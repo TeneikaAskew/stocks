@@ -134,8 +134,10 @@ def _source_files() -> list[pathlib.Path]:
     # DST-sensitive research diverge from production with both guards green
     # (Codex, PR #993). Archived notebooks are excluded by SKIP_DIRS, like
     # every other archived path.
+    # `Makefile` sits beside Dockerfile as tracked, executable configuration:
+    # `export TZ = EST` there fixes the zone for every recipe (Codex, PR #993).
     for pattern in ("*.py", "*.sql", "*.sh", "*.yml", "*.yaml", "Dockerfile*",
-                    "*.ipynb",
+                    "Makefile", "*.mk", "*.ipynb",
                     ".env.example", ".env.*.example", "*.env.example"):
         for p in REPO.rglob(pattern):
             if SKIP_DIRS & set(p.relative_to(REPO).parts):
@@ -220,7 +222,9 @@ _B = r"(?<![A-Za-z0-9_])"
 # in exactly the file types this scan was widened to cover (Codex, PR #993).
 _Q = r"[\"']?\s*"
 _TZ_CONTEXT = (
-    _B + r"tz" + _Q + r"[:=]|" + _B + r"tzinfo" + _Q + r"[:=]|"
+    # `TZ = EST` with spaces around the `=` is make's ordinary spelling, and
+    # the quote-tolerant `_Q` did not allow bare whitespace (Codex, PR #993).
+    _B + r"tz" + _Q + r"\s*[:=]|" + _B + r"tzinfo" + _Q + r"\s*[:=]|"
     + _B + r"time_?zone" + _Q + r"[:=]|"
     + _B + r"time-zone[:= ]|" + _B + r"ZoneInfo\s*\(|"
     + _B + r"pytz\.timezone\s*\(|" + _B + r"tz_convert\s*\(|"
@@ -241,7 +245,13 @@ _TZ_CONTEXT = (
     # this scan precisely to cover deployment configuration, so accepting only
     # the equals form let an image pin a fixed Eastern offset with both guards
     # green (Codex, PR #993).
-    + _B + r"ENV\s+TZ\s+"
+    + _B + r"ENV\s+TZ\s+|"
+    # Postgres has a third spelling. `SELECT set_config('timezone', 'EST',
+    # false)` does exactly what `SET TIME ZONE 'EST'` does -- and the
+    # transaction-local `true` form what `SET LOCAL` does -- but only the
+    # statement forms were contexts (Codex, PR #993). The setting NAME is
+    # required, so `set_config('work_mem', ...)` is not a timezone context.
+    + _B + r"set_config\s*\(\s*[\"']timezone[\"']\s*,\s*"
 )
 
 # Non-Python source (.sh, .sql, Pine). Regex is the only option here, so the
@@ -340,7 +350,7 @@ _TZ_CALLS_SPECIFIC = {"ZoneInfo", "tz_localize", "tz_convert", "astimezone",
 # UTC-5 zone, and python-dateutil is a declared dependency here. Generic, so an
 # unrelated `parser.tzstr(...)` cannot fail CI (Codex, PR #993).
 _TZ_CALLS_GENERIC = {"timezone", "localize", "now", "no_cache",
-                     "Timestamp", "gettz", "tzstr"}
+                     "Timestamp", "gettz", "tzstr", "tzrange"}
 _TZ_CALLS = _TZ_CALLS_SPECIFIC | _TZ_CALLS_GENERIC
 # Receivers that make a generic name specific. Alias-resolved, so
 # `import pytz as p` still reaches `pytz` -- and read as the LAST attribute of
@@ -360,7 +370,10 @@ _EASTERN_OFFSET_MINUTES = (-240, -300)
 # the same frozen UTC-5 zone as `FixedOffset(-300)`, in SECONDS. Reading it as
 # minutes would have compared -18000 against (-240, -300) and found nothing,
 # so the constructor and its unit have to arrive together (Codex, PR #993).
-_FIXED_OFFSET_SECOND_CALLS = {"tzoffset"}
+# dateutil's `tzrange(name, offset)` takes SECONDS in the same second
+# position as `tzoffset`, so it belongs with it rather than beside
+# `FixedOffset` (Codex, PR #993).
+_FIXED_OFFSET_SECOND_CALLS = {"tzoffset", "tzrange"}
 # `key` is NOT here. It is the ZoneInfo constructor's parameter name and
 # nothing else's, so as a GLOBAL keyword it flags `cache.get(key="EST")` and
 # any other ordinary lookup -- a false CI failure on code that has no timezone
@@ -389,8 +402,13 @@ _ENV_GETTER_CALLS = {"getenv", "get"}
 # against (Codex, PR #993).
 _FIXED_OFFSET_ZONES = ("Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+04", "Etc/GMT+05",
                        "EST5", "EDT4")
+# IGNORECASE, like the non-Python detector has been since round 9: dateutil
+# reads `est5` and `EST5` as the same frozen zone, so lowering the case walked
+# past the Python path entirely (Codex, PR #993). Upper-casing the VALUE
+# instead would have been the wrong fix -- it breaks `Etc/GMT+5`, which is
+# mixed-case by definition, and a test caught that.
 _FIXED_OFFSET_STRINGS = re.compile(
-    r"^(?:" + _FIXED_OFFSET_TEXT + r"|Etc/GMT\+0?[45])$")
+    r"^(?:" + _FIXED_OFFSET_TEXT + r"|Etc/GMT\+0?[45])$", re.I)
 
 # Matched with no context, like the unambiguous legacy names and for the same
 # reason: `Etc/GMT+5` means one thing.
@@ -407,6 +425,23 @@ def _call_name(node: ast.Call) -> str:
     if isinstance(fn, ast.Attribute):
         return fn.attr
     return ""
+
+
+def _resolve_callable(name: str, env, depth: int = 0) -> str:
+    """Follow `NAME = <constructor>` chains to the constructor's own name.
+
+    Bounded by depth rather than by cycle detection because the answer is a
+    NAME rather than a node: a two-name cycle would otherwise spin. Four hops
+    is past any alias chain worth writing and short of a pathological one.
+    """
+    if depth > 4:
+        return name
+    bound = env.bindings.get(name)
+    if isinstance(bound, ast.Name):
+        return _resolve_callable(bound.id, env, depth + 1)
+    if isinstance(bound, ast.Attribute):
+        return _resolve_callable(bound.attr, env, depth + 1)
+    return name
 
 
 def _call_receiver(node: ast.Call) -> str:
@@ -1161,6 +1196,10 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 reported_values.add(id(arg))
                 note(bucket_legacy, arg, where(repr(arg.value)))
                 return True
+        # Case-folded, for the reason the legacy names already are: dateutil
+        # reads `est5` and `EST5` as the same frozen zone, and the non-Python
+        # detector has been case-insensitive since round 9 while this one was
+        # not (Codex, PR #993).
         if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
                 and _FIXED_OFFSET_STRINGS.match(arg.value)):
             reported_values.add(id(arg))
@@ -1225,6 +1264,19 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # the frozen zone -- and the standalone scan deliberately ignores the
         # ambiguous literal, so nothing else would have caught it (Codex,
         # PR #993). Both branches are followed; either one reporting is enough.
+        # `ZoneInfo(os.getenv("TZ") or "EST")` -- the idiom people actually
+        # write for a default. Every operand is a value the expression can
+        # take, exactly as with the ternary below, and the standalone scan
+        # deliberately ignores a bare ambiguous literal so nothing else would
+        # have seen it (Codex, PR #993).
+        if isinstance(arg, ast.BoolOp):
+            hit = False
+            for operand in arg.values:
+                if follow(bucket_legacy, bucket_offsets, node, operand, env,
+                          where, ambiguous_ok, depth + 1, seen):
+                    hit = True
+            if hit:
+                return True
         if isinstance(arg, ast.IfExp):
             hit = False
             for branch in (arg.body, arg.orelse):
@@ -1367,6 +1419,11 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 follow(legacy, offsets, node, node.args[1], env,
                        lambda shown, k=key.value, n=name: f"{n}({k!r}, {shown})")
 
+        # `make_zone = ZoneInfo; make_zone("EST")`. Round 13 resolved IMPORT
+        # aliases, which live in `env.aliases`; an ASSIGNMENT alias lives in
+        # `env.bindings` and was never consulted, so the call name failed this
+        # filter before its argument was looked at (Codex, PR #993).
+        name = _resolve_callable(name, env)
         if name not in _TZ_CALLS:
             continue
         # Whether the CALL is enough of a timezone context to convict a bare
@@ -1439,6 +1496,27 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(legacy)), list(dict.fromkeys(offsets))
 
 
+def _notebook_cells(text: str) -> list:
+    """The source of each CODE cell, separately.
+
+    Separately, because parsing them joined meant one unparseable cell lost
+    the AST path for all the rest (Codex, PR #993).
+    """
+    try:
+        nb = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(nb, dict):
+        return []
+    out = []
+    for cell in nb.get("cells", []):
+        if not isinstance(cell, dict) or cell.get("cell_type") != "code":
+            continue
+        src = cell.get("source", "")
+        out.append("".join(src) if isinstance(src, list) else str(src))
+    return out
+
+
 def _notebook_code(text: str) -> str:
     """The source of a notebook's CODE cells, joined.
 
@@ -1448,19 +1526,7 @@ def _notebook_code(text: str) -> str:
     guard that crashes on a malformed file reports no violations either way,
     and a crash is the worse way to say so.
     """
-    try:
-        nb = json.loads(text)
-    except (ValueError, TypeError):
-        return ""
-    if not isinstance(nb, dict):
-        return ""
-    out = []
-    for cell in nb.get("cells", []):
-        if not isinstance(cell, dict) or cell.get("cell_type") != "code":
-            continue
-        src = cell.get("source", "")
-        out.append("".join(src) if isinstance(src, list) else str(src))
-    return "\n".join(out)
+    return "\n".join(_notebook_cells(text))
 
 
 _MAGIC_LINE = re.compile(r"^\s*[%!]")
@@ -1479,16 +1545,30 @@ def _notebook_hits(path, text: str):
     If the result still does not parse, the regex path runs instead: partial
     coverage beats a guard that reports nothing on a file it could not read.
     """
-    code = _notebook_code(text)
-    if not code:
-        return [], []
-    stripped = "\n".join("" if _MAGIC_LINE.match(l) else l
-                          for l in code.splitlines())
-    try:
-        ast.parse(stripped)
-    except SyntaxError:
-        return None, stripped          # caller falls back to the regex path
-    return _python_hits(path, stripped)
+    cells = _notebook_cells(text)
+    if not cells:
+        return [], [], ""
+    legacy, offsets, unparsed = [], [], []
+    for cell in cells:
+        stripped = "\n".join("" if _MAGIC_LINE.match(l) else l
+                              for l in cell.splitlines())
+        try:
+            ast.parse(stripped)
+        except SyntaxError:
+            # PER CELL, not per notebook. Parsing the joined source meant one
+            # `%%bash` or one line of IPython syntax dropped every OTHER cell
+            # to the regex path -- and a constant `timedelta` offset in a
+            # sibling cell has nothing textual to match (Codex, PR #993).
+            unparsed.append(stripped)
+            continue
+        l, o = _python_hits(path, stripped)
+        legacy += l
+        offsets += o
+    # Always the same shape: findings from the cells that parsed, plus the
+    # text of the ones that did not, for the caller's regex pass. Empty when
+    # every cell parsed. A variable-arity return would put the caller's
+    # correctness at the mercy of the notebook's contents.
+    return legacy, offsets, "\n".join(unparsed)
 
 
 # `- name: TZ` on one line and `value: EST` on the next. Every Cloud Run and
@@ -1557,12 +1637,21 @@ def _scan() -> tuple[list[str], list[str]]:
             # within the joined code, not a line of the JSON file -- which is
             # the useful one: a `.ipynb` file line points at an escaped string
             # inside a JSON array and locates nothing.
-            nb_legacy, nb_rest = _notebook_hits(p, text)
-            if nb_legacy is not None:
-                legacy += nb_legacy
-                offsets += nb_rest
+            nb_legacy, nb_offsets, nb_unparsed = _notebook_hits(p, text)
+            legacy += nb_legacy
+            offsets += nb_offsets
+            if not nb_unparsed:
                 continue
-            text = nb_rest
+            # Only the cells that could not be parsed fall through to the
+            # regex pass below; the ones that parsed were analysed properly.
+            text = nb_unparsed
+        # `${TZ:-EST}` -> `EST` before matching: the default is the value the
+        # process actually gets whenever the variable is unset, which for a
+        # container is the ordinary case (Codex, PR #993). Inline comments go
+        # first, so a commented-out value cannot supply one.
+        text = _expand_shell_defaults(_strip_shell_comments(text)) \
+            if p.suffix in (".sh", ".yml", ".yaml") or p.name.startswith(
+                ("Dockerfile", "Makefile")) else text
         lines = text.splitlines()
 
         def report(bucket, m):
@@ -1629,7 +1718,8 @@ def test_every_scheduler_declaration_uses_the_named_zone():
     this test is the hermetic half.
     """
     src = (REPO / "gcp" / "deploy.sh").read_text()
-    body = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    # Inline comments too, not just full lines -- see `_strip_shell_comments`.
+    body = _strip_shell_comments(src)
 
     # Every timezone literal in the file must be Eastern, wherever it sits.
     # BOTH gcloud spellings. Requiring whitespace missed `--time-zone=UTC`,
@@ -1654,6 +1744,47 @@ def test_every_scheduler_declaration_uses_the_named_zone():
         "Cloud Scheduler defaults to UTC when --time-zone is omitted; these "
         "declarations set no timezone and expand no array that does:\n  "
         + "\n  ".join(offenders))
+
+
+def _strip_shell_comments(text: str) -> str:
+    """Drop `#` to end of line, honouring quotes.
+
+    Only FULL-line comments were removed, so a commented-out flag satisfied
+    both halves of the scheduler check at once: the literal fed the file-wide
+    zone set, and `_scheduler_offenders` saw the `--time-zone` substring in
+    the same commented tail. A declaration that reads as compliant *because
+    of a comment* is the quietest way for this guard to be wrong (Codex,
+    PR #993).
+
+    A `#` inside single or double quotes is data -- `msg="#tag"` -- so the
+    scan tracks the quote state rather than cutting at the first `#`.
+    """
+    out = []
+    for line in text.splitlines():
+        quote = None
+        cut = len(line)
+        for i, ch in enumerate(line):
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "#":
+                cut = i
+                break
+        out.append(line[:cut].rstrip())
+    return "\n".join(out)
+
+
+# `${NAME:-VALUE}` and `${NAME-VALUE}`: the default is what the process gets
+# whenever NAME is unset, which for a container is the ordinary case. The
+# context matcher stopped at `$` and never reached it (Codex, PR #993).
+_SHELL_DEFAULT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-([^}]*)\}")
+
+
+def _expand_shell_defaults(text: str) -> str:
+    """Replace a parameter expansion with its literal default."""
+    return _SHELL_DEFAULT.sub(lambda m: m.group(1), text)
 
 
 def _shell_functions(body: str) -> list[tuple[str, str]]:
@@ -3254,7 +3385,7 @@ def test_a_notebook_cell_is_read_by_the_python_analyzer():
             "from datetime import timezone, timedelta\n",
             "ET = timezone(timedelta(hours=-5))\n"]},
     ]})
-    _legacy, offsets = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
+    _legacy, offsets, _rest = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
     assert offsets, "a constant timedelta offset in a cell must be a finding"
 
     # A cell carrying a magic is not valid Python; the scan must still read
@@ -3263,7 +3394,7 @@ def test_a_notebook_cell_is_read_by_the_python_analyzer():
         {"cell_type": "code", "source": [
             "%matplotlib inline\n", "tz = 'US/Eastern'\n"]},
     ]})
-    legacy, _offsets = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
+    legacy, _offsets, _rest = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
     assert legacy, "a cell with a magic still has to be scanned"
 
 
@@ -3348,3 +3479,154 @@ def test_a_scheduler_verb_split_across_lines_is_still_a_declaration():
     assert _scheduler_commands(func), "a wrapped invocation is an invocation"
     assert _scheduler_offenders("deploy", func), (
         "it carries no --time-zone, so it creates a UTC scheduler")
+
+
+# ── Round 14 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# Grouped by root shape rather than by spelling. Rounds 12 and 13 fixed the
+# named spellings one at a time and the next round named more, so these close
+# the families: what the shell text means before anything reads it, how a
+# callable or a value is resolved, and what counts as a source.
+
+
+def test_an_inline_shell_comment_is_not_a_timezone_flag():
+    """`create http ... # --time-zone America/New_York` sets no zone.
+
+    Only FULL-line comments were stripped, so a commented-out flag satisfied
+    both halves at once: the literal fed the file-wide zone set, and
+    `_scheduler_offenders` saw the `--time-zone` substring in the same
+    commented tail. A declaration that reads as compliant because of a comment
+    is the quietest way for this guard to be wrong.
+    """
+    assert _strip_shell_comments('a=1 # --time-zone America/New_York').strip() == "a=1"
+    # A `#` inside quotes is data, not a comment.
+    assert "#tag" in _strip_shell_comments('msg="#tag" # real comment')
+    assert "real comment" not in _strip_shell_comments('msg="#tag" # real comment')
+
+    func = (
+        'deploy() {\n'
+        '  gcloud scheduler jobs create http j1 --schedule "0 2 * * *" '
+        '--uri https://x  # --time-zone America/New_York\n'
+        '}\n'
+    )
+    assert _scheduler_offenders("deploy", _strip_shell_comments(func)), (
+        "a commented-out flag must not satisfy the per-declaration check")
+
+
+def test_a_shell_parameter_default_is_read():
+    """`export TZ="${TZ:-EST}"` installs UTC-5 whenever TZ is unset.
+
+    The context matcher stopped at `$` and never reached the default, so the
+    value that actually runs in a container with no TZ set was invisible.
+    """
+    assert NONPY_AMBIGUOUS.search(_expand_shell_defaults('export TZ="${TZ:-EST}"')), (
+        "the default is the value that runs")
+    assert NONPY_FIXED_OFFSET.search(
+        _expand_shell_defaults('TZ=${TZ--05:00}')), "the `-` form too"
+    # A named zone as the default is fine.
+    assert not NONPY_AMBIGUOUS.search(
+        _expand_shell_defaults('export TZ="${TZ:-America/New_York}"'))
+
+
+def test_a_boolean_fallback_operand_is_followed():
+    """`ZoneInfo(os.getenv("TZ") or "EST")` is the idiom people actually write.
+
+    `follow()` descended into `IfExp` branches but not `BoolOp` values, and
+    the standalone scan deliberately ignores a bare ambiguous literal, so
+    nothing saw it.
+    """
+    legacy, _ = _hits('ZoneInfo(os.getenv("TZ") or "EST")\n')
+    assert legacy, "the `or` fallback is a value this call can take"
+
+    _legacy, offsets = _hits('ZoneInfo(os.environ.get("TZ") or "-05:00")\n')
+    assert offsets, offsets
+
+    legacy, offsets = _hits('ZoneInfo(os.getenv("TZ") or "America/New_York")\n')
+    assert not legacy and not offsets, (legacy, offsets)
+
+
+def test_a_posix_fixed_zone_string_is_matched_case_insensitively():
+    """dateutil reads `est5` and `EST5` as the same frozen zone.
+
+    The non-Python detector has been case-insensitive since round 9; the
+    Python path was not, so lowering the case walked past it.
+    """
+    _legacy, offsets = _hits('from dateutil.tz import tzstr\nET = tzstr("est5")\n')
+    assert offsets, "case does not change what POSIX builds"
+    _legacy, offsets = _hits('from dateutil.tz import tzstr\nET = tzstr("EdT4")\n')
+    assert offsets, offsets
+
+
+def test_dateutil_tzrange_is_recognized():
+    """`tzrange("EST", -18000)` is a fixed UTC-5 zone; the offset is in
+    SECONDS and sits second, like `tzoffset`."""
+    _legacy, offsets = _hits('from dateutil.tz import tzrange\n'
+                             'ET = tzrange("EST", -18000)\n')
+    assert offsets, offsets
+    _legacy, offsets = _hits('from dateutil.tz import tzrange\n'
+                             'ET = tzrange("IST", 19800)\n')
+    assert not offsets, "UTC+5:30 is not Eastern"
+
+
+def test_a_constructor_reached_through_an_assignment_alias_is_resolved():
+    """`make_zone = ZoneInfo; make_zone("EST")`.
+
+    Round 13 resolved IMPORT aliases; an assignment alias lives in
+    `env.bindings` instead and was never consulted, so the call name failed
+    the `_TZ_CALLS` filter before its argument was looked at.
+    """
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'make_zone = ZoneInfo\n'
+                      'ET = make_zone("EST")\n')
+    assert legacy, legacy
+
+    _legacy, offsets = _hits('from datetime import timezone, timedelta\n'
+                             'make_zone = timezone\n'
+                             'ET = make_zone(timedelta(hours=-5))\n')
+    assert offsets, offsets
+
+
+def test_the_makefile_is_scanned():
+    """The root Makefile is tracked, executable configuration: `export TZ = EST`
+    would fix the zone for every recipe."""
+    tracked = {str(p.relative_to(REPO)) for p in _source_files()}
+    assert "Makefile" in tracked, sorted(t for t in tracked if "ake" in t)
+    assert NONPY_AMBIGUOUS.search("export TZ = EST"), (
+        "the context must accept make's spaced assignment")
+
+
+def test_postgres_set_config_is_a_timezone_context():
+    """`SELECT set_config('timezone', 'EST', false)` does what
+    `SET TIME ZONE 'EST'` does, and only the latter was a context."""
+    assert NONPY_AMBIGUOUS.search(
+        "SELECT set_config('timezone', 'EST', false)")
+    assert NONPY_FIXED_OFFSET.search(
+        "SELECT set_config('timezone', '-05:00', true)")
+    assert not NONPY_AMBIGUOUS.search(
+        "SELECT set_config('work_mem', 'EST', false)"), (
+        "only the timezone setting is a timezone context")
+
+
+def test_one_unparseable_notebook_cell_does_not_blind_the_rest():
+    """A `%%bash` cell must not downgrade every other cell to regex.
+
+    Round 13 parsed the joined source, so one non-Python cell lost the AST
+    path for the whole notebook -- and `timezone(timedelta(hours=-5))` in a
+    sibling cell has nothing textual for the regex to match.
+    """
+    # `df?` is IPython help syntax: valid in a notebook, a SyntaxError to
+    # `ast.parse`, and not a magic line so the blanking pass leaves it. Codex
+    # named `%%bash`, which the magic pass already handles -- this is the same
+    # defect reached by a cell the pass cannot rescue.
+    nb = json.dumps({"cells": [
+        {"cell_type": "code", "source": ["import pandas as pd\n", "pd?\n"]},
+        {"cell_type": "code", "source": [
+            "from datetime import timezone, timedelta\n",
+            "ET = timezone(timedelta(hours=-5))\n"]},
+    ]})
+    _legacy, offsets, unparsed = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
+    assert any("timedelta" in h for h in offsets), (
+        f"the sibling cell that parses must still be analysed: {offsets}")
+    # And the cell that could not be parsed is handed back rather than
+    # dropped, so the caller still scans it by the only means left.
+    assert "pd?" in unparsed, unparsed
