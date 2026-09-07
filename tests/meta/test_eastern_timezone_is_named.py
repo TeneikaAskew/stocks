@@ -34,6 +34,7 @@ import subprocess
 import json
 import pathlib
 import re
+import uuid
 from datetime import datetime, timedelta
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
@@ -515,8 +516,13 @@ _FIXED_OFFSET_STRINGS_PY = re.compile(
 
 # Matched with no context, like the unambiguous legacy names and for the same
 # reason: `Etc/GMT+5` means one thing.
+# `_LB` here too. `NONPY_UNAMBIGUOUS` got a left boundary last round and this
+# sibling did not, so `IMAGE_TAG=latest5` and `echo LATEST5` matched the `EST5`
+# alternative and failed the offset guard on text with no timezone in it
+# (Codex, PR #993).
 NONPY_FIXED_ZONE = re.compile(
-    r"""['"]?(?:""" + "|".join(re.escape(z) for z in _FIXED_OFFSET_ZONES)
+    _LB + r"""['"]?""" + _LB
+    + r"""(?:""" + "|".join(re.escape(z) for z in _FIXED_OFFSET_ZONES)
     + r""")['"]?(?![A-Za-z0-9_/-])""", re.I
 )
 
@@ -2617,20 +2623,42 @@ def _expand_shell_vars(text: str) -> str:
 # Narrow on purpose: only a QUOTED argument, and only to one of these names.
 # An unquoted `echo $TZ` is untouched, and a real assignment is never inside
 # quotes on the same line as one of these commands.
-_SHELL_OUTPUT_ARG = re.compile(
+_SHELL_OUTPUT_CMD = re.compile(
     r"(?<![A-Za-z0-9_/-])(?:echo|printf|print|log|logger|warn|error|die|usage"
-    r"|say|notice|info|debug)(?:\s+-[A-Za-z-]+)*\s+"
-    r"(\"[^\"\n]*\"|'[^'\n]*')")
+    r"|say|notice|info|debug)(?![A-Za-z0-9_-])")
+# A redirect or a pipe means the text is not going to a terminal. `echo
+# 'TZ=EST' > app.env` followed by `. app.env` WRITES configuration and then
+# sources it, so blanking it hid a real assignment -- the previous version of
+# this pass blanked every matching command regardless of where its output
+# went (Codex, PR #993).
+_SHELL_REDIRECT = re.compile(r">>?|\||(?<![A-Za-z0-9_-])tee(?![A-Za-z0-9_-])")
+_SHELL_QUOTED = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'")
 
 
 def _blank_shell_output(text: str) -> str:
-    """Empty the quoted arguments of the commands that only print them."""
-    def one(m):
-        quoted = m.group(1)
-        keep = m.group(0)[:m.start(1) - m.start(0)]
-        return keep + quoted[0] + " " * (len(quoted) - 2) + quoted[-1]
+    """Empty the quoted arguments of a command that only prints them.
 
-    return _SHELL_OUTPUT_ARG.sub(one, text)
+    EVERY quoted argument, not just the first: `printf '%s\n' 'TZ=EST'` puts
+    the format string in the first and the data in the second, so blanking one
+    left the other to be read as an assignment (Codex, PR #993).
+
+    And only when the output is going nowhere. A line carrying `>`, `>>`, `|`
+    or `tee` is writing its text somewhere that can be read back, which makes
+    it configuration rather than a diagnostic, so it is left alone.
+    """
+    out = []
+    for line in text.splitlines():
+        m = _SHELL_OUTPUT_CMD.search(line)
+        if m:
+            rest = line[m.end():]
+            if not _SHELL_REDIRECT.search(rest):
+                rest = _SHELL_QUOTED.sub(
+                    lambda q: (q.group(0)[0] + " " * (len(q.group(0)) - 2)
+                               + q.group(0)[-1]),
+                    rest)
+                line = line[:m.end()] + rest
+        out.append(line)
+    return "\n".join(out)
 
 
 def _expand_shell_defaults(text: str) -> str:
@@ -4403,18 +4431,40 @@ def test_the_scan_reads_only_tracked_files():
     `REPO.rglob` walked untracked files, so a local scratch file or copied
     build output containing `ZoneInfo("US/Eastern")` failed a guard about
     repository sources (Codex, PR #993).
+
+    Three things about HOW this is checked, each one a defect the first
+    version had (Codex, PR #993):
+
+    * The probe file has a unique name and the test refuses to run if one
+      somehow exists. The first version wrote a fixed path in the repository
+      root and unlinked it in `finally`, so running the suite with a
+      developer's own `_scratch_untracked_tz_probe.py` present destroyed it.
+      A test may not delete a file it did not create.
+    * It asks `_source_files()` whether the probe was COLLECTED, rather than
+      running `_scan()` over every tracked file again. The scan takes ~43 s
+      and `_scan` is `lru_cache`d precisely so the suite pays for it once;
+      clearing that cache here doubled the guard's runtime for a question
+      about the collector.
+    * It skips when git tracking data is unavailable. `_source_files`
+      deliberately falls back to scanning everything without it -- that
+      fallback is documented and tested elsewhere -- so in a source export
+      this assertion would fail on behaviour that is correct.
     """
-    scratch = REPO / "_scratch_untracked_tz_probe.py"
+    if not _tracked_files():
+        pytest.skip("no git tracking data: _source_files deliberately falls "
+                    "back to scanning every file, which this test would read "
+                    "as a failure")
+
+    scratch = REPO / f"_scratch_untracked_tz_probe_{uuid.uuid4().hex}.py"
+    assert not scratch.exists(), scratch
     scratch.write_text('from zoneinfo import ZoneInfo\n'
                        'ET = ZoneInfo("US/Eastern")\n')
     try:
-        _scan.cache_clear()
-        legacy, _offsets = _scan()
-        assert not any("_scratch_untracked_tz_probe" in h for h in legacy), (
+        collected = {p.resolve() for p in _source_files()}
+        assert scratch.resolve() not in collected, (
             "an untracked file decided the result of a hermetic guard")
     finally:
-        scratch.unlink()
-        _scan.cache_clear()
+        scratch.unlink(missing_ok=True)
 
 
 def test_the_runtime_json_configuration_is_scanned():
@@ -5813,3 +5863,97 @@ def test_the_string_fold_resolves_names_without_double_reporting():
 # costing more than it catches. They are recorded on issue #1019, with the
 # runtime assertion that would settle the whole class by construction instead
 # of by enumeration.
+
+
+# ── Round 21 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# Six findings and not one of them is another spelling: two false findings, one
+# real miss created by the previous round's false-positive fix, and three about
+# a single test -- one of which could destroy a developer's untracked file.
+# That last one is the most serious thing this review has surfaced, and it is
+# in the harness rather than in the guard.
+
+
+def test_a_fixed_zone_name_needs_a_left_boundary_too():
+    """`IMAGE_TAG=latest5` is a tag, not the POSIX zone `EST5`.
+
+    `NONPY_UNAMBIGUOUS` got a left boundary last round and this sibling did
+    not, so the `EST5` alternative matched inside an ordinary word and failed
+    the offset guard on text with no timezone in it (Codex, PR #993).
+    """
+    assert not NONPY_FIXED_ZONE.search("IMAGE_TAG=latest5")
+    assert not NONPY_FIXED_ZONE.search("echo LATEST5")
+    assert not NONPY_FIXED_ZONE.search("BEDT4")
+
+    # The real zone still matches, quoted or bare.
+    assert NONPY_FIXED_ZONE.search("TZ=EST5")
+    assert NONPY_FIXED_ZONE.search("tzstr('EST5')")
+    assert NONPY_FIXED_ZONE.search('TZ="Etc/GMT+5"')
+
+
+def test_every_quoted_diagnostic_argument_is_blanked():
+    """`printf '%s\\n' 'TZ=EST'` puts the data in the SECOND argument.
+
+    The previous version blanked only the first quoted argument -- the format
+    string -- and left the data to be read as an assignment (Codex, PR #993).
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    assert not scanned("printf '%s\\n' 'TZ=EST'")
+    assert not scanned("echo 'prefix' 'TZ=EST'")
+    assert not scanned("log 'using' 'TZ=US/Eastern' 'today'")
+    # The single-argument case the previous round fixed still holds.
+    assert not scanned("echo 'set TZ=EST to reproduce'")
+
+
+def test_redirected_output_is_configuration_not_a_diagnostic():
+    """`echo 'TZ=EST' > app.env` writes a file that is then sourced.
+
+    Blanking every matching command regardless of where its output went hid a
+    real assignment -- the previous round's false-positive fix creating a miss
+    (Codex, PR #993).
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    assert scanned("echo 'TZ=EST' > /tmp/app.env")
+    assert scanned("echo 'TZ=EST' >> /tmp/app.env")
+    assert scanned("echo 'TZ=EST' | tee /tmp/app.env")
+    assert scanned("printf 'TZ=%s\\n' 'US/Eastern' > app.env")
+
+    # Output with nowhere to go is still a diagnostic.
+    assert not scanned("echo 'set TZ=EST to reproduce'")
+    assert not scanned('die "TZ=US/Eastern is not supported"')
+
+
+def test_the_tracked_files_probe_cannot_clobber_local_work():
+    """The harness must not delete a file it did not create.
+
+    `test_the_scan_reads_only_tracked_files` wrote a FIXED path in the
+    repository root and unlinked it in `finally`, so running the suite with a
+    developer's own file of that name present destroyed it (Codex, PR #993).
+    Asserted on the source, because the failure mode is what the test does
+    rather than what it concludes.
+    """
+    source = pathlib.Path(__file__).read_text()
+    body = source[source.index("def test_the_scan_reads_only_tracked_files"):]
+    body = body[:body.index("\ndef test_", 1)]
+
+    assert "uuid.uuid4()" in body, (
+        "the probe path must be unique per run, not a fixed name another "
+        "file could already occupy")
+    assert "assert not scratch.exists()" in body, (
+        "the test must refuse to run rather than overwrite an existing file")
+    assert "missing_ok=True" in body, body
+    # And it must not re-run the repository scan for a question about the
+    # collector: `_scan` is cached so the suite pays ~43s for it once.
+    assert "_scan.cache_clear()" not in body, (
+        "clearing the cache here doubles the guard's runtime")
+    assert "_source_files()" in body, body
+    # ...nor fail in the source-export environment the collector documents.
+    assert "pytest.skip" in body and "_tracked_files()" in body, body
