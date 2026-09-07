@@ -56,6 +56,7 @@ import httpx
 import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import ThreadSafeCache
+from api.infra_errors import is_infrastructure_error
 from lib.single_flight import SingleFlight
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
@@ -360,6 +361,15 @@ def get_options_dates(
         # error escaped as a bare 500 with a driver traceback, which is not
         # the "explicit unavailable state" Rule 3.7 asks for either. 503, the
         # same answer /api/market/dates gives for the same condition.
+        #
+        # Only an INFRASTRUCTURE failure converts. A `ProgrammingError` after
+        # a schema change is our SQL being wrong, and answering it with a
+        # retryable 503 sends an operator to diagnose an outage that is not
+        # happening (Codex P1 on #999).
+        if not is_infrastructure_error(e):
+            log.exception("Cloud SQL dates probe failed for %s with an "
+                          "INTERNAL error", ticker_upper)
+            raise
         log.error("Cloud SQL dates probe failed for %s: %s", ticker_upper, e)
         # The exception text stays in the log. It is NOT interpolated into the
         # response: a driver error renders the SQL, its bound parameters and
@@ -477,6 +487,10 @@ def get_options_dates(
                 df = _dates_query(sql, {"ticker": ticker_upper,
                                         "limit": limit})
             except Exception as e:
+                if not is_infrastructure_error(e):       # same split as above
+                    log.exception("Cloud SQL dates query failed for %s with "
+                                  "an INTERNAL error", ticker_upper)
+                    raise
                 log.error("Cloud SQL dates query failed for %s: %s",
                           ticker_upper, e)
                 raise HTTPException(

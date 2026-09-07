@@ -1230,7 +1230,12 @@ def test_infrastructure_errors_are_classified_by_type():
                 psycopg2.InterfaceError("connection already closed"),
                 ConnectionRefusedError(),
                 TimeoutError(),
-                ModuleNotFoundError("lightgbm")):
+                # Constructed the way the interpreter constructs it: with
+                # `name` set. A bare `ModuleNotFoundError("lightgbm")` never
+                # comes from an import, and the name-based classifier declines
+                # it on purpose (see the cases at the end of this test).
+                ModuleNotFoundError("No module named 'lightgbm'",
+                                    name="lightgbm")):
         assert is_infrastructure_error(exc), type(exc).__name__
 
     for exc in (TypeError("bad"), KeyError("reach_rate"), AttributeError("x"),
@@ -1252,3 +1257,88 @@ def test_infrastructure_errors_are_classified_by_type():
     loop = RuntimeError("a")
     loop.__cause__ = loop
     assert not is_infrastructure_error(loop)
+
+    # The pool saying every connection is checked out is a capacity outage.
+    # `sqlalchemy.exc.TimeoutError` is NOT the builtin `TimeoutError`, and the
+    # guards were re-raising it as a bare 500 (Codex P2 on #999).
+    from sqlalchemy import exc as sa_exc
+    assert not issubclass(sa_exc.TimeoutError, TimeoutError)
+    assert is_infrastructure_error(
+        sa_exc.TimeoutError("QueuePool limit of size 7 overflow 0 reached"))
+
+    # A missing OPTIONAL package is an unavailable feature. A renamed symbol,
+    # or a typo in one of OUR module paths, is a bug and stays loud -- both
+    # used to read as an outage because every `ImportError` did
+    # (Codex P1 on #999).
+    assert is_infrastructure_error(
+        ModuleNotFoundError("No module named 'lightgbm'", name="lightgbm"))
+    assert is_infrastructure_error(
+        ModuleNotFoundError("No module named 'firebase_admin'",
+                            name="firebase_admin"))
+    assert not is_infrastructure_error(
+        ImportError("cannot import name 'predict_one' from "
+                    "'gcp.research.strat_engine.strat_pred_serve'"))
+    assert not is_infrastructure_error(
+        ModuleNotFoundError("No module named 'gcp.research.strat_pred_serv'",
+                            name="gcp.research.strat_pred_serv"))
+    assert not is_infrastructure_error(
+        ModuleNotFoundError("No module named 'x'"))      # no name: not decided
+
+
+def test_the_final_four_guards_keep_the_split(client, monkeypatch):
+    """The catches the final review found still broad, each both ways.
+
+    Each site answers 503 for what a real outage raises and a bare 500 for a
+    defect, on the same call site -- the pair is the property, not either
+    half (Codex, final review on #999).
+    """
+    import psycopg2
+    from sqlalchemy import exc as sa_exc
+    import api.routers.admin as admin
+    import api.routers.options as options
+    import api.auth as auth
+
+    def bare_500(resp, where):
+        assert resp.status_code == 500, (
+            f"{where}: an internal defect was reported as {resp.status_code}"
+            f"\nbody: {resp.text[:300]}")
+
+    # 1-2. The options dates probe and query.
+    def defect(*_a, **_k):
+        raise sa_exc.ProgrammingError(
+            "SELECT snapshot_dat", {}, psycopg2.ProgrammingError("column"))
+    monkeypatch.setattr(options, "_dates_query", defect)
+    bare_500(client.get(f"/api/options/dates/{T}"), "options dates probe")
+
+    def outage(*_a, **_k):
+        raise sa_exc.TimeoutError("QueuePool limit of size 7 overflow 0 reached")
+    monkeypatch.setattr(options, "_dates_query", outage)
+    r = client.get(f"/api/options/dates/{T}")
+    assert r.status_code == 503, r.text[:200]
+
+    # 3. Firebase initialisation.
+    monkeypatch.setattr(auth, "_ensure_firebase",
+                        lambda: (_ for _ in ()).throw(TypeError("bad init")))
+    bare_500(client.get("/api/admin/users"), "firebase initialisation")
+    monkeypatch.setattr(auth, "_ensure_firebase",
+                        lambda: (_ for _ in ()).throw(ModuleNotFoundError(
+                            "No module named 'firebase_admin'",
+                            name="firebase_admin")))
+    r = client.get("/api/admin/users")
+    assert r.status_code == 503, r.text[:200]
+    assert r.json()["detail"] == "user directory temporarily unavailable"
+
+    # 4. The timestamp parser: a bad string is the caller's 400, a defect
+    #    inside the parser is not.
+    r = client.post("/api/admin/strat-engine/predict",
+                    json={"ticker": T, "timeframe": "15m",
+                          "as_of_timestamp": "not-a-timestamp"})
+    assert r.status_code == 400, r.text[:200]
+    import pandas as pd
+    monkeypatch.setattr(pd, "to_datetime",
+                        lambda *_a, **_k: (_ for _ in ()).throw(
+                            AttributeError("integration regression")))
+    bare_500(client.post("/api/admin/strat-engine/predict",
+                         json={"ticker": T, "timeframe": "15m",
+                               "as_of_timestamp": "2026-09-05T15:30:00Z"}),
+             "timestamp parser")

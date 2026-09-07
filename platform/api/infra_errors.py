@@ -43,11 +43,13 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         # a `FileNotFoundError` on a path we chose is our bug.
         ConnectionError,
         TimeoutError,
-        # An optional dependency absent from this image. `strat_pred_serve`
-        # pulls lightgbm and scikit-learn, so an API image built without the ML
-        # extras raises this before any model runs -- an unavailable predict
-        # stack, not a crash.
-        ImportError,
+        # `ImportError` is deliberately NOT here any more. Classifying every
+        # one as an outage also caught a renamed symbol in `strat_pred_serve`
+        # or a typo in one of our own module paths, and both prediction guards
+        # wrap their lazy import -- so such a deployment answered a retryable
+        # 503 indefinitely, indistinguishable from a missing optional package
+        # (Codex P1 on #999). The optional-dependency case is decided by NAME
+        # in `_optional_dependency_missing` instead.
     ]
     try:                                    # psycopg2, the Cloud SQL driver
         import psycopg2                     # noqa: PLC0415
@@ -60,8 +62,12 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         logger.debug("psycopg2 not importable; its errors are not classified")
     try:                                    # SQLAlchemy wraps the above
         from sqlalchemy import exc as sa_exc     # noqa: PLC0415
+        # `sa_exc.TimeoutError` is the pool saying every configured connection
+        # is checked out past `pool_timeout` -- a genuine capacity outage. It
+        # is NOT a subclass of the builtin `TimeoutError` listed above, so the
+        # guards were re-raising it as a bare 500 (Codex P2 on #999).
         found += [sa_exc.OperationalError, sa_exc.InterfaceError,
-                  sa_exc.DisconnectionError]
+                  sa_exc.DisconnectionError, sa_exc.TimeoutError]
     except Exception:                       # pragma: no cover
         logger.debug("sqlalchemy not importable; its errors are not classified")
     try:                                    # GCS and the rest of google-cloud
@@ -77,6 +83,29 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
     except Exception:                       # pragma: no cover
         logger.debug("google.auth not importable; not classified")
     return tuple(found)
+
+
+#: The packages this API image may legitimately lack. `requirements-research.txt`
+#: is the heavy ML stack an API build can skip (`strat_pred_serve` pulls
+#: lightgbm and scikit-learn, and lightgbm pulls scipy), and `firebase_admin`
+#: is imported lazily behind its own 503 guard. A `ModuleNotFoundError` naming
+#: one of THESE is an unavailable feature; one naming anything else -- our own
+#: package, a typo -- is a bug and stays loud.
+OPTIONAL_DEPENDENCIES: frozenset[str] = frozenset(
+    {"lightgbm", "sklearn", "scipy", "firebase_admin"})
+
+
+def _optional_dependency_missing(exc: BaseException) -> bool:
+    """A `ModuleNotFoundError` for a package this image is allowed not to have.
+
+    Matched on the top-level package of `exc.name`, which the interpreter sets
+    on every module-not-found it raises. `ImportError` for a symbol that does
+    not exist (`cannot import name ...`) is a plain `ImportError`, not a
+    `ModuleNotFoundError`, and is never an outage.
+    """
+    if not isinstance(exc, ModuleNotFoundError) or not exc.name:
+        return False
+    return exc.name.split(".")[0] in OPTIONAL_DEPENDENCIES
 
 
 #: Evaluated once at import. The set of installed drivers does not change
@@ -99,7 +128,7 @@ def is_infrastructure_error(exc: BaseException) -> bool:
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if isinstance(cur, INFRASTRUCTURE_ERRORS):
+        if isinstance(cur, INFRASTRUCTURE_ERRORS) or _optional_dependency_missing(cur):
             return True
         cur = cur.__cause__
     return False

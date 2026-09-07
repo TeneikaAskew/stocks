@@ -394,7 +394,14 @@ def _parse_as_of(raw: Optional[str]):
     import pandas as _pd  # noqa: PLC0415
     try:
         parsed = _pd.to_datetime(raw)
-    except Exception as exc:
+    except (ValueError, TypeError, OverflowError) as exc:
+        # The parser's own rejections, and only those. pandas raises
+        # `ParserError` and `OutOfBoundsDatetime` (both `ValueError`) for a
+        # string it cannot read, `TypeError` for the wrong type, and
+        # `OverflowError` for a value past its range. Anything else --
+        # an `AttributeError` from an integration regression -- is our
+        # defect, and `except Exception` was reporting even a VALID timestamp
+        # as the caller's mistake when that happened (Codex P2 on #999).
         raise HTTPException(
             status_code=400,
             detail=f"as_of_timestamp must be an ISO-8601 timestamp; got {raw!r}",
@@ -926,6 +933,16 @@ def _fb_auth():
         # 503 "user directory temporarily unavailable" for a firebase call
         # that fails one line later. Same failure, two different answers,
         # because the guard was around the call and not the import.
+        #
+        # Only an INFRASTRUCTURE failure converts -- the classifier already
+        # recognises a missing `firebase_admin` and a `DefaultCredentialsError`.
+        # A `TypeError` raised inside `_ensure_firebase` is a defect in our
+        # initialisation, and rewriting it as "temporarily unavailable" for
+        # all three admin-user operations hid it (Codex P1 on #999).
+        if not is_infrastructure_error(exc):
+            logger.exception("firebase-admin initialisation failed with an "
+                             "INTERNAL error")
+            raise
         logger.error("firebase-admin unavailable: %s", exc)
         raise HTTPException(
             status_code=503, detail="user directory temporarily unavailable"
