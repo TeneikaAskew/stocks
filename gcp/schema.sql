@@ -4119,5 +4119,10 @@ CREATE TABLE IF NOT EXISTS schema_apply_history (
     commit_sha   TEXT        NOT NULL,
     commit_time  BIGINT      NOT NULL,
     applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- space-separated `git rev-list` of commit_sha, as deep as the build
+    -- could see. It lets the guard refuse an ancestor of the last applied
+    -- revision whatever the committer clocks say (Codex on #1022)
+    ancestors    TEXT        NOT NULL DEFAULT '',
     PRIMARY KEY (commit_sha, applied_at)
 );
+ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS ancestors TEXT NOT NULL DEFAULT '';

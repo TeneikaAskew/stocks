@@ -428,60 +428,94 @@ class _FakeEngine:
 
 
 def test_classify_orders_by_time_when_ancestry_cannot_decide():
-    assert classify_revision(None, None, "a", 100, frozenset()) == "first"
-    assert classify_revision("a", 100, "a", 100, frozenset()) == "same"
-    assert classify_revision("a", 100, "b", 101, frozenset()) == "newer"
-    assert classify_revision("a", 100, "b", 99, frozenset()) == "older"
+    none = frozenset()
+    assert classify_revision(None, None, none, "a", 100, none) == "first"
+    assert classify_revision("a", 100, none, "a", 100, none) == "same"
+    assert classify_revision("a", 100, none, "b", 101, none) == "newer"
+    assert classify_revision("a", 100, none, "b", 99, none) == "older"
 
 
 def test_equal_commit_times_are_a_tie_unless_ancestry_proves_the_order():
     """Codex on #1022: main has 38 adjacent commit pairs sharing a committer
     second (measured 2026-09-07 over 1384 commits), so equal times cannot be
-    treated as safe. A tie is resolved only by the newest applied revision
-    being an ancestor of this one; otherwise it is refused."""
-    assert classify_revision("a", 100, "b", 100, frozenset()) == "tie"
-    assert classify_revision("a", 100, "b", 100, frozenset({"b", "a", "z"})) == "descendant"
+    treated as safe. A tie is resolved only by ancestry; otherwise refused."""
+    none = frozenset()
+    assert classify_revision("a", 100, none, "b", 100, none) == "tie"
+    assert classify_revision("a", 100, none, "b", 100, frozenset({"b", "a", "z"})) == "descendant"
+    assert classify_revision("b", 100, frozenset({"b", "a"}), "a", 100, none) == "ancestor"
 
 
-def test_ancestry_beats_commit_time():
+def test_ancestry_beats_commit_time_in_both_directions():
     """A revision whose checkout proves the newest applied one is its ancestor
-    is newer whatever the clocks say."""
-    assert classify_revision("a", 200, "b", 100, frozenset({"b", "a"})) == "descendant"
+    is newer whatever the clocks say; and a revision the newest applied one
+    recorded as ITS ancestor is older whatever the clocks say (Codex on
+    #1022: a delayed build of ancestor A cannot see descendant B in its own
+    rev-list, so B's recorded ancestry is what refuses A)."""
+    assert classify_revision("a", 200, frozenset(), "b", 100, frozenset({"b", "a"})) == "descendant"
+    assert classify_revision("b", 90, frozenset({"b", "a", "z"}), "a", 100, frozenset({"a", "z"})) == "ancestor"
 
 
 def test_guard_allows_first_apply_and_newer_revisions():
     eng = _FakeEngine([[]])                      # no history yet
     assert guard_revision(eng, "aaa", 100) == (True, None)
     assert any("CREATE TABLE IF NOT EXISTS schema_apply_history" in e for e in eng.executed)
-    eng = _FakeEngine([[("aaa", 100)]])
+    assert any("ADD COLUMN IF NOT EXISTS ancestors" in e for e in eng.executed)
+    eng = _FakeEngine([[("aaa", 100, "")]])
     assert guard_revision(eng, "bbb", 200) == (True, "aaa")
 
 
 def test_guard_refuses_a_revision_older_than_the_newest_applied():
     """Cloud Build can start a newer push's build before a delayed older one;
     build start order is not commit order, so the applier itself refuses."""
-    eng = _FakeEngine([[("newer", 200)]])
+    eng = _FakeEngine([[("newer", 200, "")]])
     assert guard_revision(eng, "older", 100) == (False, "newer")
 
 
 def test_guard_lets_the_same_revision_reapply():
     """Both triggers apply the same push; the second is a no-op, not a refusal."""
-    eng = _FakeEngine([[("same", 200)]])
+    eng = _FakeEngine([[("same", 200, "")]])
     assert guard_revision(eng, "same", 200) == (True, "same")
 
 
 def test_guard_refuses_an_equal_time_tie_it_cannot_order():
-    eng = _FakeEngine([[("newer", 200)]])
+    eng = _FakeEngine([[("newer", 200, "")]])
     assert guard_revision(eng, "other", 200) == (False, "newer")
-    eng = _FakeEngine([[("newer", 200)]])
+    eng = _FakeEngine([[("newer", 200, "")]])
     assert guard_revision(eng, "other", 200, ancestors=frozenset({"other", "newer"})) == (True, "newer")
 
 
-def test_record_revision_inserts_sha_and_time():
+def test_guard_refuses_an_ancestor_of_the_applied_revision_with_a_higher_time():
+    """Codex on #1022 (round 8): B applied with a skewed lower committer time
+    than its ancestor A; A's delayed build cannot see B, so only B's recorded
+    ancestry can refuse A."""
+    eng = _FakeEngine([[("b", 90, "b a z")]])
+    assert guard_revision(eng, "a", 100, ancestors=frozenset({"a", "z"})) == (False, "b")
+
+
+def test_guard_reads_the_last_applied_revision_not_the_highest_commit_time():
+    """Under clock skew the highest committer time is not the last applied
+    revision: after A(100) then its descendant B(90), ordering by time would
+    call A "newest" and let a re-run of A pass as "same"."""
+    eng = _FakeEngine([[("b", 90, "b a")]])
+    guard_revision(eng, "a", 100)
+    select = next(e for e in eng.executed if e.lstrip().upper().startswith("SELECT"))
+    assert "ORDER BY applied_at DESC" in select and "commit_time DESC" not in select
+
+
+def test_record_revision_inserts_sha_time_and_ancestors():
     eng = _FakeEngine([])
-    record_revision(eng, "abc", 123)
+    record_revision(eng, "abc", 123, frozenset({"abc", "aaa"}))
     assert any("INSERT INTO schema_apply_history" in e and "'abc'" in e and "123" in e
-               for e in eng.executed), eng.executed
+               and "'aaa abc'" in e for e in eng.executed), eng.executed
+
+
+def test_schema_declares_the_ancestors_column():
+    from pathlib import Path
+    schema = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+    block = schema[schema.index("CREATE TABLE IF NOT EXISTS schema_apply_history"):]
+    block = block[:block.index(");")]
+    assert "ancestors" in block, "schema.sql must declare what the applier records"
+    assert "ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS ancestors" in schema
 
 
 def test_unpopulated_matviews_are_refreshed_in_order():

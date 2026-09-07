@@ -171,9 +171,14 @@ def run_unit(unit: list[str]) -> None:
 # the source revision it applied and orders the incoming one against the
 # newest successfully applied one:
 #
-#   1. ancestry first: the build passes `git rev-list` of its revision; if
-#      the newest applied SHA is in it, this revision descends from it and
-#      is newer whatever the clocks say;
+#   1. ancestry first, in both directions: the build passes `git rev-list`
+#      of its revision, and each applied revision's rev-list is recorded.
+#      If the incoming SHA is in the applied revision's recorded ancestry
+#      it is older; if the applied SHA is in the incoming ancestry it is
+#      newer; either holds whatever the clocks say. Both directions are
+#      needed: a delayed build of ancestor A cannot see its descendant B
+#      in its own rev-list, so only B's recorded ancestry can refuse A
+#      (Codex on #1022, round 8);
 #   2. otherwise committer time (main is squash-merged, GitHub stamps the
 #      merge time);
 #   3. an EQUAL committer time with a different SHA that ancestry cannot
@@ -182,31 +187,47 @@ def run_unit(unit: list[str]) -> None:
 #      #1022). The trigger checkout is a single-revision fetch, so the
 #      build step deepens it before reading the ancestry; if that fails
 #      the tie is refused rather than guessed.
+#
+# "Newest applied" is the LAST applied row (applied_at), not the highest
+# committer time: under clock skew those differ, and the guard keeps the
+# apply order monotonic, so the last applied row is the schema in force.
+# Ancestry is recorded to the depth the build could see (100 commits);
+# a relationship deeper than that falls back to committer time.
 REVISION_TABLE = "schema_apply_history"
 _REVISION_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {REVISION_TABLE} (
     commit_sha   TEXT        NOT NULL,
     commit_time  BIGINT      NOT NULL,
     applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ancestors    TEXT        NOT NULL DEFAULT '',
     PRIMARY KEY (commit_sha, applied_at)
 )"""
+# Space-separated `git rev-list` of the applied revision (also declared in
+# schema.sql; the guard runs before the apply, so it creates both itself).
+_REVISION_ANCESTORS_SQL = (
+    f"ALTER TABLE {REVISION_TABLE} ADD COLUMN IF NOT EXISTS ancestors TEXT NOT NULL DEFAULT ''"
+)
 
 
 def classify_revision(newest_sha: str | None, newest_time: int | None,
+                      newest_ancestors: frozenset[str],
                       commit_sha: str, commit_time: int,
                       ancestors: frozenset[str]) -> str:
-    """Order ``commit_sha`` against the newest applied revision.
+    """Order ``commit_sha`` against the newest (last) applied revision.
 
-    Returns one of ``first`` (nothing applied yet), ``same``, ``descendant``
-    (the newest applied SHA is an ancestor of this one, proven by the
-    checkout), ``newer`` / ``older`` (by committer time, when ancestry cannot
-    decide) or ``tie`` (equal committer time, different SHA, no ancestry
-    proof). Only ``older`` and ``tie`` are refused.
+    Returns one of ``first`` (nothing applied yet), ``same``, ``ancestor``
+    (the applied revision recorded this SHA in its ancestry), ``descendant``
+    (the applied SHA is in this revision's ancestry), ``newer`` / ``older``
+    (by committer time, when ancestry cannot decide) or ``tie`` (equal
+    committer time, different SHA, no ancestry proof). ``ancestor``,
+    ``older`` and ``tie`` are refused.
     """
     if newest_sha is None:
         return "first"
     if newest_sha == commit_sha:
         return "same"
+    if commit_sha in newest_ancestors:
+        return "ancestor"
     if newest_sha in ancestors:
         return "descendant"
     assert newest_time is not None
@@ -217,7 +238,7 @@ def classify_revision(newest_sha: str | None, newest_time: int | None,
     return "tie"
 
 
-_REFUSED = {"older", "tie"}
+_REFUSED = {"ancestor", "older", "tie"}
 
 
 def guard_revision(engine, commit_sha: str, commit_time: int,
@@ -229,14 +250,17 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
 
     with engine.begin() as conn:
         conn.execute(sqlalchemy.text(_REVISION_TABLE_SQL))
+        conn.execute(sqlalchemy.text(_REVISION_ANCESTORS_SQL))
         row = conn.execute(sqlalchemy.text(
-            f"SELECT commit_sha, commit_time FROM {REVISION_TABLE} "
-            "ORDER BY commit_time DESC, applied_at DESC LIMIT 1"
+            f"SELECT commit_sha, commit_time, ancestors FROM {REVISION_TABLE} "
+            "ORDER BY applied_at DESC LIMIT 1"
         )).fetchone()
     if row is None:
         return True, None
     newest_sha, newest_time = row[0], int(row[1])
-    verdict = classify_revision(newest_sha, newest_time, commit_sha, commit_time, ancestors)
+    newest_ancestors = frozenset((row[2] or "").split())
+    verdict = classify_revision(newest_sha, newest_time, newest_ancestors,
+                                commit_sha, commit_time, ancestors)
     log.info("Revision %s (commit time %d) vs newest applied %s (commit time %d): %s",
              commit_sha, commit_time, newest_sha, newest_time, verdict)
     if verdict in _REFUSED:
@@ -246,6 +270,12 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
                       "(%d SHAs) does not contain it, so the order is unknown. Deepen "
                       "the checkout (git fetch --deepen) and re-run.",
                       commit_sha, commit_time, newest_sha, len(ancestors))
+        elif verdict == "ancestor":
+            log.error("Refusing to apply revision %s: the newest applied revision %s "
+                      "recorded it as an ancestor (its committer time %d is higher than "
+                      "%d, so the clocks were skewed). Out-of-order applies roll CREATE "
+                      "OR REPLACE objects back.",
+                      commit_sha, newest_sha, commit_time, newest_time)
         else:
             log.error("Refusing to apply revision %s (commit time %d): a newer revision "
                       "%s (commit time %d) has already been applied. Out-of-order "
@@ -255,16 +285,17 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
     return True, newest_sha
 
 
-def record_revision(engine, commit_sha: str, commit_time: int) -> None:
+def record_revision(engine, commit_sha: str, commit_time: int,
+                    ancestors: frozenset[str] = frozenset()) -> None:
     import sqlalchemy  # noqa: PLC0415
 
     with engine.begin() as conn:
         conn.execute(
             sqlalchemy.text(
-                f"INSERT INTO {REVISION_TABLE} (commit_sha, commit_time) "
-                "VALUES (:sha, :t)"
+                f"INSERT INTO {REVISION_TABLE} (commit_sha, commit_time, ancestors) "
+                "VALUES (:sha, :t, :anc)"
             ),
-            {"sha": commit_sha, "t": int(commit_time)},
+            {"sha": commit_sha, "t": int(commit_time), "anc": " ".join(sorted(ancestors))},
         )
 
 
@@ -388,7 +419,7 @@ def main() -> int:
         return 1
 
     if args.revision is not None:
-        record_revision(engine, args.revision, args.revision_time)
+        record_revision(engine, args.revision, args.revision_time, ancestors)
         log.info("Recorded applied revision %s (commit time %d)", args.revision, args.revision_time)
 
     log.info("Schema apply complete (%d statements in %d units).", n_statements, len(units))
