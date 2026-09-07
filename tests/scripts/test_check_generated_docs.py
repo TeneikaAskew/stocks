@@ -62,6 +62,19 @@ def test_editing_inside_a_marker_block_is_a_finding(live, repo, tmp_path):
     assert any("marker block differs" in f for f in gate.gate_markers(root, repo, live))
 
 
+def test_removing_both_markers_of_a_block_is_a_finding(live, repo, tmp_path):
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    text = (root / "DATA_DEPENDENCIES.md").read_text()
+    s, e = inv.MARKER_START.format(name="orphans"), inv.MARKER_END.format(name="orphans")
+    import re
+    text = re.sub(re.escape(s) + r".*?" + re.escape(e), "", text, flags=re.S)
+    (root / "DATA_DEPENDENCIES.md").write_text(text)
+    findings = gate.gate_markers(root, repo, live)
+    assert any("inventory:orphans block is missing entirely" in f for f in findings), findings
+
+
 def test_lost_heading_and_shrink_are_findings(tmp_path):
     root = tmp_path
     prev = tmp_path / "previous"

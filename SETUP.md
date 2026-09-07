@@ -76,7 +76,7 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
   --role="roles/aiplatform.user"
 ```
 
-Read-only roles for the live snapshot (added 2026-09-07; `arch-refresh-bot@` already holds `cloudsql.client`, `secretmanager.viewer` and `run.admin` as read live on 2026-09-07 — grant the rest):
+Read-only roles for the live snapshot. **Applied 2026-09-07 04:28Z** (verified against the live project policy afterwards: `arch-refresh-bot@` holds sixteen project roles, and `storage.objectViewer` on the trading-data bucket). `run.viewer`, `cloudbuild.builds.viewer`, `cloudsql.client` and `secretmanager.viewer` in the loop below are already implied by the `run.admin`, `cloudbuild.builds.editor`, `cloudsql.client` and `secretmanager.viewer` bindings the deploy path added, so on this project the loop only adds `cloudscheduler.viewer`, `cloudsql.viewer`, `pubsub.viewer`, `logging.viewer`, `cloudtasks.viewer` and `artifactregistry.reader`. It is idempotent; re-run it whenever the SA is rebuilt:
 
 ```bash
 for ROLE in roles/run.viewer roles/cloudscheduler.viewer roles/cloudbuild.builds.viewer \

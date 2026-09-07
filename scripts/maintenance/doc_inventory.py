@@ -772,27 +772,27 @@ def _render_blast(repo, refs) -> str:
 # live: gcloud
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _gcloud(*args: str, allow_fail: bool = False) -> str:
-    """Run gcloud and return stdout. Raises on failure unless allow_fail.
+def _gcloud(*args: str) -> str:
+    """Run gcloud and return stdout. Raises on any failure: an inventory read
+    that quietly returned an empty collection produced plausible, incomplete
+    docs (Codex, PR #1009), so no read is optional.
 
     No silent fallback to a cached snapshot (Rule 3.7): a doc "verified" against
     stale state is worse than no doc.
     """
     proc = subprocess.run(("gcloud",) + args, capture_output=True, text=True, timeout=300)
     if proc.returncode != 0:
-        if allow_fail:
-            return ""
         raise RuntimeError(f"gcloud {' '.join(args)} failed: {proc.stderr.strip()[:400]}")
     return proc.stdout
 
 
-def _gjson(*args: str, allow_fail: bool = False) -> Any:
-    out = _gcloud(*args, "--format=json", allow_fail=allow_fail)
+def _gjson(*args: str) -> Any:
+    out = _gcloud(*args, "--format=json")
     return json.loads(out) if out.strip() else []
 
 
 def live_snapshot(project: str = PROJECT, region: str = REGION,
-                  executions_limit: int = 600) -> dict[str, Any]:
+                  ) -> dict[str, Any]:
     """Read the live GCP state the docs describe. Every read raises on failure."""
     p = f"--project={project}"
     jobs_raw = _gjson("run", "jobs", "list", f"--region={region}", p)
@@ -813,18 +813,23 @@ def live_snapshot(project: str = PROJECT, region: str = REGION,
             "service_account": tmpl["template"]["spec"].get("serviceAccountName", ""),
             "created": j["metadata"].get("creationTimestamp", ""),
         }
-    ex_raw = _gjson("run", "jobs", "executions", "list", f"--region={region}", p,
-                    f"--limit={executions_limit}")
-    last: dict[str, dict[str, str]] = {}
-    for e in ex_raw:
-        job = e["metadata"]["labels"].get("run.googleapis.com/job", "")
-        st = e.get("status") or {}
-        t = st.get("completionTime") or e["metadata"].get("creationTimestamp", "")
-        result = "ok" if st.get("succeededCount") else ("failed" if st.get("failedCount") else "running")
-        if job and (job not in last or t > last[job]["time"]):
-            last[job] = {"time": t, "result": result}
-    for name, row in jobs.items():
-        row["last_execution"] = last.get(name, {"time": "", "result": "never in window"})
+    # Each job's own `status.latestCreatedExecution` (name, timestamps,
+    # completionStatus) comes back in the jobs list, so the latest run of a
+    # weekly job is never crowded out by a five-minute one the way a shared
+    # `executions list --limit N` did (Codex, PR #1009).
+    for j in jobs_raw:
+        name = j["metadata"]["name"]
+        lce = (j.get("status") or {}).get("latestCreatedExecution") or {}
+        if not lce:
+            jobs[name]["last_execution"] = {"time": "", "result": "never"}
+            continue
+        status = lce.get("completionStatus", "")
+        result = {"EXECUTION_SUCCEEDED": "ok", "EXECUTION_FAILED": "failed",
+                  "EXECUTION_CANCELLED": "cancelled"}.get(status, "running" if not lce.get("completionTimestamp") else status.lower())
+        jobs[name]["last_execution"] = {
+            "time": lce.get("completionTimestamp") or lce.get("creationTimestamp", ""),
+            "result": result, "name": lce.get("name", ""),
+        }
 
     svc_raw = _gjson("run", "services", "list", f"--region={region}", p)
     services = {}
@@ -833,7 +838,7 @@ def live_snapshot(project: str = PROJECT, region: str = REGION,
         ann = m.get("annotations") or {}; tann = t["metadata"].get("annotations") or {}
         name = m["name"]
         policy = _gjson("run", "services", "get-iam-policy", name, f"--region={region}", p,
-                        allow_fail=True)
+                       )
         invokers = [x for b in (policy.get("bindings") or []) if isinstance(policy, dict)
                     for x in b.get("members", []) if b.get("role") == "roles/run.invoker"]
         env = {e["name"]: (e.get("value") if "value" in e else "<secret>") for e in c.get("env", [])}
@@ -872,31 +877,31 @@ def live_snapshot(project: str = PROJECT, region: str = REGION,
                  "branch": ((t.get("github") or {}).get("push") or {}).get("branch", "")
                            or (t.get("triggerTemplate") or {}).get("branchName", ""),
                  "disabled": t.get("disabled", False)}
-                for t in _gjson("builds", "triggers", "list", "--region=global", p, allow_fail=True)]
+                for t in _gjson("builds", "triggers", "list", "--region=global", p)]
     domains = [{"domain": d["metadata"]["name"], "service": d["spec"].get("routeName", "")}
                for d in _gjson("beta", "run", "domain-mappings", "list", f"--region={region}", p,
-                               allow_fail=True)]
-    sql = _gjson("sql", "instances", "describe", "trading-db", p, allow_fail=True)
+                              )]
+    sql = _gjson("sql", "instances", "describe", "trading-db", p)
     sql_settings = (sql.get("settings") or {}) if isinstance(sql, dict) else {}
-    backups = _gjson("sql", "backups", "list", "--instance=trading-db", "--limit=3", p, allow_fail=True)
-    dumps = _gcloud("storage", "ls", "-l", f"gs://{project}-trading-data/sql-dumps/", allow_fail=True)
+    backups = _gjson("sql", "backups", "list", "--instance=trading-db", "--limit=3", p)
+    dumps = _gcloud("storage", "ls", "-l", f"gs://{project}-trading-data/sql-dumps/")
     dump_lines = [l.split() for l in dumps.splitlines() if l.strip().startswith(("1", "2", "3", "4", "5", "6", "7", "8", "9"))]
     secrets = sorted(x["name"].rsplit("/", 1)[-1] for x in _gjson("secrets", "list", p))
-    topics = sorted(t["name"].rsplit("/", 1)[-1] for t in _gjson("pubsub", "topics", "list", p, allow_fail=True))
+    topics = sorted(t["name"].rsplit("/", 1)[-1] for t in _gjson("pubsub", "topics", "list", p))
     subs = [{"name": s["name"].rsplit("/", 1)[-1],
              "push_endpoint": (s.get("pushConfig") or {}).get("pushEndpoint", "")}
-            for s in _gjson("pubsub", "subscriptions", "list", p, allow_fail=True)]
+            for s in _gjson("pubsub", "subscriptions", "list", p)]
     sinks = [{"name": s["name"], "destination": s.get("destination", ""), "filter": s.get("filter", "")}
-             for s in _gjson("logging", "sinks", "list", p, allow_fail=True)
+             for s in _gjson("logging", "sinks", "list", p)
              if not s["name"].startswith("_")]
     queue = _gjson("tasks", "queues", "describe", "insight-pipeline-queue", f"--location={region}", p,
-                   allow_fail=True)
-    sas = sorted(s["email"] for s in _gjson("iam", "service-accounts", "list", p, allow_fail=True))
+                  )
+    sas = sorted(s["email"] for s in _gjson("iam", "service-accounts", "list", p))
     tags = _gcloud("artifacts", "docker", "tags", "list",
                    f"{region}-docker.pkg.dev/{project}/trading/trading-system", p,
-                   "--format=value(tag)", allow_fail=True).split()
+                   "--format=value(tag)").split()
     gcr = _gcloud("container", "images", "list", f"--repository=gcr.io/{project}",
-                  "--format=value(name)", allow_fail=True).split()
+                  "--format=value(name)").split()
 
     return {
         "read_at": _now_iso(),
@@ -948,17 +953,33 @@ def db_tables_snapshot() -> dict[str, dict[str, Any]]:
     from sqlalchemy import text  # local import: optional dependency
     from gcp.database import get_engine
 
-    sql = ("SELECT relname, n_live_tup, pg_size_pretty(pg_total_relation_size(relid)) AS size "
-           "FROM pg_stat_user_tables ORDER BY relname")
     with get_engine().connect() as conn:
-        rows = conn.execute(text(sql)).fetchall()
-    return {r[0]: {"rows": int(r[1]), "size": r[2]} for r in rows}
+        rows = conn.execute(text(DB_TABLES_SQL)).fetchall()
+    return {r[0]: _db_row(r[1], r[2], r[3]) for r in rows}
+
+
+# pg_stat_user_tables has no ordinary views, so a plain `v_*` view read as
+# "absent live" (Codex, PR #1009). pg_class carries every relation kind; row
+# estimates exist only for tables and materialized views, so a view's rows
+# are NULL, never 0.
+DB_TABLES_SQL = (
+    "SELECT c.relname, s.n_live_tup, pg_size_pretty(pg_total_relation_size(c.oid)) AS size, c.relkind "
+    "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+    "LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid "
+    "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'm', 'v') ORDER BY c.relname"
+)
+RELKIND = {"r": "table", "p": "partitioned table", "m": "materialized view", "v": "view"}
+
+
+def _db_row(n_live_tup: Any, size: str, relkind: str) -> dict[str, Any]:
+    rows = None if n_live_tup in (None, "") else int(float(n_live_tup))
+    return {"rows": rows, "size": size, "kind": RELKIND.get(relkind, relkind)}
 
 
 def db_tables_from_csv(path: pathlib.Path) -> dict[str, dict[str, Any]]:
     import csv
     with path.open() as fh:
-        return {r["relname"]: {"rows": int(float(r["n_live_tup"])), "size": r["size"]}
+        return {r["relname"]: _db_row(r.get("n_live_tup"), r["size"], r.get("relkind", "r"))
                 for r in csv.DictReader(fh)}
 
 
@@ -970,9 +991,11 @@ def _render_dbtables(repo: dict[str, Any], live: dict[str, Any] | None) -> str:
     rows = []
     for name in sorted(db):
         where = "`gcp/schema.sql`" if name in declared else "**runtime-created** (not in schema.sql)"
-        rows.append([f"`{name}`", f"{db[name]['rows']:,}", db[name]["size"], where])
+        n = db[name].get("rows")
+        rows.append([f"`{name}`", "—" if n is None else f"{n:,}", db[name]["size"],
+                     where + (f" ({db[name]['kind']})" if db[name].get("kind") not in (None, "table") else "")])
     missing = sorted(declared - set(db))
-    out = _md_table(["Relation (live)", "Rows (estimate)", "Size", "Declared in"], rows)
+    out = _md_table(["Relation (live)", "Rows (estimate; — for views)", "Size", "Declared in"], rows)
     if missing:
         out += "\n\nDeclared in `gcp/schema.sql` but absent live: " + ", ".join(f"`{m}`" for m in missing)
     return out
@@ -1007,7 +1030,7 @@ def reconcile(repo: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
             for n in set(repo_sched) & set(live_sched)
             if repo_sched[n]["cron"] != live_sched[n]["cron"]),
         "jobs_never_executed_in_window": sorted(
-            n for n, j in live["jobs"].items() if j["last_execution"]["result"] == "never in window"),
+            n for n, j in live["jobs"].items() if j["last_execution"]["result"] == "never"),
         "jobs_last_failed": sorted(
             n for n, j in live["jobs"].items() if j["last_execution"]["result"] == "failed"),
         "counts": {
@@ -1157,7 +1180,7 @@ def render_markdown(section: str, repo: dict[str, Any], live: dict[str, Any] | N
         block("deploy.sh schedulers targeting a job deploy.sh never creates", rec["schedulers_repo_target_not_in_deploy"])
         block("Cron drift (same name, different cron)", rec["schedulers_cron_drift"])
         block("Jobs whose last execution failed", rec["jobs_last_failed"])
-        block("Jobs with no execution in the last window", rec["jobs_never_executed_in_window"])
+        block("Jobs that have never executed", rec["jobs_never_executed_in_window"])
         return "\n".join(lines)
     if section == "modules":
         return _render_modules(repo["modules"])

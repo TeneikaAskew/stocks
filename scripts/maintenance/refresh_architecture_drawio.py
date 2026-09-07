@@ -98,6 +98,7 @@ NEW_CELLS = [
 
 SUBTITLE_ID = "subtitle"
 SCHED_GROUP_ID = "sched_group"
+GHA_GROUP_ID = "gha_group"
 SCHED_LABELS = {
     "sched_label1": "Post-close: 21:00 av-options-daily / av-intraday-nightly • 21:15 playbook-resolver • 22:00 options-daily-features • 22:30 gamma-levels • 23:00 fetch-market-data + evaluate-ew-strikes • 23:15 options-daily-greeks • 23:35 strat-engine",
     "sched_label2": "Pre-market: 06:30 fred-rates • 07:00 economic-events, insider-transactions, sec-filings-intraday • 07:30 refresh-earnings-views • 08:10 auto-refresh-top-n • 08:20 premarket-refresh • 08:30 premarket-brief • 08:35 earnings-reactions-brief • 08:45 insight-pipeline",
@@ -155,6 +156,12 @@ def refresh_main(root: ET.Element, live: dict) -> None:
         f"• Cloud SQL trading-db: {len(live.get('db_tables', {}))} relations • {counts['secrets']} secrets • read live {read} — companion to ARCHITECTURE.md")
     paused = [n for n, x in live["schedulers"].items() if x.get("state") != "ENABLED"]
     paused_note = f"; {len(paused)} paused: {', '.join(paused)}" if paused else "; none paused"
+    wf = live.get("_workflows")
+    gha_label = (f"⑩ GitHub Actions ({len(wf)} workflows) and Cloud Build ({len(live.get('cloudbuild_triggers', []))} triggers) — CI, deploys, bridges, docs-vs-live check, doc refresh"
+                 if wf is not None else
+                 f"⑩ GitHub Actions and Cloud Build ({len(live.get('cloudbuild_triggers', []))} triggers) — CI, deploys, bridges, docs-vs-live check, doc refresh")
+    if GHA_GROUP_ID in by_id:
+        by_id[GHA_GROUP_ID].set("value", gha_label)
     by_id[SCHED_GROUP_ID].set("value", f"② Cloud Scheduler — {counts['schedulers']} live entries, all America/New_York (read {read}{paused_note})")
     for cid, text in SCHED_LABELS.items():
         by_id[cid].set("value", text)
@@ -177,7 +184,10 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     cells = _cells(page)
     for c in list(cells):
         cid = c.get("id") or ""
-        if cid.startswith(ADDON_PREFIX) and cid != ADDON_GROUP_ID or cid.endswith("_a"):
+        # Only cells this script generated. An earlier `or cid.endswith("_a")`
+        # also removed the hand-authored flow_a and job_*_a detail cards
+        # (Codex, PR #1009).
+        if cid.startswith(ADDON_PREFIX) and cid != ADDON_GROUP_ID:
             parent.remove(c)
     shown = _job_labels(page)
     missing = [j for j in jobs if j not in shown]
@@ -229,6 +239,14 @@ def check(root: ET.Element, live: dict) -> list[str]:
     page = root.findall("diagram")[0]
     labels = _job_labels(page)
     problems = [f"job not drawn: {j}" for j in sorted(live["jobs"]) if j not in labels]
+    for c in root.iter("mxCell"):
+        if c.get("id") == GHA_GROUP_ID and "14 active workflows" in (c.get("value") or ""):
+            problems.append("gha_group still carries the 2026-05 '14 active workflows' label")
+    # the hand-authored detail cards must survive regeneration (Codex, PR #1009)
+    ids = {c.get("id") for c in root.iter("mxCell")}
+    for hand in ("flow_a", "job_smer_a", "job_ppr_a", "job_erb_a", "job_bdi_a"):
+        if hand not in ids:
+            problems.append(f"hand-authored cell {hand} is missing")
     text = ET.tostring(root, encoding="unicode")
     for stale in ("GitHub Pages", "Google Apps Script", "download-google-sheets.yml", "fetch-catalyst-calendar",
                   "migrate-to-gcp", "FastAPI + React", "db-query.yml", "trading-platform-staging", "React dashboard", "~49"):

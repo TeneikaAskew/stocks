@@ -91,7 +91,7 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) §5 (schema by domain) a
 ### 1b. Live relations, rows and sizes (2026-09-07)
 
 <!-- inventory:dbtables:start -->
-| Relation (live) | Rows (estimate) | Size | Declared in |
+| Relation (live) | Rows (estimate; — for views) | Size | Declared in |
 |---|---|---|---|
 | `admin_refresh_leases` | 0 | 16 kB | `gcp/schema.sql` |
 | `archive_yahoo_earnings_options_snapshots` | 0 | 24 kB | `gcp/schema.sql` |
@@ -106,13 +106,13 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) §5 (schema by domain) a
 | `daily_vex` | 218 | 936 kB | **runtime-created** (not in schema.sql) |
 | `earnings_calendar` | 60,076 | 24 MB | `gcp/schema.sql` |
 | `earnings_calibration` | 0 | 48 kB | `gcp/schema.sql` |
-| `earnings_event_outcomes` | 0 | 24 kB | `gcp/schema.sql` |
+| `earnings_event_outcomes` | 0 | 24 kB | `gcp/schema.sql` (materialized view) |
 | `earnings_history` | 132,353 | 41 MB | `gcp/schema.sql` |
 | `earnings_options_snapshots` | 0 | 588 MB | `gcp/schema.sql` |
 | `earnings_options_strategy_insights` | 0 | 104 kB | `gcp/schema.sql` |
 | `earnings_options_strategy_winners` | 0 | 160 kB | `gcp/schema.sql` |
 | `earnings_reactions` | 62,783 | 50 MB | `gcp/schema.sql` |
-| `earnings_ticker_lean` | 0 | 32 kB | `gcp/schema.sql` |
+| `earnings_ticker_lean` | 0 | 32 kB | `gcp/schema.sql` (materialized view) |
 | `earnings_upcoming_with_history` | 46,320 | 15 MB | `gcp/schema.sql` |
 | `economic_events` | 2,981 | 648 kB | `gcp/schema.sql` |
 | `etf_options_daily_greeks` | 8,042 | 976 kB | `gcp/schema.sql` |
@@ -135,12 +135,12 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) §5 (schema by domain) a
 | `magnitude_walk_forward_results` | 1,695 | 1184 kB | **runtime-created** (not in schema.sql) |
 | `market_data_cross_asset` | 0 | 16 kB | **runtime-created** (not in schema.sql) |
 | `market_data_daily` | 5,553,479 | 3895 MB | `gcp/schema.sql` |
-| `market_data_indicators` | 0 | 0 bytes | **runtime-created** (not in schema.sql) |
+| `market_data_indicators` | 0 | 0 bytes | **runtime-created** (not in schema.sql) (partitioned table) |
 | `market_data_indicators_iwm` | 0 | 2200 kB | **runtime-created** (not in schema.sql) |
 | `market_data_indicators_other` | 0 | 16 kB | **runtime-created** (not in schema.sql) |
 | `market_data_indicators_qqq` | 0 | 2224 kB | **runtime-created** (not in schema.sql) |
 | `market_data_indicators_spy` | 0 | 2232 kB | **runtime-created** (not in schema.sql) |
-| `market_data_intraday` | 0 | 0 bytes | `gcp/schema.sql` |
+| `market_data_intraday` | 0 | 0 bytes | `gcp/schema.sql` (partitioned table) |
 | `market_data_intraday_iwm` | 2,006,813 | 512 MB | `gcp/schema.sql` |
 | `market_data_intraday_other` | 5,653,650 | 67 GB | `gcp/schema.sql` |
 | `market_data_intraday_qqq` | 2,281,849 | 585 MB | `gcp/schema.sql` |
@@ -184,11 +184,10 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) §5 (schema by domain) a
 | `user_profile` | 0 | 16 kB | `gcp/schema.sql` |
 | `user_roles` | 2 | 48 kB | `gcp/schema.sql` |
 | `user_style_results` | 0 | 24 kB | `gcp/schema.sql` |
+| `v_etf_options_node` | — | 0 bytes | `gcp/schema.sql` (view) |
 | `waitlist_signups` | 1 | 48 kB | `gcp/schema.sql` |
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
-
-Declared in `gcp/schema.sql` but absent live: `v_etf_options_node`
 <!-- inventory:dbtables:end -->
 
 ---

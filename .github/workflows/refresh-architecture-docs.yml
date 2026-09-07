@@ -504,7 +504,7 @@ jobs:
         run: |
           set +e
           MEANINGFUL=0
-          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md; do
+          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md; do
             if [ ! -f "$FILE" ]; then continue; fi
             # Mangle slashes so files in subdirs (e.g. docs/X.md) don't
             # try to redirect into /tmp/docs/ which doesn't exist. Without
@@ -553,7 +553,7 @@ jobs:
 
           # Stage only the regenerated docs. refresh-inputs/ is untracked and
           # never staged.
-          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md
+          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md
 
           if git diff --cached --quiet; then
             echo "nothing staged — exit clean"
@@ -572,7 +572,7 @@ jobs:
           # force-push ban is scoped to main).
           git push --force -u origin "$BRANCH"
 
-          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md)
+          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md)
 
           # A PR may already be open for this branch from an earlier run this
           # month. `gh pr create` errors loudly in that case even though the

@@ -265,6 +265,43 @@ Cloud Build just pushed. Its absence fails a deploy only after the ~4-minute
 image build (run #13); with it, run #14 completed end to end and revision
 `trading-platform-staging-00046-x8m` went live with `/api/health` 200 (that revision predates the rename; the service is now `solyra-api-staging`).
 
+**Update 2026-09-07 — verified live at 04:28Z and again at 04:35Z.** Three
+things changed on the same identity since the paragraph above was written:
+
+1. **Six project-level viewer roles** were granted by the operator for the
+   rebuilt `refresh-architecture-docs.yml`, whose first step now reads the
+   live inventory (jobs, executions, services, schedulers, Cloud Build
+   triggers, domain mappings, Cloud SQL, Pub/Sub, sinks, Cloud Tasks,
+   service accounts, image tags) instead of letting the model guess:
+   `cloudscheduler.viewer`, `cloudsql.viewer`, `pubsub.viewer`,
+   `logging.viewer`, `cloudtasks.viewer`, `artifactregistry.reader`, plus
+   `storage.objectViewer` on `gs://…-trading-data` for the sql-dumps
+   listing. Read-only, but they widen what a compromised deploy identity can
+   enumerate. The full project set is now sixteen roles (listed in
+   `ARCHITECTURE.md` §1).
+2. **Repository-level `artifactregistry.writer` on both image repos**
+   (`trading` in `us-east1` and `gcr.io` in `us`), granted 2026-09-07 with
+   #1007 so `deploy-staging.yml` can run `gcp/deploy.sh pin-images` and tag
+   the digests it deploys; `artifactregistry.reader` on `gcr.io` remains.
+   Writer lets the deploy identity move tags, which is what the cleanup
+   policy keys on, so a bad pin can now expose a serving digest to cleanup.
+3. **The legacy `gcr.io/trading-platform` and `trading-platform-staging`
+   packages were deleted** (`gcp/deploy.sh retire-legacy-images`, #1007)
+   after prod was promoted to `gcr.io/…/solyra-api`; `gcloud container
+   images list` returns only `solyra-api`.
+
+Cleanup-policy state as read live the same day: both repos carry
+`keep-tagged`, `keep-10-most-recent` and a delete-untagged-older-than-14d
+rule. The `keep-in-use-and-latest` rule with `tagPrefixes` that #1007 wrote
+into `registry-cleanup` has **not** been applied live; PR #1009 adds the
+`tagState: TAGGED` that Artifact Registry requires next to `tagPrefixes`, so
+the next `./gcp/deploy.sh registry-cleanup` can install it.
+
+Unrelated to IAM but part of the same reconciliation: the PAUSED
+`signal-quality-report-hourly` scheduler #1005 retired was deleted live on
+2026-09-07, so Cloud Scheduler now matches `gcp/deploy.sh` exactly (65
+entries, none paused).
+
 **Runtime SA `trading-platform-svc@…`** — project-level, exactly three roles as
 read live: `cloudsql.client`, `aiplatform.user`, and `firebaseauth.admin`. The
 last one is new: the `SETUP_IAM=1` grants have landed (the Admin → Users tab

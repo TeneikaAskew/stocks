@@ -120,7 +120,7 @@ Severity: **H** = a reader acting on it would do the wrong thing; **M** = wrong 
 | Cloud SQL | `db-g1-small`, no `--no-assign-ip` in setup | `db-g1-small`, 191 GB, public IPv4 + 1 authorized network, SSL optional, PITR on, 7 backups, deletion protection on | docs said 55 GB / no public IP |
 | Tables | 66 declared | 94 | 28 runtime-created (`strat_features_*` ×12, `magnitude_*` ×2, `gamma_levels_eod`, `daily_vex`, `gamma_events`, `{iwm,qqq,spy}_30m_predictions`, `market_data_indicators*` ×5, `market_data_cross_asset`, the two MVs) |
 | Secrets / SAs | — | 22 secrets; 8 SAs incl. `arch-refresh-bot@` (`run.admin`, `cloudsql.client`, `secretmanager.viewer` already granted) | — |
-| Executions | — | 49 jobs ran in the last 3 days, all successful; 27 on-demand/research jobs have no execution in the last 600 | — |
+| Executions | — | every job has a latest execution (read per job from `status.latestCreatedExecution`, 2026-09-07 04:35Z): 74 succeeded, `intraday-bulk-backfill` failed 2026-05-23, `strat-dir-features` cancelled 2026-05-27. An earlier read through a shared `executions list --limit 600` showed 27 jobs as "never in window"; that was the cap, not the jobs (Codex, #1009) | — |
 
 ## 5. What changed in this audit
 
@@ -173,3 +173,21 @@ Every PR opened, merged or pending CI since the audit branch was cut was checked
 CI on the branch's first push (Backtest Pipeline run 34073920222) failed in eight seconds with no job logs on every job, the signature of an exhausted GitHub Actions minutes quota rather than a test failure; the repository was made public afterwards, which resets the quota. The push carrying this section re-runs it.
 
 Two further corrections from the review: the `verify_docs_against_live.py` count check flagged sixteen "64 schedulers" claims in `docs/product/*`, `docs/GCP_IMPLEMENTATION_*` and `platform/GCP_DATA_DICTIONARY.md` (live is 66 since the Discord warm window); all sixteen now read 66. And the refresh workflow's verify step no longer fails the monthly run on drift in docs it does not regenerate: findings in `README.md`, `ARCHITECTURE.md`, `DATA_DEPENDENCIES.md` or `COST_ANALYSIS.md` fail the run, findings elsewhere are emitted as workflow warnings.
+
+## 9. Codex review of #1009 and the IAM changes (2026-09-07)
+
+Codex reviewed head `ff1956a` and filed nine P2 findings; each was verified against the code or live GCP before the fix, and all nine were real:
+
+| Finding | Verified how | Fix |
+|---|---|---|
+| `docs/API.md` rendered but never staged or change-detected by the refresh workflow | the `for FILE in` loops and `git add` list omitted it | added to detection, staging and the PR-body stat |
+| `allow_fail=True` on eleven inventory reads turned a revoked role or API error into an empty collection | code | every read raises; the run stops before generation (Rule 3.7) |
+| shared `executions list --limit 600` hid weekly and on-demand jobs behind the five-minute options refresh | re-read live: 27 "never in window" jobs all had executions | latest execution read per job from `status.latestCreatedExecution` in the jobs list; no extra calls |
+| drawio `gha_group` label replacement never matched, so "14 active workflows" survived and `--check` passed | cell text on `main` | label set by cell id; `check()` fails on the stale text |
+| `keep-in-use-and-latest` cleanup rule uses `tagPrefixes` without `tagState: TAGGED` | live policy on both repos still lacks that rule, so it was never accepted | `tagState` added (main's code, ported here) |
+| `verify-docs-against-live.yml` saved a second live read as the failure artifact | workflow | the comparison itself writes `live.json` |
+| marker gate only caught unbalanced pairs; a block deleted with both markers passed | code | `EXPECTED_MARKERS` per document; new test |
+| `pg_stat_user_tables` has no ordinary views, so `v_etf_options_node` rendered as absent | live query through `db_query_cr.sh` | relations read from `pg_class` (tables, partitions, materialized views, views); views show `—` for rows, never 0 |
+| drawio cleanup deleted every cell whose id ends in `_a`, including `flow_a` and eleven hand-authored job cards | ids present on `main`, absent on the branch | cleanup restricted to generated `addon_` cells; page regenerated from `main`'s copy; `check()` asserts the hand cells exist |
+
+IAM changes made the same day, all read back live and recorded in `ARCHITECTURE.md` §1, `SETUP.md` §3 and `docs/product/09-SECURITY-AUTH.md`: six viewer roles plus bucket `objectViewer` for `arch-refresh-bot@` (04:28Z, operator), `artifactregistry.writer` on both image repos (#1007), the legacy image packages retired, and the paused scheduler deleted.

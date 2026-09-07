@@ -462,7 +462,7 @@ EOF
   {
     "name": "keep-in-use-and-latest",
     "action": {"type": "Keep"},
-    "condition": {"tagPrefixes": ["inuse-", "latest"]}
+    "condition": {"tagState": "TAGGED", "tagPrefixes": ["inuse-", "latest"]}
   },
   {
     "name": "keep-10-most-recent",

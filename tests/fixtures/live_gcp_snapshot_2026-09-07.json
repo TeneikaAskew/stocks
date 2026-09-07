@@ -25,378 +25,477 @@
  },
  "db_tables": {
   "admin_refresh_leases": {
+   "kind": "table",
    "rows": 0,
    "size": "16 kB"
   },
   "archive_yahoo_earnings_options_snapshots": {
+   "kind": "table",
    "rows": 0,
    "size": "24 kB"
   },
   "archive_yahoo_etf_options_snapshots": {
+   "kind": "table",
    "rows": 0,
    "size": "40 kB"
   },
   "archive_yahoo_market_data_daily": {
+   "kind": "table",
    "rows": 0,
    "size": "24 kB"
   },
   "archive_yahoo_market_data_intraday": {
+   "kind": "table",
    "rows": 0,
    "size": "5920 kB"
   },
   "backtest_reports": {
+   "kind": "table",
    "rows": 1,
    "size": "144 kB"
   },
   "backtest_sweeps": {
+   "kind": "table",
    "rows": 45,
    "size": "96 kB"
   },
   "backtest_trades": {
+   "kind": "table",
    "rows": 149898,
    "size": "48 MB"
   },
   "backtest_walk_forward_folds": {
+   "kind": "table",
    "rows": 0,
    "size": "496 kB"
   },
   "daily_rates": {
+   "kind": "table",
    "rows": 2916,
    "size": "424 kB"
   },
   "daily_vex": {
+   "kind": "table",
    "rows": 218,
    "size": "936 kB"
   },
   "earnings_calendar": {
+   "kind": "table",
    "rows": 60076,
    "size": "24 MB"
   },
   "earnings_calibration": {
+   "kind": "table",
    "rows": 0,
    "size": "48 kB"
   },
   "earnings_event_outcomes": {
+   "kind": "materialized view",
    "rows": 0,
    "size": "24 kB"
   },
   "earnings_history": {
+   "kind": "table",
    "rows": 132353,
    "size": "41 MB"
   },
   "earnings_options_snapshots": {
+   "kind": "table",
    "rows": 0,
    "size": "588 MB"
   },
   "earnings_options_strategy_insights": {
+   "kind": "table",
    "rows": 0,
    "size": "104 kB"
   },
   "earnings_options_strategy_winners": {
+   "kind": "table",
    "rows": 0,
    "size": "160 kB"
   },
   "earnings_reactions": {
+   "kind": "table",
    "rows": 62783,
    "size": "50 MB"
   },
   "earnings_ticker_lean": {
+   "kind": "materialized view",
    "rows": 0,
    "size": "32 kB"
   },
   "earnings_upcoming_with_history": {
+   "kind": "table",
    "rows": 46320,
    "size": "15 MB"
   },
   "economic_events": {
+   "kind": "table",
    "rows": 2981,
    "size": "648 kB"
   },
   "etf_options_daily_greeks": {
+   "kind": "table",
    "rows": 8042,
    "size": "976 kB"
   },
   "etf_options_snapshots": {
+   "kind": "table",
    "rows": 141113379,
    "size": "74 GB"
   },
   "exit_config_overrides": {
+   "kind": "table",
    "rows": 0,
    "size": "48 kB"
   },
   "gamma_events": {
+   "kind": "table",
    "rows": 0,
    "size": "3456 kB"
   },
   "gamma_levels_eod": {
+   "kind": "table",
    "rows": 102442,
    "size": "31 MB"
   },
   "historical_signals": {
+   "kind": "table",
    "rows": 96376,
    "size": "3376 MB"
   },
   "indicator_correlation": {
+   "kind": "table",
    "rows": 3016,
    "size": "1512 kB"
   },
   "insider_transactions": {
+   "kind": "table",
    "rows": 1708432,
    "size": "594 MB"
   },
   "insight_reports": {
+   "kind": "table",
    "rows": 790,
    "size": "4384 kB"
   },
   "insight_reports_history": {
+   "kind": "table",
    "rows": 846,
    "size": "3200 kB"
   },
   "insight_runs": {
+   "kind": "table",
    "rows": 948,
    "size": "360 kB"
   },
   "intraday_flow_15m": {
+   "kind": "table",
    "rows": 529920,
    "size": "63 MB"
   },
   "intraday_gex_15m": {
+   "kind": "table",
    "rows": 487540,
    "size": "87 MB"
   },
   "iwm_30m_predictions": {
+   "kind": "table",
    "rows": 0,
    "size": "352 kB"
   },
   "job_runs": {
+   "kind": "table",
    "rows": 14,
    "size": "48 kB"
   },
   "journal_entries": {
+   "kind": "table",
    "rows": 2,
    "size": "1288 kB"
   },
   "magnitude_per_bar_predictions": {
+   "kind": "table",
    "rows": 15380,
    "size": "4584 kB"
   },
   "magnitude_walk_forward_results": {
+   "kind": "table",
    "rows": 1695,
    "size": "1184 kB"
   },
   "market_data_cross_asset": {
+   "kind": "table",
    "rows": 0,
    "size": "16 kB"
   },
   "market_data_daily": {
+   "kind": "table",
    "rows": 5553479,
    "size": "3895 MB"
   },
   "market_data_indicators": {
+   "kind": "partitioned table",
    "rows": 0,
    "size": "0 bytes"
   },
   "market_data_indicators_iwm": {
+   "kind": "table",
    "rows": 0,
    "size": "2200 kB"
   },
   "market_data_indicators_other": {
+   "kind": "table",
    "rows": 0,
    "size": "16 kB"
   },
   "market_data_indicators_qqq": {
+   "kind": "table",
    "rows": 0,
    "size": "2224 kB"
   },
   "market_data_indicators_spy": {
+   "kind": "table",
    "rows": 0,
    "size": "2232 kB"
   },
   "market_data_intraday": {
+   "kind": "partitioned table",
    "rows": 0,
    "size": "0 bytes"
   },
   "market_data_intraday_iwm": {
+   "kind": "table",
    "rows": 2006813,
    "size": "512 MB"
   },
   "market_data_intraday_other": {
+   "kind": "table",
    "rows": 5653650,
    "size": "67 GB"
   },
   "market_data_intraday_qqq": {
+   "kind": "table",
    "rows": 2281849,
    "size": "585 MB"
   },
   "market_data_intraday_spx": {
+   "kind": "table",
    "rows": 0,
    "size": "2144 kB"
   },
   "market_data_intraday_spy": {
+   "kind": "table",
    "rows": 2432886,
    "size": "664 MB"
   },
   "model_routing": {
+   "kind": "table",
    "rows": 0,
    "size": "24 kB"
   },
   "news_sentiment": {
+   "kind": "table",
    "rows": 212368,
    "size": "298 MB"
   },
   "options_daily_features": {
+   "kind": "table",
    "rows": 8042,
    "size": "1112 kB"
   },
   "playbook_cards": {
+   "kind": "table",
    "rows": 72,
    "size": "144 kB"
   },
   "playbook_cards_staging": {
+   "kind": "table",
    "rows": 0,
    "size": "16 kB"
   },
   "premarket_analysis": {
+   "kind": "table",
    "rows": 383,
    "size": "1208 kB"
   },
   "premarket_analysis_history": {
+   "kind": "table",
    "rows": 702,
    "size": "1664 kB"
   },
   "qqq_30m_predictions": {
+   "kind": "table",
    "rows": 0,
    "size": "352 kB"
   },
   "ranker_runs": {
+   "kind": "table",
    "rows": 93,
    "size": "840 kB"
   },
   "realtime_gex_15m": {
+   "kind": "table",
    "rows": 6321,
    "size": "904 kB"
   },
   "regime_combo_results": {
+   "kind": "table",
    "rows": 8640,
    "size": "3872 kB"
   },
   "sec_filings": {
+   "kind": "table",
    "rows": 4274,
    "size": "1560 kB"
   },
   "signal_alerts": {
+   "kind": "table",
    "rows": 3011,
    "size": "2648 kB"
   },
   "signal_metrics": {
+   "kind": "table",
    "rows": 179485,
    "size": "58 MB"
   },
   "spy_30m_predictions": {
+   "kind": "table",
    "rows": 0,
    "size": "352 kB"
   },
   "strat_combo_results": {
+   "kind": "table",
    "rows": 0,
    "size": "32 kB"
   },
   "strat_features_15m": {
+   "kind": "table",
    "rows": 206458,
    "size": "303 MB"
   },
   "strat_features_1m": {
+   "kind": "table",
    "rows": 3105422,
    "size": "4080 MB"
   },
   "strat_features_30m": {
+   "kind": "table",
    "rows": 103261,
    "size": "152 MB"
   },
   "strat_features_4h": {
+   "kind": "table",
    "rows": 18542,
    "size": "26 MB"
   },
   "strat_features_5m": {
+   "kind": "table",
    "rows": 587853,
    "size": "811 MB"
   },
   "strat_features_60m": {
+   "kind": "table",
    "rows": 55619,
    "size": "81 MB"
   },
   "strat_features_levels_15m": {
+   "kind": "table",
    "rows": 206661,
    "size": "368 MB"
   },
   "strat_features_levels_1m": {
+   "kind": "table",
    "rows": 3087834,
    "size": "8155 MB"
   },
   "strat_features_levels_30m": {
+   "kind": "table",
    "rows": 103261,
    "size": "184 MB"
   },
   "strat_features_levels_4h": {
+   "kind": "table",
    "rows": 18542,
    "size": "28 MB"
   },
   "strat_features_levels_5m": {
+   "kind": "table",
    "rows": 617241,
    "size": "1134 MB"
   },
   "strat_features_levels_60m": {
+   "kind": "table",
    "rows": 55619,
    "size": "86 MB"
   },
   "strat_levels": {
+   "kind": "table",
    "rows": 13889,
    "size": "3184 kB"
   },
   "ticker_calibration": {
+   "kind": "table",
    "rows": 1,
    "size": "48 kB"
   },
   "ticker_info": {
+   "kind": "table",
    "rows": 0,
    "size": "24 kB"
   },
   "top_movers_daily": {
+   "kind": "table",
    "rows": 5760,
    "size": "1128 kB"
   },
   "top_movers_intraday": {
+   "kind": "table",
    "rows": 6380,
    "size": "1152 kB"
   },
   "trades": {
+   "kind": "table",
    "rows": 2968,
    "size": "1360 kB"
   },
   "user_preferences": {
+   "kind": "table",
    "rows": 1,
    "size": "32 kB"
   },
   "user_profile": {
+   "kind": "table",
    "rows": 0,
    "size": "16 kB"
   },
   "user_roles": {
+   "kind": "table",
    "rows": 2,
    "size": "48 kB"
   },
   "user_style_results": {
+   "kind": "table",
    "rows": 0,
    "size": "24 kB"
   },
+  "v_etf_options_node": {
+   "kind": "view",
+   "rows": null,
+   "size": "0 bytes"
+  },
   "waitlist_signups": {
+   "kind": "table",
    "rows": 1,
    "size": "48 kB"
   },
   "walk_forward_results": {
+   "kind": "table",
    "rows": 0,
    "size": "264 kB"
   },
   "watchlists": {
+   "kind": "table",
    "rows": 0,
    "size": "64 kB"
   }
@@ -505,6 +604,7 @@
    "created": "2026-05-01T22:26:01.159561Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "apply-schema-migrations-ncggn",
     "result": "ok",
     "time": "2026-09-07T01:52:38.297398Z"
    },
@@ -521,6 +621,7 @@
    "created": "2026-05-31T02:31:29.922335Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "audit-brief-bias-txmn7",
     "result": "ok",
     "time": "2026-09-06T14:01:12.106854Z"
    },
@@ -537,6 +638,7 @@
    "created": "2026-06-10T01:50:07.652015Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "audit-infra-drift-qppkw",
     "result": "ok",
     "time": "2026-09-06T16:30:37.950003Z"
    },
@@ -553,6 +655,7 @@
    "created": "2026-07-05T22:13:19.208278Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "audit-magnitude-drift-x9fqk",
     "result": "ok",
     "time": "2026-09-04T13:55:30.438860Z"
    },
@@ -569,6 +672,7 @@
    "created": "2026-05-31T02:31:53.282173Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "audit-walkforward-qwwvx",
     "result": "ok",
     "time": "2026-09-05T13:00:44.191099Z"
    },
@@ -585,6 +689,7 @@
    "created": "2026-04-26T04:38:21.936745Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "auto-refresh-top-n-bbm58",
     "result": "ok",
     "time": "2026-09-04T12:11:16.457064Z"
    },
@@ -601,6 +706,7 @@
    "created": "2026-05-13T10:01:41.229821Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "backfill-daily-indicators-w5jds",
     "result": "ok",
     "time": "2026-09-06T09:28:21.229912Z"
    },
@@ -617,8 +723,9 @@
    "created": "2026-04-29T13:30:38.619750Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "backfill-ticker-z8s7h",
+    "result": "ok",
+    "time": "2026-05-04T15:00:30.437231Z"
    },
    "max_retries": 1,
    "memory": "1Gi",
@@ -633,8 +740,9 @@
    "created": "2026-04-29T17:11:56.710351Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "backtest-zldxz",
+    "result": "ok",
+    "time": "2026-04-29T17:35:41.815501Z"
    },
    "max_retries": 1,
    "memory": "2Gi",
@@ -649,8 +757,9 @@
    "created": "2026-05-17T13:19:37.467614Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "backtest-pipeline-rr4v4",
+    "result": "ok",
+    "time": "2026-08-27T02:57:57.700007Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -665,8 +774,9 @@
    "created": "2026-05-14T11:16:45.727882Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:51f7b8b2b5bee7d24d38939321cc79e472a9c969dcb83d26b840791dd14924ea",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "backtest-playability-mlgfk",
+    "result": "ok",
+    "time": "2026-05-14T12:12:44.018921Z"
    },
    "max_retries": 0,
    "memory": "1Gi",
@@ -681,6 +791,7 @@
    "created": "2026-06-12T11:10:06.500084Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
+    "name": "build-options-daily-features-h8tjw",
     "result": "ok",
     "time": "2026-09-05T02:00:45.339724Z"
    },
@@ -697,6 +808,7 @@
    "created": "2026-06-05T02:18:05.400922Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
+    "name": "build-options-greeks-lsq8b",
     "result": "ok",
     "time": "2026-09-05T03:15:47.508617Z"
    },
@@ -713,6 +825,7 @@
    "created": "2026-06-07T13:34:13.325079Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
+    "name": "build-realtime-gex-6w8sn",
     "result": "ok",
     "time": "2026-09-04T21:02:17.024892Z"
    },
@@ -729,8 +842,9 @@
    "created": "2026-05-04T22:32:40.304606Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "calibrate-thresholds-pwzlf",
+    "result": "ok",
+    "time": "2026-07-01T06:00:40.412070Z"
    },
    "max_retries": 1,
    "memory": "1Gi",
@@ -745,6 +859,7 @@
    "created": "2026-06-19T19:18:11.090652Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "cloud-sql-weekly-export-jj9n5",
     "result": "ok",
     "time": "2026-09-06T08:23:12.857886Z"
    },
@@ -761,8 +876,9 @@
    "created": "2026-05-04T23:30:27.862901Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "compare-tier-fires-sjw4n",
+    "result": "ok",
+    "time": "2026-05-04T23:37:44.141303Z"
    },
    "max_retries": 0,
    "memory": "2Gi",
@@ -777,6 +893,7 @@
    "created": "2026-05-01T20:34:44.211597Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "compute-earnings-reactions-bc2dp",
     "result": "ok",
     "time": "2026-09-06T23:36:27.388782Z"
    },
@@ -793,8 +910,9 @@
    "created": "2026-05-29T14:28:40.899671Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "db-query-8dnsj",
     "result": "ok",
-    "time": "2026-09-07T01:19:22.111532Z"
+    "time": "2026-09-07T04:33:09.618826Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -809,8 +927,9 @@
    "created": "2026-07-08T02:42:51.204080Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "direction-baseline-4pq6g",
+    "result": "ok",
+    "time": "2026-07-08T03:25:55.898605Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -825,8 +944,9 @@
    "created": "2026-07-08T14:01:29.072941Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "direction-importance-9rbst",
+    "result": "ok",
+    "time": "2026-07-08T17:39:38.418473Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -841,8 +961,9 @@
    "created": "2026-07-10T01:04:26.628598Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "direction-phase2-v5lxx",
+    "result": "ok",
+    "time": "2026-07-11T16:54:19.122171Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -857,8 +978,9 @@
    "created": "2026-06-04T15:39:22.280700Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "direction-probe-slsn8",
+    "result": "ok",
+    "time": "2026-06-21T15:03:06.309328Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -873,6 +995,7 @@
    "created": "2026-05-24T19:53:12.342462Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "earnings-long-watchlist-wd8b8",
     "result": "ok",
     "time": "2026-09-06T23:45:33.352926Z"
    },
@@ -889,8 +1012,9 @@
    "created": "2026-05-21T23:26:07.853744Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "earnings-options-backfill-9lh6r",
+    "result": "ok",
+    "time": "2026-05-22T04:26:10.472836Z"
    },
    "max_retries": 0,
    "memory": "1Gi",
@@ -905,6 +1029,7 @@
    "created": "2026-05-17T13:19:41.773722Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "earnings-reactions-brief-8849w",
     "result": "ok",
     "time": "2026-09-04T12:35:40.368977Z"
    },
@@ -921,8 +1046,9 @@
    "created": "2026-05-19T13:40:54.776693Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "earnings-sweep-p7vmv",
+    "result": "ok",
+    "time": "2026-05-22T16:49:30.658668Z"
    },
    "max_retries": 0,
    "memory": "4Gi",
@@ -937,6 +1063,7 @@
    "created": "2026-06-11T22:10:54.205279Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "etf-options-retention-qz9cc",
     "result": "ok",
     "time": "2026-09-06T06:01:55.568822Z"
    },
@@ -953,6 +1080,7 @@
    "created": "2026-04-30T18:01:05.839112Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "evaluate-ew-strikes-rwhqk",
     "result": "ok",
     "time": "2026-09-05T03:00:51.519310Z"
    },
@@ -969,8 +1097,9 @@
    "created": "2026-05-27T18:08:53.181384Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research-exec-backtest",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "exec-backtest-vfxqk",
+    "result": "ok",
+    "time": "2026-05-27T18:17:24.548315Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -985,6 +1114,7 @@
    "created": "2026-02-23T00:26:31.776714Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-alphavantage-intraday-tbffw",
     "result": "ok",
     "time": "2026-09-06T01:01:08.683120Z"
    },
@@ -1001,6 +1131,7 @@
    "created": "2026-04-12T16:56:30.948083Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "fetch-av-options-backfill-w8t52",
     "result": "ok",
     "time": "2026-09-05T01:07:01.222725Z"
    },
@@ -1017,6 +1148,7 @@
    "created": "2026-05-23T01:43:27.424578Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-av-options-realtime-p769j",
     "result": "ok",
     "time": "2026-09-04T19:55:56.815420Z"
    },
@@ -1033,6 +1165,7 @@
    "created": "2026-04-25T14:17:33.383237Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "fetch-earnings-calendar-d564k",
     "result": "ok",
     "time": "2026-09-06T23:01:57.279956Z"
    },
@@ -1049,6 +1182,7 @@
    "created": "2026-04-25T14:17:41.472179Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-earnings-history-fxj6n",
     "result": "ok",
     "time": "2026-09-07T00:26:43.363867Z"
    },
@@ -1065,6 +1199,7 @@
    "created": "2026-04-25T14:17:23.427225Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-economic-events-b57ds",
     "result": "ok",
     "time": "2026-09-04T11:00:58.375646Z"
    },
@@ -1081,6 +1216,7 @@
    "created": "2026-04-30T17:56:29.870627Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:spx-removal-fred-20260516",
    "last_execution": {
+    "name": "fetch-fred-rates-h5jnm",
     "result": "ok",
     "time": "2026-09-06T10:30:39.363566Z"
    },
@@ -1097,6 +1233,7 @@
    "created": "2026-04-25T14:17:57.973075Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-insider-transactions-qm7j7",
     "result": "ok",
     "time": "2026-09-04T11:04:30.385961Z"
    },
@@ -1113,6 +1250,7 @@
    "created": "2026-02-23T00:26:13.228997Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-market-data-8sw7h",
     "result": "ok",
     "time": "2026-09-05T03:02:35.432577Z"
    },
@@ -1129,6 +1267,7 @@
    "created": "2026-04-25T14:18:13.805685Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "fetch-news-sentiment-gs8jg",
     "result": "ok",
     "time": "2026-09-04T21:02:26.951173Z"
    },
@@ -1145,6 +1284,7 @@
    "created": "2026-05-13T09:28:10.178443Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "fetch-news-sentiment-earnings-7qhtf",
     "result": "ok",
     "time": "2026-09-04T10:01:52.228601Z"
    },
@@ -1161,6 +1301,7 @@
    "created": "2026-04-25T14:18:24.974126Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-news-sentiment-topics-j9tk6",
     "result": "ok",
     "time": "2026-09-04T21:05:38.974303Z"
    },
@@ -1177,6 +1318,7 @@
    "created": "2026-04-30T18:00:16.946059Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-premarket-refresh-xz2nr",
     "result": "ok",
     "time": "2026-09-04T12:21:08.361362Z"
    },
@@ -1193,6 +1335,7 @@
    "created": "2026-04-25T14:17:49.341318Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "fetch-sec-filings-ndqb4",
     "result": "ok",
     "time": "2026-09-04T21:01:50.927136Z"
    },
@@ -1209,6 +1352,7 @@
    "created": "2026-04-25T14:18:05.843118Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "fetch-top-movers-lmwv6",
     "result": "ok",
     "time": "2026-09-04T20:15:35.026556Z"
    },
@@ -1225,6 +1369,7 @@
    "created": "2026-05-30T15:50:40.345608Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "freshness-watchdog-bg4zn",
     "result": "ok",
     "time": "2026-09-06T23:45:25.446366Z"
    },
@@ -1241,6 +1386,7 @@
    "created": "2026-04-27T21:00:47.624445Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "historical-signals-watchlist-lqz8r",
     "result": "ok",
     "time": "2026-09-05T05:01:49.644860Z"
    },
@@ -1257,8 +1403,9 @@
    "created": "2026-05-31T22:44:52.453274Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "indicator-correlation-kk7c6",
+    "result": "ok",
+    "time": "2026-05-31T22:58:27.239747Z"
    },
    "max_retries": 1,
    "memory": "1Gi",
@@ -1273,6 +1420,7 @@
    "created": "2026-04-27T21:00:34.404153Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "insight-discord-push-d76qj",
     "result": "ok",
     "time": "2026-09-04T13:15:22.503032Z"
    },
@@ -1289,6 +1437,7 @@
    "created": "2026-04-15T14:28:48.962196Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "insight-pipeline-9djdv",
     "result": "ok",
     "time": "2026-09-04T12:47:16.457496Z"
    },
@@ -1305,8 +1454,9 @@
    "created": "2026-05-22T03:19:15.768593Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "intraday-bulk-backfill-226jl",
+    "result": "failed",
+    "time": "2026-05-23T10:58:55.279744Z"
    },
    "max_retries": 0,
    "memory": "1Gi",
@@ -1321,8 +1471,9 @@
    "created": "2026-05-27T21:18:33.521510Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "magnitude-engine-c49qf",
+    "result": "ok",
+    "time": "2026-08-27T06:53:37.899216Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -1337,6 +1488,7 @@
    "created": "2026-06-10T01:50:12.651849Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
+    "name": "magnitude-inference-9pmfg",
     "result": "ok",
     "time": "2026-09-04T13:26:02.492837Z"
    },
@@ -1353,8 +1505,9 @@
    "created": "2026-07-10T10:26:17.928409Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "magnitude-recal-7fm28",
+    "result": "ok",
+    "time": "2026-07-12T06:22:20.946250Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -1369,6 +1522,7 @@
    "created": "2026-05-23T15:30:36.899266Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
+    "name": "p2-build-gamma-levels-247p4",
     "result": "ok",
     "time": "2026-09-05T02:44:24.006265Z"
    },
@@ -1385,8 +1539,9 @@
    "created": "2026-05-23T17:06:55.588108Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research-p2",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "p2-outcomes-grid-ptsps",
+    "result": "ok",
+    "time": "2026-05-23T17:50:31.856287Z"
    },
    "max_retries": 0,
    "memory": "4Gi",
@@ -1401,8 +1556,9 @@
    "created": "2026-05-24T11:02:38.813041Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "p45-deep-ds-lmds9",
+    "result": "ok",
+    "time": "2026-05-24T11:13:12.541533Z"
    },
    "max_retries": 0,
    "memory": "16Gi",
@@ -1417,8 +1573,9 @@
    "created": "2026-05-24T18:11:10.600725Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "p7-analyze-tf-qlhp4",
+    "result": "ok",
+    "time": "2026-05-25T00:48:16.967851Z"
    },
    "max_retries": 0,
    "memory": "32Gi",
@@ -1433,8 +1590,9 @@
    "created": "2026-05-24T17:19:12.935512Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "p7-build-multi-tf-features-94wdt",
+    "result": "ok",
+    "time": "2026-05-25T13:34:23.928368Z"
    },
    "max_retries": 0,
    "memory": "16Gi",
@@ -1449,8 +1607,9 @@
    "created": "2026-05-25T01:32:20.103337Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "p7a-iwm-30m-pipeline-bq9pm",
+    "result": "ok",
+    "time": "2026-05-25T06:01:35.401069Z"
    },
    "max_retries": 0,
    "memory": "4Gi",
@@ -1465,8 +1624,9 @@
    "created": "2026-05-25T12:40:42.141257Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "p7b-next-candle-classifier-5jjvv",
+    "result": "ok",
+    "time": "2026-05-26T00:13:52.554790Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -1481,8 +1641,9 @@
    "created": "2026-05-19T13:40:50.827286Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "param-sweep-vr68d",
+    "result": "ok",
+    "time": "2026-05-20T13:47:55.205732Z"
    },
    "max_retries": 0,
    "memory": "4Gi",
@@ -1497,6 +1658,7 @@
    "created": "2026-06-14T20:05:55.522805Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "phase6-playbook-f2mjc",
     "result": "ok",
     "time": "2026-09-06T20:37:18.986318Z"
    },
@@ -1513,6 +1675,7 @@
    "created": "2026-02-23T00:31:49.982049Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
    "last_execution": {
+    "name": "premarket-brief-chfzb",
     "result": "ok",
     "time": "2026-09-07T01:01:50.182015Z"
    },
@@ -1529,6 +1692,7 @@
    "created": "2026-06-19T19:17:59.782795Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "premarket-playbook-resolver-p59rs",
     "result": "ok",
     "time": "2026-09-05T01:15:45.420543Z"
    },
@@ -1545,6 +1709,7 @@
    "created": "2026-06-19T17:26:57.437765Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "refresh-earnings-views-9b4fx",
     "result": "ok",
     "time": "2026-09-07T00:01:03.439777Z"
    },
@@ -1561,6 +1726,7 @@
    "created": "2026-05-31T16:38:46.928178Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
+    "name": "regime-combo-2fgsr",
     "result": "ok",
     "time": "2026-09-06T09:02:17.033928Z"
    },
@@ -1577,8 +1743,9 @@
    "created": "2026-02-23T00:47:01.862581Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "signal-monitor-gr9tz",
     "result": "ok",
-    "time": "2026-09-04T20:00:08.881605Z"
+    "time": "2026-09-04T14:01:16.784131Z"
    },
    "max_retries": 0,
    "memory": "2Gi",
@@ -1593,6 +1760,7 @@
    "created": "2026-05-09T18:51:57.382369Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "signal-monitor-eod-resolver-d6skz",
     "result": "ok",
     "time": "2026-09-04T20:30:45.228450Z"
    },
@@ -1609,6 +1777,7 @@
    "created": "2026-05-01T22:19:43.657589Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "signal-quality-alarm-st56s",
     "result": "ok",
     "time": "2026-09-05T06:00:45.726530Z"
    },
@@ -1625,6 +1794,7 @@
    "created": "2026-05-01T22:14:43.573659Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "signal-quality-report-r2mqm",
     "result": "ok",
     "time": "2026-09-05T05:01:07.550252Z"
    },
@@ -1641,8 +1811,9 @@
    "created": "2026-05-17T12:42:48.492507Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "signal-replay-8wwsg",
+    "result": "ok",
+    "time": "2026-05-17T13:10:27.662574Z"
    },
    "max_retries": 0,
    "memory": "512Mi",
@@ -1657,8 +1828,9 @@
    "created": "2026-05-27T18:16:36.153425Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research-dir-features",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "strat-dir-features-wnbjc",
+    "result": "cancelled",
+    "time": "2026-05-27T19:15:41.995743Z"
    },
    "max_retries": 0,
    "memory": "32Gi",
@@ -1673,6 +1845,7 @@
    "created": "2026-05-26T00:06:09.951112Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
    "last_execution": {
+    "name": "strat-engine-qlzw5",
     "result": "ok",
     "time": "2026-09-05T06:55:01.625430Z"
    },
@@ -1689,8 +1862,9 @@
    "created": "2026-04-29T17:11:52.805986Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
-    "result": "never in window",
-    "time": ""
+    "name": "validate-brief-zs94t",
+    "result": "ok",
+    "time": "2026-04-29T17:29:57.754823Z"
    },
    "max_retries": 1,
    "memory": "1Gi",
@@ -1705,6 +1879,7 @@
    "created": "2026-02-23T00:34:16.642685Z",
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
+    "name": "weekend-review-95p4k",
     "result": "ok",
     "time": "2026-09-05T13:00:48.159825Z"
    },
@@ -1735,7 +1910,7 @@
    "gcp-job-failures-dlq"
   ]
  },
- "read_at": "2026-09-07T04:23:13Z",
+ "read_at": "2026-09-07T04:35:16Z",
  "region": "us-east1",
  "schedulers": {
   "audit-brief-bias-weekly": {

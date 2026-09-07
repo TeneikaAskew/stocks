@@ -56,15 +56,12 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT }}
 
+      # --write-snapshot saves the exact state THIS comparison read, so a red
+      # run is reproducible offline with --snapshot live.json. A second read
+      # after the fact could see a project that had already moved, or succeed
+      # where the first read failed (Codex, PR #1009).
       - name: Compare the operational docs against live GCP
-        run: python scripts/verify_docs_against_live.py
-
-      # The snapshot makes a failure reproducible offline: re-run the same
-      # comparison locally with --snapshot rather than needing gcloud access
-      # to see what the run saw.
-      - name: Save the live snapshot
-        if: always()
-        run: python scripts/verify_docs_against_live.py --write-snapshot live.json || true
+        run: python scripts/verify_docs_against_live.py --write-snapshot live.json
 
       - uses: actions/upload-artifact@v4
         if: always()

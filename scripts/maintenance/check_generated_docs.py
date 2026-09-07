@@ -44,6 +44,13 @@ from scripts.maintenance import doc_inventory as inv  # noqa: E402
 
 DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md")
 MARKER_DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "docs/API.md")
+# Every block each document must carry. A balanced-pairs check alone lets a
+# block vanish when both its markers are deleted together (Codex, PR #1009).
+EXPECTED_MARKERS = {
+    "ARCHITECTURE.md": ("jobs", "schedulers", "tables", "dbtables", "routes", "services", "reconcile", "modules"),
+    "DATA_DEPENDENCIES.md": ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"),
+    "docs/API.md": ("routers", "routes"),
+}
 SIZE_FLOOR = 0.80
 # README.md is a pointer map by design (2026-09-07); its length is not a
 # content signal, so it is exempt from the size floor (headings still apply).
@@ -146,6 +153,9 @@ def gate_markers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]
             s, e = inv.MARKER_START.format(name=name), inv.MARKER_END.format(name=name)
             if (s in text) != (e in text):
                 out.append(f"{doc}: unbalanced markers for inventory:{name}")
+        for name in EXPECTED_MARKERS.get(doc, ()):
+            if inv.MARKER_START.format(name=name) not in text:
+                out.append(f"{doc}: inventory:{name} block is missing entirely (both markers deleted)")
     return out
 
 
