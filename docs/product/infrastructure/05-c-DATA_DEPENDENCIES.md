@@ -198,7 +198,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 <!-- inventory:writes:start -->
 ### `admin_refresh_leases`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1430](../../../platform/api/routers/admin.py#L1430), [1433](../../../platform/api/routers/admin.py#L1433), [1456](../../../platform/api/routers/admin.py#L1456)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1447](../../../platform/api/routers/admin.py#L1447), [1450](../../../platform/api/routers/admin.py#L1450), [1473](../../../platform/api/routers/admin.py#L1473)
 
 ### `archive_yahoo_earnings_options_snapshots`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -436,7 +436,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/profile.py`](../../../platform/api/routers/profile.py) — line [187](../../../platform/api/routers/profile.py#L187)
 
 ### `user_roles`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1087](../../../platform/api/routers/admin.py#L1087), [1100](../../../platform/api/routers/admin.py#L1100)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1104](../../../platform/api/routers/admin.py#L1104), [1117](../../../platform/api/routers/admin.py#L1117)
 
 ### `user_style_results`
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [845](../../../platform/api/routers/backtest.py#L845)
@@ -598,7 +598,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/options_exec_backtest/iv_lookup.py`](../../../lib/options_exec_backtest/iv_lookup.py) — line [11](../../../lib/options_exec_backtest/iv_lookup.py#L11), [127](../../../lib/options_exec_backtest/iv_lookup.py#L127)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [165](../../../lib/options_intraday.py#L165)
 - [`platform/api/routers/grid.py`](../../../platform/api/routers/grid.py) — line [14](../../../platform/api/routers/grid.py#L14), [241](../../../platform/api/routers/grid.py#L241), [247](../../../platform/api/routers/grid.py#L247), [271](../../../platform/api/routers/grid.py#L271), [277](../../../platform/api/routers/grid.py#L277), [318](../../../platform/api/routers/grid.py#L318), [324](../../../platform/api/routers/grid.py#L324), [750](../../../platform/api/routers/grid.py#L750) (+1 more)
-- [`platform/api/routers/options.py`](../../../platform/api/routers/options.py) — line [348](../../../platform/api/routers/options.py#L348), [441](../../../platform/api/routers/options.py#L441), [447](../../../platform/api/routers/options.py#L447), [553](../../../platform/api/routers/options.py#L553), [559](../../../platform/api/routers/options.py#L559), [572](../../../platform/api/routers/options.py#L572), [804](../../../platform/api/routers/options.py#L804)
+- [`platform/api/routers/options.py`](../../../platform/api/routers/options.py) — line [349](../../../platform/api/routers/options.py#L349), [451](../../../platform/api/routers/options.py#L451), [457](../../../platform/api/routers/options.py#L457), [567](../../../platform/api/routers/options.py#L567), [573](../../../platform/api/routers/options.py#L573), [586](../../../platform/api/routers/options.py#L586), [818](../../../platform/api/routers/options.py#L818)
 - [`scripts/analysis/calibrate_intraday_theta.py`](../../../scripts/analysis/calibrate_intraday_theta.py) — line [13](../../../scripts/analysis/calibrate_intraday_theta.py#L13), [52](../../../scripts/analysis/calibrate_intraday_theta.py#L52)
 - [`scripts/analysis/options_pnl_translation.py`](../../../scripts/analysis/options_pnl_translation.py) — line [258](../../../scripts/analysis/options_pnl_translation.py#L258), [359](../../../scripts/analysis/options_pnl_translation.py#L359)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [979](../../../scripts/audit_data_freshness.py#L979)
@@ -658,7 +658,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/intraday_gex.py`](../../../lib/features/intraday_gex.py) — line [226](../../../lib/features/intraday_gex.py#L226), [227](../../../lib/features/intraday_gex.py#L227), [231](../../../lib/features/intraday_gex.py#L231), [226](../../../lib/features/intraday_gex.py#L226)
 
 ### `job_runs`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1268](../../../platform/api/routers/admin.py#L1268), [1269](../../../platform/api/routers/admin.py#L1269)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1285](../../../platform/api/routers/admin.py#L1285), [1286](../../../platform/api/routers/admin.py#L1286)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1172](../../../scripts/audit_data_freshness.py#L1172), [1173](../../../scripts/audit_data_freshness.py#L1173), [1184](../../../scripts/audit_data_freshness.py#L1184)
 
 ### `journal_entries`
@@ -878,7 +878,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `user_roles`
 - [`platform/api/auth.py`](../../../platform/api/auth.py) — line [230](../../../platform/api/auth.py#L230), [275](../../../platform/api/auth.py#L275)
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [938](../../../platform/api/routers/admin.py#L938), [963](../../../platform/api/routers/admin.py#L963), [964](../../../platform/api/routers/admin.py#L964)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [955](../../../platform/api/routers/admin.py#L955), [980](../../../platform/api/routers/admin.py#L980), [981](../../../platform/api/routers/admin.py#L981)
 
 ### `user_style_results`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
