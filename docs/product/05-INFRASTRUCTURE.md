@@ -38,9 +38,12 @@ these comparisons.
 ## Reference documents
 
 The long-form infrastructure references live in `infrastructure/` beside this
-plan. The first four are regenerated on the 1st of each month by
-[`refresh-architecture-docs.yml`](../../.github/workflows/refresh-architecture-docs.yml);
-the rest are hand-edited.
+plan. Four of them are written on the 1st of each month by
+[`refresh-architecture-docs.yml`](../../.github/workflows/refresh-architecture-docs.yml)
+and must not be hand-edited outside the rules in the Maintenance column:
+`05-a-ARCHITECTURE.md`, `05-c-DATA_DEPENDENCIES.md`, `05-d-COST_ANALYSIS.md`
+and `05-e-API.md`. Every other document here, `05-b-ERD.md` included, is
+hand-edited and the workflow never touches it.
 
 | Document | Question answered | Maintenance |
 |---|---|---|

@@ -173,8 +173,8 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 | 2 | def5678   | feat(gcp): ...     | gcp/fetchers/..., docs/... |
 
 ## Documentation Updates
-- docs/GCP_IMPLEMENTATION_GUIDE.md §5: updated [what changed]
-- docs/GCP_IMPLEMENTATION_STATUS.md: updated Last Updated, test results
+- docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md §5: updated [what changed]
+- docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md: updated Last Updated, test results
 
 ## Test Results
 N/N passed  (or: N passed, N failed — see Fix Plan below)

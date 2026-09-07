@@ -393,7 +393,7 @@ def test_the_pr_body_heredoc_cannot_execute_its_own_markdown():
 
 
 def test_the_deterministic_docs_are_frozen_not_allowlisted():
-    """No prompt writes docs/API.md or docs/INVESTMENT_MODELS_SUMMARY.md, so a
+    """No prompt writes 05-e-API.md or docs/INVESTMENT_MODELS_SUMMARY.md, so a
     model edit to either is a stray write. (Codex, PR #1009.)"""
     prompts = (WORKFLOW_PATH.parent.parent / "prompts")
     written = set(gate.DOCS)

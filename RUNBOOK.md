@@ -1,7 +1,7 @@
 # Disaster Recovery Runbook
 
 **Audience:** the one person operating this system, under pressure, at 3 AM. Practical not exhaustive.
-**Generated 2026-05-02** from `gcp_inventory.json`, `gcp/deploy.sh`, [ARCHITECTURE.md](docs/product/infrastructure/05-a-ARCHITECTURE.md), and [DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md). Numbers below were derived from live `gcloud` checks at generation time, not invented.
+**Generated 2026-05-02** from `gcp_inventory.json`, `gcp/deploy.sh`, [05-a-ARCHITECTURE.md](docs/product/infrastructure/05-a-ARCHITECTURE.md), and [05-c-DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md). Numbers below were derived from live `gcloud` checks at generation time, not invented.
 
 ---
 
@@ -140,7 +140,7 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/parquet/ | head
 
 **Detection signal**
 - `fetch_market_data` / `fetch_alphavantage_intraday` / `fetch_news_sentiment` exit with HTTP 429 or empty CSV body
-- Per [DATA_DEPENDENCIES.md §6](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md#6-blast-radius-per-cloud-run-job), `fetch-market-data` failure cascades to ~10 downstream consumers
+- Per [05-c-DATA_DEPENDENCIES.md §6](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md#6-blast-radius-per-cloud-run-job), `fetch-market-data` failure cascades to ~10 downstream consumers
 
 **Immediate response (no automated mitigation)**
 - Check status: AlphaVantage doesn't publish a public status page. Test directly:
@@ -163,7 +163,7 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/parquet/ | head
 
 **Recovery — AV outage**
 - The pipeline degrades gracefully: `compute_earnings_reactions` and `evaluate_ew_strikes` read existing rows; the brief reads the most recent `market_data_daily` row even if today's didn't land.
-- The watchdog GitHub Actions workflow (`freshness-watchdog.yml`) will eventually fire alerts on stale data — see [docs/DATA_PIPELINE.md §1](docs/product/infrastructure/05-g-DATA_PIPELINE.md) for the alert criteria.
+- The watchdog GitHub Actions workflow (`freshness-watchdog.yml`) will eventually fire alerts on stale data — see [05-g-DATA_PIPELINE.md §1](docs/product/infrastructure/05-g-DATA_PIPELINE.md) for the alert criteria.
 
 **Verification**
 ```bash
@@ -493,10 +493,10 @@ gcloud run jobs execute premarket-brief --region=us-east1 --wait
 
 Things that could fail silently today because nothing watches them. Ranked by silent-failure cost.
 
-1. **🔴 Insight pipeline showing $0.00 Vertex AI / Gemini cost over 90 days.** Per [COST_ANALYSIS.md §4B](docs/product/infrastructure/05-d-COST_ANALYSIS.md), the active Gemini model (`gemini-3.1-flash-lite` as of 2026-05-11) has paid pricing per token (no zero-cost tier). $0 means either (a) no rounding above sub-cent, or (b) the pipeline isn't actually invoking Gemini. **No alarm watches "is insight-pipeline producing output."** A failure here is invisible from billing and from Discord (the brief still posts; only the insight digest goes silent).
+1. **🔴 Insight pipeline showing $0.00 Vertex AI / Gemini cost over 90 days.** Per [05-d-COST_ANALYSIS.md §4B](docs/product/infrastructure/05-d-COST_ANALYSIS.md), the active Gemini model (`gemini-3.1-flash-lite` as of 2026-05-11) has paid pricing per token (no zero-cost tier). $0 means either (a) no rounding above sub-cent, or (b) the pipeline isn't actually invoking Gemini. **No alarm watches "is insight-pipeline producing output."** A failure here is invisible from billing and from Discord (the brief still posts; only the insight digest goes silent).
    - **Fix:** add a `signal-quality-alarm`-style daily check that queries `SELECT COUNT(*) FROM insight_reports WHERE as_of >= CURRENT_DATE - INTERVAL '1 day'` and posts to Discord if 0.
 
-2. **🔴 `ticker_calibration` written but never read.** Per [DATA_DEPENDENCIES.md §5](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md), `scripts/calibrate_thresholds.py` writes the table; `lib/strategies/config.py` documents reading it but still hardcodes thresholds. **Calibration could be silently broken for months** and nobody would notice because nothing reads the output.
+2. **🔴 `ticker_calibration` written but never read.** Per [05-c-DATA_DEPENDENCIES.md §5](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md), `scripts/calibrate_thresholds.py` writes the table; `lib/strategies/config.py` documents reading it but still hardcodes thresholds. **Calibration could be silently broken for months** and nobody would notice because nothing reads the output.
    - **Fix:** either wire `lib/strategies/config.py` to query the table, or stop running the calibrate job.
 
 3. **⚠️ Cloud SQL backup restore is never tested.** Backups run nightly; no evidence the restore path actually works. Cloud SQL has been known to silently produce backups that fail to restore due to extension version mismatches.
@@ -511,7 +511,7 @@ Things that could fail silently today because nothing watches them. Ranked by si
 6. **⚠️ Cloud Scheduler re-fires HTTP triggers regardless of job exit status.** If `fetch-market-data` fails 5 days in a row, Cloud Scheduler doesn't know; it just keeps firing. The failure-notifier catches the per-execution ERROR but doesn't escalate consecutive failures.
    - **Fix:** the `signal-quality-alarm` pattern (compare yesterday vs. today, exit non-zero on regression) could be templated for any data-freshness check.
 
-7. **⚠️ `fetch-earnings-options` Cloud Run Job confirmed missing** (per [DATA_DEPENDENCIES.md §5](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md) and the recently-merged drift PR). Nothing watches whether `earnings_options_snapshots` is fresh because the writer doesn't exist.
+7. **⚠️ `fetch-earnings-options` Cloud Run Job confirmed missing** (per [05-c-DATA_DEPENDENCIES.md §5](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md) and the recently-merged drift PR). Nothing watches whether `earnings_options_snapshots` is fresh because the writer doesn't exist.
    - **Fix:** decide — rebuild the fetcher or drop the table.
 
 8. **⚠️ Nothing watched whether this runbook was still true.** `docs/product/infrastructure/05-f-PIPELINE.md`
@@ -549,7 +549,7 @@ Things that could fail silently today because nothing watches them. Ranked by si
 When something breaks at 3 AM, the order is:
 1. **Check failure-notifier GitHub issues** — they have the run URL and last 50 lines of error logs
 2. **Identify the table that's stale** — `SELECT MAX(<date_col>) FROM <table>` for the table the broken brief / page reads
-3. **Walk the blast radius** — [DATA_DEPENDENCIES.md §6](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md) tells you what else is affected
+3. **Walk the blast radius** — [05-c-DATA_DEPENDENCIES.md §6](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md) tells you what else is affected
 4. **Pause schedulers if a job is in failure loop** — `gcloud scheduler jobs pause <NAME>`
 5. **Fix the root cause** — code regression / secret rotation / schema drift
 6. **Manually run the job** — `gcloud run jobs execute <NAME> --wait` before resuming the cron

@@ -273,7 +273,7 @@
         <mxCell id="title" value="Stocks Trading Platform — GCP Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;fontColor=#1f2933;" parent="1" vertex="1">
           <mxGeometry x="40" y="24" width="2320" height="32" as="geometry" />
         </mxCell>
-        <mxCell id="sub" value="project adept-mountain-474619-d4 · region us-east1  |  76 Cloud Run Jobs · 4 Services · 65 Scheduler entries · 95-relation Cloud SQL · 3 Discord channels · single-user platform  |  rebuilt from ARCHITECTURE.md 2026-06-23" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#7b8794;" parent="1" vertex="1">
+        <mxCell id="sub" value="project adept-mountain-474619-d4 · region us-east1  |  76 Cloud Run Jobs · 4 Services · 65 Scheduler entries · 95-relation Cloud SQL · 3 Discord channels · single-user platform  |  rebuilt from docs/product/infrastructure/05-a-ARCHITECTURE.md 2026-06-23" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#7b8794;" parent="1" vertex="1">
           <mxGeometry x="40" y="56" width="2320" height="20" as="geometry" />
         </mxCell>
         <mxCell id="g_ext" value="External APIs &amp; Delivery Surfaces" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#eef6ec;strokeColor=#7cae7a;dashed=0;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#1f2933;spacingTop=6;spacingLeft=10;" parent="1" vertex="1">

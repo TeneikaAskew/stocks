@@ -104,7 +104,7 @@ CHURN_CEILING = 0.50
 # Two documents are legitimately re-derived in full every month rather than
 # edited in place, so a high churn there is normal and a 50% ceiling would
 # block the refresh for doing its job:
-#   docs/API.md      — every line comes from the router files
+#   05-e-API.md      — every line comes from the router files
 #   COST_ANALYSIS.md — written wholesale from the billing CSVs; when the SKU
 #                      ordering shifts, most of its table rows change
 # They are not unprotected: the size floor is the real guard for

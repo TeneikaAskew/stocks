@@ -62,7 +62,7 @@ git status
 git diff --stat
 ```
 
-Identify which files are GCP-related (anything in `gcp/`, `docs/GCP_*.md`, `lib/data_loader.py` GCP changes, `requirements.txt` GCP additions, `gcp/Dockerfile`, `.claude/commands/gcp-deploy.md`).
+Identify which files are GCP-related (anything in `gcp/`, `docs/product/infrastructure/05-*.md`, `lib/data_loader.py` GCP changes, `requirements.txt` GCP additions, `gcp/Dockerfile`, `.claude/commands/gcp-deploy.md`).
 
 ### Step 3 — Update Status Tracker
 

@@ -2,7 +2,7 @@
 
 **Generated 2026-05-02.** Closing the visibility gap on the central operator question: *"Is my signal quality good and stable?"*
 
-This is a **spec, not an implementation plan**. Every proposed query is grounded in a table that already exists per [DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md). The work is sequenced so each panel ships independently — no rip-and-replace.
+This is a **spec, not an implementation plan**. Every proposed query is grounded in a table that already exists per [05-c-DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md). The work is sequenced so each panel ships independently — no rip-and-replace.
 
 ---
 
@@ -295,7 +295,7 @@ Each step adds one endpoint + one panel + one nav addition. Steps 2-5 can ship i
 
 ## Tables referenced
 
-Per [DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md):
+Per [05-c-DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md):
 
 | Table | Read by this spec | Writer | Status |
 |---|---|---|---|

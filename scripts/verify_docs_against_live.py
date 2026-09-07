@@ -254,7 +254,7 @@ def _day_segments(line: str) -> list[tuple[set[int], str]]:
         end = marks[n + 1].start() if n + 1 < len(marks) else len(line)
         # The FIRST segment starts at the beginning of the line, not at its
         # qualifier. A clock that precedes its qualifier -- `7:00 PM ET Mon-Fri
-        # + Sun`, which is how docs/DATA_PIPELINE.md writes it -- was sliced
+        # + Sun`, which is how 05-g-DATA_PIPELINE.md writes it -- was sliced
         # off the front and then belonged to no segment at all, so neither
         # piece carried a clock and the comparison never ran (Codex, PR #990).
         start = 0 if n == 0 else m.start()
