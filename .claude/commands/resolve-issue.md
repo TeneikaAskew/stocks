@@ -111,6 +111,12 @@ git fetch origin
 
 # CASE A — a PR already exists for this issue (including an auto-created
 # fix/workflow-* draft). Work on ITS head. Do not open a second PR.
+# First: is the head in THIS repo? A PR from a fork has no
+# origin/<headRefName>, so both paths below fail, and Phase 7 would push to
+# origin rather than the fork. Read headRepositoryOwner from the PR; if it is
+# not TeneikaAskew, STOP and say the PR is from a fork. Neither repo takes
+# fork PRs today (every branch is same-repo: claude/*, codex/*, fix/*), so
+# this is a guard, not a gap — building fork push-back would be speculative.
 # Never `checkout -B` here: -B RESETS an existing local branch to the start
 # point, silently discarding unpushed commits from an earlier run.
 if git show-ref --verify --quiet "refs/heads/<headRefName>"; then

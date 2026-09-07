@@ -148,10 +148,13 @@ body:
       label: Evidence attestation
       options:
         - label: >-
-            Every command output pasted above was produced by running it against
-            the live system while filing this issue. None of it is recalled from
-            memory, copied from a doc or a code comment, carried over from an
-            older issue, or inferred from a plausible mechanism.
+            Everything I have presented above **as measured** was produced by
+            running it against the live system while filing this issue — none
+            of it recalled from memory, copied from a doc or a code comment,
+            carried over from an older issue, or inferred from a plausible
+            mechanism. Anything I did not verify is labelled "not measured"
+            rather than stated as fact. An honestly unverified report is fine;
+            an unmarked guess is not.
           required: true
         - label: >-
             Where a metric stands in for the thing I actually care about, I
