@@ -4659,6 +4659,14 @@ case "${1:-help}" in
     discord) _run build_image deploy_discord_interactions deploy_backfill_ticker deploy_validate_brief deploy_backtest ;;
     all)
         build_image
+        # Both images first: deploy_indicator_correlation below and the
+        # scheduled research jobs at the end deploy from ${IMAGE}:research,
+        # so the research build must precede the first of them (Codex on
+        # #1022: building it mid-list left indicator-correlation on the
+        # previous research digest, and on a fresh project the tag did
+        # not exist yet). Each research job then pins :research by digest
+        # (pin_image_tags at the tail).
+        build_research_image
         deploy_premarket
         deploy_earnings_reactions_brief
         deploy_monitor
@@ -4690,9 +4698,7 @@ case "${1:-help}" in
         deploy_earnings_long_watchlist
         deploy_refresh_earnings_views
         deploy_calibrate_thresholds
-        # Research-image jobs with a scheduler entry. Built once here, then
-        # each job pins :research by digest (pin_image_tags at the tail).
-        build_research_image
+        # Research-image jobs with a scheduler entry (image built above).
         deploy_strat_engine
         deploy_p2_build_gamma_levels
         deploy_magnitude_inference

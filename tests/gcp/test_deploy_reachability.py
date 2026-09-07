@@ -174,3 +174,18 @@ def test_gamma_levels_dispatcher_target_uses_the_research_image_without_rebuildi
     assert "deploy_p2_build_gamma_levels" in m.group(1)
     assert "build_image" not in m.group(1), \
         "research-image jobs deploy from :research; do not rebuild :latest for them"
+
+
+def test_all_builds_the_research_image_before_any_research_job():
+    """Codex on #1022: deploy_indicator_correlation deploys from
+    ${IMAGE}:research and ran before build_research_image in `all)`, so it
+    stayed on the previous research digest (or failed on a fresh project
+    where the tag did not exist yet). The research build must precede the
+    first function that deploys from that tag."""
+    order = [f for f in re.findall(r"^\s*([a-z_][a-z0-9_]*)\s*$", ALL_BLOCK, re.M) if f in FNS]
+    assert "build_research_image" in order, "all) must build the research image"
+    build_at = order.index("build_research_image")
+    research_users = [f for f in order if ":research" in FNS[f] and f != "build_research_image"]
+    assert research_users, "expected at least one research-image deploy in all)"
+    early = [f for f in research_users if order.index(f) < build_at]
+    assert not early, f"research-image deploys before build_research_image: {early}"
