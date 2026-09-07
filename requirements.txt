@@ -126,3 +126,10 @@ cachetools>=5.3.0
 # first surface as a production db-query failure. Found by
 # tests/meta/test_import_coverage.py on 2026-08-24.
 sqlparse>=0.4.4
+# PyYAML backs tests/meta/test_eastern_timezone_is_named.py, which parses
+# every tracked manifest with the loader rather than a line regex. It was
+# present only transitively (requirements.lock pins 6.0.3, brought in by
+# nothing this file names), so the lean CI job could lose it without any
+# declared dependency changing. Declared, so the guard cannot silently stop
+# reading YAML.
+PyYAML>=6.0

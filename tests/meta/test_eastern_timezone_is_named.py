@@ -41,6 +41,7 @@ from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 import pytest
+import yaml
 
 def _repo_root() -> pathlib.Path:
     """Walk up to the checkout root, rather than counting directories.
@@ -2217,6 +2218,53 @@ def _parses(src: str) -> bool:
     return True
 
 
+# The line magics whose payload runs in a SHELL, and the one that sets the
+# kernel's environment. Everything else with a `%` is either Python IPython
+# evaluates (`%time expr`) or something that is neither (`%pip`, `%cd`).
+_SHELL_LINE_MAGICS = {"sx", "system"}
+_ENV_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:=|\s+)(.+)$")
+
+
+def _classify_magic(line: str):
+    """ONE reading of an IPython line, for both passes.
+
+    `(kind, payload)`: `"python"` for a line magic whose payload parses,
+    `"shell"` for `!cmd`, `%sx cmd` and `%system cmd`, `"env"` for `%env NAME
+    VALUE` and `%env NAME=VALUE` rendered as the shell assignment they
+    perform, `None` for a magic with nothing to read, and `(False, line)`
+    for a line that is not a magic at all.
+
+    One classification rather than two special-case lists. `_strip_magic`
+    and `_notebook_shell` each knew a different subset -- the first kept
+    Python and blanked the rest, the second collected `!` and `%%bash` -- so
+    `%env TZ EST` (a documented form whose payload is not Python) and
+    `%sx env TZ=EST date` (a shell payload behind a `%`) fell between them
+    and reached neither pass (Codex, PR #993, rounds 23 and 24). The
+    `%%bash` cell that arrived twice was the same split from the other side.
+    """
+    m = _MAGIC_LINE.match(line)
+    if not m:
+        return False, line
+    indent, sigil, name, payload = m.groups()
+    payload = payload.strip()
+    if sigil == "!":
+        # Everything after the `!` is the command. `_MAGIC_LINE`'s name
+        # group is for `%name`; on `!TZ=EST date` it would swallow `TZ` as a
+        # name and hand the shell pass `=EST date`.
+        command = line[m.end(2):].strip()
+        return ("shell", command) if command else (None, "")
+    if sigil != "%" or not payload:
+        return None, ""
+    if name in _SHELL_LINE_MAGICS:
+        return "shell", payload
+    if name == "env":
+        e = _ENV_ASSIGN.match(payload)
+        # `%env` and `%env NAME` READ the environment; only an assignment
+        # form sets it, and that is the one that installs a zone.
+        return ("env", f"export {e.group(1)}={e.group(2)}") if e else (None, "")
+    return ("python", indent + payload) if _parses(payload) else (None, "")
+
+
 def _strip_magic(line: str) -> str:
     """Blank an IPython magic, but KEEP the Python it runs.
 
@@ -2231,13 +2279,10 @@ def _strip_magic(line: str) -> str:
     the cell rather than to itself -- its body is already ordinary lines --
     so both blank as before.
     """
-    m = _MAGIC_LINE.match(line)
-    if not m:
+    kind, payload = _classify_magic(line)
+    if kind is False:
         return line
-    indent, sigil, _name, payload = m.groups()
-    if sigil != "%" or not payload.strip():
-        return ""
-    return indent + payload if _parses(payload) else ""
+    return payload if kind == "python" else ""
 
 
 def _strip_help(line: str) -> str:
@@ -2320,9 +2365,11 @@ def _notebook_shell(cells) -> str:
             out.extend(lines[1:])
             continue
         for line in lines:
-            stripped = line.lstrip()
-            if stripped.startswith("!"):
-                out.append(stripped[1:])
+            kind, payload = _classify_magic(line)
+            # `%sx`/`%system` payloads and `%env` assignments run in, or
+            # configure, a shell -- so they go where `!` already went.
+            if kind in ("shell", "env"):
+                out.append(payload)
     return "\n".join(out)
 
 
@@ -2414,43 +2461,129 @@ def _notebook_hits(path, text: str):
     return legacy, offsets, "\n".join([t for t in unparsed + [shell] if t])
 
 
-# `- name: TZ` on one line and `value: EST` on the next. Every Cloud Run and
-# Kubernetes manifest writes an environment variable this way, and the context
-# patterns all require the key and the value to sit around a single `:` or
-# `=` -- so the split form matched nothing in the very file types the scan was
-# widened to cover (Codex, PR #993).
-_YAML_ENV_PAIR = re.compile(
-    r"""(?:^|
-)[ 	-]*name:[ 	]*["']?(TZ|PGTZ|TIMEZONE|TIME_ZONE)["']?[ 	]*(?:\#[^
-]*)?
-"""
-    # Comment-only and blank lines between the two halves of ONE entry. A
-    # manifest routinely explains a variable between its name and its
-    # value, and requiring `value:` on the immediately following line
-    # meant the DOCUMENTED entry was the one that got through (Codex,
-    # PR #993). Only comments and blank lines are skipped, so a line
-    # opening the next list item or naming another key still ends the
-    # entry and this cannot reach across into a sibling.
-    r"(?:[ \t]*(?:\#[^\n]*)?\n)*"
-    r"""[ 	]*value:[ 	]*["']?([^"'
-\#]+?)["']?[ 	]*(?:\#[^
-]*)?(?=
-|$)""",
-    re.I)
+# The manifest shapes are PARSED, not pattern-matched.
+#
+# Four rounds each found a YAML spelling the previous regex could not see:
+# `- name: TZ` / `value: EST` split across lines (round 21), `args:
+# ["--time-zone", "EST"]` with the flag and its value as separate list items
+# (22), the flow-style `env: [{name: TZ, value: EST}]` (23), and `- value:
+# EST` written before `name: TZ` (24) -- which YAML permits, since mapping
+# order carries no meaning. Every one of those is the same gap: a
+# line-oriented regex over a format that is not line-oriented. This walks the
+# document the loader builds instead, so the shape a manifest is written in
+# is not the thing that decides whether it is read (Codex, PR #993).
+#
+# Only the STRUCTURAL forms live here. The plain mapping form -- `TZ: EST` on
+# one line -- is still the regex pass's, because `_TZ_CONTEXT` reads it
+# correctly and reporting it from both would double every finding.
+#
+# Character OFFSETS come from the loader's marks, so a finding still points at
+# the line it always did, and the shell blanking `_scan` applies to these
+# files first is width-preserving -- an offset into the raw text is the same
+# offset into the blanked text.
+_YAML_ENV_KEYS = {"TZ", "PGTZ", "TIMEZONE", "TIME_ZONE"}
+_YAML_ARGV_KEYS = {"args", "command", "entrypoint"}
+
+
+class _YamlHit:
+    """The two things `report` reads off a regex match, for a loader hit."""
+
+    def __init__(self, offset: int, shown: str):
+        self._offset = offset
+        self._shown = shown
+
+    def start(self) -> int:
+        return self._offset
+
+    def group(self, _n: int = 0) -> str:
+        return self._shown
+
+
+def _bad_zone_value(value: str):
+    """`(is_offset)` when `value` names a legacy zone or a fixed offset, else None."""
+    v = value.strip()
+    if v.lower() in {z.lower() for z in UNAMBIGUOUS_LEGACY}:
+        return False
+    if v.upper() in AMBIGUOUS_LEGACY:
+        return False
+    if _FIXED_OFFSET_STRINGS.match(v) or re.fullmatch(_FIXED_OFFSET_TEXT, v, re.I):
+        return True
+    return None
+
+
+def _yaml_scalar(node) -> "str | None":
+    return node.value if isinstance(node, yaml.ScalarNode) else None
 
 
 def _yaml_env_pair_hits(text: str) -> list:
-    """`(match, value, is_offset)` for each split env pair naming a bad zone."""
+    """`(hit, value, is_offset)` for each structural manifest entry naming a bad zone.
+
+    Two structures, in any nesting and either style:
+
+    * a mapping holding a `name` and a `value` scalar -- the Kubernetes and
+      Cloud Run environment entry -- in either key order;
+    * a sequence under `args`/`command`/`entrypoint` carrying `--time-zone`
+      followed by its value as the next item, or `--time-zone=VALUE` as one.
+
+    Raises on text the loader cannot read. A `.yml` that is not YAML is not
+    scanned by being skipped: the same rule as an unreadable notebook, and
+    for the same reason. (No tracked YAML here is templated; if one ever is,
+    excluding it becomes a stated decision rather than a silent one.)
+    """
     out = []
-    for m in _YAML_ENV_PAIR.finditer(text):
-        value = m.group(2).strip()
-        if value.lower() in {z.lower() for z in UNAMBIGUOUS_LEGACY}:
-            out.append((m, value, False))
-        elif value.upper() in AMBIGUOUS_LEGACY:
-            out.append((m, value, False))
-        elif (_FIXED_OFFSET_STRINGS.match(value)
-              or re.fullmatch(_FIXED_OFFSET_TEXT, value, re.I)):
-            out.append((m, value, True))
+    docs = list(yaml.compose_all(text))     # yaml.YAMLError propagates
+    stack = [d for d in docs if d is not None]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, yaml.MappingNode):
+            keys = {}
+            for k, v in node.value:
+                ks = _yaml_scalar(k)
+                if ks is not None:
+                    keys[ks] = v
+                stack.append(v)
+            name, value = _yaml_scalar(keys.get("name")), keys.get("value")
+            if name is not None and name.upper() in _YAML_ENV_KEYS:
+                val = _yaml_scalar(value)
+                if val is not None:
+                    is_offset = _bad_zone_value(val)
+                    if is_offset is not None:
+                        out.append((_YamlHit(value.start_mark.index,
+                                             f"name: {name} / value: {val}"),
+                                    val, is_offset))
+            for ks, v in keys.items():
+                if ks in _YAML_ARGV_KEYS and isinstance(v, yaml.SequenceNode):
+                    out.extend(_yaml_argv_hits(v))
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+    # Loader order is document order reversed by the stack; callers index
+    # `hits[0]`, so restore source order.
+    out.sort(key=lambda h: h[0].start())
+    return out
+
+
+def _yaml_argv_hits(seq) -> list:
+    """`--time-zone VALUE` and `--time-zone=VALUE` inside one argv sequence."""
+    out = []
+    items = [(_yaml_scalar(n), n) for n in seq.value]
+    for i, (item, node) in enumerate(items):
+        if item is None:
+            continue
+        value_node = None
+        if item == "--time-zone" and i + 1 < len(items):
+            value_node = items[i + 1][1]
+        elif item.startswith("--time-zone="):
+            value_node = node
+        if value_node is None:
+            continue
+        val = _yaml_scalar(value_node)
+        if val is None:
+            continue
+        val = val.partition("=")[2] if val.startswith("--time-zone=") else val
+        is_offset = _bad_zone_value(val)
+        if is_offset is not None:
+            out.append((_YamlHit(value_node.start_mark.index,
+                                 f"--time-zone {val}"), val, is_offset))
     return out
 
 
@@ -2506,6 +2639,7 @@ def _scan() -> tuple[list[str], list[str]]:
         # process actually gets whenever the variable is unset, which for a
         # container is the ordinary case (Codex, PR #993). Inline comments go
         # first, so a commented-out value cannot supply one.
+        raw = text
         if _reads_as_shell(p):
             text = _expand_shell_defaults(
                 _strip_shell_comments(text, make=_reads_as_make(p)))
@@ -2532,7 +2666,10 @@ def _scan() -> tuple[list[str], list[str]]:
             for m in pattern.finditer(text):
                 report(bucket, m)
         if p.suffix in (".yml", ".yaml"):
-            for m, _value, is_offset in _yaml_env_pair_hits(text):
+            # The RAW text: the loader needs the comments and quoting the
+            # shell pass blanks. Offsets agree because the blanking keeps
+            # widths, so `report` still finds the right line in `text`.
+            for m, _value, is_offset in _yaml_env_pair_hits(raw):
                 report(offsets if is_offset else legacy, m)
     return legacy, offsets
 
@@ -7172,3 +7309,117 @@ def test_an_unparseable_scheduler_command_is_not_vouched_for():
     # A parseable command with the real flag is still clean, quoted or not.
     assert _declares_zone_flag("gcloud x --time-zone America/New_York")
     assert _declares_zone_flag('gcloud x "--time-zone" "America/New_York"')
+# -- Audit: the manifest surface, parsed --------------------------------------
+
+
+def test_yaml_environment_entries_are_read_in_any_order_and_style():
+    """The three open manifest spellings, closed by one loader.
+
+    Reverse key order, flow style, and the argv list form each defeated the
+    line-oriented matcher in its own round (Codex, PR #993). None of them is
+    a special case to a parser.
+    """
+    # Reverse order: YAML mapping order carries no meaning.
+    assert _yaml_env_pair_hits("- value: EST\n  name: TZ\n")
+    # Flow style, both quotings.
+    assert _yaml_env_pair_hits("env: [{name: TZ, value: EST}]\n")
+    hits = _yaml_env_pair_hits('env: [{name: "TZ", value: "-05:00"}]\n')
+    assert hits and hits[0][2] is True, hits
+    # Nested where a manifest actually puts it.
+    assert _yaml_env_pair_hits(
+        "spec:\n  containers:\n  - env:\n"
+        "      - name: PGTZ\n        value: US/Eastern\n")
+
+    # The round-21 and round-22 properties, on the loader now.
+    assert _yaml_env_pair_hits("        - name: TZ\n          value: EST\n")
+    assert not _yaml_env_pair_hits("- name: LOG_LEVEL\n  value: EST\n")
+    assert not _yaml_env_pair_hits("- name: TZ\n  value: America/New_York\n")
+    # A comment between the halves is nothing to a parser.
+    assert _yaml_env_pair_hits(
+        "- name: TZ\n  # the app expects Eastern\n  value: EST\n")
+    # And it cannot reach into a sibling entry.
+    assert not _yaml_env_pair_hits(
+        "- name: TZ\n  value: America/New_York\n- name: OTHER\n  value: EST\n")
+
+
+def test_yaml_argv_lists_carry_the_scheduler_flag():
+    """`args: ["--time-zone", "EST"]` passes the flag and its value as two items.
+
+    Neither regex could fire: the comma, the quotes, or the list marker sat
+    between the context and the value (Codex, PR #993, round 22).
+    """
+    assert _yaml_env_pair_hits('args: ["--time-zone", "EST"]\n')
+    assert _yaml_env_pair_hits("args:\n  - --time-zone\n  - EST\n")
+    assert _yaml_env_pair_hits("command: ['--time-zone=US/Eastern']\n")
+    hits = _yaml_env_pair_hits("args: [--time-zone, '-04:00']\n")
+    assert hits and hits[0][2] is True and hits[0][1] == "-04:00", hits
+
+    # The canonical zone, an unrelated flag, and a flag with no value are
+    # not findings.
+    assert not _yaml_env_pair_hits('args: ["--time-zone", "America/New_York"]\n')
+    assert not _yaml_env_pair_hits('args: ["--location", "EST"]\n')
+    assert not _yaml_env_pair_hits('args: ["--time-zone"]\n')
+
+
+def test_yaml_hits_carry_the_line_of_the_value():
+    """`report` reads `start()` off a hit and turns it into a line number."""
+    text = "a: 1\nenv:\n  - name: TZ\n    value: EST\n"
+    hits = _yaml_env_pair_hits(text)
+    assert hits
+    assert text.count("\n", 0, hits[0][0].start()) + 1 == 4
+    assert "EST" in hits[0][0].group(0)
+
+
+def test_yaml_that_the_loader_cannot_read_fails_loudly():
+    """A `.yml` that is not YAML is not scanned by being skipped."""
+    with pytest.raises(yaml.YAMLError):
+        _yaml_env_pair_hits("key: [unclosed\n")
+
+
+def test_the_repos_real_manifests_load_and_are_clean():
+    """Every tracked YAML file parses, and none installs a bad zone."""
+    files = [p for p in _source_files() if p.suffix in (".yml", ".yaml")]
+    assert files, "no YAML collected -- has the manifest set moved?"
+    for p in files:
+        assert _yaml_env_pair_hits(p.read_text()) == [], p
+# -- Audit: the notebook surface, classified once -------------------------------
+
+
+def test_every_ipython_line_is_classified_once():
+    """`%env TZ EST` and `%sx env TZ=EST date` reach the shell pass.
+
+    Two special-case lists -- what `_strip_magic` kept and what
+    `_notebook_shell` collected -- left a gap between them, and both open
+    notebook findings sat in it (Codex, PR #993, rounds 23 and 24). One
+    classification feeds both passes now.
+    """
+    def probe(cells):
+        nb = json.dumps({"cells": [{"cell_type": "code", "source": c}
+                                   for c in cells]})
+        _legacy, _offsets, rest = _notebook_hits(
+            REPO / "notebooks" / "_probe.ipynb", nb)
+        return rest
+
+    # The environment magic, both documented forms.
+    assert NONPY_AMBIGUOUS.search(probe([["%env TZ EST\n"]]))
+    assert NONPY_AMBIGUOUS.search(probe([["%env TZ=EST\n"]]))
+    assert NONPY_FIXED_OFFSET.search(probe([["%env PGTZ -05:00\n"]]))
+    # The shell-executing line magics.
+    assert NONPY_AMBIGUOUS.search(probe([["%sx env TZ=EST date\n"]]))
+    assert NONPY_AMBIGUOUS.search(probe([["%system env TZ=EST date\n"]]))
+
+    # `%env` and `%env NAME` READ the environment and set nothing.
+    assert not probe([["%env\n"]]).strip()
+    assert not probe([["%env TZ\n"]]).strip()
+    # The canonical zone, set the same way, is clean.
+    assert not NONPY_AMBIGUOUS.search(probe([["%env TZ America/New_York\n"]]))
+
+    # Every earlier property, on the same classifier: a Python line magic
+    # keeps its payload for the parser, `%pip` blanks, a `!` escape and a
+    # `%%bash` body are shell and arrive exactly once.
+    assert _classify_magic("    %time x = 1") == ("python", "    x = 1")
+    assert _classify_magic("%pip install pandas") == (None, "")
+    assert _classify_magic("!TZ=EST date") == ("shell", "TZ=EST date")
+    assert _classify_magic("x = 1") == (False, "x = 1")
+    assert _classify_magic("%env TZ EST") == ("env", "export TZ=EST")
+    assert probe([["%%bash\n", "export TZ=EST\n"]]).count("export TZ=EST") == 1
