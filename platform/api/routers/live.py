@@ -6,6 +6,7 @@ GET /api/live/avg-volume/{ticker} - 20-day average daily volume (for RVOL denomi
 GET /api/live/status - market open/closed status based on Eastern Time
 """
 import logging
+import math
 import os
 import sys
 from datetime import datetime, time, date
@@ -242,23 +243,43 @@ async def get_live_quote(ticker: str):
                 detail=(f"Alpha Vantage returned no {label} for {ticker_upper}; "
                         f"refusing to report it as 0."))
         try:
-            return float(raw)
+            value = float(raw)
         except (TypeError, ValueError):
             raise HTTPException(
                 status_code=502,
                 detail=(f"Alpha Vantage returned an unparseable {label} for "
                         f"{ticker_upper}; refusing to report it as 0."))
+        # `float("NaN")` and `float("Infinity")` PARSE. They are not prices,
+        # and Starlette serialises with `allow_nan=False`, so one reaching the
+        # response turns this handler's honest 502 into an opaque 500 raised
+        # from inside the encoder (Codex, PR #994). Unparseable and
+        # non-finite are the same answer: the vendor did not send a number.
+        if not math.isfinite(value):
+            raise HTTPException(
+                status_code=502,
+                detail=(f"Alpha Vantage returned a non-finite {label} "
+                        f"({raw!r}) for {ticker_upper}; refusing to report it "
+                        f"as 0."))
+        return value
 
     def _optional_float(raw) -> Optional[float]:
         """None, not 0.0 — the field is nullable in the response contract."""
         if raw is None:
             return None
         try:
-            return float(raw)
+            value = float(raw)
         except (TypeError, ValueError):
             log.warning("live quote %s: unparseable optional field %r",
                         ticker_upper, raw)
             return None
+        if not math.isfinite(value):
+            # Same reasoning as _required_float, different answer: the field is
+            # nullable, so a non-finite value renders as an em-dash rather than
+            # 500ing the whole quote out of the JSON encoder.
+            log.warning("live quote %s: non-finite optional field %r",
+                        ticker_upper, raw)
+            return None
+        return value
 
     price = _required_float("05. price", "price")
     change_raw = quote.get("10. change percent")

@@ -326,14 +326,25 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
                 f"this date is a failure rather than a no-op")
         still_missing = len(enriched) - finite
     else:
-        filled = pending_ids & solved_now
-        if pending_ids and not filled:
+        # The rows this date was SELECTED for. Without `--force` that is the
+        # pending set, by construction: `list_dates_to_process` picks a date
+        # because some row has no gamma. `--force` picks every date regardless,
+        # so on a fully populated date the pending set is EMPTY -- and
+        # `if pending_ids and not filled` was then vacuously false, so a total
+        # solver failure under `--force` exited 0 while `_keep_solved` quietly
+        # restored last week's values as though this run had produced them
+        # (Codex, PR #994). An empty pending set on a date we were told to
+        # recompute means every row is the work, not that there is none.
+        selected = pending_ids if pending_ids else set(chain["id"])
+        filled = selected & solved_now
+        if selected and not filled:
             raise GreeksUnavailable(
-                f"{ticker} {snap}: {len(pending_ids)} rows were pending and 0 "
-                f"of them were solved — nothing was computed for the rows this "
-                f"date was selected for, so it is a failure rather than a "
-                f"no-op, however many rows earlier runs already filled")
-        still_missing = len(pending_ids - solved_now)
+                f"{ticker} {snap}: 0 of {len(selected)} rows this date was "
+                f"selected for were solved (pending before this run: "
+                f"{len(pending_ids)}) — nothing was computed, so it is a "
+                f"failure rather than a no-op, however many rows earlier runs "
+                f"already filled")
+        still_missing = len(selected - solved_now)
 
     n_updated = update_computed_columns(enriched)
     log.info(

@@ -1600,6 +1600,46 @@ class TestLiveMarketAPI:
         assert r.status_code == 502
         assert "price" in r.json()["detail"]
 
+    def test_live_quote_non_finite_price_is_502_not_a_500_from_the_encoder(
+            self, client, monkeypatch):
+        """`float("NaN")` parses. It is still not a price.
+
+        Both parsers accepted "NaN" / "Infinity" because they only guarded
+        against ValueError, and Starlette serialises with `allow_nan=False` --
+        so the value turned this handler's honest 502 into an opaque 500
+        raised from inside the JSON encoder (Codex, PR #994).
+        """
+        from api.routers import live as live_module
+        for raw in ("NaN", "Infinity", "-inf"):
+            monkeypatch.setattr(live_module, "AV_API_KEY", "TESTKEY")
+            payload = self._quote_payload(**{"05. price": raw})
+            monkeypatch.setattr(live_module.httpx, "AsyncClient",
+                                self._fake_async_client(payload))
+
+            r = client.get("/api/live/quote/IWM")
+            assert r.status_code == 502, (
+                f"price={raw!r} was served as {r.status_code}, not a 502")
+            assert "price" in r.json()["detail"]
+
+    def test_live_quote_non_finite_optional_field_is_null_not_a_500(
+            self, client, monkeypatch):
+        """Same cause, different answer: the field is nullable, so it renders
+        as an em-dash rather than 500ing the whole quote out of the encoder."""
+        from api.routers import live as live_module
+        monkeypatch.setattr(live_module, "AV_API_KEY", "TESTKEY")
+        payload = self._quote_payload(**{
+            "09. change": "NaN", "08. previous close": "Infinity",
+        })
+        monkeypatch.setattr(live_module.httpx, "AsyncClient",
+                            self._fake_async_client(payload))
+
+        r = client.get("/api/live/quote/IWM")
+        assert r.status_code == 200, f"body={r.text[:200]}"
+        data = r.json()
+        assert data["change"] is None
+        assert data["prev_close"] is None
+        assert data["price"] == pytest.approx(205.80)
+
     def test_live_quote_missing_optional_fields_are_null_not_zero(
             self, client, monkeypatch):
         """change / change_pct / prev_close are `number | null` in solyra's

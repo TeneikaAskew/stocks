@@ -772,3 +772,99 @@ def test_an_abandoned_loop_is_a_forbidden_shape():
     assert display == ["break (loop abandoned)"], display
     assert set(shapes) & mod.FORBIDDEN_SHAPES, (
         "an abandoned loop returns a short collection; --worst must rank it")
+
+
+def test_a_fully_populated_date_that_solves_nothing_is_still_a_failure():
+    """`--force` recomputes dates whose pending set is EMPTY.
+
+    The gate read "some row was pending and none of them solved", which on a
+    fully populated date is vacuously false: a total solver failure under
+    `--force` exited 0 while `_keep_solved` restored the previous run's values
+    as though this run had produced them (Codex, PR #994). Being told to
+    recompute a date makes every row the work, not none of it.
+    """
+    import numpy as np
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    chain = pd.DataFrame({
+        "id": [1, 2],
+        "strike": [100.0, 105.0],
+        "option_type": ["calls", "puts"],
+        "open_interest": [10, 20],
+        "expiration": ["2026-09-18", "2026-09-18"],
+        # Nothing pending: this date is only here because --force selected it.
+        "gamma_computed": [0.05, 0.07],
+    })
+
+    def _enrich_nothing(df, ticker, snap):
+        out = df.copy()
+        out["gamma_computed"] = [np.nan, np.nan]
+        return out
+
+    updated: list = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: chain)
+        mp.setattr(mod, "enrich_av_chain_with_greeks", _enrich_nothing)
+        mp.setattr(mod, "update_computed_columns",
+                   lambda df: (updated.append(len(df)), len(df))[1])
+        with pytest.raises(mod.GreeksUnavailable, match="selected for"):
+            mod.process_one_date("SPX", date(2026, 9, 4))
+
+    assert updated == [], "a run that solved nothing should not write at all"
+
+
+def test_a_forced_recompute_that_succeeds_is_not_a_failure():
+    """The other half of the gate: re-solving every row still passes."""
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    chain = pd.DataFrame({
+        "id": [1, 2],
+        "strike": [100.0, 105.0],
+        "option_type": ["calls", "puts"],
+        "open_interest": [10, 20],
+        "expiration": ["2026-09-18", "2026-09-18"],
+        "gamma_computed": [0.05, 0.07],
+    })
+
+    def _enrich_all(df, ticker, snap):
+        out = df.copy()
+        out["gamma_computed"] = [0.051, 0.071]
+        return out
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: chain)
+        mp.setattr(mod, "enrich_av_chain_with_greeks", _enrich_all)
+        mp.setattr(mod, "update_computed_columns", lambda df: len(df))
+        assert mod.process_one_date("SPX", date(2026, 9, 4)) == (2, 2)
+
+
+def test_no_intraday_bars_returns_the_empty_timeline_not_a_rate_error():
+    """The documented empty-timeline return must not be pre-empted.
+
+    The rate/yield lookup ran before the bars were loaded, so a ticker with no
+    intraday bars at all raised `RateLookupError` instead — a failure that
+    reads as a broken rate curve when the actual state is "there is nothing to
+    price", and one the callers of the empty timeline do not handle
+    (Codex, PR #994).
+    """
+    from lib import options_intraday as oi
+
+    called: list = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(oi, "_load_intraday_bars", lambda t, d: None)
+        import lib.options_greeks as og
+
+        def _boom(_d):
+            called.append(_d)
+            raise og.RateLookupError("no curve for this date")
+
+        mp.setattr(og, "get_rate_and_yield", _boom)
+        out = oi.reprice_intraday_option(
+            ticker="SPX", intraday_date=date(2026, 9, 4),
+            expiration=date(2026, 9, 18), strike=5000.0,
+            option_type="call", entry_price_per_share=10.0, iv_t_minus_1=0.2,
+        )
+
+    assert out.empty, "no bars must still return the empty timeline"
+    assert list(out.columns)[:3] == ["Time", "Spot", "IV_used"]
+    assert called == [], "the rate curve must not be consulted with nothing to price"
