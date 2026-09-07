@@ -70,17 +70,55 @@ def test_deploy_sh_deploys_a_digest():
     assert "_TAG=${IMAGE_TAG}" in src, "the build no longer passes an immutable tag"
 
 
-def test_both_paths_run_the_interlock():
-    """Each path checks for the other before building."""
-    trigger_first = _steps(TRIGGER)[0]
-    assert "assert_no_concurrent_staging_deploy.sh" in _all_args(trigger_first), (
-        "the trigger must check for a concurrent deploy in its FIRST step, "
-        f"got {trigger_first['id']!r}")
+def test_both_paths_run_the_interlock_inside_their_build():
+    """The check has to run in the SUBMITTED build, not before it.
+
+    platform/deploy.sh ran it before `gcloud builds submit`, so its build did
+    not exist yet and carried no tag — a trigger starting in that window saw
+    only itself and both paths deployed (Codex, PR #990). Running it as the
+    first step of each config means the build is registered and tagged when
+    the scan happens.
+    """
+    for cfg in (TRIGGER, PLATFORM):
+        first = _steps(cfg)[0]
+        assert "assert_no_concurrent_staging_deploy.sh" in _all_args(first), (
+            f"{cfg.name}: the interlock must be the FIRST build step, got "
+            f"{first.get('id', '<unnamed>')!r}")
+
+
+def test_the_pre_submit_check_is_not_presented_as_the_interlock():
+    """deploy.sh keeps a fast-fail courtesy check so an operator finds out
+    before uploading a tarball. It must not be described as the guard, or the
+    in-build step looks redundant and gets deleted."""
     src = DEPLOY_SH.read_text()
     assert "assert_no_concurrent_staging_deploy.sh" in src
-    assert 'if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then\n  bash' in src, (
-        "the interlock must be gated on STAGING_SERVICE (which deploys "
-        "solyra-api-staging), not STAGING (the legacy revision-tag mode on prod)")
+    assert "authoritative check is the first step of platform/cloudbuild.yaml" in src, (
+        "the comment must say which check is load-bearing")
+    assert 'if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then' in src, (
+        "gated on STAGING_SERVICE (which deploys solyra-api-staging), not "
+        "STAGING (the legacy revision-tag mode on prod)")
+
+
+def test_the_interlock_fails_closed_when_it_cannot_look():
+    """A guard that cannot check must stop, not reassure.
+
+    `|| true` turned a revoked cloudbuild.builds.list, an expired credential
+    or a transient API error into an empty result — so in exactly the
+    environment where peer builds are invisible, it announced there were none
+    (Codex, PR #990).
+    """
+    src = INTERLOCK.read_text()
+    # Non-comment lines only: the fix's own comment quotes `|| true` to say
+    # what it replaced, and a substring check on the whole file would call
+    # that a regression.
+    code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+    assert not any("|| true" in ln for ln in code), (
+        "the build scan swallows its own failure again:\n"
+        + "\n".join(ln for ln in code if "|| true" in ln))
+    assert "Refusing rather than assuming none" in src
+    assert src.count("exit 1") >= 2, (
+        "expected an exit for the unreadable-listing case as well as for a "
+        "detected concurrent build")
 
 
 def test_the_interlock_scans_both_build_tags():

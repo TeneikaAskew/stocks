@@ -563,10 +563,22 @@ COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
      "schedulers", "Cloud Scheduler jobs"),
     # "| Cloud Scheduler (60 jobs, 3 free) |" -- the "3 free" is a free-tier
     # quota, not a fleet count, so only the leading number is read.
-    # "Cloud Scheduler (84 live / 58 declared)" is the same shape: the LIVE
-    # count is the checkable one, the declared count describes gcp/deploy.sh.
-    (re.compile(rf"Cloud\s+Scheduler\s*\(\s*{_NUM}\s+(?:jobs|live)\b", re.I),
+    # `jobs` only -- the `live` spelling is handled by the declared/live
+    # pattern below, and matching it here too reported one claim twice.
+    (re.compile(rf"Cloud\s+Scheduler\s*\(\s*{_NUM}\s+jobs\b", re.I),
      "schedulers", "Cloud Scheduler jobs"),
+    # The declared/live pair, in either order:
+    #   "Scheduler (58 declared / 84 live)"
+    #   "Cloud Scheduler (84 live / 58 declared)"
+    # Only the LIVE half is checkable -- the declared half describes
+    # gcp/deploy.sh, a different measurement. The previous pattern required
+    # the first number after "(" to be the live one, so it stopped at
+    # "58 declared" and never looked at "84 live", leaving the contradiction
+    # in place under an advertised clean run (Codex, PR #990).
+    (re.compile(rf"[Ss]cheduler\s*\([^)]*?\b{_NUM}\s+live\b", re.I),
+     "schedulers", "live Cloud Scheduler jobs"),
+    (re.compile(rf"(?:Cloud\s+Run\s+)?jobs\s*\([^)]*?\b{_NUM}\s+live\b", re.I),
+     "run_jobs", "live Cloud Run Jobs"),
 )
 
 

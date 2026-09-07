@@ -387,7 +387,13 @@ def test_cadence_words_are_not_day_qualifiers():
     "**60 cron triggers** drive the Jobs above.",
     "SCH[60 Cloud Scheduler entries] --> JOBS",
     "returns **60 scheduler entries**.",
+    # The declared/live pair, in BOTH orders. The first version of this check
+    # required the live number to come first inside the parens, so
+    # "Scheduler (58 declared / 84 live)" stopped at `58 declared` and never
+    # looked at the live half -- leaving a contradiction under a clean run
+    # (Codex, PR #990).
     "| Cloud Scheduler (60 live / 58 declared) |",
+    "| Scheduler (58 declared / 60 live) / manual |",
     "driven by 60 Cloud Scheduler entries",
     "# Create 60 Cloud Scheduler triggers",
 ])
@@ -424,3 +430,18 @@ def test_the_free_tier_quota_is_still_not_a_fleet_count(tmp_path):
     n = len(LIVE["schedulers"])
     out = _check(tmp_path, f"| Cloud Scheduler ({n} jobs, 3 free) | **$0.30** |")
     assert out == []
+
+
+def test_the_declared_half_of_a_declared_live_pair_is_not_checked(tmp_path):
+    """`58 declared` describes gcp/deploy.sh, which is a different
+    measurement from the live fleet — flagging it would be a false positive
+    on a row that is telling the truth about both."""
+    n = len(LIVE["schedulers"])
+    out = _check(tmp_path, f"| Scheduler (58 declared / {n} live) / manual |")
+    assert out == [], out
+
+
+def test_a_declared_live_pair_reports_once_not_twice(tmp_path):
+    """Two patterns can match the same claim; only one finding should result."""
+    out = _check(tmp_path, "| Cloud Scheduler (60 live / 58 declared) |")
+    assert len(out) == 1, [str(f) for f in out]

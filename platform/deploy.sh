@@ -193,12 +193,21 @@ gcloud config set project "${PROJECT_ID}" >/dev/null
 # unvalidated image one click from production.
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)}"
 
-# Neither GitHub's `concurrency: deploy-staging` group nor a Cloud Build
-# trigger can see the other path, so both check for each other here.
-# STAGING_SERVICE, not STAGING: the former deploys solyra-api-staging (what the
-# trigger also deploys); the latter is the legacy revision-tag mode on prod.
+# A FAST-FAIL courtesy check, not the interlock.
+#
+# The authoritative check is the first step of platform/cloudbuild.yaml, which
+# runs INSIDE the submitted build. This one only exists so an operator finds
+# out before uploading a source tarball; it cannot be the guard, because at
+# this point the build does not exist and carries no tag, so a trigger
+# starting in the window between here and `gcloud builds submit` would see
+# nothing and proceed (Codex, PR #990).
+#
+# STAGING_SERVICE, not STAGING: the former deploys solyra-api-staging (what
+# the trigger also deploys); the latter is the legacy revision-tag mode on
+# prod. Non-fatal here -- the in-build check is what decides.
 if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
-  bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh"
+  bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh" \
+    || { echo ">> a concurrent deploy was detected before submitting; aborting early"; exit 1; }
 fi
 
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
