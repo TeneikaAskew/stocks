@@ -71,7 +71,19 @@ deploy_schedulers() {
         --message-body "${_BODY}"
     )
     gcloud scheduler jobs create http "enrich-daily" "${_common[@]}" 2>/dev/null || \
-    gcloud scheduler jobs update http "enrich-daily" "${_common[@]}" --quiet
+    gcloud scheduler jobs update http "enrich-daily" "${_common[@]}" --update-headers "X=y"
+
+    local _FULL='{"overrides":{"containerOverrides":[{"env":[{"name":"MODE","value":"full"}]}]}}'
+    gcloud scheduler jobs create http "alpha-weekly" \
+        --schedule "0 3 * * 0" \
+        --uri "$(_job_uri "alpha")" \
+        --message-body "${_FULL}" \
+        --quiet 2>/dev/null || echo "  alpha-weekly: already exists"
+    if _schedule_verified "news-hourly"  "0 8-17 * * 1-5"  "beta"; then
+        _unschedule "news-0800"
+    fi
+    _schedule_min_instances "warm-open"  "0 9 * * 1-5"   "discord-interactions" 1 \
+        || FAILURES=$((FAILURES + 1))
 }
 
 case "${1:-}" in
@@ -122,6 +134,16 @@ def test_schedulers_expand_loops_continuations_and_arrays(mini_repo):
     assert s["enrich-daily"]["cron"] == "0 2 * * 2-6"
     assert s["enrich-daily"]["target_job"] == "alpha"
     assert s["enrich-daily"]["args"] == "-m gcp.research.enrich --mode=all"
+    # The array-based create above carries no --quiet of its own; the block must
+    # stop at the blank line, not run on into alpha-weekly and steal its cron/env.
+    assert s["alpha-weekly"]["cron"] == "0 3 * * 0" and s["alpha-weekly"]["args"] == "MODE=full"
+    assert "MODE=full" not in s["enrich-daily"]["args"]
+    # `if _schedule_verified ...; then` is a declaration (#1004 consolidation).
+    assert s["news-hourly"]["cron"] == "0 8-17 * * 1-5" and s["news-hourly"]["target_job"] == "beta"
+    # `_schedule_min_instances` PATCHes a service, not a job.
+    w = s["warm-open"]
+    assert w["target_job"] == "" and w["target_service"] == "discord-interactions"
+    assert w["args"] == "minInstanceCount=1" and "services/discord-interactions" in w["target_uri"]
 
 
 def test_schema_tables_partitions_views(mini_repo):
@@ -162,6 +184,12 @@ def test_every_scheduler_targets_a_declared_job_or_a_known_gap():
     # gamma-levels-daily fires p2-build-gamma-levels, which exists live but has
     # no deploy_* function (issue #829). Anything else here is new drift.
     assert gaps <= {"gamma-levels-daily"}, gaps
+    services = {s["name"] for s in repo["schedulers"] if s["target_service"]}
+    assert services == {"discord-warm-open", "discord-warm-close"}, services
+    declared = {s["name"] for s in repo["schedulers"]}
+    # the #1004 consolidations and the #1005 playbook are declared, not live-only
+    assert {"sec-filings-intraday", "news-sentiment-hourly", "news-topics-hourly",
+            "phase6-playbook-daily", "backfill-indicators-weekly"} <= declared
 
 
 # ── reconcile + render against the saved live snapshot ──────────────────────
@@ -174,6 +202,9 @@ def test_reconcile_against_snapshot_reports_the_known_deltas():
             "strat-dir-features"} <= set(rec["jobs_live_only"])
     assert "compute-spx-greeks-backfill" in rec["jobs_repo_only"]
     assert "signal-quality-report-hourly" in rec["schedulers_paused"]
+    # retired in deploy.sh by #1005 but still (paused) live: the only live-only entry
+    assert rec["schedulers_live_only"] == ["signal-quality-report-hourly"]
+    assert rec["schedulers_repo_only"] == [] and rec["schedulers_cron_drift"] == []
     assert rec["counts"]["jobs_live"] == live["counts"]["jobs"]
 
 

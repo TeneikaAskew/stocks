@@ -204,6 +204,12 @@ def _expand_loop_vars(text: str) -> str:
     return "\n".join(out)
 
 
+def _service_of(uri: str) -> str:
+    """The Cloud Run service a scheduler URI addresses, or "" for job / other URIs."""
+    m = re.search(r"/services/([^?/:]+)", uri or "")
+    return m.group(1) if m else ""
+
+
 def deploy_schedulers(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
     """Every Cloud Scheduler entry `gcp/deploy.sh` creates.
 
@@ -216,18 +222,42 @@ def deploy_schedulers(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
     # carries its extra args on the next line.
     text = _expand_loop_vars(_strip_comments(raw)).replace("\\\n", " ")
     rows: dict[str, dict[str, Any]] = {}
+    # `if _schedule_verified "name" "cron" "job"; then` (the consolidated
+    # sec-filings / news entries, #1004) is a declaration too.
     helper = re.compile(
-        r'^\s*(_schedule\w*)\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"(.*)$', re.M
+        r'^\s*(?:if\s+!?\s*)?(_schedule\w*)\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"(.*)$', re.M
     )
     for m in helper.finditer(text):
         name = m.group(2)
         extra = m.group(5).strip()
         args = " ".join(re.findall(r'"([^"]*)"', extra)) if extra else ""
-        rows.setdefault(name, {
+        row = {
             "name": name, "cron": m.group(3), "target_job": m.group(4),
+            "target_service": "", "target_uri": "",
             "helper": m.group(1), "args": args, "time_zone": "America/New_York",
-        })
-    for m in re.finditer(r'gcloud scheduler jobs create http "([^"]+)"([\s\S]*?)--quiet', text):
+        }
+        if m.group(1) == "_schedule_min_instances":
+            # `_schedule_min_instances NAME CRON SERVICE COUNT` PATCHes a Cloud Run
+            # *service*'s minInstanceCount (the discord-interactions warm window,
+            # #1004); the third argument is a service, not a job.
+            count = re.match(r"(\d+)", extra)
+            row.update({
+                "target_job": "", "target_service": m.group(4),
+                "target_uri": (f"https://run.googleapis.com/v2/projects/${{PROJECT_ID}}/locations/${{REGION}}"
+                               f"/services/{m.group(4)}?updateMask=template.scaling.minInstanceCount"),
+                "args": f"minInstanceCount={count.group(1)}" if count else "minInstanceCount",
+            })
+        rows.setdefault(name, row)
+    # A block ends at its own `--quiet`, a blank line, or the next create,
+    # whichever comes first: strat-enrich-daily keeps its flags (and its --quiet) in a bash array
+    # ABOVE the create line, so an unbounded `[\s\S]*?--quiet` swallowed the
+    # next declaration (backfill-indicators-weekly) and its cron.
+    raw_create = re.compile(
+        r'gcloud scheduler jobs create http "([^"]+)"'
+        r'((?:(?!gcloud scheduler jobs create http)[\s\S])*?)'
+        r'(?:--quiet|\n[ \t]*\n|(?=gcloud scheduler jobs create http))'
+    )
+    for m in raw_create.finditer(text):
         name = m.group(1)
         if name in rows or "$" in name:  # "${NAME}" inside a helper definition
             continue
@@ -243,13 +273,21 @@ def deploy_schedulers(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
         jm = jobs_[-1] if jobs_ else ""
         uris = [u for u in re.findall(r'--uri "([^"]+)"', scope) if "_job_uri" not in u]
         uri = "" if jm else (uris[-1] if uris else "")
-        env = re.findall(r'\{"name":"([A-Z_]+)","value":"([^"]*)"\}', before + "\n" + block)
-        arr = re.findall(r'"args":\[([^\]]*)\]', before + "\n" + block)
+        # Overrides come from the block's own --message-body; a `${_BODY}`
+        # reference is resolved from the single-quoted `local _BODY='{...}'`
+        # above it. Scanning `before` wholesale picked up the previous
+        # declaration's body for any create that carried none of its own.
+        body_scope = scope
+        for var in re.findall(r'"\$\{(\w+)\}"', scope):
+            for d in re.findall(r"local %s='([^']*)'" % re.escape(var), before):
+                body_scope += "\n" + d
+        env = re.findall(r'\{"name":"([A-Z_]+)","value":"([^"]*)"\}', body_scope)
+        arr = re.findall(r'"args":\[([^\]]*)\]', body_scope)
         args = " ".join(f"{k}={v}" for k, v in env)
         if arr:
             args = (args + " " + " ".join(a.strip('"') for a in arr[-1].split(","))).strip()
         rows[name] = {
-            "name": name, "cron": cron, "target_job": jm,
+            "name": name, "cron": cron, "target_job": jm, "target_service": _service_of(uri),
             "target_uri": uri, "helper": "raw", "args": args, "time_zone": "America/New_York",
         }
     return sorted(rows.values(), key=lambda r: r["name"])
@@ -824,6 +862,7 @@ def live_snapshot(project: str = PROJECT, region: str = REGION,
         schedulers[name] = {
             "cron": s.get("schedule", ""), "time_zone": s.get("timeZone", ""),
             "state": s.get("state", ""), "target_job": m.group(1) if m else "",
+            "target_service": "" if m else _service_of(uri),
             "target_uri": "" if m else uri,
             "last_attempt": s.get("lastAttemptTime", ""),
             "last_status": ((s.get("status") or {}).get("code", 0)),
@@ -1037,7 +1076,13 @@ def render_markdown(section: str, repo: dict[str, Any], live: dict[str, Any] | N
         for n in names:
             r = by_name.get(n); l = live_s.get(n)
             cron = (l or r or {}).get("cron", "")
-            target = (l or r or {}).get("target_job", "") or (l or r or {}).get("target_uri", "")
+            src = l or r or {}
+            target = src.get("target_job", "") or src.get("target_uri", "")
+            svc = src.get("target_service") or _service_of(src.get("target_uri", ""))
+            if not src.get("target_job") and svc:
+                # a service-scaling PATCH, not a job run; name the service so the
+                # row reads like the rest of the table
+                target = f"{svc} (service, minInstanceCount patch)"
             if live is not None:
                 if r and l:
                     state = l["state"] + ("" if r["cron"] == l["cron"] else f" (repo cron `{r['cron']}`)")

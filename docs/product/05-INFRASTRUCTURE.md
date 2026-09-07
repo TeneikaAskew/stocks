@@ -8,7 +8,7 @@ captured alongside inline flags. <!-- verify-docs-ok: deliberately the repo-decl
 **67 Cloud Run jobs** and **58 Cloud Scheduler entries** are *declared in the repo*.
 
 **VERIFIED — LIVE, 2026-09-07.** `gcloud run jobs list --region=us-east1` returns
-**76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **64 scheduler
+**76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **66 scheduler
 entries** — and 0 in every other Cloud Scheduler location, so 64 is the whole fleet.
 This previously read 84, dated 2026-09-06, and that figure does not reproduce; only
 the reading above is vouched for here. The dated audit under

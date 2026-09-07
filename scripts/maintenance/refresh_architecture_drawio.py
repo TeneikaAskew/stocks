@@ -86,7 +86,8 @@ NEW_CELLS = [
     ("svc_st",
      "solyra-api-staging\nFastAPI API — PUBLIC edge, Firebase login (AUTH_MODE=firebase)\n"
      "▸ open self-signup over production data (#943)\n"
-     "▸ api.stocks.insightscollective.org → this service\n"
+     "▸ api.stocks.insightscollective.org → this service (since 2026-09-06;\n"
+     "   the apex stocks.insightscollective.org is reserved for the SPA and Firebase auth emails, #1006)\n"
      "▸ deploy: deploy-solyra-api-staging trigger on push to main",
      "rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=10;fontStyle=1;",
      2000, 675, 220, 95),
@@ -161,6 +162,8 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     # add new cells
     for cid, value, style, x, y, w, h in NEW_CELLS:
         if cid in by_id:
+            # the cell's text is owned by this table; geometry stays as drawn
+            by_id[cid].set("value", value)
             continue
         cell = ET.SubElement(parent, "mxCell", id=cid, value=value, style=style, parent="1", vertex="1")
         ET.SubElement(cell, "mxGeometry", x=str(x), y=str(y), width=str(w), height=str(h), **{"as": "geometry"})

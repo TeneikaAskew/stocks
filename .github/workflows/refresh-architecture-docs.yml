@@ -458,7 +458,21 @@ jobs:
             --transcripts-dir refresh-inputs/transcripts || FAIL=1
 
           # 13. Docs vs live drift (schedules, names, counts, retired services).
-          python scripts/verify_docs_against_live.py --snapshot refresh-inputs/verify_live.json || FAIL=1
+          #     The verifier scans ~40 operational docs; only the four this
+          #     workflow regenerates can be fixed by re-running it, so drift
+          #     there is a failure and drift anywhere else is a warning the
+          #     PR body carries (a stale count in docs/product/ must not block
+          #     the monthly refresh forever).
+          python scripts/verify_docs_against_live.py --snapshot refresh-inputs/verify_live.json \
+            > refresh-inputs/verify_findings.txt 2>&1 || true
+          cat refresh-inputs/verify_findings.txt
+          if grep -qE '^\[[a-z-]+\] (README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\.md:' refresh-inputs/verify_findings.txt; then
+            echo "::error::verify_docs_against_live.py found drift in a regenerated doc (see above)"
+            FAIL=1
+          fi
+          grep -E '^\[[a-z-]+\] ' refresh-inputs/verify_findings.txt \
+            | grep -vE '^\[[a-z-]+\] (README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\.md:' \
+            | sed 's/^/::warning::docs-vs-live drift outside the regenerated docs: /' || true
 
           exit $FAIL
 

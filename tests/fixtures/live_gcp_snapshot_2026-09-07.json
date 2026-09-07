@@ -408,9 +408,7 @@
   }
  ],
  "gcr_images": [
-  "gcr.io/adept-mountain-474619-d4/solyra-api",
-  "gcr.io/adept-mountain-474619-d4/trading-platform",
-  "gcr.io/adept-mountain-474619-d4/trading-platform-staging"
+  "gcr.io/adept-mountain-474619-d4/solyra-api"
  ],
  "image_tags": [
   "inuse-job-apply-schema-migrations",
@@ -508,7 +506,7 @@
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
     "result": "ok",
-    "time": "2026-09-07T01:05:04.192516Z"
+    "time": "2026-09-07T01:52:38.297398Z"
    },
    "max_retries": 0,
    "memory": "512Mi",
@@ -796,7 +794,7 @@
    "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
    "last_execution": {
     "result": "ok",
-    "time": "2026-09-07T01:10:32.189445Z"
+    "time": "2026-09-07T01:19:22.111532Z"
    },
    "max_retries": 0,
    "memory": "8Gi",
@@ -1737,7 +1735,7 @@
    "gcp-job-failures-dlq"
   ]
  },
- "read_at": "2026-09-07T01:11:54Z",
+ "read_at": "2026-09-07T03:09:14Z",
  "region": "us-east1",
  "schedulers": {
   "audit-brief-bias-weekly": {
@@ -1746,6 +1744,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "audit-brief-bias",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1755,6 +1754,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "audit-infra-drift",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1764,6 +1764,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "audit-magnitude-drift",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1773,6 +1774,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "audit-walkforward",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1782,6 +1784,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "auto-refresh-top-n",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1791,6 +1794,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-alphavantage-intraday",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1800,6 +1804,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-alphavantage-intraday",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1809,6 +1814,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-av-options-backfill",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1818,6 +1824,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-av-options-backfill",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1827,6 +1834,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-av-options-realtime",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1836,6 +1844,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "backfill-daily-indicators",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1845,6 +1854,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "backfill-daily-indicators",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1854,6 +1864,7 @@
    "last_status": -1,
    "state": "ENABLED",
    "target_job": "calibrate-thresholds",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1863,6 +1874,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "cloud-sql-weekly-export",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1872,6 +1884,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-earnings-calendar",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1881,6 +1894,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-earnings-history",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1890,6 +1904,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "compute-earnings-reactions",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1899,6 +1914,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "",
+   "target_service": "discord-interactions",
    "target_uri": "https://run.googleapis.com/v2/projects/adept-mountain-474619-d4/locations/us-east1/services/discord-interactions?updateMask=template.scaling.minInstanceCount",
    "time_zone": "America/New_York"
   },
@@ -1908,6 +1924,7 @@
    "last_status": -1,
    "state": "ENABLED",
    "target_job": "",
+   "target_service": "discord-interactions",
    "target_uri": "https://run.googleapis.com/v2/projects/adept-mountain-474619-d4/locations/us-east1/services/discord-interactions?updateMask=template.scaling.minInstanceCount",
    "time_zone": "America/New_York"
   },
@@ -1917,6 +1934,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "earnings-long-watchlist",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1926,6 +1944,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "earnings-reactions-brief",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1935,6 +1954,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-economic-events",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1944,6 +1964,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "evaluate-ew-strikes",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1953,6 +1974,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-market-data",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1962,6 +1984,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-fred-rates",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1971,6 +1994,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "freshness-watchdog",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1980,6 +2004,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "freshness-watchdog",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1989,6 +2014,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "p2-build-gamma-levels",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -1998,6 +2024,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "historical-signals-watchlist",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2007,6 +2034,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-insider-transactions",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2016,6 +2044,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "insight-discord-push",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2025,6 +2054,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "insight-pipeline",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2034,6 +2064,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "magnitude-inference",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2043,6 +2074,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-news-sentiment-earnings",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2052,6 +2084,7 @@
    "last_status": -1,
    "state": "ENABLED",
    "target_job": "fetch-news-sentiment",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2061,6 +2094,7 @@
    "last_status": -1,
    "state": "ENABLED",
    "target_job": "fetch-news-sentiment-topics",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2070,6 +2104,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "build-options-daily-features",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2079,6 +2114,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "build-options-greeks",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2088,6 +2124,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "etf-options-retention",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2097,6 +2134,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "signal-monitor",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2106,6 +2144,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "signal-monitor",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2115,6 +2154,7 @@
    "last_status": -1,
    "state": "ENABLED",
    "target_job": "phase6-playbook",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2124,6 +2164,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "premarket-brief",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2133,6 +2174,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "premarket-brief",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2142,6 +2184,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "premarket-playbook-resolver",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2151,6 +2194,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-premarket-refresh",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2160,15 +2204,17 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "build-realtime-gex",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
   "reconcile-failure-notifier-hourly": {
    "cron": "0 * * * *",
-   "last_attempt": "2026-09-07T01:00:57.094399Z",
+   "last_attempt": "2026-09-07T03:00:01.441255Z",
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "",
+   "target_service": "",
    "target_uri": "https://failure-notifier-5sjtb3yl7a-ue.a.run.app/reconcile",
    "time_zone": "America/New_York"
   },
@@ -2178,6 +2224,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "refresh-earnings-views",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2187,6 +2234,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "refresh-earnings-views",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2196,6 +2244,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "regime-combo",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2205,6 +2254,7 @@
    "last_status": -1,
    "state": "ENABLED",
    "target_job": "fetch-sec-filings",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2214,6 +2264,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "signal-monitor",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2223,6 +2274,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "signal-monitor-eod-resolver",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2232,6 +2284,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "signal-quality-alarm",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2241,6 +2294,7 @@
    "last_status": -1,
    "state": "PAUSED",
    "target_job": "signal-quality-report",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2250,6 +2304,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "signal-quality-report",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2259,6 +2314,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "strat-engine",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2268,6 +2324,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "strat-engine",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2277,6 +2334,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-top-movers",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2286,6 +2344,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-top-movers",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2295,6 +2354,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-top-movers",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2304,6 +2364,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "weekend-review",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2313,6 +2374,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-earnings-calendar",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2322,6 +2384,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "fetch-earnings-history",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   },
@@ -2331,6 +2394,7 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "compute-earnings-reactions",
+   "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
   }
@@ -2409,10 +2473,10 @@
    "cpu_throttling": "true",
    "created": "2026-09-05T13:46:26.486963Z",
    "iap": "true",
-   "image": "gcr.io/adept-mountain-474619-d4/trading-platform",
+   "image": "gcr.io/adept-mountain-474619-d4/solyra-api@sha256:fa6e190880dfd672015d927efcc49546431726b73dbaba21b8aff37556ec80b4",
    "ingress": "all",
    "invokers": [],
-   "latest_revision": "solyra-api-prod-00001-7lc",
+   "latest_revision": "solyra-api-prod-00002-chw",
    "max_instances": "5",
    "min_instances": "0",
    "open_signup": "",
@@ -2429,7 +2493,7 @@
    "invokers": [
     "allUsers"
    ],
-   "latest_revision": "solyra-api-staging-00003-g6x",
+   "latest_revision": "solyra-api-staging-00005-rcc",
    "max_instances": "5",
    "min_instances": "0",
    "open_signup": "1",

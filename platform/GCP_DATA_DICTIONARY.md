@@ -272,7 +272,7 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 | **Cloud Tasks** | `insight-pipeline-queue` — decouples the synchronous refresh request from the long-running `insight-pipeline` Job (max-attempts 2, max-concurrent 5). |
 | **GCS (`…-trading-data`)** | Playbook + phase-report **markdown** (`raw/reports/`) for Playbook & Reports pages; backtest CSVs (`raw/data/backtest_results/`) for the Insights backtest panel; signals/market **parquet fallbacks** (`raw/data/…`); strat-engine **model artifacts** (`research/strat_engine/`) for Admin; `db-query` results + weekly `pg_dump` (`sql-dumps/`). Bucket prefix for app reads = `raw/` (`platform/api/gcs_reader.py`). |
 | **Secret Manager** | All 21 secrets in §2, mounted into containers at start via `--set-secrets`. |
-| **Cloud Scheduler** | 64 cron triggers (live 2026-09-07; 61 declared in `gcp/deploy.sh`) driving the Jobs above. Page-relevant cadences: `insight-pipeline-daily` 08:45 ET; `fetch-market-data-daily` 23:00 ET; `av-options-daily` 21:00 ET + `av-options-realtime` */5 9-15 ET; `backfill-indicators-daily` 02:30 ET; `premarket-refresh-daily`/`premarket-brief-daily`; `sec-filings-intraday` 07/10/13/17 ET; `news-sentiment-hourly` + `news-topics-hourly` 8-17 ET; `auto-refresh-top-n` 08:10 ET; `freshness-watchdog-hourly`. |
+| **Cloud Scheduler** | 66 cron triggers (live 2026-09-07; 65 declared in `gcp/deploy.sh`) driving the Jobs above. Page-relevant cadences: `insight-pipeline-daily` 08:45 ET; `fetch-market-data-daily` 23:00 ET; `av-options-daily` 21:00 ET + `av-options-realtime` */5 9-15 ET; `backfill-indicators-daily` 02:30 ET; `premarket-refresh-daily`/`premarket-brief-daily`; `sec-filings-intraday` 07/10/13/17 ET; `news-sentiment-hourly` + `news-topics-hourly` 8-17 ET; `auto-refresh-top-n` 08:10 ET; `freshness-watchdog-hourly`. |
 | **Artifact Registry** | Hosts `us-east1-docker.pkg.dev/.../trading/trading-system` (Jobs image) + `gcr.io/.../solyra-api` (API image, shared by solyra-api-prod and solyra-api-staging). Both repos carry a cleanup policy (keep tagged + 10 newest, delete untagged >14d); in-use digests are tagged `inuse-job-*` / `inuse-svc-*` by `gcp/deploy.sh pin-images`, which runs before every build. |
 | **Cloud Build** | Builds both images (`gcloud builds submit` via `platform/cloudbuild.yaml` and `gcp/deploy.sh build`). |
 | **IAM / IAP** | `solyra-api-prod` is IAM-gated; an `IAP_OAUTH_CLIENT_ID` is wired and the admin/`/me`/`/dev` routes read the `X-Goog-Authenticated-User-Email` IAP header. SAs: UI svc = default compute SA (Vertex ADC); Jobs = `trading-runner@`; sandbox dispatch = `claude-web@`. |
@@ -292,7 +292,7 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 - Freshness: `insight_reports` latest `as_of` = **2026-06-04 12:46 UTC**;
   `premarket_analysis` latest = **2026-06-04**; `market_data_daily` (SPY) latest =
   **2026-06-04** — all current to the prior trading day.
-- Live `gcloud` (read 2026-09-07): 4 Cloud Run services, 76 Jobs, 64 schedulers, 22 secrets (all enumerated above).
+- Live `gcloud` (read 2026-09-07): 4 Cloud Run services, 76 Jobs, 66 schedulers, 22 secrets (all enumerated above).
 
 ### Pages whose data is NOT actually populated by a live Job (call-outs)
 1. **Journal** — `journal_entries` = 0 rows; data exists only after a user manually logs trades (no Job writes it).
