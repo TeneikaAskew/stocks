@@ -286,7 +286,8 @@ def test_no_fixed_offset_standing_in_for_eastern():
 def test_every_scheduler_declaration_uses_the_named_zone():
     """`gcp/deploy.sh` creates every Cloud Scheduler entry; all must be ET.
 
-    Read live 2026-09-06, all 84 entries are `America/New_York`. This keeps a
+    Read live 2026-09-07, all 64 entries are `America/New_York` (64 in
+    us-east1, 0 in every other Cloud Scheduler location). This keeps a
     new entry from being added without a timezone -- Cloud Scheduler defaults
     to **UTC** when `--time-zone` is omitted, which would silently move a
     "02:00 ET" job to 21:00 or 22:00 the previous evening.
