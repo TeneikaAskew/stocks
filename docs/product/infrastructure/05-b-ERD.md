@@ -1,8 +1,8 @@
 # ENTITY-RELATIONSHIP DIAGRAM (ERD)
 
-> **Companion to** [`ARCHITECTURE.md`](ARCHITECTURE.md) (system overview), [`FRONTEND.md`](https://github.com/TeneikaAskew/solyra/blob/main/FRONTEND.md) (React app — now in the solyra repo), and [`ARCHITECTURE.md` §5](ARCHITECTURE.md#5-schema-catalog) §5 (schema catalog).
-> **Source of truth:** [`gcp/schema.sql`](gcp/schema.sql) (2,575 lines, 44 `CREATE TABLE` statements).
-> **Companion diagram:** [`ERD.drawio`](ERD.drawio).
+> **Companion to** [`05-a-ARCHITECTURE.md`](05-a-ARCHITECTURE.md) (system overview), [`FRONTEND.md`](https://github.com/TeneikaAskew/solyra/blob/main/FRONTEND.md) (React app — now in the solyra repo), and [`05-a-ARCHITECTURE.md` §5](05-a-ARCHITECTURE.md#5-schema-catalog) (schema catalog).
+> **Source of truth:** [`gcp/schema.sql`](../../../gcp/schema.sql) (2,575 lines, 44 `CREATE TABLE` statements).
+> **Companion diagram:** [`ERD.drawio`](../../../ERD.drawio).
 > **Last refreshed:** 2026-05-22 (covers the May 8–22 wave: backtest pipeline migration, `exit_config_overrides`, `earnings_calibration`, `premarket_analysis_history`, `insight_reports_history`).
 
 ## TL;DR
@@ -417,7 +417,7 @@ erDiagram
 
 | Table | PK / UQ | Writer | Notes |
 |---|---|---|---|
-| `premarket_analysis` | `id` PK · `UQ (analysis_date, ticker)` | `premarket-brief` (8:30 ET batch + 8:30 Sunday), `premarket-playbook-resolver` ★ (writes outcome cols 4:30 PM) | The morning's full analysis: Strat candle/combo, FTFC, levels, LLM playbook prose, ORB recommendation. Outcome columns (`trigger_price`, `stop_price`, `t1`/`t2`/`t3`, `hit_ts`, `reversal_flag`, `mae_pct`/`mfe_pct`, `eod_pnl`) are populated by the 4:30 resolver replaying 1-min RTH bars. |
+| `premarket_analysis` | `id` PK · `UQ (analysis_date, ticker)` | `premarket-brief` (`premarket-brief-daily` `30 8 * * 1-5` + `premarket-brief-sunday` `0 21 * * 0`), `premarket-playbook-resolver` ★ (`premarket-playbook-resolver-daily` `15 21 * * 1-5`, writes the outcome cols) | The morning's full analysis: Strat candle/combo, FTFC, levels, LLM playbook prose, ORB recommendation. Outcome columns (`trigger_price`, `stop_price`, `t1`/`t2`/`t3`, `hit_ts`, `reversal_flag`, `mae_pct`/`mfe_pct`, `eod_pnl`) are populated by the resolver replaying 1-min RTH bars after the close. All three crons are `America/New_York` (read live 2026-09-07); the doc previously said 8:30 Sunday and a 4:30 PM resolver, neither of which is the live schedule. |
 | `premarket_analysis_history` ★ | `id` PK · `UQ (analysis_date, ticker, written_at)` | `premarket-brief` (all run modes) | Append-only audit shadow. Mirrors the canonical schema + `written_at`, `run_kind ∈ {scheduled, manual, replay, backfill}`, `triggered_by`, `notes`. |
 
 ---

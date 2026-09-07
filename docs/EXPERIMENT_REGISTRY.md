@@ -213,7 +213,7 @@ Docs: `MAGNITUDE_ENGINE_RESULTS.md`, `MODEL_RETHINK_PLANS.md`, `MODEL_CATALOG.md
 `MODELS_END_TO_END.md`, `MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF.md`,
 `DIRECTION_FEATURES_R&D.md`, `STRAT_ENGINE_AND_COMBO_PIPELINE.md`,
 `STRAT_ENGINE_ARCHITECTURE.md`, `STRAT_METHODOLOGY.md`, `STRAT_IMPLEMENTATION_PLAN.md`,
-`COST_ANALYSIS.md`, `docs/research/2026-05-23/RESEARCH_PLAN.md`.
+`docs/product/infrastructure/05-d-COST_ANALYSIS.md`, `docs/research/2026-05-23/RESEARCH_PLAN.md`.
 Code: `gcp/research/magnitude_engine/*`, `gcp/research/strat_engine/*`,
 `scripts/implied_vs_realized_check.py`, `scripts/magnitude_movement_sim.py`,
 `scripts/bootstrap_gate_fragility.py`, `scripts/naive_calendar_lookup_baseline.py`,
@@ -500,9 +500,9 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 ## E-23 · Cost / EV / friction analysis
 - **Engine/area:** cross-cutting (tradeability) · **Status:** partial · **Date:** ongoing.
 - **Question:** what frictions must an edge clear; do ours?
-- **Method/results:** `COST_ANALYSIS.md` (spread+slippage+commission+theta assumptions; VRP framing). Empirical cost gates realized in E-12 (gate-7 0/23) and E-18 (net-of-cost sweep — SPY-15m only).
+- **Method/results:** `docs/product/infrastructure/05-d-COST_ANALYSIS.md` (spread+slippage+commission+theta assumptions; VRP framing). Empirical cost gates realized in E-12 (gate-7 0/23) and E-18 (net-of-cost sweep — SPY-15m only).
 - **Verdict:** ⚠️ partial — BREAKOUT-META net done (marginal); broader EV model open.
-- **Artifacts:** `COST_ANALYSIS.md`; E-12/E-18 artifacts.
+- **Artifacts:** `docs/product/infrastructure/05-d-COST_ANALYSIS.md`; E-12/E-18 artifacts.
 
 ## E-25 · STRAT-NEXTBAR — historical tape + next-bar directional forward-walk
 - **Engine/area:** strat (direction / next-candle) · **Status:** ✅ validated OOS (daily + weekly); edge proven **gap-mechanical, not standalone-tradeable** (de-mech 2026-06-09) · **Dates:** 2026-06-07 → 06-09 · **PRs (all merged to main):** #592 (backend), #593 (daily held-out OOS), #594 (multi-TF OOS + this registry entry), #595 (CLV ablation), #596 (registry self-contained), + CLV de-mechanization & costed structural backtest (this PR).
@@ -603,7 +603,7 @@ the original request; keep §A1/A2/A6 in sync.*
   backfilled across `gamma_levels_eod` (96.9%) + `strat_features_{tf}` (95.5%),
   0 NaN. Added as model features + `dist_to_gamma_flip_pct`; `gamma_flip_cross`
   strategy repointed to the true level.
-- **Data dictionary** — `docs/DATA_DICTIONARY.md`: all 81 tables / 2,745 columns.
+- **Data dictionary** — `docs/product/infrastructure/05-h-DATA_DICTIONARY.md`: all 81 tables / 2,745 columns.
 
 
 ---

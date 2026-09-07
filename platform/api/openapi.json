@@ -4338,12 +4338,26 @@
         "additionalProperties": true,
         "properties": {
           "change": {
-            "title": "Change",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change"
           },
           "change_pct": {
-            "title": "Change Pct",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Pct"
           },
           "high": {
             "title": "High",
@@ -4370,8 +4384,15 @@
             "type": "number"
           },
           "prev_close": {
-            "title": "Prev Close",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prev Close"
           },
           "price": {
             "title": "Price",

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Refresh Architecture.drawio from the live GCP snapshot.
 
-The diagram is the visual companion of ARCHITECTURE.md and had not been
-regenerated since 2026-05-22 (49 crons, 42 jobs, a React SPA on the API
+The diagram is the visual companion of docs/product/infrastructure/05-a-ARCHITECTURE.md
+and had not been regenerated since 2026-05-22 (49 crons, 42 jobs, a React SPA on the API
 service, GitHub Pages and Apps Script surfaces that no longer exist). This
 script makes the refresh repeatable:
 
@@ -254,7 +254,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     by_id["title"].set("value", "Stocks Trading Platform — GCP Architecture (project: adept-mountain-474619-d4, us-east1)")
     by_id[SUBTITLE_ID].set("value",
         f"{counts['jobs']} Cloud Run Jobs (live) • {counts['services']} Cloud Run Services • {counts['schedulers']} Cloud Scheduler entries "
-        f"• Cloud SQL trading-db: {len(live.get('db_tables', {}))} relations • {counts['secrets']} secrets • read live {read} — companion to ARCHITECTURE.md")
+        f"• Cloud SQL trading-db: {len(live.get('db_tables', {}))} relations • {counts['secrets']} secrets • read live {read} — companion to docs/product/infrastructure/05-a-ARCHITECTURE.md")
     paused = [n for n, x in live["schedulers"].items() if x.get("state") != "ENABLED"]
     paused_note = f"; {len(paused)} paused: {', '.join(paused)}" if paused else "; none paused"
     wf = live.get("_workflows")
@@ -334,7 +334,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
          "★ Auth: AUTH_MODE iap (solyra-api-prod) / firebase (solyra-api-staging) / open (local) • roles from user_roles (admin, user, dev) • /api/me → is_admin, is_dev • CORS Lovable hosts only outside iap",
          60, y_after + 50, 2280, 40),
         ("addon_note",
-         f"📝 Refreshed {read} by scripts/maintenance/refresh_architecture_drawio.py from the live snapshot; ARCHITECTURE.md is the text of record.",
+         f"📝 Refreshed {read} by scripts/maintenance/refresh_architecture_drawio.py from the live snapshot; docs/product/infrastructure/05-a-ARCHITECTURE.md is the text of record.",
          60, y_after + 100, 2280, 30),
     ]
     for cid, text, x, y, w, h in notes:
@@ -451,7 +451,8 @@ def refresh_icons(root: ET.Element, live: dict) -> int:
             f"──────────────────────────────\n"
             f"• {vals['jobs']} Cloud Run Jobs live · {vals['services']} services · {vals['schedulers']} Cloud Scheduler entries · "
             f"{vals['secrets']} secrets · {vals['relations']} Cloud SQL relations\n"
-            f"• Repo-vs-live deltas: ARCHITECTURE.md §15. Job sizing and last executions: ARCHITECTURE.md §6.")
+            f"• Repo-vs-live deltas: docs/product/infrastructure/05-a-ARCHITECTURE.md §15. "
+            f"Job sizing and last executions: docs/product/infrastructure/05-a-ARCHITECTURE.md §6.")
     n = 0
     for c in root.iter("mxCell"):
         v = c.get("value")

@@ -200,9 +200,9 @@ stocks/
 │   ├── trades/                        # Local trade logs (daily Parquet)
 │   └── signals/                       # Signal archive Parquets
 │
-├── docs/
-│   ├── GCP_IMPLEMENTATION_GUIDE.md    # This document
-│   └── GCP_IMPLEMENTATION_STATUS.md   # Live implementation tracker
+├── docs/product/infrastructure/
+│   ├── 05-i-GCP_IMPLEMENTATION_GUIDE.md   # This document
+│   └── 05-j-GCP_IMPLEMENTATION_STATUS.md  # Live implementation tracker
 │
 ├── .claude/
 │   └── commands/
@@ -854,7 +854,7 @@ gcloud scheduler jobs list --location=us-east1 \
 Every entry runs in `America/New_York` (verified live 2026-09-06 — zero entries
 in any other zone), so a cron field here is a NY wall-clock time and shifts with
 DST. The declared set lives in `deploy_schedulers()` in
-[`gcp/deploy.sh`](../gcp/deploy.sh); `scripts/verify_docs_against_live.py`
+[`gcp/deploy.sh`](../../../gcp/deploy.sh); `scripts/verify_docs_against_live.py`
 compares what the docs claim against what `gcloud` returns.
 
 ### Data Flow: Pre-Market Brief
@@ -1021,7 +1021,7 @@ UPSERT earnings_calendar → Cloud SQL (42 columns)
 
 **Instance:** `trading-db` (PostgreSQL 15, `db-g1-small`, `us-east1`)
 **Database:** `trading`
-**Schema file:** [gcp/schema.sql](../gcp/schema.sql)
+**Schema file:** [gcp/schema.sql](../../../gcp/schema.sql)
 
 ### Tables
 

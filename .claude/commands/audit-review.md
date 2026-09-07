@@ -177,7 +177,7 @@ Performance (15 pts):
 
 Documentation (10 pts):
 - 4 for `CLAUDE.md` current and accurate (touched within last 30 days or known-stable)
-- 2 for `docs/GCP_IMPLEMENTATION_GUIDE.md` current
+- 2 for `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` current
 - 2 for `docs/changelog/CHANGELOG.md` top entry within last 7 days
 - 2 for `docs/incidents/` having postmortems for recent incidents
 
@@ -238,7 +238,7 @@ The old per-directory scorecard can still be useful as a supplementary view. Inc
 
 ### Delta from Previous Audit
 
-If a previous audit score exists in `docs/GCP_IMPLEMENTATION_STATUS.md`, note what improved, regressed, or stayed the same.
+If a previous audit score exists in `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md`, note what improved, regressed, or stayed the same.
 
 ### Action Items
 
@@ -248,7 +248,7 @@ Number and prioritize all CRITICAL and HIGH findings:
 ## Phase 5: Save Results
 
 After reporting:
-- Update `docs/GCP_IMPLEMENTATION_STATUS.md` with:
+- Update `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` with:
   - Today's audit score in the Test Results section
   - Any newly discovered issues in the Notes section
 - Offer to implement each CRITICAL and HIGH fix
