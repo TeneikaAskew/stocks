@@ -166,9 +166,16 @@ def replay_ticker(
             _bar_date = _ts.date()
             if prev_date is not None and _bar_date != prev_date:
                 monitor.daily_trades[ticker] = 0
+                # The level map is SESSION state too: refresh_level_map
+                # bounds the daily frame to rows before the session's
+                # analysis date (#823), so date 1's map is wrong for date
+                # 2, and evaluate_ticker refreshes only a None entry
+                # (Codex on #1022). Drop it so the next bar rebuilds it
+                # from rows before the new date.
+                monitor.level_maps[ticker] = None
                 logger.info(
-                    "replay: %s session rollover %s -> %s, daily_trades reset",
-                    ticker, prev_date, _bar_date)
+                    "replay: %s session rollover %s -> %s, daily_trades reset, "
+                    "level map dropped", ticker, prev_date, _bar_date)
             prev_date = _bar_date
         monitor.update_window(ticker, single_bar)
         try:

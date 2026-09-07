@@ -391,7 +391,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/regime_combo_job.py`](gcp/regime_combo_job.py) — line [189](gcp/regime_combo_job.py#L189), [190](gcp/regime_combo_job.py#L190)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](gcp/apply_schema.py) — line [198](gcp/apply_schema.py#L198), [295](gcp/apply_schema.py#L295)
+- [`gcp/apply_schema.py`](gcp/apply_schema.py) — line [198](gcp/apply_schema.py#L198), [317](gcp/apply_schema.py#L317)
 
 ### `sec_filings`
 - [`gcp/fetchers/fetch_sec_filings.py`](gcp/fetchers/fetch_sec_filings.py) — line [581](gcp/fetchers/fetch_sec_filings.py#L581), [582](gcp/fetchers/fetch_sec_filings.py#L582), [583](gcp/fetchers/fetch_sec_filings.py#L583)
@@ -399,7 +399,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 ### `signal_alerts`
 - [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [1661](gcp/signal_monitor.py#L1661), [1662](gcp/signal_monitor.py#L1662), [1664](gcp/signal_monitor.py#L1664), [2242](gcp/signal_monitor.py#L2242), [2245](gcp/signal_monitor.py#L2245), [2267](gcp/signal_monitor.py#L2267)
 - [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) — line [379](gcp/signal_monitor_eod_resolver.py#L379), [380](gcp/signal_monitor_eod_resolver.py#L380), [382](gcp/signal_monitor_eod_resolver.py#L382), [400](gcp/signal_monitor_eod_resolver.py#L400)
-- [`scripts/replay_signal_monitor.py`](scripts/replay_signal_monitor.py) — line [10](scripts/replay_signal_monitor.py#L10), [283](scripts/replay_signal_monitor.py#L283)
+- [`scripts/replay_signal_monitor.py`](scripts/replay_signal_monitor.py) — line [10](scripts/replay_signal_monitor.py#L10), [290](scripts/replay_signal_monitor.py#L290)
 
 ### `signal_metrics`
 - [`scripts/signal_quality_report.py`](scripts/signal_quality_report.py) — line [426](scripts/signal_quality_report.py#L426), [461](scripts/signal_quality_report.py#L461), [656](scripts/signal_quality_report.py#L656)
@@ -727,7 +727,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analysis/per_ticker_calibration.py`](scripts/analysis/per_ticker_calibration.py) — line [208](scripts/analysis/per_ticker_calibration.py#L208)
 - [`scripts/backfill_watchlist_data.py`](scripts/backfill_watchlist_data.py) — line [117](scripts/backfill_watchlist_data.py#L117)
 - [`scripts/calibrate_thresholds.py`](scripts/calibrate_thresholds.py) — line [24](scripts/calibrate_thresholds.py#L24), [217](scripts/calibrate_thresholds.py#L217), [232](scripts/calibrate_thresholds.py#L232)
-- [`scripts/replay_signal_monitor.py`](scripts/replay_signal_monitor.py) — line [103](scripts/replay_signal_monitor.py#L103), [118](scripts/replay_signal_monitor.py#L118), [225](scripts/replay_signal_monitor.py#L225)
+- [`scripts/replay_signal_monitor.py`](scripts/replay_signal_monitor.py) — line [103](scripts/replay_signal_monitor.py#L103), [118](scripts/replay_signal_monitor.py#L118), [232](scripts/replay_signal_monitor.py#L232)
 - [`scripts/run_historical_signals.py`](scripts/run_historical_signals.py) — line [143](scripts/run_historical_signals.py#L143)
 - [`scripts/signal_quality_report.py`](scripts/signal_quality_report.py) — line [407](scripts/signal_quality_report.py#L407), [410](scripts/signal_quality_report.py#L410)
 - [`scripts/validation/validate_brief_accuracy.py`](scripts/validation/validate_brief_accuracy.py) — line [247](scripts/validation/validate_brief_accuracy.py#L247), [311](scripts/validation/validate_brief_accuracy.py#L311), [538](scripts/validation/validate_brief_accuracy.py#L538)
@@ -797,7 +797,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/regime_combo_job.py`](gcp/regime_combo_job.py) — line [7](gcp/regime_combo_job.py#L7), [51](gcp/regime_combo_job.py#L51)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](gcp/apply_schema.py) — line [255](gcp/apply_schema.py#L255)
+- [`gcp/apply_schema.py`](gcp/apply_schema.py) — line [255](gcp/apply_schema.py#L255), [300](gcp/apply_schema.py#L300)
 
 ### `sec_filings`
 - [`lib/agents/ranker/candidates.py`](lib/agents/ranker/candidates.py) — line [116](lib/agents/ranker/candidates.py#L116)
@@ -818,7 +818,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analysis/per_factor_walkforward.py`](scripts/analysis/per_factor_walkforward.py) — line [13](scripts/analysis/per_factor_walkforward.py#L13), [254](scripts/analysis/per_factor_walkforward.py#L254)
 - [`scripts/analysis/per_ticker_calibration.py`](scripts/analysis/per_ticker_calibration.py) — line [6](scripts/analysis/per_ticker_calibration.py#L6), [93](scripts/analysis/per_ticker_calibration.py#L93), [196](scripts/analysis/per_ticker_calibration.py#L196), [893](scripts/analysis/per_ticker_calibration.py#L893)
 - [`scripts/analysis/verify_brief_bias.py`](scripts/analysis/verify_brief_bias.py) — line [53](scripts/analysis/verify_brief_bias.py#L53), [153](scripts/analysis/verify_brief_bias.py#L153)
-- [`scripts/replay_signal_monitor.py`](scripts/replay_signal_monitor.py) — line [212](scripts/replay_signal_monitor.py#L212)
+- [`scripts/replay_signal_monitor.py`](scripts/replay_signal_monitor.py) — line [219](scripts/replay_signal_monitor.py#L219)
 
 ### `signal_metrics`
 - [`gcp/signal_quality_alarm.py`](gcp/signal_quality_alarm.py) — line [174](gcp/signal_quality_alarm.py#L174), [198](gcp/signal_quality_alarm.py#L198)

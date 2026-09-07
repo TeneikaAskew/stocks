@@ -143,3 +143,26 @@ def test_multi_date_replay_rolls_the_cap_counter_over():
     replay_ticker(m, 'SPY', bars, captured)
     assert m.daily_trades.get('SPY') == 0, (
         "crossing into a new session must reset the per-day fire counter")
+
+
+def test_multi_date_replay_invalidates_the_cached_level_map():
+    """Codex on #1022: refresh_level_map now bounds the daily frame to rows
+    before the session's analysis date, so a map built for date 1 is wrong
+    for date 2. evaluate_ticker refreshes only when the cached entry is
+    None, so the replay rollover must clear it along with daily_trades."""
+    from scripts.replay_signal_monitor import replay_ticker
+    m = _monitor()
+    captured = []
+    _install_stub(m, captured)
+    stale = object()
+    m.level_maps['SPY'] = stale          # date 1's map
+
+    bars = pd.DataFrame([
+        {'Time': pd.Timestamp('2026-08-27 14:31:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+        {'Time': pd.Timestamp('2026-08-28 14:31:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+    ])
+    replay_ticker(m, 'SPY', bars, captured)
+    assert m.level_maps.get('SPY') is not stale, (
+        "crossing into a new session must drop the previous session's level map")
