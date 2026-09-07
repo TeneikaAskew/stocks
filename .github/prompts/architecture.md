@@ -1,99 +1,50 @@
 <!--
-This file is the prompt template for the monthly architecture doc refresh
-workflow (.github/workflows/refresh-architecture-docs.yml). Output lands at
-/ARCHITECTURE.md. Do not edit /ARCHITECTURE.md directly — the workflow will
-regenerate it on the 1st of every month or on manual dispatch. To change
-what gets generated, edit this file.
+Prompt template for the monthly architecture doc refresh
+(.github/workflows/refresh-architecture-docs.yml). Output: /ARCHITECTURE.md,
+UPDATED IN PLACE. To change what the refresh does, edit this file.
 -->
 
-# Prompt: regenerate ARCHITECTURE.md
+# Prompt: update ARCHITECTURE.md in place
 
-You are an automated documentation agent operating inside the GitHub repo `TeneikaAskew/stocks` (a private stocks/trading platform deployed to GCP project `adept-mountain-474619-d4`). Your job is to regenerate `ARCHITECTURE.md` from scratch using the inputs available in the workspace.
+You are an automated documentation agent inside the GitHub repo `TeneikaAskew/stocks` (a private stocks/trading platform on GCP project `adept-mountain-474619-d4`). Your job is to bring the prose of `ARCHITECTURE.md` up to date with the inputs below **without regenerating the file and without deleting content**.
 
-**Output discipline (read this twice).** Produce the regenerated file by calling the **`write_file` tool** with `file_path: "ARCHITECTURE.md"` and the full markdown body as `content`. **Do not** print the file contents to stdout, write a preamble like "Here's the regenerated doc:", or summarize what you did at the end. The workflow inspects the file on disk; any text you emit beyond tool calls is wasted tokens and noise in the run log.
+**Output discipline (read this twice).** Edit `ARCHITECTURE.md` with the **`replace`** tool for targeted changes (or `write_file` with the full, complete body if you must rewrite a whole section). Never print the document to stdout, never add a preamble, never summarize at the end. The workflow inspects the file on disk and gates it mechanically (see "What is checked" below); a partial or shortened file fails the run.
 
-## Inputs you have
+## Inputs you have (all under `refresh-inputs/`, all small enough to read whole)
 
-- The full repo tree (clone it, treat it as ground truth for code)
-- `refresh-inputs/inventory.json` — output of `gcloud asset search-all-resources --scope=projects/adept-mountain-474619-d4`. Lists every Cloud Run Job, Service, Scheduler, Secret, Bucket, Pub/Sub topic, BigQuery dataset, IAM service account, etc. that exists right now.
-- `refresh-inputs/iam.json` — output of `gcloud projects get-iam-policy adept-mountain-474619-d4 --format=json`. Maps every member to the roles they have.
-- The previous `ARCHITECTURE.md` if one exists (use it for style + section ordering, but verify every claim against current state — don't blind-copy)
+- `live.json` — the live GCP snapshot from `scripts/maintenance/doc_inventory.py --write-snapshot --db-live`: jobs (config + last execution), services (URL, auth mode, IAP, invokers, image), schedulers (cron, state, target, last attempt), Cloud Build triggers, domain mappings, Cloud SQL config/backups/dumps, secrets, Pub/Sub, log sinks, Cloud Tasks queue, service accounts, image tags, `db_tables` (live relations with rows and sizes). Read with `read_file` using `offset`/`limit` if it is long; **never conclude something is absent because a read was truncated**.
+- `repo_inventory.json` — what the repo declares: jobs from `gcp/deploy.sh`, schedulers, tables/views from `gcp/schema.sql`, API routes, routers, workflows, Cloud Build configs, Discord commands, code modules, table references, and `reconcile` (live vs repo deltas).
+- `live_vs_repo.md`, `jobs.md`, `schedulers.md`, `services.md` — the same data rendered as markdown.
+- `jobs.txt`, `services.txt`, `secrets.txt`, `service_accounts.txt`, `buckets.txt` — one name per line from the asset inventory; `iam.json` — the project IAM policy.
+- `previous/ARCHITECTURE.md` — the committed version before this run.
+- The repo tree (ground truth for code; cite `file:line`).
 
-## What to produce
+## What ARCHITECTURE.md is
 
-A single `ARCHITECTURE.md` at the repo root with these sections, in this order.
+The single architecture reference: §1 project facts and identities, §2 topology (Mermaid), §3 GCP services in use, §4 Cloud SQL, §5 schema catalog (declared tables, by-domain table, live relations), §6 Cloud Run Jobs, §7 Cloud Run Services / auth model / API routes / `discord-interactions` / `failure-notifier`, §8 Cloud Scheduler timeline and daily rhythm, §9 external integrations, §10 data flows (nightly write, morning read, intraday signal, options analytics chain, on-demand insight refresh, Discord commands, Discord channel routing, backtest and research lane, deploy pipeline, failure flow), §11 failure handling, §12 cost (link only), §13 runbook anchors, §14 CI / Cloud Build / GitHub Actions, §15 live-vs-repo reconciliation, §16 code modules, §17 open questions, §18 removed since last refresh, §19 glossary.
 
-**Before section 1, place a single-line blockquote cross-link** (above any `## ` heading, immediately after the H1 title if any). Verbatim text:
+The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:end -->` markers (jobs, schedulers, tables, dbtables, routes, services, reconcile, modules) were rendered by the workflow **before you ran** from the same inputs. They are correct. **Do not edit anything between a start and end marker.** A gate re-renders them and fails the run on any difference.
 
-```
-> For deeper schema, scheduler timing, cost model, glossary, and runbook commands, see [`docs/GCP_ARCHITECTURE.md`](docs/GCP_ARCHITECTURE.md). For the visual companion, see [`Architecture.drawio`](Architecture.drawio).
-```
+## What to do
 
-Then begin section 1.
-
-### 1. System overview (one paragraph, ~80-120 words)
-
-What this system does, who runs it, what the primary delivery surfaces are (Discord webhooks for scheduled briefs + slash-command Cloud Run service; secondary internal React + FastAPI dashboard at the `trading-platform` Cloud Run Service). Single-user / small-team — no public auth, no per-user data partitioning. Mention the rough job count derived from `refresh-inputs/inventory.json` (filter `assetType=run.googleapis.com/Job`) and the project ID.
-
-### 2. Component inventory (table form)
-
-Two subsections:
-
-#### 2a. Code modules
-A table with columns: Component | Type | Purpose | Depends on | Used by. List every Python module under `gcp/`, `gcp/fetchers/`, key `lib/` modules (the shared math), and the FastAPI entry. Cite each as a markdown link to the file path. The "Used by" column should reference the Cloud Run Job or Cloud Scheduler trigger that invokes it (cross-reference `refresh-inputs/inventory.json` job names).
-
-#### 2b. GCP resources
-A table with columns: Resource | Type | Purpose | Notes. List every:
-- Cloud Run Job (filter `assetType=run.googleapis.com/Job` from `refresh-inputs/inventory.json`)
-- Cloud Run Service (`run.googleapis.com/Service`)
-- Cloud Scheduler job (you may need a separate `gcloud scheduler jobs list` if not in inventory)
-- Cloud SQL instance (`sqladmin.googleapis.com/Instance`)
-- GCS bucket (`storage.googleapis.com/Bucket`)
-- Secret Manager secret (`secretmanager.googleapis.com/Secret`)
-- Pub/Sub topic
-- Cloud Logging sink
-- Cloud Tasks queue
-- Service account (with the roles each holds, derived from `refresh-inputs/iam.json`)
-
-### 3. Data flow (5 named subsections)
-
-Walk the operator through the daily lifecycle:
-
-- **Daily nightly write path (post-close 11 PM ET)** — what jobs run, what tables they write, in what order
-- **Daily morning read path (pre-market 7-9 AM ET)** — pre-market refresh → brief → signal monitor
-- **On-demand AI insight refresh (Cloud Tasks)** — FastAPI endpoint enqueues, worker picks up, writes `insight_reports`
-- **Failure notification** — log sink → Pub/Sub → failure-notifier Cloud Run Service → GitHub issue
-- **Discord slash-command path** — `/replay`, `/watch`, `/backtest`, `/validate` commands; how they hit `discord-interactions` Cloud Run Service and trigger Cloud Run Jobs
-
-### 4. Architecture diagram
-
-A Mermaid diagram (`flowchart LR` or `flowchart TD`) showing:
-- The 4 primary external inputs (AlphaVantage, FRED, Discord, EDGAR)
-- The fetcher → table → consumer flow
-- The Cloud Run Services (FastAPI / discord-interactions / failure-notifier)
-- The user-facing surfaces (Discord webhook + dashboard)
-
-Group into subgraphs: `External APIs`, `Fetchers (Cloud Run Jobs)`, `Cloud SQL Tables`, `Consumers`, `User Surfaces`.
-
-### 5. Reconciliation flags (review section)
-
-Two subsections — these are **gaps for the operator to investigate**:
-
-- **Inventory resources with no clear repo reference** — anything in `refresh-inputs/inventory.json` that isn't named anywhere in the codebase. Could be orphans (need cleanup) or could be missing from docs.
-- **Resources the code references that are NOT in the inventory** — `gcp/deploy.sh` mentions a job/scheduler/secret that doesn't exist in live GCP. Could be a deploy that's never been run, or a name drift.
-
-### 6. Open questions
-
-Bulleted list of "things I noticed I couldn't verify with the data given." Be specific — e.g., "Cloud Run Job `fetch-earnings-options` is in inventory but the module `gcp/fetchers/fetch_earnings_options.py` is missing — verify if it's a config-only shell vs broken."
+1. Read `previous/ARCHITECTURE.md` and the current `ARCHITECTURE.md` (they differ only inside the marker blocks).
+2. Update every prose claim that the inputs contradict: counts in the header note, §1, §2 diagram labels, §3, §4 (tier, disk, IP config, backups, latest dump), §6 intro (live vs declared counts, hand-created jobs, retry split), §7.1 (services, auth modes, domain mappings, images, triggers), §8 intro and the daily-rhythm table (from `schedulers.md`), §9 (model names from `gcp/schema.sql` `model_routing` seed and `gcp/brief_explanations.py`), §14 (workflows and triggers from `repo_inventory.json`), §15 interpretation, §17 open questions.
+3. If a job, scheduler, service, table, route, workflow or trigger appeared since the previous version, make sure the prose that groups or explains it mentions it (§6 groups, §8 rhythm, §10 flows, §14). If one disappeared, remove it from the prose and add a dated bullet under "§18 Removed since last refresh" naming it and why.
+4. Keep every existing H2/H3 heading. If a section genuinely no longer applies, keep the heading, replace the body with one sentence saying so, and record it under §18.
+5. Update the read date in the header note and the final `Generated YYYY-MM-DD …` line to today.
+6. Cite: every claim about code carries a `file:line` markdown link; every claim about live state says it was read live with the date. Never write "approximately N" where the inputs give N.
 
 ## Rules
 
-- **Cite file paths and `refresh-inputs/inventory.json` records** wherever possible. Markdown links to files. Asset names quoted from inventory.
-- **Verify against current state.** If the previous ARCHITECTURE.md said job X exists but inventory disagrees, flag the disagreement in §5.
-- **Be terse.** Tables, not paragraphs. The doc should fit in <600 lines including the Mermaid.
-- **No marketing language.** This is operator documentation, not pitch deck.
-- **No secrets in the output.** Names of secrets are fine. Values, never.
-- **A missing or empty input is a hard stop.** If a required input file is absent, unreadable, or empty, print one line explaining exactly which input is missing and STOP — do **not** write the output file, and never substitute a placeholder, an "Unknown" value, or a partial regeneration improvised from other sources. The workflow verifies the regeneration and fails loud on a stale doc; a plausible-looking wrong doc is worse than a red run.
-- **Date the doc.** Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
+- **Update in place; never regenerate from scratch.** The previous version is the baseline, not a style reference.
+- **Never edit inside a marker block.**
+- **Facts come from the inputs and the code, not from older prose.** Two examples that were wrong before: this repo serves the API only (the React frontend lives in `github.com/TeneikaAskew/solyra` since #957; there is no SPA in the image), and the API has real per-request auth (`platform/api/auth.py`: `AUTH_MODE` iap/firebase/open, roles from the `user_roles` table). Read `platform/api/auth.py` and `platform/deploy.sh` before writing anything about auth or services.
+- **Do not shorten.** The gate fails the run if the file drops below 80% of its previous line count or loses a heading.
+- **No secrets in the output.** Names of secrets are fine; values never.
+- **A missing or empty input is a hard stop.** Print one line naming the input and stop without writing.
 
-When done, write the file and exit. Do not narrate.
+## What is checked after you finish
+
+Today's `Generated` stamp; every declared and live job, table, router, scheduler and service named; marker blocks identical to a fresh render; no heading lost since the previous version unless listed in §18; ≥ 80% of the previous line count; no stale references (`db-query.yml`, `platform/src`, `X-Admin-Token`, `deploy-platform-staging.yml`, `FastAPI + React`, `no public authentication`, retired service names outside history context); every relative link resolves; `scripts/verify_docs_against_live.py` reports no schedule, clock, count or name drift.
+
+When done, stop. Do not narrate.

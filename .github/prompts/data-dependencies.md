@@ -1,84 +1,38 @@
-# Prompt: regenerate DATA_DEPENDENCIES.md
+# Prompt: update DATA_DEPENDENCIES.md in place
 
-You are an automated documentation agent. Regenerate `DATA_DEPENDENCIES.md` from scratch.
+You are an automated documentation agent. Bring the prose of `DATA_DEPENDENCIES.md` up to date **without regenerating the file and without deleting content**.
 
-**Output discipline (read this twice).** Produce the regenerated file by calling the **`write_file` tool** with `file_path: "DATA_DEPENDENCIES.md"` and the full markdown body as `content`. **Do not** print the file contents to stdout, write a preamble like "Here's the regenerated doc:", or summarize what you did at the end. The workflow inspects the file on disk; any text you emit beyond tool calls is noise.
+**Output discipline (read this twice).** Edit with the **`replace`** tool (or `write_file` with the complete body). No stdout output, no preamble, no summary. The workflow gates the file on disk.
 
-## Inputs
+## Inputs (under `refresh-inputs/`)
 
-- The full repo tree (for code-level grep)
-- `gcp/schema.sql` — the canonical list of Cloud SQL tables. Get it via `grep -E "^CREATE TABLE" gcp/schema.sql`.
-- The fresh `ARCHITECTURE.md` (regenerated earlier in the same workflow run) — for the Cloud Run Job → code-module mapping
-- The previous `DATA_DEPENDENCIES.md` if one exists (style reference)
+- `repo_inventory.json` — includes `table_refs` (every table's writers, readers and mentions with `file:line`), `tables`, `materialized_views`, `views`, `jobs`, `modules`.
+- `live.json` — includes `db_tables` (live relations with row estimates and sizes).
+- `previous/DATA_DEPENDENCIES.md` — the committed version before this run.
+- The fresh `ARCHITECTURE.md` (updated earlier in this run).
 
-## What to produce
+## What DATA_DEPENDENCIES.md is
 
-`DATA_DEPENDENCIES.md` at the repo root with these sections:
+§1 table inventory (declared) and §1b live relations; §2 write graph; §3 read graph; §4 multi-writer tables; §5 orphan tables; §6 blast radius per Cloud Run Job; §7 Mermaid graph; §8 notes for follow-up work; §9 removed since last refresh. Sections 1, 1b, 2, 3, 4, 5 and 6 are **rendered by the workflow inside `<!-- inventory:<name>:start/end -->` markers** (tables, dbtables, writes, reads, multiwriter, orphans, blast) and are already correct. **Do not edit inside a marker block.**
 
-### 1. Table inventory
+## What to do
 
-A markdown table: Table | One-line purpose. Cover every table in `schema.sql`. Purpose comes from schema comments + your read of the field set.
-
-**Every table name must appear VERBATIM, one row per table.** The workflow mechanically verifies that each name produced by `grep -E "^CREATE TABLE" gcp/schema.sql` appears literally in this document and fails the run on any miss. Never collapse related tables into wildcard or brace shorthand — write `market_data_intraday_spy`, `market_data_intraday_iwm`, `market_data_intraday_qqq`, `market_data_intraday_spx`, `market_data_intraday_other` as five rows, not `market_data_intraday_{spy,iwm,...}` or `market_data_intraday_*`. Operators grep this doc by exact table name; a grouped row is invisible to them. (The 2026-09-02 run failed the gate on exactly seven such omissions.) Related tables may share one Purpose sentence, but each keeps its own row. Before writing the file, diff your inventory against the grep output and add anything missing.
-
-### 2. Write graph
-
-For every table, a subsection listing every code module that writes to it. A "write" is any of:
-- `INSERT INTO <table>` / `UPDATE <table>` / `DELETE FROM <table>`
-- `upsert_dataframe(..., '<table>', ...)` (the `gcp/database.py` helper)
-- `bulk_insert_dataframe(..., '<table>', ...)`
-- `execute_sql("INSERT INTO ...")` / `execute_sql("UPDATE ...")` / `execute_sql("DELETE ...")`
-- `df.to_sql('<table>', ...)`
-
-Cite each as `file:line` with a markdown link. If the table name is dynamic (e.g., partition routing, table name from a variable), say so explicitly and explain the routing logic — don't invent specific cites.
-
-### 3. Read graph
-
-For every table, a subsection listing every reader. A "read" is any of:
-- `SELECT ... FROM <table>` / `SELECT ... JOIN <table>`
-- `query_to_dataframe("SELECT ... FROM <table>")`
-- `pd.read_sql(..., 'SELECT ... FROM <table>')`
-- SQLAlchemy `.execute(text("SELECT ..."))`
-- `row_exists('<table>', ...)` (the existence-check helper)
-
-Cite each as `file:line`. Tests under `tests/` don't count as readers (state that exclusion explicitly).
-
-### 4. Multi-writer tables (coordination risks)
-
-A table flagging every table written by 2+ distinct modules. Columns: Table | Writers | Why a coordination risk. Be specific about the risk — e.g., "two writers with different conflict keys → duplicate rows" or "one writes UPSERT, another writes append-only INSERT → race on the same primary key."
-
-### 5. Orphan tables
-
-A table flagging:
-- Tables with **zero writers** in the codebase (legacy / dead)
-- Tables with **zero readers** in the codebase (write-only audit, or populated-but-unused)
-
-Columns: Table | Writers | Readers | Status. The Status field should classify: "intentional (audit trail)", "drop candidate", "decision needed", or similar.
-
-### 6. Blast radius per Cloud Run Job
-
-For each Cloud Run Job in the fresh ARCHITECTURE.md:
-- The tables it writes
-- The downstream consumers (jobs / routers / scripts) that READ those tables
-- Severity tag (`Highest`, `Very high`, `High`, `Medium`, `Low`, `Very narrow`, `None`)
-
-If the job stops running, the listed downstream consumers lose fresh data.
-
-### 7. Mermaid graph
-
-A `flowchart LR` Mermaid diagram showing table-level data flow:
-- Tables grouped by domain in subgraphs: `Market Data`, `Earnings`, `Catalysts`, `Signals`, `Insights`, `Ops`
-- Cloud Run Jobs as nodes pointing TO tables they write (thick arrow `==>` for INSERT/UPSERT, dashed labelled arrow `-.->` for UPDATE-only paths)
-- Tables pointing TO their primary consumers (only the heaviest few — full read graph is in §3)
-- Orphan tables visually flagged (`classDef orphan` with dashed border)
+1. Read the previous and current files.
+2. Update the prose: the header (date, counts of declared vs live relations, the runtime-created table list), the notes after §4 (which multi-writer tables matter operationally and why; derive from `table_refs`), the reading of §5 (why each orphan is what it is), the hand-created-jobs paragraph after §6, the Mermaid graph in §7 (add nodes/edges for new jobs or tables that write or are read; remove nodes for tables or jobs that no longer exist), and §8 follow-up notes (retire notes that are resolved, add new ones the data shows).
+3. Every table in `gcp/schema.sql` must appear verbatim, one row each, in §1 (the marker block guarantees this; never collapse names into wildcard shorthand in prose either).
+4. If a section no longer applies, keep the heading and say so in one sentence; record it under §9 with the date.
+5. Update the `Generated YYYY-MM-DD …` last line to today.
 
 ## Rules
 
-- **Cite `file:line` everywhere.** A claim without a citation is useless.
-- **Be exhaustive on tables, lean on prose.** Cover every table even if it's a one-liner. The point of this doc is operator-grade coverage.
-- **Distinguish live vs one-shot writers.** A migration script that ran once 6 months ago should be tagged `(one-shot historical)` so the user knows it's not part of the live blast radius.
-- **No code, no SQL examples.** Just the dependency graph. If someone wants the actual SQL, they read the source file.
-- **A missing or empty input is a hard stop.** If a required input file is absent, unreadable, or empty, print one line explaining exactly which input is missing and STOP — do **not** write the output file, and never substitute a placeholder, an "Unknown" value, or a partial regeneration improvised from other sources. The workflow verifies the regeneration and fails loud on a stale doc; a plausible-looking wrong doc is worse than a red run.
-- **Date the doc.** Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
+- Update in place; never regenerate from scratch.
+- Cite `file:line` for every claim about code.
+- No code, no SQL examples: just the dependency graph and its reading.
+- Distinguish live writers (a Cloud Run Job's entrypoint or a module it imports) from one-shot `scripts/` writers.
+- A missing or empty input is a hard stop: print one line naming it and stop without writing.
 
-When done, write the file and exit. Do not narrate.
+## What is checked after you finish
+
+Today's stamp; every `CREATE TABLE` name present; a `### `table`` subsection in §2 and §3 for every table; a §6 row for every declared job; marker blocks identical to a fresh render; no heading lost since the previous version unless listed in §9; ≥ 80% of the previous line count; every relative link resolves.
+
+When done, stop. Do not narrate.

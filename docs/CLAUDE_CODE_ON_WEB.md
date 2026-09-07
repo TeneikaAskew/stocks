@@ -12,7 +12,7 @@ A field guide for using **Claude Code on the web** (claude.ai/code) with this re
 
 | Need | Path |
 |---|---|
-| Run a SQL query against Cloud SQL | Dispatch `.github/workflows/db-query.yml` |
+| Run a SQL query against Cloud SQL | `./scripts/db_query_cr.sh -q "…"` (the `db-query` Cloud Run Job; the old `db-query.yml` workflow was deleted 2026-05-30) |
 | Use `gh` / `gcloud` from the sandbox | Pre-installed in the image as of 2026-08-27; SessionStart script installs them only if absent |
 | Authenticate to GCP | `gcloud auth activate-service-account` with `claude-web@` SA key |
 | Authenticate to GitHub | PAT pulled from GCP Secret Manager (`gh-stocks-repo-pat`) |
@@ -774,7 +774,7 @@ These are the things we learned by hitting them, not by reading docs:
 ## See also
 
 - [`CLAUDE.md`](../CLAUDE.md) — full project rules, including the production-grade architecture rule (rule 0) and the database access patterns
-- [`docs/GCP_ARCHITECTURE.md`](GCP_ARCHITECTURE.md) — the broader GCP setup
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — the full architecture reference (jobs, services, schema, deploy paths)
 - [`gcp/queries/README.md`](../gcp/queries/README.md) — the SQL files directory convention
-- [`.github/workflows/db-query.yml`](../.github/workflows/db-query.yml) — the workflow itself
+- `.github/workflows/db-query.yml` (deleted 2026-05-30; use `scripts/db_query_cr.sh`) — the workflow itself
 - [`gcp/queries/run_query.py`](../gcp/queries/run_query.py) — the runner script with full inline documentation

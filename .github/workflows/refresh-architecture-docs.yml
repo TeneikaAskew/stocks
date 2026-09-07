@@ -1,30 +1,51 @@
 name: Monthly architecture doc refresh
 
-# Regenerates ARCHITECTURE.md, DATA_DEPENDENCIES.md, COST_ANALYSIS.md, and
+# Refreshes ARCHITECTURE.md, DATA_DEPENDENCIES.md, COST_ANALYSIS.md and
 # README.md from live GCP state on the first day of every month.
 #
-# How it works:
-#   1. Authenticates to GCP via Workload Identity Federation
-#   2. Snapshots inventory + IAM + 90-day billing rollup to local JSON files
-#   3. Invokes Gemini CLI in non-interactive mode for each doc using the
-#      prompts versioned under .github/prompts/. Auth is via Vertex AI
-#      (GOOGLE_GENAI_USE_VERTEXAI=true) reusing the same WIF credentials —
-#      no separate GEMINI_API_KEY secret is required.
-#   4. Diffs the regenerated docs against committed versions, ignoring
-#      the trailing "Generated YYYY-MM-DD" line so timestamp-only churn
-#      doesn't open noisy PRs
-#   5. Opens a PR titled "Monthly architecture doc refresh: YYYY-MM"
-#      if any doc changed in a meaningful way; exits clean otherwise
+# How it works (rebuilt 2026-09-07 after the 2026-09-02 run replaced a
+# 394-line hand-maintained ARCHITECTURE.md with a 158-line regeneration that
+# named 4 of 67 declared jobs — see docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md):
+#   1. Authenticates to GCP via Workload Identity Federation.
+#   2. Snapshots live state: asset inventory + IAM + 90-day billing rollup
+#      (as before) PLUS run jobs/executions/services, schedulers, Cloud Build
+#      triggers, domain mappings, Cloud SQL config/backups/dumps, secrets,
+#      Pub/Sub, sinks, Cloud Tasks, service accounts, image tags and the
+#      live table statistics, all through scripts/maintenance/doc_inventory.py.
+#   3. Digests those snapshots into small per-resource files under
+#      refresh-inputs/ (Gemini's read_file truncates large JSON; the 2026-09
+#      run said so and still went green) and reconciles them with what
+#      gcp/deploy.sh, gcp/schema.sql and platform/api declare.
+#   4. Renders the <!-- inventory:*:start/end --> blocks in ARCHITECTURE.md
+#      and DATA_DEPENDENCIES.md DETERMINISTICALLY from that data. Counting
+#      is not a language-model task.
+#   5. Invokes Gemini CLI (Vertex AI, WIF ADC — no GEMINI_API_KEY) with the
+#      prompts under .github/prompts/ to UPDATE THE PROSE IN PLACE around the
+#      blocks. The prompts forbid regenerating from scratch and forbid
+#      touching marker blocks.
+#   6. Gates the result: today's stamp, every declared and live job / table /
+#      route / scheduler present, one §2 and §3 subsection per table, marker
+#      blocks byte-identical to a fresh render, no heading lost since the
+#      previous version (or listed under "Removed since last refresh"), size
+#      floor, no stale strings, no dead links, docs-vs-live drift clean
+#      (scripts/verify_docs_against_live.py), no "truncated" in the Gemini
+#      transcripts.
+#   7. Opens a PR titled "Monthly architecture doc refresh: YYYY-MM" if any
+#      doc changed beyond its "Generated" line; exits clean otherwise.
 #
 # Required GitHub secrets (one-time setup, see SETUP.md):
-#   - GCP_WIF_PROVIDER       full resource name of the Workload Identity Provider
-#   - GCP_WIF_SA_EMAIL       email of the service account this workflow impersonates
+#   - GCP_WIF_PROVIDER, GCP_WIF_SA_EMAIL      Workload Identity Federation
+#   - CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME   live table stats
+#   - PR_WORKFLOW_TOKEN                        gh pr create
 #
 # Service account roles (see SETUP.md for grant commands):
-#   - roles/cloudasset.viewer       (asset inventory)
-#   - roles/iam.securityReviewer    (IAM policy read)
-#   - roles/bigquery.dataViewer + roles/bigquery.jobUser  (billing rollup)
-#   - roles/aiplatform.user         (Vertex AI Gemini call)
+#   - roles/cloudasset.viewer, roles/iam.securityReviewer          (as before)
+#   - roles/bigquery.dataViewer + roles/bigquery.jobUser           (billing)
+#   - roles/aiplatform.user                                        (Gemini)
+#   - roles/run.viewer, roles/cloudscheduler.viewer, roles/cloudbuild.builds.viewer,
+#     roles/cloudsql.viewer + roles/cloudsql.client, roles/secretmanager.viewer,
+#     roles/pubsub.viewer, roles/logging.viewer, roles/cloudtasks.viewer,
+#     roles/artifactregistry.reader, roles/storage.objectViewer     (live snapshot)
 
 on:
   schedule:
@@ -80,7 +101,9 @@ jobs:
           node-version: '20'
 
       - name: Install Python deps
-        run: pip install --quiet google-cloud-bigquery
+        # bigquery for the billing rollup; sqlalchemy/pg8000/connector for the
+        # live table statistics (same set the calibration step below needs).
+        run: pip install --quiet google-cloud-bigquery sqlalchemy pg8000 pandas cloud-sql-python-connector
 
       - name: Install Gemini CLI
         # Pinned: --allowed-tools was deprecated and YOLO behaviour changed
@@ -254,6 +277,86 @@ jobs:
           print(f"wrote refresh-inputs/billing.json with {len(rows)} rows")
           PY
 
+      # ── Snapshot the live GCP state the docs describe ─────────────────────
+      # Everything the inventory module reads is listed in ARCHITECTURE.md §1
+      # and the SETUP.md role table. A failed read RAISES (Rule 3.7); there is
+      # no cached fallback, because a doc "verified" against stale state is
+      # worse than a red run.
+      - name: Snapshot live Cloud Run / Scheduler / SQL / Build state
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          python -m scripts.maintenance.doc_inventory --write-snapshot refresh-inputs/live.json --db-live
+          python scripts/verify_docs_against_live.py --write-snapshot refresh-inputs/verify_live.json
+          python - <<'PY'
+          import json
+          live = json.load(open("refresh-inputs/live.json"))
+          for key in ("jobs", "services", "schedulers", "secrets", "db_tables"):
+              if not live.get(key):
+                  raise SystemExit(f"live snapshot has no {key} — refusing to generate docs from it")
+          print("live:", live["counts"], "db_tables:", len(live["db_tables"]))
+          PY
+
+      # ── Digest the snapshots into files a language model can read whole ───
+      # refresh-inputs/inventory.json runs to thousands of lines and Gemini's
+      # read_file truncates it (the 2026-09-02 ARCHITECTURE.md said "the
+      # inventory.json file was truncated" and the run went green). The
+      # per-resource files below are each a few KB.
+      - name: Digest inputs
+        run: |
+          set -e
+          jq -r '.[] | select(.assetType=="run.googleapis.com/Job") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/jobs.txt
+          jq -r '.[] | select(.assetType=="run.googleapis.com/Service") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/services.txt
+          jq -r '.[] | select(.assetType=="secretmanager.googleapis.com/Secret") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/secrets.txt
+          jq -r '.[] | select(.assetType=="iam.googleapis.com/ServiceAccount") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/service_accounts.txt
+          jq -r '.[] | select(.assetType=="storage.googleapis.com/Bucket") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/buckets.txt
+          for F in jobs services secrets service_accounts buckets; do
+            N=$(wc -l < "refresh-inputs/${F}.txt"); echo "${F}: ${N}"
+            if [ "${N}" -eq 0 ]; then echo "::error::refresh-inputs/${F}.txt is empty — the asset inventory is missing that asset type"; exit 1; fi
+          done
+          python - <<'PY'
+          import csv, json, collections
+          rows = json.load(open("refresh-inputs/billing.json"))
+          by_sku = collections.defaultdict(float); by_month = collections.defaultdict(float)
+          for r in rows:
+              by_sku[(r["service"], r["sku"])] += float(r["cost_usd"]); by_month[r["month"][:7]] += float(r["cost_usd"])
+          with open("refresh-inputs/billing_by_sku.csv", "w", newline="") as f:
+              w = csv.writer(f); w.writerow(["service", "sku", "cost_usd_90d"])
+              for (svc, sku), c in sorted(by_sku.items(), key=lambda x: -x[1]): w.writerow([svc, sku, round(c, 2)])
+          with open("refresh-inputs/billing_by_month.csv", "w", newline="") as f:
+              w = csv.writer(f); w.writerow(["month", "cost_usd"])
+              for m, c in sorted(by_month.items()): w.writerow([m, round(c, 2)])
+          if not by_sku:
+              raise SystemExit("billing digest is empty")
+          PY
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --json > refresh-inputs/repo_inventory.json
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown reconcile > refresh-inputs/live_vs_repo.md
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown services > refresh-inputs/services.md
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown schedulers > refresh-inputs/schedulers.md
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown jobs > refresh-inputs/jobs.md
+          ls -la refresh-inputs/
+
+      # ── Keep the previous versions for the loss gates ─────────────────────
+      - name: Save previous doc versions
+        run: |
+          mkdir -p refresh-inputs/previous
+          cp ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md refresh-inputs/previous/
+
+      # ── Render the inventory blocks deterministically, BEFORE Gemini ──────
+      # Jobs, schedulers, tables, routes, services, modules, write/read graph,
+      # multi-writer, orphans, blast radius, live table stats and the
+      # live-vs-repo reconciliation are rendered from the snapshot into the
+      # <!-- inventory:*:start/end --> markers. The model updates the prose
+      # around them and must not touch them (a gate below re-renders and
+      # diffs).
+      - name: Render inventory blocks
+        run: |
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --insert ARCHITECTURE.md DATA_DEPENDENCIES.md docs/API.md
+          git --no-pager diff --stat -- ARCHITECTURE.md DATA_DEPENDENCIES.md
+
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
       # Tool restriction is enforced by the policy file written above
       # (~/.gemini/policies/refresh-docs.toml), NOT by --allowed-tools or
@@ -269,8 +372,9 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          mkdir -p refresh-inputs/transcripts
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/architecture.md)"
+            --prompt "$(cat .github/prompts/architecture.md)" 2>&1 | tee "refresh-inputs/transcripts/architecture.log"
 
       - name: Regenerate DATA_DEPENDENCIES.md
         env:
@@ -278,8 +382,9 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          mkdir -p refresh-inputs/transcripts
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/data-dependencies.md)"
+            --prompt "$(cat .github/prompts/data-dependencies.md)" 2>&1 | tee "refresh-inputs/transcripts/data-dependencies.log"
 
       - name: Regenerate COST_ANALYSIS.md
         env:
@@ -287,8 +392,9 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          mkdir -p refresh-inputs/transcripts
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/cost-analysis.md)"
+            --prompt "$(cat .github/prompts/cost-analysis.md)" 2>&1 | tee "refresh-inputs/transcripts/cost-analysis.log"
 
       # README runs LAST so it can read the freshly-regenerated other docs
       # to populate the doc-map table + Mermaid embed + cost headlines.
@@ -298,8 +404,9 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          mkdir -p refresh-inputs/transcripts
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/readme.md)"
+            --prompt "$(cat .github/prompts/readme.md)" 2>&1 | tee "refresh-inputs/transcripts/readme.log"
 
       # ── Verify the regenerations actually happened and are complete ──────
       # The 2026-09-01 run shipped a placeholder COST_ANALYSIS.md, a
@@ -314,18 +421,15 @@ jobs:
 
           # 1. Every doc must carry TODAY's Generated stamp. All four prompts
           #    require the stamp, so a stale one means the model never wrote
-          #    the file this run (the ARCHITECTURE.md failure mode: it
-          #    reported "unable to regenerate" and the old detect step
-          #    misread the untouched file as "no meaningful changes").
+          #    the file this run.
           for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md; do
             if ! grep -qE "Generated(\*\*)? ${TODAY}" "$FILE"; then
-              echo "::error::${FILE} does not carry today's 'Generated ${TODAY}' stamp — the model did not complete a regeneration of it. Its transcript is in the step above."
+              echo "::error::${FILE} does not carry today's 'Generated ${TODAY}' stamp — the model did not complete an update of it. Its transcript is in the step above."
               FAIL=1
             fi
           done
 
-          # 2. DATA_DEPENDENCIES.md must mention every table schema.sql
-          #    creates — the doc's own contract ("cover every table").
+          # 2. DATA_DEPENDENCIES.md must mention every table schema.sql creates.
           MISSING=""
           for TABLE in $(grep -oE '^CREATE TABLE( IF NOT EXISTS)? [a-zA-Z0-9_]+' gcp/schema.sql | awk '{print $NF}' | sort -u); do
             grep -q "$TABLE" DATA_DEPENDENCIES.md || MISSING="${MISSING} ${TABLE}"
@@ -335,10 +439,7 @@ jobs:
             FAIL=1
           fi
 
-          # 3. COST_ANALYSIS.md must contain at least one dollar figure and
-          #    no self-described placeholder — an honest cost doc always has
-          #    numbers, because the billing step above fails loud when the
-          #    rollup is empty.
+          # 3. COST_ANALYSIS.md must contain a dollar figure and no placeholder.
           if ! grep -qE '\$[0-9]' COST_ANALYSIS.md; then
             echo "::error::COST_ANALYSIS.md contains no dollar figure — it was not generated from billing data"
             FAIL=1
@@ -347,6 +448,31 @@ jobs:
             echo "::error::COST_ANALYSIS.md describes itself as a placeholder"
             FAIL=1
           fi
+
+          # 4..12: the structural gates live in one script so they can be run
+          #    locally (`python scripts/maintenance/check_generated_docs.py`)
+          #    and unit-tested.
+          python scripts/maintenance/check_generated_docs.py \
+            --snapshot refresh-inputs/live.json \
+            --previous-dir refresh-inputs/previous \
+            --transcripts-dir refresh-inputs/transcripts || FAIL=1
+
+          # 13. Docs vs live drift (schedules, names, counts, retired services).
+          #     The verifier scans ~40 operational docs; only the four this
+          #     workflow regenerates can be fixed by re-running it, so drift
+          #     there is a failure and drift anywhere else is a warning the
+          #     PR body carries (a stale count in docs/product/ must not block
+          #     the monthly refresh forever).
+          python scripts/verify_docs_against_live.py --snapshot refresh-inputs/verify_live.json \
+            > refresh-inputs/verify_findings.txt 2>&1 || true
+          cat refresh-inputs/verify_findings.txt
+          if grep -qE '^\[[a-z-]+\] (README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\.md:' refresh-inputs/verify_findings.txt; then
+            echo "::error::verify_docs_against_live.py found drift in a regenerated doc (see above)"
+            FAIL=1
+          fi
+          grep -E '^\[[a-z-]+\] ' refresh-inputs/verify_findings.txt \
+            | grep -vE '^\[[a-z-]+\] (README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\.md:' \
+            | sed 's/^/::warning::docs-vs-live drift outside the regenerated docs: /' || true
 
           exit $FAIL
 
@@ -425,8 +551,8 @@ jobs:
           git config user.email "noreply@github.com"
           git checkout -b "$BRANCH"
 
-          # Stage only the regenerated docs. JSON dumps are gitignored
-          # (see .gitignore: gcp_inventory.json / gcp_iam.json / billing_90d.json).
+          # Stage only the regenerated docs. refresh-inputs/ is untracked and
+          # never staged.
           git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md
 
           if git diff --cached --quiet; then
@@ -473,16 +599,17 @@ jobs:
 
           ## What ran
 
-          1. \`gcloud asset search-all-resources\` → \`gcp_inventory.json\`
-          2. \`gcloud projects get-iam-policy\` → \`gcp_iam.json\`
-          3. BigQuery 90-day billing rollup → \`billing_90d.json\`
-          4. Gemini ${GEMINI_MODEL} (Vertex AI) regenerated each doc using prompts in \`.github/prompts/\`
+          1. \`gcloud asset search-all-resources\` + \`get-iam-policy\` + BigQuery billing rollup → \`refresh-inputs/\`
+          2. \`scripts/maintenance/doc_inventory.py --write-snapshot --db-live\` → live jobs, executions, services, schedulers, Cloud Build triggers, domain mappings, Cloud SQL, secrets, Pub/Sub, sinks, Cloud Tasks, images, table stats
+          3. Inventory blocks in \`ARCHITECTURE.md\` / \`DATA_DEPENDENCIES.md\` re-rendered deterministically
+          4. Gemini ${GEMINI_MODEL} (Vertex AI) updated the prose in place using prompts in \`.github/prompts/\`
+          5. Gates: stamp, table/job/route/scheduler coverage, marker integrity, no lost headings, size floor, stale strings, dead links, \`verify_docs_against_live.py\`
 
           ## Reviewer checklist
 
-          - Spot-check the Cloud Run Job inventory in \`ARCHITECTURE.md\` against \`gcloud run jobs list\`
+          - Read \`ARCHITECTURE.md\` §15 (live-vs-repo reconciliation) and §18 (removed since last refresh) — those are the deltas that need a human decision
           - Confirm \`COST_ANALYSIS.md\` headline numbers match Cloud Console → Billing → Reports
-          - Verify any new orphan-table flag in \`DATA_DEPENDENCIES.md\` is real before acting on it
+          - Verify any new orphan-table flag in \`DATA_DEPENDENCIES.md\` §5 is real before acting on it
 
           Generated by \`.github/workflows/refresh-architecture-docs.yml\`"
 

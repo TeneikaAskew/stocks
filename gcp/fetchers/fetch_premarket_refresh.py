@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pre-market refresh fetcher — runs at 8:30 AM ET, before the 8:45 brief.
+Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief.
 
 Targets a small set of tickers (today's earnings reporters + watchlist),
 fetches today's pre-market bars from AlphaVantage, and UPSERTs the
