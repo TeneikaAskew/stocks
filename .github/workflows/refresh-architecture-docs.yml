@@ -409,11 +409,22 @@ jobs:
           mkdir -p "$RUNNER_TEMP/frozen/docs"
           cp docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md "$RUNNER_TEMP/frozen/docs/"
           git rev-parse HEAD > "$RUNNER_TEMP/frozen/head.sha"
+          # Everything already sitting untracked in the workspace BEFORE the
+          # model ran. The stray-write scan below attributes an untracked file
+          # to the model; anything in this list was put there by a step, not by
+          # Gemini. gha-creds-*.json (google-github-actions/auth) was the first
+          # such file and failed every run; recording the set means the next
+          # tool that drops something in the workspace is not a new outage.
+          # Name-only is enough: the only untracked files the gates READ are
+          # under refresh-inputs/, which is frozen with a sha256 manifest.
+          git ls-files --others --exclude-standard | sort > "$RUNNER_TEMP/frozen/untracked.before"
+          echo "untracked before the model ran: $(wc -l < "$RUNNER_TEMP/frozen/untracked.before")"
           # Prove the freeze actually captured the inputs the gates depend on.
           test -f "$RUNNER_TEMP/frozen/Architecture.drawio"
           test -f "$RUNNER_TEMP/frozen/Architecture-icons.drawio"
           test -f "$RUNNER_TEMP/frozen/docs/API.md"
           test -f "$RUNNER_TEMP/frozen/docs/INVESTMENT_MODELS_SUMMARY.md"
+          test -f "$RUNNER_TEMP/frozen/untracked.before"
           for F in live.json verify_live.json previous; do
             test -e "$RUNNER_TEMP/frozen/refresh-inputs/$F" || {
               echo "::error::freeze did not capture refresh-inputs/$F"; exit 1; }
@@ -509,6 +520,11 @@ jobs:
           # action's docs recommend; assert it still does, so a future
           # .gitignore edit says so plainly instead of resurfacing as "the model
           # wrote outside the generated docs". (Codex, PR #1009.)
+          # A missing list would make every untracked path look like a model
+          # write, so say which file is missing rather than printing a stray
+          # list that blames Gemini for the freeze not having run.
+          test -f "$RUNNER_TEMP/frozen/untracked.before" || {
+            echo "::error::the freeze did not record the pre-model untracked set — refusing to attribute untracked files to the model"; exit 1; }
           if ! git check-ignore -q gha-creds-probe.json; then
             echo "::error::gha-creds-*.json is not gitignored — the WIF credentials file google-github-actions/auth writes into the workspace will be scanned as a stray model write. Restore the pattern in .gitignore."
             exit 1
@@ -523,6 +539,8 @@ jobs:
                 fi
                 continue;;
             esac
+            # Present before the model ran, so a step put it there, not Gemini.
+            if grep -qxF "$F" "$RUNNER_TEMP/frozen/untracked.before"; then continue; fi
             STRAY="$STRAY $F"
           done
           if [ -n "$STRAY" ]; then

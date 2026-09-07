@@ -452,3 +452,26 @@ def test_auth_still_writes_the_credentials_file_the_gemini_steps_need():
     assert len(auth) == 1, auth
     assert "create_credentials_file" not in (auth[0].get("with") or {}), \
         "credential-file creation was disabled; ADC for gcloud/BigQuery/Gemini would break"
+
+
+def test_untracked_files_present_before_the_model_are_not_blamed_on_it():
+    """gha-creds-*.json was the first file a STEP dropped into the workspace
+    that the stray-write scan attributed to Gemini. Ignoring that one name fixes
+    the instance; recording the pre-model untracked set fixes the class, so the
+    next tool that writes into the checkout is not a new outage.
+    (Codex, PR #1009.)"""
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    freeze = steps["Freeze gate inputs"]
+    restore = steps["Restore gate inputs and refuse model edits outside the docs"]
+    assert 'git ls-files --others --exclude-standard | sort > "$RUNNER_TEMP/frozen/untracked.before"' in freeze, \
+        "the freeze does not record what was already untracked"
+    assert 'test -f "$RUNNER_TEMP/frozen/untracked.before"' in freeze, \
+        "the freeze does not prove it recorded the list"
+    assert 'grep -qxF "$F" "$RUNNER_TEMP/frozen/untracked.before"' in restore, \
+        "the scan does not consult the pre-model untracked set"
+    # a missing list must name itself, not print a stray list blaming the model
+    assert restore.index('test -f "$RUNNER_TEMP/frozen/untracked.before"') < restore.index('STRAY=""'), \
+        "the missing-list check must run before the scan"
+    assert "refusing to attribute untracked files to the model" in restore
+    # the freeze must record it AFTER refresh-inputs exists, or the list is empty
+    assert freeze.index("cp -r refresh-inputs") < freeze.index("untracked.before")
