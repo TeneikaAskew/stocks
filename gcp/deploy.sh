@@ -204,12 +204,31 @@ _pin_tag() {
         return 0
     fi
     local short=${ref#*@sha256:}
-    if gcloud artifacts docker tags add "${ref}" "${repo_image}:${tag}" --quiet >/dev/null 2>&1; then
-        echo "  pinned ${tag} -> ${short:0:12}"
+    # Surface gcloud's own reason. The first trigger run of this step
+    # (build b76462ad, 2026-09-07, #1033) failed six pins, every one a tag
+    # that already existed on another digest, and printed nothing but
+    # "could not tag" because stderr was discarded here; the same six moves
+    # succeeded from an operator shell minutes later, so the reason was the
+    # one thing needed and the one thing not shown.
+    local errf err
+    errf=$(mktemp)
+    if gcloud artifacts docker tags add "${ref}" "${repo_image}:${tag}" --quiet >/dev/null 2>"${errf}"; then
+        rm -f "${errf}"
+        if [ -n "${existing}" ]; then
+            echo "  moved  ${tag}: ${existing#sha256:}"
+            echo "         -> ${short:0:12}"
+        else
+            echo "  pinned ${tag} -> ${short:0:12}"
+        fi
         unset "_TAG_CACHE[${repo_image}]"
         return 0
     fi
-    echo "  ERROR: could not tag ${ref} as ${tag}" >&2
+    # `|| true`: under pipefail an empty stderr makes grep exit 1, which
+    # would abort the function here and skip the fallback line and the
+    # caller's per-pin accounting (Codex, #1040).
+    err=$(grep -v '^$' "${errf}" | head -n 1 || true)
+    rm -f "${errf}"
+    echo "  ERROR: could not tag ${ref} as ${tag}: ${err:-<no stderr>}" >&2
     return 1
 }
 
