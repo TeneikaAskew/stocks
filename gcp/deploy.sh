@@ -223,7 +223,10 @@ _pin_tag() {
         unset "_TAG_CACHE[${repo_image}]"
         return 0
     fi
-    err=$(grep -v '^$' "${errf}" | head -n 1)
+    # `|| true`: under pipefail an empty stderr makes grep exit 1, which
+    # would abort the function here and skip the fallback line and the
+    # caller's per-pin accounting (Codex, #1040).
+    err=$(grep -v '^$' "${errf}" | head -n 1 || true)
     rm -f "${errf}"
     echo "  ERROR: could not tag ${ref} as ${tag}: ${err:-<no stderr>}" >&2
     return 1
