@@ -4675,6 +4675,12 @@ case "${1:-help}" in
         # not exist yet). Each research job then pins :research by digest
         # (pin_image_tags at the tail).
         build_research_image
+        # The job both Cloud Build triggers `jobs update` and execute
+        # before anything else moves (apply-schema-on-change, and the
+        # staging deploy's migrate step). It has to exist before either
+        # can run, and only the separate apply-schema) target created it
+        # (Codex on #1022).
+        deploy_apply_schema_migrations
         deploy_premarket
         deploy_earnings_reactions_brief
         deploy_monitor

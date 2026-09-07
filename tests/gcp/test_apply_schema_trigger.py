@@ -143,3 +143,19 @@ def test_the_apply_hands_the_checkout_ancestry_to_the_guard():
         assert '--revision-ancestors=$${ANCESTORS}' in args, path.name
         assert args.index("git fetch --deepen=") < args.index("ANCESTORS=$(git rev-list") \
             < args.index("gcloud run jobs execute"), path.name
+
+
+def test_the_apply_checks_the_job_exists_before_updating_it():
+    """Codex on #1022: `gcloud run jobs update` fails when the job is
+    missing (fresh project, or the maintenance job deleted). Both configs
+    look first and fail with the bootstrap command (the job's env, secrets
+    and service account live in gcp/deploy.sh, so the build must not
+    create it from a partial spec)."""
+    for path in (CFG, REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"):
+        steps = yaml.safe_load(path.read_text())["steps"]
+        step = next(s for s in steps if s["id"] in ("apply", "migrate"))
+        args = _all_args(step)
+        assert "gcloud run jobs describe apply-schema-migrations" in args, path.name
+        assert args.index("gcloud run jobs describe apply-schema-migrations") \
+            < args.index("gcloud run jobs update apply-schema-migrations"), path.name
+        assert "./gcp/deploy.sh apply-schema" in args, "the failure must name the bootstrap command"

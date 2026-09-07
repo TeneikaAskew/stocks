@@ -125,6 +125,17 @@ def test_all_target_deploys_discord_service_and_its_backing_jobs():
         assert job in created, f"{job} is not created by all)"
 
 
+def test_all_target_creates_the_job_both_cloud_build_triggers_update():
+    """Codex on #1022: apply-schema-cloudbuild.yaml and the staging deploy
+    both `gcloud run jobs update apply-schema-migrations`, which requires
+    the job to exist, and only the separate `apply-schema)` target created
+    it. A rebuild from `all)` then left every staging deploy unable to
+    reach its `deploy` step."""
+    created = _created_by(_closure(_called_from(ALL_BLOCK)))
+    assert "apply-schema-migrations" in created, "apply-schema-migrations is not created by all)"
+    assert "deploy_apply_schema_migrations" in _called_from(ALL_BLOCK)
+
+
 def test_discord_target_deploys_service_and_backing_jobs_together():
     m = re.search(r"\n\s+discord\)\s*(.*?);;", DISPATCH, re.S)
     assert m, "discord) dispatcher target missing"

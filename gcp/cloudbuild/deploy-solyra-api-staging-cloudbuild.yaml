@@ -133,6 +133,17 @@ steps:
           echo "ERROR: cannot read the committer time of $COMMIT_SHA: $${COMMIT_TIME}" >&2
           exit 1
         fi
+        # The job must already exist: `jobs update` cannot create it, and
+        # its env, secrets and service account are owned by gcp/deploy.sh,
+        # so the build refuses with the bootstrap command rather than
+        # creating a partial job (Codex on #1022). `all)` creates it too.
+        if ! gcloud run jobs describe apply-schema-migrations --region=us-east1 \
+               --format='value(name)' >/dev/null; then
+          echo "ERROR: the apply-schema-migrations job does not exist (or cannot be" >&2
+          echo "       described). Bootstrap it with ./gcp/deploy.sh apply-schema" >&2
+          echo "       (or ./gcp/deploy.sh all), then re-run this build." >&2
+          exit 1
+        fi
         echo ">> apply-schema-migrations -> $${DIGEST} (this revision's schema.sql)"
         gcloud run jobs update apply-schema-migrations \
           --image="$${DIGEST}" \
