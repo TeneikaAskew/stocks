@@ -4652,7 +4652,11 @@ case "${1:-help}" in
     regime-combo) deploy_regime_combo ;;   # research image; build separately (see strat-engine)
     setup-notifier-secrets) _PIN_AFTER=0; setup_notifier_secrets ;;
     notifier) _run build_image deploy_notifier ;;
-    discord) _run build_image deploy_discord_interactions ;;
+    # The service dispatches three Cloud Run Jobs for its slash commands
+    # (gcp/discord_interactions/main.py: /replay -> backfill-ticker,
+    # /validate -> validate-brief, /backtest -> backtest); deploy them with
+    # it so the commands work on a fresh environment (#831 K3).
+    discord) _run build_image deploy_discord_interactions deploy_backfill_ticker deploy_validate_brief deploy_backtest ;;
     all)
         build_image
         deploy_premarket
@@ -4674,6 +4678,13 @@ case "${1:-help}" in
         deploy_indicator_correlation
         deploy_weekly_pg_dump
         deploy_notifier
+        # Slash-command service + the jobs it dispatches (#831). Needs the
+        # discord-* secrets; deploy_discord_interactions fails loud without
+        # them, and a re-run of `all` after creating them is idempotent.
+        deploy_discord_interactions
+        deploy_backfill_ticker
+        deploy_validate_brief
+        deploy_backtest
         # Main-image jobs that deploy_schedulers targets but nothing above
         # created (#829/#831 audit: `all` came up partial on a rebuild).
         deploy_earnings_long_watchlist
@@ -4737,6 +4748,7 @@ case "${1:-help}" in
         echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
         echo "  notifier   Deploy failure-notifier Cloud Run service + log sink"
         echo "  discord    Deploy discord-interactions Cloud Run service (slash commands)"
+        echo "             + the backfill-ticker, validate-brief and backtest jobs it runs."
         echo "             Prereqs: discord-app-id, discord-public-key, discord-bot-token"
         echo "             secrets in Secret Manager. After deploy, set the service URL"
         echo "             as Discord's Interactions Endpoint URL and run"
