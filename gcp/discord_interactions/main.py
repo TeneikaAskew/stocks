@@ -20,7 +20,12 @@ Environment:
 
 Cloud Run config (set in gcp/deploy.sh):
   --allow-unauthenticated  (Discord can't IAM-auth)
-  --min-instances=0        (free when idle; 1-2 sec cold start fits the 3s ack)
+  --min-instances=1        (one warm instance; cold start measured 4-10 s on
+                            this image, past Discord's 3 s ack window — see
+                            deploy_discord_interactions and
+                            docs/audits/COST_AUDIT_2026-09-06.md §6 for the
+                            ~$51/month it costs and the market-hours option)
+  --no-cpu-throttling      (CPU stays on so BackgroundTasks finish the edit)
   --max-instances=5        (caps autocomplete-burst cost)
 """
 

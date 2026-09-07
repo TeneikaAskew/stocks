@@ -210,6 +210,26 @@ if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
     || { echo ">> a concurrent deploy was detected before submitting; aborting early"; exit 1; }
 fi
 
+# 0. Pin every image digest a Cloud Run job or service still runs, so the
+#    Artifact Registry cleanup policy (gcp/deploy.sh setup_registry_cleanup)
+#    cannot delete a digest something is serving: it removes untagged
+#    versions older than 14 days, and a digest whose only tag moves away
+#    becomes untagged. Fails closed: no pin, no build.
+#
+#    #1004 added this because THIS script moved ${IMAGE}:latest. It no longer
+#    does -- the build above pushes an immutable ${IMAGE}:${IMAGE_TAG} and the
+#    deploy below resolves it to a digest -- so this path is not itself the
+#    tag mover any more. The step stays because the repository is shared: the
+#    deploy-solyra-api-staging trigger and gcp/deploy.sh both still move tags
+#    in it, and the revision this run replaces is exactly the digest that
+#    needs to already carry its inuse-* tag when they do.
+#
+#    --no-sweep: the deploy-solyra-api-staging Cloud Build trigger runs this
+#    as trading-runner@, whose roles/artifactregistry.writer can create and
+#    move tags but not delete them; releasing stale pins is done by the
+#    interactive gcp/deploy.sh path instead (see gcp/cloudbuild/README.md).
+./gcp/deploy.sh pin-images --no-sweep
+
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
 echo ">> building ${IMAGE}:${IMAGE_TAG}"
 gcloud builds submit \
