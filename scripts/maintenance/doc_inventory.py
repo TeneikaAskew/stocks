@@ -505,9 +505,15 @@ def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
 # repo: code modules and table references
 # ─────────────────────────────────────────────────────────────────────────────
 
-MODULE_DIRS = ("gcp", "gcp/fetchers", "gcp/research", "gcp/research/strat_engine",
-               "gcp/research/magnitude_engine", "gcp/discord_interactions",
-               "lib", "lib/agents", "lib/strategies", "platform/api", "platform/api/routers")
+# Production roots, walked RECURSIVELY. The previous form was a hand-listed
+# set of directories globbed non-recursively, so every subpackage nobody
+# remembered to add was silently absent from the "production module catalog"
+# in ARCHITECTURE.md §16 -- lib/features/, lib/agents/ranker/ and
+# gcp/research/direction_program/ among them. (Codex, PR #1009.)
+MODULE_ROOTS = ("gcp", "lib", "platform/api")
+# Not production code: archived trees, caches, tests, and vendored deps.
+MODULE_EXCLUDE_PARTS = frozenset({"__pycache__", "_archive", "archive", "tests", "test",
+                                  "node_modules", ".venv", "venv", "migrations"})
 SCAN_DIRS = ("gcp", "lib", "scripts", "platform/api")
 # Documentation tooling names tables in its own strings; it neither writes nor reads them.
 DOC_TOOLING = frozenset({
@@ -555,9 +561,11 @@ def python_modules(root: pathlib.Path = REPO, jobs: list[dict[str, Any]] | None 
         if ep:
             by_module.setdefault(ep, []).append(j["name"])
     out = []
-    for d in MODULE_DIRS:
-        for f in sorted((root / d).glob("*.py")):
-            if f.name.startswith("__") or f.name.startswith("test_"):
+    for d in MODULE_ROOTS:
+        for f in sorted((root / d).rglob("*.py")):
+            if f.name.startswith("__") or f.name.startswith("test_") or f.name.endswith("_test.py"):
+                continue
+            if MODULE_EXCLUDE_PARTS & set(f.relative_to(root).parts):
                 continue
             rel = str(f.relative_to(root))
             dotted = rel[:-3].replace("/", ".")
@@ -603,6 +611,10 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
         except UnicodeDecodeError:
             continue
         joined = "\n".join(lines)
+        # Message text is not executed SQL, and it must not leak into the
+        # context window of the lines after it either (Codex, PR #1009).
+        diag = _diagnostic_lines(joined)
+        ctx_lines = ["" if n + 1 in diag else ln for n, ln in enumerate(lines)]
         for t, pat in pats.items():
             if t not in joined:
                 continue
@@ -611,7 +623,7 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
                     continue
                 if line.lstrip().startswith("#"):
                     continue
-                ctx = "\n".join(lines[max(0, i - 3): i + 1])
+                ctx = "\n".join(ctx_lines[max(0, i - 3): i + 1])
                 kind = "writes" if WRITE_RE.search(ctx) else ("reads" if READ_RE.search(ctx) else "mentions")
                 out[t][kind].append({"file": rel, "line": i + 1, "text": line.strip()[:120]})
                 # `TABLE = "options_daily_features"` then `upsert_dataframe(df, TABLE, ...)`
@@ -622,11 +634,50 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
                     for k, l2 in enumerate(lines):
                         if k == i or not const.search(l2) or l2.lstrip().startswith("#"):
                             continue
-                        ctx2 = "\n".join(lines[max(0, k - 3): k + 1])
+                        ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
                         if WRITE_RE.search(ctx2):
                             out[t]["writes"].append({"file": rel, "line": k + 1, "text": l2.strip()[:120]})
                         elif READ_RE.search(ctx2):
                             out[t]["reads"].append({"file": rel, "line": k + 1, "text": l2.strip()[:120]})
+    return out
+
+
+def _diagnostic_lines(text: str) -> set[int]:
+    """Line numbers whose content is a message, not executed SQL.
+
+    `gcp/signal_monitor.py` raises a RuntimeError whose text tells the operator
+    to run `UPDATE watchlists SET signals = TRUE ...`. The process only READS
+    that table, but the string matched WRITE_RE, and the four-line context
+    window then dragged the following log line in with it -- so the write graph
+    cited two lines that execute nothing and the blast radius named
+    signal-monitor a writer of watchlists. (Codex, PR #1009.)
+
+    Covers string literals inside `raise ...`, logging calls, `print(...)` and
+    `warnings.warn(...)`. SQL that reaches a driver is never in one of those.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    out: set[int] = set()
+
+    def _mark(node: ast.AST) -> None:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                out.update(range(sub.lineno, (sub.end_lineno or sub.lineno) + 1))
+            elif isinstance(sub, ast.JoinedStr):
+                out.update(range(sub.lineno, (sub.end_lineno or sub.lineno) + 1))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Raise):
+            _mark(node)
+        elif isinstance(node, ast.Call):
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+            owner = (f.value.id if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) else "")
+            if name in ("debug", "info", "warning", "warn", "error", "exception", "critical") \
+                    or name == "print" or (owner == "warnings" and name == "warn"):
+                _mark(node)
     return out
 
 

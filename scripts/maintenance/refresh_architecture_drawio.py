@@ -50,9 +50,9 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("Cloud Run Service\nFastAPI + React", "Cloud Run Service\nFastAPI API (IAP)"),
     ("FastAPI + React", "FastAPI API"),
     ("GitHub Actions\n20 workflows: backups, audits, db-query,\nsheet downloads, platform deploy + promote",
-     "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge,\nfailure handler, monthly doc refresh; API + schema deploys"),
+     "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge, failure\nhandler, docs-vs-live check, monthly doc refresh;\nAPI + schema deploys"),
     ("GitHub Actions\n20 workflows: backups, audits, db-query,\nsheet downloads, deploys, failure-handler",
-     "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge,\nfailure handler, monthly doc refresh; API + schema deploys"),
+     "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge, failure\nhandler, docs-vs-live check, monthly doc refresh;\nAPI + schema deploys"),
     ("fetch-catalyst-calendar\nBenzinga catalysts", "fetch-av-options-realtime\nAV realtime options chain\nevery 5 min in RTH → etf_options_snapshots"),
     ("fetch-av-options-backfill\none-shot historical options\n(SPY/IWM/QQQ/SPX from 2016)", "fetch-av-options-backfill\nnightly 21:00 ET + monthly\nAV HISTORICAL_OPTIONS → etf_options_snapshots"),
     ("fetch-av-earnings-options-backfill ★\nEW options chains historical\n(on-demand)", "earnings-options-backfill\nEW-window options chains\n(on-demand)"),
@@ -260,6 +260,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     by_id[SCHED_GROUP_ID].set("value", f"② Cloud Scheduler — {counts['schedulers']} live entries, all America/New_York (read {read}{paused_note})")
     for cid, text in sched_labels(live).items():
         by_id[cid].set("value", text)
+    _rewrite_main_counts(root, live)
 
     # delete retired cells and any edge touching them
     for c in list(cells):
@@ -343,6 +344,70 @@ ICON_COUNT_TEMPLATES = [
 ]
 ICON_STALE = ("42 Cloud Run Jobs", "~50 cron", "~50 Scheduler", "44 tables", "44-table", "19 secrets", "19 workflows",
               "trading-platform-staging", "React dashboard")
+
+
+# Count-bearing text on the MAIN page. Everything here is rewritten from
+# whatever number the cell currently holds, so a cell cannot go stale the way
+# sec_box ("21 secrets" beside a 22-secret subtitle) and ext_gh ("5 workflows"
+# against six active YAMLs) both did -- neither was reachable from
+# REPLACEMENTS once its one-time literal had been consumed. (Codex, PR #1009.)
+def active_workflows(root: pathlib.Path | None = None) -> list[str]:
+    """The workflow files GitHub Actions actually runs: `*.yml`, never
+    `*.yml.disabled` (the repo's retirement convention, CLAUDE.md)."""
+    base = (root or REPO) / ".github/workflows"
+    return sorted(f.name for f in base.glob("*.yml"))
+
+
+MAIN_COUNT_PATTERNS = (
+    (r"\b(\d+) secrets\b", "secrets", "secrets"),
+    (r"\((\d+) workflows\)", "workflows", "workflows"),
+    (r"\((\d+) triggers\)", "triggers", "triggers"),
+)
+
+
+def _main_values(live: dict) -> dict[str, str]:
+    wf = live.get("_workflows")
+    out = {
+        "secrets": str(live["counts"]["secrets"]),
+        "triggers": str(len(live.get("cloudbuild_triggers") or [])),
+    }
+    if wf is not None:
+        out["workflows"] = str(len(wf))
+    return out
+
+
+def _rewrite_main_counts(root: ET.Element, live: dict) -> int:
+    """Rewrite every count-bearing main-page cell from the live snapshot."""
+    vals = _main_values(live)
+    n = 0
+    for c in root.iter("mxCell"):
+        v = c.get("value")
+        if not v:
+            continue
+        new = v
+        for pat, key, noun in MAIN_COUNT_PATTERNS:
+            if key not in vals:
+                continue
+            new = re.sub(pat, lambda m, k=key, nn=noun: m.group(0).replace(m.group(1), vals[k], 1), new)
+        if new != v:
+            c.set("value", new)
+            n += 1
+    return n
+
+
+def _check_main_counts(root: ET.Element, live: dict) -> list[str]:
+    vals = _main_values(live)
+    problems = []
+    for c in root.iter("mxCell"):
+        v = c.get("value") or ""
+        for pat, key, noun in MAIN_COUNT_PATTERNS:
+            if key not in vals:
+                continue
+            for m in re.finditer(pat, v):
+                if int(m.group(1)) != int(vals[key]):
+                    problems.append(
+                        f"cell {c.get('id')} says {m.group(1)} {noun}, live is {vals[key]}")
+    return problems
 
 
 def _icon_values(live: dict) -> dict[str, str]:
@@ -429,6 +494,7 @@ def check(root: ET.Element, live: dict) -> list[str]:
     for c in root.iter("mxCell"):
         if c.get("id") == GHA_GROUP_ID and "14 active workflows" in (c.get("value") or ""):
             problems.append("gha_group still carries the 2026-05 '14 active workflows' label")
+    problems += _check_main_counts(root, live)
     want = sched_labels(live)
     for c in root.iter("mxCell"):
         if c.get("id") in want and (c.get("value") or "") != want[c.get("id")]:
@@ -460,6 +526,12 @@ def main(argv: list[str] | None = None) -> int:
     live = json.loads(pathlib.Path(a.snapshot).read_text())
     if a.repo_jobs:
         live["_repo_jobs"] = json.loads(pathlib.Path(a.repo_jobs).read_text())
+    # Active workflows are a REPO fact, not a live-GCP one, so they are read
+    # here rather than expected in the snapshot. Nothing populated
+    # live["_workflows"] before, so the gha_group label silently dropped its
+    # count and ext_gh kept the one-time "5 workflows" literal from
+    # REPLACEMENTS while six YAMLs were active. (Codex, PR #1009.)
+    live["_workflows"] = active_workflows()
     tree = ET.parse(MAIN)
     root = tree.getroot()
     if not a.check:

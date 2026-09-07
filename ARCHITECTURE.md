@@ -880,7 +880,7 @@ Interpretation (2026-09-07): the live-only jobs are hand-created research jobs f
 
 ## 16. Code modules
 
-Production modules with their first docstring line and the job(s) whose entrypoint they are. The shared math lives in `lib/` and is imported by jobs, the API and scripts alike, so indicators, Strat classification, gamma and strategy logic exist in exactly one place (CLAUDE.md "one source of truth for math").
+Every production module under `gcp/`, `lib/` and `platform/api/` — walked recursively, excluding tests, `_archive/` and caches — with its first docstring line and the job(s) whose entrypoint it is. The shared math lives in `lib/` and is imported by jobs, the API and scripts alike, so indicators, Strat classification, gamma and strategy logic exist in exactly one place (CLAUDE.md "one source of truth for math"). A module row naming a job that is not deployed is not an error: §15 lists the declared-but-absent jobs and why.
 
 <!-- inventory:modules:start -->
 | Module | Purpose (first docstring line) | Cloud Run Job(s) |
@@ -898,31 +898,14 @@ Production modules with their first docstring line and the job(s) whose entrypoi
 | [`gcp/build_intraday_gex.py`](gcp/build_intraday_gex.py) | Build / refresh `intraday_gex_15m` — MATERIALIZED reconstructed intraday | — |
 | [`gcp/build_options_daily_greeks.py`](gcp/build_options_daily_greeks.py) | Build / refresh `etf_options_daily_greeks` — the MATERIALIZED daily | `build-options-greeks` |
 | [`gcp/build_realtime_gex.py`](gcp/build_realtime_gex.py) | Build / refresh `realtime_gex_15m` — MATERIALIZED per-15m-bucket REAL intraday | `build-realtime-gex` |
+| [`gcp/cloudbuild/serving_revision.py`](gcp/cloudbuild/serving_revision.py) | Print the Cloud Run revision that is actually SERVING TRAFFIC. | — |
 | [`gcp/database.py`](gcp/database.py) | Cloud SQL (PostgreSQL) connection utilities. | — |
 | [`gcp/db_maintenance.py`](gcp/db_maintenance.py) | Non-transactional DB maintenance (VACUUM / ANALYZE / REINDEX). | — |
 | [`gcp/db_query_job.py`](gcp/db_query_job.py) | Cloud Run Job entrypoint: ad-hoc DB query → GCS results. | `db-query` |
+| [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) | Discord Interactions endpoint — Cloud Run service. | — |
 | [`gcp/earnings_long_watchlist.py`](gcp/earnings_long_watchlist.py) | Cloud Run Job — weekly long-side earnings watchlist ("Next NVAX"). | `earnings-long-watchlist` |
 | [`gcp/earnings_reactions_brief.py`](gcp/earnings_reactions_brief.py) | Earnings-reactions brief -- Cloud Run Job triggered by Cloud Scheduler at | `earnings-reactions-brief` |
 | [`gcp/failure_notifier.py`](gcp/failure_notifier.py) | GCP Cloud Run Job failure notifier. | — |
-| [`gcp/gcs_utils.py`](gcp/gcs_utils.py) | Google Cloud Storage utility helpers shared across gcp/ modules. | — |
-| [`gcp/historical_signals.py`](gcp/historical_signals.py) | Cloud SQL helpers for the ``historical_signals`` table. | — |
-| [`gcp/indicator_correlation_job.py`](gcp/indicator_correlation_job.py) | Intraday indicator → forward-return correlation / Information Coefficient (Cloud Run Job). | `indicator-correlation` |
-| [`gcp/insight_discord_push.py`](gcp/insight_discord_push.py) | Cloud Run Job — push the day's AI Insight reports to Discord. | `insight-discord-push` |
-| [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) | Cloud Run Job entry point for the AI Insights agent pipeline. | `insight-pipeline` |
-| [`gcp/migrate_to_gcp.py`](gcp/migrate_to_gcp.py) | Migrate all local Parquet data to GCS (raw backup) + Cloud SQL (structured). | — |
-| [`gcp/options_retention_job.py`](gcp/options_retention_job.py) | Cloud Run Job: prune stale REALTIME rows from etf_options_snapshots. | `etf-options-retention` |
-| [`gcp/premarket_brief.py`](gcp/premarket_brief.py) | Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET. | `premarket-brief` |
-| [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) | End-of-day resolver for brief-playbook outcomes. | `premarket-playbook-resolver` |
-| [`gcp/refresh_earnings_views.py`](gcp/refresh_earnings_views.py) | Cloud Run Job — refresh the earnings frontend mat views + upcoming table. | `refresh-earnings-views` |
-| [`gcp/regime_combo_job.py`](gcp/regime_combo_job.py) | Regime combination miner (Cloud Run Job) — Effort A, scheduled. | `regime-combo` |
-| [`gcp/signal_monitor.py`](gcp/signal_monitor.py) | Real-time signal monitor -- Cloud Run Service during market hours. | `signal-monitor` |
-| [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) | End-of-day signal_alerts reconciliation — Cloud Run Job. | `signal-monitor-eod-resolver` |
-| [`gcp/signal_quality_alarm.py`](gcp/signal_quality_alarm.py) | Phase 0.5 spec item #6 — clean-rate regression alarm. | `signal-quality-alarm` |
-| [`gcp/signal_replay.py`](gcp/signal_replay.py) | Re-post stored signal_alerts to Discord for a historical time window. | `signal-replay` |
-| [`gcp/sql_export_to_gcs.py`](gcp/sql_export_to_gcs.py) | Weekly Cloud SQL → GCS logical backup. | `cloud-sql-weekly-export` |
-| [`gcp/trade_logger.py`](gcp/trade_logger.py) | Trade logger — appends trades to Cloud SQL and/or daily parquet files. | — |
-| [`gcp/validate_brief_job.py`](gcp/validate_brief_job.py) | Validate brief/insight accuracy — Cloud Run Job wrapper. | `validate-brief` |
-| [`gcp/weekend_review.py`](gcp/weekend_review.py) | Weekend review -- Cloud Run Job triggered Saturday morning. | `weekend-review` |
 | [`gcp/fetchers/_watchlist.py`](gcp/fetchers/_watchlist.py) | Shared helper: load the configured watchlist for every consumer. | — |
 | [`gcp/fetchers/backfill_daily_indicators.py`](gcp/fetchers/backfill_daily_indicators.py) | Self-healing backfill of derived indicator columns in market_data_daily. | `backfill-daily-indicators` |
 | [`gcp/fetchers/build_options_daily_features.py`](gcp/fetchers/build_options_daily_features.py) | Populate the materialized `options_daily_features` table (perf fix). | `build-options-daily-features` |
@@ -944,6 +927,32 @@ Production modules with their first docstring line and the job(s) whose entrypoi
 | [`gcp/fetchers/fetch_rss_news.py`](gcp/fetchers/fetch_rss_news.py) | Fetch news from RSS feeds + FinViz, score with FinBERT + Gemini Flash. | — |
 | [`gcp/fetchers/fetch_sec_filings.py`](gcp/fetchers/fetch_sec_filings.py) | Cloud Run Job: Poll SEC EDGAR for recent filings (8-K, 10-Q, 10-K) → Cloud SQL. | `fetch-sec-filings` |
 | [`gcp/fetchers/fetch_top_movers.py`](gcp/fetchers/fetch_top_movers.py) | Cloud Run Job: Fetch AV TOP_GAINERS_LOSERS daily snapshot → Cloud SQL. | `fetch-top-movers` |
+| [`gcp/gcs_utils.py`](gcp/gcs_utils.py) | Google Cloud Storage utility helpers shared across gcp/ modules. | — |
+| [`gcp/historical_signals.py`](gcp/historical_signals.py) | Cloud SQL helpers for the ``historical_signals`` table. | — |
+| [`gcp/indicator_correlation_job.py`](gcp/indicator_correlation_job.py) | Intraday indicator → forward-return correlation / Information Coefficient (Cloud Run Job). | `indicator-correlation` |
+| [`gcp/insight_discord_push.py`](gcp/insight_discord_push.py) | Cloud Run Job — push the day's AI Insight reports to Discord. | `insight-discord-push` |
+| [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) | Cloud Run Job entry point for the AI Insights agent pipeline. | `insight-pipeline` |
+| [`gcp/migrate_to_gcp.py`](gcp/migrate_to_gcp.py) | Migrate all local Parquet data to GCS (raw backup) + Cloud SQL (structured). | — |
+| [`gcp/options_retention_job.py`](gcp/options_retention_job.py) | Cloud Run Job: prune stale REALTIME rows from etf_options_snapshots. | `etf-options-retention` |
+| [`gcp/premarket_brief.py`](gcp/premarket_brief.py) | Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET. | `premarket-brief` |
+| [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) | End-of-day resolver for brief-playbook outcomes. | `premarket-playbook-resolver` |
+| [`gcp/queries/run_query.py`](gcp/queries/run_query.py) | Run SQL via Cloud SQL connector and emit phone-friendly artifacts. | — |
+| [`gcp/refresh_earnings_views.py`](gcp/refresh_earnings_views.py) | Cloud Run Job — refresh the earnings frontend mat views + upcoming table. | `refresh-earnings-views` |
+| [`gcp/regime_combo_job.py`](gcp/regime_combo_job.py) | Regime combination miner (Cloud Run Job) — Effort A, scheduled. | `regime-combo` |
+| [`gcp/research/direction_program/baseline_runner.py`](gcp/research/direction_program/baseline_runner.py) | Run direction/size/type through the existing walk-forward engines, pure | `direction-baseline` |
+| [`gcp/research/direction_program/chart_baseline.py`](gcp/research/direction_program/chart_baseline.py) | Chart the 3-axis baseline (folds-beat per axis, per ticker) via the shared | — |
+| [`gcp/research/direction_program/feature_importance.py`](gcp/research/direction_program/feature_importance.py) | Feature-importance / SHAP audit for the DIRECTION and SIZE walk-forward | `direction-importance` |
+| [`gcp/research/direction_program/gate.py`](gcp/research/direction_program/gate.py) | Pre-registered success gate for the direction-predictability program. | — |
+| [`gcp/research/direction_program/phase2_ablation.py`](gcp/research/direction_program/phase2_ablation.py) | Task-parallel Phase-2 ablation. One Cloud Run task runs one config | `direction-phase2` |
+| [`gcp/research/direction_program/phase2_features.py`](gcp/research/direction_program/phase2_features.py) | Phase-2 feature families for the DIRECTION and SIZE engines. New columns are | — |
+| [`gcp/research/direction_program/phase2_prune_sets.py`](gcp/research/direction_program/phase2_prune_sets.py) | Near-dead feature columns from the 2026-07-08 importance audit. | — |
+| [`gcp/research/direction_program/slice_ledger.py`](gcp/research/direction_program/slice_ledger.py) | Append-only JSONL ledger of every experiment slice tested, so the synthesis | — |
+| [`gcp/research/magnitude_engine/mag_config.py`](gcp/research/magnitude_engine/mag_config.py) | Magnitude Engine — shared config. | — |
+| [`gcp/research/magnitude_engine/mag_dataset.py`](gcp/research/magnitude_engine/mag_dataset.py) | Magnitude Engine — dataset loader. | — |
+| [`gcp/research/magnitude_engine/mag_inference.py`](gcp/research/magnitude_engine/mag_inference.py) | Cloud Run Job: live per-bar magnitude inference. | `magnitude-inference` |
+| [`gcp/research/magnitude_engine/mag_leakage_audit.py`](gcp/research/magnitude_engine/mag_leakage_audit.py) | Magnitude Engine — leakage audit. | — |
+| [`gcp/research/magnitude_engine/mag_pred_train.py`](gcp/research/magnitude_engine/mag_pred_train.py) | Magnitude Engine — model + featurize + ECE. | — |
+| [`gcp/research/magnitude_engine/mag_walk_forward.py`](gcp/research/magnitude_engine/mag_walk_forward.py) | Magnitude Engine — anchored walk-forward. | `magnitude-engine`, `magnitude-recal` |
 | [`gcp/research/p2_build_gamma_levels.py`](gcp/research/p2_build_gamma_levels.py) | Phase 2 Step 1: Build per-(ticker, date) gamma levels table from EOD chains. | — |
 | [`gcp/research/p2_outcomes_grid.py`](gcp/research/p2_outcomes_grid.py) | Phase 2 Step 2: Walk 10 years of 1-min RTH bars, fire gamma alerts via | — |
 | [`gcp/research/p45_deep_ds_job.py`](gcp/research/p45_deep_ds_job.py) | Phase 4.5 — Deep-data-science predictability audit (Cloud Run Job version). | — |
@@ -976,13 +985,29 @@ Production modules with their first docstring line and the job(s) whose entrypoi
 | [`gcp/research/strat_engine/strat_readout.py`](gcp/research/strat_engine/strat_readout.py) | Stage 6 — Read-out — `strat_readout.py`. | — |
 | [`gcp/research/strat_engine/strat_walk_forward.py`](gcp/research/strat_engine/strat_walk_forward.py) | Strat Engine — anchored walk-forward stability check. | — |
 | [`gcp/research/strat_engine/strat_walk_forward_adaptive.py`](gcp/research/strat_engine/strat_walk_forward_adaptive.py) | Strat Engine — walk-forward with ADAPTIVE recalibration. | — |
-| [`gcp/research/magnitude_engine/mag_config.py`](gcp/research/magnitude_engine/mag_config.py) | Magnitude Engine — shared config. | — |
-| [`gcp/research/magnitude_engine/mag_dataset.py`](gcp/research/magnitude_engine/mag_dataset.py) | Magnitude Engine — dataset loader. | — |
-| [`gcp/research/magnitude_engine/mag_inference.py`](gcp/research/magnitude_engine/mag_inference.py) | Cloud Run Job: live per-bar magnitude inference. | `magnitude-inference` |
-| [`gcp/research/magnitude_engine/mag_leakage_audit.py`](gcp/research/magnitude_engine/mag_leakage_audit.py) | Magnitude Engine — leakage audit. | — |
-| [`gcp/research/magnitude_engine/mag_pred_train.py`](gcp/research/magnitude_engine/mag_pred_train.py) | Magnitude Engine — model + featurize + ECE. | — |
-| [`gcp/research/magnitude_engine/mag_walk_forward.py`](gcp/research/magnitude_engine/mag_walk_forward.py) | Magnitude Engine — anchored walk-forward. | `magnitude-engine`, `magnitude-recal` |
-| [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) | Discord Interactions endpoint — Cloud Run service. | — |
+| [`gcp/signal_monitor.py`](gcp/signal_monitor.py) | Real-time signal monitor -- Cloud Run Service during market hours. | `signal-monitor` |
+| [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) | End-of-day signal_alerts reconciliation — Cloud Run Job. | `signal-monitor-eod-resolver` |
+| [`gcp/signal_quality_alarm.py`](gcp/signal_quality_alarm.py) | Phase 0.5 spec item #6 — clean-rate regression alarm. | `signal-quality-alarm` |
+| [`gcp/signal_replay.py`](gcp/signal_replay.py) | Re-post stored signal_alerts to Discord for a historical time window. | `signal-replay` |
+| [`gcp/sql_export_to_gcs.py`](gcp/sql_export_to_gcs.py) | Weekly Cloud SQL → GCS logical backup. | `cloud-sql-weekly-export` |
+| [`gcp/trade_logger.py`](gcp/trade_logger.py) | Trade logger — appends trades to Cloud SQL and/or daily parquet files. | — |
+| [`gcp/validate_brief_job.py`](gcp/validate_brief_job.py) | Validate brief/insight accuracy — Cloud Run Job wrapper. | `validate-brief` |
+| [`gcp/weekend_review.py`](gcp/weekend_review.py) | Weekend review -- Cloud Run Job triggered Saturday morning. | `weekend-review` |
+| [`lib/agents/anthropic_adapter.py`](lib/agents/anthropic_adapter.py) | Anthropic Claude adapter for LLMClient. | — |
+| [`lib/agents/embeddings.py`](lib/agents/embeddings.py) | Vertex text-embedding-005 wrapper for journal reflection memory. | — |
+| [`lib/agents/llm_client.py`](lib/agents/llm_client.py) | Provider-agnostic LLM client interface. | — |
+| [`lib/agents/model_routing.py`](lib/agents/model_routing.py) | Read/write helpers for the `model_routing` Cloud SQL table. | — |
+| [`lib/agents/orchestrator.py`](lib/agents/orchestrator.py) | Async orchestrator for the AI Insights pipeline. | — |
+| [`lib/agents/pricing.py`](lib/agents/pricing.py) | LLM pricing table and cost calculation. | — |
+| [`lib/agents/prompts.py`](lib/agents/prompts.py) | System prompts for every agent in the pipeline. | — |
+| [`lib/agents/ranker/candidates.py`](lib/agents/ranker/candidates.py) | Gather candidate tickers from every catalyst source we collect. | — |
+| [`lib/agents/ranker/rank.py`](lib/agents/ranker/rank.py) | Public entry point: rank a candidate set, persist an audit row. | — |
+| [`lib/agents/ranker/scoring.py`](lib/agents/ranker/scoring.py) | Weighted aggregation of signal scores into a single ranker score. | — |
+| [`lib/agents/ranker/signals.py`](lib/agents/ranker/signals.py) | Per-ticker signal extractors for the ranker. | — |
+| [`lib/agents/schema.py`](lib/agents/schema.py) | Pydantic models for the AI Insights agent pipeline. | — |
+| [`lib/agents/summarizers.py`](lib/agents/summarizers.py) | Deterministic SQL summarizers for the agent pipeline. | — |
+| [`lib/agents/trade_planner.py`](lib/agents/trade_planner.py) | Deterministic per-persona trade-plan calculator. | — |
+| [`lib/agents/vertex_adapter.py`](lib/agents/vertex_adapter.py) | Vertex AI Gemini adapter for LLMClient. | — |
 | [`lib/api_client.py`](lib/api_client.py) | Resilient HTTP client for external API calls. | — |
 | [`lib/backtest.py`](lib/backtest.py) | Event-driven backtesting engine. | — |
 | [`lib/broker_import.py`](lib/broker_import.py) | Broker CSV import core — parse, detect, FIFO round-trip pairing. | — |
@@ -991,32 +1016,35 @@ Production modules with their first docstring line and the job(s) whose entrypoi
 | [`lib/config.py`](lib/config.py) | Typed configuration loaded from alert_config.json. | — |
 | [`lib/data_loader.py`](lib/data_loader.py) | Unified data loading with column normalization and multi-source priority. | — |
 | [`lib/earnings_reactions.py`](lib/earnings_reactions.py) | Earnings-reaction analytics — playability score + archetype tagging. | — |
+| [`lib/exec_backtest/cli.py`](lib/exec_backtest/cli.py) | Exec backtest — Cloud Run Job entry point. | — |
+| [`lib/exec_backtest/engine.py`](lib/exec_backtest/engine.py) | Realistic trade-lifecycle simulator. | — |
+| [`lib/exec_backtest/ftfc.py`](lib/exec_backtest/ftfc.py) | Lightweight FTFC weighted score for the exec backtest variant 1. | — |
+| [`lib/exec_backtest/runner.py`](lib/exec_backtest/runner.py) | Walk-forward orchestrator for the exec backtest. | — |
+| [`lib/features/experimental/cross_asset.py`](lib/features/experimental/cross_asset.py) | Family 2 — Cross-asset features. | — |
+| [`lib/features/experimental/news_sentiment.py`](lib/features/experimental/news_sentiment.py) | Family 1 — News-sentiment + topic features. | — |
+| [`lib/features/experimental/options_derived.py`](lib/features/experimental/options_derived.py) | Family 3 — Options-derived features. | — |
+| [`lib/features/experimental/vol_regime.py`](lib/features/experimental/vol_regime.py) | Family 4 — Volatility-regime features. | — |
+| [`lib/features/flow_direction.py`](lib/features/flow_direction.py) | Flow-direction features — DAILY d-1 EOD dealer DIRECTIONAL options greeks. | — |
+| [`lib/features/fracdiff.py`](lib/features/fracdiff.py) | Fractional differentiation features (López de Prado, AFML ch.5). | — |
+| [`lib/features/information_bars.py`](lib/features/information_bars.py) | Information-driven bars from 1-minute OHLCV. | — |
+| [`lib/features/intraday_flow.py`](lib/features/intraday_flow.py) | Intraday order-flow features — microstructure signed-volume imbalance (OFI). | — |
+| [`lib/features/intraday_gex.py`](lib/features/intraday_gex.py) | Reconstructed intraday dealer GEX / DEX — the "what would dealer positioning | — |
 | [`lib/gamma.py`](lib/gamma.py) | Gamma exposure analytics — single source of truth for the platform. | — |
 | [`lib/gamma_glossary.py`](lib/gamma_glossary.py) | Cross-framework gamma vocabulary dictionary — single source of truth. | — |
 | [`lib/indicators.py`](lib/indicators.py) | Consolidated technical indicator functions. | — |
 | [`lib/insights.py`](lib/insights.py) | Template-driven insight generator for backtest results. | — |
 | [`lib/logging_config.py`](lib/logging_config.py) | Centralized logging configuration for the trading system. | — |
 | [`lib/movement_statement.py`](lib/movement_statement.py) | Movement-statement assembler — PHASE 2 (feature-flagged, NOT user-facing). | — |
+| [`lib/options_exec_backtest/cli.py`](lib/options_exec_backtest/cli.py) | Options exec backtest — Cloud Run Job entry point. | `options-exec-backtest` |
+| [`lib/options_exec_backtest/engine.py`](lib/options_exec_backtest/engine.py) | Trade-lifecycle simulator — options edition. | — |
+| [`lib/options_exec_backtest/iv_lookup.py`](lib/options_exec_backtest/iv_lookup.py) | IV-lookup layer for the options exec backtest. | — |
+| [`lib/options_exec_backtest/pricing.py`](lib/options_exec_backtest/pricing.py) | Pure-numpy Black-Scholes-Merton pricing for the options exec backtest. | — |
+| [`lib/options_exec_backtest/runner.py`](lib/options_exec_backtest/runner.py) | Walk-forward orchestrator for the options exec backtest. | — |
 | [`lib/options_greeks.py`](lib/options_greeks.py) | Black-Scholes-Merton implied volatility solve and Greeks computation for | — |
 | [`lib/options_intraday.py`](lib/options_intraday.py) | Intraday option repricing from EOD snapshots + 1-min underlying bars. | — |
 | [`lib/signals.py`](lib/signals.py) | Signal generation — 3-of-5 condition scoring for CALL and PUT entries, | — |
 | [`lib/strat.py`](lib/strat.py) | The Strat candle classification system. | — |
 | [`lib/strat_levels.py`](lib/strat_levels.py) | Strat Levels Engine — multi-timeframe level classification, PMG, room-to-run. | — |
-| [`lib/style_miner.py`](lib/style_miner.py) | Style miner — derives a user's trading-style condition profile from their | — |
-| [`lib/ticker_info.py`](lib/ticker_info.py) | Ticker metadata, peers, and news from Alpha Vantage + FinViz. | — |
-| [`lib/trading_analysis.py`](lib/trading_analysis.py) | Historical Stock Price Analysis with Technical Indicators and Trading Signals. | — |
-| [`lib/walk_forward.py`](lib/walk_forward.py) | Walk-forward validation and parameter sensitivity analysis. | — |
-| [`lib/agents/anthropic_adapter.py`](lib/agents/anthropic_adapter.py) | Anthropic Claude adapter for LLMClient. | — |
-| [`lib/agents/embeddings.py`](lib/agents/embeddings.py) | Vertex text-embedding-005 wrapper for journal reflection memory. | — |
-| [`lib/agents/llm_client.py`](lib/agents/llm_client.py) | Provider-agnostic LLM client interface. | — |
-| [`lib/agents/model_routing.py`](lib/agents/model_routing.py) | Read/write helpers for the `model_routing` Cloud SQL table. | — |
-| [`lib/agents/orchestrator.py`](lib/agents/orchestrator.py) | Async orchestrator for the AI Insights pipeline. | — |
-| [`lib/agents/pricing.py`](lib/agents/pricing.py) | LLM pricing table and cost calculation. | — |
-| [`lib/agents/prompts.py`](lib/agents/prompts.py) | System prompts for every agent in the pipeline. | — |
-| [`lib/agents/schema.py`](lib/agents/schema.py) | Pydantic models for the AI Insights agent pipeline. | — |
-| [`lib/agents/summarizers.py`](lib/agents/summarizers.py) | Deterministic SQL summarizers for the agent pipeline. | — |
-| [`lib/agents/trade_planner.py`](lib/agents/trade_planner.py) | Deterministic per-persona trade-plan calculator. | — |
-| [`lib/agents/vertex_adapter.py`](lib/agents/vertex_adapter.py) | Vertex AI Gemini adapter for LLMClient. | — |
 | [`lib/strategies/agreement.py`](lib/strategies/agreement.py) | Phase 1.6 — strategy-agreement detection. | — |
 | [`lib/strategies/base.py`](lib/strategies/base.py) | Phase 0.8 — Signal dataclass + Strategy abstract base. | — |
 | [`lib/strategies/brief_bias.py`](lib/strategies/brief_bias.py) | Premarket-brief bias resolver — visibility-only Phase 1. | — |
@@ -1029,10 +1057,13 @@ Production modules with their first docstring line and the job(s) whose entrypoi
 | [`lib/strategies/mean_reversion.py`](lib/strategies/mean_reversion.py) | Phase 0.8 — Mean-reversion strategy (CALL = buy oversold dips). | — |
 | [`lib/strategies/momentum.py`](lib/strategies/momentum.py) | Phase 0.8 — Momentum strategy (CALL = buy strength). | — |
 | [`lib/strategies/timeframe.py`](lib/strategies/timeframe.py) | Phase 1 — assign a timeframe tag to every signal at fire time. | — |
+| [`lib/style_miner.py`](lib/style_miner.py) | Style miner — derives a user's trading-style condition profile from their | — |
+| [`lib/ticker_info.py`](lib/ticker_info.py) | Ticker metadata, peers, and news from Alpha Vantage + FinViz. | — |
+| [`lib/trading_analysis.py`](lib/trading_analysis.py) | Historical Stock Price Analysis with Technical Indicators and Trading Signals. | — |
+| [`lib/walk_forward.py`](lib/walk_forward.py) | Walk-forward validation and parameter sensitivity analysis. | — |
 | [`platform/api/auth.py`](platform/api/auth.py) | App-level authentication, gated by the AUTH_MODE env var. | — |
 | [`platform/api/gcs_reader.py`](platform/api/gcs_reader.py) | Shared GCS reader for platform API routers. | — |
 | [`platform/api/main.py`](platform/api/main.py) | Trading Platform API - FastAPI backend | — |
-| [`platform/api/schemas.py`](platform/api/schemas.py) | Response models for every JSON route the frontend consumes. | — |
 | [`platform/api/routers/admin.py`](platform/api/routers/admin.py) | Admin router — model-routing dashboard backend. | — |
 | [`platform/api/routers/analytics.py`](platform/api/routers/analytics.py) | Analytics router — trade stats computed server-side. | — |
 | [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) | Backtest router — reads directly from GCS with in-memory TTL caching. | — |
@@ -1053,6 +1084,7 @@ Production modules with their first docstring line and the job(s) whose entrypoi
 | [`platform/api/routers/profile.py`](platform/api/routers/profile.py) | Profile router — per-user account settings beyond appearance. | — |
 | [`platform/api/routers/signals.py`](platform/api/routers/signals.py) | Signals router — reads from Cloud SQL ``historical_signals``. | — |
 | [`platform/api/routers/waitlist.py`](platform/api/routers/waitlist.py) | Waitlist router — public signup capture for the Solyra landing page. | — |
+| [`platform/api/schemas.py`](platform/api/schemas.py) | Response models for every JSON route the frontend consumes. | — |
 <!-- inventory:modules:end -->
 
 ## 17. Open questions

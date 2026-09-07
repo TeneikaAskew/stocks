@@ -228,3 +228,76 @@ def test_missing_end_marker_is_an_error(tmp_path):
     doc.write_text("<!-- inventory:tables:start -->\n")
     with pytest.raises(ValueError):
         inv.insert_blocks(doc, repo, None)
+
+
+def test_operator_advice_in_an_error_message_is_not_a_write():
+    """`raise RuntimeError("... UPDATE watchlists SET ...")` executes nothing.
+
+    signal_monitor only READS watchlists, but the advice string matched
+    WRITE_RE and the four-line context window then pulled the following log
+    line in with it, so the write graph cited two lines that run no SQL and
+    the blast radius named signal-monitor a writer. (Codex, PR #1009.)
+    """
+    refs = inv.table_refs(REPO, ["watchlists"])
+    writers = {r["file"] for r in refs["watchlists"]["writes"]}
+    assert "gcp/signal_monitor.py" not in writers, sorted(writers)
+    # the real writers must survive the exclusion
+    assert {"gcp/discord_interactions/main.py", "gcp/fetchers/_watchlist.py"} <= writers
+
+
+def test_a_logged_or_raised_statement_never_classifies_as_a_write(tmp_path):
+    src = tmp_path / "gcp"
+    src.mkdir()
+    (src / "m.py").write_text(
+        "import logging\n"
+        "logger = logging.getLogger(__name__)\n"
+        "def go(conn):\n"
+        "    if not rows:\n"
+        "        raise RuntimeError(\n"
+        "            'no rows in demo_table -- fix with:\\n'\n"
+        "            '  UPDATE demo_table SET flag = TRUE'\n"
+        "        )\n"
+        "    logger.info('demo_table loaded: %d', len(rows))\n"
+        "    return conn.execute('SELECT * FROM demo_table')\n"
+    )
+    refs = inv.table_refs(tmp_path, ["demo_table"])
+    assert refs["demo_table"]["writes"] == [], refs["demo_table"]["writes"]
+    assert refs["demo_table"]["reads"], "the genuine SELECT must still be found"
+
+
+def test_an_executed_write_is_still_a_write(tmp_path):
+    src = tmp_path / "gcp"
+    src.mkdir()
+    (src / "w.py").write_text(
+        "def go(conn):\n"
+        "    conn.execute('UPDATE demo_table SET flag = TRUE')\n"
+    )
+    refs = inv.table_refs(tmp_path, ["demo_table"])
+    assert [r["line"] for r in refs["demo_table"]["writes"]] == [2]
+
+
+def test_the_module_catalog_reaches_every_production_subpackage():
+    """A hand-listed set of directories globbed non-recursively omitted every
+    subpackage nobody remembered to add. (Codex, PR #1009.)"""
+    paths = {m["path"] for m in inv.repo_inventory(REPO)["modules"]}
+    for pkg in ("lib/features/", "lib/agents/ranker/", "gcp/research/direction_program/"):
+        assert any(p.startswith(pkg) for p in paths), f"{pkg} missing from the module catalog"
+    # and nothing from the trees that are not production code
+    assert not [p for p in paths if "_archive" in p or "__pycache__" in p
+                or p.startswith("tests/") or "/tests/" in p]
+
+
+def test_the_module_catalog_matches_a_plain_recursive_walk():
+    """The catalog must equal what a filesystem walk of the roots finds, so a
+    new subpackage cannot go missing without this failing."""
+    paths = {m["path"] for m in inv.repo_inventory(REPO)["modules"]}
+    expected = set()
+    for d in inv.MODULE_ROOTS:
+        for f in (REPO / d).rglob("*.py"):
+            rel = f.relative_to(REPO)
+            if f.name.startswith("__") or f.name.startswith("test_") or f.name.endswith("_test.py"):
+                continue
+            if inv.MODULE_EXCLUDE_PARTS & set(rel.parts):
+                continue
+            expected.add(str(rel))
+    assert paths == expected

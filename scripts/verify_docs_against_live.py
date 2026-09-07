@@ -27,6 +27,7 @@ Exit code is 1 when any finding is reported, so it can gate CI.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import pathlib
 import re
@@ -800,11 +801,32 @@ def check_timezone_headers(path: pathlib.Path, rel: str, live: dict, out: list[F
                            f"{'/'.join(sorted(zones))}: {m.group(0).strip()[:120]}"))
 
 
+@functools.lru_cache(maxsize=1)
+def _declared_names() -> frozenset[str]:
+    """Job and scheduler names declared in gcp/deploy.sh."""
+    # Run as a script, the repo root is not on sys.path -- and swallowing that
+    # import error would be the silent fallback CLAUDE.md 3.7 forbids: the
+    # check would quietly report every declared-not-live name again.
+    root = str(pathlib.Path(__file__).resolve().parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from scripts.maintenance import doc_inventory as inv
+    repo = inv.repo_inventory()
+    return frozenset({j["name"] for j in repo["jobs"]} | {s["name"] for s in repo["schedulers"]})
+
+
 def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
     """A backticked name introduced as GCP infrastructure must exist live."""
     known = (set(live["run_jobs"]) | set(live["schedulers"]) | set(live["services"])
              | set(live.get("secrets", ())) | set(live.get("queues", ()))
-             | {"trading-system"})  # Artifact Registry package, not a CR resource
+             | {"trading-system"}  # Artifact Registry package, not a CR resource
+             # A job DECLARED in gcp/deploy.sh but not deployed is a repo fact,
+             # not a stale claim: ARCHITECTURE.md §16 names the declared job an
+             # entrypoint belongs to, and §15 is where the declared-vs-live gap
+             # is reported, with the reason. Flagging it here would report the
+             # same fact twice and in the more confusing place. A name in
+             # NEITHER the repo nor live is still flagged.
+             | _declared_names())
     # A retired service is not an unknown name: `check_retired_services` already
     # reports it, and with a message that says WHY the name is wrong. Reporting
     # the same line twice for one fact is the noise that teaches people to skim

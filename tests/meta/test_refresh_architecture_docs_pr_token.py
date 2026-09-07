@@ -279,3 +279,45 @@ def test_previous_tree_carries_every_doc_the_churn_gate_scores():
     run = _steps()[_index("Save previous doc versions")]["run"]
     for d in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md", "docs/API.md"):
         assert d in run, f"{d} must be saved for the loss and churn gates"
+
+
+def test_the_diagrams_are_frozen_restored_and_revalidated_after_gemini():
+    """The drawio validation ran only BEFORE the model could reach the files.
+
+    All four Gemini steps hold write_file/replace over the checkout, and the
+    stray-write allowlist named both diagrams, so an edit made after the
+    render step's `--check` was staged and published unchecked.
+    (Codex, PR #1009.)
+    """
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    freeze = next(v for k, v in steps.items() if k and k.startswith("Freeze gate inputs"))
+    assert 'cp Architecture.drawio Architecture-icons.drawio "$RUNNER_TEMP/frozen/"' in freeze
+    assert 'test -f "$RUNNER_TEMP/frozen/Architecture.drawio"' in freeze
+
+    restore = next(v for k, v in steps.items() if k and k.startswith("Restore gate inputs"))
+    allowed = re.search(r'ALLOWED="([^"]+)"', restore).group(1).split()
+    assert "Architecture.drawio" not in allowed, \
+        "a rendered file the model must not write is still allowlisted"
+    assert 'cp "$RUNNER_TEMP/frozen/Architecture.drawio" Architecture.drawio' in restore
+
+    names = [s.get("name") for s in _steps()]
+    revalidate = "Re-validate the diagrams after the model ran"
+    assert revalidate in names
+    assert "--check" in steps[revalidate]
+    # and it must come after every model step
+    last_gemini = max(i for i, n in enumerate(names) if n and n.startswith("Regenerate "))
+    assert names.index(revalidate) > last_gemini
+
+
+def test_verifier_drift_outside_the_regenerated_docs_reaches_the_pr_body():
+    """The step comment promised the PR body carries it; nothing interpolated
+    it. (Codex, PR #1009.)"""
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    verify = steps["Verify regenerated docs"]
+    assert "refresh-inputs/verify_other.md" in verify, \
+        "the non-blocking findings are not written anywhere a later step can read"
+    assert 'cat refresh-inputs/verify_other.md >> "$GITHUB_STEP_SUMMARY"' in verify
+
+    pr = next(v for k, v in steps.items() if k and k.startswith("Open refresh PR"))
+    assert "DRIFT=$(cat refresh-inputs/verify_other.md" in pr
+    assert "${DRIFT}" in pr

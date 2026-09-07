@@ -1,0 +1,115 @@
+"""Regression tests for the drawio companion regenerator.
+
+Every count on the diagrams has now gone stale at least once, and each time
+the mechanism was the same: a number reachable only through a one-time
+literal in REPLACEMENTS. Once that literal is consumed by the first
+regeneration, the cell is unreachable forever and `--check` stays green
+beside a diagram that contradicts itself.
+
+The cases pinned here are the two Codex found on PR #1009:
+
+  * `sec_box` read "Secret Manager - 21 secrets" while the subtitle on the
+    same page read 22, and
+  * `ext_gh` read "(5 workflows)" against six active YAMLs, because nothing
+    ever populated `live["_workflows"]` -- so `gha_group` silently dropped
+    its count too.
+
+Both are asserted through `check()`, which is what a monthly run consults.
+"""
+from __future__ import annotations
+
+import json
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import pytest
+
+import scripts.maintenance.refresh_architecture_drawio as dw
+
+REPO = Path(__file__).resolve().parents[2]
+SNAPSHOT = REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+
+
+@pytest.fixture
+def live() -> dict:
+    d = json.loads(SNAPSHOT.read_text())
+    d["_workflows"] = dw.active_workflows()
+    return d
+
+
+@pytest.fixture
+def main_root() -> ET.Element:
+    return ET.parse(dw.MAIN).getroot()
+
+
+def _cell(root: ET.Element, cid: str) -> ET.Element:
+    for c in root.iter("mxCell"):
+        if c.get("id") == cid:
+            return c
+    raise AssertionError(f"cell {cid} not in the diagram")
+
+
+def test_the_committed_diagram_agrees_with_the_snapshot(main_root, live):
+    assert dw.check(main_root, live) == []
+
+
+def test_a_stale_secret_count_in_any_cell_is_caught(main_root, live):
+    """sec_box said 21 while the subtitle said 22, and check() was silent."""
+    c = _cell(main_root, "sec_box")
+    c.set("value", c.get("value").replace("22 secrets", "21 secrets", 1))
+    problems = dw.check(main_root, live)
+    assert any("sec_box says 21 secrets, live is 22" in p for p in problems), problems
+
+
+def test_a_stale_workflow_count_is_caught(main_root, live):
+    c = _cell(main_root, "ext_gh")
+    c.set("value", c.get("value").replace("(6 workflows)", "(5 workflows)", 1))
+    problems = dw.check(main_root, live)
+    assert any("ext_gh says 5 workflows" in p for p in problems), problems
+
+
+def test_the_workflow_count_tracks_the_repo_not_a_literal(main_root, live):
+    """A seventh workflow must move the cell, not just the assertion.
+
+    The earlier fix wrote the count once from REPLACEMENTS; this asserts the
+    value is derived, by moving the input and requiring the output to follow.
+    """
+    live7 = dict(live, _workflows=live["_workflows"] + ["a-new-one.yml"])
+    assert any("ext_gh says 6 workflows, live is 7" in p
+               for p in dw.check(main_root, live7))
+    dw._rewrite_main_counts(main_root, live7)
+    assert "(7 workflows)" in _cell(main_root, "ext_gh").get("value")
+    assert dw._check_main_counts(main_root, live7) == []
+
+
+def test_active_workflows_excludes_retired_files(tmp_path):
+    """`*.yml.disabled` is the repo's retirement convention (CLAUDE.md)."""
+    wf = tmp_path / ".github/workflows"
+    wf.mkdir(parents=True)
+    (wf / "live-one.yml").write_text("name: x\n")
+    (wf / "also-live.yaml").write_text("name: y\n")
+    (wf / "retired.yml.disabled").write_text("name: z\n")
+    assert dw.active_workflows(tmp_path) == ["live-one.yml"]
+
+
+def test_every_count_bearing_main_cell_is_rewritten(main_root, live):
+    """No count-bearing cell may be reachable only through REPLACEMENTS.
+
+    Scans the committed diagram for the patterns the rewrite understands and
+    requires the rewrite to own every occurrence -- the property that was
+    missing when sec_box drifted.
+    """
+    stale = 0
+    for c in main_root.iter("mxCell"):
+        v = c.get("value") or ""
+        for pat, key, _noun in dw.MAIN_COUNT_PATTERNS:
+            import re
+            for m in re.finditer(pat, v):
+                bumped = m.group(0).replace(m.group(1), str(int(m.group(1)) + 1), 1)
+                c.set("value", v.replace(m.group(0), bumped, 1))
+                stale += 1
+                break
+    assert stale, "the diagram carries no count-bearing cells — the scan is wrong"
+    assert dw._check_main_counts(main_root, live), "a bumped count went unnoticed"
+    dw._rewrite_main_counts(main_root, live)
+    assert dw._check_main_counts(main_root, live) == []

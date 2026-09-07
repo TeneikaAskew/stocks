@@ -737,3 +737,47 @@ def test_a_history_word_does_not_suppress_a_count_claim(tmp_path):
     assert [f.check for f in _check(
         tmp_path, "`trading-platform` was deleted on 2026-09-06.",
         name="RUNBOOK.md")] == []
+
+
+def _names(tmp_path, text, live):
+    """check_known_names alone, against a caller-supplied live set."""
+    p = tmp_path / "ARCHITECTURE.md"
+    p.write_text(text)
+    out: list[vd.Finding] = []
+    vd.check_known_names(p, "ARCHITECTURE.md", live, out)
+    return out
+
+
+# The prefix heuristic only fires when a live name shares the candidate's
+# first segment, so the base LIVE above (no `options-*` job) cannot exercise
+# this at all -- the first version of these tests passed against the unfixed
+# code for that reason.
+_LIVE_OPTIONS = dict(LIVE, run_jobs=LIVE["run_jobs"] + ["options-retention"])
+
+
+def test_a_declared_but_undeployed_job_is_not_an_unknown_name(tmp_path):
+    """`options-exec-backtest` is in gcp/deploy.sh and not deployed.
+
+    ARCHITECTURE.md §16 names the declared job each entrypoint belongs to, and
+    §15 is where the declared-vs-live gap is reported with its reason. Flagging
+    it here reported one fact twice, in the more confusing of the two places.
+    (Surfaced by the recursive module walk, Codex PR #1009.)
+    """
+    out = _names(tmp_path, "The `options-exec-backtest` Cloud Run Job runs the simulator.",
+                 _LIVE_OPTIONS)
+    assert out == [], out
+
+
+def test_a_name_in_neither_the_repo_nor_live_is_still_flagged(tmp_path):
+    """Accepting declared names must not blind the check to a real stale claim."""
+    out = _names(tmp_path, "The `options-exec-backtestt` Cloud Run Job runs the simulator.",
+                 _LIVE_OPTIONS)
+    assert [f.check for f in out] == ["unknown-name"], out
+
+
+def test_declared_names_are_read_from_deploy_sh_not_swallowed():
+    """The first version caught ImportError and returned an empty set, so the
+    acceptance silently did nothing (CLAUDE.md 3.7)."""
+    names = vd._declared_names()
+    assert "options-exec-backtest" in names
+    assert len(names) > 100, "deploy.sh declares 67 jobs and 65 schedulers"

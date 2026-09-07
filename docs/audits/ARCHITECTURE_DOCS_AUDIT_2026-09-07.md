@@ -269,3 +269,38 @@ Codex's fourth pass (head `ee0f1cd`) found eight more, and two of them were find
 | transcripts were written under `refresh-inputs/`, which every later Gemini invocation can write to and which the stray-edit check excludes — so a later model could erase an earlier truncation report before the gate read it | fixed; transcripts are written to `$RUNNER_TEMP`, outside the checkout the model can reach |
 
 The two repeat findings are the useful lesson: a fix reported without a test that would have failed beforehand is a claim, not a change. Both now have one.
+
+Codex's sixth pass (head `d8b5939`, the tree after `main` merged for #1010 and
+#1013) found nine more. All nine were confirmed against the code, the repo or
+live GCP before anything was changed, and each carries a test that fails
+against the code as it stood:
+
+| Finding | Evidence it was real | Fix |
+|---|---|---|
+| a DUPLICATED inventory block passed every gate: `insert_blocks` rewrites the first match only (`count=1`), so the second copy survives the fresh-render comparison byte-identical, the marker check was a membership test, and churn scores REMOVED lines so pure duplication cannot trip it | reproduced by doubling the `jobs` block: gate silent | markers are COUNTED; a block must occur exactly once |
+| the `ext_gh` cell said `5 workflows` against six active YAMLs, and nothing ever populated `live["_workflows"]`, so `gha_group` silently dropped its count too | `ls .github/workflows/*.yml` = 6; the cell = 5 | `active_workflows()` reads the repo (`*.yml`, never `*.yml.disabled`); both cells derive from it |
+| `sec_box` read `Secret Manager — 21 secrets` beside a 22-secret subtitle on the same page | both strings present in the committed diagram | main-page counts are rewritten from their CURRENT value by regex and validated per cell, the mechanism the icon page already had |
+| the diagrams were validated only BEFORE Gemini ran, while all four model steps keep `write_file`/`replace` over the checkout and the stray-write allowlist named both files | read from the step order | the diagrams are frozen with the gate inputs, removed from the allowlist (a model edit is now a stray write), restored, and `--check` runs again after the model |
+| the docstring of `fetch_premarket_refresh.py` gave two conflicting schedules — 08:20 in its first line, 08:30 and 08:45 further down | live: `premarket-refresh-daily` `20 8 * * 1-5`, `premarket-brief-daily` `30 8 * * 1-5` | all four timings corrected to 08:20 / 08:30 |
+| the verify step's own comment said outside-doc drift is "a warning the PR body carries"; the PR body never interpolated it | `${DRIFT}` absent from the body | the filtered findings are written to `verify_other.md`, appended to the job summary and interpolated into the PR body |
+| `MODULE_DIRS` was a hand-listed set of directories globbed NON-recursively, so §16's "production module catalog" omitted every subpackage nobody remembered to add | `lib/features/`, `lib/agents/ranker/`, `gcp/research/direction_program/` all absent; 168 of 200 modules listed | `MODULE_ROOTS` walked with `rglob`, tests/`_archive`/caches excluded; a test asserts the catalog equals a plain filesystem walk |
+| operator advice inside a `raise` was classified as executed SQL: `gcp/signal_monitor.py:288` carries `UPDATE watchlists SET signals = TRUE` in a RuntimeError message, and the four-line context window dragged the following log line in with it, so the blast radius named `signal-monitor` a writer of a table it only reads | both lines cited in the write graph | string literals inside `raise`, logging calls, `print` and `warnings.warn` are excluded from write classification, and blanked from the context window. Measured across all 66 tables: exactly one writer dropped, the false one |
+| `README_REQUIRED_LINKS` checked 11 of the 14 in-repo targets `.github/prompts/readme.md` mandates; dropping a row for one of the other three left no dead link, kept the headings, and README is exempt from the size floor | three missing from the tuple | all three added, plus a test that re-parses the prompt's "Must link" clause and fails when the prompt and the gate disagree |
+
+Two things worth recording about the round rather than the findings.
+
+The recursive module walk surfaced a row for `lib/options_exec_backtest/cli.py`
+naming the job `options-exec-backtest`, which the verifier then flagged as an
+unknown name. That was the verifier being wrong, not the doc: the job IS
+declared in `gcp/deploy.sh` and simply not deployed, one of the two
+declared-not-live jobs §15 already reports with its reason. `check_known_names`
+now accepts repo-declared names; a name in neither the repo nor live is still
+flagged, and a test pins that.
+
+And the first version of the tests for that change PASSED against the unfixed
+code, because the test fixture's live job set contained no `options-*` name and
+the check only flags candidates sharing a first segment with a live one — so
+the assertion never reached the code path it claimed to cover. It was caught by
+running it against the stashed original, which is the only thing that
+distinguishes a test from a hope. Same lesson as round 4, arrived at from the
+other direction: run the new test against the OLD code, every time.

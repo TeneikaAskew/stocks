@@ -75,6 +75,26 @@ def test_removing_both_markers_of_a_block_is_a_finding(live, repo, tmp_path):
     assert any("inventory:orphans block is missing entirely" in f for f in findings), findings
 
 
+def test_a_duplicated_block_is_a_finding(live, repo, tmp_path):
+    """A doubled inventory block survived every other gate.
+
+    insert_blocks rewrites the FIRST match only (count=1), so the second copy
+    passes through the fresh-render comparison byte-identical; the old
+    membership check saw both markers present and said nothing; and the churn
+    ceiling scores REMOVED lines, so pure duplication cannot trip it either.
+    """
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    import re
+    text = (root / "ARCHITECTURE.md").read_text()
+    s, e = inv.MARKER_START.format(name="jobs"), inv.MARKER_END.format(name="jobs")
+    block = re.search(re.escape(s) + r".*?" + re.escape(e), text, re.S).group(0)
+    (root / "ARCHITECTURE.md").write_text(text.replace(block, block + "\n\n" + block, 1))
+    findings = gate.gate_markers(root, repo, live)
+    assert any("inventory:jobs appears 2 times" in f for f in findings), findings
+
+
 def test_a_rewrite_that_keeps_its_length_is_a_finding(tmp_path):
     """The 2026-09-02 failure mode: a doc replaced rather than updated.
 
@@ -169,6 +189,36 @@ def test_stale_reference_outside_history_context_is_a_finding(tmp_path):
     assert any("db-query.yml" in f for f in gate.gate_stale(root))
     (root / "README.md").write_text((REPO / "README.md").read_text() + "\nThe old `db-query.yml` workflow was deleted 2026-05-30.\n")
     assert not any("db-query.yml" in f for f in gate.gate_stale(root)), "history context is allowed"
+
+
+def test_every_prompt_mandated_map_target_is_gated(tmp_path):
+    """The README prompt and the gate must name the same set.
+
+    Dropping a map row leaves no dead link, keeps the headings, and README is
+    exempt from the size floor -- so an ungated target could vanish silently.
+    (Codex, PR #1009.)
+    """
+    import re
+    prompt = (REPO / ".github/prompts/readme.md").read_text()
+    line = next(ln for ln in prompt.splitlines() if "Documentation map" in ln)
+    # Only the "Must link ..." clause names required targets; the sentence
+    # after it ("Add a row for any new top-level or `docs/` reference
+    # document") is guidance, and its bare `docs/` is not a map row.
+    clause = line.split("Must link", 1)[1].split("Add a row", 1)[0]
+    mandated = {m for m in re.findall(r"`([^`]+)`", clause) if "/" in m or m.endswith(".md")}
+    missing = sorted(mandated - set(gate.README_REQUIRED_LINKS))
+    assert not missing, f"prompt mandates rows the gate does not check: {missing}"
+
+
+def test_dropping_a_map_row_is_a_finding(tmp_path):
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    text = (root / "README.md").read_text()
+    assert "(docs/GCP_IMPLEMENTATION_GUIDE.md)" in text
+    (root / "README.md").write_text(text.replace("(docs/GCP_IMPLEMENTATION_GUIDE.md)", "(ARCHITECTURE.md)"))
+    findings = gate.gate_readme(root)
+    assert any("docs/GCP_IMPLEMENTATION_GUIDE.md" in f for f in findings), findings
 
 
 def test_dead_link_and_readme_mermaid_are_findings(tmp_path):

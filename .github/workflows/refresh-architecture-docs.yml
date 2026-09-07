@@ -394,8 +394,16 @@ jobs:
           rm -rf "$RUNNER_TEMP/frozen"
           mkdir -p "$RUNNER_TEMP/frozen"
           cp -r refresh-inputs "$RUNNER_TEMP/frozen/refresh-inputs"
+          # The diagrams are RENDERED, not written by the model, but the four
+          # Gemini runs keep write_file/replace over the whole checkout and the
+          # drawio validation ran only in the render step above -- so an edit
+          # made after it was staged and published unchecked (Codex, #1009).
+          # Freeze them here; restore and re-validate after the model runs.
+          cp Architecture.drawio Architecture-icons.drawio "$RUNNER_TEMP/frozen/"
           git rev-parse HEAD > "$RUNNER_TEMP/frozen/head.sha"
           # Prove the freeze actually captured the inputs the gates depend on.
+          test -f "$RUNNER_TEMP/frozen/Architecture.drawio"
+          test -f "$RUNNER_TEMP/frozen/Architecture-icons.drawio"
           for F in live.json verify_live.json previous; do
             test -e "$RUNNER_TEMP/frozen/refresh-inputs/$F" || {
               echo "::error::freeze did not capture refresh-inputs/$F"; exit 1; }
@@ -467,7 +475,10 @@ jobs:
       - name: Restore gate inputs and refuse model edits outside the docs
         run: |
           set -e
-          ALLOWED="ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio"
+          # The diagrams are deliberately NOT here: they are rendered from the
+          # snapshot before Gemini runs, so a model edit to one is a stray
+          # write, not an update. (Codex, PR #1009.)
+          ALLOWED="ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md"
           # tracked files the model touched that are not generated docs
           STRAY=""
           for F in $(git diff --name-only; git ls-files --others --exclude-standard | grep -v '^refresh-inputs/' || true); do
@@ -488,7 +499,19 @@ jobs:
               <(sed 's|  \./|  |' "$RUNNER_TEMP/frozen/manifest.sha256") ) || {
             echo "::error::restored gate inputs do not match the frozen copies"; exit 1; }
           test "$(git rev-parse HEAD)" = "$(cat "$RUNNER_TEMP/frozen/head.sha")"
+          cp "$RUNNER_TEMP/frozen/Architecture.drawio" Architecture.drawio
+          cp "$RUNNER_TEMP/frozen/Architecture-icons.drawio" Architecture-icons.drawio
           echo "gate inputs restored and verified against the pre-Gemini manifest"
+
+      # Re-run the drawio validation against what will actually be committed:
+      # the render step validated the diagrams BEFORE the model could reach
+      # them, and nothing looked again afterwards. (Codex, PR #1009.)
+      - name: Re-validate the diagrams after the model ran
+        run: |
+          set -e
+          python scripts/maintenance/refresh_architecture_drawio.py \
+            --snapshot refresh-inputs/live.json \
+            --repo-jobs refresh-inputs/repo_jobs.json --check
 
       - name: Verify regenerated docs
         run: |
@@ -567,9 +590,30 @@ jobs:
             echo "::error::verify_docs_against_live.py found drift in a regenerated doc (see above)"
             FAIL=1
           fi
+          # Drift outside the four regenerated docs is a warning, not a
+          # failure -- but it has to REACH a reviewer. It was only ever
+          # printed to the Actions log and converted to warnings, while the
+          # comment above claimed the PR body carried it. (Codex, PR #1009.)
           grep -E '^\[[a-z-]+\] ' refresh-inputs/verify_findings.txt \
             | grep -vE '^\[[a-z-]+\] (README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\.md:' \
-            | sed 's/^/::warning::docs-vs-live drift outside the regenerated docs: /' || true
+            > refresh-inputs/verify_other.txt || true
+          sed 's/^/::warning::docs-vs-live drift outside the regenerated docs: /' \
+            refresh-inputs/verify_other.txt || true
+          if [ -s refresh-inputs/verify_other.txt ]; then
+            {
+              echo
+              echo "### Docs-vs-live drift outside the regenerated docs"
+              echo
+              echo "Not fixed by this refresh (it does not generate these files) and not"
+              echo "blocking. Each line is a claim in an operational doc that no longer"
+              echo "matches live GCP."
+              echo
+              echo '```'
+              cat refresh-inputs/verify_other.txt
+              echo '```'
+            } > refresh-inputs/verify_other.md
+            cat refresh-inputs/verify_other.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           exit $FAIL
 
@@ -674,6 +718,7 @@ jobs:
           # The added/removed accounting the gate step produced, so a reviewer
           # sees what moved without reading the whole diff.
           DIFF_REPORT=$(cat refresh-inputs/diff_report.md 2>/dev/null || echo "_no accounting produced_")
+          DRIFT=$(cat refresh-inputs/verify_other.md 2>/dev/null || true)
 
           # A PR may already be open for this branch from an earlier run this
           # month. `gh pr create` errors loudly in that case even though the
@@ -699,6 +744,7 @@ jobs:
           \`\`\`
 
           ${DIFF_REPORT}
+          ${DRIFT}
 
           ## What ran
 

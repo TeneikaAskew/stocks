@@ -102,10 +102,16 @@ HISTORY_OK = re.compile(
     r"no longer|merged|stub|history|since)\b|Removed since last refresh|verify-docs-ok",
     re.I,
 )
+# Every in-repo target .github/prompts/readme.md mandates a row for. Three
+# were missing (GCP_IMPLEMENTATION_GUIDE, docs/audits/, cloudbuild/README):
+# dropping those rows left no dead link, kept the headings, and README is
+# exempt from the size floor, so a shortened map passed every gate.
+# (Codex, PR #1009.) The solyra repo row is an external URL, not a path.
 README_REQUIRED_LINKS = (
     "ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "RUNBOOK.md",
     "ERD.md", "docs/PIPELINE.md", "docs/DATA_PIPELINE.md", "docs/API.md",
-    "docs/product/README.md", "CLAUDE.md", "SETUP.md",
+    "docs/GCP_IMPLEMENTATION_GUIDE.md", "docs/product/README.md", "docs/audits/",
+    "gcp/cloudbuild/README.md", "CLAUDE.md", "SETUP.md",
 )
 LINK = re.compile(r"\]\(([^)#\s]+)(#[^)]*)?\)")
 
@@ -173,9 +179,17 @@ def gate_markers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]
     for doc in MARKER_DOCS:
         text = (root / doc).read_text()
         for name in inv.SECTIONS:
-            s, e = inv.MARKER_START.format(name=name), inv.MARKER_END.format(name=name)
-            if (s in text) != (e in text):
-                out.append(f"{doc}: unbalanced markers for inventory:{name}")
+            # Counted, not tested for membership: insert_blocks rewrites the
+            # FIRST match only (count=1), so a duplicated block keeps its
+            # second copy verbatim through the fresh-render comparison, and
+            # the added lines never trip a removal-based churn ceiling. A
+            # doubled job or route table would publish. (Codex, PR #1009)
+            ns = text.count(inv.MARKER_START.format(name=name))
+            ne = text.count(inv.MARKER_END.format(name=name))
+            if ns != ne:
+                out.append(f"{doc}: unbalanced markers for inventory:{name} ({ns} start, {ne} end)")
+            elif ns > 1:
+                out.append(f"{doc}: inventory:{name} appears {ns} times — a block must occur exactly once")
         for name in EXPECTED_MARKERS.get(doc, ()):
             if inv.MARKER_START.format(name=name) not in text:
                 out.append(f"{doc}: inventory:{name} block is missing entirely (both markers deleted)")
