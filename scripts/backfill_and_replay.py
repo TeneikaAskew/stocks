@@ -140,6 +140,22 @@ def _execute_job(job: str, env: dict[str, str], wait: bool = True) -> bool:
     return True
 
 
+def _month_groups(dates: list[date]) -> list[list[date]]:
+    """Group dates by calendar month, ascending.
+
+    backfill-ticker pulls one full AV 1-minute month per month a date
+    touches (plus the prior trading day's month), sequentially, inside a
+    600 s task timeout (gcp/deploy.sh deploy_backfill_ticker) while each
+    AV monthly request may take up to 120 s. One execution per month keeps
+    every run inside that deadline instead of letting a long --dates list
+    exhaust it after the fetches and before the indicators (Codex on
+    #1022)."""
+    groups: dict[tuple[int, int], list[date]] = {}
+    for d in sorted(set(dates)):
+        groups.setdefault((d.year, d.month), []).append(d)
+    return [groups[k] for k in sorted(groups)]
+
+
 def trigger_backfill_ticker(ticker: str, dates: list[date], *,
                             include_news: bool, history_days: int,
                             news_window_days: int, wait: bool = True) -> bool:
@@ -148,19 +164,24 @@ def trigger_backfill_ticker(ticker: str, dates: list[date], *,
     news, then indicators + strat + pre-market context through the one
     production indicator map. Same job the Discord /replay command
     dispatches (gcp/discord_interactions/main.py), minus its watchlist
-    side effect."""
-    log.info("Cloud Run backfill-ticker → %s dates=%s history=%dd news=%s",
-             ticker, [d.isoformat() for d in dates], history_days, include_news)
-    return _execute_job('backfill-ticker', {
-        'BACKFILL_TICKER': ticker,
-        'BACKFILL_DATES': ';'.join(d.isoformat() for d in sorted(dates)),
-        'BACKFILL_INCLUDE_NEWS': 'true' if include_news else 'false',
-        'BACKFILL_HISTORY_DAYS': str(history_days),
-        'BACKFILL_NEWS_WINDOW': str(news_window_days),
-        # Historical-test tickers must not join (or be reactivated in) the
-        # shared production watchlist that every fetcher iterates.
-        'BACKFILL_ADD_TO_WATCHLIST': 'false',
-    }, wait=wait)
+    side effect. One execution per calendar month of ``dates`` (see
+    _month_groups); returns False on the first failed month."""
+    for group in _month_groups(dates):
+        log.info("Cloud Run backfill-ticker → %s dates=%s history=%dd news=%s",
+                 ticker, [d.isoformat() for d in group], history_days, include_news)
+        ok = _execute_job('backfill-ticker', {
+            'BACKFILL_TICKER': ticker,
+            'BACKFILL_DATES': ';'.join(d.isoformat() for d in group),
+            'BACKFILL_INCLUDE_NEWS': 'true' if include_news else 'false',
+            'BACKFILL_HISTORY_DAYS': str(history_days),
+            'BACKFILL_NEWS_WINDOW': str(news_window_days),
+            # Historical-test tickers must not join (or be reactivated in) the
+            # shared production watchlist that every fetcher iterates.
+            'BACKFILL_ADD_TO_WATCHLIST': 'false',
+        }, wait=wait)
+        if not ok:
+            return False
+    return True
 
 
 def trigger_insight_pipeline(ticker: str, as_of_iso_utc: str, wait: bool = True):

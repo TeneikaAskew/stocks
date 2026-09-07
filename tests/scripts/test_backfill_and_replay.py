@@ -79,3 +79,36 @@ def test_backfill_opts_out_of_the_shared_watchlist():
     ad-hoc historical-test ticker into the shared default watchlist (or
     reactivate a removed one); the script must pass the opt-out."""
     assert re.search(r"'BACKFILL_ADD_TO_WATCHLIST':\s*'false'", SRC)
+
+
+def test_backfill_runs_one_execution_per_month(monkeypatch):
+    """Codex on #1022: backfill-ticker fetches a full 1-min month per
+    touched month inside a 600 s task timeout, so a --dates list spanning
+    months must be split across executions."""
+    import importlib
+    from datetime import date as _d
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    seen: list = []
+    monkeypatch.setattr(mod, "_execute_job", lambda job, env, wait=True: seen.append((job, env)) or True)
+    dates = [_d(2026, 4, 24), _d(2026, 3, 31), _d(2026, 4, 2), _d(2026, 1, 15)]
+    assert mod.trigger_backfill_ticker("AMD", dates, include_news=False,
+                                       history_days=800, news_window_days=7)
+    assert [e["BACKFILL_DATES"] for _, e in seen] == [
+        "2026-01-15", "2026-03-31", "2026-04-02;2026-04-24"]
+    assert all(j == "backfill-ticker" for j, _ in seen)
+
+
+def test_backfill_stops_at_the_first_failed_month(monkeypatch):
+    import importlib
+    from datetime import date as _d
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    calls: list = []
+
+    def _fake(job, env, wait=True):
+        calls.append(env["BACKFILL_DATES"])
+        return len(calls) < 2   # second month fails
+
+    monkeypatch.setattr(mod, "_execute_job", _fake)
+    ok = mod.trigger_backfill_ticker("AMD", [_d(2026, 1, 5), _d(2026, 2, 5), _d(2026, 3, 5)],
+                                     include_news=False, history_days=800, news_window_days=7)
+    assert ok is False and calls == ["2026-01-05", "2026-02-05"]
