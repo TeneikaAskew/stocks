@@ -395,6 +395,14 @@ def _no_connection(*_a, **_k):
 
 _GATE_FLAGS = ("_HAS_CLOUD_SQL", "_CLOUD_SQL")
 
+# Every variable `gcp.database.is_cloud_sql_configured()` reads, listed from
+# that function rather than recalled: it needs DB_USER/DB_PASS/DB_NAME plus one
+# of CLOUD_SQL_CONNECTION_NAME or DB_HOST. DB_PORT joins them because
+# `_direct_db_url` reads it and a stray value should not reach a URL this
+# harness builds.
+_DB_ENV = ("DB_USER", "DB_PASS", "DB_NAME", "DB_HOST", "DB_PORT",
+           "CLOUD_SQL_CONNECTION_NAME")
+
 
 def _clear_process_caches() -> None:
     """Empty every module-level response cache before the sweep runs.
@@ -482,6 +490,51 @@ def client(tmp_path_factory):
         # this fixture is where it will show up, as a real connection attempt
         # during collection rather than a silent one.
         from api.main import app
+
+        # `GET /api/health/freshness` and `GET /api/admin/data-sources` both
+        # run `audit_data_freshness.audit_all()`, and one of its checks --
+        # `enrichment_coverage` -- is gated on the WALL-CLOCK HOUR in Eastern
+        # time. Inside `_ENRICHMENT_WINDOW_ET` (05:00-12:59 ET) it issues SQL,
+        # which under this harness raises and 500s the route; outside it, it
+        # returns a "skipped" row, issues nothing, and the route answers 200.
+        #
+        # So those two rows were pinned to the time of day. CI ran this file
+        # at 04:27 ET and passed; the same commit fails at 05:52 ET. Nothing
+        # about the code changes -- the suite would simply have started
+        # failing on its own for eight hours out of every twenty-four, which
+        # is worse than the environment-dependence it was already carrying
+        # because it looks like a real regression.
+        #
+        # The window is emptied so the check always takes its documented
+        # skip path. This file asserts that every route ANSWERS; whether the
+        # coverage query is correct is a different file's business, and
+        # pinning it here would have meant pinning a clock.
+        import audit_data_freshness
+
+        mp.setattr(audit_data_freshness, "_ENRICHMENT_WINDOW_ET", (0, 0))
+
+        # Clear the database environment. Two routers gate at REQUEST time
+        # rather than at import -- `grid._require_cloud_sql` and
+        # `get_playbook` each `from gcp.database import
+        # is_cloud_sql_configured` inside the function -- so patching
+        # `get_engine` never reached them and their answer came from the
+        # developer's shell. Reproduced: with DB_HOST/DB_USER/DB_PASS/DB_NAME
+        # exported, the five grid rows and `GET /api/playbook/IWM` all diverge
+        # from what this table pins (Codex, PR #999).
+        #
+        # Clearing the environment rather than patching the predicate, because
+        # the predicate is not the only thing that reads these variables and a
+        # call site added later would go straight back to the shell. The
+        # assertion below is what keeps that true: it fails at setup if a new
+        # variable appears that `_DB_ENV` does not name, rather than letting a
+        # route quietly answer something else.
+        for var in _DB_ENV:
+            mp.delenv(var, raising=False)
+        assert not database.is_cloud_sql_configured(), (
+            "the harness cleared _DB_ENV and a database still reports as "
+            "configured — `is_cloud_sql_configured` reads a variable this "
+            "list does not name, and the pinned statuses below are now "
+            "answering from the environment rather than from the code")
 
         mp.setattr(database, "get_engine", _no_connection)
         mp.setattr(model_routing, "connect", _no_connection)
@@ -620,9 +673,22 @@ def client(tmp_path_factory):
         # this file produced (under an admin identity, with the Cloud SQL
         # gates forced open) in a cache another test file reads would export
         # this file's harness to the rest of the suite.
-        _clear_process_caches()
-        mp.undo()
-        os.chdir(original_cwd)
+        #
+        # In its own `try`, because it is the only fallible step here and it
+        # ran FIRST. If setup failed while importing `api.routers.health` --
+        # or cache clearing raised for any other reason -- the finalizer
+        # exited before `mp.undo()` and `os.chdir()`, leaving the patches and
+        # the `platform/` working directory in place for every test collected
+        # afterwards: exactly the cascade this `finally` exists to prevent,
+        # reached through the finalizer itself (Codex, PR #999).
+        #
+        # Restoration must not depend on cleanup succeeding, so cleanup is
+        # what gets wrapped, not the other way round.
+        try:
+            _clear_process_caches()
+        finally:
+            mp.undo()
+            os.chdir(original_cwd)
 
         # `mp.undo()` restores each attribute to whatever it held when
         # `setattr` recorded it -- which is only the real function if the
