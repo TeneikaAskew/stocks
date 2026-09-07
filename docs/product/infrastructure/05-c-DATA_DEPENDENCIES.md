@@ -397,7 +397,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) — line [581](../../../gcp/fetchers/fetch_sec_filings.py#L581), [582](../../../gcp/fetchers/fetch_sec_filings.py#L582), [583](../../../gcp/fetchers/fetch_sec_filings.py#L583)
 
 ### `signal_alerts`
-- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1698](../../../gcp/signal_monitor.py#L1698), [1699](../../../gcp/signal_monitor.py#L1699), [1701](../../../gcp/signal_monitor.py#L1701), [2279](../../../gcp/signal_monitor.py#L2279), [2282](../../../gcp/signal_monitor.py#L2282), [2304](../../../gcp/signal_monitor.py#L2304)
+- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1698](../../../gcp/signal_monitor.py#L1698), [1699](../../../gcp/signal_monitor.py#L1699), [1701](../../../gcp/signal_monitor.py#L1701), [2283](../../../gcp/signal_monitor.py#L2283), [2286](../../../gcp/signal_monitor.py#L2286), [2308](../../../gcp/signal_monitor.py#L2308)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [379](../../../gcp/signal_monitor_eod_resolver.py#L379), [380](../../../gcp/signal_monitor_eod_resolver.py#L380), [382](../../../gcp/signal_monitor_eod_resolver.py#L382), [400](../../../gcp/signal_monitor_eod_resolver.py#L400)
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [10](../../../scripts/replay_signal_monitor.py#L10), [296](../../../scripts/replay_signal_monitor.py#L296)
 
@@ -424,7 +424,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `trades`
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [705](../../../gcp/migrate_to_gcp.py#L705), [707](../../../gcp/migrate_to_gcp.py#L707), [716](../../../gcp/migrate_to_gcp.py#L716), [735](../../../gcp/migrate_to_gcp.py#L735)
-- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2279](../../../gcp/signal_monitor.py#L2279), [2281](../../../gcp/signal_monitor.py#L2281), [2284](../../../gcp/signal_monitor.py#L2284), [2287](../../../gcp/signal_monitor.py#L2287), [2318](../../../gcp/signal_monitor.py#L2318)
+- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2283](../../../gcp/signal_monitor.py#L2283), [2285](../../../gcp/signal_monitor.py#L2285), [2288](../../../gcp/signal_monitor.py#L2288), [2291](../../../gcp/signal_monitor.py#L2291), [2322](../../../gcp/signal_monitor.py#L2322)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [379](../../../gcp/signal_monitor_eod_resolver.py#L379), [383](../../../gcp/signal_monitor_eod_resolver.py#L383), [387](../../../gcp/signal_monitor_eod_resolver.py#L387), [390](../../../gcp/signal_monitor_eod_resolver.py#L390), [393](../../../gcp/signal_monitor_eod_resolver.py#L393), [413](../../../gcp/signal_monitor_eod_resolver.py#L413)
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [68](../../../gcp/trade_logger.py#L68), [71](../../../gcp/trade_logger.py#L71)
 - [`scripts/analysis/phase7_feedback_loop.py`](../../../scripts/analysis/phase7_feedback_loop.py) — line [276](../../../scripts/analysis/phase7_feedback_loop.py#L276)
@@ -716,7 +716,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [20](../../../gcp/premarket_playbook_resolver.py#L20), [362](../../../gcp/premarket_playbook_resolver.py#L362), [524](../../../gcp/premarket_playbook_resolver.py#L524)
 - [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [4](../../../gcp/regime_combo_job.py#L4)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [339](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L339)
-- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [375](../../../gcp/signal_monitor.py#L375), [405](../../../gcp/signal_monitor.py#L405), [1845](../../../gcp/signal_monitor.py#L1845)
+- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [375](../../../gcp/signal_monitor.py#L375), [405](../../../gcp/signal_monitor.py#L405), [1849](../../../gcp/signal_monitor.py#L1849)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [18](../../../gcp/signal_monitor_eod_resolver.py#L18)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [172](../../../lib/data_loader.py#L172), [288](../../../lib/data_loader.py#L288), [301](../../../lib/data_loader.py#L301)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [124](../../../lib/features/intraday_flow.py#L124)
@@ -853,8 +853,8 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/db_query_job.py`](../../../gcp/db_query_job.py) — line [18](../../../gcp/db_query_job.py#L18)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [5](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L5)
 - [`gcp/research/strat_engine/strat_walk_forward.py`](../../../gcp/research/strat_engine/strat_walk_forward.py) — line [513](../../../gcp/research/strat_engine/strat_walk_forward.py#L513)
-- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2283](../../../gcp/signal_monitor.py#L2283)
-- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [120](../../../gcp/trade_logger.py#L120), [139](../../../gcp/trade_logger.py#L139), [148](../../../gcp/trade_logger.py#L148), [181](../../../gcp/trade_logger.py#L181)
+- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2287](../../../gcp/signal_monitor.py#L2287)
+- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [125](../../../gcp/trade_logger.py#L125), [144](../../../gcp/trade_logger.py#L144), [153](../../../gcp/trade_logger.py#L153), [186](../../../gcp/trade_logger.py#L186)
 - [`gcp/weekend_review.py`](../../../gcp/weekend_review.py) — line [26](../../../gcp/weekend_review.py#L26)
 - [`lib/backtest.py`](../../../lib/backtest.py) — line [11](../../../lib/backtest.py#L11), [326](../../../lib/backtest.py#L326), [357](../../../lib/backtest.py#L357), [358](../../../lib/backtest.py#L358)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [174](../../../lib/data_loader.py#L174), [599](../../../lib/data_loader.py#L599), [602](../../../lib/data_loader.py#L602), [625](../../../lib/data_loader.py#L625)

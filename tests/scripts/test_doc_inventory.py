@@ -447,3 +447,31 @@ def test_a_route_registered_only_behind_a_dist_guard_is_not_inventoried():
     registers in production. (Codex, PR #1009.)"""
     routes = {r["path"] for r in inv.repo_inventory(REPO)["routes"]}
     assert "/{full_path:path}" not in routes, "an inactive route is published as live"
+
+
+def test_deploy_jobs_reads_flags_declared_in_a_helper_function(tmp_path):
+    """#1022: apply-schema-migrations' flags live in `_apply_schema_job_flags`,
+    used by both its bootstrap create and the serialized in-build update.
+    The inventory must read them from there, not render Cloud Run defaults."""
+    from scripts.maintenance.doc_inventory import deploy_jobs
+
+    (tmp_path / "gcp").mkdir()
+    (tmp_path / "gcp/deploy.sh").write_text("""#!/usr/bin/env bash
+_apply_schema_job_flags() {
+    printf '%s' "--memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 --service-account ${SA_EMAIL} --command python,-m,gcp.apply_schema ${DB_SECRET_FLAG} --set-env-vars $(_env_string)"
+}
+
+deploy_apply_schema_migrations() {
+    gcloud run jobs create apply-schema-migrations \\
+        --image "${IMAGE}" --region "${REGION}" \\
+        $(_apply_schema_job_flags) \\
+        --quiet
+}
+""")
+    jobs = {j["name"]: j for j in deploy_jobs(tmp_path)}
+    job = jobs["apply-schema-migrations"]
+    assert job["task_timeout"] == "1800" and job["max_retries"] == "0"
+    assert job["memory"] == "512Mi" and job["cpu"] == "1"
+    assert job["command"] == "python -m gcp.apply_schema"
+    assert job["uses_secrets"] is True
+    assert job["timeout_defaulted"] is False and job["retries_defaulted"] is False

@@ -3113,26 +3113,41 @@ EOF
 # `jobs execute`, repointing the job at the local image; the build would
 # then execute a different schema while recording its own revision as
 # applied, and the serializer cannot see a local mutation (Codex on #1022).
+# The job's declaration, ONE function used by both the bootstrap create
+# below and the serialized in-build update in apply_schema_via_build, so the
+# two converge on the same flags. Without this, once the bootstrap stopped
+# updating an existing job, nothing could change the live job's timeout,
+# env or secrets again (the trigger configs pass --image only; internal
+# review of #1022 round 14). 1800 s: the apply itself is seconds, but
+# gcp/apply_schema.py refreshes any materialized view the apply left
+# unpopulated (the two earnings views, weekly refresh job sized at 1200 s),
+# so the budget covers apply + refresh with Rule 0 headroom.
+_apply_schema_job_flags() {
+    printf '%s' "--memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 --service-account ${SA_EMAIL} --command python,-m,gcp.apply_schema ${DB_SECRET_FLAG} --set-env-vars $(_env_string)"
+}
+
 deploy_apply_schema_migrations() {
-    if gcloud run jobs describe apply-schema-migrations --region "${REGION}" \
-           --format='value(name)' >/dev/null 2>&1; then
-        echo "apply-schema-migrations exists; not touching it here. Its image moves"
-        echo "  only through the serialized path: ./gcp/deploy.sh apply-schema, or"
-        echo "  the apply-schema-on-change / deploy-solyra-api-staging triggers."
+    local desc
+    if desc=$(gcloud run jobs describe apply-schema-migrations --region "${REGION}" \
+                --format='value(name)' 2>&1); then
+        echo "apply-schema-migrations exists; not touching it here. Its image and"
+        echo "  configuration move only through the serialized path: ./gcp/deploy.sh"
+        echo "  apply-schema, or the apply-schema-on-change / deploy-solyra-api-staging triggers."
         return 0
     fi
+    # Only a real NOT_FOUND means "create". A 503, quota or auth failure must
+    # not fall into `jobs create` (which then fails with ALREADY EXISTS and
+    # aborts `all)` at its first job; internal review of #1022 round 14).
+    if ! printf '%s' "${desc}" | grep -qi "not found"; then
+        echo "ERROR: cannot tell whether apply-schema-migrations exists; not creating it." >&2
+        echo "       ${desc}" >&2
+        return 1
+    fi
     echo "Creating apply-schema-migrations job..."
-    # 1800 s: the apply itself is seconds, but gcp/apply_schema.py refreshes
-    # any materialized view the apply left unpopulated (the two earnings
-    # views, whose weekly refresh job is sized at 1200 s), so the budget
-    # covers apply + refresh with Rule 0 headroom (Codex on #1022).
+    # shellcheck disable=SC2046  # the flags are deliberately word-split
     gcloud run jobs create apply-schema-migrations \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 \
-        --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.apply_schema" \
-        ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        $(_apply_schema_job_flags) \
         --quiet
 }
 
@@ -3144,24 +3159,41 @@ deploy_apply_schema_migrations() {
 # committer time and its rev-list, exactly what the trigger builds pass.
 # Only the serializer script and the generated config are uploaded.
 apply_schema_via_build() {
-    local digest revision revision_time ancestors tmpdir
+    local digest revision revision_time ancestors tmpdir flags rc
     digest=$(gcloud artifacts docker images describe "${IMAGE}:latest" \
                --format='value(image_summary.fully_qualified_digest)') || return 1
     if [ -z "${digest}" ]; then
         echo "ERROR: cannot resolve ${IMAGE}:latest to a digest; run ./gcp/deploy.sh build first." >&2
         return 1
     fi
-    revision=$(git rev-parse HEAD) || return 1
-    revision_time=$(git log -1 --format=%ct HEAD) || return 1
-    ancestors=$(git rev-list --max-count=100 HEAD | tr '\n' ' ') || return 1
-    if [ -n "$(git status --porcelain)" ]; then
-        echo "WARNING: the working tree has uncommitted changes. The schema applied is the" >&2
-        echo "         one build_image staged; the revision recorded is HEAD ${revision:0:12}." >&2
+    # The revision the guard records must be a MAIN commit: main is linear
+    # (squash merges), and a feature-branch SHA is neither ancestor nor
+    # descendant of the next squash commit, so a later main apply could be
+    # refused on committer time alone (internal review of #1022 round 14).
+    # On main, HEAD itself; off main, the newest main commit this checkout
+    # contains. The schema applied is still this checkout's.
+    git fetch -q origin main || { echo "ERROR: cannot fetch origin/main to place HEAD on main's history." >&2; return 1; }
+    if git merge-base --is-ancestor HEAD origin/main; then
+        revision=$(git rev-parse HEAD) || return 1
+    else
+        revision=$(git merge-base HEAD origin/main) || return 1
+        echo "WARNING: HEAD $(git rev-parse --short HEAD) is not on origin/main. The schema applied is" >&2
+        echo "         this checkout's, but the guard records main commit ${revision:0:12}, the" >&2
+        echo "         newest main commit it contains, so no later main apply is refused." >&2
     fi
+    revision_time=$(git log -1 --format=%ct "${revision}") || return 1
+    ancestors=$(git rev-list --max-count=100 "${revision}" | tr '\n' ' ') || return 1
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "WARNING: the working tree has uncommitted changes; the schema applied is the one" >&2
+        echo "         build_image staged." >&2
+    fi
+    # The full declaration goes into the in-build update so the live job
+    # converges on it (timeout, env, secrets), not just the image. `$` is
+    # escaped for Cloud Build's substitution parser; \$BUILD_ID is left for
+    # it, and nothing else in the rendered file contains a $.
+    flags=$(_apply_schema_job_flags | sed 's/\$/$$/g')
     tmpdir=$(mktemp -d)
     cp gcp/cloudbuild/wait_for_earlier_schema_builds.sh "${tmpdir}/"
-    # \$BUILD_ID is left for Cloud Build to substitute; everything else is
-    # expanded here, and none of it contains a $.
     cat > "${tmpdir}/cloudbuild.yaml" <<EOF
 # Generated by gcp/deploy.sh apply_schema_via_build. Tagged and serialized
 # like gcp/cloudbuild/apply-schema-cloudbuild.yaml; see that file's header.
@@ -3180,7 +3212,9 @@ steps:
         set -euo pipefail
         echo ">> apply-schema-migrations -> ${digest} (revision ${revision})"
         gcloud run jobs update apply-schema-migrations \\
-          --image="${digest}" --region=${REGION} --quiet
+          --image=${digest} --region=${REGION} \\
+          ${flags} \\
+          --quiet
         gcloud run jobs execute apply-schema-migrations --region=${REGION} \\
           --args="--revision=${revision},--revision-time=${revision_time},--revision-ancestors=${ancestors}" \\
           --wait
@@ -3191,9 +3225,19 @@ options:
 timeout: 5400s
 EOF
     echo "Submitting the schema apply as a tagged, serialized Cloud Build (revision ${revision:0:12})..."
-    gcloud builds submit --config "${tmpdir}/cloudbuild.yaml" "${tmpdir}" \
-        || { echo "ERROR: the serialized schema apply failed; see the build log above." >&2; rm -rf "${tmpdir}"; return 1; }
+    rc=0
+    # --timeout is passed explicitly so an operator's builds/timeout property
+    # cannot shrink the budget the serializer computes from.
+    gcloud builds submit --config "${tmpdir}/cloudbuild.yaml" --timeout=5400s "${tmpdir}" || rc=$?
     rm -rf "${tmpdir}"
+    # Pin whatever the job runs now, whatever the build's outcome: a failed
+    # execute after a successful update leaves the job on a digest only
+    # :latest keeps alive, and the next build moves that tag.
+    pin_image_tags || return 1
+    if [ "${rc}" -ne 0 ]; then
+        echo "ERROR: the serialized schema apply failed (build exit ${rc}); see the build log above." >&2
+        return "${rc}"
+    fi
 }
 
 # One-shot SPX Greeks backfill. Walks every historical SPX snapshot_date in

@@ -84,7 +84,7 @@ def _apply_job_task_timeout() -> int:
     """The --task-timeout deploy.sh declares for apply-schema-migrations."""
     import re
     body = (REPO / "gcp/deploy.sh").read_text()
-    fn = body[body.index("deploy_apply_schema_migrations() {"):]
+    fn = body[body.index("_apply_schema_job_flags() {"):]
     fn = fn[:fn.index("\n}")]
     timeouts = {int(m) for m in re.findall(r"--task-timeout (\d+)", fn)}
     assert len(timeouts) == 1, timeouts
@@ -225,3 +225,150 @@ def test_the_manual_apply_target_is_a_tagged_serialized_cloud_build():
     updaters = {name for name in re.findall(r"^([a-z_][a-z0-9_]*)\(\)\s*\{", _CODE, re.M)
                 if "gcloud run jobs update apply-schema-migrations" in _fn(name)}
     assert updaters == {"apply_schema_via_build"}, updaters
+
+
+# ── Executable checks of the two deploy.sh functions (internal review of
+# round 14): run them under bash with stub `gcloud` / `git` on PATH.
+import os
+import stat
+import subprocess
+import textwrap
+
+
+def _bash_env(tmp_path, gcloud_script: str, git_script: str | None = None) -> dict:
+    binder = tmp_path / "bin"
+    binder.mkdir(exist_ok=True)
+    for name, body in (("gcloud", gcloud_script), ("git", git_script)):
+        if body is None:
+            continue
+        f = binder / name
+        f.write_text("#!/usr/bin/env bash\n" + textwrap.dedent(body))
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    env = dict(os.environ)
+    env["PATH"] = f"{binder}:{env['PATH']}"
+    env["OUT"] = str(tmp_path)
+    return env
+
+
+def _run_fn(tmp_path, env, call: str) -> subprocess.CompletedProcess:
+    defs = "\n".join(f"{n}() {{{_fn(n)}}}" for n in
+                     ("_apply_schema_job_flags", "deploy_apply_schema_migrations", "apply_schema_via_build"))
+    script = f"""set -uo pipefail
+PROJECT_ID=proj; REGION=us-east1; SA_EMAIL=sa@proj.iam.gserviceaccount.com
+IMAGE=us-east1-docker.pkg.dev/proj/trading/trading-system; DB_SECRET_FLAG='--set-secrets DB_PASSWORD=db-pw:latest'
+_env_string() {{ echo 'CLOUD_SQL_CONNECTION_NAME=proj:us-east1:db,DB_USER=trading,DB_NAME=trading'; }}
+pin_image_tags() {{ echo PINNED >> "$OUT/calls"; }}
+{defs}
+cd {REPO}
+{call}
+echo "rc=$?"
+"""
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, cwd=str(REPO))
+
+
+_GCLOUD_OK = """
+    echo "$*" >> "$OUT/calls"
+    case "$1 $2 $3" in
+      "run jobs describe") echo "${DESCRIBE_STDERR:-}" >&2; exit "${DESCRIBE_RC:-0}" ;;
+      "run jobs create") exit 0 ;;
+      "artifacts docker images") echo "us-east1-docker.pkg.dev/proj/trading/trading-system@sha256:abc123"; exit 0 ;;
+      "builds submit x") ;;
+    esac
+    if [ "$1 $2" = "builds submit" ]; then
+      for a in "$@"; do case "$a" in --config) want=1 ;; *) if [ "${want:-0}" = 1 ]; then cp "$a" "$OUT/rendered.yaml"; want=0; fi ;; esac; done
+      exit "${SUBMIT_RC:-0}"
+    fi
+    exit 0
+"""
+_GIT_ON_MAIN = """
+    case "$*" in
+      "fetch -q origin main") exit 0 ;;
+      "merge-base --is-ancestor HEAD origin/main") exit "${OFF_MAIN:-0}" ;;
+      "merge-base HEAD origin/main") echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+      "rev-parse HEAD") echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+      "rev-parse --short HEAD") echo aaaaaaaa ;;
+      "status --porcelain") ;;
+      *) case "$1" in log) echo 1700000000 ;; rev-list) printf '%s\\n' "$3" 1111111111111111111111111111111111111111 ;; esac ;;
+    esac
+"""
+
+
+def test_bootstrap_distinguishes_not_found_from_a_describe_failure(tmp_path):
+    """Internal review of round 14: `describe ... 2>/dev/null` treated a
+    503 / auth blip like NOT_FOUND, fell into `jobs create`, which then
+    failed with ALREADY EXISTS and aborted `all)` at its first job."""
+    env = _bash_env(tmp_path, _GCLOUD_OK)
+    env.update(DESCRIBE_RC="1", DESCRIBE_STDERR="ERROR: (gcloud.run.jobs.describe) Job [apply-schema-migrations] not found.")
+    r = _run_fn(tmp_path, env, "deploy_apply_schema_migrations")
+    calls = (tmp_path / "calls").read_text()
+    assert "run jobs create apply-schema-migrations" in calls and "rc=0" in r.stdout, r.stdout + r.stderr
+    (tmp_path / "calls").write_text("")
+    env.update(DESCRIBE_RC="1", DESCRIBE_STDERR="ERROR: (gcloud.run.jobs.describe) PERMISSION_DENIED: quota")
+    r = _run_fn(tmp_path, env, "deploy_apply_schema_migrations")
+    calls = (tmp_path / "calls").read_text()
+    assert "run jobs create" not in calls, "a describe failure that is not NOT_FOUND must not create"
+    assert "rc=1" in r.stdout and "cannot tell" in r.stderr, r.stdout + r.stderr
+
+
+def test_serialized_apply_renders_a_valid_config_that_converges_the_full_job_declaration(tmp_path):
+    """Internal review of round 14 (blocking): with the bootstrap no longer
+    updating an existing job and the in-build update passing only --image,
+    nothing could ever change the live job's task-timeout, env or secrets
+    again (live was 600 s against the declared 1800). The serialized update
+    now carries the same declaration the bootstrap creates with, the rendered
+    config parses, and $BUILD_ID is the only Cloud Build substitution left."""
+    import re
+    env = _bash_env(tmp_path, _GCLOUD_OK, _GIT_ON_MAIN)
+    r = _run_fn(tmp_path, env, "apply_schema_via_build")
+    assert "rc=0" in r.stdout, r.stdout + r.stderr
+    rendered = (tmp_path / "rendered.yaml").read_text()
+    cfg = yaml.safe_load(rendered)
+    assert [s["id"] for s in cfg["steps"]] == ["serialize", "apply"]
+    assert cfg["tags"] == ["apply-schema-on-change"] and cfg["timeout"] == "5400s"
+    assert cfg["serviceAccount"].endswith("/serviceAccounts/sa@proj.iam.gserviceaccount.com")
+    assert re.findall(r"\$\{?[A-Za-z_]+\}?", rendered) == ["$BUILD_ID"], "only $BUILD_ID may be left for Cloud Build"
+    apply = " ".join(cfg["steps"][1]["args"])
+    update = apply[apply.index("gcloud run jobs update"):apply.index("gcloud run jobs execute")]
+    for flag in ("--image=us-east1-docker.pkg.dev/proj/trading/trading-system@sha256:abc123",
+                 "--task-timeout 1800", "--memory 512Mi", "--max-retries 0",
+                 "--command python,-m,gcp.apply_schema", "--set-secrets DB_PASSWORD=db-pw:latest",
+                 "--set-env-vars CLOUD_SQL_CONNECTION_NAME=proj:us-east1:db,DB_USER=trading,DB_NAME=trading"):
+        assert flag in update, flag
+    execute = apply[apply.index("gcloud run jobs execute"):]
+    assert "--revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,--revision-time=1700000000,--revision-ancestors=aaaaaaaa" in execute
+    assert "--wait" in execute
+    calls = (tmp_path / "calls").read_text()
+    assert "--timeout=5400s" in calls, "the submit must not depend on the operator's builds/timeout property"
+    assert "PINNED" in calls, "the digest the job now runs must be pinned"
+
+
+def test_job_declaration_is_one_function_used_by_create_and_update():
+    body = _fn("_apply_schema_job_flags")
+    assert "--task-timeout 1800" in body
+    assert "_apply_schema_job_flags" in _fn("deploy_apply_schema_migrations")
+    assert "_apply_schema_job_flags" in _fn("apply_schema_via_build")
+
+
+def test_serialized_apply_pins_even_when_the_build_fails(tmp_path):
+    """A failed execute after a successful update leaves the job on a digest
+    only :latest keeps alive; the pin must run whatever the build's outcome."""
+    env = _bash_env(tmp_path, _GCLOUD_OK, _GIT_ON_MAIN)
+    env["SUBMIT_RC"] = "1"
+    r = _run_fn(tmp_path, env, "apply_schema_via_build")
+    assert "rc=1" in r.stdout, r.stdout + r.stderr
+    assert "PINNED" in (tmp_path / "calls").read_text()
+
+
+def test_manual_apply_records_the_main_base_when_head_is_off_main(tmp_path):
+    """Internal review of round 14: recording a feature-branch SHA lets a
+    later main apply be refused on committer time (the branch commit is
+    neither ancestor nor descendant of the squash commit). Off main, the
+    guard records the newest main commit the checkout contains."""
+    env = _bash_env(tmp_path, _GCLOUD_OK, _GIT_ON_MAIN)
+    env["OFF_MAIN"] = "1"
+    r = _run_fn(tmp_path, env, "apply_schema_via_build")
+    assert "rc=0" in r.stdout, r.stdout + r.stderr
+    rendered = (tmp_path / "rendered.yaml").read_text()
+    assert "--revision=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb," in rendered
+    assert "--revision=aaaaaaaa" not in rendered
+    assert "not on origin/main" in r.stderr
