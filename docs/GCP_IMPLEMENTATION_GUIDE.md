@@ -1349,7 +1349,7 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/raw/
 ./gcp/deploy.sh monitor     # Deploy signal-monitor service
 ./gcp/deploy.sh weekend     # Deploy weekend-review job
 ./gcp/deploy.sh fetchers    # Deploy all 4 fetch jobs
-./gcp/deploy.sh schedulers  # Create 21 Cloud Scheduler triggers
+./gcp/deploy.sh schedulers  # Create the Cloud Scheduler triggers (64 live)
 ./gcp/deploy.sh all         # build + fetchers + premarket + monitor + weekend + schedulers
 ```
 

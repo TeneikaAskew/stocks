@@ -546,34 +546,58 @@ WORD_NUMBERS = {
 _NUM = r"(\d{1,3}|" + "|".join(WORD_NUMBERS) + r")"
 
 COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
-    (re.compile(rf"\b{_NUM}\s+Cloud Run Jobs\b", re.I), "run_jobs", "Cloud Run Jobs"),
+    (re.compile(rf"\b{_NUM}\s+Cloud\s+Run\s+Jobs\b", re.I), "run_jobs", "Cloud Run Jobs"),
     # Qualified deliberately: a bare "N services" in operational prose is as
     # likely to mean GCP APIs or third-party vendors as Cloud Run services.
-    (re.compile(rf"\b{_NUM}\s+(?:long-lived\s+)?(?:HTTP\s+|Cloud Run\s+)"
+    (re.compile(rf"\b{_NUM}\s+(?:long-lived\s+)?(?:HTTP\s+|Cloud\s+Run\s+)"
                 rf"(?:HTTP\s+)?services\b", re.I), "services", "Cloud Run services"),
-    (re.compile(rf"\b{_NUM}\s+(?:cron triggers|scheduler jobs|schedulers|"
-                rf"Cloud Scheduler jobs)\b", re.I), "schedulers", "Cloud Scheduler jobs"),
+    # The noun for a scheduler is spelled at least five ways across these
+    # docs -- "cron triggers", "scheduler jobs", "scheduler entries",
+    # "Cloud Scheduler entries", "schedulers" -- and the first version of this
+    # pattern knew three of them, so `SCH[84 Cloud Scheduler entries]` and
+    # "returns **84 scheduler entries**" were still invisible on a run that
+    # reported clean. That is the same narrowing the review caught one level
+    # up, so the alternation is now the whole vocabulary the repo uses.
+    (re.compile(rf"\b{_NUM}\s+(?:cron\s+triggers|(?:Cloud\s+)?[Ss]cheduler\s+"
+                rf"(?:jobs|entries|triggers)|schedulers)\b", re.I),
+     "schedulers", "Cloud Scheduler jobs"),
     # "| Cloud Scheduler (60 jobs, 3 free) |" -- the "3 free" is a free-tier
-    # quota, not a fleet count, so only the parenthesised total is read.
-    (re.compile(rf"Cloud Scheduler\s*\(\s*{_NUM}\s+jobs\b", re.I),
+    # quota, not a fleet count, so only the leading number is read.
+    # "Cloud Scheduler (84 live / 58 declared)" is the same shape: the LIVE
+    # count is the checkable one, the declared count describes gcp/deploy.sh.
+    (re.compile(rf"Cloud\s+Scheduler\s*\(\s*{_NUM}\s+(?:jobs|live)\b", re.I),
      "schedulers", "Cloud Scheduler jobs"),
 )
 
 
 def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
-    """A stated resource count must match the live count."""
-    for i, line in _lines(path):
-        if RETIRED_OK.search(line):
-            continue
-        for pattern, key, label in COUNT_CLAIMS:
-            n_live = len(live[key])
-            for claimed in pattern.findall(line):
-                n = WORD_NUMBERS.get(claimed.lower())
-                if n is None:
-                    n = int(claimed)
-                if n != n_live:
-                    out.append(Finding("count-drift", rel, i,
-                                       f"claims {claimed} {label}; live count is {n_live}"))
+    r"""A stated resource count must match the live count.
+
+    Scans the WHOLE file rather than line by line. Prose wraps, and a count
+    claim wraps with it: `docs/product/05-INFRASTRUCTURE.md` says "returns
+    **84 scheduler\nentries**", which a per-line scan cannot see even with the
+    right vocabulary. That is the same blind spot the Eastern-timezone guard
+    was caught with on #993 -- a formatter's line break defeating a check --
+    so this uses the same remedy: match the full text, derive the line number
+    from the match offset. The `\s+` in the patterns already spans newlines.
+    """
+    text = path.read_text(errors="replace")
+    raw = text.splitlines()
+    skip = {i for i, line in enumerate(raw, 1) if SUPPRESS.search(line)}
+    skip |= {i + 1 for i in skip}
+    for pattern, key, label in COUNT_CLAIMS:
+        n_live = len(live[key])
+        for m in pattern.finditer(text):
+            i = text.count("\n", 0, m.start()) + 1
+            if i in skip or RETIRED_OK.search(raw[i - 1]):
+                continue
+            claimed = m.group(1)
+            n = WORD_NUMBERS.get(claimed.lower())
+            if n is None:
+                n = int(claimed)
+            if n != n_live:
+                out.append(Finding("count-drift", rel, i,
+                                   f"claims {claimed} {label}; live count is {n_live}"))
 
 
 def main() -> int:

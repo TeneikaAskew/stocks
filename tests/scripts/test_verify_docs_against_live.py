@@ -374,3 +374,53 @@ def test_cadence_words_are_not_day_qualifiers():
     them as day words split rows on prose ("Loads daily data") and invented
     segments carrying no claim."""
     assert vd._day_segments("nightly at 01:00, loads daily data hourly") == []
+
+
+# ── Count vocabulary and wrapped claims ─────────────────────────────────────
+# Widening `check_counts` to services and schedulers was still not enough on
+# the first pass: the repo spells a scheduler at least five ways, and a run
+# that reported clean was sitting on `SCH[84 Cloud Scheduler entries]`,
+# `Cloud Scheduler (84 live / 58 declared)` and a claim broken across two
+# lines by prose wrapping. Same narrowing, one level down.
+
+@pytest.mark.parametrize("text", [
+    "**60 cron triggers** drive the Jobs above.",
+    "SCH[60 Cloud Scheduler entries] --> JOBS",
+    "returns **60 scheduler entries**.",
+    "| Cloud Scheduler (60 live / 58 declared) |",
+    "driven by 60 Cloud Scheduler entries",
+    "# Create 60 Cloud Scheduler triggers",
+])
+def test_every_scheduler_spelling_is_counted(tmp_path, text):
+    out = _check(tmp_path, text)
+    assert [f.check for f in out] == ["count-drift"], text
+    assert f"live count is {len(LIVE['schedulers'])}" in out[0].detail
+
+
+def test_a_count_claim_broken_across_lines_is_still_counted(tmp_path):
+    """`docs/product/05-INFRASTRUCTURE.md` says "returns **84 scheduler\nentries**".
+
+    A per-line scan cannot see that however good its vocabulary is — the same
+    blind spot the Eastern-timezone guard was caught with on #993, where a
+    formatter's line break defeated the check. `check_counts` matches the whole
+    file and derives the line from the match offset.
+    """
+    out = _check(tmp_path,
+                 "`gcloud scheduler jobs list --location=us-east1` returns **60 scheduler\n"
+                 "entries**. The two numbers answer different questions.")
+    assert [f.check for f in out] == ["count-drift"]
+    assert out[0].line == 1, "the finding must point at the line the claim starts on"
+
+
+def test_a_reviewed_exemption_still_suppresses_a_wrapped_claim(tmp_path):
+    """Whole-file matching must not lose the per-line suppression markers."""
+    out = _check(tmp_path,
+                 "<!-- verify-docs-ok: deliberately the declared count -->\n"
+                 "**60 scheduler entries** are declared in the repo.")
+    assert out == []
+
+
+def test_the_free_tier_quota_is_still_not_a_fleet_count(tmp_path):
+    n = len(LIVE["schedulers"])
+    out = _check(tmp_path, f"| Cloud Scheduler ({n} jobs, 3 free) | **$0.30** |")
+    assert out == []
