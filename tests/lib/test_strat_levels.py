@@ -680,6 +680,23 @@ class TestIdentifyTriggers:
         assert [t['price'] for t in calls['targets']] == [101.00]
         assert calls['room_to_first_target'] == pytest.approx((101.0 - 100.004) / 100.004 * 100, abs=1e-3)
 
+    def test_a_line_on_the_anchors_cent_is_not_a_trigger(self):
+        """100.0041 against a 100.004 anchor is the same cent; the trigger is
+        the first line a full cent beyond, the same rule select_nearest_levels
+        applies to the ladder (Codex P2 on #1030, round 7)."""
+        levels = {
+            'PDO': StratLevel('PDO', 100.0041, 'day', 'open', '', False, ''),
+            'PDH': StratLevel('PDH', 101.00, 'day', 'high', '2U', False, ''),
+            'PWH': StratLevel('PWH', 102.00, 'week', 'high', '2U', False, ''),
+            'PDL': StratLevel('PDL', 99.9961, 'day', 'low', '2D', False, ''),  # same cent, below
+            'PWL': StratLevel('PWL', 98.00, 'week', 'low', '2D', False, ''),
+        }
+        triggers = identify_triggers(100.004, levels)
+        assert triggers['calls']['trigger_name'] == 'PDH'
+        assert triggers['calls']['trigger_level'] == 101.00
+        assert triggers['puts']['trigger_name'] == 'PWL'
+        assert triggers['calls']['stop_name'] == 'PWL'
+
     def test_targets_one_cent_apart_are_distinct_despite_float_error(self):
         """240.01 - 240.00 < 0.01 in binary; integer cents keep them apart."""
         levels = {

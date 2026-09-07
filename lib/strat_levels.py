@@ -1010,8 +1010,15 @@ def identify_triggers(
       and the same level would be used as a 41% stop on the CALL side.
     """
     all_levels = sorted(levels.values(), key=lambda lv: lv.price)
-    above_all = [lv for lv in all_levels if lv.price > current_price]
-    below_all = [lv for lv in all_levels if lv.price < current_price]
+    # Partition on the shared cents rule, as select_nearest_levels does: a
+    # line on the anchor's own cent cannot be "broken above" or "below" at
+    # the card's precision, so it is neither a trigger nor a stop. Without
+    # this a raw 100.0041 against a 100.004 anchor was persisted as the
+    # trigger, the ladder omitted it, and every visible rung's slot shifted
+    # by one (Codex P2 on #1030, round 7).
+    anchor_c = price_cents(current_price)
+    above_all = [lv for lv in all_levels if price_cents(lv.price) > anchor_c]
+    below_all = [lv for lv in all_levels if price_cents(lv.price) < anchor_c]
     below_all.reverse()
 
     above_fresh = [

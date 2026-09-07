@@ -406,7 +406,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](lib/strat_levels.py) — line [1825](lib/strat_levels.py#L1825)
+- [`lib/strat_levels.py`](lib/strat_levels.py) — line [1832](lib/strat_levels.py#L1832)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](scripts/calibrate_thresholds.py) — line [25](scripts/calibrate_thresholds.py#L25), [313](scripts/calibrate_thresholds.py#L313), [487](scripts/calibrate_thresholds.py#L487), [489](scripts/calibrate_thresholds.py#L489)
@@ -831,7 +831,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `strat_levels`
 - [`lib/indicators.py`](lib/indicators.py) — line [537](lib/indicators.py#L537)
-- [`lib/strat_levels.py`](lib/strat_levels.py) — line [623](lib/strat_levels.py#L623), [1006](lib/strat_levels.py#L1006), [1650](lib/strat_levels.py#L1650)
+- [`lib/strat_levels.py`](lib/strat_levels.py) — line [623](lib/strat_levels.py#L623), [1006](lib/strat_levels.py#L1006), [1657](lib/strat_levels.py#L1657)
 
 ### `ticker_calibration`
 - [`lib/config.py`](lib/config.py) — line [367](lib/config.py#L367)
