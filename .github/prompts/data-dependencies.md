@@ -2,7 +2,7 @@
 
 You are an automated documentation agent. Bring the prose of `DATA_DEPENDENCIES.md` up to date **without regenerating the file and without deleting content**.
 
-**Output discipline (read this twice).** Edit with the **`replace`** tool (or `write_file` with the complete body). No stdout output, no preamble, no summary. The workflow gates the file on disk.
+**Output discipline (read this twice).** The file is `DATA_DEPENDENCIES.md` at the **repository root**: `file_path: "DATA_DEPENDENCIES.md"`, never `docs/DATA_DEPENDENCIES.md` or any other directory. Edit that path with the **`replace`** tool (or `write_file` with the complete body). Do not create a second copy anywhere. A file written outside the four generated documents fails the run by name and nothing is published — run 15 died exactly that way, having written `docs/DATA_DEPENDENCIES.md`. No stdout output, no preamble, no summary. The workflow gates the file on disk.
 
 ## Inputs (under `refresh-inputs/`)
 

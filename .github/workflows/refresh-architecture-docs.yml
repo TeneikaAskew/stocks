@@ -552,6 +552,16 @@ jobs:
             esac
             # Present before the model ran, so a step put it there, not Gemini.
             if grep -qxF "$F" "$RUNNER_TEMP/frozen/untracked.before"; then continue; fi
+            # A stray whose basename IS one of the generated docs is the model
+            # having written the right document to the wrong directory rather
+            # than an unrelated file. Run 15 produced docs/DATA_DEPENDENCIES.md
+            # and the bare name told a reader nothing about which of the two
+            # mistakes it was; the prompts now pin file_path to the repo root.
+            case " $ALLOWED " in
+              *" $(basename "$F") "*)
+                STRAY="$STRAY $F(wrong directory: $(basename "$F") belongs at the repo root)"
+                continue;;
+            esac
             STRAY="$STRAY $F"
           done
           if [ -n "$STRAY" ]; then
