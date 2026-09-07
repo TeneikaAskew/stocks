@@ -169,7 +169,7 @@ class StratClassifier:
         bar is by definition directional (a '2U' or '2D'), so
         `strat_setup` MUST be False; the entry already happened on
         that bar via the directional break, not on a pending inside
-        bar. Tests in `tests/test_strat.py::TestSetupVsComboOrthogonality`
+        bar. Tests in `tests/lib/test_strat.py::TestSetupVsComboOrthogonality`
         lock this behaviour in.
 
         Priority order on collision (§3 of doc): higher-listed wins. Lower

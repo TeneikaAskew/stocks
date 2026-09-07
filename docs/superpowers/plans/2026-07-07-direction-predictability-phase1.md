@@ -25,7 +25,7 @@
 **Files:**
 - Create: `gcp/research/direction_program/__init__.py` (empty)
 - Create: `gcp/research/direction_program/gate.py`
-- Test: `tests/test_direction_gate.py`
+- Test: `tests/gcp/test_direction_gate.py`
 
 **Interfaces:**
 - Produces: `slice_passes_folds(fold_beats: list[float], min_folds: int = 6, total: int = 8) -> bool` — True iff ≥ min_folds of the fold `beat` values are > 0. `slice_predictable(per_ticker_beats: dict[str, list[float]], min_folds=6, total=8, tickers=("IWM","SPY","QQQ")) -> dict` — returns `{"predictable": bool, "per_ticker_pass": {tk: bool}, "n_tickers_pass": int}`; predictable True iff every required ticker's `slice_passes_folds` is True.
@@ -33,7 +33,7 @@
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_direction_gate.py
+# tests/gcp/test_direction_gate.py
 from gcp.research.direction_program.gate import slice_passes_folds, slice_predictable
 
 def test_passes_when_six_of_eight_beat():
@@ -54,7 +54,7 @@ def test_predictable_requires_all_three_tickers():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_direction_gate.py -q`
+Run: `python -m pytest tests/gcp/test_direction_gate.py -q`
 Expected: FAIL — `ModuleNotFoundError: gcp.research.direction_program.gate`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -85,13 +85,13 @@ def slice_predictable(per_ticker_beats, min_folds: int = 6, total: int = 8,
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_direction_gate.py -q`
+Run: `python -m pytest tests/gcp/test_direction_gate.py -q`
 Expected: PASS (3 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add gcp/research/direction_program/__init__.py gcp/research/direction_program/gate.py tests/test_direction_gate.py
+git add gcp/research/direction_program/__init__.py gcp/research/direction_program/gate.py tests/gcp/test_direction_gate.py
 git commit -m "feat(direction): pre-registered success gate (>=6/8 folds, all 3 tickers)"
 ```
 
@@ -101,7 +101,7 @@ git commit -m "feat(direction): pre-registered success gate (>=6/8 folds, all 3 
 
 **Files:**
 - Create: `gcp/research/direction_program/slice_ledger.py`
-- Test: `tests/test_slice_ledger.py`
+- Test: `tests/gcp/test_slice_ledger.py`
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
@@ -110,7 +110,7 @@ git commit -m "feat(direction): pre-registered success gate (>=6/8 folds, all 3 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_slice_ledger.py
+# tests/gcp/test_slice_ledger.py
 from gcp.research.direction_program.slice_ledger import SliceLedger
 
 def test_record_and_readback_roundtrip(tmp_path):
@@ -138,7 +138,7 @@ def test_appends_across_instances(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_slice_ledger.py -q`
+Run: `python -m pytest tests/gcp/test_slice_ledger.py -q`
 Expected: FAIL — `ModuleNotFoundError: ...slice_ledger`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -179,13 +179,13 @@ class SliceLedger:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_slice_ledger.py -q`
+Run: `python -m pytest tests/gcp/test_slice_ledger.py -q`
 Expected: PASS (2 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add gcp/research/direction_program/slice_ledger.py tests/test_slice_ledger.py
+git add gcp/research/direction_program/slice_ledger.py tests/gcp/test_slice_ledger.py
 git commit -m "feat(direction): append-only slice ledger for multiple-comparisons control"
 ```
 
@@ -195,7 +195,7 @@ git commit -m "feat(direction): append-only slice ledger for multiple-comparison
 
 **Files:**
 - Create: `gcp/research/direction_program/baseline_runner.py`
-- Test: `tests/test_baseline_runner.py`
+- Test: `tests/gcp/test_baseline_runner.py`
 
 **Interfaces:**
 - Consumes: `SliceLedger` (Task 2), `slice_predictable` (Task 1); existing `gcp.research.strat_engine.strat_dir_walk_forward.walk_forward_direction(engine, ticker, tf, cutoffs=None) -> dict` (returns `{"folds": [ {"beat": float, ...}, ... ], ...}`).
@@ -206,7 +206,7 @@ git commit -m "feat(direction): append-only slice ledger for multiple-comparison
 - [ ] **Step 1: Write the failing test** (unit-tests the pure helper; the full run is a documented smoke test, not a unit test, since it needs the DB)
 
 ```python
-# tests/test_baseline_runner.py
+# tests/gcp/test_baseline_runner.py
 from gcp.research.direction_program.baseline_runner import extract_fold_beats
 
 def test_extract_fold_beats_skips_non_ok():
@@ -223,7 +223,7 @@ def test_extract_handles_empty():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_baseline_runner.py -q`
+Run: `python -m pytest tests/gcp/test_baseline_runner.py -q`
 Expected: FAIL — `ModuleNotFoundError: ...baseline_runner`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -280,7 +280,7 @@ def run_baseline(engine, tf: str = "5m",
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_baseline_runner.py -q`
+Run: `python -m pytest tests/gcp/test_baseline_runner.py -q`
 Expected: PASS (2 passed)
 
 - [ ] **Step 5: Documented smoke run (manual, needs DB via IAM; not a unit test)**
@@ -290,7 +290,7 @@ Record in the task report (do not commit output): run `run_baseline` for tf=5m a
 - [ ] **Step 6: Commit**
 
 ```bash
-git add gcp/research/direction_program/baseline_runner.py tests/test_baseline_runner.py
+git add gcp/research/direction_program/baseline_runner.py tests/gcp/test_baseline_runner.py
 git commit -m "feat(direction): 3-axis baseline runner reusing existing WF engines"
 ```
 
@@ -300,7 +300,7 @@ git commit -m "feat(direction): 3-axis baseline runner reusing existing WF engin
 
 **Files:**
 - Create: `gcp/research/direction_program/chart_baseline.py`
-- Test: `tests/test_chart_baseline.py`
+- Test: `tests/gcp/test_chart_baseline.py`
 
 **Interfaces:**
 - Consumes: `scripts.magnitude_result_charts.small_multiples` (already in repo, PR #693); ledger rows (Task 2).
@@ -309,7 +309,7 @@ git commit -m "feat(direction): 3-axis baseline runner reusing existing WF engin
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_chart_baseline.py
+# tests/gcp/test_chart_baseline.py
 import pytest
 pytest.importorskip("matplotlib")
 from gcp.research.direction_program.chart_baseline import beats_to_panels
@@ -328,7 +328,7 @@ def test_beats_to_panels_groups_by_ticker():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_chart_baseline.py -q`
+Run: `python -m pytest tests/gcp/test_chart_baseline.py -q`
 Expected: FAIL — `ModuleNotFoundError: ...chart_baseline`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -364,13 +364,13 @@ def chart_baseline(ledger_path: str, out_path: str) -> str:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_chart_baseline.py -q`
+Run: `python -m pytest tests/gcp/test_chart_baseline.py -q`
 Expected: PASS (1 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add gcp/research/direction_program/chart_baseline.py tests/test_chart_baseline.py
+git add gcp/research/direction_program/chart_baseline.py tests/gcp/test_chart_baseline.py
 git commit -m "feat(direction): 3-axis baseline chart via shared small-multiples tool"
 ```
 

@@ -220,7 +220,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `premarket_analysis`, `playbook_cards` |
 | Models | MODEL-BRIEF-001, MODEL-LEVEL-001 |
 | Code | `platform/src/routes/PlaybookPage.tsx`, `platform/api/routers/playbook.py`, `gcp/premarket_brief.py`, `scripts/analysis/phase6_playbook.py` |
-| Tests | `playbook.spec.ts`, `tests/test_phase6_playbook.py` |
+| Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py` |
 | Open issues | 1 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-playbook-001-premarket-playbook-1-open) |
 | Blocking issues | [#861](https://github.com/TeneikaAskew/stocks/issues/861) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |

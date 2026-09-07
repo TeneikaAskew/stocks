@@ -68,7 +68,7 @@ Two-step rollout per Rule 0:
 
 ## Tests
 
-33 hermetic tests in `tests/test_analyze_timeframe_heuristic.py` cover all target methodologies, bucket boundary thresholds, lookup-table mode logic + 'none' fallback, cold-start, INSUFFICIENT_DATA handling, split determinism, the include_ticker plumbing, and the multi-TF + per-ticker reports.
+33 hermetic tests in `tests/scripts/test_analyze_timeframe_heuristic.py` cover all target methodologies, bucket boundary thresholds, lookup-table mode logic + 'none' fallback, cold-start, INSUFFICIENT_DATA handling, split determinism, the include_ticker plumbing, and the multi-TF + per-ticker reports.
 
 ---
 

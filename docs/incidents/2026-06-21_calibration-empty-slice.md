@@ -7,7 +7,7 @@
 
 ## What happened
 
-`tests/test_strat_dir_probes_calibration.py::test_calibration_path_runs_and_reports_ece`
+`tests/gcp/test_strat_dir_probes_calibration.py::test_calibration_path_runs_and_reports_ece`
 passed in isolation locally (Python 3.11) but failed in the GitHub Actions CI
 full-suite run (Python 3.12):
 
@@ -56,7 +56,7 @@ detection failure after the fixture was enlarged.
   explicit `log.warning(...)` and fallback to `cal_status="RAW_calib_empty_predictions"`.
   Per Rule 3.7: fail loud with a logged reason, never silently swallow.
 
-- **File**: `tests/test_strat_dir_probes_calibration.py`, `_synthetic` default
+- **File**: `tests/gcp/test_strat_dir_probes_calibration.py`, `_synthetic` default
 - **Change**: `per_day=50` → `per_day=200` (4800 total rows; calib slice ~520 rows).
   Guarantees both classes are reliably present and LightGBM produces real splits.
 

@@ -100,7 +100,7 @@ def profile_to_signal_config(profile: StyleProfile) -> SignalConfig:
     approximate "at least N of the full 5-factor set" semantics, which
     could fire on bars where a DIFFERENT combination of (un-named) factors
     happened to reach the same count — the bug
-    `tests/test_style_walk_forward.py` now pins as a regression case.
+    `tests/lib/test_style_walk_forward.py` now pins as a regression case.
 
     HIGH-severity note (direction gating falls out of the allowlist, no
     separate mechanism needed): CALL's and PUT's internal factor names
@@ -278,7 +278,7 @@ class WalkForwardValidator:
 
         Converts `profile` into a `SignalConfig` override via the
         module-level `profile_to_signal_config` (also unit-tested standalone
-        in `tests/test_style_walk_forward.py` — see its docstring for
+        in `tests/lib/test_style_walk_forward.py` — see its docstring for
         exactly how vocabulary conditions become `min_conditions` +
         `enabled_conditions` / range / threshold tunables — the resulting
         gate is EXACT: it fires only when all of the profile's named
