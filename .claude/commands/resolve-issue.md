@@ -336,7 +336,11 @@ one. While writing, the standing gates:
   A widening is three steps:
 
   1. **solyra first** — it widens its TS type and guards every call site `tsc`
-     then flags; that pair IS the compatibility change. The null is exercised
+     then flags; that pair IS the compatibility change. `tsc` is necessary and
+     not sufficient over there: an existing `?? 0` on the widened field
+     compiles before and after, so the compiler never points at it, and it is
+     the site that fabricates a value once this repo emits null. It greps the
+     field for `?? 0` / `|| 0` too. The null is exercised
      by a TEST-ONLY payload, never solyra's canonical mock, which `satisfies`
      its types and is validated against the vendored schema — still the OLD
      one at this step. No snapshot change, so its `contract:check` still
