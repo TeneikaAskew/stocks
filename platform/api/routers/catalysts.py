@@ -29,11 +29,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 router = APIRouter()
 
-# Coalesces cold catalyst fetches per (window, tickers). Bounded well above a
-# normal Benzinga round trip so a decliner usually wakes to a written cache,
-# and gives up rather than holding a worker when the vendor is slow.
+# Coalesces cold catalyst fetches per (window, tickers).
+#
+# SHORT, because a decliner never fetches: the wait only buys the case where
+# the claimant is nearly done, and every second of it is an AnyIO worker held.
+# `fetch_all_catalysts` makes 11 serial requests each allowing 30 s, so a
+# claimant that has not finished in a second or two will not finish in eight
+# either -- waiting longer would cost workers for an outcome it cannot reach.
 _CATALYST_FLIGHT = SingleFlight()
-_CATALYST_WAIT_S = 8.0
+_CATALYST_WAIT_S = 1.5
 logger = logging.getLogger(__name__)
 
 CATALYSTS_FILE = PROJECT_ROOT / "data" / "catalysts" / "catalyst_calendar.json"
@@ -187,18 +191,39 @@ def get_catalyst_events(
     #
     # `refresh=true` is deliberately NOT coalesced away for the claimant: an
     # operator asking for a refresh gets one. A concurrent refresh for the
-    # same window still waits rather than duplicating the batch.
+    # same window still declines rather than duplicating the batch.
+    #
+    # A DECLINER NEVER FETCHES, even after its wait expires. Waiting and then
+    # fetching anyway is the worst of both: `fetch_all_catalysts` makes 11
+    # serial requests each allowing a 30-second timeout, so a slow claimant
+    # runs for minutes, every overlapping request holds an AnyIO worker for
+    # the full wait AND then launches its own complete batch -- multiplying
+    # vendor calls at exactly the moment Benzinga is slow (Codex, PR #991).
+    # That is the same error I made once already on this PR and had
+    # overturned: counting what the waiter gains and not what it costs.
+    #
+    # So the wait is short and speculative -- it only buys the case where the
+    # claimant is nearly done -- and a decliner that comes back empty says so
+    # instead of paying again. The page is not blank either way: the DB
+    # sources below are merged in regardless.
+    benzinga_pending = False
     if refresh or not CATALYSTS_FILE.exists():
         flight_key = f"{d_from}:{d_to}:{','.join(ticker_list or [])}"
         with _CATALYST_FLIGHT.claim(flight_key) as mine:
-            if not mine:
-                _CATALYST_FLIGHT.wait(flight_key, _CATALYST_WAIT_S)
-                # Re-read: the claimant has usually just written the file, in
-                # which case this request pays nothing.
-                cached = _load_cached_events()
-                events = cached.get("events", []) if cached else None
-            if events is None:
+            if mine:
                 events = _fetch_live_events(d_from, d_to, ticker_list)
+            else:
+                _CATALYST_FLIGHT.wait(flight_key, _CATALYST_WAIT_S)
+                # Re-read: a claimant that finished inside the wait has just
+                # written the file, in which case this request pays nothing.
+                cached = _load_cached_events()
+                events = cached.get("events") if cached else None
+                if events is None:
+                    benzinga_pending = True
+                    logger.info(
+                        "catalysts: a fetch for %s..%s is still in flight; "
+                        "serving DB sources only rather than starting a "
+                        "second Benzinga batch", d_from, d_to)
 
     # Fall back to cache. If no Benzinga data is available, fall through
     # with an empty list — our own DB sources (news / SEC) below still
@@ -237,7 +262,11 @@ def get_catalyst_events(
     # Sort dates
     sorted_dates = dict(sorted(by_date.items()))
 
-    sources = ["Benzinga"]
+    # Name what actually contributed. Listing "Benzinga" while its fetch is
+    # still in flight reports a source this response does not carry, which is
+    # the fabricated-provenance shape Rule 3.7 forbids -- and the operator
+    # reading it would have no way to tell a quiet day from a slow vendor.
+    sources = ["Benzinga (fetch in flight)"] if benzinga_pending else ["Benzinga"]
     if db_events:
         sources.append(f"DB (news + sec, {len(db_events)})")
 

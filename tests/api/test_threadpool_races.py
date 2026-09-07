@@ -1085,58 +1085,39 @@ def test_nothing_calls_move_to_end_outside_the_wrapper():
         "window a concurrent eviction fits into:\n  " + "\n  ".join(offenders))
 
 
-def test_a_cold_catalyst_fetch_is_coalesced(tmp_path, monkeypatch):
-    """Two concurrent cold requests must hit Benzinga once, not twice.
+def test_a_catalyst_decliner_never_starts_a_second_vendor_batch():
+    """A decliner must not wait AND then fetch anyway.
 
-    This handler is a plain `def` now, so both requests run in separate worker
-    threads, both pass the cache-existence check, and each walks every
-    configured Benzinga calendar endpoint. `_SAVE_LOCK` is taken after that
-    batch and protects the file, not the vendor quota (Codex, PR #991).
+    `fetch_all_catalysts` makes 11 serial requests each allowing 30 s, so a
+    slow claimant runs for minutes. Waiting and then fetching means every
+    overlapping request holds an AnyIO worker for the full wait and then
+    launches its own complete batch — multiplying vendor calls at exactly the
+    moment Benzinga is slow (Codex, PR #991).
     """
-    import threading
+    import re
+    from pathlib import Path
 
-    from api.routers import catalysts as mod
+    src = (Path(__file__).resolve().parent.parent.parent
+           / "platform" / "api" / "routers" / "catalysts.py").read_text()
+    body = src[src.index("with _CATALYST_FLIGHT.claim("):src.index("# Fall back to cache")]
 
-    calls = []
-    in_fetch = threading.Event()
-    release = threading.Event()
+    # The fetch is reachable only on the claimant branch.
+    assert re.search(r"if mine:\s*\n\s*events = _fetch_live_events", body), (
+        "the fetch must sit under `if mine:` so only the claimant runs it")
+    decliner = body[body.index("else:"):]
+    assert "_fetch_live_events" not in decliner, (
+        "the decliner branch starts a second vendor batch:\n" + decliner)
 
-    def _slow_fetch(d_from, d_to, tickers=None, calendar_types=None):
-        calls.append((d_from, d_to))
-        in_fetch.set()
-        release.wait(2.0)          # hold the claim while the peer arrives
-        return [{"date": d_from, "ticker": "IWM"}]
 
-    monkeypatch.setattr(mod, "_fetch_live_events", _slow_fetch)
-    monkeypatch.setattr(mod, "_load_cached_events",
-                        lambda: {"events": [{"date": "x", "ticker": "IWM"}]})
-
-    key = "2026-09-01:2026-09-10:"
-    results = []
-
-    def claimant():
-        with mod._CATALYST_FLIGHT.claim(key) as mine:
-            assert mine, "the first caller must own the work"
-            results.append(mod._fetch_live_events("2026-09-01", "2026-09-10"))
-
-    def decliner():
-        in_fetch.wait(2.0)
-        with mod._CATALYST_FLIGHT.claim(key) as mine:
-            assert not mine, "the second caller must decline while one is in flight"
-            mod._CATALYST_FLIGHT.wait(key, 0.2)   # bounded; claimant still busy
-            results.append(mod._load_cached_events()["events"])
-
-    a = threading.Thread(target=claimant)
-    b = threading.Thread(target=decliner)
-    a.start(); b.start()
-    in_fetch.wait(2.0)
-    b.join(3.0)
-    release.set()
-    a.join(3.0)
-
-    assert len(calls) == 1, f"the vendor batch ran {len(calls)} times: {calls}"
-    assert len(results) == 2, "both callers must return an answer"
-    assert all(r for r in results), "neither caller may return nothing"
+def test_a_pending_catalyst_fetch_is_not_reported_as_a_source():
+    """Naming Benzinga while its fetch is in flight reports a source this
+    response does not carry — and hides a slow vendor behind what looks like
+    a quiet day (Rule 3.7)."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent.parent
+           / "platform" / "api" / "routers" / "catalysts.py").read_text()
+    assert 'sources = ["Benzinga (fetch in flight)"] if benzinga_pending' in src, (
+        "the response must distinguish a fetch in flight from a real fetch")
 
 
 def test_the_catalyst_wait_is_bounded():
