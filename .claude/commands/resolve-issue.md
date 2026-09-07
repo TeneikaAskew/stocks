@@ -152,12 +152,17 @@ git fetch origin
 # Never `checkout -B` here: -B RESETS an existing local branch to the start
 # point, silently discarding unpushed commits from an earlier run.
 if git show-ref --verify --quiet "refs/heads/<headRefName>"; then
-  git checkout "<headRefName>"        # already local: keep what it carries
-  # `|| echo` would swallow the failure: a diverged branch would then be
-  # implemented and tested against a head missing remote commits, and only
-  # fail at push. A non-fast-forward here is a STOP.
-  git merge --ff-only "origin/<headRefName>" \
-    || { echo "DIVERGED from origin/<headRefName> — reconcile before any edit"; false; }
+  # CHAINED, not two statements. An unchecked `checkout` that fails leaves you
+  # on the previous branch, and the merge then runs there — succeeding silently
+  # whenever that branch is an ancestor of the PR head. You would commit and
+  # `git push -u origin HEAD` somewhere else entirely. The likeliest cause is
+  # this command's own base worktree still holding the ref, so it is a real
+  # path, not a hypothetical.
+  git checkout "<headRefName>" \
+    && git merge --ff-only "origin/<headRefName>" \
+    || { echo "CHECKOUT OR MERGE FAILED for <headRefName> — stop, do not edit"; false; }
+  # A non-fast-forward is a STOP: a diverged branch would be implemented and
+  # tested against a head missing remote commits, and only fail at push.
 else
   git checkout -b "<headRefName>" --track "origin/<headRefName>"
 fi
@@ -181,10 +186,18 @@ So for a code-only finding, keep an unfixed tree to measure against, and say
 which one you used:
 
 ```bash
-git worktree add /tmp/base-tree \
+BASE_TREE=$(mktemp -d -t base-tree-XXXXXX) && rmdir "$BASE_TREE"
+git worktree add "$BASE_TREE" \
   "$(git merge-base origin/main <headRefName>)"   # the PR's own base
 # reproduce there; the failing-before test in Phase 4 runs there too
+...
+git worktree remove "$BASE_TREE"    # when the before-half is captured
 ```
+
+**Remove it when you are done, and use a fresh path.** A registered worktree
+at a fixed path makes the next run's `git worktree add` fail, and it also
+holds the branch ref — which is exactly the checkout failure the CASE A block
+above now chains against. A leftover from one run breaks the next one twice.
 
 A finding about production state — a missing scheduler, a stale table, a bad
 row — is unaffected, because the PR head does not change what GCP or Cloud SQL
@@ -342,7 +355,7 @@ ways and pasted; it does not have to be a pytest case:
 |---|---|
 | A behaviour changes | a test, as below |
 | A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
-| A scheduler or job is retired | `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name)') && ! grep -qx "<job>" <<<"$LIST"` — the listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
+| A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name)') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
 
@@ -594,8 +607,14 @@ replay_check() {
   test $rc -eq 0 || { tail -20 /tmp/replay.log; echo "replay exited $rc"; return 1; }
   n=$(grep -c "evaluate_ticker raised" /tmp/replay.log)
   test "$n" -eq 0 || { echo "$n tickers raised"; return 1; }
-  # and the positive check: a replay that evaluated nothing exits 0
-  grep -q "Bars" /tmp/replay.log || { echo "no bars evaluated"; return 1; }
+  # and the positive check, PER TICKER. `grep -q "Bars"` matches the summary
+  # COLUMN HEADER, printed unconditionally at
+  # scripts/replay_signal_monitor.py:544, so it passes on an all-empty replay —
+  # which is the exact case this section exists to reject.
+  for tk in SPY IWM QQQ; do
+    b=$(awk -v t="$tk" '$1==t {print $2}' /tmp/replay.log); : "${b:=0}"
+    test "$b" -gt 0 || { echo "$tk evaluated $b bars"; return 1; }
+  done
 }
 replay_check          # call it BARE — see below
 ```
@@ -928,9 +947,17 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    this session did not open and was not asked to drive, so the merge is its
    author's call; or the user has said they want to merge it themselves. Never
    merge to get past a step above that has not passed.
-8. **Merging is not deploying.** If Phase 6 deferred the final proof to the
-   merged image, the issue is not closeable yet, because nothing between here
-   and Phase 9 puts that image in front of a user.
+8. **Merging is not deploying — for every runtime fix, not only deferred
+   ones.** A local `uvicorn` run, an in-process replay and a dry-run all
+   exercise YOUR tree; none of them changes what is serving. So the question
+   at this step is not "was the proof deferred" but "does this fix run
+   anywhere at runtime": if it does, it needs a deployment and a production
+   check before Phase 9, however conclusive the pre-merge evidence was. An
+   earlier version made this step conditional on a deferred proof, which
+   exempted exactly the fixes that were verified most carefully.
+
+   Documentation, tests, and CI-only changes are the genuine exemption — they
+   ship by merging.
 
    `gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml:26` says it
    outright: *"Merging to main NEVER touches prod. Prod moves only when a human
