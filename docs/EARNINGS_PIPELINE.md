@@ -280,6 +280,6 @@ gcloud run jobs execute backfill-ticker \
 ## Related docs
 
 - [`DATA_PIPELINE.md`](DATA_PIPELINE.md) — per-table freshness contract
-- [`GCP_ARCHITECTURE.md`](GCP_ARCHITECTURE.md) — infrastructure overview
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — infrastructure overview
 - [`CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) — sandbox patterns for ad-hoc DB queries
 - [`gamma_levels.md`](gamma_levels.md) — gamma analytics (independent pipeline)
