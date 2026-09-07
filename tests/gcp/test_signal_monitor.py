@@ -291,3 +291,64 @@ class TestIndicatorEngineContract:
         import pandas as pd
         pd.testing.assert_series_equal(base['Consecutive_Up_5'],
                                        overridden['Consecutive_Up_5'])
+
+
+class TestCheckOrbTimezone:
+    """#819 (audit R2) — `check_orb` compared bar clock times against the
+    ET market open without converting the index, so in replay (where
+    `market_data_intraday` bars are UTC) the 09:30-10:00 ET window
+    selected 09:30-10:00 UTC, i.e. pre-market bars, and the ORB levels
+    were built from the wrong half hour. This is the 2026-05-06 V1
+    harness bug in production code. The replay-aware conversion already
+    exists twice in the same class (`update_window`'s level-tracking and
+    leg-tracker paths); `check_orb` must use it too."""
+
+    @staticmethod
+    def _utc_bars(start_utc: str, minutes: int, base: float = 200.0):
+        import pandas as pd
+        times = pd.date_range(start_utc, periods=minutes, freq="1min")
+        highs = [base + i * 0.1 for i in range(minutes)]
+        return pd.DataFrame({
+            "Time": times,
+            "Open": highs, "High": highs, "Low": [h - 0.05 for h in highs],
+            "Close": highs, "Volume": [1000] * minutes,
+        })
+
+    def test_replay_utc_bars_use_et_open(self):
+        """Replay: naive-UTC bars from 13:25 UTC (09:25 ET). The 5-minute
+        ORB is 09:30-09:35 ET == 13:30-13:35 UTC, whose highs are the bars
+        at index 5..10. Under the old code nothing matched 09:30-09:35
+        (all clock times are 13:xx) and no ORB level was recorded."""
+        import pandas as pd
+        m = _build_monitor()
+        df = self._utc_bars("2026-05-06 13:25:00", 45)
+        m.replay_clock_ts = pd.Timestamp("2026-05-06 14:10:00")
+        m.check_orb("IWM", df)
+        lv = m.orb_levels["IWM"]
+        assert "5m_high" in lv, "ORB never formed: window compared UTC clock to ET open"
+        assert lv["5m_high"] == pytest.approx(200.0 + 10 * 0.1)   # 13:35 UTC bar
+        assert lv["5m_low"] == pytest.approx(200.0 + 5 * 0.1 - 0.05)  # 13:30 UTC bar
+        assert lv["30m_high"] == pytest.approx(200.0 + 35 * 0.1)  # 14:00 UTC bar
+
+    def test_replay_does_not_take_premarket_utc_bars(self):
+        """The same frame with a pre-market run-up: if the window were
+        still read in UTC, 09:30-10:00 UTC (05:30-06:00 ET) bars would be
+        the ORB. Make those bars the highest and assert they are ignored."""
+        import pandas as pd
+        m = _build_monitor()
+        pre = self._utc_bars("2026-05-06 09:25:00", 40, base=300.0)   # 05:25 ET
+        rth = self._utc_bars("2026-05-06 13:25:00", 40, base=200.0)   # 09:25 ET
+        df = pd.concat([pre, rth], ignore_index=True)
+        m.replay_clock_ts = pd.Timestamp("2026-05-06 14:05:00")
+        m.check_orb("IWM", df)
+        lv = m.orb_levels["IWM"]
+        assert lv["30m_high"] < 250.0, "ORB built from pre-market UTC bars"
+
+    def test_live_tz_aware_et_bars_unchanged(self):
+        """Live path: tz-aware ET timestamps keep working exactly as before."""
+        import pandas as pd
+        m = _build_monitor()
+        df = self._utc_bars("2026-05-06 13:25:00", 45)
+        df["Time"] = df["Time"].dt.tz_localize("UTC").dt.tz_convert("America/New_York")
+        m.check_orb("IWM", df)
+        assert m.orb_levels["IWM"]["5m_high"] == pytest.approx(200.0 + 10 * 0.1)
