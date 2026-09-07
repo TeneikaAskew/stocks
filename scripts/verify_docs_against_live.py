@@ -629,6 +629,28 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
                 seen.add(key)
 
 
+# A markdown table header labels the whole column: `| Scheduler | Cron (UTC) |`
+# says every cron below it is UTC. The per-line UTC guard only ever looked at
+# the line carrying the job name, so two scheduler tables in
+# docs/product/05-INFRASTRUCTURE.md asserted UTC over an all-Eastern fleet and
+# the file read clean (Codex, PR #1009). Flagging the header rather than each
+# row puts the finding where the single-word fix goes.
+TZ_HEADER = re.compile(r"^\|[^\n]*?\b(?:cron|schedule)\b[^|\n]*?\bUTC\b", re.I | re.M)
+
+
+def check_timezone_headers(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
+    zones = {m.get("timeZone", "") for m in live.get("schedulers", {}).values()}
+    zones.discard("")
+    if not zones or zones == {"UTC"}:
+        return
+    text = path.read_text(errors="replace")
+    for m in TZ_HEADER.finditer(text):
+        line_no = text[:m.start()].count("\n") + 1
+        out.append(Finding("utc-claim", rel, line_no,
+                           f"table column header states UTC over schedules that all run in "
+                           f"{'/'.join(sorted(zones))}: {m.group(0).strip()[:120]}"))
+
+
 def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
     """Backticked names introduced as a Cloud Run Job / scheduler must exist."""
     known = (set(live["run_jobs"]) | set(live["schedulers"]) | set(live["services"])
@@ -797,6 +819,7 @@ def main() -> int:
         rel = str(p.relative_to(root))
         check_retired_services(p, rel, findings)
         check_schedules(p, rel, live, findings)
+        check_timezone_headers(p, rel, live, findings)
         check_known_names(p, rel, live, findings)
         check_counts(p, rel, live, findings)
 

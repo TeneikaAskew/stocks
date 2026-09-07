@@ -153,6 +153,23 @@ def test_service_account_is_not_the_deleted_service(tmp_path):
     assert out == []
 
 
+def test_utc_column_header_over_eastern_schedules_is_caught(tmp_path):
+    """`| Scheduler | Cron (UTC) |` labels every row beneath it. The per-line
+    guard only read the line carrying the job name, so two tables asserted UTC
+    over an all-Eastern fleet and read clean (Codex, PR #1009)."""
+    doc = tmp_path / "d.md"
+    doc.write_text("| Scheduler | Cron (UTC) | Job |\n|---|---|---|\n"
+                   "| fetch-market-data-daily | 0 23 * * 1-5 | fetch-market-data |\n")
+    out = []
+    vd.check_timezone_headers(doc, "d.md", LIVE, out)
+    assert len(out) == 1 and out[0].check == "utc-claim", out
+    # ...and a header that names the real zone is not a finding
+    doc.write_text("| Scheduler | Cron (America/New_York) | Job |\n")
+    out = []
+    vd.check_timezone_headers(doc, "d.md", LIVE, out)
+    assert out == []
+
+
 def test_count_claim_in_adjacent_table_columns_is_compared(tmp_path):
     """`| Cloud Run Jobs | 7 jobs |` -- resource in one column, count in the
     next. Every other pattern wants them adjacent or parenthesized, so a whole

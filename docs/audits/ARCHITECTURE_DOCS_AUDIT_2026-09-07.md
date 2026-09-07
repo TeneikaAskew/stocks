@@ -219,6 +219,7 @@ Codex's third pass (head `2291596`) found two P1 runtime breakers and eight furt
 | the verifier could not read a count split across markdown table columns | three table-column patterns added; they immediately caught four more stale claims (`7 jobs`, `21 triggers`, `all 7 jobs`, `22 triggers`) in two files the verifier already scanned |
 | the icon page's count labels matched only the 2026-06 literals, so the next change would not update them | rewritten by cell id and current-value regex |
 | a scheduler firing at several times was bucketed only by its first | range and list crons are placed in every session they fire in |
+| the UTC guard only read the line carrying the job name, so a `Cron (UTC)` **column header** over an all-Eastern fleet read clean | `check_timezone_headers` flags the header; it immediately caught three in `docs/product/05-INFRASTRUCTURE.md`, now corrected to `America/New_York` |
 | README called all of `docs/` hand-edited while the workflow overwrites `docs/API.md` and `docs/INVESTMENT_MODELS_SUMMARY.md` | the maintenance section is now a table of all eight generated files and what the run does to each |
 
 ### The gate that was missing: an added/removed budget

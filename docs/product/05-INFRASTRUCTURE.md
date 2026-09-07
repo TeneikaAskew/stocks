@@ -41,7 +41,7 @@ these comparisons.
 |---|---|---|---|---|---|
 | FastAPI API service | **API only** — the SPA moved to the solyra repo in #957 and `platform/Dockerfile` copies no `dist/`, so `main.py`'s conditional SPA mount never activates. Two services: `solyra-api-prod` and `solyra-api-staging` | `platform/Dockerfile`, `gcp/cloudbuild/*.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` on prod; `firebase` on staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase`/`iap` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
 | Cloud Run jobs (67 declared / 76 live) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (65 live) / manual | 8 jobs exist only by hand — see the table above |
-| Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (UTC) | one entry targets a nonexistent job |
+| Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (America/New_York) | one entry targets a nonexistent job |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
 | GCS | model/report/query artifacts | job writers, `db_query_cr.sh` | SA IAM | — | retention/provenance |
 | Cloud Build + GitHub Actions | image build, test, deploy | `gcp/cloudbuild/`, `.github/workflows/` | build identities | commit / manual | frontend suites not in CI ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868) |
@@ -52,7 +52,7 @@ these comparisons.
 Diffing scheduler targets against created job names reproduces a known CRITICAL finding
 without reading the audit — the plan should carry this check, not just cite it:
 
-| Scheduler | Cron (UTC) | Targets job | Exists in `deploy.sh`? | Issue |
+| Scheduler | Cron (America/New_York) | Targets job | Exists in `deploy.sh`? | Issue |
 |---|---|---|---|---|
 | `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | **NO** | [#829](https://github.com/TeneikaAskew/stocks/issues/829) |
 
@@ -133,7 +133,7 @@ internet, not a developer laptop — the exposure detailed in [09](09-SECURITY-A
 `—` in a config column means the flag is absent from the `deploy_*` function, so Cloud Run's
 default applies (task-timeout **600s**, max-retries **3**).
 
-| Job | Deploy fn | Schedule (UTC) | Timeout | Retries | Mem | CPU | Secrets |
+| Job | Deploy fn | Schedule (America/New_York) | Timeout | Retries | Mem | CPU | Secrets |
 |---|---|---|---|---|---|---|---|
 | `apply-schema-migrations` | `deploy_apply_schema_migrations` | manual | `600` | `0` | `512Mi` | `1` | — |
 | `audit-brief-bias` | `deploy_audit_brief_bias` | `0 10 * * 0` | `1800` | `0` | `1Gi` | `1` | `DB_PASS` |
