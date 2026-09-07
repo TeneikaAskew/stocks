@@ -114,13 +114,28 @@ The third trigger (`deploy-solyra-api-prod`) is manual-only and is the ONLY
 path that changes prod:
 
 ```bash
-gcloud builds triggers run deploy-solyra-api-prod --branch=main
+# 1. read what staging is serving, and validate THAT
+gcloud run services describe solyra-api-staging --region=us-east1 --format=json \
+  | python3 gcp/cloudbuild/serving_revision.py
+# 2. promote it by name
+gcloud builds triggers run deploy-solyra-api-prod --branch=main \
+  --substitutions=_EXPECT_STAGING_REVISION=<the revision from step 1>
 ```
 
 It no longer shifts traffic between tags on one service. It reads the image
 digest currently serving `solyra-api-staging` and deploys that exact digest to
 `solyra-api-prod`, so prod ships the bits staging validated rather than a fresh
 build of whatever has since merged to main. The same IAM grants above cover it.
+
+`_EXPECT_STAGING_REVISION` is **required**, and it is what ties the promotion to
+what you actually looked at. "What staging is serving now" and "what was
+validated" are the same answer only while nothing deploys in between — and the
+staging trigger fires on every push to main, so that is not a safe assumption.
+With the expectation passed, a staging deploy landing in the gap aborts the
+promotion instead of silently substituting a revision nobody reviewed. An image
+digest is accepted in its place if you validated by artifact. The failure
+message prints the revision serving right now, so re-running after a
+re-validation is a copy-paste.
 
 ## Two staging deploy paths, and how they are kept from interleaving
 

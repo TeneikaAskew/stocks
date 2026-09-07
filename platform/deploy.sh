@@ -230,6 +230,20 @@ fi
 #    interactive gcp/deploy.sh path instead (see gcp/cloudbuild/README.md).
 ./gcp/deploy.sh pin-images --no-sweep
 
+# The revision this run is about to replace, read BEFORE the build so it can be
+# compared with the revision serving when the deploy is finally issued. See the
+# compare-and-swap in step 3. A service that does not exist yet has nothing to
+# race with, so an empty baseline is not an error here.
+DEPLOY_BASELINE_REVISION=""
+if gcloud run services describe "${SERVICE}" --region "${REGION}" \
+     --format=json >/tmp/solyra-deploy-baseline.json 2>/dev/null; then
+  DEPLOY_BASELINE_REVISION="$(python3 gcp/cloudbuild/serving_revision.py \
+                                < /tmp/solyra-deploy-baseline.json)"
+  echo ">> ${SERVICE} is currently serving ${DEPLOY_BASELINE_REVISION}"
+else
+  echo ">> ${SERVICE} does not exist yet; this run creates it"
+fi
+
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
 echo ">> building ${IMAGE}:${IMAGE_TAG}"
 gcloud builds submit \
@@ -256,6 +270,40 @@ IMAGE_DIGEST=$(gcloud container images describe "${IMAGE}:${IMAGE_TAG}" \
 if [[ -z "${IMAGE_DIGEST}" ]]; then
   echo ">> ERROR: could not resolve ${IMAGE}:${IMAGE_TAG} to a digest" >&2
   exit 1
+fi
+
+# The interlock, AGAIN, and a compare-and-swap on the service.
+#
+# Moving the interlock inside platform/cloudbuild.yaml made the IMAGE BUILD
+# visible to a concurrent trigger. It did not cover this deploy, which happens
+# after that build has finished and is therefore no longer ongoing: a trigger
+# starting in the gap sees nothing, builds, deploys -- and then this older
+# invocation deploys last and wins, which is the exact ordering failure the
+# interlock exists to prevent (Codex, PR #990). Two checks close it from both
+# sides. The build scan catches a peer that is still running; the revision
+# comparison catches one that already finished and deployed, because the
+# service is then serving a revision this run never saw.
+#
+# The remaining window is between this comparison and `gcloud run deploy`
+# returning -- seconds, against the minutes a build takes. Cloud Run has no
+# conditional-deploy primitive to close it completely; this narrows it to the
+# point where the losing path is the one that started second, not the one that
+# started first.
+if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
+  bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh"
+fi
+
+if [[ -n "${DEPLOY_BASELINE_REVISION}" ]]; then
+  SERVING_NOW="$(gcloud run services describe "${SERVICE}" --region "${REGION}" \
+                   --format=json | python3 gcp/cloudbuild/serving_revision.py)"
+  if [[ "${SERVING_NOW}" != "${DEPLOY_BASELINE_REVISION}" ]]; then
+    echo ">> ERROR: ${SERVICE} moved while this build ran." >&2
+    echo "          was serving ${DEPLOY_BASELINE_REVISION}, now ${SERVING_NOW}." >&2
+    echo "          Another deploy path landed in the gap; deploying now would" >&2
+    echo "          put this older build's image over it. Re-run this deploy on" >&2
+    echo "          top of the new revision instead." >&2
+    exit 1
+  fi
 fi
 
 echo ">> deploying to Cloud Run: ${IMAGE_DIGEST}"

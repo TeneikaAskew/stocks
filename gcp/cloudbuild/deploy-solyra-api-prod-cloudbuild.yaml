@@ -1,22 +1,32 @@
 # Trigger: deploy-solyra-api-prod
 # Fires:   MANUAL ONLY — nothing auto-invokes this.
 #
-#   gcloud builds triggers run deploy-solyra-api-prod --branch=main
+#   gcloud builds triggers run deploy-solyra-api-prod --branch=main \
+#     --substitutions=_EXPECT_STAGING_REVISION=solyra-api-staging-00005-rcc
 #
 # Promotes to prod the exact image digest that STAGING IS SERVING, rather than
 # rebuilding from main. A rebuild would pick up whatever merged since staging
 # last deployed, so prod would ship bits that were never the ones validated.
 #
 # The serving revision is resolved from the service's TRAFFIC TARGETS, not from
-# status.latestReadyRevisionName. Those differ whenever staging has been rolled
-# back, is split across revisions, or was deployed with --no-traffic (a mode
-# platform/deploy.sh still supports). In each of those cases the latest ready
-# revision is NOT the one an operator validated, and promoting it would ship an
-# unvalidated image under the banner of "promote what staging validated"
-# (Codex, PR #990).
+# status.latestReadyRevisionName — see gcp/cloudbuild/serving_revision.py for
+# why those differ and when.
 #
-# Fails loud rather than guessing: no revision serving traffic, or traffic split
-# across several, both abort instead of picking one.
+# _EXPECT_STAGING_REVISION is REQUIRED, and it is what binds this promotion to
+# the thing the operator actually looked at. Resolving the serving revision at
+# run time answers "what is staging serving NOW", which is not the same
+# question: an automatic staging deploy landing between the validation and this
+# build silently substitutes a different revision, and the promotion ships it
+# under the banner of "promote what staging validated". The staging-build
+# interlock does not cover this trigger — it has no shared tag and no preflight
+# — so nothing else stops that (Codex, PR #990). Passing the revision makes the
+# promotion a compare-and-swap: if staging moved, this aborts and the operator
+# re-validates rather than discovering it in prod.
+#
+# An image digest is accepted in place of the revision name, for an operator who
+# validated by artifact rather than by revision.
+substitutions:
+  _EXPECT_STAGING_REVISION: ''
 steps:
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: promote
@@ -26,26 +36,9 @@ steps:
       - |
         set -euo pipefail
 
-        cat > /tmp/pick_serving_revision.py <<'PYEOF'
-        import json, sys
-        s = json.load(sys.stdin)["status"]
-        serving = [t for t in s.get("traffic", []) if t.get("percent", 0) > 0]
-        if not serving:
-            sys.exit("FATAL: no solyra-api-staging revision is receiving traffic; "
-                     "there is nothing validated to promote")
-        if len(serving) > 1:
-            detail = ", ".join("%s=%s%%" % (t.get("revisionName", "?"), t.get("percent"))
-                               for t in serving)
-            sys.exit("FATAL: staging traffic is split across revisions (%s); which one "
-                     "was validated is ambiguous, settle staging before promoting" % detail)
-        name = serving[0].get("revisionName") or s.get("latestReadyRevisionName")
-        if not name:
-            sys.exit("FATAL: could not resolve the serving revision name from the traffic target")
-        print(name)
-        PYEOF
-
         REV=$$(gcloud run services describe solyra-api-staging \
-          --region=us-east1 --format=json | python3 /tmp/pick_serving_revision.py)
+          --region=us-east1 --format=json \
+          | python3 gcp/cloudbuild/serving_revision.py)
 
         DIGEST=$$(gcloud run revisions describe "$$REV" \
           --region=us-east1 --format='value(status.imageDigest)')
@@ -54,7 +47,25 @@ steps:
           exit 1
         fi
 
-        echo "Promoting the revision STAGING IS SERVING: $$REV"
+        EXPECT='${_EXPECT_STAGING_REVISION}'
+        if [ -z "$$EXPECT" ]; then
+          echo "FATAL: _EXPECT_STAGING_REVISION is required, so that this promotes" >&2
+          echo "       the revision you validated rather than whatever staging" >&2
+          echo "       happens to be serving when this build runs." >&2
+          echo "       Staging is serving $$REV right now:" >&2
+          echo "         image: $$DIGEST" >&2
+          echo "       Re-run with --substitutions=_EXPECT_STAGING_REVISION=$$REV" >&2
+          exit 1
+        fi
+        if [ "$$EXPECT" != "$$REV" ] && [ "$$EXPECT" != "$$DIGEST" ]; then
+          echo "FATAL: staging moved. You validated '$$EXPECT', but staging is now" >&2
+          echo "       serving $$REV ($$DIGEST)." >&2
+          echo "       Re-validate staging and promote that, rather than shipping a" >&2
+          echo "       revision nobody looked at." >&2
+          exit 1
+        fi
+
+        echo "Promoting the revision STAGING IS SERVING, as validated: $$REV"
         echo "  image: $$DIGEST"
         gcloud run deploy solyra-api-prod \
           --image="$$DIGEST" \

@@ -31,6 +31,8 @@ PLATFORM = REPO / "platform/cloudbuild.yaml"
 DEPLOY_SH = REPO / "platform/deploy.sh"
 INTERLOCK = REPO / "gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh"
 WORKFLOW = REPO / ".github/workflows/deploy-staging.yml"
+PROMOTE = REPO / "gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml"
+SERVING = REPO / "gcp/cloudbuild/serving_revision.py"
 
 
 def _steps(path):
@@ -144,3 +146,72 @@ def test_the_workflow_concurrency_group_is_documented_as_insufficient():
     assert "group: deploy-staging" in src
     assert "assert_no_concurrent_staging_deploy.sh" in src, (
         "the concurrency block must say what actually serialises the two paths")
+
+
+# ── the gap between the build and the deploy ────────────────────────────────
+#
+# Moving the interlock inside platform/cloudbuild.yaml made the IMAGE BUILD
+# visible to a peer. The manual `gcloud run deploy` runs AFTER that build has
+# finished, so a trigger starting in the gap sees no ongoing build, deploys,
+# and is then overwritten by the older invocation finishing last (Codex,
+# PR #990).
+
+def _deploy_sh_order(*needles):
+    """Offset of each needle in platform/deploy.sh.
+
+    The LAST occurrence, deliberately: the interlock is called twice, and it is
+    the second call -- the one after the build -- this file is asserting about.
+    """
+    text = DEPLOY_SH.read_text()
+    at = []
+    for n in needles:
+        assert n in text, f"platform/deploy.sh no longer contains {n!r}"
+        at.append(text.rindex(n))
+    return at
+
+
+def test_the_interlock_is_re_asserted_before_the_manual_deploy():
+    submit, recheck, deploy = _deploy_sh_order(
+        "gcloud builds submit",
+        "assert_no_concurrent_staging_deploy.sh",
+        "gcloud run deploy ",
+    )
+    assert submit < recheck < deploy, (
+        "the interlock must run again between the build and the deploy; "
+        "the pre-submit call alone leaves the deploy unguarded")
+
+
+def test_the_deploy_refuses_a_service_that_moved_under_it():
+    baseline, submit, compare, deploy = _deploy_sh_order(
+        "DEPLOY_BASELINE_REVISION=",
+        "gcloud builds submit",
+        "SERVING_NOW=",
+        "gcloud run deploy ",
+    )
+    assert baseline < submit < compare < deploy, (
+        "the serving revision must be read before the build and compared "
+        "after it, or the comparison proves nothing")
+    assert 'if [[ "${SERVING_NOW}" != "${DEPLOY_BASELINE_REVISION}" ]]' in \
+        DEPLOY_SH.read_text()
+
+
+def test_both_deploy_paths_resolve_the_serving_revision_the_same_way():
+    """One implementation, two callers — a second copy would drift silently."""
+    assert SERVING.exists()
+    assert "serving_revision.py" in DEPLOY_SH.read_text()
+    assert "serving_revision.py" in PROMOTE.read_text()
+    body = _all_args(yaml.safe_load(PROMOTE.read_text())["steps"][0])
+    assert "latestReadyRevisionName" not in body, (
+        "the promote config must not resolve the revision itself")
+    assert "traffic" not in body
+
+
+def test_promotion_requires_the_revision_the_operator_validated():
+    cfg = yaml.safe_load(PROMOTE.read_text())
+    assert "_EXPECT_STAGING_REVISION" in cfg.get("substitutions", {})
+    body = _all_args(cfg["steps"][0])
+    assert 'if [ -z "$$EXPECT" ]' in body, (
+        "an absent expectation must abort; resolving the serving revision at "
+        "run time answers a different question than what was validated")
+    assert 'if [ "$$EXPECT" != "$$REV" ] && [ "$$EXPECT" != "$$DIGEST" ]' in body
+    assert body.index('if [ -z "$$EXPECT" ]') < body.index("gcloud run deploy")
