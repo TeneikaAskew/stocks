@@ -106,6 +106,16 @@ git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
 # whichever PR you pick before reusing its head.
 ```
 
+**One merged PR you must NOT skip past.** Phase 8 step 8 leaves an issue open
+when promotion needs an owner action, with the outstanding deploy named in its
+status comment. On the next run `is:open` hides that merged PR, CASE B then
+creates a fresh branch from `main`, and the run re-implements a fix that has
+already merged. So before branching: if the issue is open and its newest
+status comment says the code merged and only deployment or production
+verification remains, **do not branch at all** — resume at Phase 8 step 8,
+deploy, verify, and close. Check the issue's linked PRs for a merged one
+rather than trusting `is:open` to have told you everything.
+
 **Branch before touching any file** (CLAUDE.md Rule 2), and the two cases are
 exclusive. Check out the existing head, or create a branch, never both:
 
@@ -282,7 +292,8 @@ ways and pasted; it does not have to be a pytest case:
 | A behaviour changes | a test, as below |
 | A module or job is deleted | the consumer grep across `lib/ gcp/ platform/ scripts/ tests/` and solyra — hits before, silent after — plus `make test` clean |
 | A scheduler or job is retired | `gcloud scheduler jobs list` / `run jobs list` before and after |
-| A query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
+| A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
+| A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
 
 Skipping the before half is what is never acceptable. "It passes now" says
 nothing; "it failed before and passes now" is the evidence.
@@ -359,6 +370,16 @@ one. While writing, the standing gates:
     request to the deployed API fails validation immediately. This repo makes
     it optional and deploys, THEN solyra stops sending, THEN this repo drops
     it.
+
+    **And the last of those three is not "as soon as solyra deploys".** The
+    request models here set `model_config = ConfigDict(extra="forbid")` —
+    `ProfileUpdate` and `PreferencesUpdate` both do, deliberately, so an
+    unknown field 422s rather than being silently dropped (Rule 3.7). Removing
+    the field the moment the new bundle ships therefore 422s every browser
+    still running the old one, and any rollback. Keep it declared and optional
+    until old clients have aged out — a session-length wait, or telemetry
+    showing the field has stopped arriving. Making the API tolerant before the
+    frontend switches is necessary and is not the whole sequence.
 
   The invariant under all three cases: **whichever side is RECEIVING must
   tolerate the new shape before the sending side produces it.** For a response
@@ -703,7 +724,14 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    posting; every finding it lands between that read and step 2's completion is
    absent from what you are holding. And a review WITH findings satisfies step 2
    perfectly well, since the bar there is "not `CHANGES_REQUESTED`", so nothing
-   else catches it. Then: every thread fixed-and-resolved, naming what changed
+   else catches it.
+
+   **Then go to step 4 and work them. Zero unresolved is checked at step 5, not
+   here.** Requiring it here would deadlock: step 3 would demand a finding be
+   resolved before step 4 has said to reproduce, test and fix it, and the only
+   way out is resolving a thread you have not validated. Read and triage here;
+   fix there. What follows is the bar step 5 enforces: every thread
+   fixed-and-resolved, naming what changed
    and the covering test and commit, or replied to with why not. Zero unresolved
    across every page is the bar.
 4. Verify each finding against the code before fixing it: reproduce, write the
@@ -769,9 +797,15 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      cd /tmp/deploy-src
      git rev-parse HEAD                    # must equal the PR's merge commit
      test -z "$(git status --porcelain)"   # must be silent
-     ./gcp/deploy.sh <target>
+     ./gcp/deploy.sh <target>; rc=$?       # capture BEFORE cleanup
      cd - && git worktree remove /tmp/deploy-src
+     test $rc -eq 0 || echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"
      ```
+
+     `rc` is captured rather than trusting the block's exit status, because
+     `git worktree remove` succeeds whether or not the deploy did, and it runs
+     last. Without it a failed deploy ends on a zero and the run proceeds to
+     Phase 9 to report a fix that is not serving.
 
    - **For an API change, confirm the staging build actually fired** rather
      than assuming the merge triggered one; a merge outside `includedFiles`
@@ -803,7 +837,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      REV=$(gcloud run services describe solyra-api-staging --region=us-east1 \
              --format=json | python gcp/cloudbuild/serving_revision.py)
      # ...verify against staging while it is serving $REV...
-     gcloud builds triggers run deploy-solyra-api-prod \
+     gcloud builds triggers run deploy-solyra-api-prod --branch=main \
        --substitutions=_EXPECT_STAGING_REVISION="$REV"
      ```
 
