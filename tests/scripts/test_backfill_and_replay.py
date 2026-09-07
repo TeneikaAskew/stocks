@@ -72,3 +72,10 @@ def test_main_calls_the_job_not_a_local_pipeline():
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert "trigger_backfill_ticker" in calls
     assert not calls & {"write_daily_history", "compute_daily_indicators_for_ticker"}
+
+
+def test_backfill_opts_out_of_the_shared_watchlist():
+    """Codex on #1022: backfill-ticker's add_to_watchlist() would put an
+    ad-hoc historical-test ticker into the shared default watchlist (or
+    reactivate a removed one); the script must pass the opt-out."""
+    assert re.search(r"'BACKFILL_ADD_TO_WATCHLIST':\s*'false'", SRC)

@@ -147,7 +147,8 @@ def trigger_backfill_ticker(ticker: str, dates: list[date], *,
     daily history, 1-min bars for every month a date touches, optional
     news, then indicators + strat + pre-market context through the one
     production indicator map. Same job the Discord /replay command
-    dispatches (gcp/discord_interactions/main.py)."""
+    dispatches (gcp/discord_interactions/main.py), minus its watchlist
+    side effect."""
     log.info("Cloud Run backfill-ticker → %s dates=%s history=%dd news=%s",
              ticker, [d.isoformat() for d in dates], history_days, include_news)
     return _execute_job('backfill-ticker', {
@@ -156,6 +157,9 @@ def trigger_backfill_ticker(ticker: str, dates: list[date], *,
         'BACKFILL_INCLUDE_NEWS': 'true' if include_news else 'false',
         'BACKFILL_HISTORY_DAYS': str(history_days),
         'BACKFILL_NEWS_WINDOW': str(news_window_days),
+        # Historical-test tickers must not join (or be reactivated in) the
+        # shared production watchlist that every fetcher iterates.
+        'BACKFILL_ADD_TO_WATCHLIST': 'false',
     }, wait=wait)
 
 
