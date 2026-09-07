@@ -358,6 +358,40 @@ async def admin_structure_brief(
 # ---------------------------------------------------------------------------
 
 
+def _parse_as_of(raw: Optional[str]):
+    """ISO-8601 -> a pandas Timestamp, or a 400 naming the bad input.
+
+    Parsed BEFORE the infrastructure guard in both callers below. Inside it,
+    a malformed timestamp came back as "strat engine temporarily unavailable"
+    with a 503 -- telling an authenticated admin to retry a request that can
+    never succeed, while the backend it accuses is healthy (Codex, PR #999).
+
+    Still `pandas.to_datetime`, not `datetime.fromisoformat`: the set of
+    accepted spellings is part of the contract and a stricter parser would
+    reject inputs that work today. Only the error mapping changes.
+    """
+    if not raw:
+        return None
+    import pandas as _pd  # noqa: PLC0415
+    try:
+        parsed = _pd.to_datetime(raw)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"as_of_timestamp must be an ISO-8601 timestamp; got {raw!r}",
+        ) from exc
+    if _pd.isna(parsed):
+        # `to_datetime` returns NaT for some inputs rather than raising, and a
+        # NaT reaching `predict_one` is the fabricated-value shape all over
+        # again: a request for "no particular bar" that the caller asked to be
+        # a specific one.
+        raise HTTPException(
+            status_code=400,
+            detail=f"as_of_timestamp must be an ISO-8601 timestamp; got {raw!r}",
+        )
+    return parsed
+
+
 class StratEnginePredictRequest(BaseModel):
     ticker: str
     timeframe: str
@@ -570,12 +604,12 @@ async def admin_strat_engine_predict(
     # 500, and the one that actually fires in an API image that skipped the
     # heavy ML extras. An unavailable predict stack IS "strat engine
     # temporarily unavailable"; it is not a crash. (Codex, PR #999)
+    as_of = _parse_as_of(body.as_of_timestamp)
+
     try:
         from gcp.database import get_engine  # noqa: PLC0415
         from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
-        import pandas as _pd  # noqa: PLC0415
 
-        as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
         engine = get_engine()
         result = predict_one(engine, ticker, tf, as_of=as_of)
     except HTTPException:
@@ -707,12 +741,12 @@ async def admin_structure_continuation(
     # "the model cannot produce one" -- but unreachable infrastructure is not
     # a consulted-and-empty model, so it answers 503 rather than a 200
     # envelope that would tell the caller the opposite of what happened.
+    as_of = _parse_as_of(body.as_of_timestamp)
+
     try:
         from gcp.database import get_engine  # noqa: PLC0415
         from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
-        import pandas as _pd  # noqa: PLC0415
 
-        as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
         engine = get_engine()
         result = predict_one(engine, ticker, tf, as_of=as_of)
     except HTTPException:

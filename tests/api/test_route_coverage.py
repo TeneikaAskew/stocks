@@ -458,11 +458,25 @@ def client(tmp_path_factory):
         import gcp.database as database
         from lib.agents import model_routing
 
+        # The app is imported BEFORE the sources are patched, and the order is
+        # load-bearing. Patching first meant that when this fixture was the
+        # first code to import `api.main`, `routers/insights.py` bound
+        # `_no_connection` at import; the module sweep below then recorded THAT
+        # as the alias's previous value, so `mp.undo()` restored the stub
+        # rather than the real function and every later insights test in the
+        # same process saw a harness-injected outage it never asked for
+        # (Codex, PR #999). Importing first means every alias's recorded
+        # previous value is the real one.
+        #
+        # Safe because nothing under `api.` opens a connection at import time:
+        # the routers bind names and register routes. If that ever changes,
+        # this fixture is where it will show up, as a real connection attempt
+        # during collection rather than a silent one.
+        from api.main import app
+
         mp.setattr(database, "get_engine", _no_connection)
         mp.setattr(model_routing, "connect", _no_connection)
         mp.setattr(model_routing, "_get_connector", _no_connection, raising=False)
-
-        from api.main import app
 
         # Names bound at import time in a router's own namespace do not see
         # the patch above, so patch them where they are looked up.
@@ -600,6 +614,26 @@ def client(tmp_path_factory):
         _clear_process_caches()
         mp.undo()
         os.chdir(original_cwd)
+
+        # `mp.undo()` restores each attribute to whatever it held when
+        # `setattr` recorded it -- which is only the real function if the
+        # routers had already bound the real function. Patching the sources
+        # before importing the app made the recorded value the stub itself,
+        # so undo restored the stub and every later insights test in this
+        # process saw an outage this file injected (Codex, PR #999). The
+        # import above is ordered to prevent that; this is the assertion that
+        # says so out loud, because the ordering has no other visible effect.
+        leaked = sorted(
+            f"{name}.{attr}"
+            for name, module in list(sys.modules.items())
+            if name.startswith("api.")
+            for attr in ("get_engine", "connect", "_get_connector")
+            if getattr(module, attr, None) is _no_connection
+        )
+        assert not leaked, (
+            "this harness left its outage stub bound after teardown, so every "
+            "later test in this process sees a failure it did not ask for:\n  "
+            + "\n  ".join(leaked))
 
 
 # ── coverage: the declared table against the real route table ───────────────
@@ -933,6 +967,49 @@ def test_the_feature_gated_handlers_survive_a_backend_outage(
         f"expected 503 for a backend outage on the enabled path, got "
         f"{resp.status_code}: {resp.text[:400]}")
     assert resp.headers.get("content-type", "").startswith("application/json")
+
+
+@pytest.mark.parametrize("path,flag", [
+    ("/api/admin/strat-engine/predict", None),
+    ("/api/admin/strat-engine/structure-continuation",
+     "STRUCTURE_CONTINUATION_ENABLED"),
+])
+def test_a_malformed_as_of_timestamp_is_the_callers_error(
+    client, monkeypatch, path, flag,
+):
+    """400, not 503.
+
+    The parse sat inside the infrastructure guard, so `"not-a-date"` came back
+    as "strat engine temporarily unavailable" -- telling an authenticated
+    admin to retry a request that can never succeed, and accusing a backend
+    that is healthy (Codex, PR #999). Both endpoints had it.
+    """
+    if flag:
+        monkeypatch.setenv(flag, "1")
+    resp = client.post(path, json={
+        "ticker": T, "timeframe": "15m", "as_of_timestamp": "not-a-date"})
+
+    assert resp.status_code == 400, (
+        f"{path} answered {resp.status_code} for a malformed as_of_timestamp; "
+        f"a bad request is not a backend outage.\nbody: {resp.text[:300]}")
+    assert "as_of_timestamp" in resp.text
+    assert resp.headers.get("content-type", "").startswith("application/json")
+
+
+def test_a_valid_as_of_timestamp_still_reaches_the_backend(client, monkeypatch):
+    """The 400 above must not swallow a well-formed request.
+
+    With the same outage injected, a parseable timestamp has to get past the
+    parse and fail on the infrastructure instead -- otherwise the fix would
+    have replaced one wrong answer with another.
+    """
+    monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "1")
+    resp = client.post("/api/admin/strat-engine/structure-continuation", json={
+        "ticker": T, "timeframe": "15m", "as_of_timestamp": "2026-09-04T14:30:00"})
+
+    assert resp.status_code == 503, (
+        f"a valid timestamp answered {resp.status_code}; it should reach the "
+        f"backend guard.\nbody: {resp.text[:300]}")
 
 
 def test_a_successful_route_write_still_guards_its_reload(client, monkeypatch):
