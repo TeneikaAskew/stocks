@@ -89,6 +89,16 @@ CRON = re.compile(
 )
 # "weekdays 23:00", "Sun 19:15", "4:15 PM" -- a wall-clock claim about a job.
 CLOCK = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?(?![\d:])")
+# "Sun 6 AM", "11 PM nightly" -- the same claim with the minutes left off.
+# Requiring the meridiem is what makes this safe: a bare number next to a job
+# name is far more often a size, a count or a retry budget ("1 GiB / 30 min",
+# "3-embed", "--max-retries 0") than an hour, and there is no way to tell them
+# apart. AM/PM makes it unambiguous.
+#
+# Without this the checker was blind to a whole spelling: `fetch-earnings-
+# history` was documented "Sun 6 AM weekly" against a live `15 19 * * 0`
+# (19:15), and the run reported clean.
+CLOCK_HOUR_ONLY = re.compile(r"(?<![\d:.])(\d{1,2})\s*(AM|PM|am|pm)\b")
 
 
 def _clock_times(line: str) -> set[str]:
@@ -102,19 +112,28 @@ def _clock_times(line: str) -> set[str]:
     for hh, mm, mer in CLOCK.findall(line):
         h = int(hh)
         if mer:
-            mer = mer.upper()
-            if mer == "PM" and h != 12:
-                h += 12
-            elif mer == "AM" and h == 12:
-                h = 0
-            out.add(f"{h:02d}:{mm}")
+            out.add(f"{_h24(h, mer):02d}:{mm}")
         else:
             out.add(f"{h:02d}:{mm}")
             # "7:15" with no meridiem could be either; "07:15" is 24-hour by
             # its own padding, so only the unpadded form gets both readings.
             if len(hh) == 1 and 1 <= h <= 11:
                 out.add(f"{h + 12:02d}:{mm}")
+    for hh, mer in CLOCK_HOUR_ONLY.findall(line):
+        h = int(hh)
+        if h <= 12:
+            out.add(f"{_h24(h, mer):02d}:00")
     return out
+
+
+def _h24(hour: int, meridiem: str) -> int:
+    """12-hour clock to 24-hour. 12 AM is 00, 12 PM is 12."""
+    mer = meridiem.upper()
+    if mer == "PM" and hour != 12:
+        return hour + 12
+    if mer == "AM" and hour == 12:
+        return 0
+    return hour
 
 
 def _fire_times(crons: set[str]) -> set[str]:
@@ -168,11 +187,125 @@ def _expand(field: str, lo: int, hi: int) -> list[int]:
 UTC_TIME = re.compile(r"\b\d{1,2}:\d{2}\s*(?:UTC|Z)\b|\b\d{1,2}:\d{2}\b[^.\n]{0,20}\bUTC\b")
 
 
+# ── Day qualifiers ──────────────────────────────────────────────────────────
+# A schedule table row often states SEVERAL cadences for one job:
+#
+#   | `premarket-brief` | 1 GiB / 30 min | weekdays 08:30 + Sun 09:00 | ...
+#
+# Checking such a row as a whole against the union of its live fire times
+# accepts it as soon as ANY claimed time matches ANY live time -- so the
+# correct weekday 08:30 vouched for a Sunday 09:00 that the live schedule
+# fires at 21:00, and the run reported no drift.
+#
+# The whole-line rule is not simply wrong, though: the same tables carry an ET
+# column and a UTC column, where one firing is legitimately stated twice and
+# only one spelling can match. So the rule is kept WITHIN a day-qualified
+# segment and applied per segment, which separates "the same firing written
+# two ways" from "two different firings, one of them stale".
+DAY_NAMES = {
+    "sun": 0, "sunday": 0, "sundays": 0,
+    "mon": 1, "monday": 1, "mondays": 1,
+    "tue": 2, "tues": 2, "tuesday": 2, "tuesdays": 2,
+    "wed": 3, "weds": 3, "wednesday": 3, "wednesdays": 3,
+    "thu": 4, "thur": 4, "thurs": 4, "thursday": 4, "thursdays": 4,
+    "fri": 5, "friday": 5, "fridays": 5,
+    "sat": 6, "saturday": 6, "saturdays": 6,
+}
+DAY_ORDER = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+DAY_GROUPS = {
+    "weekday": {1, 2, 3, 4, 5}, "weekdays": {1, 2, 3, 4, 5},
+    "weekend": {0, 6}, "weekends": {0, 6},
+}
+# "nightly", "daily" and "hourly" are deliberately NOT qualifiers: they say how
+# often, not on which days, and treating them as day words would split rows on
+# prose ("Loads daily data") and invent segments with no claim in them.
+_DAY_ALT = "|".join(sorted(set(DAY_NAMES) | set(DAY_GROUPS), key=len, reverse=True))
+DAY_QUALIFIER = re.compile(
+    rf"\b({_DAY_ALT})\b(?:\s*[-\u2010-\u2015]\s*\b({_DAY_ALT})\b)?", re.I)
+
+
+def _dow_of(word: str) -> set[int]:
+    w = word.lower()
+    return set(DAY_GROUPS[w]) if w in DAY_GROUPS else {DAY_NAMES[w]}
+
+
+def _qualifier_days(first: str, last: str) -> set[int]:
+    """`Sun` -> {0}; `weekdays` -> {1..5}; `Tue-Sat` -> {2,3,4,5,6} (wrapping)."""
+    days = _dow_of(first)
+    if not last:
+        return days
+    end = _dow_of(last)
+    if len(days) != 1 or len(end) != 1:
+        return days | end
+    a, b = next(iter(days)), next(iter(end))
+    return {d % 7 for d in range(a, b + 1)} if a <= b else \
+        {d % 7 for d in range(a, b + 8)}
+
+
+def _day_segments(line: str) -> list[tuple[set[int], str]]:
+    """Split a line at its day qualifiers into (days, text) pieces.
+
+    Returns [] when the line carries no day qualifier at all, in which case
+    the caller falls back to the whole-line rule -- which is right for an
+    ET/UTC column pair and for any row that states a single cadence.
+    """
+    marks = list(DAY_QUALIFIER.finditer(line))
+    if not marks:
+        return []
+    segments: list[tuple[set[int], str]] = []
+    for n, m in enumerate(marks):
+        end = marks[n + 1].start() if n + 1 < len(marks) else len(line)
+        segments.append((_qualifier_days(m.group(1), m.group(2)), line[m.start():end]))
+    return segments
+
+
+def _cron_dow(field: str) -> set[int]:
+    """Day-of-week field to a set. `7` is Sunday as well as `0`."""
+    if field.strip() == "*":
+        return set(range(7))
+    try:
+        return {d % 7 for d in _expand(field, 0, 7)}
+    except ValueError:
+        return set(range(7))
+
+
+def _cron_firings(cron: str) -> set[tuple[int, str]]:
+    """A cron expression to the (weekday, HH:MM) pairs it fires at.
+
+    Comparing FIRINGS rather than expression strings is what stops an
+    equivalent respelling reading as drift: `docs/product/05-INFRASTRUCTURE.md`
+    documents `fetch-sec-filings` as four separate crons where the live entry
+    is one comma list, `0 7,10,13,17 * * 1-5`. Identical schedule, and the
+    string comparison called it a finding -- a false positive is how a checker
+    trains its readers to ignore it.
+
+    Anything unparseable, or too broad to be a meaningful claim, yields the
+    empty set, which suppresses the check rather than inventing a mismatch.
+    """
+    parts = cron.split()
+    if len(parts) != 5:
+        return set()
+    try:
+        minutes = _expand(parts[0], 0, 59)
+        hours = _expand(parts[1], 0, 23)
+    except ValueError:
+        return set()
+    if len(minutes) * len(hours) > 240:
+        return set()
+    days = _cron_dow(parts[4])
+    return {(d, f"{h:02d}:{m:02d}")
+            for d in days for h in hours for m in minutes}
+
+
 # An explicit, reviewed exemption for a line the heuristics cannot judge: a
 # historical narrative that must keep naming a deleted service, or a count that
 # is deliberately about the repo rather than the live fleet. Placed on the line
 # or the line above it, with the reason inline so the next reader sees why.
 SUPPRESS = re.compile(r"<!--\s*verify-docs-ok:\s*(.+?)\s*-->")
+
+# "`0 17 * * 1-5` ET *(now `0 23 * * 1-5`)*" -- a record that states the old
+# value beside the new one. See the use site in check_schedules.
+ANNOTATED_CORRECTION = re.compile(r"\b(now|currently|since|as of)\b", re.I)
 
 
 @dataclass
@@ -297,37 +430,79 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
         found = name_re.findall(line)
         if not found or RETIRED_OK.search(line):
             continue
-        # One table row can name several jobs with their own times
-        # ("fetch-market-data (11 PM), fetch-premarket-refresh (8:20 AM)"),
-        # so the whole row is checked against the union of their schedules.
+        # One table row can name several jobs with their own times, so the
+        # owning scheduler entries of every name on the row are collected.
         job = "`, `".join(dict.fromkeys(found))
-        entries = [e for name in dict.fromkeys(found) for e in owners[name]]
-        live_crons = {re.sub(r"\s+", " ", e[1]["schedule"]) for e in entries}
-        live_times = _fire_times(live_crons)
-        shown = ", ".join(dict.fromkeys(
-            f"`{n}` = `{e['schedule']}`" for n, e in entries))
+        entries = list({n: (n, m)
+                        for name in dict.fromkeys(found)
+                        for n, m in owners[name]}.values())
+        shown = ", ".join(f"`{n}` = `{m['schedule']}`" for n, m in entries)
+
         crons = {re.sub(r"\s+", " ", c.strip()) for c in CRON.findall(line)}
         crons = {c for c in crons if c.count(" ") == 4}
-        # Whole-line rule, as with clock times below: a line that carries the
-        # live cron alongside a historical one (an annotated status entry, a
-        # before/after note) is correct, not drift.
-        if crons and not (crons & live_crons):
-            out.append(Finding("schedule-drift", rel, i,
-                               f"`{job}` documented as "
-                               f"{', '.join('`' + c + '`' for c in sorted(crons))}; "
-                               f"live: {shown}"))
-        # A line is checked as a whole, not per-token: schedule tables here
-        # carry an ET column AND a UTC column, so a correct row states two
-        # different times and only one of them can match. One match anywhere
-        # on the line means the row is right.
-        claimed = _clock_times(line)
-        if claimed and live_times and not (claimed & live_times):
-            out.append(Finding("clock-drift", rel, i,
-                               f"`{job}` documented at {', '.join(sorted(claimed))}; "
-                               f"no live fire time matches "
-                               f"({', '.join(sorted(live_times))}) — {shown}"))
+        claims_a_schedule = bool(crons or _clock_times(line))
+
+        # A PAUSED scheduler does not fire, whatever its cron expression still
+        # says. Comparing only the expression let `signal-quality-report-
+        # hourly` -- paused -- back a doc line presenting it as running hourly
+        # 10:00-16:00, and the run reported clean. Lines that acknowledge the
+        # state are already exempt: RETIRED_OK matches "paused".
+        stopped = [(n, m) for n, m in entries if m["state"] != "ENABLED"]
+        running = [(n, m) for n, m in entries if m["state"] == "ENABLED"]
+        if stopped and claims_a_schedule:
+            out.append(Finding(
+                "paused-schedule", rel, i,
+                f"`{job}`: " + ", ".join(f"`{n}` is {m['state']}" for n, m in stopped)
+                + ", so the documented schedule does not fire — " + shown))
+
+        live_firings: set[tuple[int, str]] = set()
+        for _, m in running:
+            live_firings |= _cron_firings(re.sub(r"\s+", " ", m["schedule"]))
+        if not live_firings:
+            continue
+        live_times = {t for _, t in live_firings}
+
+        # Cron claims are compared by the firings they expand to, not by
+        # spelling: four separate crons and one comma list can be the same
+        # schedule. Drift is a claimed firing that does not happen.
+        #
+        # Except on a line that corrects itself. A deployment checklist entry
+        # reads ``- [x] `fetch-market-data-daily` — `0 17 * * 1-5` ET *(now
+        # `0 23 * * 1-5`)*``: the stale cron is deliberately kept beside the
+        # live one so the record shows the change. Checking each cron
+        # independently turned that into a finding, which is the whole-line
+        # rule's original point resurfacing -- so it is kept, narrowly, for a
+        # line that carries a correction word AND states the live schedule.
+        corrects_itself = (ANNOTATED_CORRECTION.search(line)
+                           and any(_cron_firings(c) <= live_firings
+                                   for c in crons if _cron_firings(c)))
+        if not corrects_itself:
+            for c in sorted(crons):
+                claimed = _cron_firings(c)
+                if claimed and not claimed <= live_firings:
+                    out.append(Finding("schedule-drift", rel, i,
+                                       f"`{job}` documented as `{c}`, which fires when the "
+                                       f"live schedule does not; live: {shown}"))
+
+        # Clock claims, checked per day-qualified segment. Within a segment the
+        # any-match rule still holds, because an ET column and a UTC column
+        # state one firing twice and only one spelling can match.
+        for days, segment in _day_segments(line) or [(None, line)]:
+            claimed = _clock_times(segment)
+            if not claimed:
+                continue
+            relevant = live_times if days is None else {
+                t for d, t in live_firings if d in days}
+            if relevant and not (claimed & relevant):
+                where = "" if days is None else \
+                    f" on {'/'.join(DAY_ORDER[d] for d in sorted(days))}"
+                out.append(Finding("clock-drift", rel, i,
+                                   f"`{job}` documented at "
+                                   f"{', '.join(sorted(claimed))}{where}; no live fire "
+                                   f"time matches ({', '.join(sorted(relevant))}) — {shown}"))
+
         if UTC_TIME.search(line):
-            zones = {e[1]["timeZone"] for e in entries}
+            zones = {m["timeZone"] for _, m in entries}
             out.append(Finding("utc-claim", rel, i,
                                f"`{job}` is scheduled in {'/'.join(sorted(zones))} "
                                f"({shown}) but the line states a UTC clock time: "
@@ -356,19 +531,49 @@ def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Findin
                                    f"job/scheduler/service exists live"))
 
 
-COUNT_CLAIM = re.compile(r"\b(\d{1,3})\s+Cloud Run Jobs\b", re.I)
+# Counts stated in prose. The first version of this check knew only about
+# "N Cloud Run Jobs", so it never compared services or schedulers even though
+# read_live() fetches both -- and the advertised clean run was reported while
+# docs/GCP_ARCHITECTURE.md claimed 3 services against a live 4 and 60
+# schedulers against a live 64.
+#
+# Spelled-out numbers are parsed because the drift is spelled out: line 344 of
+# that file says "Three long-lived HTTP services".
+WORD_NUMBERS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+_NUM = r"(\d{1,3}|" + "|".join(WORD_NUMBERS) + r")"
+
+COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
+    (re.compile(rf"\b{_NUM}\s+Cloud Run Jobs\b", re.I), "run_jobs", "Cloud Run Jobs"),
+    # Qualified deliberately: a bare "N services" in operational prose is as
+    # likely to mean GCP APIs or third-party vendors as Cloud Run services.
+    (re.compile(rf"\b{_NUM}\s+(?:long-lived\s+)?(?:HTTP\s+|Cloud Run\s+)"
+                rf"(?:HTTP\s+)?services\b", re.I), "services", "Cloud Run services"),
+    (re.compile(rf"\b{_NUM}\s+(?:cron triggers|scheduler jobs|schedulers|"
+                rf"Cloud Scheduler jobs)\b", re.I), "schedulers", "Cloud Scheduler jobs"),
+    # "| Cloud Scheduler (60 jobs, 3 free) |" -- the "3 free" is a free-tier
+    # quota, not a fleet count, so only the parenthesised total is read.
+    (re.compile(rf"Cloud Scheduler\s*\(\s*{_NUM}\s+jobs\b", re.I),
+     "schedulers", "Cloud Scheduler jobs"),
+)
 
 
 def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
-    """A stated Cloud Run Job count must match the live count."""
-    n_live = len(live["run_jobs"])
+    """A stated resource count must match the live count."""
     for i, line in _lines(path):
         if RETIRED_OK.search(line):
             continue
-        for claimed in COUNT_CLAIM.findall(line):
-            if int(claimed) != n_live:
-                out.append(Finding("count-drift", rel, i,
-                                   f"claims {claimed} Cloud Run Jobs; live count is {n_live}"))
+        for pattern, key, label in COUNT_CLAIMS:
+            n_live = len(live[key])
+            for claimed in pattern.findall(line):
+                n = WORD_NUMBERS.get(claimed.lower())
+                if n is None:
+                    n = int(claimed)
+                if n != n_live:
+                    out.append(Finding("count-drift", rel, i,
+                                       f"claims {claimed} {label}; live count is {n_live}"))
 
 
 def main() -> int:

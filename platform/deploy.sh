@@ -184,11 +184,28 @@ fi
 echo ">> project=${PROJECT_ID} region=${REGION} service=${SERVICE}"
 gcloud config set project "${PROJECT_ID}" >/dev/null
 
+# An immutable per-build tag. This used to build, push and deploy the bare
+# ${IMAGE} -- i.e. :latest -- which the deploy-solyra-api-staging Cloud Build
+# trigger writes too. Two overlapping runs could then push over each other
+# between one run's push and its deploy, so `gcloud run deploy --image
+# ...:latest` resolved to an image that run never built. The prod promote
+# trigger promotes whatever digest is serving staging, so a mutable tag put an
+# unvalidated image one click from production.
+IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)}"
+
+# Neither GitHub's `concurrency: deploy-staging` group nor a Cloud Build
+# trigger can see the other path, so both check for each other here.
+# STAGING_SERVICE, not STAGING: the former deploys solyra-api-staging (what the
+# trigger also deploys); the latter is the legacy revision-tag mode on prod.
+if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
+  bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh"
+fi
+
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
-echo ">> building ${IMAGE}"
+echo ">> building ${IMAGE}:${IMAGE_TAG}"
 gcloud builds submit \
   --config platform/cloudbuild.yaml \
-  --substitutions "_IMAGE=${IMAGE}" \
+  --substitutions "_IMAGE=${IMAGE},_TAG=${IMAGE_TAG}" \
   .
 
 # 2. One-time: create the password secret if missing
@@ -203,9 +220,18 @@ fi
 # chain (all expiries) and computes GEX across it; for the latest/largest
 # snapshot this peaks just over 1 GiB. At 1Gi the instance OOM-killed mid-request
 # (503 + cascading connection errors on co-located requests). 2Gi gives headroom.
-echo ">> deploying to Cloud Run"
+# Deploy the DIGEST, not the tag: the revision is then pinned to exactly the
+# artifact this run built, whatever else writes the repository afterwards.
+IMAGE_DIGEST=$(gcloud container images describe "${IMAGE}:${IMAGE_TAG}" \
+                 --format='value(image_summary.fully_qualified_digest)')
+if [[ -z "${IMAGE_DIGEST}" ]]; then
+  echo ">> ERROR: could not resolve ${IMAGE}:${IMAGE_TAG} to a digest" >&2
+  exit 1
+fi
+
+echo ">> deploying to Cloud Run: ${IMAGE_DIGEST}"
 gcloud run deploy "${SERVICE}" \
-  --image "${IMAGE}" \
+  --image "${IMAGE_DIGEST}" \
   --region "${REGION}" \
   --platform managed \
   --add-cloudsql-instances "${INSTANCE}" \

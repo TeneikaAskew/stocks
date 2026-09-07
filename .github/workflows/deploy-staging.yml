@@ -141,6 +141,14 @@ on:
         options: ['false', 'true']
 
 # Never let two deploys interleave; never cancel one mid-flight.
+#
+# This group only serialises this workflow against ITSELF. It has no reach over
+# the deploy-solyra-api-staging Cloud Build trigger, which deploys the same
+# service on push to main (Codex, PR #990). The cross-path interlock is
+# gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh, which platform/deploy.sh
+# runs in STAGING_SERVICE mode and which the trigger config runs as its first
+# step; both paths also deploy by image digest so an overlap can never leave the
+# service on an artifact neither run built. See gcp/cloudbuild/README.md.
 concurrency:
   group: deploy-staging
   cancel-in-progress: false

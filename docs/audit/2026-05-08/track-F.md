@@ -148,7 +148,7 @@ Layout: **drawio-pre-edit → ground-truth (deploy.sh / repo / gcloud) → drawi
 
 | Service | drawio | deploy.sh / live | Status |
 |---|---|---|---|
-| solyra-api-prod (FastAPI) | ✓ | ✓ | kept |
+| trading-platform (FastAPI) | ✓ | ✓ | kept |
 | discord-interactions | ✓ | ✓ | kept |
 | failure-notifier | ✓ | ✓ | kept |
 | signal-monitor (Service) | ⚠ flagged orphan, "Ready: False" | confirmed broken | kept (correctly flagged) |
@@ -311,7 +311,7 @@ After the first round of edits, I audited my own findings to look for missed dri
 
 - **Routers**: claim says 13. Actual: `ls platform/api/routers/*.py | grep -v __init__` → 13. ✓
 - **GH Actions workflows**: claim says 14. Actual: 14 active `.yml` files (+ 1 disabled). ✓
-- **Cloud Run Services**: 4 (solyra-api-prod, discord-interactions, failure-notifier, signal-monitor [confirmed broken]). ✓
+- **Cloud Run Services**: 4 (trading-platform, discord-interactions, failure-notifier, signal-monitor [confirmed broken]). ✓
 - **Schedulers**: ~50, broken down as 22 distinct names + 4 sec-filings + 10 news-sentiment + 10 news-topics + 2 ORB + 2 brief variants. ✓
 - **`fetch-news-sentiment-topics` representation**: The drawio's `job_fns` cell labels itself "fetch-news-sentiment / ticker mode + topic mode / hourly 08-17" — i.e. it represents both Cloud Run Jobs (fetch-news-sentiment + fetch-news-sentiment-topics) as one box because they share the `gcp.fetchers.fetch_news_sentiment` Python module. This is intentional consolidation per the existing Open question §6, not a missing job.
 - **6 flow-detail diagrams** in the .drawio (Nightly Write, Morning Read, Insight Refresh, Failure Pipeline, Discord Slash-Cmd, Earnings Pipeline): spot-checked. The new jobs (`calibrate-thresholds`, `historical-signals-watchlist`, `compute-spx-greeks-backfill`) don't fit thematically into any of the existing 6 flow paths, so I didn't add them to the detail diagrams. Flagged as P3 enhancement (a 7th "Daily 1am batch / quarterly calibration" diagram).

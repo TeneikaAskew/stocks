@@ -10,6 +10,16 @@ ones that made the earlier hand-checking unreliable:
 * a line about a deleted resource is a record, not a stale claim
 * an explicit reviewed exemption suppresses exactly one line
 
+And four blind spots found in review, each of which let real drift through a
+run that reported clean:
+
+* "Sun 6 AM" -- an hour-only claim, invisible to a pattern needing ``:MM``
+* "weekdays 08:30 + Sun 09:00" -- one correct time on a multi-cadence line
+  vouching for a wrong one, because the line was checked as a whole
+* a PAUSED scheduler whose cron expression still matches
+* only ``N Cloud Run Jobs`` was compared, so service and scheduler counts
+  were never checked at all
+
 Hermetic: no gcloud, no network. The live snapshot is a literal.
 """
 import importlib.util
@@ -39,6 +49,26 @@ LIVE = {
         "av-options-realtime": {
             "schedule": "*/5 9-15 * * 1-5", "timeZone": "America/New_York",
             "state": "ENABLED", "target_job": "fetch-av-options-realtime",
+        },
+        # Two cadences for one job -- the shape that hid a wrong Sunday time
+        # behind a right weekday one.
+        "premarket-brief-daily": {
+            "schedule": "30 8 * * 1-5", "timeZone": "America/New_York",
+            "state": "ENABLED", "target_job": "premarket-brief",
+        },
+        "premarket-brief-sunday": {
+            "schedule": "0 21 * * 0", "timeZone": "America/New_York",
+            "state": "ENABLED", "target_job": "premarket-brief",
+        },
+        # Paused: the expression still matches, the job does not run.
+        "signal-quality-report-hourly": {
+            "schedule": "0 10-16 * * 1-5", "timeZone": "America/New_York",
+            "state": "PAUSED", "target_job": "signal-quality-report",
+        },
+        # One comma list where a doc spells out the equivalent four crons.
+        "sec-filings-intraday": {
+            "schedule": "0 7,10,13,17 * * 1-5", "timeZone": "America/New_York",
+            "state": "ENABLED", "target_job": "fetch-sec-filings",
         },
     },
     "run_jobs": ["fetch-market-data", "fetch-top-movers", "fetch-av-options-realtime"],
@@ -182,3 +212,165 @@ def test_snapshot_round_trips(tmp_path):
     snap = tmp_path / "live.json"
     snap.write_text(json.dumps(LIVE))
     assert json.loads(snap.read_text())["run_jobs"] == LIVE["run_jobs"]
+
+
+# ── Hour-only clock claims ──────────────────────────────────────────────────
+# `docs/GCP_ARCHITECTURE.md:211` documented `fetch-earnings-history` as
+# "Sun 6 AM weekly" against a live `15 19 * * 0`, and the run reported clean.
+
+def test_hour_only_claim_is_compared(tmp_path):
+    out = _check(tmp_path, "**`fetch-market-data-daily`** (weekdays 6 AM)")
+    assert [f.check for f in out] == ["clock-drift"]
+    assert "06:00" in out[0].detail
+
+
+def test_correct_hour_only_claim_is_not_drift(tmp_path):
+    out = _check(tmp_path, "**`fetch-market-data-daily`** (weekdays 11 PM)")
+    assert out == []
+
+
+def test_a_bare_number_is_not_read_as_an_hour(tmp_path):
+    """Requiring AM/PM is what keeps this safe: a number beside a job name is
+    usually a size, a count or a retry budget."""
+    out = _check(tmp_path,
+                 "| `fetch-market-data-daily` | 1 GiB / 30 min / `--max-retries 0` |")
+    assert out == []
+
+
+# ── Multi-cadence lines ─────────────────────────────────────────────────────
+
+def test_one_correct_time_does_not_vouch_for_a_wrong_one(tmp_path):
+    """The exact line from `docs/GCP_ARCHITECTURE.md:314`.
+
+    Weekday 08:30 is right; Sunday is 21:00 live, not 09:00. Checking the line
+    as a whole accepted it because 08:30 matched something.
+    """
+    out = _check(tmp_path, "| `premarket-brief` | 1 GiB | weekdays 08:30 + Sun 09:00 |")
+    assert [f.check for f in out] == ["clock-drift"]
+    assert "09:00" in out[0].detail and "Sun" in out[0].detail
+    assert "08:30" not in out[0].detail, "the correct weekday time is not the finding"
+
+
+def test_a_correct_multi_cadence_line_is_clean(tmp_path):
+    out = _check(tmp_path, "| `premarket-brief` | 1 GiB | weekdays 08:30 + Sun 21:00 |")
+    assert out == []
+
+
+def test_the_any_match_rule_survives_inside_a_segment(tmp_path):
+    """Within one day-qualified segment the any-match rule still holds, which
+    is what keeps an ET column beside a UTC column (or a fire time beside a
+    completion deadline) from reading as drift. Only ACROSS segments is each
+    cadence judged on its own."""
+    out = _check(tmp_path,
+                 "| `premarket-brief` | weekdays 08:30, must finish by 09:15 |")
+    assert [f.check for f in out] == []
+
+
+# ── Paused schedulers ───────────────────────────────────────────────────────
+
+def test_a_paused_scheduler_is_not_a_running_schedule(tmp_path):
+    """`docs/GCP_ARCHITECTURE.md:321` presented a PAUSED entry as running
+    hourly, and its cron expression still matched, so the run reported clean."""
+    out = _check(tmp_path, "| `signal-quality-report-hourly` | weekdays hourly 10:00-16:00 |")
+    assert "paused-schedule" in [f.check for f in out]
+    assert "PAUSED" in [f for f in out if f.check == "paused-schedule"][0].detail
+
+
+def test_a_line_that_says_paused_is_not_flagged(tmp_path):
+    out = _check(tmp_path,
+                 "`signal-quality-report-hourly` is paused; it would run `0 10-16 * * 1-5`.")
+    assert out == []
+
+
+# ── Counts beyond Cloud Run Jobs ────────────────────────────────────────────
+
+def test_service_count_is_compared(tmp_path):
+    out = _check(tmp_path, "| **Cloud Run Services** | 3 long-lived HTTP services |")
+    assert [f.check for f in out] == ["count-drift"]
+    assert "live count is 2" in out[0].detail
+
+
+def test_a_spelled_out_service_count_is_compared(tmp_path):
+    """`docs/GCP_ARCHITECTURE.md:344` says "Three long-lived HTTP services"."""
+    out = _check(tmp_path, "Three long-lived HTTP services, all `min-instances=0`.")
+    assert [f.check for f in out] == ["count-drift"]
+
+
+def test_scheduler_count_is_compared(tmp_path):
+    out = _check(tmp_path, "**60 cron triggers** drive the Jobs above.")
+    assert [f.check for f in out] == ["count-drift"]
+    assert f"live count is {len(LIVE['schedulers'])}" in out[0].detail
+
+
+def test_the_free_tier_quota_is_not_read_as_a_fleet_count(tmp_path):
+    """"Cloud Scheduler (N jobs, 3 free)" states one count and one quota."""
+    n = len(LIVE["schedulers"])
+    out = _check(tmp_path, f"| Cloud Scheduler ({n} jobs, 3 free) | **$0.30** |")
+    assert out == []
+
+
+def test_an_unqualified_service_count_is_not_a_cloud_run_claim(tmp_path):
+    """"three services" in prose can mean vendors or APIs; only a Cloud Run
+    qualifier makes it a claim this script can judge."""
+    out = _check(tmp_path, "The pipeline depends on three services we do not control.")
+    assert out == []
+
+
+# ── Equivalent cron spellings ───────────────────────────────────────────────
+
+def test_an_equivalent_respelling_is_not_drift(tmp_path):
+    """`docs/product/05-INFRASTRUCTURE.md` writes the live `0 7,10,13,17 * * 1-5`
+    as four separate crons. Identical schedule; the string comparison called it
+    a finding, and a false positive is how a checker trains its readers to
+    ignore it."""
+    out = _check(tmp_path,
+                 "| `fetch-sec-filings` | `0 7 * * 1-5`; `0 10 * * 1-5`; "
+                 "`0 13 * * 1-5`; `0 17 * * 1-5` |")
+    assert out == []
+
+
+def test_a_cron_that_fires_when_live_does_not_is_still_drift(tmp_path):
+    out = _check(tmp_path, "| `fetch-sec-filings` | `0 9 * * 1-5` |")
+    assert [f.check for f in out] == ["schedule-drift"]
+
+
+def test_a_self_correcting_record_is_not_drift(tmp_path):
+    """A checklist entry keeps the old value beside the new one on purpose:
+    ``- [x] `fetch-market-data-daily` — `0 17 * * 1-5` ET *(now `0 23 * * 1-5`)*``
+    """
+    out = _check(tmp_path,
+                 "- [x] `fetch-market-data-daily` — `0 17 * * 1-5` ET "
+                 "*(now `0 23 * * 1-5`)*")
+    assert out == []
+
+
+def test_a_wrong_cron_without_the_live_one_is_still_drift(tmp_path):
+    """The correction exemption requires the line to actually state the live
+    schedule, or "now" would excuse any stale cron."""
+    out = _check(tmp_path, "- `fetch-market-data-daily` now runs `0 17 * * 1-5`")
+    assert [f.check for f in out] == ["schedule-drift"]
+
+
+# ── Day qualifiers ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text,days", [
+    ("weekdays 08:30", {1, 2, 3, 4, 5}),
+    ("Sun 21:00", {0}),
+    ("Tue-Sat 01:00", {2, 3, 4, 5, 6}),
+    ("Sat\u2013Sun 09:00", {6, 0}),
+    ("Fri-Mon 09:00", {5, 6, 0, 1}),
+])
+def test_day_qualifier_parsing(text, days):
+    segments = vd._day_segments(text)
+    assert segments and segments[0][0] == days
+
+
+def test_a_line_with_no_day_qualifier_falls_back_to_the_whole_line():
+    assert vd._day_segments("runs at 23:00 ET / 03:00 UTC") == []
+
+
+def test_cadence_words_are_not_day_qualifiers():
+    """"daily"/"nightly"/"hourly" say how often, not on which days. Treating
+    them as day words split rows on prose ("Loads daily data") and invented
+    segments carrying no claim."""
+    assert vd._day_segments("nightly at 01:00, loads daily data hourly") == []

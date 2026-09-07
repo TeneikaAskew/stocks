@@ -17,14 +17,8 @@ Still runnable on demand, from the repo root:
   pytest archive/tests/test_e2e.py -v           # headless
   pytest archive/tests/test_e2e.py --headed     # visible browser
 
-<<<<<<<< HEAD:archive/tests/test_e2e.py
 The legacy options-heatseeker static app was retired in #255 (cutover to
 FastAPI under platform/) — its directory no longer exists.
-========
-Run these separately from the unit suite:
-  pytest tests/e2e/test_e2e.py --headed       # visible browser
-  pytest tests/e2e/test_e2e.py               # headless (CI)
->>>>>>>> origin/main:tests/e2e/test_e2e.py
 """
 
 import http.server
@@ -39,14 +33,10 @@ import pytest
 # Repo root and app paths
 # ---------------------------------------------------------------------------
 
-<<<<<<<< HEAD:archive/tests/test_e2e.py
 # This file lives at archive/tests/, so its parent.parent IS archive/ — the
 # sites are siblings of this directory, not under a nested "archive" segment.
 # Resolving first so the paths hold when pytest is invoked from anywhere.
 ARCHIVE_ROOT = Path(__file__).resolve().parent.parent
-========
-REPO_ROOT = Path(__file__).parent.parent.parent
->>>>>>>> origin/main:tests/e2e/test_e2e.py
 APPS = {
     "success_report": ARCHIVE_ROOT / "success-report-site",
     "website": ARCHIVE_ROOT / "website",

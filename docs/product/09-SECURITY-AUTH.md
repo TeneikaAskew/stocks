@@ -291,7 +291,10 @@ names the default compute SA `28960574877-compute@developer…` (Codex, PR #989)
 
 ### Environment split and public surface — 2026-09-05 — VERIFIED — LIVE
 
-Two Cloud Run services, read live 2026-09-05:
+<!-- verify-docs-ok: "two" counts the API services this section is about, not
+     the live fleet, which is four -- discord-interactions and
+     failure-notifier are neither browser-facing nor part of the auth split. -->
+Two **API** Cloud Run services, read live 2026-09-05:
 
 | Service | Edge | App auth | Reached by |
 |---|---|---|---|

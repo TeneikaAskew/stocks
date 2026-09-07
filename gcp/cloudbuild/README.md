@@ -98,3 +98,42 @@ It no longer shifts traffic between tags on one service. It reads the image
 digest currently serving `solyra-api-staging` and deploys that exact digest to
 `solyra-api-prod`, so prod ships the bits staging validated rather than a fresh
 build of whatever has since merged to main. The same IAM grants above cover it.
+
+## Two staging deploy paths, and how they are kept from interleaving
+
+`solyra-api-staging` is deployed by **two** things that cannot see each other:
+
+* the `deploy-solyra-api-staging` trigger, on push to main
+* `.github/workflows/deploy-staging.yml`, dispatched by an operator, which
+  runs `platform/deploy.sh` → `gcloud builds submit platform/cloudbuild.yaml`
+
+The workflow's `concurrency: deploy-staging` group serialises the workflow
+against itself and has no reach over a Cloud Build run (Codex, PR #990). Two
+mechanisms close the gap:
+
+1. **Immutable tags, deploy by digest.** Both paths used to build, push and
+   deploy the bare image — `:latest`, a mutable pointer both of them write. Two
+   overlapping runs could push over each other between one run's push and its
+   deploy, so `gcloud run deploy --image …:latest` resolved to an image that
+   run never built. Since the promote trigger above deliberately promotes
+   whatever digest is serving staging, a mutable tag put an unvalidated image
+   one click from production. Both paths now tag with the commit
+   (`$SHORT_SHA`, or `git rev-parse --short HEAD` in `platform/deploy.sh`),
+   resolve that tag to its `sha256` digest, and deploy the **digest** — so a
+   revision is pinned to exactly the artifact its run built.
+
+2. **A shared interlock.** `assert_no_concurrent_staging_deploy.sh` runs first
+   in both paths and fails loud if another deploy build is in flight. Both
+   paths are Cloud Build runs in this project, so one can see the other through
+   the build tags in the two configs (`solyra-api-staging-deploy` in the
+   trigger config, `solyra-api-image-build` in `platform/cloudbuild.yaml` —
+   `gcloud builds submit` has no flag for build tags, so each tag has to live
+   in its own file, and the script scans for both). It needs
+   `cloudbuild.builds.list`, which `roles/cloudbuild.builds.editor` already
+   grants to both `trading-runner@` and the workflow's WIF SA — no new grants.
+
+   It refuses rather than queues: a deploy that silently starts twenty minutes
+   later is harder to reason about than one an operator re-runs. Because
+   `platform/cloudbuild.yaml` serves prod as well and its tag is static, a prod
+   deploy also blocks a concurrent staging deploy — conservative rather than
+   wrong, since both are manual and both publish into the same repository.
