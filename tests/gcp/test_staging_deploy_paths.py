@@ -418,3 +418,24 @@ def test_cloudbuild_triggers_check_mode_only_exports(tmp_path):
     assert recorded, "expected the export call to be recorded"
     assert all("triggers export" in c for c in recorded), recorded
     assert not any("triggers import" in c for c in recorded), recorded
+
+
+def test_pin_tag_surfaces_gclouds_own_error():
+    """`_pin_tag` used to send `gcloud artifacts docker tags add`'s stderr to
+    /dev/null and print only "could not tag". The first trigger run of the
+    pin step (build b76462ad, #1033) failed six moves that way, and the
+    reason was the one thing needed. The add command must keep its stderr
+    and the error line must carry it."""
+    import re
+
+    gcp_deploy_sh = (REPO / "gcp/deploy.sh").read_text()
+    m = re.search(r"^_pin_tag\(\) \{\n(.*?)^\}", gcp_deploy_sh, re.S | re.M)
+    assert m is not None, "_pin_tag not found in deploy.sh"
+    body = m.group(1)
+    add_lines = [ln for ln in body.splitlines() if "docker tags add" in ln]
+    assert add_lines, "no `gcloud artifacts docker tags add` in _pin_tag"
+    for ln in add_lines:
+        assert "2>&1" not in ln and "2>/dev/null" not in ln, (
+            f"stderr of the tag add is discarded again:\n{ln}")
+    assert re.search(r'could not tag .*\$\{err', body), (
+        "the failure line does not carry gcloud's error text")
