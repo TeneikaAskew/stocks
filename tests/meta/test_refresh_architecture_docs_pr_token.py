@@ -390,3 +390,34 @@ def test_a_state_change_sharing_a_line_with_a_timestamp_is_not_reverted():
     assert "<DATE>" in detect, "dates must be masked, not used to drop lines"
     # removed and added lines are COMPARED once masked
     assert ".old" in detect and ".new" in detect and "diff " in detect
+
+
+def test_a_legitimate_render_change_is_not_a_stray_write():
+    """P1: the render is the whole point of the run, and excluding the
+    deterministic files from ALLOWED classified their INTENDED changes as
+    model writes -- so every month that added a route or a job would have
+    failed. They are compared with their frozen copies instead.
+    (Codex, PR #1009.)"""
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    restore = next(v for k, v in steps.items() if k and k.startswith("Restore gate inputs"))
+    assert "DETERMINISTIC=" in restore
+    det = set(re.search(r'DETERMINISTIC="([^"]+)"', restore).group(1).split())
+    assert det == {"Architecture.drawio", "Architecture-icons.drawio",
+                   "docs/API.md", "docs/INVESTMENT_MODELS_SUMMARY.md"}, det
+    # each is judged against the frozen copy, not against HEAD
+    assert 'cmp -s "$F" "$RUNNER_TEMP/frozen/$F"' in restore
+    # and they are still not simply allowed
+    allowed = set(re.search(r'ALLOWED="([^"]+)"', restore).group(1).split())
+    assert not (det & allowed), "a deterministic file is allowlisted again"
+
+
+def test_a_pure_line_move_is_not_treated_as_timestamp_only():
+    """Sorting the two sides made a moved paragraph look identical to a date
+    change; ordering alone does not separate them either, because a move has
+    identical sides by definition. The unmasked sides decide.
+    (Codex, PR #1009.)"""
+    detect = {s.get("name"): s.get("run") or "" for s in _steps()}["Detect meaningful changes"]
+    assert "| sort >" not in detect, "the sorted comparison is back; a line move would be reverted"
+    assert ".rold" in detect and ".rnew" in detect, "the unmasked sides are not compared"
+    # timestamp-only requires masked-equal AND unmasked-different
+    assert 'diff -q "/tmp/${DIFF_NAME}.rold" "/tmp/${DIFF_NAME}.rnew"' in detect

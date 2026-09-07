@@ -73,7 +73,7 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("Audit / type-check / test workflows\nsecurity-review, audit-review,\nvalidate-data, pre-deploy-check", "Cloud Build: apply-schema-on-change\npush touching gcp/schema.sql\n→ apply-schema-migrations job"),
     ("refresh-architecture-docs.yml (monthly Gemini regen)", "refresh-architecture-docs.yml (monthly: live snapshot → rendered blocks → gated prose update)"),
     ("⑩ GitHub Actions — 14 active workflows: backups, audits, sandbox bridges, deploys", "⑩ GitHub Actions (5 workflows) and Cloud Build (3 triggers) — CI, deploys, bridges, doc refresh"),
-    ("⑦ Cloud Run Services (always-on)", "⑦ Cloud Run Services (4; discord-interactions min-instances 1, others 0)"),
+    ("⑦ Cloud Run Services (always-on)", "⑦ Cloud Run Services (4)"),
     ("7:15 ET — earnings-calendar refreshes today's reporters", "19:00 ET prior evening — daily-earnings-refresh-calendar / -history / -reactions"),
     ("4️⃣  8:20 ET — premarket-refresh polls AV intraday → gap_pct, pre_high/low/vwap\n5️⃣  8:30 ET — premarket-brief reads everything → Discord (multi-embed)",
      "4️⃣  8:20 ET — premarket-refresh polls AV intraday → gap_pct, pre_high/low/vwap\n5️⃣  8:30 ET — premarket-brief → Discord; 8:35 earnings-reactions-brief; 8:10 auto-refresh-top-n pre-warmed insights"),
@@ -263,6 +263,16 @@ def refresh_main(root: ET.Element, live: dict) -> None:
                  f"⑩ GitHub Actions and Cloud Build ({len(live.get('cloudbuild_triggers', []))} triggers) — CI, deploys, bridges, docs-vs-live check, doc refresh")
     if GHA_GROUP_ID in by_id:
         by_id[GHA_GROUP_ID].set("value", gha_label)
+    # min-instances is a WINDOW here: discord-warm-open/-close move
+    # discord-interactions between 1 and 0 around the session, so the label is
+    # rendered from the snapshot and says when it was read rather than
+    # asserting a constant the service only holds for part of the day.
+    # (Codex, PR #1009.)
+    svc_min = ", ".join(f"{n} min-instances {s.get('min_instances', '?')}"
+                        for n, s in sorted(live.get("services", {}).items())
+                        if str(s.get("min_instances", "0")) != "0") or "all min-instances 0"
+    by_id["svc_group"].set("value",
+        f"⑦ Cloud Run Services ({counts['services']}; {svc_min} — read {read})")
     by_id[SCHED_GROUP_ID].set("value", f"② Cloud Scheduler — {counts['schedulers']} live entries, all America/New_York (read {read}{paused_note})")
     for cid, text in sched_labels(live).items():
         by_id[cid].set("value", text)

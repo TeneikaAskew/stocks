@@ -954,14 +954,15 @@ COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
     # MARKDOWN TABLE COLUMNS: `| Cloud Run Jobs | 7 jobs |`. Every pattern
     # above wants the count adjacent to the noun or parenthesized, so a
     # component-summary table that puts the resource in one column and its
-    # count in the next was invisible -- including in files this verifier
-    # explicitly scans, which claimed 7 jobs and 21 triggers against a live
-    # 76 and 65 while reporting clean (Codex, PR #1009).
-    (re.compile(rf"^\|[^|\n]*Cloud\s+Run\s+Jobs?[^|\n]*\|[^|\n]*?\b{_NUM}\s+(?:Cloud\s+Run\s+)?jobs?\b", re.I | re.M),
+    # count in the next was invisible. Fixing that by requiring the resource
+    # in the FIRST cell then missed `| Scheduled Jobs | Cloud Run Jobs | 7
+    # jobs |`, where it is in the second -- so the resource and the count are
+    # now matched anywhere in the same ROW. (Codex, PR #1009.)
+    (re.compile(rf"^\|[^\n]*?Cloud\s+Run\s+Jobs?[^\n]*?\b{_NUM}\s+(?:Cloud\s+Run\s+)?jobs?\b", re.I | re.M),
      "run_jobs", "Cloud Run Jobs"),
-    (re.compile(rf"^\|[^|\n]*Cloud\s+Scheduler[^|\n]*\|[^|\n]*?\b{_NUM}\s+(?:cron\s+)?(?:triggers?|jobs?|entries|schedulers?)\b", re.I | re.M),
+    (re.compile(rf"^\|[^\n]*?Cloud\s+Scheduler[^\n]*?\b{_NUM}\s+(?:cron\s+)?(?:triggers?|jobs?|entries|schedulers?)\b", re.I | re.M),
      "schedulers", "Cloud Scheduler jobs"),
-    (re.compile(rf"^\|[^|\n]*Cloud\s+Run\s+Services?[^|\n]*\|[^|\n]*?\b{_NUM}\s+services?\b", re.I | re.M),
+    (re.compile(rf"^\|[^\n]*?Cloud\s+Run\s+Services?[^\n]*?\b{_NUM}\s+services?\b", re.I | re.M),
      "services", "Cloud Run services"),
 )
 
@@ -981,10 +982,17 @@ def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -
     raw = text.splitlines()
     skip = {i for i, line in enumerate(raw, 1) if SUPPRESS.search(line)}
     skip |= {i + 1 for i in skip}
+    # One fact, one finding. The noun-first and table-row patterns both match
+    # `| **Cloud Scheduler (66 jobs)** | ... |`, and reporting a line twice is
+    # the noise that teaches people to skim the output -- the same argument
+    # `check_retired_services` already makes. (Codex, PR #1009.)
+    seen: set[tuple[int, str]] = set()
     for pattern, key, label in COUNT_CLAIMS:
         n_live = len(live[key])
         for m in pattern.finditer(text):
             i = text.count("\n", 0, m.start()) + 1
+            if (i, key) in seen:
+                continue
             # RETIRED_OK is deliberately NOT consulted here. It exempts a
             # line for naming a retired SERVICE, and its vocabulary is
             # ordinary past tense -- `was`, `were`, `deleted`, `old`. A count
@@ -1001,6 +1009,7 @@ def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -
             if n is None:
                 n = int(claimed)
             if n != n_live:
+                seen.add((i, key))
                 out.append(Finding("count-drift", rel, i,
                                    f"claims {claimed} {label}; live count is {n_live}"))
 

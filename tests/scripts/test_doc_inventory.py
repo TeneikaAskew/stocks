@@ -376,3 +376,39 @@ def test_a_templated_uri_target_is_not_reported_as_drift():
     assert templated is not None, "fixture assumption: a templated URI target exists"
     live_form = dict(templated, target_uri="https://failure-notifier-5sjtb3yl7a-ue.a.run.app/reconcile")
     assert inv._sched_target(templated) == inv._sched_target(live_form)
+
+
+def test_a_uri_target_keeps_the_service_it_points_at():
+    """Discarding the host made a redirect to any other host with the same
+    path invisible. deploy.sh derives ${service_url} from NOTIFIER_SERVICE, so
+    the identity is knowable. (Codex, PR #1009.)"""
+    repo = inv.repo_inventory(REPO)
+    live = json.loads(FIXTURE.read_text())
+    name = "reconcile-failure-notifier-hourly"
+    r, l = next(s for s in repo["schedulers"] if s["name"] == name), live["schedulers"][name]
+    assert inv._sched_target(r) == inv._sched_target(l) == "service:failure-notifier/reconcile"
+    # a redirect to a DIFFERENT service on the same path is drift
+    moved = dict(l, target_uri="https://some-other-svc-abc-ue.a.run.app/reconcile")
+    assert inv._sched_target(moved) != inv._sched_target(r)
+    live["schedulers"][name] = moved
+    assert any(n.startswith(f"{name}:") for n in inv.reconcile(repo, live)["schedulers_target_drift"])
+
+
+def test_live_job_config_drift_is_reported():
+    """Job rows were rendered only from deploy.sh, so a job running at 2 GiB
+    against a 1 GiB declaration read as 1 GiB and reconciled clean.
+    (Codex, PR #1009.)"""
+    live = json.loads(FIXTURE.read_text())
+    drift = inv.reconcile(inv.repo_inventory(REPO), live)["jobs_config_drift"]
+    assert any("compute-earnings-reactions.memory" in d and "1Gi" in d and "2Gi" in d for d in drift), drift
+    assert any("strat-engine.memory" in d for d in drift), drift
+
+
+def test_a_deploy_time_variable_is_not_config_drift():
+    """`--tasks ${n}` is a value the repo cannot state, exactly like a
+    templated scheduler URI."""
+    live = json.loads(FIXTURE.read_text())
+    drift = inv.reconcile(inv.repo_inventory(REPO), live)["jobs_config_drift"]
+    assert not [d for d in drift if "${" in d], drift
+    assert inv._norm_cfg("${plan_size}") is None
+    assert inv._norm_cfg("2Gi") == inv._norm_cfg("2G")

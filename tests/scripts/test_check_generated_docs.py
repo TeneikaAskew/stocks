@@ -266,3 +266,36 @@ def test_the_runtime_relation_count_must_match_the_snapshot(live, repo, tmp_path
                                        "Live table drift (28 runtime relations)"))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any("claims 28 runtime relations" in f and "is 26" in f for f in findings), findings
+
+
+def test_the_retry_claim_is_caught_in_either_clause_order(live, repo, tmp_path):
+    """The first version required the flag to precede the count, so
+    "56 jobs use `--max-retries 0`" -- a phrasing no prompt forbids -- passed
+    the gate that exists to catch that number. (Codex, PR #1009.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / "ARCHITECTURE.md"
+    a.write_text("56 jobs use `--max-retries 0` today.\n" + a.read_text())
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 56 jobs at --max-retries 0" in f for f in findings), findings
+
+
+def test_runtime_relations_are_a_set_difference(repo, tmp_path):
+    """Subtracting totals undercounts when a declared relation is not yet
+    live, rejecting correct prose and accepting a wrong number.
+    (Codex, PR #1009.)"""
+    import json as _json
+    live = _json.loads((REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json").read_text())
+    # drop one DECLARED relation from the live side, as a pending migration would
+    declared = ({t["name"] for t in repo["tables"]}
+                | {v["name"] for v in repo["materialized_views"]}
+                | {v["name"] for v in repo["views"]})
+    victim = next(n for n in live["db_tables"] if n in declared)
+    live["db_tables"] = {k: v for k, v in live["db_tables"].items() if k != victim}
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    # the runtime count is unchanged: only a declared relation disappeared
+    assert gate.gate_derived_numbers(root, repo, live) == [], \
+        "a pending migration must not change the runtime-created count"

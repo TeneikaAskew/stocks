@@ -79,7 +79,7 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/dashboard/brief/{ticker}` | [`platform/api/routers/dashboard.py:80`](../platform/api/routers/dashboard.py#L80) | Return daily bias / strat status for the dashboard. |
 | `GET` | `/api/earnings/calibration` | [`platform/api/routers/earnings.py:304`](../platform/api/routers/earnings.py#L304) | The live calibration row (PR-A + PR-B headline finding). |
 | `GET` | `/api/earnings/event/{ticker}/{event_date}` | [`platform/api/routers/earnings.py:172`](../platform/api/routers/earnings.py#L172) | Single-event drill-down. |
-| `GET` | `/api/earnings/health/ping` | [`platform/api/routers/earnings.py:324`](../platform/api/routers/earnings.py#L324) | Lightweight warm-up endpoint hit by the keep-warm Cloud Scheduler. |
+| `GET` | `/api/earnings/health/ping` | [`platform/api/routers/earnings.py:324`](../platform/api/routers/earnings.py#L324) | Lightweight warm-up probe. NOT called by a scheduler. |
 | `GET` | `/api/earnings/history/{ticker}` | [`platform/api/routers/earnings.py:138`](../platform/api/routers/earnings.py#L138) | Last N quarters for one ticker — full event timeline. |
 | `GET` | `/api/earnings/insights/grid` | [`platform/api/routers/earnings.py:255`](../platform/api/routers/earnings.py#L255) | The 144-row Q × bucket × structure insights table (PR-B). |
 | `GET` | `/api/earnings/insights/winners` | [`platform/api/routers/earnings.py:278`](../platform/api/routers/earnings.py#L278) | Top-N named winners per (structure × quintile). |

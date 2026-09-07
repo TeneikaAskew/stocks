@@ -492,10 +492,25 @@ jobs:
           # the two deterministic docs are rendered before the model runs, so
           # an edit to any of them is a stray write. (Codex, PR #1009.)
           ALLOWED="ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md"
-          # tracked files the model touched that are not generated docs
+          # Rendered BEFORE the model ran, and frozen at that point. Their diff
+          # against HEAD is the RENDER's work -- a new route or job -- which is
+          # the whole reason this workflow exists, so it must not be mistaken
+          # for a model write. Excluding them from ALLOWED alone did exactly
+          # that and would have failed every month that changed an inventory.
+          # What must not happen is a difference from the FROZEN copy, which
+          # only the model could produce. (Codex, PR #1009.)
+          DETERMINISTIC="Architecture.drawio Architecture-icons.drawio docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md"
           STRAY=""
           for F in $(git diff --name-only; git ls-files --others --exclude-standard | grep -v '^refresh-inputs/' || true); do
-            case " $ALLOWED " in *" $F "*) ;; *) STRAY="$STRAY $F";; esac
+            case " $ALLOWED " in *" $F "*) continue;; esac
+            case " $DETERMINISTIC " in
+              *" $F "*)
+                if ! cmp -s "$F" "$RUNNER_TEMP/frozen/$F"; then
+                  STRAY="$STRAY $F(model edited a rendered file)"
+                fi
+                continue;;
+            esac
+            STRAY="$STRAY $F"
           done
           if [ -n "$STRAY" ]; then
             echo "::error::the model wrote outside the generated docs:$STRAY — refusing to verify or publish"
@@ -679,13 +694,24 @@ jobs:
             # A file is timestamp-only when its removed and added lines are
             # identical once dates are masked, which is a comparison rather
             # than a filter and cannot silently discard content.
-            git diff --no-color "$FILE" \
-              | grep -E '^[-+][^-+]' \
-              | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}/<DATE>/g; s/(\*\*)?Generated(\*\*)? 20[0-9]{2}/Generated <DATE>/g' \
-              > "/tmp/${DIFF_NAME}.norm"
-            sed -n 's/^-//p' "/tmp/${DIFF_NAME}.norm" | sort > "/tmp/${DIFF_NAME}.old"
-            sed -n 's/^+//p' "/tmp/${DIFF_NAME}.norm" | sort > "/tmp/${DIFF_NAME}.new"
-            diff "/tmp/${DIFF_NAME}.old" "/tmp/${DIFF_NAME}.new" > "/tmp/${DIFF_NAME}.diff" || true
+            git diff --no-color "$FILE" | grep -E '^[-+][^-+]' > "/tmp/${DIFF_NAME}.raw" || true
+            sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}/<DATE>/g; s/(\*\*)?Generated(\*\*)? 20[0-9]{2}/Generated <DATE>/g' \
+              "/tmp/${DIFF_NAME}.raw" > "/tmp/${DIFF_NAME}.norm"
+            sed -n 's/^-//p' "/tmp/${DIFF_NAME}.norm" > "/tmp/${DIFF_NAME}.old"
+            sed -n 's/^+//p' "/tmp/${DIFF_NAME}.norm" > "/tmp/${DIFF_NAME}.new"
+            sed -n 's/^-//p' "/tmp/${DIFF_NAME}.raw"  > "/tmp/${DIFF_NAME}.rold"
+            sed -n 's/^+//p' "/tmp/${DIFF_NAME}.raw"  > "/tmp/${DIFF_NAME}.rnew"
+            # A file is timestamp-only when masking the dates makes the two
+            # sides identical AND the unmasked sides differ -- i.e. a date is
+            # what changed. A pure line MOVE also has identical masked sides,
+            # but its unmasked sides are identical too, so it is a real edit
+            # and must survive; sorting the sides hid that distinction, and
+            # ordering alone does not recover it. (Codex, PR #1009.)
+            : > "/tmp/${DIFF_NAME}.diff"
+            if ! diff -q "/tmp/${DIFF_NAME}.old" "/tmp/${DIFF_NAME}.new" >/dev/null \
+               || diff -q "/tmp/${DIFF_NAME}.rold" "/tmp/${DIFF_NAME}.rnew" >/dev/null; then
+              cp "/tmp/${DIFF_NAME}.raw" "/tmp/${DIFF_NAME}.diff"
+            fi
             if [ -s "/tmp/${DIFF_NAME}.diff" ]; then
               CHANGED_LINES=$(wc -l < "/tmp/${DIFF_NAME}.diff")
               echo "::notice::$FILE has meaningful changes ($CHANGED_LINES lines)"

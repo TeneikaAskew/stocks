@@ -329,20 +329,39 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
     text = (root / "ARCHITECTURE.md").read_text()
 
     counts = collections.Counter(j.get("max_retries") for j in repo["jobs"])
-    # every "`--max-retries N` ... for M jobs" claim, whatever the wording
-    for m in re.finditer(r"`--max-retries (\d)`[^.\n]{0,40}?for (\d+)", text):
-        want = counts.get(m.group(1), 0)
-        if int(m.group(2)) != want:
-            out.append(f"ARCHITECTURE.md: claims {m.group(2)} jobs at --max-retries {m.group(1)}; "
+    # Both clause orders. The first version required the flag to precede the
+    # count, so "56 jobs use `--max-retries 0`" -- a phrasing no prompt forbids
+    # -- would have sailed past the gate that exists to catch exactly that
+    # number. (Codex, PR #1009.)
+    claims: list[tuple[str, str]] = []
+    # flag first: "`--max-retries 0` for 41 ...", "`--max-retries 0` is the norm (41 of ..."
+    claims += [(m.group(1), m.group(2)) for m in
+               re.finditer(r"`--max-retries (\d)`\s*(?:is the norm\s*\(|for\s+)(\d+)", text)]
+    # count first: "the 25 `--max-retries 1` jobs", "56 jobs use `--max-retries 0`"
+    claims += [(m.group(2), m.group(1)) for m in
+               re.finditer(r"\b(\d+)\s+`--max-retries (\d)`", text)]
+    claims += [(m.group(2), m.group(1)) for m in
+               re.finditer(r"\b(\d+)\s+jobs?\s+(?:use|have|are at|run with)\s+`--max-retries (\d)`", text)]
+    # the trailing shorthand of a list: "... `1` for 25 and `2` for one"
+    for m in re.finditer(r"`--max-retries \d`[^.\n]*", text):
+        for m2 in re.finditer(r"`(\d)`\s+for\s+(\d+)", m.group(0)):
+            claims.append((m2.group(1), m2.group(2)))
+    for flag, claimed in claims:
+        want = counts.get(flag, 0)
+        if int(claimed) != want:
+            out.append(f"ARCHITECTURE.md: claims {claimed} jobs at --max-retries {flag}; "
                        f"gcp/deploy.sh declares {want}")
-    for m in re.finditer(r"`--max-retries 0` is the norm \((\d+) of", text):
-        if int(m.group(1)) != counts.get("0", 0):
-            out.append(f"ARCHITECTURE.md: claims {m.group(1)} jobs at --max-retries 0; "
-                       f"gcp/deploy.sh declares {counts.get('0', 0)}")
 
     if live and live.get("db_tables"):
-        declared = (len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"]))
-        runtime = len(live["db_tables"]) - declared
+        # A SET difference, not a subtraction of totals: a relation declared in
+        # schema.sql but not yet migrated live would make the subtraction
+        # undercount, rejecting correct prose and accepting a wrong number.
+        # (Codex, PR #1009.)
+        declared_names = ({t_["name"] for t_ in repo["tables"]}
+                          | {v["name"] for v in repo["materialized_views"]}
+                          | {v["name"] for v in repo["views"]})
+        declared = len(declared_names)
+        runtime = len(set(live["db_tables"]) - declared_names)
         for doc in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md"):
             body = (root / doc).read_text()
             for m in re.finditer(r"(\d+) runtime[- ](?:created )?relations", body):

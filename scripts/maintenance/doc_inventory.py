@@ -1061,6 +1061,42 @@ def _now_iso() -> str:
 # reconcile
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Fields rendered from deploy.sh in the job table. The live values were read
+# but used only for execution status, so a job running at 2 GiB against a 1 GiB
+# declaration was documented as 1 GiB and reconciled clean -- and a rebuild
+# would silently move it. (Codex, PR #1009.)
+JOB_CONFIG_FIELDS = ("memory", "cpu", "timeout", "max_retries", "tasks")
+
+
+def _norm_cfg(v: Any) -> str | None:
+    """Comparable form, or None when the value is not comparable.
+
+    A deploy-time variable (`--tasks ${n}`) is not drift: the repo cannot state
+    the number, exactly as with a templated scheduler URI.
+    """
+    if v is None:
+        return None
+    s = str(v)
+    if "${" in s:
+        return None
+    return s.rstrip("i") if s[:-1].isdigit() or s[:-2].isdigit() else s
+
+
+def jobs_config_drift(repo: dict[str, Any], live: dict[str, Any]) -> list[str]:
+    by = {j["name"]: j for j in repo["jobs"]}
+    out = []
+    for name, l in sorted((live.get("jobs") or {}).items()):
+        r = by.get(name)
+        if not r:
+            continue
+        for f in JOB_CONFIG_FIELDS:
+            rv, lv = _norm_cfg(r.get(f)), _norm_cfg(l.get(f))
+            if rv is None or lv is None or rv == lv:
+                continue
+            out.append(f"{name}.{f}: repo `{r.get(f)}` live `{l.get(f)}`")
+    return out
+
+
 def _sched_target(s: dict[str, Any]) -> str:
     """A scheduler's target as `kind:name`, so a job and a service of the same
     name are different targets and a conversion between the two is drift."""
@@ -1069,13 +1105,30 @@ def _sched_target(s: dict[str, Any]) -> str:
     if s.get("target_service"):
         return f"service:{s['target_service']}"
     if s.get("target_uri"):
-        # The repo can only know the host as a deploy-time variable
-        # (`${service_url}/reconcile`), so compare the PATH, which is the part
-        # both sides state and the part that selects the endpoint.
+        # Discarding the host entirely made a redirect to ANY other host with
+        # the same path invisible. The repo does know the intended identity --
+        # deploy.sh sets NOTIFIER_SERVICE and derives ${service_url} from it --
+        # so the variable name is kept as the service, and a live URL is
+        # matched back to its service by hostname. (Codex, PR #1009.)
         uri = s["target_uri"]
-        path = uri.split("}", 1)[-1] if "${" in uri else re.sub(r"^https?://[^/]+", "", uri)
+        if "${" in uri:
+            var = re.search(r"\$\{([a-z_]*service[a-z_]*)\}", uri, re.I)
+            svc = s.get("target_service") or (_SERVICE_VAR.get(var.group(1)) if var else None)
+            path = uri.split("}", 1)[-1]
+            return f"service:{svc}{path}" if svc else f"uri:{path or '/'}"
+        host = re.match(r"https?://([^/]+)", uri)
+        path = re.sub(r"^https?://[^/]+", "", uri)
+        if host:
+            # Cloud Run hostnames start with the service name.
+            svc = host.group(1).split(".")[0].rsplit("-", 2)[0]
+            return f"service:{svc}{path or '/'}"
         return f"uri:{path or '/'}"
     return ""
+
+
+# `${service_url}` in deploy.sh is derived from NOTIFIER_SERVICE; keeping the
+# mapping here means a templated target still names the service it points at.
+_SERVICE_VAR = {"service_url": "failure-notifier"}
 
 
 def reconcile(repo: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
@@ -1118,6 +1171,7 @@ def reconcile(repo: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
             for n in set(repo_sched) & set(live_sched)
             if repo_sched[n].get("time_zone") and live_sched[n].get("time_zone")
             and repo_sched[n]["time_zone"] != live_sched[n]["time_zone"]),
+        "jobs_config_drift": jobs_config_drift(repo, live),
         "jobs_never_executed_in_window": sorted(
             n for n, j in live["jobs"].items() if j["last_execution"]["result"] == "never"),
         "jobs_last_failed": sorted(
@@ -1270,6 +1324,7 @@ def render_markdown(section: str, repo: dict[str, Any], live: dict[str, Any] | N
         block("Cron drift (same name, different cron)", rec["schedulers_cron_drift"])
         block("Target drift (same name, different job)", rec["schedulers_target_drift"])
         block("Time-zone drift (same name, different zone)", rec["schedulers_tz_drift"])
+        block("Job config drift (declared vs live)", rec["jobs_config_drift"])
         block("Jobs whose last execution failed", rec["jobs_last_failed"])
         block("Jobs that have never executed", rec["jobs_never_executed_in_window"])
         return "\n".join(lines)

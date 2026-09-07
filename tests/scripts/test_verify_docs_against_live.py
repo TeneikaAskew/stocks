@@ -800,3 +800,19 @@ def test_the_declared_names_cache_is_keyed_on_the_root():
     """One cached answer for every root would defeat --root just as thoroughly
     as ignoring it."""
     assert vd._declared_names.cache_info().maxsize > 1
+
+
+def test_a_count_claim_is_matched_anywhere_in_its_row(tmp_path):
+    """Requiring the resource in the FIRST cell missed the real rows.
+
+    `| Scheduled Jobs | Cloud Run Jobs | 7 jobs |` puts the resource in the
+    second cell, so a stale 7 against a live 76 passed in a file the verifier
+    explicitly scans -- and I had reported this one corrected when only the
+    cost table on the same page had been. (Codex, PR #1009.)
+    """
+    out = _check(tmp_path, "| Scheduled Jobs | Cloud Run Jobs | 7 jobs | notes |\n")
+    assert [f.check for f in out] == ["count-drift"], out
+    out = _check(tmp_path, "| Cron Triggers | Cloud Scheduler | 21 triggers | notes |\n")
+    assert [f.check for f in out] == ["count-drift"], out
+    # the correct counts pass
+    assert _check(tmp_path, "| Scheduled Jobs | Cloud Run Jobs | 3 jobs | notes |\n") == []

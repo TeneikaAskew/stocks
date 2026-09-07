@@ -769,9 +769,9 @@ All sources are normalized to canonical names before returning:
 |-----------|---------|------|--------|
 | Relational DB | Cloud SQL | `trading-db` | PostgreSQL 15, `db-g1-small`, 191 GB (read live 2026-09-07; auto-grown from the original 20 GB), us-east1 |
 | Object Storage | Cloud Storage | `PROJECT-trading-data` | Standard, us-east1, 730-day raw/ lifecycle |
-| Scheduled Jobs | Cloud Run Jobs | 7 jobs | 1–2 Gi memory, max-retries 1–2 |
+| Scheduled Jobs | Cloud Run Jobs | 76 jobs live, 67 declared in `gcp/deploy.sh` (read live 2026-09-07) | 1–16 Gi memory; retries 0 on 41 declared jobs, 1 on 25, 2 on one |
 | Real-time Monitor | Cloud Run Job | `signal-monitor` | 2 Gi, 8h timeout, 0 retries, scheduled 9:25 AM ET |
-| Cron Triggers | Cloud Scheduler | 21 triggers | All America/New_York timezone |
+| Cron Triggers | Cloud Scheduler | 65 triggers (read live 2026-09-07) | All America/New_York timezone |
 | Container Images | Artifact Registry | `trading/trading-system` | us-east1 |
 | Build | Cloud Build | (default) | `gcloud builds submit` |
 | Secrets | Secret Manager | 22 secrets | See §14 |
