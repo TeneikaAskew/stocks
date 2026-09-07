@@ -255,7 +255,13 @@ def _day_segments(line: str) -> list[tuple[set[int], str]]:
     segments: list[tuple[set[int], str]] = []
     for n, m in enumerate(marks):
         end = marks[n + 1].start() if n + 1 < len(marks) else len(line)
-        segments.append((_qualifier_days(m.group(1), m.group(2)), line[m.start():end]))
+        # The FIRST segment starts at the beginning of the line, not at its
+        # qualifier. A clock that precedes its qualifier -- `7:00 PM ET Mon-Fri
+        # + Sun`, which is how docs/DATA_PIPELINE.md writes it -- was sliced
+        # off the front and then belonged to no segment at all, so neither
+        # piece carried a clock and the comparison never ran (Codex, PR #990).
+        start = 0 if n == 0 else m.start()
+        segments.append((_qualifier_days(m.group(1), m.group(2)), line[start:end]))
     return segments
 
 
@@ -608,6 +614,18 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
                 continue
             relevant = live_times if days is None else {
                 t for d, t in live_firings if d in days}
+            if days is not None and not relevant:
+                # The line names days the live schedule does not fire on at
+                # all. Skipping this as "nothing to compare" accepted a claim
+                # that `fetch-market-data` runs on Sunday against a weekday
+                # cron (Codex, PR #990).
+                out.append(Finding(
+                    "schedule-drift", rel, i,
+                    f"`{job}` documented at {', '.join(sorted(claimed))} on "
+                    f"{'/'.join(DAY_ORDER[d] for d in sorted(days))}, but the live "
+                    f"schedule never fires on {'those days' if len(days) > 1 else 'that day'}"
+                    f" — {shown}"))
+                continue
             if relevant and not (claimed & relevant):
                 where = "" if days is None else \
                     f" on {'/'.join(DAY_ORDER[d] for d in sorted(days))}"
@@ -615,6 +633,30 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
                                    f"`{job}` documented at "
                                    f"{', '.join(sorted(claimed))}{where}; no live fire "
                                    f"time matches ({', '.join(sorted(relevant))}) — {shown}"))
+
+        # NOT CHECKED: which clock on the line belongs to which named job.
+        #
+        # A row naming two jobs passes as soon as ONE documented clock matches
+        # ONE of them, so `orb-15m-alert`/`orb-30m-alert` at 09:45/10:00 would
+        # still pass with 10:00 moved (Codex, PR #990). The obvious fix -- also
+        # require every named scheduler to have a matching clock -- was written
+        # and measured, and it reports four findings on correct documentation:
+        #
+        #   RUNBOOK.md:30            "Brief at 8:30 ET errors with ..."
+        #   GCP_ARCHITECTURE.md:551  "premarket-refresh (08:20) MUST finish
+        #                             before premarket-brief (08:30)"
+        #   GCP_ARCHITECTURE.md:599  a mermaid node giving signal-monitor's
+        #                             window
+        #
+        # In each case the doc names a JOB and states its weekday cadence,
+        # while `_schedule_owners` maps that job to a family of schedulers
+        # including a Sunday one whose time the line never claims to give. The
+        # association cannot be recovered without the doc stating it, and a
+        # checker that reports correct lines is one people learn to skip --
+        # the argument this file makes about `EST` and about bare secret
+        # counts. So the gap is named here instead: a row listing several jobs
+        # should name each job beside its own time, and where that mattered
+        # (docs/EARNINGS_PIPELINE.md:17) the row now does.
 
         if UTC_TIME.search(line):
             zones = {m["timeZone"] for _, m in entries}
@@ -635,6 +677,13 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
                 seen.add(key)
 
 
+# The domains this project serves its own hostnames from. Held here rather than
+# derived from the live mappings, because the live set can legitimately be
+# EMPTY (every mapping deleted) and a scope derived from it is then empty too --
+# so the check that should shout loudest would go silent (Codex, PR #990).
+KNOWN_CUSTOM_DOMAINS = ("insightscollective.org",)
+
+
 # "`host` maps to `service`", "host points at service", "host -> service".
 # Backticks optional: these docs write the hostname both ways.
 MAPPING_CLAIM = re.compile(
@@ -651,8 +700,15 @@ def check_domain_mappings(path: pathlib.Path, rel: str, live: dict,
     only record of it and every copy drifted together when the mapping moved.
     """
     mappings = live.get("domain_mappings")
-    if not mappings:
-        return
+    if mappings is None:
+        return          # a snapshot written before this field existed
+
+    # NOT `if not mappings: return`. Deleting every domain mapping -- the
+    # routing outage this check exists to expose -- produced an empty dict,
+    # and the early return then suppressed every mapping check: the verifier
+    # reported `no findings` while the docs still routed readers at
+    # `api.stocks.insightscollective.org` (Codex, PR #990). An empty live set
+    # is a state to check against, not a reason to stop checking.
 
     # Every host under a domain we actually map, whether or not the line spells
     # out "maps to". Chasing phrasings with a pattern is the mistake #993 made
@@ -667,7 +723,11 @@ def check_domain_mappings(path: pathlib.Path, rel: str, live: dict,
     # `api.stocks.insightscollective.org` that is `insightscollective.org`, so
     # the bare `stocks.insightscollective.org` -- which is what every stale
     # copy says -- is inside the scope rather than outside it.
+    # Union, not `or`: a mapping under a new domain widens the scope, and the
+    # domains we are known to serve from keep it non-empty when every mapping
+    # is gone -- which is precisely when the docs are most wrong.
     suffixes = {".".join(h.rsplit(".", 2)[-2:]) for h in mappings if h.count(".") >= 1}
+    suffixes |= set(KNOWN_CUSTOM_DOMAINS)
     host_re = re.compile(
         r"\b((?:[a-z0-9][a-z0-9.-]*\.)?(?:" + "|".join(re.escape(x) for x in sorted(suffixes))
         + r"))\b", re.I) if suffixes else None
@@ -686,7 +746,8 @@ def check_domain_mappings(path: pathlib.Path, rel: str, live: dict,
                     "mapping-drift", rel, i,
                     f"`{host}` is named in an operational doc but is not a live "
                     f"Cloud Run domain mapping; live: "
-                    + ", ".join(f"`{h}` -> `{sv}`" for h, sv in sorted(mappings.items()))))
+                    + (", ".join(f"`{h}` -> `{sv}`" for h, sv in sorted(mappings.items()))
+                       or "no domain mappings at all")))
         # The second pass exists for a host that IS a live mapping but is
         # documented against the wrong service. A host the first pass already
         # named would otherwise be reported twice for one line.
@@ -705,7 +766,7 @@ def check_domain_mappings(path: pathlib.Path, rel: str, live: dict,
                     f"`{host}` is documented as mapping to `{service}`, but no "
                     f"Cloud Run domain mapping exists for it; live: "
                     + (", ".join(f"`{h}` -> `{sv}`" for h, sv in sorted(mappings.items()))
-                       or "none")))
+                       or "no domain mappings at all")))
             else:
                 out.append(Finding(
                     "mapping-drift", rel, i,
@@ -714,17 +775,29 @@ def check_domain_mappings(path: pathlib.Path, rel: str, live: dict,
 
 
 def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
-    """Backticked names introduced as a Cloud Run Job / scheduler must exist."""
+    """A backticked name introduced as GCP infrastructure must exist live."""
     known = (set(live["run_jobs"]) | set(live["schedulers"]) | set(live["services"])
              | set(live.get("secrets", ())) | set(live.get("queues", ()))
              | {"trading-system"})  # Artifact Registry package, not a CR resource
-    context = re.compile(r"Cloud Run Job|Cloud Scheduler|scheduler entry|CR Job", re.I)
+    # A retired service is not an unknown name: `check_retired_services` already
+    # reports it, and with a message that says WHY the name is wrong. Reporting
+    # the same line twice for one fact is the noise that teaches people to skim
+    # the output.
+    owned_elsewhere = set(RETIRED_SERVICES)
+    # `Cloud Run service` was missing from this list, so a rename or a typo
+    # that kept the total service count -- `solyra-api-stagin` -- stayed in an
+    # operational doc under a run this script reported clean, while
+    # `check_retired_services` only knows the two hard-coded legacy names
+    # (Codex, PR #990). The count check and the name check answer different
+    # questions and a service needs both.
+    context = re.compile(r"Cloud Run Jobs?|Cloud Run services?|Cloud Scheduler"
+                         r"|scheduler entry|CR Job", re.I)
     tick = re.compile(r"`([a-z][a-z0-9-]{4,})`")
     for i, line in _lines(path):
         if not context.search(line) or RETIRED_OK.search(line):
             continue
         for cand in tick.findall(line):
-            if "-" not in cand or cand in known:
+            if "-" not in cand or cand in known or cand in owned_elsewhere:
                 continue
             # Only flag names that LOOK like ours: they share a prefix with a
             # real job. An unrelated backticked token is not a claim about us.
@@ -732,7 +805,7 @@ def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Findin
             if any(k.split("-")[0] == head for k in known):
                 out.append(Finding("unknown-name", rel, i,
                                    f"`{cand}` is named as infrastructure but no such "
-                                   f"job/scheduler/service exists live"))
+                                   f"job/scheduler/service/secret/queue exists live"))
 
 
 # Counts stated in prose. The first version of this check knew only about

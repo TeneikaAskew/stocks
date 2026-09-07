@@ -230,40 +230,58 @@ fi
 #    interactive gcp/deploy.sh path instead (see gcp/cloudbuild/README.md).
 ./gcp/deploy.sh pin-images --no-sweep
 
-# The revision this run is about to replace, read BEFORE the build so it can be
-# compared with the revision serving when the deploy is finally issued. See the
-# compare-and-swap in step 3. A service that does not exist yet has nothing to
-# race with, so an empty baseline is not an error here.
+# Reads ${SERVICE} and prints the state a compare-and-swap can compare against:
+# `serving <revision>` or `absent`.
 #
 # FAILS CLOSED. `2>/dev/null` plus a bare `else` treated EVERY nonzero exit as
-# "the service does not exist": a transient API error, an expired credential
-# or a missing role all left the baseline empty, which silently skips the
-# compare-and-swap below and re-opens the window it exists to close. Only an
+# "the service does not exist": a transient API error, an expired credential or
+# a missing role all left the baseline empty, which silently skipped the
+# compare-and-swap below and re-opened the window it exists to close. Only an
 # explicit not-found is the create case; anything else stops the deploy
 # (Codex, PR #990).
-DEPLOY_BASELINE_REVISION=""
-_describe_err="$(mktemp)"
-if gcloud run services describe "${SERVICE}" --region "${REGION}" \
-     --format=json >/tmp/solyra-deploy-baseline.json 2>"${_describe_err}"; then
-  # A nonzero exit from serving_revision.py -- nothing serving, or traffic
-  # split across revisions -- aborts here under `set -e`, and should: a
-  # compare-and-swap has no baseline to compare against in either case, and
-  # deploying over an ambiguous service is what this guard is for.
-  DEPLOY_BASELINE_REVISION="$(python3 gcp/cloudbuild/serving_revision.py \
-                                < /tmp/solyra-deploy-baseline.json)"
-  echo ">> ${SERVICE} is currently serving ${DEPLOY_BASELINE_REVISION}"
-elif grep -qiE 'NOT_FOUND|could not be found|does not exist' "${_describe_err}"; then
+describe_deploy_state() {
+  local err out rev
+  err="$(mktemp)"
+  if out="$(gcloud run services describe "${SERVICE}" --region "${REGION}" \
+              --format=json 2>"${err}")"; then
+    rm -f "${err}"
+    # A nonzero exit from serving_revision.py -- nothing serving, or traffic
+    # split across revisions -- fails the assignment below and aborts under
+    # `set -e`, and should: a compare-and-swap has no baseline to compare
+    # against in either case, and deploying over an ambiguous service is what
+    # this guard is for.
+    rev="$(printf '%s' "${out}" | python3 gcp/cloudbuild/serving_revision.py)" || return 1
+    printf 'serving %s\n' "${rev}"
+  elif grep -qiE 'NOT_FOUND|could not be found|does not exist' "${err}"; then
+    rm -f "${err}"
+    printf 'absent\n'
+  else
+    echo ">> ERROR: could not read ${SERVICE} to establish a deploy baseline." >&2
+    echo "          Not treating an unreadable service as an absent one: that" >&2
+    echo "          would skip the compare-and-swap and let a concurrent deploy" >&2
+    echo "          be overwritten silently." >&2
+    cat "${err}" >&2
+    rm -f "${err}"
+    return 1
+  fi
+}
+
+# The state this run is about to replace, read BEFORE the build so it can be
+# compared with the state at deploy time. See the compare-and-swap in step 3.
+#
+# ABSENCE IS A STATE, not an empty string. Representing "the service does not
+# exist yet" as an empty baseline skipped the comparison entirely on the create
+# path, so a peer that created and deployed the service while this build ran
+# was overwritten by this older invocation -- first creation being exactly the
+# case the previous fix left open (Codex, PR #990). Comparing the whole state
+# means the create path is guarded by "still absent" the same way the replace
+# path is guarded by "still the same revision".
+DEPLOY_BASELINE="$(describe_deploy_state)"
+if [[ "${DEPLOY_BASELINE}" == "absent" ]]; then
   echo ">> ${SERVICE} does not exist yet; this run creates it"
 else
-  echo ">> ERROR: could not read ${SERVICE} to establish a deploy baseline." >&2
-  echo "          Not treating an unreadable service as an absent one: that" >&2
-  echo "          would skip the compare-and-swap and let a concurrent deploy" >&2
-  echo "          be overwritten silently." >&2
-  cat "${_describe_err}" >&2
-  rm -f "${_describe_err}"
-  exit 1
+  echo ">> ${SERVICE} is currently ${DEPLOY_BASELINE}"
 fi
-rm -f "${_describe_err}"
 
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
 echo ">> building ${IMAGE}:${IMAGE_TAG}"
@@ -314,17 +332,15 @@ if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
   bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh"
 fi
 
-if [[ -n "${DEPLOY_BASELINE_REVISION}" ]]; then
-  SERVING_NOW="$(gcloud run services describe "${SERVICE}" --region "${REGION}" \
-                   --format=json | python3 gcp/cloudbuild/serving_revision.py)"
-  if [[ "${SERVING_NOW}" != "${DEPLOY_BASELINE_REVISION}" ]]; then
-    echo ">> ERROR: ${SERVICE} moved while this build ran." >&2
-    echo "          was serving ${DEPLOY_BASELINE_REVISION}, now ${SERVING_NOW}." >&2
-    echo "          Another deploy path landed in the gap; deploying now would" >&2
-    echo "          put this older build's image over it. Re-run this deploy on" >&2
-    echo "          top of the new revision instead." >&2
-    exit 1
-  fi
+DEPLOY_NOW="$(describe_deploy_state)"
+if [[ "${DEPLOY_NOW}" != "${DEPLOY_BASELINE}" ]]; then
+  echo ">> ERROR: ${SERVICE} moved while this build ran." >&2
+  echo "          before the build: ${DEPLOY_BASELINE}" >&2
+  echo "          now:              ${DEPLOY_NOW}" >&2
+  echo "          Another deploy path landed in the gap; deploying now would" >&2
+  echo "          put this older build's image over it. Re-run this deploy on" >&2
+  echo "          top of the new revision instead." >&2
+  exit 1
 fi
 
 echo ">> deploying to Cloud Run: ${IMAGE_DIGEST}"
@@ -344,6 +360,16 @@ gcloud run deploy "${SERVICE}" \
   --max-instances 5 \
   ${AUTH_FLAGS[@]+"${AUTH_FLAGS[@]}"} \
   ${STAGING_FLAGS[@]+"${STAGING_FLAGS[@]}"}
+
+# Pin the digest this deploy just made current. The `pin-images` call above runs
+# BEFORE the build, so it tags the revision this run replaces -- the new digest
+# is not in the service inventory yet and comes out of that sweep with no
+# `inuse-svc-*` tag at all. Against the 30-day delete rule this PR adds to the
+# gcr.io cleanup policy, an unpinned digest is deletable while it is still the
+# serving revision, so the manual and break-glass paths pin again here. The
+# automatic staging and prod triggers do the same as their own last step
+# (Codex, PR #990).
+./gcp/deploy.sh pin-images --no-sweep
 
 echo ">> done"
 if [[ "${STAGING:-0}" == "1" ]]; then

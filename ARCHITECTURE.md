@@ -28,7 +28,7 @@ This system is a private stocks/trading platform deployed to the GCP project `ad
 
 | Resource | Type | Purpose | Notes |
 |---|---|---|---|
-| `solyra-api-prod` | Cloud Run Service | FastAPI API only (no SPA since #957) | Production API, behind IAP. Deployed ONLY by the manual `deploy-solyra-api-prod` trigger. |
+| `solyra-api-prod` | Cloud Run Service | FastAPI API only (no SPA since #957) | Production API, behind IAP. Deployed by the manual `deploy-solyra-api-prod` trigger, which promotes the digest staging validated. `platform/deploy.sh` with its defaults also reaches this service, without that gate — the break-glass path, documented in `gcp/cloudbuild/README.md`. |
 | `solyra-api-staging` | Cloud Run Service | FastAPI API only | Staging API, public edge + Firebase auth. Auto-deployed on merge to main. |
 | `discord-interactions` | Cloud Run Service | Handles Discord slash commands | Invokes Cloud Run Jobs based on commands. |
 | `failure-notifier` | Cloud Run Service | Notifies on job failures | Creates GitHub issues for failed jobs. |

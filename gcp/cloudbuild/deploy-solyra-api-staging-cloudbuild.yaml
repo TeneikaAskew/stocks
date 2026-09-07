@@ -1,6 +1,26 @@
 # Trigger: deploy-solyra-api-staging
 # Fires:   push to main touching platform/, lib/, requirements.txt, gcp/database.py
 #
+# ⚠️ THAT FILTER IS TOO NARROW, and the fix is a live trigger change an owner
+# must apply -- it is trigger configuration, not repository content, so this
+# file cannot carry it (read live 2026-09-07):
+#
+#   includedFiles = platform/**  lib/**  requirements.txt  gcp/database.py
+#
+# `platform/Dockerfile` copies `scripts/` and `gcp/` wholesale, and API routes
+# import from both at request time -- `scripts.fetch_catalyst_calendar`,
+# `gcp.fetchers._watchlist`, `gcp.research.strat_engine.strat_pred_serve`. So a
+# fix to one of those request paths merges to main, does NOT start a staging
+# build, and the browser-facing service keeps serving the old code; the digest
+# available for promotion to prod is stale for the same reason (Codex, #990).
+#
+#   gcloud builds triggers update github deploy-solyra-api-staging \
+#     --region=global \
+#     --included-files='platform/**,lib/**,scripts/**,gcp/**,requirements.txt'
+#
+# Widening rather than enumerating: the Dockerfile copies whole directories, so
+# a per-module list would drift the moment a route imports something new.
+#
 # Builds the API image and deploys it to the STAGING service, solyra-api-staging.
 # Merging to main NEVER touches prod. Prod moves only when a human runs the
 # deploy-solyra-api-prod trigger (see the sibling file).

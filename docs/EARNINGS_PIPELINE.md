@@ -14,7 +14,7 @@ This doc traces every step from "an earnings event is announced" to "a trader se
 | Get OHLC for those tickers | `fetch-market-data` daily Mon–Fri 23:00 ET |
 | Get historical EPS for those tickers | `fetch-earnings-history` Mon–Fri 19:15 ET + Sun 19:15 ET |
 | Compute the reaction profile (gap, sustain, ATR) | `compute-earnings-reactions` daily Mon–Fri 19:30 ET |
-| Show the trader the morning brief | `premarket-brief-daily` Mon–Fri 08:30 ET (Sunday week-ahead at 21:00 ET) |
+| Show the trader the morning brief | `premarket-brief-daily` Mon–Fri 08:30 ET (`premarket-brief-sunday` runs the week-ahead Sunday 21:00 ET) |
 
 If any single step's filter or cap drops a ticker, that ticker silently disappears from the brief — no error, no warning. The fixes documented below tightened those filters so the universe size is bounded by an option-tradability filter, not by an arbitrary numeric cap.
 

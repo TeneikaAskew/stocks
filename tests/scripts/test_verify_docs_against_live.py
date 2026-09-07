@@ -583,3 +583,76 @@ def test_a_hostname_is_a_claim_even_without_maps_to(tmp_path):
 
 def test_a_hostname_under_another_domain_is_not_our_claim(tmp_path):
     assert _check(tmp_path, "Docs live at `example.com` and `docs.other.org`.") == []
+
+
+def test_deleting_every_mapping_does_not_silence_the_mapping_check(tmp_path):
+    """The outage this check exists to expose must not be what disables it.
+
+    An empty live mapping set early-returned, so a run made against a project
+    with every domain mapping deleted reported `no findings` while the docs
+    still routed readers at a hostname that served nothing (Codex, PR #990).
+    The scope therefore does not come from the live mappings alone.
+    """
+    p = tmp_path / "RUNBOOK.md"
+    p.write_text("The API answers at `api.stocks.insightscollective.org`.\n")
+
+    out: list[vd.Finding] = []
+    vd.check_domain_mappings(p, "RUNBOOK.md", {"domain_mappings": {}}, out)
+    assert [f.check for f in out] == ["mapping-drift"]
+    assert "no domain mappings at all" in out[0].detail
+
+    # A snapshot written before the field existed says nothing was READ, which
+    # is not the same claim as "nothing is mapped", and must not report.
+    out = []
+    vd.check_domain_mappings(p, "RUNBOOK.md", {}, out)
+    assert out == []
+
+
+def test_a_misspelled_cloud_run_service_is_caught(tmp_path):
+    """A typo or rename that preserves the service count was invisible.
+
+    `check_counts` compares totals, and `check_retired_services` only knows the
+    two hard-coded legacy names, so `solyra-api-stagin` sat in an operational
+    doc under a run this script reported clean (Codex, PR #990).
+    """
+    out = _check(tmp_path, "Deployed to the `solyra-api-stagin` Cloud Run service.")
+    assert [f.check for f in out] == ["unknown-name"]
+    assert _check(tmp_path,
+                  "Deployed to the `solyra-api-staging` Cloud Run service.") == []
+
+
+def test_a_retired_service_is_reported_once_not_twice(tmp_path):
+    """Two findings for one fact is the noise that teaches people to skim.
+
+    Widening the known-name context to Cloud Run services made a retired name
+    match both checks; `check_retired_services` owns it, because its message
+    says why the name is wrong rather than only that it is unknown.
+    """
+    out = _check(tmp_path, "The API runs on the `trading-platform` Cloud Run service.")
+    assert [f.check for f in out] == ["retired-service"]
+
+
+def test_the_workflow_uploads_the_snapshot_the_comparison_actually_read():
+    """One invocation, or the artifact cannot reproduce the failure.
+
+    A separate `always()` step ran the script a SECOND time to write the
+    snapshot, reading live GCP again. Infrastructure moving between the two
+    calls then produced an artifact with different counts and schedules -- or a
+    clean one -- attached to a failure it could not explain, which is the
+    opposite of what the artifact is for (Codex, PR #990). `--write-snapshot`
+    writes the state it read and compares against that same state.
+    """
+    import yaml
+    wf = yaml.safe_load(
+        (_SRC.parent.parent / ".github/workflows/verify-docs-against-live.yml").read_text())
+    steps = wf["jobs"]["verify"]["steps"]
+    runs = [s["run"] for s in steps if "run" in s and "verify_docs_against_live.py" in s["run"]]
+    assert len(runs) == 1, (
+        "two invocations read live GCP twice and can disagree; the snapshot "
+        "must come from the run that produced the findings")
+    assert "--write-snapshot live.json" in runs[0]
+    uploads = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
+    assert uploads, "the snapshot is only useful if it leaves the runner"
+    assert uploads[0]["with"]["path"] == "live.json"
+    assert uploads[0]["if"] == "always()", (
+        "the drift run exits nonzero, which is exactly when the snapshot matters")

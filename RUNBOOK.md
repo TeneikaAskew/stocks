@@ -14,7 +14,7 @@ These are derived from the actual backup config — `gcloud sql instances descri
 | **Cloud SQL `trading-db`** | 30-60 min | **~5 min** | PITR enabled (7d transaction log retention). Without PITR, RPO would be 24h (one daily backup). |
 | **GCS `adept-mountain-474619-d4-trading-data`** | ∞ for missing data | ∞ | **No versioning, no backup.** Loss is permanent unless the file can be re-fetched from an external API (AlphaVantage daily/intraday only, no historical re-issue). |
 | **Cloud Run Jobs (76 jobs) + Schedulers (66)** | 60-90 min | n/a (stateless) | All recreatable from `gcp/deploy.sh all`. Schedulers from `deploy.sh schedulers`. |
-| **Cloud Run Services (4: solyra-api-prod, solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | Same `deploy.sh` redeploys. `solyra-api-staging` is NOT optional in a rebuild: it is the API the frontend actually calls, and `api.stocks.insightscollective.org` maps to it (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
+| **Cloud Run Services (4: solyra-api-prod, solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | TWO scripts: `gcp/deploy.sh` redeploys `discord-interactions` and `failure-notifier`, `platform/deploy.sh` the two API services (step 10 below). `solyra-api-staging` is NOT optional in a rebuild: it is the API the frontend actually calls, and `api.stocks.insightscollective.org` maps to it (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
 | **Secret Manager (22 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
 | **Whole-project rebuild** | 4-8 hours | Whatever Cloud SQL backup you can restore (≤ 7 days old) | Rebuild sequence in §4 below. |
 
@@ -451,9 +451,21 @@ echo -n "<value>" | gcloud secrets create <name> --data-file=- --replication-pol
 # deploy_notifier + deploy_schedulers + backfill_watchlist
 
 # === Step 10: Deploy services that aren't in `all` ===
+# `gcp/deploy.sh all` deploys the JOBS and failure-notifier. It does not create
+# either API service -- those are platform/deploy.sh's -- so a rebuild that
+# stops at step 9 leaves the browser-facing API absent (Codex, PR #990).
 ./gcp/deploy.sh discord    # discord-interactions Cloud Run Service (slash commands)
                            # Then point Discord's Interactions Endpoint URL at the new
                            # service URL and run scripts/discord/register_commands.py
+
+# The two API services. Staging first: it is the one the frontend calls, and
+# prod is a promotion of a digest staging has served.
+STAGING_SERVICE=1 ./platform/deploy.sh   # solyra-api-staging  (public edge, Firebase)
+./platform/deploy.sh                     # solyra-api-prod     (IAP)
+# Then re-create the custom domain mapping, which is Cloud Run state and in no
+# script:
+gcloud beta run domain-mappings create --service=solyra-api-staging \
+    --domain=api.stocks.insightscollective.org --region=us-east1
 
 # === Step 11: Restore data (if Cloud SQL backup is recoverable) ===
 # If you had a Cloud SQL export (sqldump) in another project / off-cloud:
