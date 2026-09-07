@@ -229,7 +229,14 @@ REQUESTS: list[Req] = [
         note="#991's endpoint; see test_levels_actually_awaits_the_chain"),
 
     # ── playbook / reports ──────────────────────────────────────────────────
-    Req("GET", f"/api/playbook/{T}", 502, note="GCS unreachable"),
+    # #1005 moved this handler off GCS onto playbook_cards in Cloud SQL, so
+    # the backend-less answer changed from 502 (GCS unreachable) to 503 at
+    # the `is_cloud_sql_configured()` gate. That gate is the first thing the
+    # handler does, so this row proves the route is wired and little else;
+    # the freshness contract underneath it (stale refusal, the age boundary,
+    # 404 on no rows) is covered by tests/api/test_playbook_evaluate.py.
+    Req("GET", f"/api/playbook/{T}", 503,
+        note="Cloud SQL not configured; deep paths in test_playbook_evaluate.py"),
     Req("GET", f"/api/reports/list/{T}", 404,
         note="404 not 502: list_matching_blobs swallows (fallback backlog)"),
     Req("GET", f"/api/reports/{T}/premarket", 404, note="same swallow"),
