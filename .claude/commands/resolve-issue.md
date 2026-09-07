@@ -432,6 +432,22 @@ echo "exit=$?"                                     # must be 0
 grep -c "evaluate_ticker raised" /tmp/replay.log   # must be 0
 ```
 
+**And know what this replay is NOT exercising.** `filter_to_rth` runs only
+under `persist_mode` (`scripts/replay_signal_monitor.py:505-512`), so the
+`env -u REPLAY_PERSIST` invocation above — the one that makes it safe — is
+also the one that leaves the RTH filter off. Production evaluates only while
+`is_market_hours()` is true (`gcp/signal_monitor.py:2267`), so this replay
+feeds premarket and after-hours bars into rolling state and into
+`evaluate_ticker`, and the positive-`Bars` check below can pass on a date with
+no RTH data at all. Fire counts from it are therefore NOT comparable to
+production, and a candidate can fire here in a way production never would.
+
+Use it for "does the candidate raise / does the fire path execute". Do NOT
+quote its counts as production behaviour. If the issue turns on a fire count,
+the Rule 3.6 answer applies: decouple `filter_to_rth` from `persist_mode` with
+an `--rth` flag in a small PR against the script FIRST, then run the audit —
+rather than reading numbers this invocation cannot produce faithfully.
+
 Three separate things have to hold, and each covers a hole the others do not:
 
 - **`pipefail` (or `${PIPESTATUS[0]}`).** Without it the pipeline's status is
@@ -609,22 +625,26 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    nothing wrong with it. Either of these satisfies this step:
    - `pull_request_read` `method: "get_reviews"` returning a review that is
      **authored by the review bot**, is not `CHANGES_REQUESTED`, whose
-     `commit_id` is the head SHA, and whose `submitted_at` is **after** the
-     ready-for-review transition in step 0 — marking a draft ready does not
-     move the head, so a review of that same SHA from an earlier
-     `@codex review` satisfies a SHA-only test while the readiness-triggered
-     run is still going. Note the transition time when you undraft and compare
-     against it. **`get_reviews` returns oldest first, so the current
+     `commit_id` is the head SHA. **Only if step 0 actually undrafted the PR**,
+     the review must also carry a `submitted_at` **after** that transition:
+     marking a draft ready does not move the head, so a review of that same SHA
+     from an earlier `@codex review` would satisfy a SHA-only test while the
+     readiness-triggered run is still going. Note the transition time when you
+     undraft. **On a PR that was never a draft — which is every CASE B PR this
+     command opens — there is no transition and no cutoff**; the head SHA and
+     the author check carry the step on their own, and applying a cutoff to an
+     event that did not happen makes the gate unsatisfiable on the normal path.
+     **`get_reviews` returns oldest first, so the current
      review is on the LAST page**; reading page 1 and finding an older "no
      findings" is exactly how #991 merged two minutes after a review it never
      saw; or
-   - the Codex summary comment showing **Completed** against the head SHA,
-     **and started after the ready-for-review transition** — the same cutoff
-     as the first alternative, for the same reason. Marking a draft ready does
-     not move the head, so the previous run's summary keeps reading Completed
-     for that SHA until the newly triggered run replaces it, and a SHA-only
-     summary check merges straight through that window. The summary carries
-     its own timestamp; compare it, not just the commit.
+   - the Codex summary comment showing **Completed** against the head SHA —
+     and, **again only where step 0 undrafted**, started after that transition,
+     for the same reason and with the same exemption. The previous run's
+     summary keeps reading Completed for an unchanged SHA until the newly
+     triggered run replaces it, so on that path a SHA-only summary check merges
+     straight through the window. The summary carries its own timestamp;
+     compare it when the transition exists.
 
    **Check the author, not just the SHA.** Every reply you post on a thread is
    itself recorded as a review on the current head. Measured on this PR:
@@ -691,11 +711,24 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      here publishes an image missing those merged changes, under a tag that
      claims to be main:
 
+     **And build from a pristine tree, not this one.** `deploy.sh:64-66` does
+     `cp -r lib/ gcp/ scripts/` straight out of the working directory, and
+     `git checkout` does not remove untracked or modified files — `-f` would be
+     the flag that discards local modifications, and even that leaves untracked
+     ones. Phase 7's deliberately file-scoped `git add` is what makes this
+     reachable: anything a run left behind under those three directories gets
+     copied into the production image, uncommitted and unreviewed, while
+     `git rev-parse` reports the merge SHA and looks clean. Use a separate
+     worktree so there is nothing to leave behind:
+
      ```bash
      git fetch origin main
-     git checkout origin/main
-     git rev-parse HEAD        # must equal the merge commit the PR reports
+     git worktree add /tmp/deploy-src origin/main
+     cd /tmp/deploy-src
+     git rev-parse HEAD                    # must equal the PR's merge commit
+     test -z "$(git status --porcelain)"   # must be silent
      ./gcp/deploy.sh <target>
+     cd - && git worktree remove /tmp/deploy-src
      ```
 
    - **For an API change, confirm the staging build actually fired** rather
@@ -714,9 +747,19 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      you were checking. So capture the staging revision as part of the
      verification, not afterwards:
 
+     Read the revision with the repo's own helper, not
+     `latestReadyRevisionName`. `gcp/cloudbuild/serving_revision.py` exists
+     because the two differ whenever staging was rolled back, is split across
+     revisions, or was deployed `--no-traffic` — and in each of those "the
+     latest ready revision is precisely the one nobody validated". The prod
+     trigger resolves the serving revision with that helper, so binding
+     `_EXPECT_STAGING_REVISION` to the latest-ready name makes the promotion
+     fail closed on exactly the cases the helper exists to catch. It also fails
+     loud on nothing-serving or a traffic split, rather than picking one:
+
      ```bash
      REV=$(gcloud run services describe solyra-api-staging --region=us-east1 \
-             --format='value(status.latestReadyRevisionName)')
+             --format=json | python gcp/cloudbuild/serving_revision.py)
      # ...verify against staging while it is serving $REV...
      gcloud builds triggers run deploy-solyra-api-prod \
        --substitutions=_EXPECT_STAGING_REVISION="$REV"
