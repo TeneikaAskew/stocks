@@ -96,6 +96,19 @@ class TradeLogger:
         params['rk'] = run_kind
         return " AND run_kind = :rk"
 
+    @staticmethod
+    def _filter_run_kind(df: pd.DataFrame, run_kind) -> pd.DataFrame:
+        """Apply the same run_kind restriction to a Parquet fallback frame.
+        log_trade() writes every kind to those files, so the fallback would
+        otherwise return replay and backfill rows the SQL path excludes
+        (Codex on #1022). A file written before the column existed holds
+        live monitor rows, so a missing column reads as 'live'."""
+        if run_kind is None or df.empty:
+            return df
+        if 'run_kind' not in df.columns:
+            return df if run_kind == 'live' else df.iloc[0:0]
+        return df[df['run_kind'] == run_kind].reset_index(drop=True)
+
     def get_daily_trades(self, date=None, run_kind='live') -> pd.DataFrame:
         """Load trades for a specific date (Cloud SQL preferred, Parquet fallback)."""
         if _cloud_sql_active():
@@ -119,7 +132,7 @@ class TradeLogger:
         # Parquet fallback
         path = self._daily_file(date)
         if path.exists():
-            return pd.read_parquet(path)
+            return self._filter_run_kind(pd.read_parquet(path), run_kind)
         return pd.DataFrame()
 
     def get_weekly_trades(self, week_end_date=None, run_kind='live') -> pd.DataFrame:
@@ -151,7 +164,7 @@ class TradeLogger:
         frames = []
         for i in range(7):
             date = week_end_date - pd.Timedelta(days=i)
-            df = self._load_parquet_for_date(date)
+            df = self._filter_run_kind(self._load_parquet_for_date(date), run_kind)
             if not df.empty:
                 frames.append(df)
 
@@ -181,8 +194,9 @@ class TradeLogger:
         files = sorted(self.output_dir.glob('*.parquet'))
         if not files:
             return pd.DataFrame()
-        frames = [pd.read_parquet(f) for f in files]
-        return pd.concat(frames, ignore_index=True)
+        frames = [self._filter_run_kind(pd.read_parquet(f), run_kind) for f in files]
+        frames = [f for f in frames if not f.empty]
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def _load_parquet_for_date(self, date) -> pd.DataFrame:
         path = self._daily_file(date)
