@@ -239,6 +239,16 @@ ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 # YAML, which is precisely what the ambiguous names are kept context-gated to
 # avoid (Codex, PR #993).
 _B = r"(?<![A-Za-z0-9_])"
+# Every operator that BINDS a value to a key in the file types this scans.
+# A bare `[:=]` covered shell, YAML and `.env`, and stopped one character
+# short of Make: GNU Make writes `TZ := EST` (simple), `TZ ?= EST` (default)
+# and `TZ ::= EST` (POSIX simple), and `export TZ := EST` puts the resulting
+# fixed zone in every recipe's environment. Makefiles were added to the
+# collector precisely to cover that, so accepting only the recursive `=`
+# left the collector reading files whose ordinary spelling it could not match
+# (Codex, PR #993). Longest alternatives first, or `:=` would match as `:`
+# and leave `=` to be read as part of the value.
+_ASSIGN = r"(?:::=|:=|\?=|\+=|[:=])"
 # YAML quotes a key as readily as it leaves it bare, and the quote sits
 # between the key and the colon: `"TZ": "EST"` matched no context at all,
 # in exactly the file types this scan was widened to cover (Codex, PR #993).
@@ -246,15 +256,16 @@ _Q = r"[\"']?\s*"
 _TZ_CONTEXT = (
     # `TZ = EST` with spaces around the `=` is make's ordinary spelling, and
     # the quote-tolerant `_Q` did not allow bare whitespace (Codex, PR #993).
-    _B + r"tz" + _Q + r"\s*[:=]|" + _B + r"tzinfo" + _Q + r"\s*[:=]|"
+    _B + r"tz" + _Q + r"\s*" + _ASSIGN + r"|"
+    + _B + r"tzinfo" + _Q + r"\s*" + _ASSIGN + r"|"
     # libpq's own variable, for the shell and manifest side of the same
     # finding: `PGTZ` is not matched by the `tz` alternative above because
     # that one is anchored at an identifier boundary, and `PGTZ=EST` in a
     # Dockerfile or a compose file installs the frozen session zone just as
     # `os.environ["PGTZ"]` does (Codex, PR #993).
-    + _B + r"pgtz" + _Q + r"\s*[:=]|"
-    + _B + r"time_?zone" + _Q + r"[:=]|"
-    + _B + r"time-zone[:= ]|" + _B + r"ZoneInfo\s*\(|"
+    + _B + r"pgtz" + _Q + r"\s*" + _ASSIGN + r"|"
+    + _B + r"time_?zone" + _Q + r"\s*" + _ASSIGN + r"|"
+    + _B + r"time-zone(?:" + _ASSIGN + r"| )|" + _B + r"ZoneInfo\s*\(|"
     + _B + r"pytz\.timezone\s*\(|" + _B + r"tz_convert\s*\(|"
     + _B + r"tz_localize\s*\(|" + _B + r"AT TIME ZONE\s*|"
     + _B + r"Timestamp\.now\s*\(|" + _B + r"astimezone\s*\(|"
@@ -267,7 +278,13 @@ _TZ_CONTEXT = (
     # `SET` and the setting name; requiring `TIME ZONE` immediately after
     # `SET` exempted `SET LOCAL timezone TO 'EST'`, which does the same thing
     # for the transaction (Codex, PR #993).
-    + _B + r"SET\s+(?:LOCAL\s+|SESSION\s+)?TIME[ _]?ZONE\s*(?:TO\s+)?|"
+    # `INTERVAL` is optional and consumed here rather than left for the
+    # offset matcher: `SET TIME ZONE INTERVAL '-05:00' HOUR TO MINUTE` is a
+    # fixed UTC-5 session zone that Postgres accepts, and the keyword sat
+    # between the context and the value so neither SQL matcher reached it
+    # (Codex, PR #993).
+    + _B + r"SET\s+(?:LOCAL\s+|SESSION\s+)?TIME[ _]?ZONE\s*(?:TO\s+)?"
+    + r"(?:INTERVAL\s+)?|"
     # Dockerfiles take `ENV <key> <value>` as well as `ENV <key>=<value>`, and
     # the abbreviated `tz` key required a `:` or `=`. Dockerfiles were added to
     # this scan precisely to cover deployment configuration, so accepting only
@@ -432,6 +449,9 @@ _TZ_KEYWORDS = {"tz", "tzinfo", "timezone", "time_zone", "pgtz"}
 # the process timezone when the key is `TZ`, and neither is a timezone
 # constructor, so the call-name filter walked past them.
 _ENV_SETTER_CALLS = {"putenv", "setdefault"}
+# `os.environ.update(...)`, whose argument is a whole mapping rather than a
+# key and a value in two positions.
+_ENV_UPDATE_CALLS = {"update"}
 # The read side of the same idea. `getenv` and `get` are the two spellings
 # `os.getenv(...)` and `os.environ.get(...)` present, and both take the value
 # that runs when the variable is absent as their second argument.
@@ -511,6 +531,17 @@ def _resolve_callable(name: str, env, seen=None):
     if name in seen:
         return name, ""
     seen = seen | {name}
+    # The IMPORT alias map is applied at EVERY hop, not only to the name the
+    # call site wrote. `from zoneinfo import ZoneInfo as Z` then
+    # `make_zone = Z` composes the two ordinary alias forms, and resolving
+    # `make_zone` landed on the unrecognised `Z` because the alias map was
+    # consulted once, before the recursion (Codex, PR #993).
+    aliased = env.aliases.get(name, name)
+    if aliased != name:
+        if aliased in seen:
+            return aliased, ""
+        seen = seen | {aliased}
+        name = aliased
     bound = env.bindings.get(name)
     if isinstance(bound, ast.Name):
         return _resolve_callable(bound.id, env, seen)
@@ -519,6 +550,73 @@ def _resolve_callable(name: str, env, seen=None):
         receiver = inner.id if isinstance(inner, ast.Name) else ""
         return bound.attr, receiver
     return name, ""
+
+
+def _resolve_binding(node, env, seen=None):
+    """Follow a NAME or ATTRIBUTE to the node it was bound to.
+
+    Three separate branches each required their subject to be written inline
+    -- the SQL query text, a `tzinfos` mapping, an offset constructor's
+    argument -- while `env.bindings` already held the value under a name.
+    Naming a constant once is the ordinary reason a constant gets a name, so
+    each of them missed the form people actually write (Codex, PR #993).
+
+    Returns the node unchanged when it is not an indirection or nothing is
+    bound, so a caller can always use the result. Cycle detection, matching
+    the other resolvers in this file.
+    """
+    seen = seen or set()
+    while isinstance(node, (ast.Name, ast.Attribute)):
+        if isinstance(node, ast.Name):
+            key = node.id
+            target = env.bindings.get(key)
+        else:
+            inner = node.value
+            key = f"{inner.id}.{node.attr}" if isinstance(inner, ast.Name) else None
+            target = (env.attrs.get(inner.id, {}).get(node.attr)
+                      if isinstance(inner, ast.Name) else None)
+        if key is None or key in seen or target is None:
+            return node
+        seen = seen | {key}
+        node = target
+    return node
+
+
+def _unpack_arguments(node: ast.Call, env):
+    """(positional, keyword) with statically known `*` and `**` flattened.
+
+    `pytz.FixedOffset(*[-300])` and `FixedOffset(**{"offset": -300})` are
+    valid UTC-5 constructors, and the numeric branch handed the `Starred`
+    wrapper or the whole dict to `_const_number`, which reports None for
+    both. The generic descent added one round earlier cannot rescue them
+    either: by the time it sees `-300` it has lost the constructor that gives
+    the number its unit (Codex, PR #993).
+
+    Only literal containers are flattened. A `*args` forwarded from a
+    parameter stays as it was and is simply not decidable here.
+    """
+    positional = []
+    for arg in node.args:
+        target = arg
+        if isinstance(arg, ast.Starred):
+            target = _resolve_binding(arg.value, env)
+            if isinstance(target, (ast.Tuple, ast.List, ast.Set)):
+                positional.extend(target.elts)
+                continue
+            continue                      # not statically known
+        positional.append(target)
+    keywords = []
+    for kw in node.keywords:
+        if kw.arg is not None:
+            keywords.append((kw.arg, kw.value))
+            continue
+        mapping = _resolve_binding(kw.value, env)
+        if not isinstance(mapping, ast.Dict):
+            continue
+        for k, v in zip(mapping.keys, mapping.values):
+            if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                keywords.append((k.value, v))
+    return positional, keywords
 
 
 def _resolve_receiver(name: str, env, seen=None) -> str:
@@ -622,6 +720,33 @@ def _const_number(node: ast.AST, env=None, seen=None):
         bound = env.bindings.get(node.id)
         if bound is not None:
             return _const_number(bound, env, seen | {node.id})
+    return None
+
+
+def _const_string(node: ast.AST, env=None, seen=None):
+    """The value of a constant string expression, or None.
+
+    Concatenation is folded, for the same reason `_const_number` folds
+    arithmetic: `"E" + "ST"` and `"US/" + "Eastern"` are the forbidden values
+    written in two pieces, and every matcher here reads one `ast.Constant`
+    (Codex, PR #993). Only `+`, and only over operands that are themselves
+    constant strings, so nothing executes or guesses.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _const_string(node.left, env, seen)
+        right = _const_string(node.right, env, seen)
+        if left is None or right is None:
+            return None
+        return left + right
+    if env is not None and isinstance(node, ast.Name):
+        seen = seen or set()
+        if node.id in seen:
+            return None
+        bound = env.bindings.get(node.id)
+        if bound is not None:
+            return _const_string(bound, env, seen | {node.id})
     return None
 
 
@@ -1086,8 +1211,15 @@ def _parameter_bindings(scope: ast.AST) -> tuple[set[str], dict]:
         # left the body unable to resolve `offset` and the frozen zone passed
         # (Codex, PR #993). A default IS a binding; which node kinds count is
         # not a question the two should answer differently.
+        # `_const_number` too, matching `_collect_bindings` exactly. Round 16
+        # taught the assignment map to keep a resolvable number so an offset
+        # constructor could read it, and this map -- whose docstring already
+        # claimed to keep "the same kinds" -- was not updated, so
+        # `def build(offset=-300): return pytz.FixedOffset(offset)` still
+        # resolved to nothing (Codex, PR #993).
         if (_binding_text(default) is not None
                 or _is_eastern_fixed_timedelta(default)
+                or _const_number(default) is not None
                 or isinstance(default, (ast.Name, ast.Attribute))):
             defaults[arg.arg] = default
     return names, defaults
@@ -1238,6 +1370,20 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
     PR #993). The caller decides which nodes are in scope; this reads them.
     """
     for node in nodes:
+        # `for zone in ("EST",): ZoneInfo(zone)` and the comprehension form
+        # bind the target to each element, exactly as an assignment would.
+        # The scope machinery already marked the target as SHADOWING an
+        # inherited name -- correctly -- but never bound it to anything, so
+        # the call resolved to nothing while the ambiguous literal stayed
+        # ignored outside a call context (Codex, PR #993). Only a statically
+        # known literal iterable; anything computed is left unresolved, as
+        # everywhere else here.
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            if isinstance(node.iter, (ast.Tuple, ast.List, ast.Set)) \
+                    and isinstance(node.target, ast.Name):
+                for element in node.iter.elts:
+                    _keep(out, node.target.id, element)
+            continue
         if isinstance(node, ast.Assign):
             targets = node.targets
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
@@ -1265,10 +1411,18 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
         # (Codex, PR #993). A number alone is never a finding, so this cannot
         # report anything on its own; it only lets the constructor that gives
         # the number a unit evaluate it.
+        # Plus a literal CONTAINER. `INFOS = {"EST": -18000}` reused across
+        # call sites, `PARAMS = ("EST",)` handed to `execute`, and the list an
+        # offset constructor is splatted from are all statically known values
+        # that the resolvers added this round need to find under their name
+        # (Codex, PR #993). A container is never a finding by itself; only a
+        # branch that already has a timezone context looks inside one.
         if (_binding_text(v) is None
+                and _const_string(v) is None
                 and not _is_eastern_fixed_timedelta(v)
                 and _const_number(v) is None
-                and not isinstance(v, (ast.Name, ast.Attribute))):
+                and not isinstance(v, (ast.Name, ast.Attribute, ast.Dict,
+                                       ast.Tuple, ast.List, ast.Set))):
             continue
         for t in targets:
             if isinstance(t, ast.Name):
@@ -1337,6 +1491,25 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # twice (Codex, PR #993).
         if id(arg) in reported_values:
             return True
+        # Folded before any matcher reads it: `ZoneInfo("E" + "ST")` and
+        # `ZoneInfo("US/" + "Eastern")` build the forbidden zone, every check
+        # below reads a single `ast.Constant`, and the standalone walk sees
+        # only harmless fragments. The numeric side has folded arithmetic
+        # since round 15 for exactly this reason (Codex, PR #993). The
+        # ORIGINAL node stays the one marked reported, so the dedupe and the
+        # line number still point at what was written.
+        # NO `env` here, deliberately. Following a name inside the fold made
+        # `follow` resolve an indirection itself instead of recursing through
+        # the branch that exists for it -- so the finding was attributed to
+        # the NAME, the constant at the assignment was never marked reported,
+        # and the module-settings pass reported the same value a second time.
+        # Four scoping tests caught it. Indirection is the recursion's job;
+        # this only folds an expression written in place, and the recursion
+        # reaches it again at the leaf.
+        folded = _const_string(arg)
+        if folded is not None and not isinstance(arg, ast.Constant):
+            reported_values.add(id(arg))
+            arg = ast.copy_location(ast.Constant(value=folded), arg)
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
             folded = {z.lower() for z in legacy_here}
             if arg.value.lower() in folded:
@@ -1617,6 +1790,32 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 follow(legacy, offsets, node, node.args[1], env,
                        lambda shown, k=key.value, n=name: f"{n}({k!r}, {shown})")
 
+        # `os.environ.update(...)` takes a mapping OR an iterable of pairs,
+        # and both install the process zone. `update` is not a two-positional
+        # setter, so it never entered the branch above, and a `("TZ", "EST")`
+        # tuple is not an `ast.Dict` so the dict-literal branch missed it too
+        # (Codex, PR #993). Keyword form (`update(TZ="EST")`) is already
+        # covered by the keyword branch further down.
+        if name in _ENV_UPDATE_CALLS:
+            for arg in node.args:
+                mapping = _resolve_binding(arg, env)
+                pairs = []
+                if isinstance(mapping, ast.Dict):
+                    pairs = list(zip(mapping.keys, mapping.values))
+                elif isinstance(mapping, (ast.Tuple, ast.List, ast.Set)):
+                    for element in mapping.elts:
+                        element = _resolve_binding(element, env)
+                        if (isinstance(element, (ast.Tuple, ast.List))
+                                and len(element.elts) == 2):
+                            pairs.append((element.elts[0], element.elts[1]))
+                for k, v in pairs:
+                    if (isinstance(k, ast.Constant)
+                            and isinstance(k.value, str)
+                            and k.value.lower() in _TZ_KEYWORDS):
+                        follow(legacy, offsets, node, v, env,
+                               lambda shown, kk=k.value, nn=name:
+                                   f"{nn}({{{kk!r}: {shown}}})")
+
         # `make_zone = ZoneInfo; make_zone("EST")`. Round 13 resolved IMPORT
         # aliases, which live in `env.aliases`; an ASSIGNMENT alias lives in
         # `env.bindings` and was never consulted, so the call name failed this
@@ -1629,7 +1828,12 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # statically known parameters are followed as if they were arguments
         # to a constructor -- which, one layer down, is what they are.
         if name in _SQL_EXECUTE_CALLS and node.args:
-            query = node.args[0]
+            # Through the bindings: `QUERY = "SET TIME ZONE %s"` on one line
+            # and `cur.execute(QUERY, ("EST",))` on the next is the ordinary
+            # way a statement gets named, and requiring the text inline meant
+            # the context and its parameter were never joined
+            # (Codex, PR #993).
+            query = _resolve_binding(node.args[0], env)
             if (isinstance(query, ast.Constant)
                     and isinstance(query.value, str)
                     and re.search(_TZ_CONTEXT, query.value, re.I)):
@@ -1653,9 +1857,15 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # called. The numeric value is read in SECONDS, which is the unit
         # dateutil documents for this mapping.
         for kw in node.keywords:
-            if kw.arg != "tzinfos" or not isinstance(kw.value, ast.Dict):
+            if kw.arg != "tzinfos":
                 continue
-            for k, v in zip(kw.value.keys, kw.value.values):
+            # `INFOS = {"EST": -18000}` reused across call sites is the usual
+            # shape for a mapping like this, and accepting only an inline
+            # dict missed it (Codex, PR #993).
+            mapping = _resolve_binding(kw.value, env)
+            if not isinstance(mapping, ast.Dict):
+                continue
+            for k, v in zip(mapping.keys, mapping.values):
                 seconds = _const_number(v, env)
                 if (seconds is not None
                         and int(seconds) in _EASTERN_OFFSET_SECONDS):
@@ -1712,10 +1922,18 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             seconds = name in _FIXED_OFFSET_SECOND_CALLS
             # `tzoffset(name, offset)` takes the offset SECOND; `FixedOffset`
             # takes it first. Both also accept it by keyword.
-            positional = list(node.args)[1:] if seconds else list(node.args)
+            #
+            # Unpacked first, so `FixedOffset(*[-300])` and
+            # `FixedOffset(**{"offset": -300})` reach the same candidate the
+            # inline spellings do. The generic container descent below cannot
+            # stand in for this: it would see a bare `-300` having lost the
+            # constructor that says whether that is minutes or seconds
+            # (Codex, PR #993).
+            flat_args, flat_kwargs = _unpack_arguments(node, env)
+            positional = flat_args[1:] if seconds else flat_args
             candidate = next(
                 (a for a in positional
-                 + [k.value for k in node.keywords if k.arg in (None, "offset")]),
+                 + [v for a, v in flat_kwargs if a == "offset"]),
                 None)
             # Through `env`: the argument is as often a name as a literal,
             # and `_const_number` follows one to the number it holds.
@@ -2051,8 +2269,13 @@ def _scan() -> tuple[list[str], list[str]]:
         # process actually gets whenever the variable is unset, which for a
         # container is the ordinary case (Codex, PR #993). Inline comments go
         # first, so a commented-out value cannot supply one.
-        text = _expand_shell_defaults(_strip_shell_comments(text)) \
-            if _reads_as_shell(p) else text
+        if _reads_as_shell(p):
+            text = _expand_shell_defaults(_strip_shell_comments(text))
+        elif p.suffix == ".sql":
+            # SQL has its own comment syntax and none of the shell expansion
+            # forms, so it gets the one preprocessing step that applies to it
+            # rather than being lumped in with the shell files.
+            text = _strip_sql_comments(text)
         lines = text.splitlines()
 
         def report(bucket, m):
@@ -2208,6 +2431,27 @@ _SHELL_DEFAULT = re.compile(
 _SHELL_OTHER_DEFAULT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-[^}]*\}")
 
 
+# `export TZ="$LEGACY"` after `LEGACY=EST`. Same anchoring as the parameter
+# default above and for the same reason: substituting every `$VAR` in the file
+# is how the expansion pass came to report `echo ${MESSAGE:-TZ=EST}`, so a
+# reference is resolved only where a timezone context sits immediately in
+# front of it (Codex, PR #993).
+_SHELL_TZ_VAR = re.compile(
+    r"((?:" + _TZ_CONTEXT + r")\s*[\"']?\s*)\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?",
+    re.I)
+
+
+def _expand_shell_vars(text: str) -> str:
+    """Substitute a statically known scalar into a timezone assignment."""
+    scalars = _shell_scalars(text)
+
+    def one(m):
+        value = scalars.get(m.group(2))
+        return m.group(1) + value if value is not None else m.group(0)
+
+    return _SHELL_TZ_VAR.sub(one, text)
+
+
 def _expand_shell_defaults(text: str) -> str:
     """Expose a TIMEZONE parameter default; blank every other one.
 
@@ -2219,7 +2463,79 @@ def _expand_shell_defaults(text: str) -> str:
     be reported as a process-timezone assignment.
     """
     text = _SHELL_DEFAULT.sub(lambda m: m.group(1) + m.group(2), text)
-    return _SHELL_OTHER_DEFAULT.sub(lambda m: " " * len(m.group(0)), text)
+    text = _SHELL_OTHER_DEFAULT.sub(lambda m: " " * len(m.group(0)), text)
+    # Plain `$VAR` last, so a `${VAR:-default}` is read as its default rather
+    # than as a reference to VAR.
+    return _expand_shell_vars(text)
+
+
+def _strip_sql_comments(text: str) -> str:
+    """Blank `--` line comments and `/* ... */` blocks, honouring quotes.
+
+    A tracked `.sql` file may legitimately carry a commented example -- the
+    old spelling beside its replacement is the ordinary way a migration
+    explains itself -- and `-- SET TIME ZONE 'EST'` failed the guard on text
+    that never executes (Codex, PR #993). Same class as the shell-expansion
+    finding one round earlier, and worse for the same reason: a false finding
+    is red CI on correct code, and it teaches people to skip the guard.
+
+    Blanked rather than deleted, in spaces of the same width and keeping the
+    newlines, so every line number and column still means what it says.
+
+    Quote state is tracked, because `'--'` and `'/*'` inside a string literal
+    are data. SQL escapes a quote by doubling it, which needs no special case
+    here: the closing quote of the pair opens the next one, and the state
+    machine ends up back inside the string.
+    """
+    out = []
+    quote = None
+    block = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if block:
+            if ch == "*" and nxt == "/":
+                out.append("  "); i += 2; block = False
+                continue
+            out.append("\n" if ch == "\n" else " "); i += 1
+            continue
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch; out.append(ch); i += 1
+            continue
+        if ch == "-" and nxt == "-":
+            while i < len(text) and text[i] != "\n":
+                out.append(" "); i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            out.append("  "); i += 2; block = True
+            continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+# Simple shell scalar assignments: `LEGACY=EST`, `export LEGACY="EST"`. Only a
+# bare word or a fully quoted literal -- anything containing an expansion, a
+# substitution or whitespace is not statically known and is left alone.
+_SHELL_SCALAR = re.compile(
+    r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)="
+    r"(?:\"([^\"$`\\\n]*)\"|'([^'\n]*)'|([^\s\"'$`;|&\n]+))[ \t]*$",
+    re.M)
+
+
+def _shell_scalars(text: str) -> dict:
+    """`{NAME: value}` for every statically known scalar assignment."""
+    out = {}
+    for m in _SHELL_SCALAR.finditer(text):
+        value = next(g for g in m.groups()[1:] if g is not None)
+        out[m.group(1)] = value
+    return out
 
 
 def _shell_functions(body: str) -> list[tuple[str, str]]:
@@ -4582,3 +4898,314 @@ def test_only_a_timezone_expansion_is_rewritten_to_its_default():
     # they say for everything after it on the same line.
     blanked = _expand_shell_defaults("echo ${MESSAGE:-TZ=EST}")
     assert len(blanked) == len("echo ${MESSAGE:-TZ=EST}"), repr(blanked)
+
+
+# ── Round 18 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# Twelve, up from seven. Eleven are compositions -- two alias forms chained, a
+# constant named instead of written inline, a container where a scalar was
+# expected -- which is what each round's fix creates more of. One is not: a
+# commented-out example in a `.sql` file made the guard FAIL, the same class
+# as round 17's shell expansion and the second false positive in two rounds.
+#
+# The trend is recorded in issue #1019, not argued here.
+
+
+def test_sql_comments_are_not_executable_text():
+    """`-- SET TIME ZONE 'EST'` in a migration is an explanation, not a zone.
+
+    A tracked `.sql` file carrying the old spelling beside its replacement is
+    the ordinary way a migration documents itself, and the guard failed on
+    text that never runs. Preprocessing was gated solely on `_reads_as_shell`,
+    which no `.sql` file matches (Codex, PR #993).
+    """
+    def scanned(text: str) -> bool:
+        stripped = _strip_sql_comments(text)
+        return bool(NONPY_AMBIGUOUS.search(stripped)
+                    or NONPY_UNAMBIGUOUS.search(stripped)
+                    or NONPY_FIXED_OFFSET.search(stripped))
+
+    assert not scanned("-- SET TIME ZONE 'EST'")
+    assert not scanned("/* SET TIME ZONE '-05:00' */")
+    assert not scanned("-- old zone was US/Eastern")
+    assert not scanned("/* multi\n   line US/Eastern */")
+
+    # The executable statement is still a finding, including when a comment
+    # sits on the same line after it.
+    assert scanned("SET TIME ZONE 'EST';")
+    assert scanned("SET TIME ZONE 'EST'; -- deliberate")
+
+    # A `--` or `/*` INSIDE a string literal is data, not a comment, so the
+    # stripper must not eat the rest of the statement.
+    assert _strip_sql_comments("SELECT '-- x' AS a;") == "SELECT '-- x' AS a;"
+    assert _strip_sql_comments("SELECT 'a/*b*/c';") == "SELECT 'a/*b*/c';"
+
+    # Blanked, not deleted: line and column numbers survive.
+    src = "SET TIME ZONE 'EST'; -- note\nSELECT 1;"
+    out = _strip_sql_comments(src)
+    assert len(out) == len(src) and out.count("\n") == src.count("\n")
+
+
+def test_make_assignment_operators_are_contexts():
+    """GNU Make writes `TZ := EST` and `TZ ?= EST`, and exports both.
+
+    Makefiles were added to the collector to cover deployment configuration,
+    and the context accepted only a bare `:` or `=` immediately after the key,
+    so the operators Make actually uses left an extra character before the
+    value (Codex, PR #993).
+    """
+    for line in ("export TZ := EST", "export TZ ?= EST", "TZ ::= EST",
+                 "TZ += EST"):
+        assert NONPY_AMBIGUOUS.search(line), line
+
+    # The spellings that already worked still do, and the identifier boundary
+    # that keeps `quartz=EST` clean is unaffected.
+    assert NONPY_AMBIGUOUS.search("TZ=EST")
+    assert NONPY_AMBIGUOUS.search("TZ: EST")
+    assert not NONPY_AMBIGUOUS.search("quartz=EST")
+
+
+def test_a_shell_scalar_reaches_a_timezone_assignment():
+    """`LEGACY=EST` then `export TZ="$LEGACY"` installs the frozen zone.
+
+    The first assignment has no timezone context and the second has no
+    literal, so each half looked innocent -- the same shape as the bound SQL
+    parameter, in shell (Codex, PR #993).
+
+    Resolved only where a timezone context sits immediately in front of the
+    reference, which is the anchoring the parameter-default expansion already
+    uses; substituting every `$VAR` in a file is how that pass came to report
+    `echo ${MESSAGE:-TZ=EST}`.
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    assert scanned('LEGACY=EST\nexport TZ="$LEGACY"\n')
+    assert scanned('LEGACY="US/Eastern"\nexport TZ=${LEGACY}\n')
+
+    # A reference OUTSIDE a timezone context is not substituted, a benign
+    # value stays benign, and an unknown name resolves to nothing.
+    assert not scanned('LEGACY=EST\necho "$LEGACY"\n')
+    assert not scanned('GOOD=America/New_York\nexport TZ="$GOOD"\n')
+    assert not scanned('export TZ="$UNKNOWN"\n')
+
+
+def test_the_postgres_interval_form_is_a_fixed_offset():
+    """`SET TIME ZONE INTERVAL '-05:00' HOUR TO MINUTE` is a frozen session.
+
+    `_TZ_CONTEXT` reached the statement and then `INTERVAL` sat between it and
+    the value, so the offset matcher expected the number immediately and the
+    numeric matcher rejected the keyword (Codex, PR #993).
+    """
+    assert NONPY_FIXED_OFFSET.search(
+        "SET TIME ZONE INTERVAL '-05:00' HOUR TO MINUTE")
+    assert NONPY_FIXED_OFFSET.search("SET LOCAL TIME ZONE INTERVAL '-04:00'")
+    # The forms that already worked are unchanged.
+    assert NONPY_FIXED_OFFSET.search("SET TIME ZONE '-05:00'")
+    assert NONPY_SQL_NUMERIC_OFFSET.search("SET TIME ZONE -5")
+
+
+def test_an_import_alias_is_resolved_at_every_hop():
+    """`from zoneinfo import ZoneInfo as Z; make_zone = Z; make_zone("EST")`.
+
+    The two alias forms were fixed separately -- imports in round 13,
+    assignments in round 15 -- and composing them still failed, because the
+    import map was consulted once before the recursion rather than at each
+    hop, so the chain terminated on the unrecognised `Z` (Codex, PR #993).
+    """
+    legacy, _ = _hits('from zoneinfo import ZoneInfo as Z\n'
+                      'make_zone = Z\n'
+                      'ET = make_zone("EST")\n')
+    assert legacy, legacy
+
+    # The reverse composition, and a longer chain.
+    legacy, _ = _hits('import pytz as p\n'
+                      'mod = p\n'
+                      'ET = mod.timezone("EST")\n')
+    assert legacy, legacy
+
+    # An alias chain with no timezone at the end of it is still nothing.
+    legacy, _ = _hits('from mymodule import lookup as L\n'
+                      'get = L\n'
+                      'row = get("EST")\n')
+    assert not legacy, legacy
+
+
+def test_a_named_query_still_joins_its_bound_parameter():
+    """`QUERY = "SET TIME ZONE %s"; cur.execute(QUERY, ("EST",))`.
+
+    Naming the statement is the ordinary way this gets written, and the branch
+    required the text inline, so the context and the value were never joined
+    (Codex, PR #993).
+    """
+    legacy, _ = _hits('QUERY = "SET TIME ZONE %s"\n'
+                      'cur.execute(QUERY, ("EST",))\n')
+    assert legacy, legacy
+
+    # A named query with no timezone context still does not convict its
+    # parameters.
+    legacy, _ = _hits('Q = "SELECT %s"\ncur.execute(Q, ("EST",))\n')
+    assert not legacy, legacy
+
+
+def test_an_unpacked_offset_constructor_argument_is_read():
+    """`pytz.FixedOffset(*[-300])` and `FixedOffset(**{"offset": -300})`.
+
+    The numeric branch handed the `Starred` wrapper or the whole dict to
+    `_const_number`, which reports None for both, and the generic container
+    descent added a round earlier cannot stand in: by the time it reaches
+    `-300` it has lost the constructor that says the unit is minutes
+    (Codex, PR #993).
+    """
+    _legacy, offsets = _hits('import pytz\nET = pytz.FixedOffset(*[-300])\n')
+    assert offsets, offsets
+
+    _legacy, offsets = _hits(
+        'import pytz\nET = pytz.FixedOffset(**{"offset": -300})\n')
+    assert offsets, offsets
+
+    _legacy, offsets = _hits(
+        'from dateutil.tz import tzoffset\nET = tzoffset(*[None, -18000])\n')
+    assert offsets, offsets
+
+    # A non-Eastern offset is still not a finding, and a splat this cannot
+    # resolve statically is left alone rather than guessed at.
+    _legacy, offsets = _hits('import pytz\nTZ = pytz.FixedOffset(*[90])\n')
+    assert not offsets, offsets
+    _legacy, offsets = _hits('import pytz\n'
+                             'def f(*a):\n'
+                             '    return pytz.FixedOffset(*a)\n')
+    assert not offsets, offsets
+
+
+def test_a_numeric_parameter_default_is_a_binding():
+    """`def build(offset=-300): return pytz.FixedOffset(offset)`.
+
+    Round 16 taught the ASSIGNMENT map to keep a resolvable number so an
+    offset constructor could read it. `_parameter_bindings`, whose docstring
+    claims to keep "the same kinds", was not updated -- so the two maps
+    disagreed about what a binding is (Codex, PR #993).
+    """
+    _legacy, offsets = _hits('import pytz\n'
+                             'def build(offset=-300):\n'
+                             '    return pytz.FixedOffset(offset)\n')
+    assert offsets, offsets
+
+    _legacy, offsets = _hits('from dateutil.tz import tzoffset\n'
+                             'def build(sec=-18000):\n'
+                             '    return tzoffset(None, sec)\n')
+    assert offsets, offsets
+
+    _legacy, offsets = _hits('from datetime import timedelta, timezone\n'
+                             'def build(hours=-5):\n'
+                             '    return timezone(timedelta(hours=hours))\n')
+    assert offsets, offsets
+
+    # A default that is not Eastern is not a finding.
+    _legacy, offsets = _hits('import pytz\n'
+                             'def build(offset=90):\n'
+                             '    return pytz.FixedOffset(offset)\n')
+    assert not offsets, offsets
+
+
+def test_an_environment_update_is_inspected():
+    """`os.environ.update([("TZ", "EST")])` installs the process zone.
+
+    `update` takes a mapping or an iterable of pairs, and neither reached the
+    two-positional setter branch; a `("TZ", "EST")` tuple is not an
+    `ast.Dict`, so the dict-literal branch missed it too (Codex, PR #993).
+    """
+    legacy, _ = _hits('import os\nos.environ.update([("TZ", "EST")])\n')
+    assert legacy, legacy
+
+    legacy, _ = _hits('import os\nos.environ.update({"TZ": "US/Eastern"})\n')
+    assert legacy, legacy
+
+    legacy, _ = _hits('import os\n'
+                      'ENV = [("TZ", "EST")]\n'
+                      'os.environ.update(ENV)\n')
+    assert legacy, legacy
+
+    # A non-timezone key is not a timezone.
+    legacy, _ = _hits('d = {}\nd.update([("REGION", "EST")])\n')
+    assert not legacy, legacy
+
+
+def test_a_named_tzinfos_mapping_is_resolved():
+    """`INFOS = {"EST": -18000}; parse("...", tzinfos=INFOS)`.
+
+    The keyword branch accepted only an inline dict, though a mapping like
+    this is exactly the kind of constant that gets named and reused
+    (Codex, PR #993).
+    """
+    _legacy, offsets = _hits('from dateutil.parser import parse\n'
+                             'INFOS = {"EST": -18000}\n'
+                             'd = parse("x", tzinfos=INFOS)\n')
+    assert offsets, offsets
+
+    _legacy, offsets = _hits('from dateutil.parser import parse\n'
+                             'INFOS = {"PST": -28800}\n'
+                             'd = parse("x", tzinfos=INFOS)\n')
+    assert not offsets, offsets
+
+
+def test_a_constant_string_expression_is_folded():
+    """`ZoneInfo("E" + "ST")` builds the forbidden zone.
+
+    Every matcher reads a single `ast.Constant` and the standalone walk sees
+    only harmless fragments. The numeric side has folded arithmetic since
+    round 15 for exactly this reason (Codex, PR #993).
+    """
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\nET = ZoneInfo("E" + "ST")\n')
+    assert legacy, legacy
+
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'ET = ZoneInfo("US/" + "Eastern")\n')
+    assert legacy, legacy
+
+    # Through a name, since the fold and the indirection have to compose.
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'Z = "US/" + "Eastern"\n'
+                      'ET = ZoneInfo(Z)\n')
+    assert legacy, legacy
+
+    # A concatenation that spells something else is not a zone. This is the
+    # case that makes folding safe rather than noisy.
+    legacy, _ = _hits('msg = "E" + "STIMATE"\n')
+    assert not legacy, legacy
+
+    assert _const_string(ast.parse('"E" + "ST"', mode="eval").body) == "EST"
+    assert _const_string(ast.parse('"E" + x', mode="eval").body) is None
+
+
+def test_a_loop_target_takes_the_values_it_iterates():
+    """`for zone in ("EST",): ZoneInfo(zone)` constructs the frozen zone.
+
+    The scope machinery marked the target as shadowing an inherited name --
+    correctly -- and then bound it to nothing, so the call resolved to nothing
+    while the ambiguous literal stayed ignored outside a call context
+    (Codex, PR #993).
+    """
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'for zone in ("EST",):\n'
+                      '    ET = ZoneInfo(zone)\n')
+    assert legacy, legacy
+
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'zs = [ZoneInfo(zone) for zone in ("EST",)]\n')
+    assert legacy, legacy
+
+    # A literal iterable OUTSIDE a timezone context is still nothing: the
+    # binding is only ever read by a branch that already has one.
+    legacy, _ = _hits('stop = []\n'
+                      'for w in ("EST", "GMT"):\n'
+                      '    stop.append(w)\n')
+    assert not legacy, legacy
+
+    # A computed iterable is not statically known and is left unresolved.
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'for zone in load_zones():\n'
+                      '    ET = ZoneInfo(zone)\n')
+    assert not legacy, legacy
