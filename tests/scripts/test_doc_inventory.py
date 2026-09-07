@@ -412,3 +412,32 @@ def test_a_deploy_time_variable_is_not_config_drift():
     assert not [d for d in drift if "${" in d], drift
     assert inv._norm_cfg("${plan_size}") is None
     assert inv._norm_cfg("2Gi") == inv._norm_cfg("2G")
+
+
+def test_config_drift_compares_the_field_names_that_exist():
+    """The first version compared `timeout`; both sides store `task_timeout`,
+    so that entry was None-vs-None on every job and the check was dead for the
+    field. (Codex, PR #1009.)"""
+    assert "task_timeout" in inv.JOB_CONFIG_FIELDS
+    assert "timeout" not in inv.JOB_CONFIG_FIELDS
+    live = json.loads(FIXTURE.read_text())
+    drift = inv.reconcile(inv.repo_inventory(REPO), live)["jobs_config_drift"]
+    assert any("compute-earnings-reactions.task_timeout" in d and "1800" in d and "5400" in d
+               for d in drift), drift
+
+
+def test_an_entrypoint_change_is_drift_but_its_spelling_is_not():
+    """deploy.sh puts the whole invocation in command; the live record splits
+    `python` from `-m gcp.x`. Compared separately that reported four jobs as
+    drifted on representation alone. (Codex, PR #1009.)"""
+    live = json.loads(FIXTURE.read_text())
+    drift = inv.reconcile(inv.repo_inventory(REPO), live)["jobs_config_drift"]
+    assert any("magnitude-recal.entrypoint" in d for d in drift), drift
+    assert not [d for d in drift if d.endswith(".command: repo `python -m gcp.backtest_job` live `python`")]
+
+
+def test_a_route_registered_only_behind_a_dist_guard_is_not_inventoried():
+    """platform/Dockerfile copies no dist/, so the SPA fallback never
+    registers in production. (Codex, PR #1009.)"""
+    routes = {r["path"] for r in inv.repo_inventory(REPO)["routes"]}
+    assert "/{full_path:path}" not in routes, "an inactive route is published as live"

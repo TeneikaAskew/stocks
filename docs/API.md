@@ -21,7 +21,7 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 <!-- inventory:routers:start -->
 | Router | Routes | Methods | Path families |
 |---|---|---|---|
-| [`main.py`](../platform/api/main.py) | 10 | GET | `/api/health`, `/api/market`, `/api/me`, `/dev` … |
+| [`main.py`](../platform/api/main.py) | 9 | GET | `/api/health`, `/api/market`, `/api/me`, `/dev` |
 | [`admin.py`](../platform/api/routers/admin.py) | 12 | GET, POST, PUT | `/api/admin` |
 | [`analytics.py`](../platform/api/routers/analytics.py) | 2 | GET, POST | `/api/analytics` |
 | [`backtest.py`](../platform/api/routers/backtest.py) | 5 | GET, POST | `/api/backtest`, `/api/style` |
@@ -42,7 +42,7 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | [`profile.py`](../platform/api/routers/profile.py) | 2 | GET, PUT | `/api/me` |
 | [`signals.py`](../platform/api/routers/signals.py) | 2 | GET | `/api/signals` |
 | [`waitlist.py`](../platform/api/routers/waitlist.py) | 1 | POST | `/api/waitlist` |
-| **Total** | 101 |  | 21 routers |
+| **Total** | 100 |  | 21 routers |
 <!-- inventory:routers:end -->
 
 ## Routes
@@ -150,7 +150,6 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:604`](../platform/api/routers/backtest.py#L604) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:84`](../platform/api/routers/waitlist.py#L84) |  |
 | `GET` | `/dev` | [`platform/api/main.py:396`](../platform/api/main.py#L396) |  |
-| `GET` | `/{full_path:path}` | [`platform/api/main.py:1539`](../platform/api/main.py#L1539) | SPA fallback — serve index.html for any non-API, non-asset route. |
 <!-- inventory:routes:end -->
 
 ## Conventions

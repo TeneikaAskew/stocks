@@ -299,3 +299,31 @@ def test_runtime_relations_are_a_set_difference(repo, tmp_path):
     # the runtime count is unchanged: only a declared relation disappeared
     assert gate.gate_derived_numbers(root, repo, live) == [], \
         "a pending migration must not change the runtime-created count"
+
+
+def test_a_model_written_suppression_is_a_finding(tmp_path):
+    """`verify-docs-ok` silences the docs-vs-live checks for a line, and the
+    model can edit all four generated documents. A marker it wrote would have
+    removed a stale claim from the verifier under a clean run.
+    (Codex, PR #1009.)"""
+    root, prev = tmp_path / "r", tmp_path / "p"
+    root.mkdir(); prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d); _copy(REPO / d, prev / d)
+    assert gate.gate_new_suppressions(root, prev) == []
+    a = root / "ARCHITECTURE.md"
+    a.write_text("Live has 999 jobs. <!-- verify-docs-ok: the model says so -->\n" + a.read_text())
+    findings = gate.gate_new_suppressions(root, prev)
+    assert any("new verify-docs-ok exemption" in f for f in findings), findings
+
+
+def test_a_spelled_out_retry_count_is_validated(live, repo, tmp_path):
+    """The document's own shorthand is "`2` for one", so a word count is the
+    shape already in use and digits-only let a rephrase defeat the gate."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / "ARCHITECTURE.md"
+    a.write_text(a.read_text().replace("`2` for one", "`2` for two"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 2 jobs at --max-retries 2" in f for f in findings), findings

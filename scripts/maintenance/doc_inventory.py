@@ -350,6 +350,25 @@ def schema_tables(root: pathlib.Path = REPO) -> dict[str, list[dict[str, Any]]]:
 _HTTP = {"get", "post", "put", "delete", "patch"}
 
 
+def _conditionally_registered(tree: ast.AST) -> set[str]:
+    """Handlers defined under a `dist`-existence guard.
+
+    The SPA fallback is mounted only when platform/dist is present, which the
+    production image never contains, so it is not part of the live surface.
+    """
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        src = ast.dump(node.test)
+        if "dist" not in src.lower():
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out.add(sub.name)
+    return out
+
+
 def _router_prefix(tree: ast.Module) -> str:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "APIRouter":
@@ -374,8 +393,15 @@ def api_routes(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
             continue
         tree = ast.parse(f.read_text())
         prefix = _router_prefix(tree) if f.name != "main.py" else ""
+        # Routes registered inside `if _dist.is_dir():` are the SPA fallback,
+        # and platform/Dockerfile says plainly that no dist/ is copied into the
+        # production image -- so walking the whole AST published a route that
+        # never registers. (Codex, PR #1009.)
+        inactive = _conditionally_registered(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name in inactive:
                 continue
             for dec in node.decorator_list:
                 if not isinstance(dec, ast.Call) or not isinstance(dec.func, ast.Attribute):
@@ -1065,7 +1091,12 @@ def _now_iso() -> str:
 # but used only for execution status, so a job running at 2 GiB against a 1 GiB
 # declaration was documented as 1 GiB and reconciled clean -- and a rebuild
 # would silently move it. (Codex, PR #1009.)
-JOB_CONFIG_FIELDS = ("memory", "cpu", "timeout", "max_retries", "tasks")
+# `task_timeout` is what BOTH sides actually store. The first version of this
+# said "timeout", so that entry compared None with None on every job and the
+# check was dead for the field -- missing compute-earnings-reactions at 1800
+# declared against 5400 live. command/args were omitted entirely, hiding an
+# entrypoint change. (Codex, PR #1009.)
+JOB_CONFIG_FIELDS = ("memory", "cpu", "task_timeout", "max_retries", "tasks")
 
 
 def _norm_cfg(v: Any) -> str | None:
@@ -1076,8 +1107,10 @@ def _norm_cfg(v: Any) -> str | None:
     """
     if v is None:
         return None
-    s = str(v)
-    if "${" in s:
+    if isinstance(v, (list, tuple)):
+        v = " ".join(str(x) for x in v)
+    s = str(v).strip()
+    if "${" in s or not s:
         return None
     return s.rstrip("i") if s[:-1].isdigit() or s[:-2].isdigit() else s
 
@@ -1094,7 +1127,20 @@ def jobs_config_drift(repo: dict[str, Any], live: dict[str, Any]) -> list[str]:
             if rv is None or lv is None or rv == lv:
                 continue
             out.append(f"{name}.{f}: repo `{r.get(f)}` live `{l.get(f)}`")
+        # command and args are ONE fact: the live record splits `python` from
+        # `-m gcp.x` while deploy.sh puts the whole invocation in command, so
+        # comparing the fields separately reports four jobs as drifted purely
+        # on representation. Joined, only a real entrypoint change shows.
+        rv, lv = _entrypoint(r), _entrypoint(l)
+        if rv and lv and rv != lv:
+            out.append(f"{name}.entrypoint: repo `{rv[:70]}` live `{lv[:70]}`")
     return out
+
+
+def _entrypoint(j: dict[str, Any]) -> str | None:
+    parts = [_norm_cfg(j.get("command")), _norm_cfg(j.get("args"))]
+    joined = " ".join(p for p in parts if p)
+    return joined or None
 
 
 def _sched_target(s: dict[str, Any]) -> str:

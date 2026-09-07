@@ -46,6 +46,12 @@ DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.m
 MARKER_DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "docs/API.md")
 # Every block each document must carry. A balanced-pairs check alone lets a
 # block vanish when both its markers are deleted together (Codex, PR #1009).
+# Spelled-out counts appear in the generated prose ("`2` for one"), so the
+# gates must read them; the verifier already carries the same table.
+WORD_NUMBERS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                "eleven": 11, "twelve": 12}
+
 EXPECTED_MARKERS = {
     "ARCHITECTURE.md": ("jobs", "schedulers", "tables", "dbtables", "routes", "services", "reconcile", "modules"),
     "DATA_DEPENDENCIES.md": ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"),
@@ -314,6 +320,34 @@ def render_report(stats: list[dict]) -> str:
     return "\n".join(body) + "\n"
 
 
+SUPPRESS_RE = re.compile(r"<!--\s*verify-docs-ok:\s*(.+?)\s*-->")
+
+
+def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[str]:
+    """A suppression the MODEL wrote is not a reviewed exemption.
+
+    `verify-docs-ok` markers silence the docs-vs-live checks for a line, and
+    every regeneration can edit the four generated documents. A model that
+    wrote one above a stale schedule, service or count claim would have removed
+    that claim from the verifier and published a run reporting clean, with no
+    human having approved the exemption. So a marker text that was not in the
+    previous version of the file fails the run. (Codex, PR #1009.)
+    """
+    if previous_dir is None:
+        return []
+    out = []
+    for doc in DOCS:
+        prev = previous_dir / doc
+        if not prev.exists():
+            continue
+        was = set(SUPPRESS_RE.findall(prev.read_text()))
+        now = set(SUPPRESS_RE.findall((root / doc).read_text()))
+        for added in sorted(now - was):
+            out.append(f"{doc}: a new verify-docs-ok exemption appeared in a generated doc "
+                       f"({added!r}) — an exemption is a human decision, not a model's")
+    return out
+
+
 def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
     """Prose figures that are DERIVED from the inventory must match it.
 
@@ -343,9 +377,14 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
     claims += [(m.group(2), m.group(1)) for m in
                re.finditer(r"\b(\d+)\s+jobs?\s+(?:use|have|are at|run with)\s+`--max-retries (\d)`", text)]
     # the trailing shorthand of a list: "... `1` for 25 and `2` for one"
+    # The document's own shorthand is "`2` for one", so a word count is the
+    # shape already in use; accepting only digits let a rephrase to "`2` for
+    # two" defeat the gate. (Codex, PR #1009.)
     for m in re.finditer(r"`--max-retries \d`[^.\n]*", text):
-        for m2 in re.finditer(r"`(\d)`\s+for\s+(\d+)", m.group(0)):
-            claims.append((m2.group(1), m2.group(2)))
+        for m2 in re.finditer(r"`(\d)`\s+for\s+(\d+|[a-z]+)", m.group(0)):
+            n = WORD_NUMBERS.get(m2.group(2).lower(), m2.group(2))
+            if str(n).isdigit():
+                claims.append((m2.group(1), str(n)))
     for flag, claimed in claims:
         want = counts.get(flag, 0)
         if int(claimed) != want:
@@ -430,6 +469,7 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_diff_budget(diff_stats(root, previous_dir), allow_rewrite)
     findings += gate_headings_and_size(root, previous_dir)
     findings += gate_derived_numbers(root, repo, live)
+    findings += gate_new_suppressions(root, previous_dir)
     findings += gate_stale(root)
     findings += gate_links(root)
     findings += gate_readme(root)
