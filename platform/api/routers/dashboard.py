@@ -16,6 +16,7 @@ from api.schemas import (
     DashboardBriefResponse,
     MovementStatementResponse,
 )
+from api.infra_errors import is_infrastructure_error
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -581,6 +582,17 @@ def movement_statement(
     except HTTPException:
         raise
     except Exception as exc:
+        # Only an INFRASTRUCTURE failure converts. This guard wraps the whole
+        # assembly, so `except Exception` also rewrote a `TypeError` from a
+        # movement-result schema regression into "temporarily unavailable" --
+        # telling an operator to retry a defect that will never resolve, and
+        # leaving the route sweep green through it, which is the opposite of
+        # what that sweep is for (Codex P1 on #999).
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "movement statement failed for %s %s with an INTERNAL error",
+                ticker_u, tf)
+            raise
         logger.error("movement statement failed for %s %s: %s", ticker_u, tf, exc)
         raise HTTPException(
             status_code=503, detail="movement statement temporarily unavailable"

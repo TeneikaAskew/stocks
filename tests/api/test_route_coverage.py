@@ -385,8 +385,20 @@ REQUESTS: list[Req] = [
 
 # ── the harness ─────────────────────────────────────────────────────────────
 
-class _BackendDown(RuntimeError):
-    """Raised where a socket to Cloud SQL or GCS would be opened."""
+class _BackendDown(ConnectionError):
+    """Raised where a socket to Cloud SQL or GCS would be opened.
+
+    A `ConnectionError`, not a bare `RuntimeError`, because the handlers now
+    ask `api.infra_errors.is_infrastructure_error` whether a failure is an
+    outage or a bug, and a harness that raises something no real outage raises
+    would exercise a classification path production never takes. This is the
+    same correction as the harness rewrite recorded above: what stands in for
+    the backend decides whether any of this means anything (Codex P1 on #999).
+
+    `ConnectionError` is the honest type for both backends -- it is what a
+    refused socket to Cloud SQL or to GCS actually surfaces as -- and it is
+    what the docstring already claimed this class stood for.
+    """
 
 
 def _no_connection(*_a, **_k):
@@ -964,9 +976,16 @@ def test_insight_report_lookups_are_503_not_a_bare_500(client, monkeypatch):
     because the test supplied what production lacked.
     """
     from api.routers import insights as insights_module
+    import psycopg2
 
     def boom(*_a, **_k):
-        raise RuntimeError("connection to server at 127.0.0.1:5432 refused")
+        # The type a real outage raises, not a stand-in. The handlers now ask
+        # `is_infrastructure_error` whether a failure is an outage or a bug, so
+        # a `RuntimeError` here would assert 503 against a classification path
+        # production never reaches -- and would have kept passing after the
+        # narrowing that this test exists to constrain (Codex P1 on #999).
+        raise psycopg2.OperationalError(
+            "connection to server at 127.0.0.1:5432 refused")
 
     for name in ("_fetch_latest_report", "_fetch_report_history",
                  "_fetch_report_by_id", "_insert_run", "_fetch_run"):
@@ -982,7 +1001,7 @@ def test_insight_report_lookups_are_503_not_a_bare_500(client, monkeypatch):
         r = client.request(method, url, json={} if method == "POST" else None)
         assert r.status_code == 503, f"{method} {url}: {r.text[:300]}"
         assert r.headers["content-type"].startswith("application/json")
-        assert "RuntimeError" in r.json()["detail"], r.text[:300]
+        assert "OperationalError" in r.json()["detail"], r.text[:300]
 
 
 def test_admin_answers_503_when_firebase_is_unavailable(client):
@@ -1123,10 +1142,13 @@ def test_a_successful_route_write_still_guards_its_reload(client, monkeypatch):
     """
     import api.routers.admin as admin
 
+    import psycopg2
+
     monkeypatch.setattr(admin, "set_route", lambda *a, **k: None)
     monkeypatch.setattr(
         admin, "list_routes",
-        lambda: (_ for _ in ()).throw(RuntimeError("connection refused")))
+        lambda: (_ for _ in ()).throw(
+            psycopg2.OperationalError("connection refused")))
 
     resp = client.put("/api/admin/routes/analyst",
                       json={"provider": "vertex", "model": "gemini-2.5-flash"})
@@ -1135,3 +1157,98 @@ def test_a_successful_route_write_still_guards_its_reload(client, monkeypatch):
         f"a read failure after a successful write is still a bare "
         f"{resp.status_code}: {resp.text[:400]}")
     assert resp.json()["detail"] == "model route store temporarily unavailable"
+
+
+# ── an INTERNAL defect must fail loudly ─────────────────────────────────────
+#
+# Every 503 guard this PR added wraps a whole helper, not a connection
+# boundary, so `except Exception` rewrote a `KeyError` or `TypeError` from our
+# own code into a retryable "temporarily unavailable" -- and the coverage
+# requests above, which assert 503, would have stayed green straight through a
+# schema regression (Codex P1 on #999).
+#
+# Rule 3.7 already draws the line these tests enforce: an EXTERNAL failure is
+# reported as an explicit 503, an INTERNAL one is a bug and must surface.
+
+
+def test_an_internal_defect_is_not_reported_as_an_outage(client, monkeypatch):
+    """A `TypeError` in a guarded helper is a 500, not a 503.
+
+    One case per guard Codex named, plus the two route-store guards that were
+    not named and had the same conflation. The pair with the 503 tests above
+    is the point: the same call site must answer 503 for a driver failure and
+    500 for a defect, and only one of those was true before this.
+    """
+    import psycopg2
+    from api.routers import insights as insights_module
+    import api.routers.admin as admin
+    import api.routers.dashboard as dashboard
+
+    def defect(*_a, **_k):
+        raise TypeError("movement_result.reach_rate: expected float, got dict")
+
+    # The fixture builds its client with `raise_server_exceptions=False`, so
+    # an unhandled exception arrives as the 500 FastAPI would really answer.
+    # That is the contract worth asserting anyway: "fails loudly" means the
+    # caller sees a 500, not that a particular exception escapes the app.
+    def bare_500(resp, where):
+        assert resp.status_code == 500, (
+            f"{where}: an internal defect was reported as "
+            f"{resp.status_code} -- an operator would retry a bug.\n"
+            f"body: {resp.text[:300]}")
+
+    # 1. insights, through `_db_call`.
+    monkeypatch.setattr(insights_module, "_fetch_latest_report", defect)
+    bare_500(client.get(f"/api/insights/report/{T}"), "insights report lookup")
+
+    # 2. the model route store, on the read path.
+    monkeypatch.setattr(admin, "list_routes", defect)
+    bare_500(client.get("/api/admin/routes"), "admin route listing")
+
+    # 3. the movement statement, behind its flag.
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    monkeypatch.setattr(dashboard, "_build_movement_level_map", defect)
+    bare_500(client.get(f"/api/movement-statement?ticker={T}&timeframe=15m"),
+             "movement statement")
+
+    # And the same call sites still answer 503 for a real driver failure, so
+    # the narrowing did not simply delete the guards.
+    def outage(*_a, **_k):
+        raise psycopg2.OperationalError("connection refused")
+
+    monkeypatch.setattr(admin, "list_routes", outage)
+    r = client.get("/api/admin/routes")
+    assert r.status_code == 503, r.text[:200]
+
+
+def test_infrastructure_errors_are_classified_by_type():
+    """The predicate itself, over the cases the guards depend on."""
+    import psycopg2
+    from api.infra_errors import is_infrastructure_error
+
+    for exc in (psycopg2.OperationalError("refused"),
+                psycopg2.InterfaceError("connection already closed"),
+                ConnectionRefusedError(),
+                TimeoutError(),
+                ModuleNotFoundError("lightgbm")):
+        assert is_infrastructure_error(exc), type(exc).__name__
+
+    for exc in (TypeError("bad"), KeyError("reach_rate"), AttributeError("x"),
+                ValueError("v"), psycopg2.ProgrammingError("syntax error")):
+        assert not is_infrastructure_error(exc), type(exc).__name__
+
+    # A driver error re-raised inside a helper's own wrapper is still an
+    # outage; the chain is followed.
+    wrapped = RuntimeError("could not load routes")
+    wrapped.__cause__ = psycopg2.OperationalError("refused")
+    assert is_infrastructure_error(wrapped)
+
+    # ...but a wrapper around a DEFECT is not.
+    wrapped2 = RuntimeError("could not load routes")
+    wrapped2.__cause__ = TypeError("bad")
+    assert not is_infrastructure_error(wrapped2)
+
+    # A self-referencing chain terminates rather than spinning.
+    loop = RuntimeError("a")
+    loop.__cause__ = loop
+    assert not is_infrastructure_error(loop)

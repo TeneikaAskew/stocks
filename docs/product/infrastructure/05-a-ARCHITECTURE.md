@@ -462,18 +462,18 @@ Staging is therefore the service users actually hit, with open self-signup over 
 <!-- inventory:routes:start -->
 | Method | Path | Defined | Purpose |
 |---|---|---|---|
-| `GET` | `/api/admin/data-sources` | [`platform/api/routers/admin.py:1328`](../../../platform/api/routers/admin.py#L1328) | Per-dataset freshness/coverage, aggregated from the shared audit. |
-| `POST` | `/api/admin/data-sources/{source_id}/refresh` | [`platform/api/routers/admin.py:1461`](../../../platform/api/routers/admin.py#L1461) | Queue the dataset's Cloud Run fetcher job. |
-| `GET` | `/api/admin/models` | [`platform/api/routers/admin.py:189`](../../../platform/api/routers/admin.py#L189) |  |
-| `GET` | `/api/admin/routes` | [`platform/api/routers/admin.py:128`](../../../platform/api/routers/admin.py#L128) |  |
-| `PUT` | `/api/admin/routes/{role}` | [`platform/api/routers/admin.py:147`](../../../platform/api/routers/admin.py#L147) |  |
-| `POST` | `/api/admin/strat-engine/predict` | [`platform/api/routers/admin.py:566`](../../../platform/api/routers/admin.py#L566) | Run the frozen strat-engine type model for ONE bar. |
-| `GET` | `/api/admin/strat-engine/state` | [`platform/api/routers/admin.py:549`](../../../platform/api/routers/admin.py#L549) | Operator snapshot of the on-shelf strat-engine model state. |
-| `POST` | `/api/admin/strat-engine/structure-continuation` | [`platform/api/routers/admin.py:689`](../../../platform/api/routers/admin.py#L689) | Read-only, feature-flagged calibrated structure-continuation probability. |
-| `GET` | `/api/admin/structure-brief` | [`platform/api/routers/admin.py:323`](../../../platform/api/routers/admin.py#L323) | Dev-only readout of the strat-engine type model's structure predictions. |
-| `GET` | `/api/admin/users` | [`platform/api/routers/admin.py:958`](../../../platform/api/routers/admin.py#L958) | Every Firebase account + its stored role(s). |
-| `PUT` | `/api/admin/users/{uid}/roles` | [`platform/api/routers/admin.py:1002`](../../../platform/api/routers/admin.py#L1002) | Replace an account's stored role. |
-| `PUT` | `/api/admin/users/{uid}/status` | [`platform/api/routers/admin.py:1074`](../../../platform/api/routers/admin.py#L1074) | Enable or disable a Firebase account. |
+| `GET` | `/api/admin/data-sources` | [`platform/api/routers/admin.py:1367`](../../../platform/api/routers/admin.py#L1367) | Per-dataset freshness/coverage, aggregated from the shared audit. |
+| `POST` | `/api/admin/data-sources/{source_id}/refresh` | [`platform/api/routers/admin.py:1500`](../../../platform/api/routers/admin.py#L1500) | Queue the dataset's Cloud Run fetcher job. |
+| `GET` | `/api/admin/models` | [`platform/api/routers/admin.py:208`](../../../platform/api/routers/admin.py#L208) |  |
+| `GET` | `/api/admin/routes` | [`platform/api/routers/admin.py:129`](../../../platform/api/routers/admin.py#L129) |  |
+| `PUT` | `/api/admin/routes/{role}` | [`platform/api/routers/admin.py:157`](../../../platform/api/routers/admin.py#L157) |  |
+| `POST` | `/api/admin/strat-engine/predict` | [`platform/api/routers/admin.py:585`](../../../platform/api/routers/admin.py#L585) | Run the frozen strat-engine type model for ONE bar. |
+| `GET` | `/api/admin/strat-engine/state` | [`platform/api/routers/admin.py:568`](../../../platform/api/routers/admin.py#L568) | Operator snapshot of the on-shelf strat-engine model state. |
+| `POST` | `/api/admin/strat-engine/structure-continuation` | [`platform/api/routers/admin.py:721`](../../../platform/api/routers/admin.py#L721) | Read-only, feature-flagged calibrated structure-continuation probability. |
+| `GET` | `/api/admin/structure-brief` | [`platform/api/routers/admin.py:342`](../../../platform/api/routers/admin.py#L342) | Dev-only readout of the strat-engine type model's structure predictions. |
+| `GET` | `/api/admin/users` | [`platform/api/routers/admin.py:997`](../../../platform/api/routers/admin.py#L997) | Every Firebase account + its stored role(s). |
+| `PUT` | `/api/admin/users/{uid}/roles` | [`platform/api/routers/admin.py:1041`](../../../platform/api/routers/admin.py#L1041) | Replace an account's stored role. |
+| `PUT` | `/api/admin/users/{uid}/status` | [`platform/api/routers/admin.py:1113`](../../../platform/api/routers/admin.py#L1113) | Enable or disable a Firebase account. |
 | `GET` | `/api/analytics/summary/{ticker}` | [`platform/api/routers/analytics.py:126`](../../../platform/api/routers/analytics.py#L126) | Summarize rows from the ``trades`` table for a ticker. |
 | `POST` | `/api/analytics/trade-stats` | [`platform/api/routers/analytics.py:118`](../../../platform/api/routers/analytics.py#L118) |  |
 | `GET` | `/api/backtest/all/{ticker}` | [`platform/api/routers/backtest.py:355`](../../../platform/api/routers/backtest.py#L355) | List all backtest runs for a ticker, sorted by timestamp descending. |
@@ -488,7 +488,7 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:44`](../../../platform/api/routers/config.py#L44) | Public runtime auth config for the frontend bootstrap. |
 | `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:71`](../../../platform/api/routers/config.py#L71) | Return indicator periods, signal thresholds, and zone labels. |
 | `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:127`](../../../platform/api/routers/config.py#L127) | Return US equity market session windows + 2026 holidays. |
-| `GET` | `/api/dashboard/brief/{ticker}` | [`platform/api/routers/dashboard.py:81`](../../../platform/api/routers/dashboard.py#L81) | Return daily bias / strat status for the dashboard. |
+| `GET` | `/api/dashboard/brief/{ticker}` | [`platform/api/routers/dashboard.py:82`](../../../platform/api/routers/dashboard.py#L82) | Return daily bias / strat status for the dashboard. |
 | `GET` | `/api/earnings/calibration` | [`platform/api/routers/earnings.py:304`](../../../platform/api/routers/earnings.py#L304) | The live calibration row (PR-A + PR-B headline finding). |
 | `GET` | `/api/earnings/event/{ticker}/{event_date}` | [`platform/api/routers/earnings.py:172`](../../../platform/api/routers/earnings.py#L172) | Single-event drill-down. |
 | `GET` | `/api/earnings/health/ping` | [`platform/api/routers/earnings.py:324`](../../../platform/api/routers/earnings.py#L324) | Lightweight warm-up probe. NOT called by a scheduler. |
@@ -501,19 +501,19 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
 | `GET` | `/api/health` | [`platform/api/main.py:270`](../../../platform/api/main.py#L270) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:146`](../../../platform/api/routers/health.py#L146) | Return the cached freshness report (see freshness_report_dict). |
-| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1061`](../../../platform/api/routers/insights.py#L1061) | Stream a Gemini response for the given mode and message. |
-| `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:711`](../../../platform/api/routers/insights.py#L711) | Return the most recent InsightReport for the ticker. |
-| `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:740`](../../../platform/api/routers/insights.py#L740) | Return a scannable list of recent reports for the ticker. |
-| `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:788`](../../../platform/api/routers/insights.py#L788) | Enqueue a fresh pipeline run for the ticker. |
-| `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:750`](../../../platform/api/routers/insights.py#L750) | Return a single insight report by row id. |
-| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:912`](../../../platform/api/routers/insights.py#L912) | Poll the status of a refresh run. |
-| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:491`](../../../platform/api/routers/insights.py#L491) | Search for tickers by keyword (company name, symbol, etc). |
-| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:506`](../../../platform/api/routers/insights.py#L506) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
-| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:537`](../../../platform/api/routers/insights.py#L537) | Return peer tickers from FinViz (cached). |
-| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:526`](../../../platform/api/routers/insights.py#L526) | Return latest price/volume from AV GLOBAL_QUOTE. |
-| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:656`](../../../platform/api/routers/insights.py#L656) | Return today's ranked candidate tickers with score breakdowns. |
-| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:546`](../../../platform/api/routers/insights.py#L546) | Add a ticker to the watchlist and return its info + quote. |
-| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:623`](../../../platform/api/routers/insights.py#L623) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
+| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1074`](../../../platform/api/routers/insights.py#L1074) | Stream a Gemini response for the given mode and message. |
+| `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:724`](../../../platform/api/routers/insights.py#L724) | Return the most recent InsightReport for the ticker. |
+| `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:753`](../../../platform/api/routers/insights.py#L753) | Return a scannable list of recent reports for the ticker. |
+| `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:801`](../../../platform/api/routers/insights.py#L801) | Enqueue a fresh pipeline run for the ticker. |
+| `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:763`](../../../platform/api/routers/insights.py#L763) | Return a single insight report by row id. |
+| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:925`](../../../platform/api/routers/insights.py#L925) | Poll the status of a refresh run. |
+| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:504`](../../../platform/api/routers/insights.py#L504) | Search for tickers by keyword (company name, symbol, etc). |
+| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:519`](../../../platform/api/routers/insights.py#L519) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
+| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:550`](../../../platform/api/routers/insights.py#L550) | Return peer tickers from FinViz (cached). |
+| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:539`](../../../platform/api/routers/insights.py#L539) | Return latest price/volume from AV GLOBAL_QUOTE. |
+| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:669`](../../../platform/api/routers/insights.py#L669) | Return today's ranked candidate tickers with score breakdowns. |
+| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:559`](../../../platform/api/routers/insights.py#L559) | Add a ticker to the watchlist and return its info + quote. |
+| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:636`](../../../platform/api/routers/insights.py#L636) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
 | `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:905`](../../../platform/api/routers/journal.py#L905) | Read-only teaching "Examples" — the UNION of the admin's own journal |
 | `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1348`](../../../platform/api/routers/journal.py#L1348) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
 | `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1492`](../../../platform/api/routers/journal.py#L1492) | Insert the caller-selected `PairedTrade`s from a preview. |
@@ -542,7 +542,7 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../../../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:145`](../../../platform/api/routers/profile.py#L145) |  |
 | `PUT` | `/api/me/profile` | [`platform/api/routers/profile.py:162`](../../../platform/api/routers/profile.py#L162) | Upsert the provided subset of fields and return the full stored row. |
-| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:519`](../../../platform/api/routers/dashboard.py#L519) | PHASE 3 — read-only, feature-flagged movement statement. |
+| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:520`](../../../platform/api/routers/dashboard.py#L520) | PHASE 3 — read-only, feature-flagged movement statement. |
 | `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:317`](../../../platform/api/routers/options.py#L317) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
 | `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:739`](../../../platform/api/routers/options.py#L739) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
 | `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:619`](../../../platform/api/routers/options.py#L619) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
@@ -1066,6 +1066,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`lib/walk_forward.py`](../../../lib/walk_forward.py) | Walk-forward validation and parameter sensitivity analysis. | — |
 | [`platform/api/auth.py`](../../../platform/api/auth.py) | App-level authentication, gated by the AUTH_MODE env var. | — |
 | [`platform/api/gcs_reader.py`](../../../platform/api/gcs_reader.py) | Shared GCS reader for platform API routers. | — |
+| [`platform/api/infra_errors.py`](../../../platform/api/infra_errors.py) | What counts as an INFRASTRUCTURE failure, in one place. | — |
 | [`platform/api/main.py`](../../../platform/api/main.py) | Trading Platform API - FastAPI backend | — |
 | [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) | Admin router — model-routing dashboard backend. | — |
 | [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) | Analytics router — trade stats computed server-side. | — |

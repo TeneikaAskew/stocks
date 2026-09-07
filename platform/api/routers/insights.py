@@ -40,6 +40,7 @@ import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
 # Server-verified identity for per-user watchlist scoping (mirrors journal.py).
 from api.auth import current_user_email  # noqa: E402
+from api.infra_errors import is_infrastructure_error  # noqa: E402
 from api.schemas import (
     InsightHistoryResponse,
     TickerSearchResponse,
@@ -159,12 +160,24 @@ def _db_call(what: str, fn, *args, **kwargs):
     type, which is the same contract every other DB-backed router in this app
     already answers with. `HTTPException` passes through untouched so a
     deliberate 404/400 raised inside `fn` keeps its own status.
+
+    Only an INFRASTRUCTURE failure converts. `fn` is a whole helper, not a
+    connection boundary -- it also indexes rows, formats timestamps and builds
+    envelopes -- so `except Exception` rewrote a `KeyError` from a schema
+    regression into a retryable 503, and the coverage test asserting 503 stayed
+    green through it (Codex P1 on #999). Rule 3.7's own split says why that is
+    wrong: an EXTERNAL failure is reported, an INTERNAL one is a bug and must
+    fail loudly. Anything `is_infrastructure_error` does not recognise is
+    re-raised untouched and reaches FastAPI as a 500.
     """
     try:
         return fn(*args, **kwargs)
     except HTTPException:
         raise
     except Exception as exc:
+        if not is_infrastructure_error(exc):
+            logger.exception("%s failed with an INTERNAL error: %s", what, exc)
+            raise
         logger.exception("%s failed: %s", what, exc)
         raise HTTPException(
             status_code=503, detail=f"{what} failed: {type(exc).__name__}")

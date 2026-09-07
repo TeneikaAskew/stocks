@@ -38,6 +38,7 @@ from lib.agents.model_routing import (  # noqa: E402
 from lib.agents.schema import ALL_ROLES, AgentRole  # noqa: E402
 from api import auth as auth_state  # noqa: E402 — module ref: AUTH_MODE read at call time
 from api.auth import configured_admin_email, current_user_email, is_admin_email  # noqa: E402
+from api.infra_errors import is_infrastructure_error  # noqa: E402
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -136,7 +137,16 @@ def admin_list_routes(request: Request):
         # with a plain-text body, which the admin UI cannot render and which
         # reads as a bug in our code rather than an unreachable database.
         # Verified against a real `psycopg2.OperationalError` in
-        # tests/test_route_coverage.py.
+        # tests/api/test_route_coverage.py.
+        #
+        # Narrowed with the three guards Codex flagged on #999, though it was
+        # not one of them: `_route_to_row` shapes every row inside this try, so
+        # the same conflation was here. Fixing the named three and leaving this
+        # one is how the five bare 500s in `insights.py` came to be fixed one
+        # at a time in the first place.
+        if not is_infrastructure_error(exc):
+            logger.exception("model route listing failed with an INTERNAL error")
+            raise
         logger.error("model route listing failed: %s", exc)
         raise HTTPException(
             status_code=503, detail="model route store temporarily unavailable"
@@ -163,6 +173,10 @@ def admin_update_route(
         # with a plain-text body -- the same shape as `admin_list_routes`
         # above, and invisible to the route sweep because its request was
         # covered through the adapter-validation branch that 400s first.
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "model route write failed for %s with an INTERNAL error", role)
+            raise
         logger.error("model route write failed for %s: %s", role, exc)
         raise HTTPException(
             status_code=503, detail="model route store temporarily unavailable"
@@ -176,6 +190,11 @@ def admin_update_route(
     try:
         rows = list_routes()
     except Exception as exc:
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "model route reload failed after writing %s with an INTERNAL "
+                "error", role)
+            raise
         logger.error("model route reload failed after writing %s: %s", role, exc)
         raise HTTPException(
             status_code=503, detail="model route store temporarily unavailable"
@@ -615,6 +634,19 @@ def admin_strat_engine_predict(
     except HTTPException:
         raise
     except Exception as exc:
+        # Only an INFRASTRUCTURE failure converts. This guard covers the whole
+        # inference, not just the import and `get_engine()`, so with a
+        # reachable database `except Exception` reported a model or schema
+        # programming error as a retryable outage -- and the coverage request
+        # already expects 503, so that regression could stay green while an
+        # operator diagnosed an outage that was not happening
+        # (Codex P1 on #999). ImportError IS infrastructure here: an image
+        # built without the ML extras genuinely has no predict stack.
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "strat-engine predict failed for %s %s with an INTERNAL error",
+                ticker, tf)
+            raise
         logger.error("strat-engine predict failed for %s %s: %s: %s",
                      ticker, tf, type(exc).__name__, exc)
         raise HTTPException(
@@ -752,6 +784,13 @@ def admin_structure_continuation(
     except HTTPException:
         raise
     except Exception as exc:
+        # Narrowed with the predict endpoint above, as Codex asked: the same
+        # guard covers the same whole inference here (Codex P1 on #999).
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "structure-continuation predict failed for %s %s with an "
+                "INTERNAL error", ticker, tf)
+            raise
         logger.error("structure-continuation predict failed for %s %s: %s: %s",
                      ticker, tf, type(exc).__name__, exc)
         raise HTTPException(
