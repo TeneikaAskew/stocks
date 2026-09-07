@@ -660,12 +660,14 @@ finding is fixed, it says how; where it is not, it says what still stands.
 | C-01 | `gcp/database.py` `query_to_dataframe()` swallows every exception | **PARTIAL.** `query_to_dataframe_strict()` now exists as the raising sibling and the swallowing one carries a docstring warning naming Rule 3.7. But it still swallows, and the callers did not move: **119 call sites use the swallowing helper, 14 use strict.** The trap is documented, not removed. |
 | C-02 | `lib/data_loader.py` same swallow one layer up | **PARTIAL.** Now `log.exception` with a message telling callers that empty means "errored, not zero rows". Still returns an empty DataFrame that no caller checks. |
 | C-03 | `lib/options_greeks.py` hardcoded risk-free rate on FRED failure | **FIXED on this branch.** See §12.2. |
-| C-04 | `lib/signals.py` disabled-conditions resolver swallows | **FIXED** — PRs #358, #372, #329. |
+| C-04 | `lib/signals.py` disabled-conditions resolver swallows | **OPEN.** Marked FIXED here on the strength of PRs #358, #372, #329, and re-checked 2026-09-07 (Codex, PR #994): **both handlers the finding describes are still in the code.** `lib/signals.py:254` turns malformed `disabled_conditions` JSON into `dc = []`, which re-enables a condition an operator disabled for risk; `lib/signals.py:265` swallows any resolver failure with `pass`. Both now LOG rather than degrading in total silence (the old comment claimed "the resolver itself logs the cause", which only holds when the resolver was actually reached). They still degrade: what a resolver failure should do to a live trading signal is a product decision, not a refactor, so it is not being made inside a docs-accuracy fix. Reproduce with `python scripts/audit_silent_fallbacks.py --json`. |
 | C-05 | six `continue-on-error: true` in fetcher workflows | **FIXED.** `grep -rn "continue-on-error" .github/workflows/` returns nothing. |
 | C-06 | `gcp/signal_monitor.py` `refresh_level_map` swallow | **FIXED** — PR #339. |
 
-So four of six are closed and two remain as a documented trap rather than a
-fix. That is worth stating plainly: adding `query_to_dataframe_strict` beside
+So **three** of six are closed and three remain: two as a documented trap
+rather than a fix, and C-04 as a status that was simply wrong — it was
+recorded closed while its handlers ran in production, which is worse than
+either, because a finding marked FIXED leaves the prioritised backlog. That is worth stating plainly: adding `query_to_dataframe_strict` beside
 `query_to_dataframe` made the right thing *possible* without making the wrong
 thing *stop*, and 119 callers still take the wrong one by default.
 
@@ -697,12 +699,30 @@ python scripts/audit_silent_fallbacks.py --worst   # broad, unlogged, container-
 python scripts/audit_silent_fallbacks.py --json    # diff against the last run
 ```
 
-Current reading (2026-09-06, excluding `tests/`, `docs/`, `archive/`):
+Current reading (2026-09-07, excluding `tests/`, `docs/`, `archive/`):
 
 ```
-255 swallowing handlers in 88 files; 146 return a container or a zero rather than None
- 15 are broad AND unlogged AND return a container or a zero
+$ python scripts/audit_silent_fallbacks.py
+355 swallowing handlers in 107 files; 177 return a container or a zero rather than None
+
+$ python scripts/audit_silent_fallbacks.py --worst
+ 29 swallowing handlers in 21 files (broad, unlogged, container-or-zero)
 ```
+
+The 2026-09-06 reading recorded here was `255 swallowing handlers in 88 files;
+146 return a container or a zero rather than None`, and neither number was
+right. Two scanner defects, both found in review (Codex, PR #994):
+
+* it walked `Return` nodes only, so a handler that swallows by ASSIGNMENT
+  (`dc = []`) or by `pass` was invisible -- about a third of the inventory,
+  including the C-04 handlers the script was written to keep visible;
+* `forbidden_shape` intersected the DISPLAY strings (`dc = []`) with the
+  shape set (`[]`), so no assignment ever counted as a forbidden shape and
+  `--worst` omitted them all.
+
+A third defect moved the count the other way: `ast.walk` descended into nested
+`except` blocks, so an inner handler's fallback was attributed to every
+enclosing handler too. Fixing that removed four double-counted rows.
 
 Two deliberate distinctions the script encodes, because both were wrong in my
 first pass at it:

@@ -179,6 +179,15 @@ def update_computed_columns(df: pd.DataFrame) -> int:
     return total
 
 
+class GreeksUnavailable(RuntimeError):
+    """Enrichment produced no finite Greeks for a non-empty chain.
+
+    Typed so the caller counts it as a failed date rather than a silent
+    no-op: `main` exits non-zero, and the Cloud Run job's failure is visible
+    to the failure-notifier instead of reading as a clean run.
+    """
+
+
 def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
     """Load → enrich → UPDATE for one snapshot date.
 
@@ -191,12 +200,29 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
         return 0, 0
 
     enriched = enrich_av_chain_with_greeks(chain, ticker, snap)
-    n_updated = update_computed_columns(enriched)
 
-    # Quick coverage stat for the log line — how many rows have a finite
-    # gamma_computed after enrichment.
+    # How many rows carry a finite gamma_computed after enrichment. This was
+    # a log-line statistic and nothing else, which made the job unable to fail
+    # for the reason it exists (Codex, PR #994):
+    #
+    #   * a failed rate lookup returns the chain UNTOUCHED, so the sidecars
+    #     keep whatever they had — and `load_chain` already selects them, so
+    #     they are the existing NULLs;
+    #   * an underivable spot returns the sidecars present and entirely NaN.
+    #
+    # Either way `update_computed_columns` rewrites NULL over NULL and returns
+    # the full row count, `process_one_date` raises nothing, `failures` stays
+    # 0, and the Cloud Run job exits 0 reporting a backfill it did not
+    # perform. `n_updated` counts rows touched, not Greeks computed.
     g = pd.to_numeric(enriched.get("gamma_computed"), errors="coerce")
     finite = int(np.isfinite(g).sum()) if g is not None else 0
+    if finite == 0:
+        raise GreeksUnavailable(
+            f"{ticker} {snap}: {len(chain)} rows loaded and 0 finite "
+            f"gamma_computed after enrichment — nothing was computed, so this "
+            f"date is a failure rather than a no-op")
+
+    n_updated = update_computed_columns(enriched)
     log.info(
         "  %s %s: loaded=%d enriched_finite=%d updated=%d",
         ticker, snap, len(chain), finite, n_updated,

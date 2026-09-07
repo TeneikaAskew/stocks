@@ -93,7 +93,31 @@ def _neutral(value: ast.expr | None) -> str | None:
     return None
 
 
-def _handler_returns(node: ast.ExceptHandler) -> list[str]:
+def _own_nodes(handler: ast.ExceptHandler):
+    """Every node in THIS handler's body, not a nested handler's.
+
+    `ast.walk` descends into nested `try`/`except`, so a neutral assignment in
+    an inner handler was attributed to every enclosing handler as well --
+    `platform/api/routers/dashboard.py` and `scripts/fetch_earnings_calendar.py`
+    were each reported twice with identical assignments, although the outer
+    handler retries an alternate import and only the inner one substitutes a
+    neutral value (Codex, PR #994). An inventory that double-counts and
+    misattributes cannot be diffed against anything.
+
+    A nested try's protected body IS still visited: that is code running in
+    this handler. Only the nested `except` bodies are skipped.
+    """
+    stack = list(handler.body)
+    while stack:
+        n = stack.pop()
+        yield n
+        for child in ast.iter_child_nodes(n):
+            if isinstance(child, ast.ExceptHandler):
+                continue
+            stack.append(child)
+
+
+def _handler_returns(node: ast.ExceptHandler) -> tuple[list[str], list[str]]:
     """Neutral values this handler substitutes. Empty if it re-raises.
 
     A `return` is only one way to swallow. Walking `Return` alone missed the
@@ -112,28 +136,39 @@ def _handler_returns(node: ast.ExceptHandler) -> list[str]:
     hand-written audit it replaces, which is the claim this script makes.
     """
     out: list[str] = []
-    for n in ast.walk(node):
+    shapes: list[str] = []
+    for n in _own_nodes(node):
         if isinstance(n, ast.Raise):
-            return []          # re-raises: not a silent swallow
+            return [], []      # re-raises: not a silent swallow
         if isinstance(n, ast.Return):
             name = _neutral(n.value)
             if name:
                 out.append(name)
+                shapes.append(name)
         elif isinstance(n, ast.Assign):
             name = _neutral(n.value)
             if name:
                 out.append(f"{_target_names(n.targets)} = {name}")
+                # The SHAPE is tracked separately from the display string.
+                # `forbidden_shape` intersected the display strings with
+                # FORBIDDEN_SHAPES, so `dc = []` never matched `[]` and every
+                # assignment fallback was classified as harmless -- dropping
+                # exactly the handlers `--worst` exists to surface
+                # (Codex, PR #994).
+                shapes.append(name)
         elif isinstance(n, ast.AnnAssign) and n.value is not None:
             name = _neutral(n.value)
             if name:
                 out.append(f"{_target_names([n.target])} = {name}")
+                shapes.append(name)
 
     # A handler whose entire body is `pass` substitutes nothing and says
     # nothing -- the purest silent swallow, and previously invisible because
     # there is no value to classify.
     if not out and all(isinstance(st, ast.Pass) for st in node.body):
         out.append("pass (swallowed, no action)")
-    return sorted(set(out))
+        shapes.append("pass")
+    return sorted(set(out)), sorted(set(shapes))
 
 
 def _target_names(targets: list[ast.expr]) -> str:
@@ -165,7 +200,7 @@ def scan(root: pathlib.Path) -> list[dict]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ExceptHandler):
                 continue
-            returns = _handler_returns(node)
+            returns, shapes = _handler_returns(node)
             if not returns:
                 continue
             enclosing = min(
@@ -187,7 +222,7 @@ def scan(root: pathlib.Path) -> list[dict]:
                 "logs": any(m in body for m in LOG_MARKERS),
                 # `None` alone is usually correct; a container or a zero is the
                 # shape the rule is actually about.
-                "forbidden_shape": bool(set(returns) & FORBIDDEN_SHAPES),
+                "forbidden_shape": bool(set(shapes) & FORBIDDEN_SHAPES),
             })
     return rows
 

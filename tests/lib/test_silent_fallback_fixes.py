@@ -192,8 +192,292 @@ def test_the_fallback_scanner_sees_assignment_and_pass_handlers():
     )
     handlers = [n for n in ast.walk(ast.parse(src))
                 if isinstance(n, ast.ExceptHandler)]
-    assign, swallow, reraise = (mod._handler_returns(h) for h in handlers)
+    assign, swallow, reraise = (mod._handler_returns(h)[0] for h in handlers)
 
     assert assign == ["dc = []"], assign
     assert swallow == ["pass (swallowed, no action)"], swallow
     assert reraise == [], "a handler that re-raises is not a silent fallback"
+
+
+def _scanner():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "audit_silent_fallbacks", REPO / "scripts" / "audit_silent_fallbacks.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_a_nested_handler_is_not_attributed_to_the_one_around_it():
+    """`ast.walk` descends into nested try/except, so an inner handler's
+    neutral assignment was counted for every enclosing handler as well --
+    inflating the inventory and blaming an outer handler that does something
+    else entirely (Codex, PR #994)."""
+    import ast
+    mod = _scanner()
+
+    src = "\n".join([
+        "def f():",
+        "    try:",
+        "        primary()",
+        "    except Exception:",
+        "        try:",
+        "            alternate()",
+        "        except Exception:",
+        "            inner = {}",
+        "",
+    ])
+    handlers = [n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.ExceptHandler)]
+    outer, inner = handlers[0], handlers[1]
+
+    assert mod._handler_returns(inner)[0] == ["inner = {}"]
+    assert mod._handler_returns(outer)[0] == [], (
+        "the outer handler retries an alternate path and substitutes nothing; "
+        "attributing the inner handler's fallback to it is a misattribution, "
+        "not a duplicate")
+
+
+def test_the_protected_body_of_a_nested_try_still_counts():
+    """Only nested EXCEPT bodies are skipped. Code inside a nested `try:` is
+    code this handler runs, so its fallbacks are this handler's."""
+    import ast
+    mod = _scanner()
+
+    src = "\n".join([
+        "def f():",
+        "    try:",
+        "        primary()",
+        "    except Exception:",
+        "        try:",
+        "            mine = []",
+        "        finally:",
+        "            done()",
+        "",
+    ])
+    handler = next(n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.ExceptHandler))
+    assert mod._handler_returns(handler)[0] == ["mine = []"]
+
+
+def test_an_assignment_fallback_is_classified_as_a_forbidden_shape():
+    """`forbidden_shape` intersected the DISPLAY strings with FORBIDDEN_SHAPES,
+    so `dc = []` never matched `[]` and every assignment fallback was scored
+    harmless -- dropping exactly the handlers `--worst` exists to surface."""
+    import ast
+    mod = _scanner()
+
+    src = "\n".join([
+        "def f():",
+        "    try:",
+        "        g()",
+        "    except Exception:",
+        "        dc = []",
+        "",
+    ])
+    handler = next(n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.ExceptHandler))
+    display, shapes = mod._handler_returns(handler)
+
+    assert display == ["dc = []"]
+    assert set(shapes) & mod.FORBIDDEN_SHAPES == {"[]"}, (
+        f"the neutral shape must be tracked separately from its display "
+        f"string; got shapes={shapes}")
+
+
+def test_scan_marks_an_assignment_fallback_forbidden(tmp_path, monkeypatch):
+    """The end-to-end version: `--worst` reads `forbidden_shape` off the ROW,
+    so asserting the helper alone would not catch `scan()` intersecting the
+    display strings again."""
+    mod = _scanner()
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "m.py").write_text("\n".join([
+        "def f():",
+        "    try:",
+        "        g()",
+        "    except Exception:",
+        "        dc = []",
+        "",
+    ]))
+    monkeypatch.setattr(mod, "REPO", tmp_path)
+    rows = mod.scan(pkg)
+
+    assert len(rows) == 1, rows
+    assert rows[0]["returns"] == ["dc = []"]
+    assert rows[0]["forbidden_shape"] is True, (
+        "an assignment fallback scored as a harmless shape, so --worst drops "
+        "exactly the handlers it exists to surface")
+
+
+
+# ── The grid's computed-Greek gate: coverage, not column presence ───────────
+
+def _on_demand_harness(mp, enriched_df):
+    """Drive `_fetch_on_demand` for a COMPUTE_GREEKS ticker with a canned
+    enrichment result, stubbing everything between the AV call and the check."""
+    import pandas as pd
+    sys.path.insert(0, str(REPO / "platform"))
+    import api.routers.grid as grid
+
+    chain = pd.DataFrame({
+        "strike": [100.0, 105.0],
+        "option_type": ["calls", "puts"],
+        "open_interest": [10, 20],
+        "expiration": ["2026-09-18", "2026-09-18"],
+        "gamma": [float("nan"), float("nan")],
+        "vega": [float("nan"), float("nan")],
+    })
+
+    # `_fetch_on_demand` imports these LAZILY inside the function body, so the
+    # source modules have to be patched rather than names on `grid`.
+    import gcp.database as gdb
+    import gcp.fetchers.fetch_av_realtime_options as avrt
+    import lib.options_greeks as og
+
+    mp.setattr(grid, "_AV_API_KEY", "test-key")
+    mp.setattr(grid, "_check_ondemand_rate_limit", lambda *a, **k: None)
+    mp.setattr(avrt, "fetch_av_realtime_options", lambda t, key, ts: chain)
+    mp.setattr(gdb, "is_cloud_sql_configured", lambda: False)
+    mp.setattr(gdb, "upsert_dataframe", lambda *a, **k: None)
+    mp.setattr(og, "enrich_av_chain_with_greeks", lambda df, t, d: enriched_df)
+    return grid
+
+
+def test_all_nan_computed_greeks_do_not_publish_as_realtime(monkeypatch):
+    """The case that defeated the first version of this gate.
+
+    When no spot is derivable, `enrich_av_chain_with_greeks` explicitly ADDS
+    the sidecar columns filled entirely with NaN and returns
+    (lib/options_greeks.py, the `No spot derivable` branch). A check for
+    column PRESENCE therefore passes, the coalesce fills NaN over NaN, and
+    `build_grid_summary` aggregates the misses to zero — publishing a
+    fabricated flat reading labelled `realtime` (Codex, PR #994).
+    """
+    import pandas as pd
+
+    all_nan = pd.DataFrame({
+        "strike": [100.0, 105.0],
+        "option_type": ["calls", "puts"],
+        "open_interest": [10, 20],
+        "expiration": ["2026-09-18", "2026-09-18"],
+        "gamma": [float("nan")] * 2,
+        "vega": [float("nan")] * 2,
+        "delta": [float("nan")] * 2,
+        # The columns exist. Every value is NaN.
+        "gamma_computed": [float("nan")] * 2,
+        "vega_computed": [float("nan")] * 2,
+        "delta_computed": [float("nan")] * 2,
+    })
+
+    with pytest.MonkeyPatch.context() as mp:
+        grid = _on_demand_harness(mp, all_nan)
+        contracts, snap_ts, snap_date = grid._fetch_on_demand("SPX", "1.2.3.4")
+
+    assert contracts == [], (
+        "an all-NaN enrichment was published as a live chain; empty contracts "
+        "is what makes the caller answer `unavailable` instead")
+    assert snap_ts is None and snap_date is None
+
+
+def test_partially_computed_greeks_are_still_published(monkeypatch):
+    """The gate refuses NO measurement, not an imperfect one.
+
+    A chain where some strikes solved carries real information, and refusing
+    it would trade one silent failure for a loud one that is wrong.
+    """
+    import pandas as pd
+
+    partial = pd.DataFrame({
+        "strike": [100.0, 105.0],
+        "option_type": ["calls", "puts"],
+        "open_interest": [10, 20],
+        "expiration": ["2026-09-18", "2026-09-18"],
+        "gamma": [float("nan")] * 2,
+        "vega": [float("nan")] * 2,
+        "delta": [float("nan")] * 2,
+        "gamma_computed": [0.031, float("nan")],
+        "vega_computed": [12.4, float("nan")],
+        "delta_computed": [0.55, float("nan")],
+    })
+
+    with pytest.MonkeyPatch.context() as mp:
+        grid = _on_demand_harness(mp, partial)
+        contracts, _, _ = grid._fetch_on_demand("SPX", "1.2.3.4")
+
+    assert contracts, "a partially solved chain is a real measurement and must publish"
+    assert contracts[0]["gamma"] == pytest.approx(0.031), (
+        "the computed sidecar must be coalesced into the primary column")
+
+
+# ── The backfill job must not report success for an unperformed backfill ────
+
+def _greeks_backfill_module():
+    sys.path.insert(0, str(REPO))
+    import importlib
+    return importlib.import_module("scripts.maintenance.compute_spx_greeks")
+
+
+def _chain_df():
+    import pandas as pd
+    return pd.DataFrame({
+        "strike": [100.0, 105.0],
+        "option_type": ["calls", "puts"],
+        "open_interest": [10, 20],
+        "expiration": ["2026-09-18", "2026-09-18"],
+        "gamma_computed": [None, None],
+    })
+
+
+def test_a_date_that_computes_nothing_is_a_failure_not_a_no_op():
+    """`enrich_av_chain_with_greeks` returns the chain untouched when the rate
+    lookup fails, and `load_chain` already selects the sidecar columns — so
+    `update_computed_columns` rewrote NULL over NULL, returned the full row
+    count, and the Cloud Run job exited 0 reporting a backfill it never
+    performed (Codex, PR #994)."""
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    chain = _chain_df()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: chain)
+        # The untouched-frame case: sidecars still all NULL.
+        mp.setattr(mod, "enrich_av_chain_with_greeks", lambda df, t, s: df)
+        updated: list = []
+        mp.setattr(mod, "update_computed_columns",
+                   lambda df: (updated.append(len(df)), len(df))[1])
+
+        with pytest.raises(mod.GreeksUnavailable, match="0 finite"):
+            mod.process_one_date("SPX", date(2026, 9, 4))
+
+    assert updated == [], (
+        "the UPDATE ran before the check — a job that writes nothing useful "
+        "should not touch the table at all")
+
+
+def test_a_date_with_finite_greeks_still_updates():
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    chain = _chain_df()
+    enriched = chain.copy()
+    enriched["gamma_computed"] = [0.031, 0.028]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: chain)
+        mp.setattr(mod, "enrich_av_chain_with_greeks", lambda df, t, s: enriched)
+        mp.setattr(mod, "update_computed_columns", lambda df: len(df))
+        loaded, n_updated = mod.process_one_date("SPX", date(2026, 9, 4))
+
+    assert (loaded, n_updated) == (2, 2)
+
+
+def test_an_empty_chain_is_still_a_skip_not_a_failure():
+    """No rows for a date is a legitimate no-op — a market holiday, or a date
+    outside the ingested range. Only a NON-empty chain that computes nothing
+    is a failure."""
+    import pandas as pd
+    mod = _greeks_backfill_module()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: pd.DataFrame())
+        assert mod.process_one_date("SPX", date(2026, 9, 4)) == (0, 0)
