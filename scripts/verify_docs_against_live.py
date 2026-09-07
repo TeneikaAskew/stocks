@@ -297,6 +297,27 @@ def _cron_firings(cron: str) -> set[tuple[int, str]]:
             for d in days for h in hours for m in minutes}
 
 
+def _cron_calendar(cron: str) -> tuple[frozenset, frozenset] | None:
+    """(day-of-month set, month set) for a cron, or None if unparseable.
+
+    `_cron_firings` deliberately reduces a cron to weekday and clock, which is
+    what makes an equivalent respelling compare equal. It also discards fields
+    3 and 4 entirely, so `0 5 1 * *` and `0 5 2 * *` were indistinguishable and
+    a monthly or quarterly job could be documented on the wrong day or in the
+    wrong months without a finding (Codex, PR #990). Compared separately rather
+    than folded into the firing tuple, because the clock comparison is
+    deliberately weekday-shaped and widening it would change what "equivalent"
+    means for every daily schedule.
+    """
+    parts = cron.split()
+    if len(parts) != 5:
+        return None
+    try:
+        return frozenset(_expand(parts[2], 1, 31)), frozenset(_expand(parts[3], 1, 12))
+    except ValueError:
+        return None
+
+
 # An explicit, reviewed exemption for a line the heuristics cannot judge: a
 # historical narrative that must keep naming a deleted service, or a count that
 # is deliberately about the repo rather than the live fleet. Placed on the line
@@ -548,6 +569,8 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
         corrects_itself = (ANNOTATED_CORRECTION.search(line)
                            and any(_cron_firings(c) <= live_firings
                                    for c in crons if _cron_firings(c)))
+        live_calendars = [cal for cal in (_cron_calendar(re.sub(r"\s+", " ", m["schedule"]))
+                                          for _, m in running) if cal]
         if not corrects_itself:
             for c in sorted(crons):
                 claimed = _cron_firings(c)
@@ -555,6 +578,15 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
                     out.append(Finding("schedule-drift", rel, i,
                                        f"`{job}` documented as `{c}`, which fires when the "
                                        f"live schedule does not; live: {shown}"))
+                    continue
+                # Same clock and weekday, different calendar: a monthly job
+                # documented on the wrong day of the month, or a quarterly one
+                # in the wrong months.
+                cal = _cron_calendar(c)
+                if claimed and cal and live_calendars and cal not in live_calendars:
+                    out.append(Finding("schedule-drift", rel, i,
+                                       f"`{job}` documented as `{c}`: the clock matches but "
+                                       f"the day-of-month/month fields do not; live: {shown}"))
 
         # Clock claims, checked per day-qualified segment. Within a segment the
         # any-match rule still holds, because an ET column and a UTC column
@@ -671,6 +703,28 @@ COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
      "schedulers", "live Cloud Scheduler jobs"),
     (re.compile(rf"(?:Cloud\s+Run\s+)?jobs{_FMT}\([^)]*?\b{_NUM}\s+live\b", re.I),
      "run_jobs", "live Cloud Run Jobs"),
+    # NOUN FIRST, which is how RUNBOOK.md's recovery tables are written:
+    # `Cloud Run Jobs (27 jobs)` and `Cloud Run Jobs (29)`. Every pattern above
+    # requires the number BEFORE the noun, so a whole table of stale recovery
+    # inventories was unreachable in a file the verifier explicitly scans
+    # (Codex, PR #990).
+    (re.compile(rf"Cloud\s+Run\s+Jobs{_FMT}\(\s*{_NUM}(?:\s+jobs)?\s*[),/]", re.I),
+     "run_jobs", "Cloud Run Jobs"),
+    (re.compile(rf"Cloud\s+Run\s+Services{_FMT}\(\s*{_NUM}\s*[),:]", re.I),
+     "services", "Cloud Run services"),
+    # Secret Manager had NO entry at all: `read_live` collects the secrets and
+    # the run summary prints their count, so the number was measured, carried
+    # and never compared to anything (Codex, PR #990).
+    #
+    # Qualified, like the services pattern above and for the same reason. A
+    # bare "N secrets" is far more often a SUBSET -- "just two secrets" for one
+    # workflow, "6 secrets" for one service -- than a fleet count, and a
+    # checker that flags those is one people stop reading. So the noun has to
+    # be near it, or the claim has to say it is the whole set.
+    (re.compile(rf"Secret\s+Manager[^\n]{{0,120}}?\b{_NUM}\s+secrets\b", re.I),
+     "secrets", "Secret Manager secrets"),
+    (re.compile(rf"\bAll\s+{_NUM}\s+secrets\b", re.I),
+     "secrets", "Secret Manager secrets"),
 )
 
 

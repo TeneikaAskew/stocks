@@ -70,8 +70,14 @@ LIVE = {
             "schedule": "0 7,10,13,17 * * 1-5", "timeZone": "America/New_York",
             "state": "ENABLED", "target_job": "fetch-sec-filings",
         },
+        # Monthly: same clock and weekday set as a wrong day-of-month claim.
+        "av-options-monthly": {
+            "schedule": "0 5 1 * *", "timeZone": "America/New_York",
+            "state": "ENABLED", "target_job": "fetch-av-options-monthly",
+        },
     },
     "run_jobs": ["fetch-market-data", "fetch-top-movers", "fetch-av-options-realtime"],
+    # A monthly entry, for the calendar-field comparison.
     "services": ["solyra-api-prod", "solyra-api-staging"],
     "secrets": ["av-api-key"],
     "queues": ["insight-pipeline-queue"],
@@ -206,6 +212,53 @@ def test_a_one_line_cell_is_not_reported_twice(tmp_path):
         "  └────────────────────────────────────┘",
     ]))
     assert [f.check for f in out] == ["clock-drift"]
+
+
+def test_a_noun_first_job_count_is_read(tmp_path):
+    """`Cloud Run Jobs (27 jobs)` is a count claim too.
+
+    Every pattern required the number BEFORE the noun, which is not how
+    RUNBOOK.md's recovery tables are written, so a whole table of stale
+    inventories was unreachable in a file the verifier explicitly scans
+    (Codex, PR #990).
+    """
+    out = _check(tmp_path, "| **Cloud Run Jobs (27 jobs) + Schedulers (40+)** | 60-90 min |")
+    assert "count-drift" in [f.check for f in out]
+    assert "27" in " ".join(f.detail for f in out)
+
+
+def test_a_secret_count_is_compared_at_all(tmp_path):
+    """`read_live` collected the secrets and nothing ever checked them."""
+    out = _check(tmp_path, "| **Secret Manager (19 secrets)** | 1-4 hours |")
+    assert [f.check for f in out] == ["count-drift"]
+    assert "19" in out[0].detail and "1" in out[0].detail
+
+
+def test_a_subset_of_secrets_is_not_a_fleet_count(tmp_path):
+    """"Just two secrets" for one workflow is not a claim about the project.
+
+    A bare `N secrets` is more often a subset than a fleet count, and a
+    checker that flags those is one people stop reading -- the same reason
+    the services pattern is qualified.
+    """
+    out = _check(tmp_path, "Just two secrets: one for the DB and one for the API key.")
+    assert out == [], [f.detail for f in out]
+
+
+def test_the_calendar_fields_of_a_cron_are_compared(tmp_path):
+    """`0 5 1 * *` and `0 5 2 * *` are not the same schedule.
+
+    Firings are reduced to weekday and clock, which is what makes an
+    equivalent respelling compare equal -- and it discarded day-of-month and
+    month entirely, so a monthly job could be documented on the wrong day
+    (Codex, PR #990).
+    """
+    out = _check(tmp_path, "| `fetch-av-options-monthly` | `0 5 2 * *` |")
+    assert [f.check for f in out] == ["schedule-drift"]
+    assert "day-of-month" in out[0].detail
+
+    # The live spelling itself must stay clean.
+    assert _check(tmp_path, "| `fetch-av-options-monthly` | `0 5 1 * *` |") == []
 
 
 def test_secret_named_as_infrastructure_is_known(tmp_path):

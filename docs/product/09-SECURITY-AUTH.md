@@ -283,6 +283,7 @@ Its **secret access is secret-scoped, not project-level**:
 `roles/secretmanager.secretAccessor` bound on `trading-db-pass` and
 `av-api-key` individually, which is what lets the `--set-secrets` mounts in
 `platform/deploy.sh` resolve at container start. It holds no project-wide
+<!-- verify-docs-ok: "those two secrets" is this service account's REACH, not the fleet count -- the whole point of the sentence is that it is a subset -->
 Secret Manager role, so its reach is those two secrets rather than every secret
 in the project — worth stating positively, since a reader auditing blast radius
 from the project-level list alone would see no secret capability at all and

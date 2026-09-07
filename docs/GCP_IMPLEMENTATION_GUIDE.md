@@ -774,7 +774,7 @@ All sources are normalized to canonical names before returning:
 | Cron Triggers | Cloud Scheduler | 21 triggers | All America/New_York timezone |
 | Container Images | Artifact Registry | `trading/trading-system` | us-east1 |
 | Build | Cloud Build | (default) | `gcloud builds submit` |
-| Secrets | Secret Manager | 6 secrets | See §14 |
+| Secrets | Secret Manager | 22 secrets | See §14 |
 | Identity | IAM Service Account | `trading-runner@PROJECT.iam` | Least-privilege roles |
 
 ### Service Account Roles
@@ -1537,7 +1537,7 @@ done
 | Cloud Run Job | signal-monitor, 8h timeout, 0 retries, scheduled daily | ~$3/mo |
 | Cloud Storage | ~50 GB + 15 write ops/day | ~$2/mo |
 | Cloud Scheduler | 21 triggers × ~20 weekdays/mo | ~$0.21/mo |
-| Secret Manager | 6 secrets × ~100 accesses/day | ~$0.06/mo |
+| Secret Manager | 22 secrets × ~100 accesses/day | ~$0.20/mo |
 | Artifact Registry | ~1 GB images | ~$0.10/mo |
 | Cloud Build | ~1 build/week × 5 min | ~$0.25/mo |
 | **Total** | | **~$38/mo** |

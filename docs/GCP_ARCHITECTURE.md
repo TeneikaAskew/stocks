@@ -73,7 +73,7 @@ flowchart LR
     SVC3[Cloud Run Service:<br/>failure-notifier]:::gcp
     GCS[GCS<br/>raw parquets,<br/>archives]:::gcp
     SQL[(Cloud SQL Postgres 15<br/>trading-db<br/>39 tables)]:::db
-    SECR[Secret Manager<br/>~20 secrets]:::gcp
+    SECR[Secret Manager<br/>22 secrets]:::gcp
     PS[Pub/Sub<br/>gcp-job-failures]:::gcp
     LG[Cloud Logging<br/>sink on ERROR]:::gcp
     VAI[Vertex AI<br/>Gemini Flash + embeddings]:::ext
@@ -131,7 +131,7 @@ Every GCP service the system actually uses, with the role it plays.
 | **Cloud Storage (GCS)** | Raw parquet archives, daily snapshots, archived Yahoo data. Bucket lifecycle rule moves old objects to nearline. | ✅ 5 GB-month free |
 | **Pub/Sub** | Single topic `gcp-job-failures` + DLQ for the failure pipeline. | ✅ 10 GB/mo free, low traffic |
 | **Cloud Logging** | Captures every job's stdout/stderr; ERROR-level entries trigger the Pub/Sub sink. | ✅ 50 GB/mo free, well under |
-| **Secret Manager** | All credentials (DB pass, API keys, Discord tokens, GitHub PAT). | ⚠️ 6 free; 20 secrets ≈ $0.84/mo |
+| **Secret Manager** | All credentials (DB pass, API keys, Discord tokens, GitHub PAT). | ⚠️ 6 free; 22 secrets ≈ $0.96/mo |
 | **IAP (Identity-Aware Proxy)** | Auto-managed IAP gates the solyra-api-prod service to bictech.org Google identities. | ✅ Free (auto-managed mode) |
 | **Cloud Tasks** | One queue `insight-pipeline-queue` — used by the platform's "Refresh insight" button to enqueue per-ticker runs without blocking the request. | ✅ 1M ops/mo free |
 | **Vertex AI** | Gemini 2.0 Flash for the brief's per-ticker explanations and the AI Insight pipeline persona LLMs. `text-embedding-005` for journal-entry embeddings. | ⚠️ Pay-per-token; ~$3–5/mo at current usage |
@@ -697,7 +697,7 @@ Estimated monthly run-rate at current usage. **Cloud SQL is ~70% of the bill.**
 | Cloud Run Jobs vCPU + memory | **$1–5** | Slight overage on the 180k vCPU-sec free tier; biggest consumers are signal-monitor (8 hr/day) and historical-signals-watchlist |
 | Cloud Run Services | **$0–1** | All min-instances=0, near-zero idle cost |
 | Vertex AI Gemini Flash | **$3–5** | Per-brief ~$0.005, per-insight ~$0.10. Can be killed via `BRIEF_LLM_DISABLE=1` |
-| Secret Manager (20 secrets, 6 free) | **$0.84** | $0.06/secret-version-month |
+| Secret Manager (22 secrets, 6 free) | **$0.96** | $0.06/secret-version-month |
 | Cloud Storage (under 5 GB) | **$0–1** | Within free tier |
 | Pub/Sub | **$0** | Way under 10 GB/mo free |
 | Cloud Logging | **$0–2** | Under 50 GB/mo free |
