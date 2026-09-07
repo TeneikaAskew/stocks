@@ -96,7 +96,16 @@ def _source_files() -> list[pathlib.Path]:
     # YAML and Dockerfiles are where a `TZ: US/Eastern` or `ENV TZ=EST` would
     # live, and neither was scanned -- the guard's docstring says
     # repository-wide (Codex, PR #993).
-    for pattern in ("*.py", "*.sql", "*.sh", "*.yml", "*.yaml", "Dockerfile*"):
+    # `.env.example` is tracked and is what people copy into `.env`, so a
+    # legacy or fixed zone shipped there is distributed to every developer
+    # while both guards pass (Codex, PR #993).
+    #
+    # The TEMPLATES only, never a bare `.env`: that file is gitignored and
+    # local, so scanning it would make this suite report findings that depend
+    # on the machine it runs on -- the environment-dependence #999 spent a
+    # round removing from the route table.
+    for pattern in ("*.py", "*.sql", "*.sh", "*.yml", "*.yaml", "Dockerfile*",
+                    ".env.example", ".env.*.example", "*.env.example"):
         for p in REPO.rglob(pattern):
             if SKIP_DIRS & set(p.relative_to(REPO).parts):
                 continue
@@ -160,8 +169,13 @@ ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 # YAML, which is precisely what the ambiguous names are kept context-gated to
 # avoid (Codex, PR #993).
 _B = r"(?<![A-Za-z0-9_])"
+# YAML quotes a key as readily as it leaves it bare, and the quote sits
+# between the key and the colon: `"TZ": "EST"` matched no context at all,
+# in exactly the file types this scan was widened to cover (Codex, PR #993).
+_Q = r"[\"']?\s*"
 _TZ_CONTEXT = (
-    _B + r"tz\s*[:=]|" + _B + r"tzinfo\s*[:=]|" + _B + r"time_?zone\s*[:=]|"
+    _B + r"tz" + _Q + r"[:=]|" + _B + r"tzinfo" + _Q + r"[:=]|"
+    + _B + r"time_?zone" + _Q + r"[:=]|"
     + _B + r"time-zone[:= ]|" + _B + r"ZoneInfo\s*\(|"
     + _B + r"pytz\.timezone\s*\(|" + _B + r"tz_convert\s*\(|"
     + _B + r"tz_localize\s*\(|" + _B + r"AT TIME ZONE\s*|"
@@ -263,13 +277,17 @@ NONPY_FIXED_OFFSET = re.compile(
 # it is only the bare `EST`/`EDT` tokens that need the stronger context.
 _TZ_CALLS_SPECIFIC = {"ZoneInfo", "tz_localize", "tz_convert", "astimezone",
                       "Timestamp", "gettz", "FixedOffset", "tzoffset"}
-_TZ_CALLS_GENERIC = {"timezone", "localize", "now"}
+# `no_cache` is ZoneInfo's alternate constructor and returns the same object
+# without the module cache; generic because plenty of unrelated APIs have a
+# method by that name, so its RECEIVER is what makes it a timezone context
+# (Codex, PR #993).
+_TZ_CALLS_GENERIC = {"timezone", "localize", "now", "no_cache"}
 _TZ_CALLS = _TZ_CALLS_SPECIFIC | _TZ_CALLS_GENERIC
 # Receivers that make a generic name specific. Alias-resolved, so
 # `import pytz as p` still reaches `pytz` -- and read as the LAST attribute of
 # the chain, so `pd.Timestamp.now(...)` resolves to `Timestamp`.
 _TZ_RECEIVERS = {"pytz", "tz", "dateutil", "pd", "pandas", "datetime",
-                 "Timestamp", "zoneinfo"}
+                 "Timestamp", "zoneinfo", "ZoneInfo"}
 
 # Constructors whose numeric argument IS the offset, in MINUTES.
 # `pytz.FixedOffset(-300)` is a fixed UTC-5 zone -- right for Eastern in
@@ -598,8 +616,17 @@ def _local_attrs(scope: ast.AST) -> dict[str, dict[str, ast.AST]]:
     default to file-wide, which is why they are now built by one descent.
     """
     out: dict[str, dict[str, ast.AST]] = {}
+    # Two `class Settings` in ONE scope are still two classes. Merging their
+    # bodies by name made the later one overwrite the earlier, so a call
+    # between them resolved to the wrong body -- a miss in one order and a
+    # false finding in the reverse, which is the same pair the cross-scope fix
+    # closed and this one did not (Codex, PR #993). Which definition is in
+    # effect at a given line is a flow question, so a conflicted name resolves
+    # to nothing, exactly as `_local_aliases` handles two imports of one name.
+    seen_classes: dict[str, int] = {}
     for node in _scope_nodes(scope):
         if isinstance(node, ast.ClassDef):
+            seen_classes[node.name] = seen_classes.get(node.name, 0) + 1
             body = _collect_bindings(_scope_nodes(node), {})
             if body:
                 out.setdefault(node.name, {}).update(body)
@@ -613,6 +640,9 @@ def _local_attrs(scope: ast.AST) -> dict[str, dict[str, ast.AST]]:
                 if (isinstance(tgt, ast.Attribute)
                         and isinstance(tgt.value, ast.Name)):
                     _keep(out.setdefault(tgt.value.id, {}), tgt.attr, v)
+    for name, count in seen_classes.items():
+        if count > 1:
+            out.pop(name, None)
     return out
 
 
@@ -971,13 +1001,9 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
 
     reported: set[int] = set()
-    # A binding can only hold a constant or a constructor call, so a chain is
-    # short by construction and cannot cycle. The cap is a guard against a
-    # future binding kind that could, not a limit anything hits today.
-    _MAX_FOLLOW_DEPTH = 4
 
     def follow(bucket_legacy, bucket_offsets, node, arg, env, where,
-               ambiguous_ok=True, depth=0):
+               ambiguous_ok=True, depth=0, seen=None):
         """Report `arg` when it is, or resolves to, a legacy zone or offset.
 
         `ambiguous_ok=False` drops the bare `EST`/`EDT` tokens, for a call
@@ -1016,7 +1042,18 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # `OFFSET = timedelta(hours=-5); timezone(OFFSET)` invisible: the
         # binding held no string, so there was nothing to compare
         # (Codex, PR #993).
-        if depth < _MAX_FOLLOW_DEPTH:
+        # Cycle detection, not a hop count. The cap here was 4, justified in a
+        # comment saying a binding could only hold a constant or a constructor
+        # call so a chain was short by construction -- and the same commit
+        # started retaining `ast.Name` bindings, which made that sentence false
+        # as I wrote it. `A="EST"; B=A; ...; F=E; ZoneInfo(F)` then hit the cap
+        # and reported nothing (Codex, PR #993). A configuration alias chain has
+        # no natural length; what it cannot do is revisit a node, and that is
+        # the thing worth bounding.
+        if seen is None:
+            seen = set()
+        if id(arg) not in seen:
+            seen = seen | {id(arg)}
             target = label = None
             if (isinstance(arg, ast.Attribute)
                     and isinstance(arg.value, ast.Name)):
@@ -1028,7 +1065,19 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             if target is not None:
                 return follow(bucket_legacy, bucket_offsets, node, target, env,
                               lambda shown, l=label: where(f"{l} (= {shown})"),
-                              ambiguous_ok, depth + 1)
+                              ambiguous_ok, depth + 1, seen)
+
+        # A statically present branch is a value this expression can take, so
+        # `ZoneInfo("EST" if legacy else "America/New_York")` really can build
+        # the frozen zone -- and the standalone scan deliberately ignores the
+        # ambiguous literal, so nothing else would have caught it (Codex,
+        # PR #993). Both branches are followed; either one reporting is enough.
+        if isinstance(arg, ast.IfExp):
+            hit = False
+            for branch in (arg.body, arg.orelse):
+                hit |= follow(bucket_legacy, bucket_offsets, node, branch, env,
+                              where, ambiguous_ok, depth + 1, seen)
+            return hit
         return False
 
     for node in ast.walk(tree):
@@ -2583,3 +2632,99 @@ def test_a_timezone_array_must_be_defined_before_it_is_expanded():
     before = "deploy() {\n" + define + cmd + "}\n"
     assert not _scheduler_offenders("deploy", before), (
         "the ordinary define-then-use order must still be accepted")
+
+
+def test_an_alias_chain_has_no_length_limit():
+    """The hop cap was justified by an invariant the same commit broke.
+
+    It said a binding could only hold a constant or a constructor call, so a
+    chain was short by construction — and that commit started retaining
+    `ast.Name` bindings, making the sentence false as it was written. A
+    six-hop configuration chain then hit the cap and reported nothing
+    (Codex, PR #993). Cycle detection replaces it: a chain has no natural
+    length, but it cannot revisit a node.
+    """
+    chain = 'A = "EST"\nB = A\nC = B\nD = C\nE = D\nF = E\nZoneInfo(F)\n'
+    assert _hits(chain)[0], _hits(chain)
+
+    # A cycle terminates rather than recursing forever.
+    assert _hits('A = B\nB = A\nZoneInfo(A)\n') == ([], [])
+
+
+def test_both_branches_of_a_conditional_are_values_it_can_take():
+    """`ZoneInfo("EST" if legacy else "America/New_York")` builds the frozen
+    zone on one path, and the standalone scan deliberately ignores the
+    ambiguous literal, so nothing else would catch it (Codex, PR #993)."""
+    assert _hits('ZoneInfo("EST" if legacy else "America/New_York")\n')[0]
+    assert _hits('ZoneInfo("America/New_York" if x else "US/Eastern")\n')[0]
+    assert _hits('tz = timezone(timedelta(hours=-5) if x else UTC)\n')[1]
+
+    # Neither branch legacy, and the conditional itself is not a context.
+    assert _hits('ZoneInfo("UTC" if x else "America/New_York")\n') == ([], [])
+    assert _hits('label = "EST" if x else "EDT"\n') == ([], [])
+
+
+def test_two_classes_of_one_name_in_one_scope_resolve_to_neither():
+    """Merging their bodies by name let the later overwrite the earlier.
+
+    The cross-scope fix keyed by object name and scope, which still merges two
+    definitions inside ONE scope: a call between them resolved to the wrong
+    body — a miss in one order and a false finding in the reverse (Codex,
+    PR #993).
+
+    A conflicted name now resolves to nothing, the same way `_local_aliases`
+    treats one name imported from two modules. That closes the false finding
+    and leaves the miss: which definition is in effect at a line is a flow
+    question, and resolving it needs positional attribute lookup that would
+    change every attribute resolution in the file for a shape as unusual as
+    two same-named classes in one scope.
+    """
+    est_first = ('class Settings:\n    tz = "EST"\n'
+                 'ZoneInfo(Settings.tz)\n'
+                 'class Settings:\n    tz = "UTC"\n')
+    utc_first = ('class Settings:\n    tz = "UTC"\n'
+                 'ZoneInfo(Settings.tz)\n'
+                 'class Settings:\n    tz = "EST"\n')
+    assert _hits(utc_first) == ([], []), (
+        "the later body's EST was attributed to a call that reads the "
+        f"earlier body's UTC: {_hits(utc_first)}")
+    assert _hits(est_first) == ([], []), _hits(est_first)
+
+    # One definition per scope still resolves, which is the case that matters.
+    assert _hits('class Settings:\n    tz = "EST"\nZoneInfo(Settings.tz)\n')[0]
+
+
+def test_the_uncached_zoneinfo_constructor_is_still_a_constructor():
+    """`ZoneInfo.no_cache("EST")` returns the same frozen zone; bypassing the
+    cache must not also bypass the guard (Codex, PR #993)."""
+    assert _hits('ZoneInfo.no_cache("EST")\n')[0]
+    assert _hits('from zoneinfo import ZoneInfo\nZoneInfo.no_cache("-05:00")\n')[1]
+    # Generic on its own: an unrelated `no_cache` is not a timezone context.
+    assert _hits('store.no_cache("EST")\n') == ([], [])
+
+
+def test_quoted_yaml_keys_are_timezone_keys():
+    """YAML quotes a key as readily as it leaves it bare, and the quote sits
+    between the key and the colon (Codex, PR #993)."""
+    for line in ('  "TZ": "EST"', "  'timezone': 'EDT'", '  "tz": EST'):
+        assert NONPY_AMBIGUOUS.search(line), line
+    assert NONPY_FIXED_OFFSET.search("  'timezone': '-05:00'")
+    # The bare form still works, and an unrelated quoted key is not a context.
+    assert NONPY_AMBIGUOUS.search("  TZ: EST")
+    assert not NONPY_AMBIGUOUS.search('  "quartz": EST')
+
+
+def test_tracked_dotenv_templates_are_scanned():
+    """`.env.example` is tracked and is what people copy into `.env`, so a
+    legacy zone shipped there reaches every developer (Codex, PR #993).
+
+    Templates only. A bare `.env` is gitignored and local, so scanning it
+    would make this suite report findings that depend on the machine it runs
+    on — the environment-dependence #999 spent a round removing.
+    """
+    scanned = {p.name for p in _source_files()}
+    assert any(n.startswith(".env") and n.endswith(".example") for n in scanned), (
+        f"no dotenv template in the scan: {sorted(n for n in scanned if 'env' in n)}")
+    assert ".env" not in scanned, (
+        "a bare .env is local and gitignored; scanning it makes this suite "
+        "depend on the machine it runs on")
