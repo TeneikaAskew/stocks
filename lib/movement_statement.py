@@ -270,7 +270,8 @@ def _reach_rate_sql(side: str) -> str:
     """Per-slot UNCONDITIONAL population reach-rates for one side.
 
     For each slot the denominator is the resolved rows where that slot AND
-    every slot before it had a real price at least one cent beyond its
+    every slot before it, the trigger included (measured against the row's
+    own `price` anchor), had a real price at least one cent beyond its
     predecessor on the trade's side, and the numerator is those rows where the
     slot's hit timestamp is set. Two things this deliberately does NOT do:
 
@@ -288,10 +289,19 @@ def _reach_rate_sql(side: str) -> str:
     price = {k: f"{side}_{k}_price" for k in _REACH_SLOTS}
     hit = {k: f"{side}_{k}_hit_ts" for k in _REACH_SLOTS}
     parts = []
-    cond = None
+    # Seed with the row's own anchor: identify_triggers now refuses a trigger
+    # on the anchor's cent, so a legacy row whose persisted trigger rounds to
+    # the same cent as its `price` would have promoted its t1 to trigger under
+    # the current builder. Such rows are out of every population rather than
+    # counted with shifted ordinals (Codex P2 on #1030, round 8).
+    a0, b0 = (price["trigger"], "price") if side == "calls" else ("price", price["trigger"])
+    cond = (
+        f"{_finite('price')} AND {_finite(price['trigger'])} AND "
+        f"round({a0}::numeric, 2) - round({b0}::numeric, 2) >= {_LEVEL_PRICE_TOL}"
+    )
     for k in _REACH_SLOTS:
         this = _finite(price[k])
-        if cond is not None:
+        if k != "trigger":
             # "Beyond" by at least one cent, and CUMULATIVE: slot k is in its
             # population only if every earlier slot on the row was a distinct
             # line too. A legacy row trigger=100, t1=100, t2=101 would
@@ -303,8 +313,7 @@ def _reach_rate_sql(side: str) -> str:
             prev = _REACH_SLOTS[_REACH_SLOTS.index(k) - 1]
             a, b = (price[k], price[prev]) if side == "calls" else (price[prev], price[k])
             gap = f"round({a}::numeric, 2) - round({b}::numeric, 2) >= {_LEVEL_PRICE_TOL}"
-            this = f"{cond} AND {this} AND {gap}"
-        cond = this
+            cond = f"{cond} AND {this} AND {gap}"
         parts.append(f"COUNT(*) FILTER (WHERE {cond}) AS {k}_n")
         parts.append(f"COUNT(*) FILTER (WHERE {cond} AND {hit[k]} IS NOT NULL) AS {k}_hits")
     return (
@@ -377,7 +386,7 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
     there is no row for today and every rung reports that honestly.
     """
     sql = (
-        "SELECT analysis_date, "
+        "SELECT analysis_date, price, "
         + ", ".join(f"{s}_{k}_price" for s in ("calls", "puts") for k in _REACH_SLOTS)
         + " FROM premarket_analysis WHERE ticker = :ticker AND analysis_date = :d LIMIT 1"
     )
@@ -405,7 +414,11 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
         # changes what a legacy session row matches.
         beyond = (lambda a, b: a > b) if side == "calls" else (lambda a, b: a < b)
         out: list = []
-        last_c = None
+        # Seed with the row's own anchor when it is a real number, so a legacy
+        # trigger on the anchor's cent is skipped and its t1 promoted, as the
+        # current identify_triggers would have built the row (round 8).
+        anchor = row.get("price")
+        last_c = _cents(anchor) if anchor is not None and anchor == anchor else None
         for k in _REACH_SLOTS:
             v = row.get(f"{side}_{k}_price")
             # NaN-safe without pandas: NaN != NaN.

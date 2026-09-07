@@ -97,12 +97,12 @@ SESSION = date_type(2026, 6, 20)
 
 
 def _tracked_df(calls=(101.0, 102.0, 103.0, 104.0), puts=(99.0, 98.0, 97.0, 96.0),
-                analysis_date=SESSION):
+                analysis_date=SESSION, price=100.0):
     """The premarket_analysis row for the ladder's session, as
     _fetch_tracked_levels reads it. Defaults line up with _sample_level_map:
     PDH 101 == calls trigger, PWH 102 == calls t1, PMH 103 == calls t2;
     PDL 99 == puts trigger, PWL 98 == puts t1."""
-    row = {"analysis_date": analysis_date}
+    row = {"analysis_date": analysis_date, "price": price}
     for side, prices in (("calls", calls), ("puts", puts)):
         for k, v in zip(("trigger", "t1", "t2", "t3"), prices):
             row[f"{side}_{k}_price"] = v
@@ -694,6 +694,12 @@ def test_reach_rate_sql_excludes_zero_distance_and_nan_targets():
     # the t1 gap too, so a legacy trigger=100/t1=100/t2=101 row (where 101 is
     # really the first target) is out of every downstream slot, not just t1.
     g = lambda a, b: f"round({a}::numeric, 2) - round({b}::numeric, 2) >= 0.01"  # noqa: E731
+    # Seeded with the row's own anchor: a legacy trigger on the price's cent
+    # (which identify_triggers no longer produces) takes the row out of every
+    # population, trigger included.
+    trig_pop = calls.split("AS trigger_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
+    assert g("calls_trigger_price", "price") in trig_pop
+    assert g("price", "puts_trigger_price") in puts.split("AS trigger_n")[0]
     assert g("calls_t1_price", "calls_trigger_price") in calls
     assert g("calls_t2_price", "calls_t1_price") in calls
     assert g("calls_t3_price", "calls_t2_price") in calls
@@ -704,6 +710,7 @@ def test_reach_rate_sql_excludes_zero_distance_and_nan_targets():
     assert g("calls_t2_price", "calls_t1_price") in t2_pop
     t3_pop = calls.split("AS t3_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
     assert g("calls_t1_price", "calls_trigger_price") in t3_pop
+    assert g("calls_trigger_price", "price") in t3_pop
     for sql in (calls, puts):
         assert "<> 'NaN'::float8" in sql
         # unconditional: no `WHERE ..._trigger_hit_ts IS NOT NULL` gate
@@ -856,12 +863,34 @@ def test_legacy_session_row_slots_are_remapped_to_distinct_ordinals(monkeypatch)
     )
     qf = _make_query_fn(
         _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
-        tracked_df=_tracked_df(calls=(100.0, 100.0, 101.0, 102.0)),
+        # price=99.0: the row's own anchor sits below the trigger, so the
+        # trigger itself is kept and only the duplicate t1 collapses.
+        tracked_df=_tracked_df(calls=(100.0, 100.0, 101.0, 102.0), price=99.0),
     )
     out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
     calls = out["levels"]["calls"]
     assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1", "t2"]
     assert [c["reach_rate"]["hits"] for c in calls] == [40, 25, 17]
+
+
+def test_legacy_trigger_on_the_rows_own_cent_is_skipped(monkeypatch):
+    """A legacy row persisted a trigger on the same cent as its own premarket
+    price (100.004 vs 100.0041); identify_triggers no longer does that and
+    would have made 101.00 the trigger. The tracked slots are seeded with the
+    row's anchor so 101.00 tracks as `trigger`, not `t1` (Codex P2 on #1030,
+    round 8)."""
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 101.0, "day", 1.0), _level("PWH", 102.0, "week", 2.0)],
+        put_levels=[], current_price=100.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(100.0041, 101.0, 102.0, 103.0), price=100.004),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1"]
+    assert calls[0]["reach_rate"]["hits"] == 40
 
 
 def test_match_compares_integer_cents_not_a_float_threshold(monkeypatch):
