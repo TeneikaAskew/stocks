@@ -86,14 +86,27 @@ automatically and a stale draft PR is the usual reason two branches diverge:
 ```bash
 git fetch origin
 git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
-# and: mcp__github__search_pull_requests q="repo:TeneikaAskew/stocks <issue-number>"
+# and: mcp__github__search_pull_requests
+#        q="repo:TeneikaAskew/stocks is:open <issue-number>"
+# `is:open` matters: without it the search returns closed and merged PRs
+# too, and CASE A below would check out a dead PR's retained branch and
+# push commits that can never reach the merge gate. Confirm the state of
+# whichever PR you pick before reusing its head.
 ```
 
 **Branch before touching any file** (CLAUDE.md Rule 2), and the two cases are
 exclusive. Check out the existing head, or create a branch, never both:
 
+**A dirty worktree stops you here.** Ordinary `checkout` preserves
+non-conflicting local edits, so uncommitted work from another task follows you
+onto the issue branch: Phase 5 then tests a mixed candidate, and Phase 7's
+file-level `git add` can commit hunks that have nothing to do with this issue.
+If `git status --porcelain` is not empty, stop and ask whether to stash or
+commit it. Never `checkout -f`, which discards it.
+
 ```bash
-git status && git rev-parse --abbrev-ref HEAD
+git status --porcelain           # must be empty before going further
+git rev-parse --abbrev-ref HEAD
 git fetch origin
 
 # CASE A — a PR already exists for this issue (including an auto-created
@@ -251,6 +264,18 @@ one. While writing, the standing gates:
   or resolver pipeline.
 - **Rule 5** — financial math lives in `lib/` and is exposed via FastAPI. Do not
   recompute it in the frontend.
+- **Rule 6 — a shape change is TWO change sets, and every phase below is
+  written for one.** If this fix changes a response shape, the solyra edits are
+  not a footnote: that repo needs its own branch, commit, PR and review, while
+  the phases after this one only ever track the stocks checkout and one PR
+  number. Carry both explicitly, or the backend merges while the frontend sits
+  uncommitted against a contract it no longer matches.
+
+  Concretely: open the solyra PR in the same session, name each PR in the
+  other's description, and merge **stocks first, then solyra**, because the
+  snapshot solyra vendors is read from stocks `main`. If you cannot do the
+  solyra half now, do not merge the stocks half either; say what is
+  outstanding.
 - **Rule 6** — a response shape change means: regenerate
   `platform/api/openapi.json` (`python scripts/export_openapi.py`), then on the
   solyra side `npm run contract:sync` plus the `src/types/` and fixture update,
@@ -289,7 +314,7 @@ changed:
 |---|---|
 | Signal, indicator, strategy or fire-path code | `python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. Hermetic, in-process, and the production path per Rule 3.6, so it runs YOUR tree. |
 | Brief or insight code | The as-of entrypoints in-process (`BRIEF_AS_OF`, `INSIGHT_AS_OF`) against the local tree, same reason. |
-| A Cloud Run Job's own behaviour, sizing or schedule | Build and deploy the candidate first (`gcloud builds submit`, then point the job at that digest), and only then execute. Say which digest you ran. |
+| A Cloud Run Job's own behaviour, sizing or schedule | Build the candidate and run it **somewhere that is not the live job**: `gcloud builds submit`, then a throwaway `<job>-candidate` pointed at that digest, or the staging service. Say which digest ran and where. |
 | API handler code | The hermetic suite plus a local `uvicorn`; the deployed service is not carrying your change yet. |
 | A query plan | `EXPLAIN (ANALYZE, BUFFERS)` runs against live data and is independent of any deploy, so it is valid now. |
 
@@ -405,6 +430,15 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    procedure requires converting it once fixed. Either mark it ready or stop
    and say it needs a human to.
 7. Only then CI green on the current head, and no merge conflict.
+8. **Merge it.** Steps 1-7 are the gate, not the destination; stopping here
+   leaves the fix on a branch while Phase 9 describes the issue as landed.
+   Merge once every step above passes, and record the merge commit in the
+   Phase 9 status comment.
+
+   Two cases where you stop instead of merging, and say which: the PR is one
+   this session did not open and was not asked to drive, so the merge is its
+   author's call; or the user has said they want to merge it themselves. Never
+   merge to get past a step above that has not passed.
 
 **A completed review with no findings posts no review at all** — Codex reacts
 👍 instead. So `get_reviews` cannot by itself distinguish "reviewed clean" from

@@ -144,9 +144,12 @@ body:
       label: Evidence attestation
       options:
         - label: >-
-            The freshness, scheduler, and execution state above were read from
-            the live system while filing this issue, not from a doc, a code
-            comment, or a previous session's notes.
+            Every piece of live state I reported above — whichever of freshness,
+            scheduler and execution history this surface actually has — was read
+            from the live system while filing, not from a doc, a code comment,
+            or a previous session's notes. A code-only surface with no writer,
+            schedule or execution history is filed with those marked n/a, and
+            the importer search below is then the evidence.
           required: true
         - label: >-
             The consumer search covered both repos, and I have said so if I

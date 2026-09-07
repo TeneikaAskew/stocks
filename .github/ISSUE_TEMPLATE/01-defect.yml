@@ -23,12 +23,17 @@ body:
   - type: textarea
     id: summary
     attributes:
-      label: Summary
-      description: What is wrong. One or two sentences, stating the defect rather than the symptom.
+      label: Summary and provenance
+      description: What is wrong, stated as the defect rather than the symptom. Then where it came from, and whether it is a regression.
       placeholder: |
         `lib/options_greeks.py::get_rate_and_yield` substitutes fixed risk-free and
         dividend rates on import, query, or missing-row failures, with no freshness
         gate. Gamma-flip computation consumes the same path.
+
+        Provenance: found by Codex on #933 at commit 7b82f10. NOT a regression that
+        PR introduced — daily_trades has had this property since long before it; the
+        new ceilings inherit it. (#940 was split out of a review this way, rather
+        than patched in place, because the fix exceeded that PR's scope.)
     validations:
       required: true
 
@@ -36,7 +41,7 @@ body:
     id: evidence
     attributes:
       label: Evidence from the live system
-      description: Paste the command AND its output together, from the live system. See the worked example below.
+      description: Command AND output together. Where you characterise a population, include the grouped counts, not MIN/MAX.
       render: shell
       placeholder: |
         $ ./scripts/db_query_cr.sh -q "SELECT max(analysis_date), current_date - max(analysis_date), count(*) FROM playbook_cards"
@@ -44,19 +49,15 @@ body:
 
         $ gcloud scheduler jobs list --location=us-east1 --filter="name~phase6"
         Listed 0 items.
-    validations:
-      required: true
 
-  - type: textarea
-    id: distribution
-    attributes:
-      label: Distribution, where you are characterising data
-      description: If this issue claims what a table or population looks like, paste grouped counts, not MIN/MAX. Otherwise write "n/a".
-      render: shell
-      placeholder: |
+        # Characterising data? Show the distribution. An aggregate hid a second
+        # timestamp convention in market_data_intraday and the conclusion had
+        # to be reverted:
         $ ./scripts/db_query_cr.sh -q "SELECT extract(hour from ts) h, count(*), min(ts::date), max(ts::date) FROM market_data_intraday WHERE ticker='IWM' GROUP BY 1 ORDER BY 1"
         4 | 5636 | 2016-12-13 | 2026-09-04
         5 | 4887 | 2026-04-06 | 2026-09-04
+    validations:
+      required: true
 
   - type: textarea
     id: current-expected
@@ -140,18 +141,6 @@ body:
         - A decision recorded on the 54 historical rows (corrected or nulled).
     validations:
       required: true
-
-  - type: textarea
-    id: provenance
-    attributes:
-      label: Provenance
-      description: >-
-        Where this came from, and whether it is a regression. #940 was split out
-        of a review on #933 rather than patched there because the fix exceeded
-        that PR's scope, and said so.
-      placeholder: |
-        Found by Codex on #933 at commit 7b82f10. Not a regression introduced by that PR:
-        daily_trades has had this property since long before it; the new ceilings inherit it.
 
   - type: checkboxes
     id: attestation
