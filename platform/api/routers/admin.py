@@ -1053,6 +1053,14 @@ class AdminDataSourceRow(BaseModel):
 
 class AdminDataSourcesResponse(BaseModel):
     sources: list[AdminDataSourceRow]
+    # Mirrors `FreshnessResponse`: this view is a regrouping of that report,
+    # so when the report is a stale one served during a refresh, this view is
+    # stale too. Deriving the displayed statuses from the `tables` rows alone
+    # meant an expired report whose last status was "ok" was presented here as
+    # current and healthy -- a stale value shown as live, which is the shape
+    # Rule 3.7 forbids (Codex, PR #991).
+    stale: Optional[bool] = None
+    stale_age_seconds: Optional[int] = None
 
 
 class DataSourceRefreshResponse(BaseModel):
@@ -1228,7 +1236,14 @@ def admin_list_data_sources(request: Request):
             sources.append(
                 _aggregate_source(table, {"label": table, "category": "other", "job": None}, rows)
             )
-    return AdminDataSourcesResponse(sources=sources)
+    return AdminDataSourcesResponse(
+        sources=sources,
+        # Carried through rather than recomputed: the audit decides whether
+        # what it handed back is current, and this endpoint has no way to know
+        # otherwise. Absent when the report is fresh.
+        stale=report.get("stale"),
+        stale_age_seconds=report.get("stale_age_seconds"),
+    )
 
 
 # One dispatch per job per cooldown window — a double-clicked button must

@@ -217,12 +217,20 @@ def get_catalyst_events(
             if mine:
                 events = _fetch_live_events(d_from, d_to, ticker_list)
             else:
-                _CATALYST_FLIGHT.wait(flight_key, _CATALYST_WAIT_S)
+                finished = _CATALYST_FLIGHT.wait(flight_key, _CATALYST_WAIT_S)
                 # Re-read: a claimant that finished inside the wait has just
                 # written the file, in which case this request pays nothing.
                 cached = _load_cached_events()
                 events = cached.get("events") if cached else None
-                if events is None:
+                # `finished` decides the provenance, not `events is not None`.
+                # A decliner whose wait TIMED OUT reads the pre-refresh file,
+                # so `events` is non-null and the response used to name
+                # Benzinga unconditionally -- meaning a caller that explicitly
+                # asked for `refresh=true` could not tell a completed refresh
+                # from the data it already had (Codex, PR #991). That is the
+                # same fabricated provenance the in-flight label was added to
+                # remove, one branch along.
+                if events is None or not finished:
                     benzinga_pending = True
                     logger.info(
                         "catalysts: a fetch for %s..%s is still in flight; "

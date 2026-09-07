@@ -123,11 +123,6 @@ _ALL_RUNS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=600)
 # moved to the threadpool — the `async def` with no `await` had serialised them
 # for free, and nobody had written that guarantee down (Codex, PR #991).
 _ALL_RUNS_FLIGHT = SingleFlight()
-# The claimant does bucket LISTs plus one download and parse per historical
-# run, so it is measured in seconds rather than milliseconds; a decliner that
-# waits much longer than this is holding a worker for an outcome it is
-# unlikely to reach, and it has a 404-or-serve answer either way.
-_ALL_RUNS_WAIT_S = 5.0
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -329,11 +324,18 @@ def list_all_backtests(ticker: str):
 
     with _ALL_RUNS_FLIGHT.claim(ticker_upper) as mine:
         if not mine:
-            # A decliner waits for the claimant and re-reads. It never does
-            # the work itself, even on timeout: the whole cost here is the
-            # duplicated LIST-download-parse, so running it after a wait is
-            # strictly worse than either half alone.
-            _ALL_RUNS_FLIGHT.wait(ticker_upper, _ALL_RUNS_WAIT_S)
+            # Declines IMMEDIATELY -- no wait at all. The first version waited
+            # 5 s and that is worse than not waiting: the claimant LISTs the
+            # bucket twice and then downloads and parses every historical run,
+            # which routinely exceeds any wait worth taking, so a burst held
+            # one AnyIO worker per decliner for the full timeout, starved
+            # unrelated synchronous endpoints like `/api/me`, and then
+            # returned 503 to every waiter anyway (Codex, PR #991).
+            #
+            # A wait only earns a worker where the claimant usually finishes
+            # inside it -- true of the 1.7 s market-dates scan, not of this.
+            # Retry-After hands the cost back to the client, which can afford
+            # it; the worker pool cannot.
             cached = _ALL_RUNS_CACHE.get(ticker_upper, MISS)
             if cached is not MISS:
                 return cached

@@ -1270,20 +1270,129 @@ def test_a_backtest_decliner_serves_the_cache_the_claimant_filled():
     assert calls == []
 
 
-def test_every_bounded_wait_is_actually_bounded():
-    """A wait that is not bounded hands a worker over indefinitely, which is
-    the failure mode `claim`-and-decline exists to avoid."""
+def test_a_wait_is_bounded_and_only_where_it_can_pay_for_itself():
+    """A wait costs a worker; it earns one only when the claimant usually
+    finishes inside it.
+
+    The backtest path had a 5 s wait and that was worse than none: the
+    claimant LISTs the bucket twice and then downloads and parses every
+    historical run, which routinely exceeds any wait worth taking, so a burst
+    held one AnyIO worker per decliner for the full timeout, starved unrelated
+    synchronous endpoints, and returned 503 to every waiter anyway (Codex,
+    PR #991). It declines immediately now.
+    """
     import api.main as m
     from api.routers import backtest as bt
     from api.routers import catalysts as cat
 
-    for mod, name in ((m, "_MARKET_DATES_WAIT_S"),
-                      (bt, "_ALL_RUNS_WAIT_S"),
-                      (cat, "_CATALYST_WAIT_S")):
+    for mod, name in ((m, "_MARKET_DATES_WAIT_S"), (cat, "_CATALYST_WAIT_S")):
         value = getattr(mod, name)
         assert isinstance(value, (int, float)) and 0 < value <= 30, (
             f"{name}={value!r} either does not bound the wait or holds a "
             f"FastAPI worker far longer than the work it waits on")
+
+    # The backtest decliner must not wait at all — no constant, and no call.
+    assert not hasattr(bt, "_ALL_RUNS_WAIT_S"), (
+        "a wait constant is back on the backtest path; its claimant runs for "
+        "longer than any wait worth taking")
+    src = (Path(__file__).resolve().parent.parent.parent
+           / "platform" / "api" / "routers" / "backtest.py").read_text()
+    body = src[src.index("with _ALL_RUNS_FLIGHT.claim("):
+               src.index("def _list_all_backtests_uncached")]
+    assert "_ALL_RUNS_FLIGHT.wait" not in body, (
+        "the backtest decliner waits on the flight:\n" + body)
+
+
+def test_the_market_dates_cache_never_exceeds_its_documented_bound():
+    """Eviction and insertion happen under one acquisition.
+
+    Releasing between them let two claimants for different tickers both read
+    63, both skip eviction, and both insert. The backing mapping is a plain
+    `OrderedDict`, which unlike `TTLCache` has no size bound of its own, so
+    the documented 64-entry maximum stayed exceeded until some later miss
+    happened to repair it (Codex, PR #991).
+
+    Read with `ast` rather than by comparing indentation. The first version of
+    this test measured the wrong line's indent and passed against the two-step
+    form — it was caught by running the injection, not by reading it.
+    """
+    import ast
+    import api.main as m
+
+    src = (Path(__file__).resolve().parent.parent.parent
+           / "platform" / "api" / "main.py").read_text()
+    tree = ast.parse(src)
+
+    def guards_the_cache(node):
+        return isinstance(node, ast.With) and any(
+            isinstance(i.context_expr, ast.Attribute)
+            and i.context_expr.attr == "lock"
+            and isinstance(i.context_expr.value, ast.Name)
+            and i.context_expr.value.id == "_MARKET_DATES_CACHE"
+            for i in node.items)
+
+    def writes_the_cache(node):
+        return isinstance(node, ast.Subscript) and isinstance(
+            node.value, ast.Name) and node.value.id == "_MARKET_DATES_CACHE" \
+            and isinstance(node.ctx, ast.Store)
+
+    holders = [n for n in ast.walk(tree) if guards_the_cache(n)]
+    assert holders, "the eviction no longer runs under the cache's own lock"
+    guarded = {id(sub) for h in holders for sub in ast.walk(h)}
+    writes = [n for n in ast.walk(tree) if writes_the_cache(n)]
+    assert writes, "nothing writes the market-dates cache any more"
+    unguarded = [n.lineno for n in writes if id(n) not in guarded]
+    assert not unguarded, (
+        f"platform/api/main.py:{unguarded} writes the market-dates cache "
+        f"outside the acquisition that checks its length and evicts — two "
+        f"claimants can both see room and both insert, and the backing "
+        f"OrderedDict has no bound of its own to repair it")
+
+    # And the wrapper's lock is reentrant, which is what makes nesting the
+    # write inside `with cache.lock` legal rather than a deadlock.
+    assert isinstance(m._MARKET_DATES_CACHE.lock, type(threading.RLock())), (
+        "nesting __setitem__ inside `with cache.lock` needs an RLock")
+
+
+def test_a_catalyst_decliner_that_timed_out_does_not_claim_a_fresh_fetch():
+    """`refresh=true` plus a timed-out wait returns the PRE-refresh file.
+
+    `events` is then non-null and the response named Benzinga unconditionally,
+    so a caller that explicitly forced a refresh could not tell a completed
+    refresh from the data it already had (Codex, PR #991).
+    """
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parent.parent.parent
+           / "platform" / "api" / "routers" / "catalysts.py").read_text()
+    block = src[src.index("with _CATALYST_FLIGHT.claim("):src.index("# Fall back to cache")]
+    assert "finished = _CATALYST_FLIGHT.wait(" in block, (
+        "the wait result is discarded, so the decliner cannot tell a "
+        "completed refresh from a timeout:\n" + block)
+    assert "if events is None or not finished:" in block, (
+        "provenance is decided by whether a cache read succeeded rather than "
+        "by whether the refresh finished:\n" + block)
+
+
+def test_a_stale_freshness_report_stays_stale_through_the_admin_view():
+    """The admin view is a regrouping of the same report, so it inherits its
+    staleness. Deriving statuses from the `tables` rows alone presented an
+    expired report whose last status was "ok" as current and healthy
+    (Codex, PR #991)."""
+    from api.schemas import FreshnessResponse
+    from api.routers.admin import AdminDataSourcesResponse
+
+    for model in (FreshnessResponse, AdminDataSourcesResponse):
+        for field in ("stale", "stale_age_seconds"):
+            assert field in model.model_fields, (
+                f"{model.__name__} does not declare {field}, so it is absent "
+                f"from the committed OpenAPI contract and no consumer can "
+                f"be expected to read it")
+
+    # Absent on a fresh response, so the contract does not gain a field that
+    # is always null.
+    fresh = FreshnessResponse(checked_at="t", expected_market_close="d",
+                              overall_status="ok", tables=[])
+    assert "stale" not in fresh.model_dump(exclude_unset=True)
 
 
 # ── The options-dates cache carries the version it was read at ──────────────
@@ -1373,3 +1482,73 @@ def test_two_unquantizable_prices_do_not_become_one_duplicate():
         JournalTradeCreate(ticker="IWM", direction="CALL",
                            entry_date="2026-09-07", entry_time="10:00",
                            entry_price=1.0, exit_price=1e24)
+
+
+def test_a_cold_options_dates_scan_runs_once_per_key():
+    """Concurrent misses each ran the recursive walk.
+
+    At the default `limit=1000` those duplicate index walks can hold every one
+    of the 5+2 pooled connections while unrelated handlers queue behind the
+    pool (Codex, PR #991) — the same starvation the threadpool migration
+    exists to remove, reintroduced by the migration itself.
+    """
+    import pandas as pd
+    from unittest.mock import patch
+    from fastapi import HTTPException
+    from api.routers import options as opt
+
+    ticker, limit = "IWM", 7
+    key = (ticker, limit)
+    opt._DATES_CACHE.pop(key, None)
+    calls = []
+
+    def fake_query(sql, params=None):
+        calls.append(sql)
+        return pd.DataFrame({"snapshot_date": ["2026-09-07"]})
+
+    # A decliner with nothing cached has no answer, so it says so rather than
+    # running a second walk.
+    with patch.object(opt, "query_to_dataframe_strict", fake_query), \
+         patch.object(opt, "_require_cloud_sql", lambda: None):
+        with opt._DATES_FLIGHT.claim(key):
+            with pytest.raises(HTTPException) as exc:
+                opt.get_options_dates(ticker, limit=limit)
+    assert exc.value.status_code == 503, exc.value.status_code
+    assert (exc.value.headers or {}).get("Retry-After")
+    assert len(calls) == 1, (
+        f"the decliner ran the dates walk as well as the probe: {calls}")
+
+    # With a stale entry present it serves that instead, labelled.
+    opt._DATES_CACHE[key] = ("2026-09-04", ["2026-09-04"])
+    calls.clear()
+    try:
+        with patch.object(opt, "query_to_dataframe_strict", fake_query), \
+             patch.object(opt, "_require_cloud_sql", lambda: None):
+            with opt._DATES_FLIGHT.claim(key):
+                out = opt.get_options_dates(ticker, limit=limit)
+    finally:
+        opt._DATES_CACHE.pop(key, None)
+    assert out["dates"] == ["2026-09-04"], out
+    assert "stale" in out["source"], (
+        f"a pre-refresh list served as a live read: {out['source']!r}")
+    assert len(calls) == 1, f"the decliner ran the walk anyway: {calls}"
+
+
+def test_the_options_dates_query_runs_inside_the_claim():
+    """A flight that releases before the work coalesces nothing.
+
+    The first version of this fix took the claim, re-read the cache, and then
+    ran the query *after* the `with` block had exited — so every concurrent
+    request still executed its own walk while the flight looked correct.
+    """
+    src = (Path(__file__).resolve().parent.parent.parent
+           / "platform" / "api" / "routers" / "options.py").read_text()
+    body = src[src.index("with _DATES_FLIGHT.claim("):]
+    body = body[:body.index("\n@router")]
+    claim_indent = 4
+    for marker in ("df = query_to_dataframe_strict(sql,",
+                   "_DATES_CACHE[cache_key] = (latest_date, dates)"):
+        line = next(l for l in body.splitlines() if marker in l)
+        assert len(line) - len(line.lstrip()) > claim_indent, (
+            f"`{marker}` sits outside the claim, so the flight coalesces "
+            f"nothing:\n{line}")

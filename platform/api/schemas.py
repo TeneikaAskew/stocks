@@ -1322,3 +1322,10 @@ class FreshnessResponse(ApiModel):
     expected_market_close: str
     overall_status: str
     tables: list[FreshnessRow]
+    # Present ONLY when a refresh is in flight and this response is the
+    # previous report served in its place. Absent on a fresh read, which is
+    # what `response_model_exclude_unset` renders. They were being emitted as
+    # undeclared extras, so the committed OpenAPI contract did not carry them
+    # and no consumer could be expected to read them (Codex, PR #991).
+    stale: Optional[bool] = None
+    stale_age_seconds: Optional[int] = None

@@ -768,11 +768,20 @@ def get_available_dates(ticker: str):
                     # separate locked calls and two threads can both see the
                     # cache full, both evict, and the second `popitem` can hit
                     # an empty mapping and raise.
+                    # The INSERT is inside the same acquisition as the length
+                    # check and the eviction. Releasing between them let two
+                    # claimants for different tickers both read 63, both skip
+                    # eviction, and both insert -- and the backing mapping here
+                    # is a plain OrderedDict, which unlike TTLCache has no size
+                    # bound of its own, so the documented 64-entry maximum
+                    # stayed exceeded until some later miss happened to repair
+                    # it (Codex, PR #991). The lock is an RLock, so the nested
+                    # `__setitem__` re-enters it rather than deadlocking.
                     with _MARKET_DATES_CACHE.lock:
                         while len(_MARKET_DATES_CACHE) >= _MARKET_DATES_CACHE_MAX:
                             _MARKET_DATES_CACHE.popitem(last=False)
-                    _MARKET_DATES_CACHE[ticker_upper] = (
-                        latest_ts, datetime.now(timezone.utc), payload)
+                        _MARKET_DATES_CACHE[ticker_upper] = (
+                            latest_ts, datetime.now(timezone.utc), payload)
                     return payload
                 # Configured, and the query SUCCEEDED returning no rows. The
                 # system of record says this ticker has no 1-minute bars; that is

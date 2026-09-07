@@ -56,6 +56,7 @@ import httpx
 import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import ThreadSafeCache
+from lib.single_flight import SingleFlight
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 from api.schemas import (
@@ -98,6 +99,14 @@ _CHAIN_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200)
 # ticker-wide in effect — every variant probes the same date and rejects itself
 # when it moves — but no entry can now disagree with its own version.
 _DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=43200))
+# Coalesces cold or newly-invalidated misses. Threadpool dispatch is what makes
+# this reachable: concurrent requests all miss and each runs the recursive
+# walk, and at the default limit=1000 those duplicate index walks can hold
+# every one of the 5+2 pooled connections while unrelated handlers queue behind
+# the pool (Codex, PR #991). Keyed per (ticker, limit), because the two
+# variants are genuinely different queries and serialising them against each
+# other would trade one queue for another.
+_DATES_FLIGHT = SingleFlight()
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
 # exposure on the free tier (5 calls/min, 500/day).
@@ -349,86 +358,112 @@ def get_options_dates(
     # /api/market/dates already uses.
     cache_key = (ticker_upper, limit)
     cached = _DATES_CACHE.get(cache_key)
-    if cached is not None:
-        cached_date, cached_dates = cached
-        if cached_date == latest_date:
-            return {"ticker": ticker_upper, "dates": cached_dates,
+    if cached is not None and cached[0] == latest_date:
+        return {"ticker": ticker_upper, "dates": cached[1],
+                "source": "cloud_sql", "cached": True}
+
+    with _DATES_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it does not mean being first, and
+        # a request descheduled between the probe and the claim can take it
+        # moments after the previous claimant stored the answer.
+        cached = _DATES_CACHE.get(cache_key)
+        if cached is not None and cached[0] == latest_date:
+            return {"ticker": ticker_upper, "dates": cached[1],
                     "source": "cloud_sql", "cached": True}
-        # `pop(key, None)`, not `del`. Under threadpool dispatch two requests
-        # can both observe the same moved date and both drop this key, and
-        # `del` on a key the other thread already removed raises KeyError out
-        # of a handler that was only invalidating a cache.
-        _DATES_CACHE.pop(cache_key, None)
-
-    sql = None
-    if limit != 1:
-        # The depth counter `n` is load-bearing, not decoration. Bounding the
-        # recursion only in the OUTER query does not work: ORDER BY has to
-        # materialise the whole CTE before LIMIT can discard any of it, so the
-        # walk runs to the end of history regardless. Measured on prod for
-        # IWM ?limit=2 — unbounded recursion: 2,682 rows walked, 3,013 ms;
-        # bounded by `n < :limit`: 2 rows walked, 0.27 ms.
-        sql = """
-            WITH RECURSIVE d AS (
-                (SELECT snapshot_date, 1 AS n
-                   FROM etf_options_snapshots
-                  WHERE ticker = :ticker AND data_source = 'alphavantage'
-                  ORDER BY snapshot_date DESC
-                  LIMIT 1)
-                UNION ALL
-                SELECT (SELECT s.snapshot_date
-                          FROM etf_options_snapshots s
-                         WHERE s.ticker = :ticker
-                           AND s.data_source = 'alphavantage'
-                           AND s.snapshot_date < d.snapshot_date
-                         ORDER BY s.snapshot_date DESC
-                         LIMIT 1),
-                       d.n + 1
-                  FROM d
-                 WHERE d.snapshot_date IS NOT NULL
-                   AND d.n < :limit
+        if not mine:
+            # Declines rather than running a second walk, and never waits:
+            # the same policy the other cold paths settled on, for the same
+            # reason -- a decliner reaches its timeout exactly when the
+            # connection pool is contended, which is the worst moment to add
+            # a duplicate scan to it.
+            if cached is not None:
+                # A stale list, labelled. The dates only grow, so it is a real
+                # answer missing at most the newest snapshot, and `source` is
+                # a free-form string in the contract (Rule 6).
+                return {"ticker": ticker_upper, "dates": cached[1],
+                        "source": "cloud_sql (stale, refresh in flight)",
+                        "cached": True}
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Snapshot dates for {ticker_upper} are being read "
+                        f"now; retry shortly."),
+                headers={"Retry-After": "2"},
             )
-            SELECT snapshot_date
-              FROM d
-             WHERE snapshot_date IS NOT NULL
-             ORDER BY snapshot_date DESC
-        """
+        if cached is not None:
+            # `pop(key, None)`, not `del`. Two requests can both observe the
+            # same moved date, and `del` on a key the other already removed
+            # raises KeyError out of a handler that was only invalidating.
+            _DATES_CACHE.pop(cache_key, None)
 
-    # STRICT: a connection failure or missing relation must surface as a 5xx.
-    # The swallowing sibling would return an empty frame here, which this
-    # handler cannot tell apart from "ticker genuinely has no data" and would
-    # report as a 404 telling the operator to run the fetcher — a false
-    # diagnosis of a DB outage (CLAUDE.md Rule 3.7).
-    if limit == 1:
-        # The freshness probe above IS this query, and it has already run.
-        # Re-issuing it would make the advertised single-descent path pay two
-        # descents plus a second pool checkout and pre-ping on every miss --
-        # exactly the requests the cache exists to make cheap.
-        df = probe
-    else:
-        df = query_to_dataframe_strict(sql, {"ticker": ticker_upper,
-                                             "limit": limit})
+        sql = None
+        if limit != 1:
+            # The depth counter `n` is load-bearing, not decoration. Bounding the
+            # recursion only in the OUTER query does not work: ORDER BY has to
+            # materialise the whole CTE before LIMIT can discard any of it, so the
+            # walk runs to the end of history regardless. Measured on prod for
+            # IWM ?limit=2 — unbounded recursion: 2,682 rows walked, 3,013 ms;
+            # bounded by `n < :limit`: 2 rows walked, 0.27 ms.
+            sql = """
+                WITH RECURSIVE d AS (
+                    (SELECT snapshot_date, 1 AS n
+                       FROM etf_options_snapshots
+                      WHERE ticker = :ticker AND data_source = 'alphavantage'
+                      ORDER BY snapshot_date DESC
+                      LIMIT 1)
+                    UNION ALL
+                    SELECT (SELECT s.snapshot_date
+                              FROM etf_options_snapshots s
+                             WHERE s.ticker = :ticker
+                               AND s.data_source = 'alphavantage'
+                               AND s.snapshot_date < d.snapshot_date
+                             ORDER BY s.snapshot_date DESC
+                             LIMIT 1),
+                           d.n + 1
+                      FROM d
+                     WHERE d.snapshot_date IS NOT NULL
+                       AND d.n < :limit
+                )
+                SELECT snapshot_date
+                  FROM d
+                 WHERE snapshot_date IS NOT NULL
+                 ORDER BY snapshot_date DESC
+            """
 
-    dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
-             for d in df["snapshot_date"].tolist()] if not df.empty else []
+        # STRICT: a connection failure or missing relation must surface as a 5xx.
+        # The swallowing sibling would return an empty frame here, which this
+        # handler cannot tell apart from "ticker genuinely has no data" and would
+        # report as a 404 telling the operator to run the fetcher — a false
+        # diagnosis of a DB outage (CLAUDE.md Rule 3.7).
+        if limit == 1:
+            # The freshness probe above IS this query, and it has already run.
+            # Re-issuing it would make the advertised single-descent path pay two
+            # descents plus a second pool checkout and pre-ping on every miss --
+            # exactly the requests the cache exists to make cheap.
+            df = probe
+        else:
+            df = query_to_dataframe_strict(sql, {"ticker": ticker_upper,
+                                                 "limit": limit})
 
-    if not dates:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No AlphaVantage options data ingested for {ticker_upper}. "
-                "Run `python -m gcp.fetchers.fetch_av_historical_options` or "
-                "trigger the 'Fetch Daily Alpha Vantage Options Data' workflow."
-            ),
-        )
+        dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+                 for d in df["snapshot_date"].tolist()] if not df.empty else []
 
-    _DATES_CACHE[cache_key] = (latest_date, dates)
-    return {
-        "ticker": ticker_upper,
-        "dates": dates,
-        "source": "cloud_sql",
-        "cached": False,
-    }
+        if not dates:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No AlphaVantage options data ingested for {ticker_upper}. "
+                    "Run `python -m gcp.fetchers.fetch_av_historical_options` or "
+                    "trigger the 'Fetch Daily Alpha Vantage Options Data' workflow."
+                ),
+            )
+
+        _DATES_CACHE[cache_key] = (latest_date, dates)
+        return {
+            "ticker": ticker_upper,
+            "dates": dates,
+            "source": "cloud_sql",
+            "cached": False,
+        }
 
 
 @router.get("/api/options/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
