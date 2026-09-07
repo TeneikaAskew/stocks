@@ -98,7 +98,9 @@ body:
         # .github/workflows/deploy-staging.yml:299 runs
         # `gcloud run jobs execute refresh-earnings-views`, and the five-dir
         # search cannot see it.
-        $ git grep -En "playbook_cards" -- . ':!docs/' | wc -l
+        # ':!archive/' too: archive/ is retired code that does not run in
+        # production, so a hit there is not a consumer.
+        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' | wc -l
         11
         Live consumers in solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
     validations:

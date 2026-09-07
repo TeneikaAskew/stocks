@@ -90,7 +90,11 @@ body:
         # only caller is often a workflow. Measured:
         # .github/workflows/deploy-staging.yml:299 dispatches
         # refresh-earnings-views and the five-dir search misses it entirely.
-        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/'
+        # ':!archive/' as well: archive/README.md says "Retired code ... Nothing
+        # here runs in production", so a hit there is not a consumer. Measured —
+        # TradingAlertSystem matches archive/standalone-scripts/trading_alerts.py
+        # and nothing live, which would block a correct retirement.
+        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/'
         (11 hits: router, writer, tests)
 
         solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.

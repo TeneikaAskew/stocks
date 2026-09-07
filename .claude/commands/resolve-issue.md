@@ -416,10 +416,15 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 - **Establish who consumes the surface** before deciding what to fix. If nothing
   reads it, disabling the render is one line and ships today.
   ```bash
-  git grep -En "<table|endpoint|function>" -- . ':!docs/'
+  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/'
   ```
   **Repo-wide over tracked files, not the five source directories** — the same
-  scope Phase 4's deletion check uses, and for the same reason. The five-dir
+  scope Phase 4's deletion check uses, and for the same reason. Excluding `archive/`
+  as well as `docs/`, because repo-wide over-corrects in the other direction:
+  `archive/README.md` says *"Retired code, kept for reference rather than
+  deleted. Nothing here runs in production"*, so a hit there is not a consumer
+  — measured, `TradingAlertSystem` matches
+  `archive/standalone-scripts/trading_alerts.py` and nothing live. The five-dir
   form (`lib/ gcp/ platform/ scripts/ tests/`) cannot see `.github/`, and CI is
   where jobs are actually dispatched. Measured on `refresh-earnings-views`: the
   five-dir search returns 5 hits and **not one of them is a caller** —
@@ -502,7 +507,7 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
+| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
 | A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself. **`basename()` is not optional**: `name` is a fully qualified resource name (`projects/…/locations/…/jobs/<job>`), so `grep -qx "<job>"` against the raw value never matches and the check reports "retired" while both resources are live. It is a no-op on an already-bare value, so it is right without resolving which shape this gcloud prints — which I cannot check here, the session's gcloud being unauthenticated (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
@@ -538,12 +543,11 @@ assertion through one function that returns on the first failure:
 # `&&`-chained, so the first failure short-circuits and IS the status.
 absent_everywhere() {
   local rc
-  git grep -q "<symbol>" -- . ':!docs/'; rc=$?
+  git grep -q "<symbol>" -- . ':!docs/' ':!archive/'; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc — still referenced here"; return 1; }
-  git -C ../solyra grep -q "<symbol>" -- . ':!docs/'; rc=$?
+  git -C ../solyra grep -q "<symbol>" -- . ':!docs/' ':!archive/'; rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc — still referenced there"; return 1; }
 }
-absent_everywhere        # BARE
 
 retired_everywhere() {
   local list
@@ -554,7 +558,13 @@ retired_everywhere() {
     || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
   ! grep -qx "<job>" <<<"$list" || { echo "<job> trigger still exists"; return 1; }
 }
-retired_everywhere       # BARE
+# ONE call, `&&`-chained. Two bare calls have the same defect the functions
+# were written to remove, one level up: if the code is still referenced but both
+# resources are gone, `absent_everywhere` returns 1, `retired_everywhere` then
+# returns 0, and the block reports success. Measured — first-fails plus
+# second-passes exits 0.
+fully_retired() { absent_everywhere && retired_everywhere; }
+fully_retired            # BARE
 ```
 
 Skipping the before half is what is never acceptable. "It passes now" says
@@ -1347,7 +1357,8 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      binds the two.** `IMAGE` is declared without a tag
      (`gcp/deploy.sh:27`), so it resolves `:latest`, and every
      `gcloud run jobs create|update` passes `--image "${IMAGE}"` — the
-     floating tag, in all fourteen of them. The script's own comments say what
+     floating tag, at **122 sites** — 96 `--image "${IMAGE}"` and 26
+     `--image "${research_image}"`. The script's own comments say what
      that means: *"every build re-points `:latest`"* (`:67`) and *"every
      `gcloud builds submit --tag IMAGE` moves `:latest`"* (`:77`).
 
@@ -1375,7 +1386,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
      The actual fix is to pin `--image` to a digest resolved from the
      validated source instead of a moving tag. That is a change to
-     `gcp/deploy.sh` in fourteen places, so per Rule 3.6's coverage-gap clause
+     `gcp/deploy.sh` at all 122 of those sites — best done once, through a shared
+     helper, rather than edited in place. (An earlier draft of this section said
+     "fourteen": that is the number of functions assigning
+     `research_image="${IMAGE}:research"`, not the number of deployment sites.
+     Counted, not recalled.) So per Rule 3.6's coverage-gap clause
      it lands in its own PR **before** a resolution leans on it — not bolted
      onto whichever issue happens to notice.
 

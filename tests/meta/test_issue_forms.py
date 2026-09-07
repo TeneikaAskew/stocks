@@ -132,11 +132,15 @@ def test_every_checkbox_option_is_required(path: Path):
     # all, so removing a form's whole attestation used to pass CI: the
     # body-budget test stayed green because the body only got SHORTER.
     # Measured on 04-follow-up.yml with the element deleted — 14 passed.
+    # By ID, not "any checkboxes element". A form that grew an unrelated
+    # checkbox group could otherwise lose `id: attestation` and still pass,
+    # which is the invariant this test claims to enforce rather than the one
+    # it would actually be checking.
     boxes = [el for el in body if el.get("type") == "checkboxes"]
-    assert boxes, (
-        f"{path.name}: no checkboxes element. Every form ends in an evidence "
-        "attestation; a form without one collects no claim about how the "
-        "evidence was produced."
+    assert any(el.get("id") == "attestation" for el in boxes), (
+        f"{path.name}: no `id: attestation` checkboxes element. Every form ends "
+        "in an evidence attestation; a form without one collects no claim about "
+        f"how the evidence was produced. Found: {[el.get('id') for el in boxes]}"
     )
 
     for el in boxes:
