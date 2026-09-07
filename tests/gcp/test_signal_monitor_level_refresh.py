@@ -200,3 +200,121 @@ def test_session_summary_includes_level_refresh_counters():
             f"signal_monitor.py must reference `{token}`; see G.P1.1 "
             f"instrumentation in session_summary"
         )
+
+
+# ── 5) As-of bound (#823 / audit R6) ─────────────────────────────────
+#
+# DataLoader.load_daily has no upper date bound (lib/data_loader.py
+# _load_daily_from_sql filters on ticker and optional year only), so the
+# frame refresh_level_map hands to calculate_historical_levels and
+# build_level_map ends at whatever market_data_daily holds:
+#   * live: fetch-premarket-refresh INSERTs today's row at 08:20 ET with
+#     pre_* fields only (OHLC NULL until the 23:00 ET fill) — verified
+#     2026-09-07 on production: every session date's first row lands at
+#     12:21 UTC — so from the open the last row is today's NULL-OHLC bar,
+#     current_price = float(NaN), and the current-period levels and the
+#     gap scan read a bar the session has not produced yet;
+#   * replay of D: the frame carries D's COMPLETED bar and every bar
+#     after it, so the replayed map is built from information the live
+#     session on D never had.
+# The premarket brief bounds its frame with `idx < analysis_date` before
+# building; the monitor must apply the same cutoff so a D-replay and the
+# D-live session build the map from the same rows.
+
+def _daily_frame_through(last_day: str) -> pd.DataFrame:
+    idx = pd.date_range("2026-08-03", last_day, freq="B")
+    n = len(idx)
+    df = pd.DataFrame({
+        "Time": idx,
+        "Open": [100.0 + i for i in range(n)],
+        "High": [101.0 + i for i in range(n)],
+        "Low": [99.0 + i for i in range(n)],
+        "Close": [100.5 + i for i in range(n)],
+    }, index=idx)
+    df.index.name = "Time"
+    return df
+
+
+def _capture_build_inputs(monitor, ticker, df):
+    """Run refresh_level_map over `df` and return (daily_df, current_price)
+    as passed to build_level_map, plus the frame calculate_historical_levels
+    received (via the length of its `times` argument)."""
+    seen = {}
+
+    def _fake_build(**kw):
+        seen["daily_df"] = kw["daily_df"]
+        seen["current_price"] = kw["current_price"]
+        seen["analysis_date"] = kw["analysis_date"]
+        return MagicMock()
+
+    real_hist = __import__("lib.indicators", fromlist=["calculate_historical_levels"]).calculate_historical_levels
+
+    def _spy_hist(ts, high, low, open_, close):
+        seen["hist_last_ts"] = pd.Timestamp(pd.Series(ts).iloc[-1])
+        return real_hist(ts, high, low, open_, close)
+
+    with patch("lib.data_loader.DataLoader") as mock_dl_class, \
+         patch("gcp.signal_monitor.build_level_map", side_effect=_fake_build), \
+         patch("lib.indicators.calculate_historical_levels", side_effect=_spy_hist):
+        mock_dl_class.return_value.load_daily.return_value = df
+        monitor.refresh_level_map(ticker)
+    return seen
+
+
+def test_refresh_level_map_excludes_the_analysis_date_row_and_everything_after():
+    """A row dated exactly analysis_date (and any later row) must not reach
+    calculate_historical_levels, build_level_map or current_price."""
+    monitor = _make_monitor()
+    ticker = monitor.tickers[0]
+    monitor.replay_clock_ts = pd.Timestamp("2026-09-03 09:31:00")
+    df = _daily_frame_through("2026-09-05")          # carries 09-03, 09-04
+    seen = _capture_build_inputs(monitor, ticker, df)
+
+    assert seen["analysis_date"] == pd.Timestamp("2026-09-03").date()
+    passed = seen["daily_df"]
+    assert passed.index.max() == pd.Timestamp("2026-09-02"), \
+        f"frame must end BEFORE analysis_date; got {passed.index.max()}"
+    assert seen["hist_last_ts"] == pd.Timestamp("2026-09-02")
+    expected_close = float(df.loc[pd.Timestamp("2026-09-02"), "Close"])
+    assert seen["current_price"] == expected_close, \
+        "current_price must be the last close BEFORE analysis_date, not the as-of bar"
+    assert monitor.level_refresh_success_count[ticker] == 1
+
+
+def test_replay_of_d_and_live_on_d_build_from_the_same_rows():
+    """#823 definition of done: the level map for date D is identical
+    between a D-replay (frame extends past D) and the D-live session
+    (frame ends at D's not-yet-filled row)."""
+    replay = _make_monitor()
+    replay.replay_clock_ts = pd.Timestamp("2026-09-03 09:31:00")
+    seen_replay = _capture_build_inputs(replay, replay.tickers[0],
+                                        _daily_frame_through("2026-09-05"))
+
+    live = _make_monitor()
+    live.replay_clock_ts = pd.Timestamp("2026-09-03 09:31:00")
+    live_df = _daily_frame_through("2026-09-03")
+    # Live: today's row exists from 08:20 ET with NULL OHLC (premarket refresh).
+    live_df.loc[pd.Timestamp("2026-09-03"), ["Open", "High", "Low", "Close"]] = float("nan")
+    seen_live = _capture_build_inputs(live, live.tickers[0], live_df)
+
+    pd.testing.assert_frame_equal(seen_replay["daily_df"], seen_live["daily_df"])
+    assert seen_replay["current_price"] == seen_live["current_price"]
+    assert seen_live["current_price"] == seen_live["current_price"], \
+        "live current_price must not be NaN from today's unfilled row"
+
+
+def test_frame_empty_after_the_bound_is_the_empty_df_path():
+    """Only rows on/after analysis_date -> nothing to build from; take the
+    explicit empty-df path (counter + warning), never a map from as-of data."""
+    monitor = _make_monitor()
+    ticker = monitor.tickers[0]
+    monitor.replay_clock_ts = pd.Timestamp("2026-08-03 09:31:00")
+    df = _daily_frame_through("2026-08-05")   # all rows >= 08-03
+    with patch("lib.data_loader.DataLoader") as mock_dl_class, \
+         patch("gcp.signal_monitor.build_level_map") as build:
+        mock_dl_class.return_value.load_daily.return_value = df
+        monitor.refresh_level_map(ticker)
+    build.assert_not_called()
+    assert monitor.level_maps[ticker] is None
+    assert monitor.level_refresh_empty_df_count[ticker] == 1
+    assert monitor.level_refresh_exception_count[ticker] == 0
