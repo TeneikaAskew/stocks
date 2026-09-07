@@ -380,9 +380,23 @@ jobs:
       # previous versions it is about to be judged against (Codex, #1009).
       - name: Freeze gate inputs
         run: |
+          set -e
+          # rm -rf first: `cp -r src dst` NESTS into dst when dst already
+          # exists, so a re-run in a dirty RUNNER_TEMP silently produced
+          # frozen/refresh-inputs/refresh-inputs/ and the restore below then
+          # had nothing to copy back -- and said nothing.
+          rm -rf "$RUNNER_TEMP/frozen"
           mkdir -p "$RUNNER_TEMP/frozen"
           cp -r refresh-inputs "$RUNNER_TEMP/frozen/refresh-inputs"
           git rev-parse HEAD > "$RUNNER_TEMP/frozen/head.sha"
+          # Prove the freeze actually captured the inputs the gates depend on.
+          for F in live.json verify_live.json previous; do
+            test -e "$RUNNER_TEMP/frozen/refresh-inputs/$F" || {
+              echo "::error::freeze did not capture refresh-inputs/$F"; exit 1; }
+          done
+          ( cd "$RUNNER_TEMP/frozen/refresh-inputs" && find . -type f -exec sha256sum {} + | sort -k2 ) \
+            > "$RUNNER_TEMP/frozen/manifest.sha256"
+          echo "frozen $(wc -l < "$RUNNER_TEMP/frozen/manifest.sha256") files"
 
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
       # Tool restriction is enforced by the policy file written above
@@ -457,9 +471,18 @@ jobs:
             echo "::error::the model wrote outside the generated docs:$STRAY — refusing to verify or publish"
             exit 1
           fi
-          # the gates read only the frozen copies of the snapshot, digests and previous versions
+          # The gates must read the inputs captured BEFORE the model ran, so
+          # restore them and then PROVE the restore happened: a cp that
+          # silently copies nothing leaves the model's version in place and
+          # the gates judge tampered inputs while reporting success.
+          test -f "$RUNNER_TEMP/frozen/manifest.sha256" || {
+            echo "::error::no frozen gate inputs to restore — refusing to verify"; exit 1; }
           cp -r "$RUNNER_TEMP/frozen/refresh-inputs/." refresh-inputs/
+          ( cd refresh-inputs && sha256sum -c --quiet --status \
+              <(sed 's|  \./|  |' "$RUNNER_TEMP/frozen/manifest.sha256") ) || {
+            echo "::error::restored gate inputs do not match the frozen copies"; exit 1; }
           test "$(git rev-parse HEAD)" = "$(cat "$RUNNER_TEMP/frozen/head.sha")"
+          echo "gate inputs restored and verified against the pre-Gemini manifest"
 
       - name: Verify regenerated docs
         run: |
