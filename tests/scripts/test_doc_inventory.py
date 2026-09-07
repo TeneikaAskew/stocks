@@ -301,3 +301,40 @@ def test_the_module_catalog_matches_a_plain_recursive_walk():
                 continue
             expected.add(str(rel))
     assert paths == expected
+
+
+def test_reconcile_catches_a_scheduler_redirected_to_another_existing_job():
+    """Cron alone said the fleets matched.
+
+    A scheduler kept its name and cron but pointed at a different job that also
+    exists, so every missing-target check passed and §15 read clean while
+    production fired the wrong job. (Codex, PR #1009.)
+    """
+    live = json.loads(FIXTURE.read_text())
+    repo = inv.repo_inventory(REPO)
+    name = next(s["name"] for s in repo["schedulers"]
+                if s.get("target_job") and s["name"] in live["schedulers"])
+    other = next(j["name"] for j in repo["jobs"]
+                 if j["name"] != next(s["target_job"] for s in repo["schedulers"] if s["name"] == name))
+    live["schedulers"][name] = dict(live["schedulers"][name], target_job=other)
+    rec = inv.reconcile(repo, live)
+    assert rec["schedulers_targeting_missing_job"] == [], "the old check must still pass — that is the point"
+    assert any(n.startswith(f"{name}:") for n in rec["schedulers_target_drift"]), rec["schedulers_target_drift"]
+
+
+def test_reconcile_catches_a_scheduler_moved_to_another_time_zone():
+    live = json.loads(FIXTURE.read_text())
+    repo = inv.repo_inventory(REPO)
+    name = next(s["name"] for s in repo["schedulers"]
+                if s.get("time_zone") and s["name"] in live["schedulers"])
+    live["schedulers"][name] = dict(live["schedulers"][name], time_zone="UTC")
+    rec = inv.reconcile(repo, live)
+    assert rec["schedulers_cron_drift"] == [] or all(not c.startswith(f"{name}:") for c in rec["schedulers_cron_drift"])
+    assert any(n.startswith(f"{name}:") for n in rec["schedulers_tz_drift"]), rec["schedulers_tz_drift"]
+
+
+def test_the_committed_fleets_have_no_target_or_timezone_drift():
+    live = json.loads(FIXTURE.read_text())
+    rec = inv.reconcile(inv.repo_inventory(REPO), live)
+    assert rec["schedulers_target_drift"] == []
+    assert rec["schedulers_tz_drift"] == []

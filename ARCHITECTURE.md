@@ -872,6 +872,8 @@ Live read 2026-09-07T04:35:16Z. Repo declares 67 jobs / 65 schedulers; live has 
 **Live schedulers targeting a missing job** (0): none
 **deploy.sh schedulers targeting a job deploy.sh never creates** (1): `gamma-levels-daily`
 **Cron drift (same name, different cron)** (0): none
+**Target drift (same name, different job)** (0): none
+**Time-zone drift (same name, different zone)** (0): none
 **Jobs whose last execution failed** (1): `intraday-bulk-backfill`
 **Jobs that have never executed** (0): none
 <!-- inventory:reconcile:end -->

@@ -48,6 +48,12 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("▸ prod domain: stocks.insightscollective.org (IAP + managed TLS)\n▸ deploy: staging revision → promote workflow",
      "▸ IAP-gated, AUTH_MODE=iap, SA trading-platform-svc@\n▸ deploy: deploy-solyra-api-prod Cloud Build trigger (manual digest promote)"),
     ("Cloud Run Service\nFastAPI + React", "Cloud Run Service\nFastAPI API (IAP)"),
+    # The `trading-platform` Cloud Run service was deleted; prod is
+    # `solyra-api-prod`. check() rejected only `trading-platform-staging`, so
+    # three cells kept the dead name through every refresh. (Codex, PR #1009.)
+    ("trading-platform\nFastAPI API only", "solyra-api-prod\nFastAPI API only"),
+    ("trading-platform\nCloud Run Service", "solyra-api-prod\nCloud Run Service"),
+    ("Browser → trading-platform Cloud Run Service", "Browser → solyra-api-prod Cloud Run Service"),
     ("FastAPI + React", "FastAPI API"),
     ("GitHub Actions\n20 workflows: backups, audits, db-query,\nsheet downloads, platform deploy + promote",
      "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge, failure\nhandler, docs-vs-live check, monthly doc refresh;\nAPI + schema deploys"),
@@ -362,6 +368,10 @@ MAIN_COUNT_PATTERNS = (
     (r"\b(\d+) secrets\b", "secrets", "secrets"),
     (r"\((\d+) workflows\)", "workflows", "workflows"),
     (r"\((\d+) triggers\)", "triggers", "triggers"),
+    # svc_group reads "Cloud Run Services (4; ...)": a fifth service moved the
+    # subtitle and left this cell at four. (Codex, PR #1009.)
+    (r"Cloud Run Services \((\d+);", "services", "Cloud Run Services"),
+    (r"\b(\d+) Cloud Run Services\b", "services", "Cloud Run Services"),
 )
 
 
@@ -369,6 +379,7 @@ def _main_values(live: dict) -> dict[str, str]:
     wf = live.get("_workflows")
     out = {
         "secrets": str(live["counts"]["secrets"]),
+        "services": str(live["counts"]["services"]),
         "triggers": str(len(live.get("cloudbuild_triggers") or [])),
     }
     if wf is not None:
@@ -509,6 +520,15 @@ def check(root: ET.Element, live: dict) -> list[str]:
                   "migrate-to-gcp", "FastAPI + React", "db-query.yml", "trading-platform-staging", "React dashboard", "~49"):
         if stale in text:
             problems.append(f"stale label still present: {stale}")
+    # `trading-platform` the SERVICE is deleted; `trading-platform-svc@` the
+    # service account is live, so the bare name needs a boundary rather than a
+    # substring test. (Codex, PR #1009.)
+    if re.search(r"trading-platform(?!-svc)\b", text):
+        problems.append("stale label still present: trading-platform (the service is deleted; prod is solyra-api-prod)")
+    # Every live service must appear somewhere on the page.
+    for svc in sorted(live.get("services", {})):
+        if svc not in text:
+            problems.append(f"live Cloud Run service not drawn: {svc}")
     return problems
 
 

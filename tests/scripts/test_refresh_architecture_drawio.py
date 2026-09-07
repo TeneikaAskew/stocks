@@ -113,3 +113,36 @@ def test_every_count_bearing_main_cell_is_rewritten(main_root, live):
     assert dw._check_main_counts(main_root, live), "a bumped count went unnoticed"
     dw._rewrite_main_counts(main_root, live)
     assert dw._check_main_counts(main_root, live) == []
+
+
+def test_a_stale_service_count_is_caught(main_root, live):
+    """svc_group reads "Cloud Run Services (4; ...)" and was not in the rewrite
+    set, so a fifth service would move the subtitle and leave it at four.
+    (Codex, PR #1009.)"""
+    live5 = dict(live, counts=dict(live["counts"], services=5))
+    problems = dw.check(main_root, live5)
+    assert any("svc_group says 4 Cloud Run Services, live is 5" in p for p in problems), problems
+    dw._rewrite_main_counts(main_root, live5)
+    assert "Cloud Run Services (5;" in _cell(main_root, "svc_group").get("value")
+
+
+def test_the_deleted_prod_service_name_is_rejected(main_root, live):
+    """`trading-platform` the SERVICE is deleted; check() rejected only
+    `trading-platform-staging`, so three cells kept the dead name."""
+    c = _cell(main_root, "svc_tp")
+    c.set("value", c.get("value").replace("solyra-api-prod", "trading-platform", 1))
+    problems = dw.check(main_root, live)
+    assert any("trading-platform" in p and "deleted" in p for p in problems), problems
+
+
+def test_the_service_account_name_is_not_mistaken_for_the_service(main_root, live):
+    """`trading-platform-svc@` is live and must not trip the stale-name check."""
+    assert "trading-platform-svc" in ET.tostring(main_root, encoding="unicode")
+    assert dw.check(main_root, live) == []
+
+
+def test_every_live_service_must_be_drawn(main_root, live):
+    live5 = dict(live, services=dict(live["services"], **{"brand-new-svc": {}}),
+                 counts=dict(live["counts"], services=5))
+    problems = dw.check(main_root, live5)
+    assert any("brand-new-svc" in p for p in problems), problems

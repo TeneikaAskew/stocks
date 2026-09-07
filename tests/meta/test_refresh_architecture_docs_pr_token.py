@@ -326,3 +326,67 @@ def test_verifier_drift_outside_the_regenerated_docs_reaches_the_pr_body():
     pr = next(v for k, v in steps.items() if k and k.startswith("Open refresh PR"))
     assert "DRIFT=$(cat refresh-inputs/verify_other.md" in pr
     assert "${DRIFT}" in pr
+
+
+def test_a_second_run_in_the_same_month_updates_the_existing_pr_body():
+    """A force-push replaced the branch content and left the body describing
+    the previous run's documents. (Codex, PR #1009.)"""
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    pr = next(v for k, v in steps.items() if k and k.startswith("Open refresh PR"))
+    assert "BODY=$(cat <<EOF" in pr, "the body must be built once for both paths"
+    assert 'gh pr edit "$EXISTING_PR" --body "$BODY"' in pr
+    assert '--body "$BODY"' in pr, "gh pr create must use the same body"
+    # the edit has to happen inside the EXISTING_PR branch, before ITS exit --
+    # the step has an earlier exit for the nothing-to-commit case, so anchor on
+    # the branch rather than on the first `exit 0` in the file
+    branch = pr[pr.index('if [ -n "$EXISTING_PR" ]'):]
+    assert branch.index('gh pr edit "$EXISTING_PR"') < branch.index("exit 0")
+
+
+def test_the_pr_body_heredoc_cannot_execute_its_own_markdown():
+    """An UNQUOTED heredoc runs backticks. Before they were escaped, expanding
+    the body actually executed `gcloud asset search-all-resources` and dropped
+    every backticked span from the text."""
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    pr = next(v for k, v in steps.items() if k and k.startswith("Open refresh PR"))
+    body = pr[pr.index("BODY=$(cat <<EOF"):pr.index("\nEOF\n)")]
+    unescaped = re.findall(r"(?<!\\)`", body[body.index("\n"):])
+    assert not unescaped, f"{len(unescaped)} unescaped backticks would be executed"
+
+
+def test_the_deterministic_docs_are_frozen_not_allowlisted():
+    """No prompt writes docs/API.md or docs/INVESTMENT_MODELS_SUMMARY.md, so a
+    model edit to either is a stray write. (Codex, PR #1009.)"""
+    prompts = (WORKFLOW_PATH.parent.parent / "prompts")
+    written = {"ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md"}
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    restore = next(v for k, v in steps.items() if k and k.startswith("Restore gate inputs"))
+    allowed = set(re.search(r'ALLOWED="([^"]+)"', restore).group(1).split())
+    assert allowed == written, f"allowlist must be exactly the prompt-written docs, got {allowed}"
+
+    freeze = next(v for k, v in steps.items() if k and k.startswith("Freeze gate inputs"))
+    for f in ("docs/API.md", "docs/INVESTMENT_MODELS_SUMMARY.md"):
+        assert f in freeze, f"{f} is not frozen"
+        assert f'cp "$RUNNER_TEMP/frozen/{f}" {f}' in restore, f"{f} is not restored"
+    # the calibration renderer is the legitimate writer of the summary, and it
+    # must run AFTER the restore or its work would be thrown away
+    names = [s.get("name") for s in _steps()]
+    restore_i = next(i for i, n in enumerate(names) if n and n.startswith("Restore gate inputs"))
+    calib_i = next(i for i, n in enumerate(names) if n and "ticker_calibration" in n)
+    assert calib_i > restore_i
+
+
+def test_a_state_change_sharing_a_line_with_a_timestamp_is_not_reverted():
+    """Dropping every line containing a date threw away real state changes.
+
+    The drawio sched_group cell is one XML line carrying both the read date and
+    the paused-scheduler list, so a scheduler becoming paused was classified
+    timestamp-only and reverted. (Codex, PR #1009.)
+    """
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    detect = steps["Detect meaningful changes"]
+    assert "grep -vE '(read live|Live|read) 20" not in detect, \
+        "the line-dropping filter is back; it discards content that shares a line with a date"
+    assert "<DATE>" in detect, "dates must be masked, not used to drop lines"
+    # removed and added lines are COMPARED once masked
+    assert ".old" in detect and ".new" in detect and "diff " in detect

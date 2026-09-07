@@ -304,3 +304,23 @@ the assertion never reached the code path it claimed to cover. It was caught by
 running it against the stashed original, which is the only thing that
 distinguishes a test from a hope. Same lesson as round 4, arrived at from the
 other direction: run the new test against the OLD code, every time.
+
+Codex's seventh pass (head `2273272`) found six more, all confirmed:
+
+| Finding | Evidence | Fix |
+|---|---|---|
+| a second run in the same month force-pushes fresh content and exits without touching the PR body, so its diff accounting and drift findings describe the PREVIOUS run's documents | the existing-PR branch computed `STAT`/`DIFF_REPORT`/`DRIFT` and then `exit 0` | the body is built once into `$BODY` and used by both `gh pr edit` and `gh pr create` |
+| `MAIN_COUNT_PATTERNS` covered secrets, workflows and triggers but not services, and `svc_group` reads `Cloud Run Services (4; ...)` | a fifth service moves the subtitle and leaves that cell at four | services added to the rewrite and the per-cell check |
+| three cells still label the production service `trading-platform`, deleted in favour of `solyra-api-prod` | `svc_tp`, `flow_c`, `p4_tp`; `check()` rejected only `trading-platform-staging` | all three relabelled; `check()` rejects the bare name with a boundary so the live `trading-platform-svc@` SA does not trip it, and every live service must now appear on the page |
+| the meaningful-change filter DROPPED any line containing a date, so a real state change sharing a line with the read date was classified timestamp-only and reverted | reproduced: the `sched_group` cell is one XML line carrying both `read YYYY-MM-DD` and the paused list; a scheduler becoming paused reverted under the old filter and survives under the new one | dates are masked to `<DATE>` and the removed and added lines COMPARED, which cannot discard content |
+| `docs/API.md` and `docs/INVESTMENT_MODELS_SUMMARY.md` were allowlisted for model writes although no prompt writes either | the README prompt only LINKS API.md; the summary is written by `scripts/refresh_calibration_table.py`, which runs after the restore | both frozen and restored with the diagrams; the allowlist is now exactly the four documents a prompt writes, asserted against the prompt set |
+| reconciliation compared only `cron`, so a scheduler redirected to a different EXISTING job, or moved to another time zone, read clean | both `target_job` and `time_zone` were already captured on both sides | `schedulers_target_drift` and `schedulers_tz_drift`, rendered into §15 |
+
+The PR-body change is worth its own note, because writing it introduced a bug
+worse than the one it fixed and only testing found it. Moving the body into a
+heredoc dropped the backslash-escapes the original `--body "..."` string
+carried, and an **unquoted heredoc performs command substitution**: expanding
+it executed `gcloud asset search-all-resources` for real and deleted every
+backticked span from the text. Escaping the 30 backticks restores the original
+semantics. The test asserts there is no unescaped backtick in the body, which
+is the property rather than the symptom.

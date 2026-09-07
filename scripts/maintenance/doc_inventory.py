@@ -1080,6 +1080,22 @@ def reconcile(repo: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
             f"{n}: repo `{repo_sched[n]['cron']}` live `{live_sched[n]['cron']}`"
             for n in set(repo_sched) & set(live_sched)
             if repo_sched[n]["cron"] != live_sched[n]["cron"]),
+        # Cron alone said the fleets matched while a scheduler could be
+        # redirected to a different EXISTING job, or moved to another zone --
+        # both pass the missing-target check and neither changes the cron, so
+        # production fired the wrong job, or the right one at the wrong
+        # wall-clock time, under a reconciliation that read clean.
+        # (Codex, PR #1009.)
+        "schedulers_target_drift": sorted(
+            f"{n}: repo `{repo_sched[n]['target_job']}` live `{live_sched[n]['target_job']}`"
+            for n in set(repo_sched) & set(live_sched)
+            if repo_sched[n].get("target_job") and live_sched[n].get("target_job")
+            and repo_sched[n]["target_job"] != live_sched[n]["target_job"]),
+        "schedulers_tz_drift": sorted(
+            f"{n}: repo `{repo_sched[n].get('time_zone')}` live `{live_sched[n].get('time_zone')}`"
+            for n in set(repo_sched) & set(live_sched)
+            if repo_sched[n].get("time_zone") and live_sched[n].get("time_zone")
+            and repo_sched[n]["time_zone"] != live_sched[n]["time_zone"]),
         "jobs_never_executed_in_window": sorted(
             n for n, j in live["jobs"].items() if j["last_execution"]["result"] == "never"),
         "jobs_last_failed": sorted(
@@ -1230,6 +1246,8 @@ def render_markdown(section: str, repo: dict[str, Any], live: dict[str, Any] | N
         block("Live schedulers targeting a missing job", rec["schedulers_targeting_missing_job"])
         block("deploy.sh schedulers targeting a job deploy.sh never creates", rec["schedulers_repo_target_not_in_deploy"])
         block("Cron drift (same name, different cron)", rec["schedulers_cron_drift"])
+        block("Target drift (same name, different job)", rec["schedulers_target_drift"])
+        block("Time-zone drift (same name, different zone)", rec["schedulers_tz_drift"])
         block("Jobs whose last execution failed", rec["jobs_last_failed"])
         block("Jobs that have never executed", rec["jobs_never_executed_in_window"])
         return "\n".join(lines)

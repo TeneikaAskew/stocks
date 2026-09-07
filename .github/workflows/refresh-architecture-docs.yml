@@ -400,10 +400,20 @@ jobs:
           # made after it was staged and published unchecked (Codex, #1009).
           # Freeze them here; restore and re-validate after the model runs.
           cp Architecture.drawio Architecture-icons.drawio "$RUNNER_TEMP/frozen/"
+          # docs/API.md and docs/INVESTMENT_MODELS_SUMMARY.md are deterministic
+          # too: NO prompt writes either (the README prompt only links API.md),
+          # one is rendered marker blocks plus a hand-written header and the
+          # other is refreshed by scripts/refresh_calibration_table.py AFTER
+          # the restore. Allowlisting them meant a model edit to their prose
+          # was staged as legitimate. (Codex, PR #1009.)
+          mkdir -p "$RUNNER_TEMP/frozen/docs"
+          cp docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md "$RUNNER_TEMP/frozen/docs/"
           git rev-parse HEAD > "$RUNNER_TEMP/frozen/head.sha"
           # Prove the freeze actually captured the inputs the gates depend on.
           test -f "$RUNNER_TEMP/frozen/Architecture.drawio"
           test -f "$RUNNER_TEMP/frozen/Architecture-icons.drawio"
+          test -f "$RUNNER_TEMP/frozen/docs/API.md"
+          test -f "$RUNNER_TEMP/frozen/docs/INVESTMENT_MODELS_SUMMARY.md"
           for F in live.json verify_live.json previous; do
             test -e "$RUNNER_TEMP/frozen/refresh-inputs/$F" || {
               echo "::error::freeze did not capture refresh-inputs/$F"; exit 1; }
@@ -478,7 +488,10 @@ jobs:
           # The diagrams are deliberately NOT here: they are rendered from the
           # snapshot before Gemini runs, so a model edit to one is a stray
           # write, not an update. (Codex, PR #1009.)
-          ALLOWED="ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md"
+          # Only the four documents a prompt actually writes. The diagrams and
+          # the two deterministic docs are rendered before the model runs, so
+          # an edit to any of them is a stray write. (Codex, PR #1009.)
+          ALLOWED="ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md"
           # tracked files the model touched that are not generated docs
           STRAY=""
           for F in $(git diff --name-only; git ls-files --others --exclude-standard | grep -v '^refresh-inputs/' || true); do
@@ -501,6 +514,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(cat "$RUNNER_TEMP/frozen/head.sha")"
           cp "$RUNNER_TEMP/frozen/Architecture.drawio" Architecture.drawio
           cp "$RUNNER_TEMP/frozen/Architecture-icons.drawio" Architecture-icons.drawio
+          cp "$RUNNER_TEMP/frozen/docs/API.md" docs/API.md
+          cp "$RUNNER_TEMP/frozen/docs/INVESTMENT_MODELS_SUMMARY.md" docs/INVESTMENT_MODELS_SUMMARY.md
           echo "gate inputs restored and verified against the pre-Gemini manifest"
 
       # Re-run the drawio validation against what will actually be committed:
@@ -653,12 +668,24 @@ jobs:
             # diff file is absent, the -s check is false, and we revert
             # the file we just regenerated. (Caught by Codex on PR #254.)
             DIFF_NAME="${FILE//\//_}"
+            # Normalise the timestamp, do NOT drop the line. Dropping any line
+            # containing a date threw away real state changes that share a line
+            # with one: the drawio sched_group cell is a single XML line
+            # carrying both "read YYYY-MM-DD" and the paused-scheduler list, so
+            # a scheduler becoming paused was classified timestamp-only and the
+            # file reverted -- with the diagram already validated, so nothing
+            # looked again. (Codex, PR #1009.)
+            #
+            # A file is timestamp-only when its removed and added lines are
+            # identical once dates are masked, which is a comparison rather
+            # than a filter and cannot silently discard content.
             git diff --no-color "$FILE" \
-              | grep -vE '^[-+]Generated 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
-              | grep -vE '^[-+]\*\*Generated\*\* 20[0-9]{2}' \
-              | grep -vE '(read live|Live|read) 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
               | grep -E '^[-+][^-+]' \
-              > "/tmp/${DIFF_NAME}.diff"
+              | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}/<DATE>/g; s/(\*\*)?Generated(\*\*)? 20[0-9]{2}/Generated <DATE>/g' \
+              > "/tmp/${DIFF_NAME}.norm"
+            sed -n 's/^-//p' "/tmp/${DIFF_NAME}.norm" | sort > "/tmp/${DIFF_NAME}.old"
+            sed -n 's/^+//p' "/tmp/${DIFF_NAME}.norm" | sort > "/tmp/${DIFF_NAME}.new"
+            diff "/tmp/${DIFF_NAME}.old" "/tmp/${DIFF_NAME}.new" > "/tmp/${DIFF_NAME}.diff" || true
             if [ -s "/tmp/${DIFF_NAME}.diff" ]; then
               CHANGED_LINES=$(wc -l < "/tmp/${DIFF_NAME}.diff")
               echo "::notice::$FILE has meaningful changes ($CHANGED_LINES lines)"
@@ -724,16 +751,12 @@ jobs:
           # month. `gh pr create` errors loudly in that case even though the
           # force-push above already updated it with fresh content — that's
           # not a failure, just nothing further to do.
-          EXISTING_PR=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number // empty')
-          if [ -n "$EXISTING_PR" ]; then
-            echo "::notice::PR #$EXISTING_PR already open for $BRANCH — force-pushed fresh content, no new PR needed"
-            exit 0
-          fi
-
-          gh pr create \
-            --base main --head "$BRANCH" \
-            --title "Monthly architecture doc refresh: ${MONTH}" \
-            --body "## Summary
+          # The body is built once and used by BOTH paths. A second run in the
+          # same month force-pushes fresh content; leaving the body alone left
+          # its diff accounting and docs-vs-live findings describing the
+          # PREVIOUS run's documents. (Codex, PR #1009.)
+          BODY=$(cat <<EOF   # escaped backticks: an unquoted heredoc would RUN them
+          ## Summary
 
           Automated monthly refresh of architecture / cost / dependency docs from live GCP state.
 
@@ -762,7 +785,21 @@ jobs:
           - Verify any new orphan-table flag in \`DATA_DEPENDENCIES.md\` §5 is real before acting on it
           - Scan the added/removed table above: a document with high churn or a lost heading is the failure mode this refresh has hit before
 
-          Generated by \`.github/workflows/refresh-architecture-docs.yml\`"
+          Generated by \`.github/workflows/refresh-architecture-docs.yml\`
+          EOF
+          )
+
+          EXISTING_PR=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr edit "$EXISTING_PR" --body "$BODY"
+            echo "::notice::PR #$EXISTING_PR already open for $BRANCH — force-pushed fresh content and updated its body"
+            exit 0
+          fi
+
+          gh pr create \
+            --base main --head "$BRANCH" \
+            --title "Monthly architecture doc refresh: ${MONTH}" \
+            --body "$BODY"
 
       - name: No-op summary
         if: steps.detect.outputs.meaningful != '1'
