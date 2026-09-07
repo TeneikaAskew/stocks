@@ -93,10 +93,13 @@ def _reach_df(n, trigger_hits, t1, t2, t3, *, t1_n=None, t2_n=None, t3_n=None):
     }])
 
 
+SESSION = date_type(2026, 6, 20)
+
+
 def _tracked_df(calls=(101.0, 102.0, 103.0, 104.0), puts=(99.0, 98.0, 97.0, 96.0),
-                analysis_date=date_type(2026, 6, 20)):
-    """The latest premarket_analysis row's slot prices, as
-    _fetch_tracked_levels reads them. Defaults line up with _sample_level_map:
+                analysis_date=SESSION):
+    """The premarket_analysis row for the ladder's session, as
+    _fetch_tracked_levels reads it. Defaults line up with _sample_level_map:
     PDH 101 == calls trigger, PWH 102 == calls t1, PMH 103 == calls t2;
     PDL 99 == puts trigger, PWL 98 == puts t1."""
     row = {"analysis_date": analysis_date}
@@ -145,7 +148,7 @@ def _make_query_fn(reach_calls_df, reach_puts_df, mag_df, tracked_df=None):
 
 def _assemble(monkeypatch, *, enabled=True, predict=_predict_one_ok,
               query_fn=None, gamma_fn=_gamma_ok, level_map=None,
-              ticker="SPY", timeframe="15m"):
+              ticker="SPY", timeframe="15m", session_date=SESSION):
     if enabled:
         monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
     else:
@@ -160,7 +163,7 @@ def _assemble(monkeypatch, *, enabled=True, predict=_predict_one_ok,
     return ms.assemble_movement_statement(
         ticker, timeframe,
         engine=object(), level_map=level_map or _sample_level_map(),
-        query_fn=query_fn, gamma_fn=gamma_fn,
+        query_fn=query_fn, gamma_fn=gamma_fn, session_date=session_date,
     )
 
 
@@ -686,14 +689,21 @@ def test_reach_rate_sql_excludes_zero_distance_and_nan_targets():
     ratio."""
     calls = ms._reach_rate_sql("calls")
     puts = ms._reach_rate_sql("puts")
-    # At least one cent beyond, not merely greater: a target persisted a
-    # fraction of a cent past its predecessor is the same line under the
-    # one-cent rule every other level comparison here uses.
-    assert "calls_t1_price - calls_trigger_price >= 0.01" in calls
-    assert "calls_t2_price - calls_t1_price >= 0.01" in calls
-    assert "calls_t3_price - calls_t2_price >= 0.01" in calls
-    assert "puts_trigger_price - puts_t1_price >= 0.01" in puts
-    assert "puts_t2_price - puts_t3_price >= 0.01" in puts
+    # At least one cent beyond, on prices rounded to the cent in numeric (float8
+    # says 240.01 - 240.00 < 0.01), and CUMULATIVE: t2's population requires
+    # the t1 gap too, so a legacy trigger=100/t1=100/t2=101 row (where 101 is
+    # really the first target) is out of every downstream slot, not just t1.
+    g = lambda a, b: f"round({a}::numeric, 2) - round({b}::numeric, 2) >= 0.01"  # noqa: E731
+    assert g("calls_t1_price", "calls_trigger_price") in calls
+    assert g("calls_t2_price", "calls_t1_price") in calls
+    assert g("calls_t3_price", "calls_t2_price") in calls
+    assert g("puts_trigger_price", "puts_t1_price") in puts
+    assert g("puts_t2_price", "puts_t3_price") in puts
+    t2_pop = calls.split("AS t2_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
+    assert g("calls_t1_price", "calls_trigger_price") in t2_pop
+    assert g("calls_t2_price", "calls_t1_price") in t2_pop
+    t3_pop = calls.split("AS t3_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
+    assert g("calls_t1_price", "calls_trigger_price") in t3_pop
     for sql in (calls, puts):
         assert "<> 'NaN'::float8" in sql
         # unconditional: no `WHERE ..._trigger_hit_ts IS NOT NULL` gate
@@ -702,8 +712,9 @@ def test_reach_rate_sql_excludes_zero_distance_and_nan_targets():
 
 
 def test_tracked_levels_bounded_by_as_of(monkeypatch):
-    """Rule 3.6: a replayed statement matches against a playbook row dated at
-    or before its as_of, never a later one."""
+    """Rule 3.6: a replayed statement matches against the playbook row for
+    its as_of's own market date — never a later one, and never an earlier
+    one either (a line's ordinal changes between sessions)."""
     seen = {}
 
     def _q(sql, params=None):
@@ -721,9 +732,9 @@ def test_tracked_levels_bounded_by_as_of(monkeypatch):
         "SPY", "15m", as_of=pd.Timestamp("2026-06-20T15:45:00Z"),
         engine=object(), level_map=_sample_level_map(), query_fn=_q, gamma_fn=_gamma_ok,
     )
-    assert "analysis_date <= :as_of" in seen["sql"]
-    assert seen["params"]["as_of"] == date_type(2026, 6, 20)
-    assert "ORDER BY analysis_date DESC LIMIT 1" in seen["sql"]
+    assert "analysis_date = :d" in seen["sql"]
+    assert seen["params"]["d"] == date_type(2026, 6, 20)
+    assert "<=" not in seen["sql"] and "ORDER BY" not in seen["sql"]
 
 
 @pytest.mark.parametrize(
@@ -770,8 +781,65 @@ def test_evening_utc_as_of_matches_the_same_sessions_playbook(monkeypatch):
         "SPY", "15m", as_of=pd.Timestamp("2026-06-23T01:00:00Z"),
         engine=object(), level_map=_sample_level_map(), query_fn=_q, gamma_fn=_gamma,
     )
-    assert seen["params"]["as_of"] == date_type(2026, 6, 22)
+    assert seen["params"]["d"] == date_type(2026, 6, 22)
     assert gamma_seen["as_of"] == date_type(2026, 6, 22)
+
+
+def test_no_playbook_row_for_the_session_leaves_every_rung_unavailable(monkeypatch):
+    """Overnight / weekend / brief not yet run: the ladder is anchored to a
+    session the playbook has no row for. No falling back to yesterday's row
+    (Friday's PWH is t1 on Friday and the trigger on Monday); every rung says
+    why (Codex P2 on #1030)."""
+    qf = _make_query_fn(_reach_df(50, 35, 24, 18, 11), _reach_df(40, 28, 19, 14, 8),
+                        _mag_df(), tracked_df=pd.DataFrame())
+    out = _assemble(monkeypatch, query_fn=qf, session_date=date_type(2026, 6, 22))
+    assert out["levels"]["status"] == "OK"
+    for side in ("calls", "puts"):
+        for rung in out["levels"][side]:
+            rr = rung["reach_rate"]
+            assert rr["status"] == "UNAVAILABLE"
+            assert "2026-06-22" in rr["reason"]
+            assert "reach_rate" not in rr
+
+
+def test_session_date_defaults_to_the_as_of_market_date_then_today(monkeypatch):
+    seen = []
+
+    def _q(sql, params=None):
+        if "premarket_analysis" in sql and "FILTER" not in sql:
+            seen.append(dict(params or {}))
+            return _tracked_df()
+        return _make_query_fn(_reach_df(50, 35, 24, 18, 11),
+                              _reach_df(40, 28, 19, 14, 8), _mag_df())(sql, params)
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    import gcp.research.strat_engine.strat_pred_serve as serve
+    monkeypatch.setattr(serve, "predict_one", _predict_one_ok)
+    monkeypatch.setattr(ms, "market_today", lambda: date_type(2026, 9, 7))
+    common = dict(engine=object(), level_map=_sample_level_map(), query_fn=_q, gamma_fn=_gamma_ok)
+    ms.assemble_movement_statement("SPY", "15m", as_of=pd.Timestamp("2026-06-23T01:00:00Z"), **common)
+    ms.assemble_movement_statement("SPY", "15m", **common)
+    ms.assemble_movement_statement("SPY", "15m", session_date=date_type(2026, 1, 2), **common)
+    assert [p["d"] for p in seen] == [date_type(2026, 6, 22), date_type(2026, 9, 7), date_type(2026, 1, 2)]
+
+
+def test_match_compares_integer_cents_not_a_float_threshold(monkeypatch):
+    """240.01 - 240.00 is 0.00999… in binary, so a `< 0.01` test called them
+    the same line and pinned the trigger's rate on the t1 rung (Codex P2 on
+    #1030). Cents are integers."""
+    assert 240.01 - 240.00 < 0.01  # the hazard, stated
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 240.00, "day", 2.0), _level("PWH", 240.01, "week", 2.01)],
+        put_levels=[], current_price=235.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(240.00, 240.01, 241.0, 242.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1"]
+    assert calls[1]["reach_rate"]["hits"] == 25
 
 
 def test_degenerate_magnitude_leaves_headline_and_levels_ok(monkeypatch):

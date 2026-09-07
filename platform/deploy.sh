@@ -148,6 +148,20 @@ fi
 # lands through the promotion gate in
 # gcp/research/magnitude_engine/mag_walk_forward.promotion_verdict and needs
 # no flag change here.
+#
+# PROPAGATION. This script is the break-glass deploy path. The routine one,
+# gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml, deploys the image
+# ONLY and deliberately leaves the service's env alone, so merging this file
+# does not flip the live flag (Codex P1 on #1030). Live on 2026-09-07 per
+# platform/GCP_DATA_DICTIONARY.md: solyra-api-staging (the service the
+# browser talks to) carries false, solyra-api-prod carries true. After the
+# image carrying #1030 is serving, enable it on the service itself:
+#
+#   gcloud run services update solyra-api-staging --region=us-east1 \
+#     --update-env-vars=MOVEMENT_STATEMENT_ENABLED=true
+#
+# --update-env-vars merges; do not use --set-env-vars here, it replaces the
+# whole set (the reason this flag lives in ENV_VARS below at all).
 # --set-env-vars replaces the whole set on each deploy, so the flag must live
 # here to persist across deploys.
 # GCP_REGION rides along with GCP_PROJECT_ID so the admin refresh dispatch

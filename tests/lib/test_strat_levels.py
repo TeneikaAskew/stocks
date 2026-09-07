@@ -665,6 +665,18 @@ class TestIdentifyTriggers:
         calls = triggers['calls']
         assert calls['trigger_level'] == 265.00
         assert [t['price'] for t in calls['targets']] == [266.50, 268.00, 270.00]
+
+    def test_targets_one_cent_apart_are_distinct_despite_float_error(self):
+        """240.01 - 240.00 < 0.01 in binary; integer cents keep them apart."""
+        levels = {
+            'PDH': StratLevel('PDH', 240.00, 'day', 'high', '2U', False, ''),
+            'PWH': StratLevel('PWH', 240.01, 'week', 'high', '2U', False, ''),
+            'PMH': StratLevel('PMH', 241.00, 'month', 'high', '2U', False, ''),
+            'PDL': StratLevel('PDL', 235.00, 'day', 'low', '2D', False, ''),
+        }
+        calls = identify_triggers(238.00, levels)['calls']
+        assert calls['trigger_level'] == 240.00
+        assert [t['price'] for t in calls['targets']] == [240.01, 241.00]
         assert all(t['price'] > calls['trigger_level'] for t in calls['targets'])
 
 

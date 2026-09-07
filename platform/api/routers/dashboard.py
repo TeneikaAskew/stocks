@@ -394,14 +394,14 @@ def _movement_statement_enabled() -> bool:
 
 
 def _movement_analysis_date() -> _date_cls:
-    """Today's trading date in market time (Rule 3.9: Eastern, named zone).
+    """Today's trading date in market time — lib.movement_statement.market_today.
 
-    The API serves requests at any hour; a UTC date would already be tomorrow
-    after 20:00 ET and would push the ladder one session forward.
+    One definition for the ladder anchor AND the playbook-row lookup, so the
+    two can never disagree about which session "today" is.
     """
-    from zoneinfo import ZoneInfo  # noqa: PLC0415
+    from lib.movement_statement import market_today  # noqa: PLC0415
 
-    return datetime.now(ZoneInfo("America/New_York")).date()
+    return market_today()
 
 
 def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = None):
@@ -524,8 +524,13 @@ def movement_statement(
 
     from lib.movement_statement import assemble_movement_statement  # noqa: PLC0415
 
-    level_map = _build_movement_level_map(ticker_u)
-    result = assemble_movement_statement(ticker_u, tf, level_map=level_map)
+    # One session date for both the ladder anchor and the playbook row the
+    # rungs are matched against (Codex P2 on #1030).
+    session_date = _movement_analysis_date()
+    level_map = _build_movement_level_map(ticker_u, analysis_date=session_date)
+    result = assemble_movement_statement(
+        ticker_u, tf, level_map=level_map, session_date=session_date,
+    )
 
     # Defensive: the assembler returns None only when the flag is OFF, but we
     # already gated on the flag above. If it still returns None (e.g. an env

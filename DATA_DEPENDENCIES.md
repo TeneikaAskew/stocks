@@ -406,7 +406,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](lib/strat_levels.py) — line [1755](lib/strat_levels.py#L1755)
+- [`lib/strat_levels.py`](lib/strat_levels.py) — line [1758](lib/strat_levels.py#L1758)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](scripts/calibrate_thresholds.py) — line [25](scripts/calibrate_thresholds.py#L25), [313](scripts/calibrate_thresholds.py#L313), [487](scripts/calibrate_thresholds.py#L487), [489](scripts/calibrate_thresholds.py#L489)
@@ -779,7 +779,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) — line [342](gcp/discord_interactions/main.py#L342), [345](gcp/discord_interactions/main.py#L345)
 - [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [7](gcp/premarket_brief.py#L7), [3297](gcp/premarket_brief.py#L3297), [3342](gcp/premarket_brief.py#L3342)
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [320](gcp/premarket_playbook_resolver.py#L320), [326](gcp/premarket_playbook_resolver.py#L326), [503](gcp/premarket_playbook_resolver.py#L503), [586](gcp/premarket_playbook_resolver.py#L586)
-- [`lib/movement_statement.py`](lib/movement_statement.py) — line [22](lib/movement_statement.py#L22), [290](lib/movement_statement.py#L290), [296](lib/movement_statement.py#L296), [356](lib/movement_statement.py#L356)
+- [`lib/movement_statement.py`](lib/movement_statement.py) — line [22](lib/movement_statement.py#L22), [310](lib/movement_statement.py#L310), [316](lib/movement_statement.py#L316), [380](lib/movement_statement.py#L380)
 - [`lib/strategies/brief_bias.py`](lib/strategies/brief_bias.py) — line [83](lib/strategies/brief_bias.py#L83), [156](lib/strategies/brief_bias.py#L156)
 - [`platform/api/routers/dashboard.py`](platform/api/routers/dashboard.py) — line [88](platform/api/routers/dashboard.py#L88), [108](platform/api/routers/dashboard.py#L108), [116](platform/api/routers/dashboard.py#L116)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [3](scripts/backfill_history_tables.py#L3), [104](scripts/backfill_history_tables.py#L104), [106](scripts/backfill_history_tables.py#L106), [127](scripts/backfill_history_tables.py#L127), [128](scripts/backfill_history_tables.py#L128)
@@ -831,7 +831,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `strat_levels`
 - [`lib/indicators.py`](lib/indicators.py) — line [537](lib/indicators.py#L537)
-- [`lib/strat_levels.py`](lib/strat_levels.py) — line [623](lib/strat_levels.py#L623), [982](lib/strat_levels.py#L982), [1615](lib/strat_levels.py#L1615)
+- [`lib/strat_levels.py`](lib/strat_levels.py) — line [623](lib/strat_levels.py#L623), [985](lib/strat_levels.py#L985), [1618](lib/strat_levels.py#L1618)
 
 ### `ticker_calibration`
 - [`lib/config.py`](lib/config.py) — line [367](lib/config.py#L367)

@@ -953,11 +953,14 @@ def _distinct_targets(candidates, trigger_price: float, n: int = 3) -> list:
     anything within a cent of the trigger or of a target already taken, the
     same tolerance ``select_nearest_levels`` uses.
     """
-    out, taken = [], [trigger_price]
+    # Integer cents, not a float threshold: 240.01 - 240.00 is 0.00999… in
+    # binary and a `< 0.01` test would call them the same line.
+    out, taken = [], {int(round(trigger_price * 100))}
     for lv in candidates:
-        if any(abs(lv.price - p) < 0.01 for p in taken):
+        c = int(round(lv.price * 100))
+        if c in taken:
             continue
-        taken.append(lv.price)
+        taken.add(c)
         out.append(lv)
         if len(out) >= n:
             break
