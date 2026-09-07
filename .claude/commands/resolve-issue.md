@@ -97,7 +97,9 @@ git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
 # the issue's development sidebar. So a hit is a candidate, not an answer.
 # Confirm the relationship before treating any result as this issue's PR —
 # a closing keyword in its body, or the issue's own linked-PR entry — and
-# read the issue timeline when the search comes back empty.
+# read the issue timeline when the search comes back empty. It is paginated
+# too — the fourth such read in this file — so page it out rather than
+# concluding "no existing PR" from one page of keyword hits.
 # `is:open` matters: without it the search returns closed and merged PRs
 # too, and CASE A below would check out a dead PR's retained branch and
 # push commits that can never reach the merge gate. Confirm the state of
