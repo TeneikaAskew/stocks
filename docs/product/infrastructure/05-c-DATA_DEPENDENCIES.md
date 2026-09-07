@@ -854,7 +854,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [5](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L5)
 - [`gcp/research/strat_engine/strat_walk_forward.py`](../../../gcp/research/strat_engine/strat_walk_forward.py) — line [513](../../../gcp/research/strat_engine/strat_walk_forward.py#L513)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2283](../../../gcp/signal_monitor.py#L2283)
-- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [107](../../../gcp/trade_logger.py#L107), [126](../../../gcp/trade_logger.py#L126), [135](../../../gcp/trade_logger.py#L135), [168](../../../gcp/trade_logger.py#L168)
+- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [120](../../../gcp/trade_logger.py#L120), [139](../../../gcp/trade_logger.py#L139), [148](../../../gcp/trade_logger.py#L148), [181](../../../gcp/trade_logger.py#L181)
 - [`gcp/weekend_review.py`](../../../gcp/weekend_review.py) — line [26](../../../gcp/weekend_review.py#L26)
 - [`lib/backtest.py`](../../../lib/backtest.py) — line [11](../../../lib/backtest.py#L11), [326](../../../lib/backtest.py#L326), [357](../../../lib/backtest.py#L357), [358](../../../lib/backtest.py#L358)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [174](../../../lib/data_loader.py#L174), [599](../../../lib/data_loader.py#L599), [602](../../../lib/data_loader.py#L602), [625](../../../lib/data_loader.py#L625)

@@ -164,3 +164,64 @@ def test_the_apply_checks_the_job_exists_before_updating_it():
         assert args.index("gcloud run jobs describe apply-schema-migrations") \
             < args.index("gcloud run jobs update apply-schema-migrations"), path.name
         assert "./gcp/deploy.sh apply-schema" in args, "the failure must name the bootstrap command"
+
+
+# ── Every mutation of apply-schema-migrations goes through the serializer ──
+DEPLOY_SH = (REPO / "gcp/deploy.sh").read_text()
+_CODE = "\n".join(l for l in DEPLOY_SH.splitlines() if not l.lstrip().startswith("#"))
+
+
+def _fn(name: str) -> str:
+    import re
+    m = re.search(r"^" + name + r"\(\)\s*\{(.*?)^\}", _CODE, re.M | re.S)
+    assert m, f"{name} not found in deploy.sh"
+    return m.group(1)
+
+
+def _target(name: str) -> str:
+    import re
+    dispatch = _CODE[_CODE.index('case "${1:-help}" in'):]
+    m = re.search(r"\n\s+" + re.escape(name) + r"\)\s*(.*?);;", dispatch, re.S)
+    assert m, f"{name}) target not found"
+    return m.group(1)
+
+
+def test_all_only_bootstraps_the_migration_job_and_never_updates_it():
+    """Codex on #1022: an `all)` run between a Cloud Build's `jobs update`
+    and `jobs execute` could repoint the shared job at the local image,
+    and the build would then execute a different schema while recording
+    its own revision as applied. The serializer only sees tagged builds,
+    so deploy.sh must not update an existing job outside it: `all)` creates
+    the job when it is missing and otherwise leaves it alone."""
+    body = _fn("deploy_apply_schema_migrations")
+    assert "gcloud run jobs create apply-schema-migrations" in body
+    assert "gcloud run jobs update apply-schema-migrations" not in body, \
+        "bootstrap only: the image is moved by the serialized path"
+    assert "deploy_apply_schema_migrations" in _target("all")
+    assert "apply_schema_via_build" not in _target("all")
+
+
+def test_the_manual_apply_target_is_a_tagged_serialized_cloud_build():
+    """`./gcp/deploy.sh apply-schema` submits a Cloud Build carrying the
+    same tag the triggers use, runs the same serializer inside it, and
+    moves + executes the job from there, so it is ordered with the trigger
+    builds instead of racing them. The revision guard args come from the
+    local checkout."""
+    body = _fn("apply_schema_via_build")
+    assert "gcloud builds submit" in body
+    assert "apply-schema-on-change" in body, "must carry the tag the serializer scans"
+    assert "wait_for_earlier_schema_builds.sh" in body
+    assert "gcloud run jobs update apply-schema-migrations" in body
+    assert "gcloud run jobs execute apply-schema-migrations" in body and "--wait" in body
+    for arg in ("--revision=", "--revision-time=", "--revision-ancestors="):
+        assert arg in body, arg
+    assert "timeout: 5400s" in body
+    target = _target("apply-schema")
+    assert "build_image" in target and "apply_schema_via_build" in target
+    assert target.index("deploy_apply_schema_migrations") < target.index("apply_schema_via_build"), \
+        "bootstrap (create if missing) before the serialized move"
+    # No other function updates the job outside a Cloud Build.
+    import re
+    updaters = {name for name in re.findall(r"^([a-z_][a-z0-9_]*)\(\)\s*\{", _CODE, re.M)
+                if "gcloud run jobs update apply-schema-migrations" in _fn(name)}
+    assert updaters == {"apply_schema_via_build"}, updaters
