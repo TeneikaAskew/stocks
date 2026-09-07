@@ -304,9 +304,14 @@ def test_the_diagrams_are_frozen_restored_and_revalidated_after_gemini():
     revalidate = "Re-validate the diagrams after the model ran"
     assert revalidate in names
     assert "--check" in steps[revalidate]
-    # and it must come after every model step
+    # and it must come after every model step AND after the restore, so it
+    # validates the bytes that get committed rather than the model's copy
     last_gemini = max(i for i, n in enumerate(names) if n and n.startswith("Regenerate "))
-    assert names.index(revalidate) > last_gemini
+    restore_i = next(i for i, n in enumerate(names) if n and n.startswith("Restore gate inputs"))
+    assert last_gemini < restore_i < names.index(revalidate)
+    # it reads the frozen inputs, which the restore has just put back
+    assert "refresh-inputs/live.json" in steps[revalidate]
+    assert "refresh-inputs/repo_jobs.json" in steps[revalidate]
 
 
 def test_verifier_drift_outside_the_regenerated_docs_reaches_the_pr_body():
