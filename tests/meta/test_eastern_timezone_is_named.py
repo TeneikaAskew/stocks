@@ -34,6 +34,7 @@ import subprocess
 import json
 import pathlib
 import re
+import shlex
 import uuid
 from datetime import datetime, timedelta
 from typing import NamedTuple
@@ -2711,20 +2712,61 @@ def _blank_shell_output(text: str) -> str:
     And only when the output is going nowhere. A line carrying `>`, `>>`, `|`
     or `tee` is writing its text somewhere that can be read back, which makes
     it configuration rather than a diagnostic, so it is left alone.
+
+    Bounded to the CURRENT command. Blanking to the end of the physical line
+    emptied every quoted string after the diagnostic, so `echo done; export
+    TZ="EST"` was rewritten to `TZ="   "` and a real assignment on the same
+    line stopped being a finding -- this pass, added to close a false
+    positive, silently creating a false negative instead (Codex, PR #993).
+
+    `;`, `&&`, `||` and a lone `&` end the command. A single `|` does not: it
+    is the pipe `_redirects_outside_quotes` exists to notice, and treating it
+    as a terminator would blank `echo 'TZ=EST' | tee app.env`, which IS
+    writing configuration.
     """
     out = []
     for line in text.splitlines():
         m = _SHELL_OUTPUT_CMD.search(line)
         if m:
-            rest = line[m.end():]
+            cut = _command_end(line, m.end())
+            rest, tail = line[m.end():cut], line[cut:]
             if not _redirects_outside_quotes(rest):
                 rest = _SHELL_QUOTED.sub(
                     lambda q: (q.group(0)[0] + " " * (len(q.group(0)) - 2)
                                + q.group(0)[-1]),
                     rest)
-                line = line[:m.end()] + rest
+            line = line[:m.end()] + rest + tail
         out.append(line)
     return "\n".join(out)
+
+
+def _command_end(line: str, start: int) -> int:
+    """Index of the separator ending the command that begins at `start`.
+
+    Quote-aware, so a `;` inside `echo 'a; b'` does not end anything.
+    """
+    quote = None
+    escaped = False
+    i = start
+    while i < len(line):
+        ch = line[i]
+        if escaped:
+            escaped = False
+        elif quote:
+            if ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == ";":
+            return i
+        elif line.startswith("&&", i) or line.startswith("||", i):
+            return i
+        elif ch == "&":
+            return i
+        i += 1
+    return len(line)
 
 
 def _expand_shell_defaults(text: str) -> str:
@@ -2747,6 +2789,17 @@ def _expand_shell_defaults(text: str) -> str:
     return _expand_shell_vars(text)
 
 
+def _opens_escape_string(text: str, i: int) -> bool:
+    """Is the quote at `i` the start of a PostgreSQL `E'...'` literal?
+
+    The `E` has to be its own token, so `TABLE'x'` and `CASE'x'` are ordinary
+    literals rather than escape strings.
+    """
+    if text[i - 1:i] not in ("E", "e") or i == 0:
+        return False
+    return i < 2 or not re.match(r"[A-Za-z0-9_]", text[i - 2])
+
+
 def _strip_sql_comments(text: str) -> str:
     """Blank `--` line comments and `/* ... */` blocks, honouring quotes.
 
@@ -2764,9 +2817,21 @@ def _strip_sql_comments(text: str) -> str:
     are data. SQL escapes a quote by doubling it, which needs no special case
     here: the closing quote of the pair opens the next one, and the state
     machine ends up back inside the string.
+
+    PostgreSQL's escape strings are the case that does need one. In `E'...'`
+    a backslash escapes the following character, so the quote in
+    `SELECT E'foo\' -- still data'; SET TIME ZONE 'EST';` does NOT close the
+    literal -- but this machine read it as the closing quote, took the `--`
+    for a comment, and blanked the real `SET` that followed. The third time
+    the same shape has appeared: a stripper destroying the statement it exists
+    to read, here in the direction that HIDES a finding (Codex, PR #993).
+
+    Only `E'...'` honours backslashes at PostgreSQL's default
+    `standard_conforming_strings = on`, so an ordinary literal is unchanged.
     """
     out = []
     quote = None
+    escapes = False
     block = False
     i = 0
     while i < len(text):
@@ -2780,12 +2845,19 @@ def _strip_sql_comments(text: str) -> str:
             continue
         if quote:
             out.append(ch)
+            if escapes and ch == "\\" and i + 1 < len(text):
+                # The escaped character is data whatever it is, including a
+                # quote, so it cannot close the literal.
+                out.append(text[i + 1]); i += 2
+                continue
             if ch == quote:
                 quote = None
             i += 1
             continue
         if ch in "\"'":
-            quote = ch; out.append(ch); i += 1
+            quote = ch
+            escapes = ch == "'" and _opens_escape_string(text, i)
+            out.append(ch); i += 1
             continue
         if ch == "-" and nxt == "-":
             while i < len(text) and text[i] != "\n":
@@ -2858,13 +2930,21 @@ def _shell_functions(body: str) -> list[tuple[str, str]]:
     """
     lines = body.splitlines(keepends=True)
     out: list[tuple[str, list]] = [("<top level>", [])]
-    header = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{")
+    # All three POSIX/bash spellings. Recognising only `name() {` meant a
+    # helper written `function name {` opened no scope at all, so its `local`
+    # zoned array was read as top level and covered a later top-level command
+    # that actually receives nothing -- the same silent disarming of the
+    # scheduler check this splitter was rewritten to fix, one spelling along
+    # (Codex, PR #993).
+    header = re.compile(
+        r"^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\)\s*)?"
+        r"|([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*)\{")
     depth = 0
     for line in lines:
         if depth == 0:
             m = header.match(line)
             if m:
-                out.append((m.group(1), [line]))
+                out.append((m.group(1) or m.group(2), [line]))
                 depth = _brace_delta(line)
                 if depth <= 0:          # a one-line function body
                     depth = 0
@@ -2916,6 +2996,35 @@ def _brace_delta(line: str) -> int:
     return depth
 
 
+def _declares_zone_flag(cmd: str) -> bool:
+    """Does this command pass `--time-zone` as an ARGUMENT?
+
+    A substring test accepted any command whose payload happened to contain
+    the text, so `--message-body '{"note":"--time-zone"}'` satisfied the
+    check while the scheduler was created with no zone and defaulted to UTC
+    (Codex, PR #993). The other half of the guard could not catch it either:
+    the file-wide zone assertion is satisfied by the genuine flags elsewhere
+    in `deploy.sh`.
+
+    Tokenised, so the reverse also holds -- `"--time-zone"` written quoted is
+    still the flag it is, which a blank-the-quotes approach would have missed
+    and reported as an offender.
+
+    On unbalanced quoting `shlex` raises and there is nothing to tokenise. It
+    falls back to the substring test rather than reporting the command,
+    because a parse failure is this guard's shortcoming and answering it with
+    red CI on somebody's shell is the failure direction this file has spent
+    six rounds removing. `gcp/deploy.sh` parses today, and
+    `test_the_real_deploy_script_tokenises` fails if it stops.
+    """
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return "--time-zone" in cmd
+    return any(t == "--time-zone" or t.startswith("--time-zone=")
+               for t in tokens)
+
+
 def _scheduler_offenders(name: str, func: str) -> list[str]:
     """Scheduler declarations in `func` that set no timezone.
 
@@ -2928,7 +3037,7 @@ def _scheduler_offenders(name: str, func: str) -> list[str]:
     zoned = _arrays_carrying_timezone(func)
     out = []
     for at, cmd in _scheduler_commands(func):
-        if "--time-zone" in cmd:
+        if _declares_zone_flag(cmd):
             continue
         # `pos <= at`, not merely membership. An array assigned LATER in the
         # same function is still unset when this command runs, so bash expands
@@ -2981,7 +3090,7 @@ def _arrays_carrying_timezone(func: str) -> dict[str, list]:
     # (Codex, PR #993).
     for m in re.finditer(
             r"^\s*(?:(?:local|declare|typeset|readonly|export)\s+"
-            r"(?:-[A-Za-z]+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)=\(",
+            r"(?:-[A-Za-z]+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)(\+?)=\(",
             func, re.MULTILINE):
         start = m.end()
         depth = 1
@@ -2997,6 +3106,15 @@ def _arrays_carrying_timezone(func: str) -> dict[str, list]:
         # it while saying nothing about the zone those schedulers would run in.
         carries = bool(re.search(r"--time-zone[=\s]+[\"']?" + re.escape(EASTERN)
                                  + r"[\"']?", func[start:i]))
+        # `+=(` APPENDS. Reading it as a rebind lost the elements already
+        # there, so `flags=(--location ...)` then `flags+=(--time-zone ...)`
+        # recorded the zoneless assignment as the one in force and reported a
+        # correctly zoned scheduler as an offender -- a false CI failure, on
+        # the incremental spelling rather than the sloppy one
+        # (Codex, PR #993).
+        prior = names.get(m.group(1))
+        if m.group(2) == "+" and prior:
+            carries = carries or prior[-1][1]
         # The END of the assignment: bash has the value only after the
         # closing paren, so a command between `(` and `)` is not covered.
         names.setdefault(m.group(1), []).append((i, carries))
@@ -6294,3 +6412,196 @@ def test_a_wrapped_time_zone_flag_reads_its_value():
 #
 # All three end in a real zone or a real process environment, so the runtime
 # assertion on #1019 covers them.
+# -- Round 24 (Codex, PR #993) ----------------------------------------------
+#
+# Ten findings. Five fixed, five recorded on #1019. Four of the five fixed are
+# defects in this file's own preprocessing -- two of them created by the fixes
+# one round earlier -- and the fifth is the scheduler check accepting a
+# zoneless declaration because a substring appeared in a payload.
+
+
+def test_a_postgres_escape_string_does_not_end_at_its_escaped_quote():
+    """`SELECT E'foo\' -- still data'; SET TIME ZONE 'EST';` runs the SET.
+
+    In an `E'...'` literal a backslash escapes the next character, so the
+    quote is data. The stripper read it as the closing quote, took the `--`
+    for a comment, and blanked the real `SET` -- hiding a fixed session
+    timezone from both guards. The third instance of this shape, after the
+    `${path#*/}` and escaped-quote findings in the SHELL stripper, and the
+    first in the direction that hides rather than invents (Codex, PR #993).
+    """
+    kept = _strip_sql_comments(
+        r"SELECT E'foo\' -- still data'; SET TIME ZONE 'EST';")
+    assert "SET TIME ZONE 'EST'" in kept, kept
+    assert NONPY_AMBIGUOUS.search(kept) or NONPY_UNAMBIGUOUS.search(kept)
+
+    # Doubling still needs no special case, and an ordinary literal takes no
+    # backslash escapes at PostgreSQL's default settings.
+    assert "SET TIME ZONE 'EST'" in _strip_sql_comments(
+        "SELECT 'it''s'; SET TIME ZONE 'EST';")
+
+    # A real comment is still blanked, and `--` inside a literal is still data.
+    assert not NONPY_AMBIGUOUS.search(
+        _strip_sql_comments("-- SET TIME ZONE 'EST'"))
+    assert "'a -- b'" in _strip_sql_comments("SELECT 'a -- b';")
+
+    # `E` only counts as its own token, so a column called `table` keeps an
+    # ordinary literal.
+    assert _strip_sql_comments("SELECT table'x' -- c").rstrip() == (
+        "SELECT table'x'")
+
+
+def test_blanking_a_diagnostic_stops_at_the_command_separator():
+    """`echo done; export TZ="EST"` still reports the export.
+
+    The output-blanking pass emptied every quoted string to the end of the
+    physical line, so a real assignment after a `;` was rewritten to
+    `TZ="   "`. A pass added last round to close a FALSE POSITIVE had created
+    a false negative instead, which is the more dangerous direction
+    (Codex, PR #993).
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    assert scanned('echo done; export TZ="EST"')
+    assert scanned("echo done && export TZ=EST")
+    assert scanned("echo done || export TZ=EST")
+
+    # Every earlier round's property still holds. The diagnostics stay quiet:
+    assert not scanned("echo 'set TZ=EST to reproduce'")          # round 21
+    assert not scanned(r'printf "--time-zone EST\n"')                # round 21
+    assert not scanned(
+        "echo 'Never set TZ=EST | use America/New_York'")         # round 23
+    # and writing the text somewhere is still configuration:
+    assert scanned("echo 'TZ=EST' > /tmp/app.env")                # round 22
+    assert scanned("echo 'TZ=EST' | tee app.env")                 # round 22
+
+    # A separator inside quotes separates nothing.
+    assert not scanned("echo 'a; b TZ=EST'")
+    assert _command_end("echo a; export TZ=EST", 4) == 6
+    assert _command_end("echo 'a; b'", 4) == len("echo 'a; b'")
+
+
+def test_an_appended_array_keeps_what_it_already_held():
+    """`flags=(--location ...)` then `flags+=(--time-zone ...)` is covered.
+
+    `+=(` was read as a rebind, so the zoneless assignment was the one in
+    force and a correctly zoned scheduler was reported as an offender. A false
+    CI failure aimed at the incremental spelling (Codex, PR #993).
+    """
+    appended = ("flags=(--location us-east1)\n"
+                "flags+=(--time-zone America/New_York)\n"
+                'gcloud scheduler jobs create http j "${flags[@]}"\n')
+    assert not _scheduler_offenders("<top level>", appended), (
+        _scheduler_offenders("<top level>", appended))
+
+    # An append carrying no zone leaves the array zoneless.
+    zoneless = ("flags=(--location us-east1)\n"
+                "flags+=(--attempt-deadline 60s)\n"
+                'gcloud scheduler jobs create http j "${flags[@]}"\n')
+    assert _scheduler_offenders("<top level>", zoneless)
+
+    # A REBIND still wipes the zone, which is the round-21 property.
+    rebound = ("flags=(--time-zone America/New_York)\n"
+               "flags=(--location us-east1)\n"
+               'gcloud scheduler jobs create http j "${flags[@]}"\n')
+    assert _scheduler_offenders("<top level>", rebound)
+
+
+def test_the_function_keyword_opens_a_scope():
+    """`function helper { ... }` is a function, and its locals stay in it.
+
+    The header pattern knew only `name() {`, so a helper written with the
+    keyword opened no scope: its `local` zoned array was read as file scope
+    and covered a later top-level command that actually expands an unset
+    array and receives no zone at all. The same silent disarming of the
+    scheduler check the splitter was rewritten to fix one round earlier, one
+    spelling along (Codex, PR #993).
+    """
+    def bodies(header: str) -> str:
+        return (header + "\n"
+                "  local flags=(--time-zone America/New_York)\n"
+                '  gcloud scheduler jobs create http a "${flags[@]}"\n'
+                "}\n"
+                'gcloud scheduler jobs create http b "${flags[@]}"\n')
+
+    for header in ("function helper {", "function helper() {", "helper() {"):
+        segs = _shell_functions(bodies(header))
+        assert [n for n, _ in segs] == ["<top level>", "helper"], header
+        found = [o for n, seg in segs for o in _scheduler_offenders(n, seg)]
+        assert len(found) == 1 and "http b" in found[0], (header, found)
+
+
+def test_a_scheduler_flag_is_an_argument_not_a_substring():
+    """A payload quoting `--time-zone` does not satisfy the check.
+
+    `--message-body '{"note":"--time-zone"}'` contained the text, so the
+    command was skipped and a scheduler defaulting to UTC produced no
+    offender. The file-wide zone assertion could not catch it either: the
+    genuine flags elsewhere in `deploy.sh` already satisfy it
+    (Codex, PR #993).
+    """
+    payload = ('gcloud scheduler jobs create http j '
+               "--message-body '{\"note\":\"--time-zone\"}'\n")
+    assert _scheduler_offenders("<top level>", payload), (
+        "a payload is not a flag")
+
+    # Tokenising cuts the other way too: a quoted flag is still the flag.
+    for real in ('--time-zone America/New_York',
+                 '"--time-zone" "America/New_York"',
+                 '--time-zone=America/New_York'):
+        cmd = f'gcloud scheduler jobs create http j {real}\n'
+        assert not _scheduler_offenders("<top level>", cmd), real
+
+    assert _declares_zone_flag("gcloud x --time-zone America/New_York")
+    # `shlex` strips the quotes, so a payload that is EXACTLY the flag --
+    # `--body '--time-zone'` -- still tokenises to it. Telling that from a
+    # real flag needs gcloud's option arity, which this file does not model,
+    # so it stays a limitation rather than a silent claim. The reported
+    # shape, a flag quoted INSIDE a larger payload, is what is closed here.
+    assert not _declares_zone_flag(
+        "gcloud x --message-body '{\"note\":\"--time-zone\"}'")
+
+
+def test_the_real_deploy_script_tokenises():
+    """Every scheduler command in `gcp/deploy.sh` can actually be parsed.
+
+    `_declares_zone_flag` falls back to the old substring test when `shlex`
+    cannot read a command, so a script that stopped parsing would quietly
+    return the guard to the weaker check this round replaced. This asserts
+    the fallback is not currently load-bearing.
+    """
+    body = _strip_shell_comments((REPO / "gcp" / "deploy.sh").read_text())
+    commands = [cmd for _, seg in _shell_functions(body)
+                for _, cmd in _scheduler_commands(seg)]
+    assert commands, "no scheduler commands found -- has deploy.sh moved?"
+    for cmd in commands:
+        shlex.split(cmd)          # raises ValueError if it cannot
+
+
+# Recorded on #1019 rather than fixed, with the reasoning in the issue:
+#
+#   * Make variable references -- `LEGACY := EST` then `export TZ := $(LEGACY)`
+#   * `SET TIME ZONE INTERVAL '-5 hours'`, the unit-bearing interval spelling
+#   * `%sx` / `%system` line magics, whose payload runs in a shell
+#   * YAML `- value: EST` before `name: TZ`, the reverse block order
+#
+# and one that is NOT merely another spelling, which is why it is written out
+# here as well as there:
+#
+#   * `export TZ=\` continued onto the next physical line.
+#
+# Every shell preprocessing step in this file is WIDTH-PRESERVING -- comments
+# and expansions are blanked in spaces rather than deleted -- because
+# `_scalar_in_force` resolves a reference by comparing character offsets, and
+# `_scheduler_commands` maps commands to array assignments the same way.
+# Joining a continuation removes a newline, so it cannot preserve either the
+# offsets or the line numbers this file reports, and the scheduler path gets
+# away with joining only because it computes its own offsets afterwards.
+#
+# So closing it means re-basing every offset consumer on joined text: a change
+# to the machinery six of the last twelve regressions came from, in service of
+# one spelling. That is the trade this whole class is about, and it is the
+# user's call rather than mine.
