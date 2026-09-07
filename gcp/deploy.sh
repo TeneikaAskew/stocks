@@ -69,7 +69,7 @@ build_image() {
     # cleanup policy only deletes UNTAGGED versions, so pinning first keeps
     # those digests alive until the jobs are redeployed (see pin_image_tags).
     pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :latest off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
-    gcloud builds submit --tag "${IMAGE}" "$tmpdir"
+    gcloud builds submit --tag "${IMAGE}" "$tmpdir" || { echo "ERROR: build failed; :latest not moved." >&2; rm -rf "$tmpdir"; return 1; }
     rm -rf "$tmpdir"
 }
 
@@ -156,6 +156,10 @@ _pkgdev_path() {
 # subshell and is lost (Codex, PR #1004); callers then read
 # ${_TAG_CACHE[<repo_image>]} themselves.
 declare -A _TAG_CACHE=()
+# Every repo image _pin_tag wrote or checked a tag on during this run, so the
+# stale-tag sweep visits each package that can hold an inuse-* tag rather
+# than a hard-coded list (Codex, PR #1004).
+declare -A _SEEN_REPOS=()
 
 _load_tags() {
     # _load_tags <repo_image>  -> fills _TAG_CACHE[<repo_image>]; nonzero on failure
@@ -176,6 +180,7 @@ _pin_tag() {
     repo_image=$(_pkgdev_path "${ref%%@*}")
     ref="${repo_image}@${ref#*@}"
     local existing
+    _SEEN_REPOS[${repo_image}]=1
     _load_tags "${repo_image}" || return 1
     existing=$(printf '%s\n' "${_TAG_CACHE[${repo_image}]}" \
         | awk -F'\t' -v t="${tag}" '{n=split($1,p,"/"); if (p[n]==t) print $2}' \
@@ -303,7 +308,11 @@ pin_image_tags() {
     # succeeded, so `wanted` is the complete in-use set.
     for repo_image in "${IMAGE}" \
             "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/trading-platform" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/trading-platform-staging" \
             "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/solyra-api"; do
+        _SEEN_REPOS[${repo_image}]=1
+    done
+    for repo_image in "${!_SEEN_REPOS[@]}"; do
         _load_tags "${repo_image}" || { failures=$((failures + 1)); continue; }
         tags=${_TAG_CACHE[${repo_image}]}
         while IFS=$'\t' read -r tag _; do
@@ -394,15 +403,46 @@ setup_registry_cleanup() {
   }
 ]
 EOF
-    # `trading` (us-east1) holds the jobs image; `gcr.io` (multi-region us)
-    # is the legacy gcr.io-redirect repo that still holds solyra-api and
-    # trading-platform (built by .github/workflows/deploy-staging.yml).
+    # `gcr.io` (multi-region us) is the legacy gcr.io-redirect repo holding
+    # the API service images. Its DELETE rule is scoped to the retired
+    # trading-platform* packages: solyra-api is built by platform/deploy.sh
+    # (which now pins first) AND by the Cloud Build trigger from #990, which
+    # cannot run pin-images, so a prod revision's digest could lose its
+    # only tag on a later staging build. Widen the prefix once that trigger
+    # pins (Codex, PR #1004).
+    local gcr_policy
+    gcr_policy=$(mktemp)
+    cat > "${gcr_policy}" <<'EOF'
+[
+  {
+    "name": "keep-tagged",
+    "action": {"type": "Keep"},
+    "condition": {"tagState": "TAGGED"}
+  },
+  {
+    "name": "keep-10-most-recent",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": 10}
+  },
+  {
+    "name": "delete-untagged-legacy-older-than-14d",
+    "action": {"type": "Delete"},
+    "condition": {
+      "tagState": "UNTAGGED",
+      "olderThan": "1209600s",
+      "packageNamePrefixes": ["trading-platform"]
+    }
+  }
+]
+EOF
+    # `trading` (us-east1) holds the jobs image; every path that moves its
+    # tags (build_image, build_research_image) pins first.
     gcloud artifacts repositories set-cleanup-policies trading \
         --location "${REGION}" --policy "${policy}" --no-dry-run --quiet
     gcloud artifacts repositories set-cleanup-policies gcr.io \
-        --location us --policy "${policy}" --no-dry-run --quiet
-    rm -f "${policy}"
-    echo "Cleanup policy applied to trading (${REGION}) and gcr.io (us)."
+        --location us --policy "${gcr_policy}" --no-dry-run --quiet
+    rm -f "${policy}" "${gcr_policy}"
+    echo "Cleanup policy applied to trading (${REGION}) and gcr.io (us, delete scoped to trading-platform*)."
     echo "  Deletions run asynchronously (Artifact Registry sweeps roughly daily)."
 }
 
@@ -850,8 +890,23 @@ _env_string() {
 #   6. After this script runs, set the service URL as the "Interactions
 #      Endpoint URL" in Discord Dev Portal → General Information.
 #   7. Run scripts/discord/register_commands.py to register the commands.
-# 1 during the discord-warm window (Mon-Fri 09:00-16:29 ET), else 0.
+# 1 during the discord-warm window (Mon-Fri 09:00-16:29 ET), else 0 — but
+# ONLY when both discord-warm-open and discord-warm-close exist and are
+# ENABLED. Without a scheduler to raise it again, deploying 0 outside the
+# window would leave the bot cold through every following market day
+# (Codex, PR #1004); any read failure counts as "not verified" and keeps it
+# warm.
 _discord_min_instances_now() {
+    local name state
+    for name in discord-warm-open discord-warm-close; do
+        state=$(gcloud scheduler jobs describe "${name}" --location "${REGION}" \
+            --format="value(state)" 2>/dev/null) || state=""
+        if [ "${state}" != "ENABLED" ]; then
+            echo "  ${name} not verified ENABLED; keeping min-instances=1 (run ./gcp/deploy.sh schedulers)" >&2
+            echo 1
+            return 0
+        fi
+    done
     local dow hhmm
     dow=$(TZ=America/New_York date +%u); hhmm=$(TZ=America/New_York date +%H%M)
     if [ "${dow}" -le 5 ] && [ "${hhmm}" -ge 0900 ] && [ "${hhmm}" -lt 1630 ]; then
@@ -1256,7 +1311,10 @@ build_research_image() {
     cp -r lib/    "$tmpdir/lib/"
     cp -r gcp/    "$tmpdir/gcp/"
     cp -r scripts/ "$tmpdir/scripts/"
-    gcloud builds submit --tag "${IMAGE}:research" "$tmpdir"
+    # Same guard as build_image: this build moves :research, which the
+    # research jobs pin by digest (Codex, PR #1004).
+    pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :research off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
+    gcloud builds submit --tag "${IMAGE}:research" "$tmpdir" || { echo "ERROR: research build failed; :research not moved." >&2; rm -rf "$tmpdir"; return 1; }
     rm -rf "$tmpdir"
 }
 
@@ -4373,23 +4431,35 @@ backfill_watchlist() {
 # Every command that deploys a job or service is followed by pin_image_tags
 # (see the tail of this file), so the digest a job was just pinned to gets
 # its inuse-* tag before the next build can move :latest off it.
+#
+# Steps run through _run, one simple command at a time, never as an AND
+# list: inside a function on the left of `&&` Bash suspends errexit, so a
+# failed `gcloud builds submit` followed by a successful `rm -rf` returned 0
+# and the deploy proceeded with the previous image (Codex, PR #1004). With
+# _run, the first failing command inside any step aborts the script.
+_run() {
+    local step
+    for step in "$@"; do
+        "${step}"
+    done
+}
 _PIN_AFTER=1
 case "${1:-help}" in
     setup)       _PIN_AFTER=0; setup ;;
     migrate)     _PIN_AFTER=0; shift; migrate "$@" ;;
     build)       _PIN_AFTER=0; build_image ;;
     pin-images)  _PIN_AFTER=0; pin_image_tags ;;
-    registry-cleanup) _PIN_AFTER=0; pin_image_tags && setup_registry_cleanup ;;
+    registry-cleanup) _PIN_AFTER=0; _run pin_image_tags setup_registry_cleanup ;;
     retire-legacy-images) _PIN_AFTER=0; retire_legacy_images ;;
     build-research) _PIN_AFTER=0; build_research_image ;;
-    premarket)   build_image && deploy_premarket ;;
-    earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
-    earnings-long-watchlist) build_image && deploy_earnings_long_watchlist ;;
-    refresh-earnings-views) build_image && deploy_refresh_earnings_views ;;
-    monitor)     build_image && deploy_monitor ;;
-    eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
-    playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
-    phase6-playbook) build_image && deploy_phase6_playbook ;;
+    premarket) _run build_image deploy_premarket ;;
+    earnings-reactions-brief) _run build_image deploy_earnings_reactions_brief ;;
+    earnings-long-watchlist) _run build_image deploy_earnings_long_watchlist ;;
+    refresh-earnings-views) _run build_image deploy_refresh_earnings_views ;;
+    monitor) _run build_image deploy_monitor ;;
+    eod-resolver) _run build_image deploy_signal_monitor_eod_resolver ;;
+    playbook-resolver) _run build_image deploy_premarket_playbook_resolver ;;
+    phase6-playbook) _run build_image deploy_phase6_playbook ;;
     strat-engine) deploy_strat_engine ;;
     direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
     build-options-greeks) deploy_build_options_greeks ;;  # research image
@@ -4400,37 +4470,37 @@ case "${1:-help}" in
     direction-importance) deploy_direction_importance ;;   # research image; build separately (build-research)
     direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
     magnitude-recal) deploy_magnitude_recal ;;   # research image (already built)   # research image; build separately (build-research)
-    magnitude-inference) build_research_image && deploy_magnitude_inference ;;
+    magnitude-inference) _run build_research_image deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
-    weekend)     build_image && deploy_weekend ;;
-    fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
-    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
+    weekend) _run build_image deploy_weekend ;;
+    fetchers) _run build_image deploy_fetchers backfill_watchlist ;;
+    insights) _run build_image setup_insight_tasks_queue deploy_insight_pipeline deploy_insight_discord_push deploy_historical_signals_watchlist deploy_auto_refresh_top_n ;;
     schedulers)  _PIN_AFTER=0; deploy_schedulers ;;
     backfill)    _PIN_AFTER=0; shift; backfill_watchlist "$@" ;;
-    apply-schema) build_image && deploy_apply_schema_migrations ;;
-    pg-dump)      build_image && deploy_weekly_pg_dump ;;
+    apply-schema) _run build_image deploy_apply_schema_migrations ;;
+    pg-dump) _run build_image deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) _PIN_AFTER=0; setup_pg_dump_iam ;;
-    fred-rates)   build_image && deploy_fetch_fred_rates ;;
-    db-query)     build_image && deploy_db_query ;;
-    freshness-watchdog) build_image && deploy_freshness_watchdog ;;
-    audit-infra-drift) build_image && deploy_audit_infra_drift ;;
-    audit-magnitude-drift) build_image && deploy_audit_magnitude_drift ;;
-    audit-walkforward) build_image && deploy_audit_walkforward ;;
-    audit-brief-bias) build_image && deploy_audit_brief_bias ;;
-    spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
-    calibrate)    build_image && deploy_calibrate_thresholds ;;
-    param-sweep)  build_image && deploy_param_sweep ;;
-    earnings-sweep) build_image && deploy_earnings_sweep ;;
-    earnings-options-backfill) build_image && deploy_earnings_options_backfill ;;
-    intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
-    options-retention) build_image && deploy_options_retention ;;
-    signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
-    signal-replay) build_image && deploy_signal_replay ;;
-    indicator-correlation) build_image && deploy_indicator_correlation ;;
+    fred-rates) _run build_image deploy_fetch_fred_rates ;;
+    db-query) _run build_image deploy_db_query ;;
+    freshness-watchdog) _run build_image deploy_freshness_watchdog ;;
+    audit-infra-drift) _run build_image deploy_audit_infra_drift ;;
+    audit-magnitude-drift) _run build_image deploy_audit_magnitude_drift ;;
+    audit-walkforward) _run build_image deploy_audit_walkforward ;;
+    audit-brief-bias) _run build_image deploy_audit_brief_bias ;;
+    spx-greeks) _run build_image deploy_compute_spx_greeks_backfill ;;
+    calibrate) _run build_image deploy_calibrate_thresholds ;;
+    param-sweep) _run build_image deploy_param_sweep ;;
+    earnings-sweep) _run build_image deploy_earnings_sweep ;;
+    earnings-options-backfill) _run build_image deploy_earnings_options_backfill ;;
+    intraday-bulk-backfill) _run build_image deploy_intraday_bulk_backfill ;;
+    options-retention) _run build_image deploy_options_retention ;;
+    signal-quality) _run build_image deploy_signal_quality_report deploy_signal_quality_alarm ;;
+    signal-replay) _run build_image deploy_signal_replay ;;
+    indicator-correlation) _run build_image deploy_indicator_correlation ;;
     regime-combo) deploy_regime_combo ;;   # research image; build separately (see strat-engine)
     setup-notifier-secrets) _PIN_AFTER=0; setup_notifier_secrets ;;
-    notifier)    build_image && deploy_notifier ;;
-    discord)     build_image && deploy_discord_interactions ;;
+    notifier) _run build_image deploy_notifier ;;
+    discord) _run build_image deploy_discord_interactions ;;
     all)
         build_image
         deploy_premarket

@@ -68,9 +68,19 @@ What shipped:
   the job's image reference is resolved to a digest at pin time. Every
   read or write failure aborts the run; an unreadable inventory is never
   treated as an empty one (Codex review on #1004).
-- `gcp/deploy.sh registry-cleanup` applies to both repos: keep tagged,
-  keep 10 newest, delete untagged older than 14 days. Applied 2026-09-06
-  (`--no-dry-run`). Sweeps are asynchronous.
+- `gcp/deploy.sh registry-cleanup` applies the policy to both repos: keep
+  tagged, keep 10 newest, delete untagged older than 14 days. On `gcr.io`
+  the delete rule is scoped to the retired `trading-platform*` packages
+  only: `solyra-api` is also built by the Cloud Build trigger from #990,
+  which cannot run `pin-images` before it moves `:latest`, so a prod
+  revision's digest could otherwise lose its only tag on a later staging
+  build. `platform/deploy.sh` now pins before its build; widen the prefix
+  once the trigger does too. Applied 2026-09-06, re-applied with the
+  scoped rule 2026-09-07 (`--no-dry-run`). Sweeps are asynchronous.
+- Both image builds (`build_image`, `build_research_image`) pin before
+  moving their tag and refuse to build if pinning fails; the dispatcher
+  runs deploy steps one at a time (never as `a && b`) so a failed build
+  cannot be masked by a later successful command.
 
 Expected effect (computed against the live inventory after pinning):
 
@@ -78,7 +88,8 @@ Expected effect (computed against the live inventory after pinning):
 |---|---|---|---|
 | trading/trading-system | 448 | 389 | 245 GiB of 282 |
 | gcr.io/trading-platform | 175 | 127 | 45 GiB of 63 |
-| gcr.io/solyra-api, trading-platform-staging | 11 | 0 | 0 |
+| gcr.io/trading-platform-staging | 9 | 0 | 0 |
+| gcr.io/solyra-api | 2 | 0 (excluded from delete, see above) | 0 |
 
 Saves ~$25/month.
 

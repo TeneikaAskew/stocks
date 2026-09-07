@@ -175,6 +175,13 @@ fi
 echo ">> project=${PROJECT_ID} region=${REGION} service=${SERVICE}"
 gcloud config set project "${PROJECT_ID}" >/dev/null
 
+# 0. Pin every image digest a Cloud Run job or service still runs. This
+#    build moves ${IMAGE}:latest, and the Artifact Registry cleanup policy
+#    (gcp/deploy.sh setup_registry_cleanup) deletes untagged versions older
+#    than 14 days, so the digest the current revisions run must carry its
+#    inuse-* tag before the tag moves. Fails closed: no pin, no build.
+./gcp/deploy.sh pin-images
+
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
 echo ">> building ${IMAGE}"
 gcloud builds submit \
