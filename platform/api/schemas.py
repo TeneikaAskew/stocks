@@ -54,9 +54,16 @@ class LiveQuoteResponse(ApiModel):
     high: float
     low: float
     volume: int
-    change: float
-    change_pct: float
-    prev_close: float
+    # Nullable by contract, not by accident. `get_live_quote` answers a
+    # malformed AlphaVantage payload with a 502 for price/OHLC/volume, but
+    # returns `None` for these three when the vendor omits them or sends
+    # something unparseable, because solyra's `LiveQuote` already declares
+    # them `number | null` and renders null as an em-dash. Declaring them
+    # non-Optional here would turn that honest null into a
+    # ResponseValidationError 500 (CLAUDE.md Rule 3.7).
+    change: Optional[float] = None
+    change_pct: Optional[float] = None
+    prev_close: Optional[float] = None
     last_updated: str
     market_session: str
     market_open: bool

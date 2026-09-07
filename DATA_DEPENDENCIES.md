@@ -270,7 +270,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_av_realtime_options.py`](gcp/fetchers/fetch_av_realtime_options.py) — line [256](gcp/fetchers/fetch_av_realtime_options.py#L256)
 - [`gcp/migrate_to_gcp.py`](gcp/migrate_to_gcp.py) — line [379](gcp/migrate_to_gcp.py#L379), [438](gcp/migrate_to_gcp.py#L438), [450](gcp/migrate_to_gcp.py#L450), [461](gcp/migrate_to_gcp.py#L461), [491](gcp/migrate_to_gcp.py#L491)
 - [`gcp/options_retention_job.py`](gcp/options_retention_job.py) — line [79](gcp/options_retention_job.py#L79)
-- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [544](platform/api/routers/grid.py#L544)
+- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [594](platform/api/routers/grid.py#L594)
 - [`scripts/maintenance/compute_spx_greeks.py`](scripts/maintenance/compute_spx_greeks.py) — line [149](scripts/maintenance/compute_spx_greeks.py#L149)
 - [`scripts/validate_track2_live.py`](scripts/validate_track2_live.py) — line [80](scripts/validate_track2_live.py#L80), [112](scripts/validate_track2_live.py#L112)
 
@@ -406,7 +406,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](lib/strat_levels.py) — line [1732](lib/strat_levels.py#L1732)
+- [`lib/strat_levels.py`](lib/strat_levels.py) — line [1743](lib/strat_levels.py#L1743)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](scripts/calibrate_thresholds.py) — line [25](scripts/calibrate_thresholds.py#L25), [313](scripts/calibrate_thresholds.py#L313), [487](scripts/calibrate_thresholds.py#L487), [489](scripts/calibrate_thresholds.py#L489)
@@ -497,7 +497,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/options_exec_backtest/engine.py`](lib/options_exec_backtest/engine.py) — line [161](lib/options_exec_backtest/engine.py#L161), [162](lib/options_exec_backtest/engine.py#L162)
 - [`lib/options_exec_backtest/pricing.py`](lib/options_exec_backtest/pricing.py) — line [9](lib/options_exec_backtest/pricing.py#L9)
 - [`lib/options_exec_backtest/runner.py`](lib/options_exec_backtest/runner.py) — line [207](lib/options_exec_backtest/runner.py#L207), [214](lib/options_exec_backtest/runner.py#L214)
-- [`lib/options_greeks.py`](lib/options_greeks.py) — line [108](lib/options_greeks.py#L108), [110](lib/options_greeks.py#L110), [124](lib/options_greeks.py#L124), [131](lib/options_greeks.py#L131)
+- [`lib/options_greeks.py`](lib/options_greeks.py) — line [196](lib/options_greeks.py#L196), [202](lib/options_greeks.py#L202)
 
 ### `earnings_calendar`
 - [`gcp/earnings_long_watchlist.py`](gcp/earnings_long_watchlist.py) — line [119](gcp/earnings_long_watchlist.py#L119), [149](gcp/earnings_long_watchlist.py#L149)
@@ -571,7 +571,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/gamma_glossary.py`](lib/gamma_glossary.py) — line [260](lib/gamma_glossary.py#L260)
 - [`lib/strategies/catalyst_proximity.py`](lib/strategies/catalyst_proximity.py) — line [195](lib/strategies/catalyst_proximity.py#L195)
 - [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [416](platform/api/routers/catalysts.py#L416), [424](platform/api/routers/catalysts.py#L424)
-- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [875](platform/api/routers/grid.py#L875)
+- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [925](platform/api/routers/grid.py#L925)
 - [`scripts/check_event_window_concentration.py`](scripts/check_event_window_concentration.py) — line [60](scripts/check_event_window_concentration.py#L60)
 
 ### `etf_options_daily_greeks`
@@ -597,7 +597,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/options_exec_backtest/__init__.py`](lib/options_exec_backtest/__init__.py) — line [12](lib/options_exec_backtest/__init__.py#L12)
 - [`lib/options_exec_backtest/iv_lookup.py`](lib/options_exec_backtest/iv_lookup.py) — line [11](lib/options_exec_backtest/iv_lookup.py#L11), [127](lib/options_exec_backtest/iv_lookup.py#L127)
 - [`lib/options_intraday.py`](lib/options_intraday.py) — line [165](lib/options_intraday.py#L165)
-- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [14](platform/api/routers/grid.py#L14), [241](platform/api/routers/grid.py#L241), [247](platform/api/routers/grid.py#L247), [271](platform/api/routers/grid.py#L271), [277](platform/api/routers/grid.py#L277), [318](platform/api/routers/grid.py#L318), [324](platform/api/routers/grid.py#L324), [700](platform/api/routers/grid.py#L700) (+1 more)
+- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [14](platform/api/routers/grid.py#L14), [241](platform/api/routers/grid.py#L241), [247](platform/api/routers/grid.py#L247), [271](platform/api/routers/grid.py#L271), [277](platform/api/routers/grid.py#L277), [318](platform/api/routers/grid.py#L318), [324](platform/api/routers/grid.py#L324), [750](platform/api/routers/grid.py#L750) (+1 more)
 - [`platform/api/routers/options.py`](platform/api/routers/options.py) — line [335](platform/api/routers/options.py#L335), [411](platform/api/routers/options.py#L411), [417](platform/api/routers/options.py#L417), [514](platform/api/routers/options.py#L514), [520](platform/api/routers/options.py#L520), [533](platform/api/routers/options.py#L533), [765](platform/api/routers/options.py#L765)
 - [`scripts/analysis/calibrate_intraday_theta.py`](scripts/analysis/calibrate_intraday_theta.py) — line [13](scripts/analysis/calibrate_intraday_theta.py#L13), [52](scripts/analysis/calibrate_intraday_theta.py#L52)
 - [`scripts/analysis/options_pnl_translation.py`](scripts/analysis/options_pnl_translation.py) — line [258](scripts/analysis/options_pnl_translation.py#L258), [359](scripts/analysis/options_pnl_translation.py#L359)
@@ -697,7 +697,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/main.py`](platform/api/main.py) — line [1040](platform/api/main.py#L1040), [1115](platform/api/main.py#L1115), [1259](platform/api/main.py#L1259), [1416](platform/api/main.py#L1416), [1429](platform/api/main.py#L1429), [1431](platform/api/main.py#L1431)
 - [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [633](platform/api/routers/catalysts.py#L633), [743](platform/api/routers/catalysts.py#L743)
 - [`platform/api/routers/dashboard.py`](platform/api/routers/dashboard.py) — line [88](platform/api/routers/dashboard.py#L88), [149](platform/api/routers/dashboard.py#L149), [278](platform/api/routers/dashboard.py#L278)
-- [`platform/api/routers/live.py`](platform/api/routers/live.py) — line [349](platform/api/routers/live.py#L349)
+- [`platform/api/routers/live.py`](platform/api/routers/live.py) — line [407](platform/api/routers/live.py#L407)
 - [`scripts/audit_data_freshness.py`](scripts/audit_data_freshness.py) — line [964](scripts/audit_data_freshness.py#L964), [971](scripts/audit_data_freshness.py#L971), [1095](scripts/audit_data_freshness.py#L1095), [1103](scripts/audit_data_freshness.py#L1103)
 - [`scripts/backfill_and_replay.py`](scripts/backfill_and_replay.py) — line [370](scripts/backfill_and_replay.py#L370), [542](scripts/backfill_and_replay.py#L542)
 - [`scripts/backfill_watchlist_data.py`](scripts/backfill_watchlist_data.py) — line [109](scripts/backfill_watchlist_data.py#L109)
@@ -719,7 +719,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) — line [18](gcp/signal_monitor_eod_resolver.py#L18)
 - [`lib/data_loader.py`](lib/data_loader.py) — line [172](lib/data_loader.py#L172), [288](lib/data_loader.py#L288), [301](lib/data_loader.py#L301)
 - [`lib/features/intraday_flow.py`](lib/features/intraday_flow.py) — line [124](lib/features/intraday_flow.py#L124)
-- [`lib/options_intraday.py`](lib/options_intraday.py) — line [253](lib/options_intraday.py#L253), [574](lib/options_intraday.py#L574), [585](lib/options_intraday.py#L585)
+- [`lib/options_intraday.py`](lib/options_intraday.py) — line [253](lib/options_intraday.py#L253), [580](lib/options_intraday.py#L580), [591](lib/options_intraday.py#L591)
 - [`lib/strat_levels.py`](lib/strat_levels.py) — line [622](lib/strat_levels.py#L622)
 - [`platform/api/main.py`](platform/api/main.py) — line [622](platform/api/main.py#L622), [767](platform/api/main.py#L767), [1263](platform/api/main.py#L1263), [1617](platform/api/main.py#L1617), [1635](platform/api/main.py#L1635)
 - [`scripts/analysis/momentum_eligibility.py`](scripts/analysis/momentum_eligibility.py) — line [12](scripts/analysis/momentum_eligibility.py#L12)
