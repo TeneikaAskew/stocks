@@ -206,17 +206,26 @@ NONPY_AMBIGUOUS = re.compile(
     r"""['"]?(?:""" + "|".join(AMBIGUOUS_LEGACY) + r""")['"]?"""
     r"""(?![A-Za-z0-9_/-])""", re.I
 )
-# `EST5` is POSIX's fixed form -- a std abbreviation with an offset and NO DST
-# rule, so it is frozen at UTC-5 all year, and it is what `TZ=EST5` installs
-# for a whole process. `UTC-05:00` is the same zone spelled the way pandas and
-# several config formats accept it. Both were invisible to a pattern that knew
-# only a bare number and the `Etc/GMT` names (Codex, PR #993).
+# `EST5` and `EDT4` are POSIX's fixed form -- a std abbreviation with an
+# offset and NO DST rule, so they are frozen at UTC-5 / UTC-4 all year, and
+# `TZ=EST5` installs that for a whole process. Both were invisible to a
+# pattern that knew only a bare number and the `Etc/GMT` names (Codex,
+# PR #993).
 #
-# `EST5EDT` deliberately does NOT match here: the anchors keep the `EST5`
+# `UTC-05:00` is NOT here, and its absence is the point. POSIX inverts the
+# sign in a `TZ` value: `TZ=UTC-05:00` selects UTC+**5**, not Eastern, while
+# `pd.Timestamp(tz="UTC-05:00")` really does mean UTC-5. I added it last round
+# reading it the pandas way, which made `os.environ["TZ"] = "UTC-05:00"` a
+# false finding on a timezone that is not Eastern in either season (Codex,
+# PR #993). One string, two opposite meanings, decided by a context this
+# guard does not track -- so it matches neither, and loses the pandas spelling
+# rather than inventing a violation. The POSIX abbreviations above have no
+# such ambiguity: the offset in `EST5` is hours WEST in every context.
+#
+# `EST5EDT` deliberately does NOT match: the anchors keep the `EST5`
 # alternative from claiming its prefix, and it belongs to the backward-link
 # test rather than this one -- it IS DST-correct, it is just the wrong name.
-_FIXED_OFFSET_TEXT = (r"(?:-\s*0?[45]:?00|EST5|"
-                      r"(?:UTC|GMT)\s*-\s*0?[45](?::?00)?)")
+_FIXED_OFFSET_TEXT = r"(?:-\s*0?[45]:?00|EST5|EDT4)"
 # Quotes optional, like the legacy-name pattern above and for the same reason:
 # `timezone=-05:00` in a shell or YAML file is the ordinary spelling, and
 # requiring both quotes exempted it (Codex, PR #993). The lookahead keeps the
@@ -535,6 +544,37 @@ def _local_aliases(scope: ast.AST) -> dict[str, str]:
     return {k: v for k, v in seen.items() if k not in conflicted}
 
 
+def _local_modules(scope: ast.AST) -> dict[str, str]:
+    """`local name -> module it was imported from`, for `from X import Y`.
+
+    Separate from `_local_aliases`, which answers "what was this renamed
+    from". This answers "where did it come from", and only the second one can
+    tell that the `timezone` in `from pytz import timezone` is pytz's.
+
+    Added because the generic-name gate I introduced last round turned a real
+    `timezone("EST")` into a MISS: `_call_receiver` is empty for a bare call,
+    so a directly imported constructor had no provenance and was treated as
+    an unknown method (Codex, PR #993). Fixing a false positive created a
+    false negative, which is the trade this file spends most of its comments
+    trying not to make.
+
+    Names imported from two different modules in one scope are dropped, for
+    the reason `_local_aliases` gives: which import is in effect at a line is
+    a flow question, and this guard does not answer flow questions.
+    """
+    seen: dict[str, str] = {}
+    conflicted: set[str] = set()
+    for node in _scope_nodes(scope):
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        tail = node.module.rsplit(".", 1)[-1]
+        for a in node.names:
+            local = a.asname or a.name
+            if seen.setdefault(local, tail) != tail:
+                conflicted.add(local)
+    return {k: v for k, v in seen.items() if k not in conflicted}
+
+
 def _local_attrs(scope: ast.AST) -> dict[str, dict[str, ast.AST]]:
     """`obj -> {attr: (value, node)}`, for resolving `obj.attr` as a zone.
 
@@ -652,9 +692,10 @@ class _Env(NamedTuple):
     bindings: dict[str, ast.AST]                   # NAME = <value node>
     aliases: dict[str, str]                        # import ... as NAME
     attrs: dict[str, dict[str, ast.AST]]           # NAME.attr = <value node>
+    modules: dict[str, str]                        # from MODULE import NAME
 
 
-_EMPTY_ENV = _Env({}, {}, {})
+_EMPTY_ENV = _Env({}, {}, {}, {})
 
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
@@ -777,11 +818,14 @@ def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
         aliases = survives(inherited.aliases)
         aliases.update(_local_aliases(scope))
 
+        modules = survives(inherited.modules)
+        modules.update(_local_modules(scope))
+
         attrs = {k: dict(v) for k, v in survives(inherited.attrs).items()}
         for obj, members in _local_attrs(scope).items():
             attrs.setdefault(obj, {}).update(members)
 
-        env = _Env(bindings, aliases, attrs)
+        env = _Env(bindings, aliases, attrs, modules)
         out[id(scope)] = env
 
         # Python does NOT close over a class namespace: a method does not see
@@ -1054,8 +1098,15 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # `cache.now("EDT")` were reported, which is a false CI failure on
         # code that has no timezone in it (Codex, PR #993).
         receiver = _call_receiver(node)
+        # Provenance, in either of the two ways it can be written: the
+        # RECEIVER for `pytz.timezone(...)`, or the module a bare
+        # `timezone(...)` was imported from. Reading only the receiver made
+        # `from pytz import timezone` a miss (Codex, PR #993). Looked up by
+        # the name AS WRITTEN, since that is what `from X import Y as Z`
+        # binds.
         specific = (name in _TZ_CALLS_SPECIFIC
-                    or env.aliases.get(receiver, receiver) in _TZ_RECEIVERS)
+                    or env.aliases.get(receiver, receiver) in _TZ_RECEIVERS
+                    or env.modules.get(_call_name(node), "") in _TZ_RECEIVERS)
 
         # `pytz.FixedOffset(-300)` and `dateutil.tz.tzoffset(None, -18000)` --
         # the offset is a plain number, so no string or `timedelta` check
@@ -2192,9 +2243,18 @@ def test_posix_and_utc_prefixed_offsets_are_offsets():
     walked past both (Codex, PR #993).
     """
     for src in ('os.environ["TZ"] = "EST5"\n',
-                'ts = pd.Timestamp("2026-01-01", tz="UTC-05:00")\n',
-                'tz = ZoneInfo("GMT-05:00")\n'):
+                'os.environ["TZ"] = "EDT4"\n',
+                'tz = ZoneInfo("EST5")\n'):
         assert _hits(src)[1], src
+
+    # `UTC-05:00` is deliberately NOT matched. POSIX inverts the sign in a
+    # `TZ` value, so `TZ=UTC-05:00` selects UTC+5 and is not Eastern in either
+    # season, while `pd.Timestamp(tz="UTC-05:00")` really does mean UTC-5.
+    # One string, two opposite meanings, decided by a context this guard does
+    # not track — so it matches neither rather than inventing a violation on
+    # the process-environment spelling (Codex, PR #993).
+    assert _hits('os.environ["TZ"] = "UTC-05:00"\n') == ([], [])
+    assert not NONPY_FIXED_OFFSET.search("ENV TZ UTC-05:00")
 
     # `EST5EDT` is DST-correct and belongs to the backward-link test, not
     # this one — the anchors must stop `EST5` claiming its prefix.
@@ -2273,3 +2333,28 @@ def test_the_timezone_context_is_not_vacuous():
     # And the ambiguous names still need a real context in front of them.
     assert not NONPY_AMBIGUOUS.search("the estimate was EST")
     assert not NONPY_AMBIGUOUS.search("EST")
+
+
+def test_a_directly_imported_constructor_keeps_its_provenance():
+    """`from pytz import timezone; timezone("EST")`.
+
+    The generic-name gate added last round reads the call's RECEIVER, and a
+    bare call has none — so a constructor imported directly had no provenance
+    and was treated as an unknown method. Fixing a false positive created a
+    false negative (Codex, PR #993), which is the trade this file spends most
+    of its comments trying not to make.
+    """
+    for src in ('from pytz import timezone\ntz = timezone("EST")\n',
+                'from pytz import timezone as tzf\ntz = tzf("EST")\n',
+                'from dateutil.tz import gettz\ntz = gettz("EST")\n'):
+        assert _hits(src)[0], src
+
+    # An unrelated module's `timezone` is still not a timezone constructor,
+    # which is the false positive the gate exists to prevent.
+    assert _hits('from mylib.text import localize\nlocalize("EST")\n') == ([], [])
+    assert _hits('from cache import now\nnow("EDT")\n') == ([], [])
+
+    # Provenance is per scope, like every other map here.
+    assert _hits('def a():\n    from pytz import timezone\n    return timezone("UTC")\n'
+                 '\n'
+                 'def b(timezone):\n    return timezone("EST")\n') == ([], [])
