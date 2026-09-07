@@ -459,6 +459,21 @@ _FIXED_OFFSET_ZONES = ("Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+04", "Etc/GMT+05",
 # mixed-case by definition, and a test caught that.
 _FIXED_OFFSET_STRINGS = re.compile(
     r"^(?:" + _FIXED_OFFSET_TEXT + r"|Etc/GMT\+0?[45])$", re.I)
+# The same set PLUS the `UTC-05:00` spellings, for the AST path only.
+#
+# `_FIXED_OFFSET_TEXT` leaves them out deliberately and the comment above says
+# why: in a shell `TZ` value POSIX inverts the sign, so `UTC-05:00` selects
+# UTC+5 and is not Eastern in either season -- one string, two opposite
+# meanings, decided by a context the TEXT scan cannot see.
+#
+# The AST path CAN see it. Reaching `follow` means the string is already
+# established as an argument to a timezone constructor or a `tz=` keyword,
+# where `pd.Timestamp.now(tz="UTC-05:00")` means UTC minus five and nothing
+# else (Codex, PR #993). The ambiguity is resolved by the context rather than
+# guessed at, which is the same move `EST`/`EDT` already get on this path.
+_FIXED_OFFSET_STRINGS_PY = re.compile(
+    r"^(?:" + _FIXED_OFFSET_TEXT + r"|Etc/GMT\+0?[45]|UTC\s*-\s*0?[45]:?00)$",
+    re.I)
 
 # Matched with no context, like the unambiguous legacy names and for the same
 # reason: `Etc/GMT+5` means one thing.
@@ -504,6 +519,33 @@ def _resolve_callable(name: str, env, seen=None):
         receiver = inner.id if isinstance(inner, ast.Name) else ""
         return bound.attr, receiver
     return name, ""
+
+
+def _resolve_receiver(name: str, env, seen=None) -> str:
+    """Follow `p = pytz` so a receiver aliased by ASSIGNMENT names its module.
+
+    `import pytz as p` is an IMPORT alias and `env.aliases` already records it.
+    `import pytz; p = pytz` is an assignment, which lands in `env.bindings`,
+    and the provenance check consulted only the alias map -- so `p.timezone(...)`
+    resolved its receiver to the bare name `p`, `specific` stayed false, and
+    the ambiguous `EST` argument was ignored (Codex, PR #993). The callable
+    half of this had already been fixed; the receiver half had not.
+
+    Cycle detection rather than a hop cap, matching `_resolve_callable` and
+    `follow`: an alias chain has no natural length, and what it cannot do is
+    revisit a name.
+    """
+    seen = seen or set()
+    while name and name not in seen:
+        seen = seen | {name}
+        bound = env.bindings.get(name)
+        if isinstance(bound, ast.Name):
+            name = bound.id
+        elif isinstance(bound, ast.Attribute):
+            name = bound.attr
+        else:
+            break
+    return name
 
 
 def _call_receiver(node: ast.Call) -> str:
@@ -1258,11 +1300,22 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
     reported: set[int] = set()
 
     def follow(bucket_legacy, bucket_offsets, node, arg, env, where,
-               ambiguous_ok=True, depth=0, seen=None):
+               ambiguous_ok=True, depth=0, seen=None, utc_prefixed_ok=False):
         """Report `arg` when it is, or resolves to, a legacy zone or offset.
 
         `ambiguous_ok=False` drops the bare `EST`/`EDT` tokens, for a call
         whose name alone does not establish a timezone context.
+
+        `utc_prefixed_ok=True` additionally accepts the `UTC-05:00` spelling,
+        and is set ONLY for the arguments of a recognised timezone call. The
+        sign in that string means opposite things in the two places it turns
+        up: `pd.Timestamp.now(tz="UTC-05:00")` is UTC minus five, while POSIX
+        reads `TZ=UTC-05:00` as UTC PLUS five, which is not Eastern in either
+        season (Codex, PR #993, and the round-9 comment on
+        `_FIXED_OFFSET_TEXT` that made this file refuse the spelling in the
+        first place). A library argument is the one context that settles it,
+        so it is the only one that opts in -- an env subscript, a config dict
+        key and a bound SQL parameter all keep the narrower pattern.
         """
         if depth == 0:
             # Only the argument as written is marked reported. A value reached
@@ -1294,8 +1347,10 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # reads `est5` and `EST5` as the same frozen zone, and the non-Python
         # detector has been case-insensitive since round 9 while this one was
         # not (Codex, PR #993).
+        offset_strings = (_FIXED_OFFSET_STRINGS_PY if utc_prefixed_ok
+                          else _FIXED_OFFSET_STRINGS)
         if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
-                and _FIXED_OFFSET_STRINGS.match(arg.value)):
+                and offset_strings.match(arg.value)):
             reported_values.add(id(arg))
             note(bucket_offsets, arg, where(repr(arg.value)))
             return True
@@ -1320,7 +1375,8 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 return follow(bucket_legacy, bucket_offsets, node, default, env,
                               lambda shown, n=_call_name(arg):
                                   where(f"{n}(..., {shown})"),
-                              ambiguous_ok, depth + 1, seen)
+                              ambiguous_ok, depth + 1, seen,
+                              utc_prefixed_ok)
         # An indirection -- `Settings.tz`, `settings.tz`, or a plain name --
         # is resolved to the NODE it was bound to and re-dispatched through
         # this same function, so every spelling above is reachable through a
@@ -1351,7 +1407,8 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             if target is not None:
                 return follow(bucket_legacy, bucket_offsets, node, target, env,
                               lambda shown, l=label: where(f"{l} (= {shown})"),
-                              ambiguous_ok, depth + 1, seen)
+                              ambiguous_ok, depth + 1, seen,
+                              utc_prefixed_ok)
 
         # A statically present branch is a value this expression can take, so
         # `ZoneInfo("EST" if legacy else "America/New_York")` really can build
@@ -1370,12 +1427,50 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # nothing saw it (Codex, PR #993).
         if isinstance(arg, ast.NamedExpr):
             return follow(bucket_legacy, bucket_offsets, node, arg.value, env,
-                          where, ambiguous_ok, depth + 1, seen)
+                          where, ambiguous_ok, depth + 1, seen,
+                          utc_prefixed_ok)
+        # A container in a timezone context holds values this call receives.
+        # Two live shapes needed it and neither was reachable:
+        # `cur.executemany("SET TIME ZONE %s", [("EST",)])`, where the
+        # parameter loop unwrapped the outer list and handed `follow` the
+        # inner TUPLE, and `ZoneInfo(*["EST"])`, where the loop handed it an
+        # `ast.Starred` wrapper (Codex, PR #993). Every element is followed;
+        # any one reporting is enough. Safe because `follow` is only reached
+        # in an established timezone context -- an ordinary list of strings
+        # elsewhere in the file is never handed to it.
+        if isinstance(arg, ast.Starred):
+            return follow(bucket_legacy, bucket_offsets, node, arg.value, env,
+                          where, ambiguous_ok, depth + 1, seen,
+                          utc_prefixed_ok)
+        if isinstance(arg, (ast.Tuple, ast.List, ast.Set)):
+            hit = False
+            for element in arg.elts:
+                if follow(bucket_legacy, bucket_offsets, node, element, env,
+                          where, ambiguous_ok, depth + 1, seen,
+                          utc_prefixed_ok):
+                    hit = True
+            if hit:
+                return True
+        # `ZoneInfo(**{"key": "EST"})`. The keyword loop below passes a `**`
+        # mapping as one `keyword` whose `arg` is None and whose value is the
+        # whole dict, so the zone sat one level below anything that looked at
+        # it. The VALUES are followed, not the keys: a key here names the
+        # parameter, not the zone.
+        if isinstance(arg, ast.Dict):
+            hit = False
+            for element in arg.values:
+                if follow(bucket_legacy, bucket_offsets, node, element, env,
+                          where, ambiguous_ok, depth + 1, seen,
+                          utc_prefixed_ok):
+                    hit = True
+            if hit:
+                return True
         if isinstance(arg, ast.BoolOp):
             hit = False
             for operand in arg.values:
                 if follow(bucket_legacy, bucket_offsets, node, operand, env,
-                          where, ambiguous_ok, depth + 1, seen):
+                          where, ambiguous_ok, depth + 1, seen,
+                          utc_prefixed_ok):
                     hit = True
             if hit:
                 return True
@@ -1383,7 +1478,8 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             hit = False
             for branch in (arg.body, arg.orelse):
                 hit |= follow(bucket_legacy, bucket_offsets, node, branch, env,
-                              where, ambiguous_ok, depth + 1, seen)
+                              where, ambiguous_ok, depth + 1, seen,
+                              utc_prefixed_ok)
             return hit
         return False
 
@@ -1544,6 +1640,36 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                     for item in items:
                         follow(legacy, offsets, node, item, env,
                                lambda shown, n=name: f"{n}(..., {shown})")
+        # `dateutil.parser.parse("... EST", tzinfos={"EST": -18000})`.
+        # python-dateutil is a declared dependency and this is its documented
+        # way to give an abbreviation a meaning -- and the meaning given here
+        # is a FIXED offset, so the parsed datetime is frozen at UTC-5 all
+        # year. Neither guard saw it: `parse` is not a timezone call, the key
+        # is an ambiguous literal the standalone scan ignores on purpose, and
+        # the value is a bare number (Codex, PR #993).
+        #
+        # Handled before the `_TZ_CALLS` filter for the same reason `execute`
+        # is: the keyword carries the context, whatever the function is
+        # called. The numeric value is read in SECONDS, which is the unit
+        # dateutil documents for this mapping.
+        for kw in node.keywords:
+            if kw.arg != "tzinfos" or not isinstance(kw.value, ast.Dict):
+                continue
+            for k, v in zip(kw.value.keys, kw.value.values):
+                seconds = _const_number(v, env)
+                if (seconds is not None
+                        and int(seconds) in _EASTERN_OFFSET_SECONDS):
+                    reported.add(id(v))
+                    reported_values.add(id(v))
+                    label = (repr(k.value)
+                             if isinstance(k, ast.Constant) else "?")
+                    note(offsets, v,
+                         f"tzinfos={{{label}: {seconds:g}}} seconds")
+                    continue
+                # Not a fixed Eastern offset, but the VALUE may still be a
+                # legacy zone: `tzinfos={"EST": gettz("US/Eastern")}`.
+                follow(legacy, offsets, node, v, env,
+                       lambda shown: f"tzinfos={{... {shown}}}")
         if name not in _TZ_CALLS:
             continue
         # Whether the CALL is enough of a timezone context to convict a bare
@@ -1569,8 +1695,13 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # name left `specific` false and the ambiguous `EST` argument ignored,
         # which is the provenance half of a fix whose name half already
         # landed (Codex, PR #993).
+        # The receiver is resolved through the BINDINGS first, so a module
+        # aliased by assignment (`p = pytz`) reaches the same answer as one
+        # aliased at import (`import pytz as p`), and only then through the
+        # import-alias map (Codex, PR #993).
+        resolved = _resolve_receiver(receiver, env)
         specific = (name in _TZ_CALLS_SPECIFIC
-                    or env.aliases.get(receiver, receiver) in _TZ_RECEIVERS
+                    or env.aliases.get(resolved, resolved) in _TZ_RECEIVERS
                     or env.modules.get(_call_name(node), "") in _TZ_RECEIVERS
                     or env.modules.get(name, "") in _TZ_RECEIVERS)
 
@@ -1601,7 +1732,7 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         for arg in list(node.args) + [k.value for k in node.keywords]:
             follow(legacy, offsets, node, arg, env,
                    lambda shown, n=name: f"{n}(... {shown} ...)",
-                   ambiguous_ok=specific)
+                   ambiguous_ok=specific, utc_prefixed_ok=True)
 
     # Module-level settings, judged last so that "already reported" is a
     # settled fact rather than a guess about walk order.
@@ -1849,7 +1980,7 @@ def _notebook_hits(path, text: str):
 # widened to cover (Codex, PR #993).
 _YAML_ENV_PAIR = re.compile(
     r"""(?:^|
-)[ 	-]*name:[ 	]*["']?(TZ|TIMEZONE|TIME_ZONE)["']?[ 	]*(?:\#[^
+)[ 	-]*name:[ 	]*["']?(TZ|PGTZ|TIMEZONE|TIME_ZONE)["']?[ 	]*(?:\#[^
 ]*)?
 """
     r"""[ 	]*value:[ 	]*["']?([^"'
@@ -2050,12 +2181,45 @@ def _strip_shell_comments(text: str) -> str:
 # `${NAME:-VALUE}` and `${NAME-VALUE}`: the default is what the process gets
 # whenever NAME is unset, which for a container is the ordinary case. The
 # context matcher stopped at `$` and never reached it (Codex, PR #993).
-_SHELL_DEFAULT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-([^}]*)\}")
+#
+# Only where a TIMEZONE CONTEXT sits immediately in front of it. Rewriting
+# every expansion in the file turned `echo ${MESSAGE:-TZ=EST}` into
+# `echo TZ=EST` and reported a line that only prints text; a help string
+# carrying `--time-zone EST` did the same (Codex, PR #993). A false CI
+# failure on correct code is the failure mode this guard keeps every
+# ambiguous token gated to avoid, and it is worse here than a miss: it is
+# red on someone else's PR.
+#
+# The context prefix is KEPT in the rewritten text rather than consumed, so
+# the patterns that run afterwards see `TZ=EST`, exactly as if the default
+# had been written inline.
+_SHELL_DEFAULT = re.compile(
+    r"((?:" + _TZ_CONTEXT + r")\s*[\"']?\s*)"
+    r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-([^}]*)\}", re.I)
+
+
+# What is left after the timezone expansions are done: any OTHER `${X:-...}`.
+# Its body is the default for some unrelated variable, not a line of shell, so
+# it is blanked rather than read -- narrowing the EXPANSION alone was not
+# enough, because `echo ${MESSAGE:-TZ=EST}` still carries the literal text
+# `TZ=EST` and the context pattern matched it straight out of the raw line
+# (Codex, PR #993). Replaced with spaces of the same width so every later line
+# and column still means what it says.
+_SHELL_OTHER_DEFAULT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-[^}]*\}")
 
 
 def _expand_shell_defaults(text: str) -> str:
-    """Replace a parameter expansion with its literal default."""
-    return _SHELL_DEFAULT.sub(lambda m: m.group(1), text)
+    """Expose a TIMEZONE parameter default; blank every other one.
+
+    Two steps, and both are needed. A timezone expansion is rewritten to its
+    default with the context prefix kept, so the patterns that run afterwards
+    read `TZ=EST` exactly as if it had been written inline. Every other
+    expansion is emptied, because its body is data belonging to another
+    variable and reading it as shell is how `echo ${MESSAGE:-TZ=EST}` came to
+    be reported as a process-timezone assignment.
+    """
+    text = _SHELL_DEFAULT.sub(lambda m: m.group(1) + m.group(2), text)
+    return _SHELL_OTHER_DEFAULT.sub(lambda m: " " * len(m.group(0)), text)
 
 
 def _shell_functions(body: str) -> list[tuple[str, str]]:
@@ -4232,3 +4396,189 @@ def test_an_environment_template_gets_shell_preprocessing(tmp_path):
     # And a commented-out template line still supplies nothing.
     assert not NONPY_AMBIGUOUS.search(
         _expand_shell_defaults(_strip_shell_comments("# TZ=${TZ:-EST}")))
+
+
+# ── Round 17 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# Six are more ways to spell a value the guard already understands one layer
+# down, and follow round 16's shape exactly. The seventh is different in kind
+# and is the one worth landing on its own: the shell-default expansion was
+# producing FALSE findings, which is the failure mode that costs someone else
+# a red CI run on correct code.
+
+
+def test_a_receiver_aliased_by_assignment_still_names_its_module():
+    """`import pytz; p = pytz; p.timezone("EST")`.
+
+    Round 15 fixed the CALLABLE half of this -- `make_zone = pytz.timezone` --
+    and left the receiver half. `_call_receiver` returns the bare `p`, the
+    provenance check consulted only `env.aliases` (which records IMPORT
+    aliases), so `specific` stayed false and the ambiguous `EST` was ignored
+    (Codex, PR #993).
+    """
+    legacy, _ = _hits('import pytz\n'
+                      'p = pytz\n'
+                      'ET = p.timezone("EST")\n')
+    assert legacy, legacy
+
+    # Through a chain, and the cycle guard holds.
+    legacy, _ = _hits('import pytz\n'
+                      'a = pytz\n'
+                      'b = a\n'
+                      'ET = b.timezone("EST")\n')
+    assert legacy, legacy
+
+    # A receiver with no timezone provenance still does not make `EST` one.
+    legacy, _ = _hits('import mymodule\n'
+                      'p = mymodule\n'
+                      'row = p.lookup("EST")\n')
+    assert not legacy, legacy
+
+
+def test_a_container_of_parameters_is_descended_into():
+    """`cur.executemany("SET TIME ZONE %s", [("EST",)])` is the batch form.
+
+    The parameter loop unwrapped the OUTER list and handed `follow` the inner
+    tuple, which had no case for a container -- so the API the SQL branch was
+    written to cover was covered in one shape and not the other
+    (Codex, PR #993).
+    """
+    legacy, _ = _hits('cur.executemany("SET TIME ZONE %s", [("EST",)])\n')
+    assert legacy, legacy
+
+    _legacy, offsets = _hits(
+        'cur.executemany("SET timezone TO %s", [("-05:00",), ("UTC",)])\n')
+    assert offsets, offsets
+
+    # The single-row form still works, and a statement with no timezone
+    # context still does not make its parameters into one.
+    legacy, _ = _hits('cur.execute("SELECT %s", [("EST",)])\n')
+    assert not legacy, legacy
+
+
+def test_statically_unpacked_arguments_are_inspected():
+    """`ZoneInfo(*["EST"])` and `ZoneInfo(**{"key": "EST"})` both construct it.
+
+    The positional loop handed `follow` an `ast.Starred` wrapper and the
+    keyword loop handed it the whole `**` mapping; neither had a case, and the
+    standalone scan ignores a bare ambiguous literal on purpose
+    (Codex, PR #993).
+    """
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'ET = ZoneInfo(*["EST"])\n')
+    assert legacy, legacy
+
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'ET = ZoneInfo(**{"key": "EST"})\n')
+    assert legacy, legacy
+
+    # A container OUTSIDE a timezone context is untouched -- `follow` is only
+    # reached once the call establishes one, which is what keeps this safe.
+    legacy, _ = _hits('STOP_WORDS = ["EST", "GMT"]\n')
+    assert not legacy, legacy
+
+
+def test_a_numeric_dateutil_tzinfos_mapping_is_rejected():
+    """`parse("...", tzinfos={"EST": -18000})` freezes the parse at UTC-5.
+
+    python-dateutil is a declared dependency and this is its documented way to
+    give an abbreviation a meaning. `parse` is not a timezone call, the key is
+    an ambiguous literal the standalone scan ignores, and the value is a bare
+    number -- so all three checks walked past it (Codex, PR #993).
+    """
+    _legacy, offsets = _hits(
+        'from dateutil.parser import parse\n'
+        'd = parse("2026-07-01 12:00 EST", tzinfos={"EST": -18000})\n')
+    assert offsets, offsets
+    assert "seconds" in offsets[0], (
+        f"the unit dateutil documents for this mapping is seconds: {offsets}")
+
+    # The value can also be a zone rather than a number.
+    legacy, _ = _hits(
+        'from dateutil.parser import parse\n'
+        'from dateutil.tz import gettz\n'
+        'd = parse("x", tzinfos={"EST": gettz("US/Eastern")})\n')
+    assert legacy, legacy
+
+    # An offset that is not Eastern is not this guard's business.
+    _legacy, offsets = _hits(
+        'from dateutil.parser import parse\n'
+        'd = parse("x", tzinfos={"PST": -28800})\n')
+    assert not offsets, offsets
+
+
+def test_the_utc_prefixed_offset_is_caught_in_a_python_timezone_context():
+    """`pd.Timestamp.now(tz="UTC-05:00")` is a fixed zone, unambiguously.
+
+    The TEXT scan leaves this spelling alone on purpose and says why: in a
+    shell `TZ` value POSIX inverts the sign, so `UTC-05:00` selects UTC+5.
+    Reaching `follow` means the AST has already established the string as a
+    timezone argument, where the ambiguity does not exist (Codex, PR #993).
+    """
+    _legacy, offsets = _hits('import pandas as pd\n'
+                             't = pd.Timestamp.now(tz="UTC-05:00")\n')
+    assert offsets, offsets
+
+    _legacy, offsets = _hits('from zoneinfo import ZoneInfo\n'
+                             'ET = ZoneInfo("UTC-04:00")\n')
+    assert offsets, offsets
+
+    # The sign still matters, and the TEXT scan is deliberately unchanged --
+    # `export TZ=UTC-05:00` is UTC+5 and stays unmatched there.
+    _legacy, offsets = _hits('import pandas as pd\n'
+                             't = pd.Timestamp.now(tz="UTC+05:00")\n')
+    assert not offsets, offsets
+    assert not NONPY_FIXED_OFFSET.search("export TZ=UTC-05:00")
+
+
+def test_a_split_yaml_env_pair_recognises_pgtz():
+    """`- name: PGTZ` / `value: EST` is how a manifest sets it.
+
+    Round 16 added `PGTZ` to the scalar contexts; the cross-line matcher that
+    exists for exactly this Kubernetes and Cloud Run shape still accepted only
+    `TZ`, `TIMEZONE` and `TIME_ZONE`, and the line-local regex cannot connect a
+    key on one line to a value on the next (Codex, PR #993).
+    """
+    hits = _yaml_env_pair_hits("        - name: PGTZ\n          value: EST\n")
+    assert hits, "a split PGTZ pair must be matched"
+    assert hits[0][1] == "EST", hits
+
+    # The keys it already knew still match, and an unrelated one still does not.
+    assert _yaml_env_pair_hits("        - name: TZ\n          value: US/Eastern\n")
+    assert not _yaml_env_pair_hits("        - name: REGION\n          value: EST\n")
+
+
+def test_only_a_timezone_expansion_is_rewritten_to_its_default():
+    """`echo ${MESSAGE:-TZ=EST}` prints text; it does not set a timezone.
+
+    The expansion pass rewrote EVERY `${X:-...}` in the file before the context
+    patterns ran, so an ordinary message default became `echo TZ=EST` and was
+    reported as a process-timezone assignment -- a false CI failure on correct
+    code, which is worse than a miss because it is red on someone else's PR
+    (Codex, PR #993).
+
+    Two halves, and the second is what actually closes it: narrowing the
+    rewrite is not enough, because the raw line still carries the literal text
+    `TZ=EST` inside the braces. Every non-timezone expansion is blanked.
+    """
+    def scanned(line: str) -> bool:
+        text = _expand_shell_defaults(_strip_shell_comments(line))
+        return bool(NONPY_AMBIGUOUS.search(text)
+                    or NONPY_UNAMBIGUOUS.search(text))
+
+    # False findings, gone.
+    assert not scanned("echo ${MESSAGE:-TZ=EST}")
+    assert not scanned("echo ${HELP:---time-zone EST}")
+    assert not scanned("echo ${MSG:-US/Eastern is not set}")
+
+    # Real ones, still found -- in every spelling the repository uses.
+    assert scanned("TZ=${TZ:-EST}")
+    assert scanned('TZ="${TZ:-EST}"')
+    assert scanned("export TZ=${TZ:-US/Eastern}")
+    assert scanned("--time-zone ${SCHED_TZ:-EST}")
+    assert scanned("timezone: ${TZ:-EST}")
+
+    # Blanking preserves width, so a line number and column still mean what
+    # they say for everything after it on the same line.
+    blanked = _expand_shell_defaults("echo ${MESSAGE:-TZ=EST}")
+    assert len(blanked) == len("echo ${MESSAGE:-TZ=EST}"), repr(blanked)
