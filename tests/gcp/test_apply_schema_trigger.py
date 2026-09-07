@@ -77,8 +77,37 @@ def test_overlapping_schema_builds_apply_in_start_order():
     code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
     assert not any("|| true" in ln for ln in code), "the guard must fail closed"
     assert src.count("exit 1") >= 3, "cannot-describe, cannot-list and deadline all fail"
-    deadline = int(src.split('DEADLINE_SECONDS:-')[1].split('}')[0])
-    assert deadline < int(str(cfg["timeout"]).rstrip("s")), "the wait must end before the build times out"
+    assert "DEADLINE_SECONDS" not in src, "a fixed wait budget ignores the outer build timeout"
+
+
+def _apply_job_task_timeout() -> int:
+    """The --task-timeout deploy.sh declares for apply-schema-migrations."""
+    import re
+    body = (REPO / "gcp/deploy.sh").read_text()
+    fn = body[body.index("deploy_apply_schema_migrations() {"):]
+    fn = fn[:fn.index("\n}")]
+    timeouts = {int(m) for m in re.findall(r"--task-timeout (\d+)", fn)}
+    assert len(timeouts) == 1, timeouts
+    return timeouts.pop()
+
+
+def test_the_wait_reserves_the_build_time_the_apply_and_deploy_need():
+    """Codex on #1022: the waiter's budget was a constant below the build
+    timeout, but the wait starts after the image build and is followed by
+    the apply job (its own timeout) plus pin or deploy, so the outer Cloud
+    Build timeout could kill the build mid-apply. The waiter now reads its
+    build's createTime and timeout and stops when the remaining budget
+    falls below a reserve that covers the apply job and the deploy."""
+    src = WAIT.read_text()
+    assert "value(createTime,timeout)" in src, "the budget comes from the build itself"
+    reserve = int(src.split("RESERVE_SECONDS:-")[1].split("}")[0])
+    assert reserve >= _apply_job_task_timeout() + 240, \
+        "the reserve must cover the apply job's timeout plus the deploy/pin step"
+    for path in (CFG, REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"):
+        timeout = int(str(yaml.safe_load(path.read_text())["timeout"]).rstrip("s"))
+        # image build (staging builds measure 4.5-6 min) + a full earlier
+        # build's apply + this build's reserve
+        assert timeout >= 2 * reserve + 900, (path.name, timeout, reserve)
 
 
 def test_the_image_is_the_trading_system_repo_not_the_api_image():

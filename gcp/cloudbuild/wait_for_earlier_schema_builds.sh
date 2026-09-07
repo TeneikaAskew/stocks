@@ -26,32 +26,49 @@
 # deadlock.
 #
 # FAILS CLOSED: if the build list cannot be read, or an earlier build has
-# not finished within the deadline, exit non-zero. A guard that cannot see
+# not finished within the budget, exit non-zero. A guard that cannot see
 # its peers must stop rather than reassure (same rule as the staging
 # interlock, Codex on PR #990).
+#
+# BUDGET: the wait starts AFTER the image build and push, and is followed
+# by the apply job (its own --task-timeout, 1800 s in gcp/deploy.sh) plus
+# the pin or deploy step. A fixed wait budget ignored all of that, so the
+# outer Cloud Build timeout could kill the build in the middle of the apply
+# (Codex on #1022). The budget is therefore read from the build itself:
+# createTime and timeout from `gcloud builds describe`, and the wait stops
+# once the time left before the build's own timeout falls below
+# RESERVE_SECONDS, which covers the apply job and the step after it.
 set -euo pipefail
 
 SELF="${1:-}"
 TAGS="apply-schema-on-change solyra-api-staging-deploy"
 POLL_SECONDS="${POLL_SECONDS:-20}"
-DEADLINE_SECONDS="${DEADLINE_SECONDS:-1500}"   # below the build's 1800 s timeout
+RESERVE_SECONDS="${RESERVE_SECONDS:-2100}"   # apply job 1800 s + deploy/pin 300 s
 
 if [ -z "${SELF}" ]; then
   echo "usage: $0 <this build id>" >&2
   exit 2
 fi
 
-if ! self_start=$(gcloud builds describe "${SELF}" --format='value(createTime)' 2>&1); then
+if ! self_desc=$(gcloud builds describe "${SELF}" --format='value(createTime,timeout)' 2>&1); then
   echo "ERROR: cannot describe this build (${SELF}); cannot order it against its peers." >&2
-  echo "       ${self_start}" >&2
+  echo "       ${self_desc}" >&2
   exit 1
 fi
-if [ -z "${self_start}" ]; then
-  echo "ERROR: build ${SELF} has no createTime; refusing to guess the order." >&2
+self_start=$(printf '%s' "${self_desc}" | cut -f1)
+self_timeout=$(printf '%s' "${self_desc}" | cut -f2 | sed 's/[^0-9].*$//')
+if [ -z "${self_start}" ] || [ -z "${self_timeout}" ]; then
+  echo "ERROR: build ${SELF} has no createTime/timeout (${self_desc}); refusing to guess." >&2
   exit 1
 fi
+if ! self_epoch=$(date -u -d "${self_start}" +%s 2>&1); then
+  echo "ERROR: cannot parse createTime '${self_start}': ${self_epoch}" >&2
+  exit 1
+fi
+deadline_epoch=$((self_epoch + self_timeout - RESERVE_SECONDS))
+echo "build ${SELF}: created ${self_start}, timeout ${self_timeout}s, reserving ${RESERVE_SECONDS}s;" \
+     "will wait at most $((deadline_epoch - $(date -u +%s)))s for earlier schema builds"
 
-waited=0
 while :; do
   earlier=""
   for tag in ${TAGS}; do
@@ -71,13 +88,15 @@ while :; do
     echo "no earlier schema-mutating build in flight — proceeding"
     exit 0
   fi
-  if [ "${waited}" -ge "${DEADLINE_SECONDS}" ]; then
-    echo "ERROR: earlier schema build(s) still running after ${waited}s:${earlier}" >&2
+  now=$(date -u +%s)
+  if [ "${now}" -ge "${deadline_epoch}" ]; then
+    echo "ERROR: earlier schema build(s) still running with only $((self_epoch + self_timeout - now))s" >&2
+    echo "       of this build's timeout left, below the ${RESERVE_SECONDS}s the apply and" >&2
+    echo "       deploy need:${earlier}" >&2
     echo "       Not applying this revision's schema out of order. Re-run this" >&2
     echo "       build once they finish (gcloud builds log <id>)." >&2
     exit 1
   fi
-  echo "waiting ${POLL_SECONDS}s for earlier schema build(s):${earlier}"
+  echo "waiting ${POLL_SECONDS}s for earlier schema build(s):${earlier} ($((deadline_epoch - now))s of budget left)"
   sleep "${POLL_SECONDS}"
-  waited=$((waited + POLL_SECONDS))
 done

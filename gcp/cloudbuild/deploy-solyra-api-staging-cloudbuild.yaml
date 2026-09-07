@@ -186,4 +186,8 @@ substitutions:
 tags: [solyra-api-staging-deploy]
 options:
   logging: CLOUD_LOGGING_ONLY
-timeout: 1800s
+# 5400 s: image build (4.5-6 min measured) + waiting out an earlier schema
+# build's apply + this build's apply (job timeout 1800 s) + deploy + pin.
+# The serializer reads this value and stops waiting once less than its
+# reserve is left.
+timeout: 5400s
