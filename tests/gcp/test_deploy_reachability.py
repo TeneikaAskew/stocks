@@ -139,7 +139,8 @@ def _gamma_levels_body() -> str:
 
 
 @pytest.mark.parametrize("flag", [
-    r'--image\s+"\$\{IMAGE\}:research"',
+    r'research_image="\$\{IMAGE\}:research"',
+    r'--image\s+"\$\{research_image\}"',
     r"--memory\s+2Gi",
     r"--cpu\s+2\b",
     r"--max-retries\s+0",

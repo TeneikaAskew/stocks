@@ -1366,6 +1366,47 @@ deploy_phase6_playbook() {
         --quiet
 }
 
+# ── Gamma levels EOD (Cloud Run Job, research image) ─────────────────────────
+# Builds gamma_levels_eod (Kings / Gates / Flip per ticker-date) from the
+# alphavantage EOD chains in etf_options_snapshots. Scheduled nightly by
+# gamma-levels-daily (22:30 ET, deploy_schedulers) and read by
+# strat-engine-daily (23:35 ET) for the gamma/vex/vix features.
+#
+# Captured from the live job on 2026-09-07 (#829 K1 / #834 D2): the job
+# had been created by hand and this scheduler was the only mention of it
+# in the repo, so its image, sizing and timeout were unversioned and a
+# fresh-environment rebuild would have produced a scheduler pointing at
+# nothing. Every flag below reproduces `gcloud run jobs describe
+# p2-build-gamma-levels`: trading-system:research, python -m
+# gcp.research.p2_build_gamma_levels (default args = current year only,
+# ~1 min/ticker), cpu 2, memory 2Gi, maxRetries 0, timeoutSeconds 5400,
+# SA trading-runner, DB env + DB_PASS secret. Sizing review is a separate
+# question from the capture; see the #834 follow-up note on PR #1022.
+# tests/gcp/test_deploy_reachability.py pins the spec.
+deploy_p2_build_gamma_levels() {
+    echo "Deploying p2-build-gamma-levels job..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create p2-build-gamma-levels \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.p2_build_gamma_levels" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update p2-build-gamma-levels \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 0 \
+        --task-timeout 5400 \
+        --command "python" \
+        --args="-m,gcp.research.p2_build_gamma_levels" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Strat Directionality Engine (Cloud Run Job, research image) ─────────────
 # Replaces the P7-era `p7b-next-candle-classifier` job (which is now used
 # only to keep the prior modeling pipeline reachable for reference;
@@ -4571,6 +4612,7 @@ case "${1:-help}" in
     playbook-resolver) _run build_image deploy_premarket_playbook_resolver ;;
     phase6-playbook) _run build_image deploy_phase6_playbook ;;
     strat-engine) deploy_strat_engine ;;
+    gamma-levels) deploy_p2_build_gamma_levels ;;   # research image; build separately (build-research)
     direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
     build-options-greeks) deploy_build_options_greeks ;;  # research image
     build-realtime-gex) deploy_build_realtime_gex ;;      # research image
@@ -4632,6 +4674,21 @@ case "${1:-help}" in
         deploy_indicator_correlation
         deploy_weekly_pg_dump
         deploy_notifier
+        # Main-image jobs that deploy_schedulers targets but nothing above
+        # created (#829/#831 audit: `all` came up partial on a rebuild).
+        deploy_earnings_long_watchlist
+        deploy_refresh_earnings_views
+        deploy_calibrate_thresholds
+        # Research-image jobs with a scheduler entry. Built once here, then
+        # each job pins :research by digest (pin_image_tags at the tail).
+        build_research_image
+        deploy_strat_engine
+        deploy_p2_build_gamma_levels
+        deploy_magnitude_inference
+        deploy_build_realtime_gex
+        deploy_build_options_daily_features
+        deploy_build_options_greeks
+        deploy_regime_combo
         deploy_schedulers
         backfill_watchlist
         echo "All components deployed."
@@ -4666,6 +4723,9 @@ case "${1:-help}" in
         echo "             objectAdmin on the dump bucket, lifecycle rule sets 30d"
         echo "             retention on the sql-dumps/ prefix."
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
+        echo "  gamma-levels"
+        echo "             Deploy p2-build-gamma-levels job (research image; run"
+        echo "             build-research first). Nightly writer of gamma_levels_eod."
         echo "  spx-greeks Deploy one-shot SPX Greeks backfill job (12h timeout)"
         echo "             python -m scripts.maintenance.compute_spx_greeks --ticker SPX"
         echo ""
@@ -4710,7 +4770,8 @@ case "${1:-help}" in
         echo "  retire-legacy-images"
         echo "             Delete the pre-#990 gcr.io/trading-platform(-staging)"
         echo "             image packages. Refuses while a live service runs one."
-        echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
+        echo "  all        Build both images + deploy every scheduled job and service"
+        echo "             + schedulers + backfill"
         ;;
 esac
 # A failed AND-list inside a case arm (e.g. build_image failing before
