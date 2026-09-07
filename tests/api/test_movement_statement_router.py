@@ -385,6 +385,32 @@ def test_level_map_anchors_prior_levels_to_the_session_before_analysis_date(monk
     assert pdh.price != pytest.approx(day_before_high)
 
 
+def test_level_map_ignores_a_complete_row_for_the_session_itself(monkeypatch):
+    """Once the session's own daily row lands (evening, after the refresh), the
+    frame holds a complete bar for analysis_date. The playbook the ladder is
+    matched against was built premarket from rows strictly BEFORE the session,
+    anchored to the prior close, so the ladder must use the same cutoff or a
+    level crossed intraday changes sides and loses its slot (Codex P2 on
+    #1030, round 4)."""
+    import datetime as _dt  # noqa: PLC0415
+
+    df = _synthetic_daily()  # complete rows, last one IS the session
+    today = df.index[-1].date()
+    prior_close = float(df["Close"].iloc[-2])
+    prior_high = float(df["High"].iloc[-2])
+    todays_high = float(df["High"].iloc[-1])
+
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
+        level_map = dashboard_router._build_movement_level_map("SPY", analysis_date=today)
+
+    assert level_map is not None
+    assert level_map.current_price == pytest.approx(prior_close)
+    pdh = next(lv for lv in level_map.levels if lv.name == "PDH")
+    assert pdh.price == pytest.approx(prior_high)
+    assert pdh.price != pytest.approx(todays_high)
+    assert isinstance(today, _dt.date)
+
+
 def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):
     """The default is today's date in America/New_York, not UTC, so an
     evening request does not roll the ladder forward a session (Rule 3.9)."""

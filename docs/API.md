@@ -130,7 +130,7 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:145`](../platform/api/routers/profile.py#L145) |  |
 | `PUT` | `/api/me/profile` | [`platform/api/routers/profile.py:162`](../platform/api/routers/profile.py#L162) | Upsert the provided subset of fields and return the full stored row. |
-| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:483`](../platform/api/routers/dashboard.py#L483) | PHASE 3 — read-only, feature-flagged movement statement. |
+| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:496`](../platform/api/routers/dashboard.py#L496) | PHASE 3 — read-only, feature-flagged movement statement. |
 | `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:305`](../platform/api/routers/options.py#L305) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
 | `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:700`](../platform/api/routers/options.py#L700) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
 | `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:580`](../platform/api/routers/options.py#L580) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |

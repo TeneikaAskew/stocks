@@ -451,6 +451,19 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         # block to an explicit UNAVAILABLE envelope (never a fabricated ladder).
         ohlc_cols = [c for c in ("Open", "High", "Low", close_col) if c in df.columns]
         df = df[df[ohlc_cols].notna().all(axis=1)]
+        # Same strict cutoff the premarket brief applies (gcp/premarket_brief.py,
+        # "Honour BRIEF_AS_OF"): only bars BEFORE the session. The playbook row
+        # this ladder is matched against was built premarket from exactly that
+        # frame, anchored to the prior close. Once the session's own daily row
+        # lands, an unfiltered frame would anchor to today's close instead, and
+        # a level crossed during the session flips between the call and put
+        # ladders relative to the playbook's sides, losing its slot (Codex P2
+        # on #1030, round 4).
+        session = analysis_date or _movement_analysis_date()
+        ts_col = pd.to_datetime(df["Time"] if "Time" in df.columns else pd.Series(df.index, index=df.index))
+        if getattr(ts_col.dt, "tz", None) is not None:
+            ts_col = ts_col.dt.tz_localize(None)
+        df = df[ts_col < pd.Timestamp(session)]
         if df.empty or len(df) < 2:
             return None
         ts = df["Time"] if "Time" in df.columns else pd.Series(df.index)
@@ -473,7 +486,7 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
             daily_df=df,
             current_price=current_price,
             atr=atr_for_filter,
-            analysis_date=analysis_date or _movement_analysis_date(),
+            analysis_date=session,
         )
     except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
         logger.warning("movement-statement level map unavailable for %s: %s", ticker, exc)
