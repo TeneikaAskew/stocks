@@ -75,19 +75,30 @@ jobs:
 
           gh run view "$RUN_ID" --repo "$REPO" --log-failed > failed.log
 
-          # A transport failure is a STRUCTURED CLI ERROR RECORD, not a string
-          # somewhere in the log. The log carries the model's own stdout, so a
-          # substring match could be faked by the model quoting a code. Two
-          # things must both hold, and only in the tail, because the CLI emits
-          # its fatal record last and then exits. The timestamps GitHub adds
-          # are stripped first so the emitter can be line-anchored.
+          # A transport failure is ONE ATTRIBUTABLE CLI ERROR RECORD, matched on
+          # a single line: the CLI's own emitter, the path of the report only
+          # the CLI writes, and the transport cause. The log interleaves the
+          # model's stdout with the CLI's stderr, so two independent greps --
+          # a fatal prefix somewhere and a transport token somewhere -- can
+          # both be satisfied by text the model wrote. (Codex, PR #1032.)
+          #
+          # The prefix alone was never the discriminator. The CLI emits it for
+          # internal errors too; two real samples from this project:
+          #
+          #   ...gemini-client-error-<id>.json TypeError: terminated   <- transport
+          #   ...gemini-client-error-<id>.json Error: Couldn't ...     <- internal
+          #
+          # so the cause ON THAT LINE is what separates them.
+          #
+          # Only the tail, because the CLI emits this last and then exits. The
+          # timestamps GitHub prefixes onto log lines are stripped first so the
+          # emitter can be anchored to the start of the line.
           TAIL=$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' failed.log | tail -n 40)
-          FATAL='^(Error when talking to Gemini API|An unexpected critical error occurred)'
-          TRANSPORT='UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|TypeError: terminated|ECONNRESET|socket hang up'
+          RECORD='^Error when talking to Gemini API Full report available at: /tmp/gemini-client-error-[^ ]+ '
+          TRANSPORT='(TypeError: terminated|ECONNRESET|socket hang up|UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)'
 
-          if printf '%s\n' "$TAIL" | grep -qE "$FATAL" \
-             && printf '%s\n' "$TAIL" | grep -qE "$TRANSPORT"; then
-            CAUSE=$(printf '%s\n' "$TAIL" | grep -oE "$TRANSPORT" | sort -u | tr '\n' ' ')
+          if printf '%s\n' "$TAIL" | grep -qE "${RECORD}${TRANSPORT}"; then
+            CAUSE=$(printf '%s\n' "$TAIL" | grep -oE "${RECORD}${TRANSPORT}" | grep -oE "$TRANSPORT" | sort -u | tr '\n' ' ')
             echo "::notice::run ${RUN_ID} died on a Vertex transport stall (${CAUSE}); re-running the failed jobs once"
             gh api --method POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun-failed-jobs"
             {
@@ -97,7 +108,7 @@ jobs:
               echo "Re-running the failed jobs once, from a fresh checkout."
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "run ${RUN_ID} failed, but not with a CLI transport-error record in the last 40 lines of the failed step. Leaving it red — this is the repo's own failure and the gates are supposed to catch it."
+            echo "run ${RUN_ID} failed, but not with an attributable CLI transport-error record in the last 40 lines of the failed step. Leaving it red — this is the repo's own failure and the gates are supposed to catch it."
             {
               echo "### Not re-run"
               echo
