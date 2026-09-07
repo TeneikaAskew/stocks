@@ -1,4 +1,4 @@
-name: Re-run a doc refresh that died on a Vertex transport stall
+name: Re-run a doc refresh that died on a Vertex transport stall or quota exhaustion
 
 # Run 20 of the monthly refresh (2026-09-07) died at
 # "Regenerate 05-c-DATA_DEPENDENCIES.md" after 6m45s of silence:
@@ -12,6 +12,12 @@ name: Re-run a doc refresh that died on a Vertex transport stall
 # file 20 minutes earlier in 28 seconds, and run 21 completed the same step in
 # 6m01s. One vendor blip cost a 13-minute run, and on the 1st of the month it
 # would cost the whole unattended refresh.
+#
+# Run 25 (2026-09-07) died at the same step a different way: Vertex answered
+# 429 RESOURCE_EXHAUSTED ten times over six minutes and the CLI's own backoff
+# gave up with `RetryableQuotaError`. The vendor's page says "try again
+# later"; attempt 2 takes ~15 minutes to reach the same call, which is the
+# retry. Both causes are one bounded re-run; anything else stays red.
 #
 # WHY THE RE-RUN LIVES HERE AND NOT INSIDE THE REFRESH JOB
 #
@@ -86,12 +92,12 @@ jobs:
           set -e
           case "$VERDICT" in
             0)
-              echo "::notice::run ${RUN_ID} died on a Vertex transport stall; re-running the failed jobs once"
+              echo "::notice::run ${RUN_ID} died on a Vertex transport stall or quota exhaustion; re-running the failed jobs once"
               gh api --method POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun-failed-jobs"
               {
                 echo "### Re-ran the monthly doc refresh"
                 echo
-                echo "Run \`${RUN_ID}\` failed with a Vertex transport stall."
+                echo "Run \`${RUN_ID}\` failed with a Vertex transport stall or quota exhaustion."
                 echo "Re-running the failed jobs once, from a fresh checkout."
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
@@ -100,7 +106,7 @@ jobs:
               {
                 echo "### Not re-run"
                 echo
-                echo "Run \`${RUN_ID}\` failed without a Vertex transport-error record. That is a real failure, so it stays red."
+                echo "Run \`${RUN_ID}\` failed without a Vertex transport-error or quota-exhaustion record. That is a real failure, so it stays red."
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
             *)
