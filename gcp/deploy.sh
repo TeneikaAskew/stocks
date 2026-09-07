@@ -513,14 +513,24 @@ _env_string() {
 deploy_discord_interactions() {
     echo "Deploying discord-interactions SERVICE..."
 
-    # Discord-specific secrets only — the service queries Cloud SQL via
+    # Discord-specific configuration — the service queries Cloud SQL via
     # the same connector path as the rest of the platform.
-    local discord_app_id discord_public_key discord_bot_token
+    #
+    # DISCORD_APP_ID and DISCORD_PUBLIC_KEY are public identifiers (the
+    # public key is Discord's Ed25519 *verification* key) and ride as plain
+    # env vars. DISCORD_BOT_TOKEN is a credential and is bound by
+    # reference with --set-secrets like every other credential on this
+    # service (DB_PASS, AV_API_KEY, the webhooks, FRED, Benzinga). It used
+    # to be read into this shell and pasted into --set-env-vars, which put
+    # the token in plaintext in the revision spec of a public
+    # (--allow-unauthenticated) service, in `gcloud run services describe`
+    # output, and in every deploy log (#830, audit K2). The value is never
+    # read here any more — only its existence is checked.
+    local discord_app_id discord_public_key
     discord_app_id="$(_secret discord-app-id 2>/dev/null || true)"
     discord_public_key="$(_secret discord-public-key 2>/dev/null || true)"
-    discord_bot_token="$(_secret discord-bot-token 2>/dev/null || true)"
     if [ -z "${discord_app_id}" ] || [ -z "${discord_public_key}" ] \
-       || [ -z "${discord_bot_token}" ]; then
+       || ! gcloud secrets describe discord-bot-token --project="${PROJECT_ID}" >/dev/null 2>&1; then
         echo "ERROR: Discord secrets missing. Create discord-app-id, " \
              "discord-public-key, discord-bot-token in Secret Manager first." >&2
         return 1
@@ -530,8 +540,10 @@ deploy_discord_interactions() {
     env="$(_env_string)"
     env="${env},DISCORD_APP_ID=${discord_app_id}"
     env="${env},DISCORD_PUBLIC_KEY=${discord_public_key}"
-    env="${env},DISCORD_BOT_TOKEN=${discord_bot_token}"
     env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+    # DB_SECRET_FLAG is "--set-secrets=K=secret:ver,..."; append the token.
+    local discord_secret_flag
+    discord_secret_flag="${DB_SECRET_FLAG},DISCORD_BOT_TOKEN=discord-bot-token:latest"
 
     # Cloud Run service deploy. min-instances=1 keeps one warm container so
     # Discord's 3-sec interaction-ack window never blows up on cold start
@@ -552,7 +564,7 @@ deploy_discord_interactions() {
         --service-account "${SA_EMAIL}" \
         --command "uvicorn" \
         --args "gcp.discord_interactions.main:app,--host,0.0.0.0,--port,8080" \
-        ${DB_SECRET_FLAG} \
+        ${discord_secret_flag} \
         --set-env-vars "${env}" \
         --quiet
 
