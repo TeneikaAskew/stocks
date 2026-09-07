@@ -22,7 +22,7 @@ import os
 import re
 import sys
 import uuid
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -686,8 +686,20 @@ def _round_half_up_4dp(value: float) -> float:
     """
     if not math.isfinite(value):
         raise ValueError(f"price must be finite, got {value!r}")
-    return float(Decimal(repr(value)).quantize(Decimal("0.0001"),
-                                               rounding=ROUND_HALF_UP))
+    try:
+        return float(Decimal(repr(value)).quantize(Decimal("0.0001"),
+                                                   rounding=ROUND_HALF_UP))
+    except InvalidOperation:
+        # FINITE and still unquantizable. `1e24` passes `math.isfinite` and
+        # `allow_inf_nan=False`, but quantizing it to four places needs more
+        # significant digits than the default Decimal context carries, so it
+        # raises `InvalidOperation` -- an ArithmeticError, which slips past
+        # `_dedupe_key`'s `except (TypeError, ValueError)` exactly as the
+        # non-finite case did before it, and 500s the import (Codex, PR #991).
+        # Same answer as a non-finite price: this is not a price, and the
+        # helper stays total so no caller is crashed by one.
+        raise ValueError(
+            f"price is out of range for a 4-decimal key, got {value!r}")
 
 
 def _dedupe_key(ticker, direction, entry_ts, entry_price) -> tuple:

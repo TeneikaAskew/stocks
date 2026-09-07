@@ -22,10 +22,18 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
+from lib.single_flight import SingleFlight
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 router = APIRouter()
+
+# Coalesces cold catalyst fetches per (window, tickers). Bounded well above a
+# normal Benzinga round trip so a decliner usually wakes to a written cache,
+# and gives up rather than holding a worker when the vendor is slow.
+_CATALYST_FLIGHT = SingleFlight()
+_CATALYST_WAIT_S = 8.0
 logger = logging.getLogger(__name__)
 
 CATALYSTS_FILE = PROJECT_ROOT / "data" / "catalysts" / "catalyst_calendar.json"
@@ -160,9 +168,37 @@ def get_catalyst_events(
 
     events = None
 
-    # Try live fetch if refresh requested or no cache
+    # Try live fetch if refresh requested or no cache.
+    #
+    # COALESCED. This handler is a plain `def` now, so concurrent requests run
+    # it in separate worker threads: on a cold cache both pass the existence
+    # check and both call `_fetch_live_events`, which walks every configured
+    # Benzinga calendar endpoint serially. `_SAVE_LOCK` is taken only after
+    # that network batch, inside `save_catalysts`, so it protects the file and
+    # not the vendor quota — while the previous no-await `async def` handler
+    # serialised the calls for free and the second request found the file
+    # already written (Codex, PR #991).
+    #
+    # A decliner WAITS and then re-reads the cache, rather than declining with
+    # an answer of its own: the claimant is about to produce the only answer
+    # there is. The wait is bounded so a slow vendor cannot hold a worker
+    # indefinitely; on timeout the decliner does the fetch itself, which is
+    # the pre-existing behaviour rather than a new failure.
+    #
+    # `refresh=true` is deliberately NOT coalesced away for the claimant: an
+    # operator asking for a refresh gets one. A concurrent refresh for the
+    # same window still waits rather than duplicating the batch.
     if refresh or not CATALYSTS_FILE.exists():
-        events = _fetch_live_events(d_from, d_to, ticker_list)
+        flight_key = f"{d_from}:{d_to}:{','.join(ticker_list or [])}"
+        with _CATALYST_FLIGHT.claim(flight_key) as mine:
+            if not mine:
+                _CATALYST_FLIGHT.wait(flight_key, _CATALYST_WAIT_S)
+                # Re-read: the claimant has usually just written the file, in
+                # which case this request pays nothing.
+                cached = _load_cached_events()
+                events = cached.get("events", []) if cached else None
+            if events is None:
+                events = _fetch_live_events(d_from, d_to, ticker_list)
 
     # Fall back to cache. If no Benzinga data is available, fall through
     # with an empty list — our own DB sources (news / SEC) below still

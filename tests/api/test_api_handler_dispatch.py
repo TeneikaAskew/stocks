@@ -60,6 +60,79 @@ def _awaited_names(node: ast.AST) -> set[str]:
     return names
 
 
+# Handlers allowed to sit on the event loop with no `await`, each because
+# being on the loop is the POINT rather than an oversight.
+#
+#   health_check -- exists to answer while the service is in trouble, and the
+#     trouble worth reporting is usually worker saturation: a burst of DB
+#     requests can hold every AnyIO worker token for up to the 30-second pool
+#     timeout, so a threadpooled health check queues behind exactly the
+#     condition it is meant to report (Codex, PR #991).
+#
+# Membership here is necessary and not sufficient -- see `_holds_the_loop`.
+EXEMPT = {"health_check"}
+
+# Calls a handler may make and still count as holding the loop for no time:
+# pure construction and formatting, nothing that reaches a socket, a file or a
+# lock.
+_PURE_CALLS = {
+    "str", "int", "float", "bool", "len", "repr", "format",
+    "list", "dict", "set", "tuple", "sorted", "isoformat",
+}
+
+
+def _holds_the_loop(node: ast.AST) -> str | None:
+    """The first call in `node` that could block, or None if nothing can.
+
+    This is what keeps an exemption honest. The two exemptions removed from
+    this list were both justified by a decorator -- "returns a
+    StreamingResponse", "schedules BackgroundTasks" -- and both handlers did
+    blocking work anyway. A name in a set records a decision; re-deriving it
+    from the body is what keeps the decision true after the handler changes.
+    """
+    # The BODY only. `ast.walk` on a FunctionDef also yields its
+    # decorator_list, so walking the whole node reported the route's own
+    # `@app.get(...)` as a blocking call in the handler.
+    for stmt in node.body:
+        for sub in ast.walk(stmt):
+            if not isinstance(sub, ast.Call):
+                continue
+            fn = sub.func
+            name = fn.id if isinstance(fn, ast.Name) else (
+                fn.attr if isinstance(fn, ast.Attribute) else None)
+            if name not in _PURE_CALLS:
+                return f"{name}() at line {sub.lineno}"
+    return None
+
+
+def test_an_exempt_handler_still_does_no_blocking_work():
+    """The exemption is re-earned from the body, not inherited from the list.
+
+    A handler exempted for being pure that later grows a database call is the
+    exact failure mode of the two exemptions this file used to carry, and the
+    only difference then was that nobody re-read them.
+    """
+    bodies = {}
+    for path, tree in _module_trees():
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                bodies.setdefault(node.name, (path, node))
+
+    for name in sorted(EXEMPT):
+        assert name in bodies, f"EXEMPT names {name}, which no longer exists"
+        path, node = bodies[name]
+        blocking = _holds_the_loop(node)
+        assert blocking is None, (
+            f"{path.name}:{node.lineno} {name} is exempted from the dispatch "
+            f"guard on the grounds that it holds the event loop for no time, "
+            f"but it calls {blocking}. Either drop the call or drop the "
+            f"exemption and declare the handler `def`.")
+        assert isinstance(node, ast.AsyncFunctionDef), (
+            f"{name} is in EXEMPT, which only means anything for an "
+            f"`async def` handler; this one is a plain `def` and is already "
+            f"threadpooled")
+
+
 def test_no_async_route_handler_lacks_await():
     """An `async def` route with no `await` blocks the loop for nothing.
 
@@ -77,17 +150,18 @@ def test_no_async_route_handler_lacks_await():
       response time was spent on the event loop. It is now a plain generator
       that Starlette iterates in a threadpool.
 
-    Both exemptions described a decorator rather than the work behind it.
-    Keep the list empty; if a handler needs to be added back, the reason has
-    to be about what it actually does while the loop is held.
+    Both exemptions described a decorator rather than the work behind it. So
+    the one exemption that exists now is not taken on trust: `_holds_the_loop`
+    re-derives it from the handler's body on every run, and a handler that
+    grows a call outside the pure-construction allowlist stops being exempt
+    without anyone remembering to remove it.
     """
-    exempt: set[str] = set()
     offenders = []
     for path, tree in _module_trees():
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef) or not _is_route(node):
                 continue
-            if node.name in exempt:
+            if node.name in EXEMPT and not _holds_the_loop(node):
                 continue
             if not any(isinstance(s, ast.Await) for s in ast.walk(node)):
                 offenders.append(f"{path.name}:{node.lineno} {node.name}")

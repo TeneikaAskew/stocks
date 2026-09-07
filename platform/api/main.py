@@ -231,14 +231,37 @@ def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
 # ── App-level API routes ─────────────────────────────────────────────────────
 
 
+# Read once at import. The image is immutable, so this cannot change while the
+# process lives, and hoisting it leaves the health handler with no I/O at all —
+# which is what lets it stay on the event loop honestly rather than by
+# assertion (see the exemption in tests/api/test_api_handler_dispatch.py).
+_LIB_DIR_EXISTS = (PROJECT_ROOT / "lib").is_dir()
+
+
 @app.get("/api/health")
-def health_check():
+async def health_check():
+    """`async def`, and the ONLY handler in this file that should be.
+
+    Everything else here is `def` on purpose: a synchronous handler belongs on
+    the threadpool so a blocking query cannot stall the loop. This one is the
+    exception, and for the opposite reason. It exists to answer while the
+    service is in trouble, and the trouble worth reporting is usually worker
+    saturation — a burst of DB requests queued behind the 5+2 SQLAlchemy pool
+    can hold every AnyIO worker token for up to the 30-second pool timeout.
+    A threadpooled health check waits in that same queue, so the probe goes
+    silent exactly when the answer matters (Codex, PR #991).
+
+    It holds the loop for microseconds and touches nothing: no database, no
+    filesystem, no network. `_LIB_DIR_EXISTS` is read at import for that
+    reason. If this handler ever grows a call that blocks, it belongs back on
+    the threadpool and the exemption must go with it.
+    """
     return {
         "status": "ok",
         "project_root": str(PROJECT_ROOT),
         "cloud_sql": _CLOUD_SQL,
         "gcs_bucket": "adept-mountain-474619-d4-trading-data",
-        "lib_dir_exists": (PROJECT_ROOT / "lib").is_dir(),
+        "lib_dir_exists": _LIB_DIR_EXISTS,
     }
 
 
