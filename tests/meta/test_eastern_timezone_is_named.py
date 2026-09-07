@@ -292,6 +292,10 @@ _FIXED_OFFSET_SECOND_CALLS = {"tzoffset"}
 # included, so `ZoneInfo(key="US/Eastern")` is still caught where it means
 # something.
 _TZ_KEYWORDS = {"tz", "tzinfo", "timezone", "time_zone"}
+# Calls whose FIRST argument is a key and whose second is its value. Both set
+# the process timezone when the key is `TZ`, and neither is a timezone
+# constructor, so the call-name filter walked past them.
+_ENV_SETTER_CALLS = {"putenv", "setdefault"}
 # A fixed offset does not have to be spelled as a number. `Etc/GMT+5` is a
 # real IANA zone frozen at UTC-5 (POSIX inverts the sign), so it stands in for
 # Eastern through the winter and is wrong all summer -- exactly what this
@@ -760,7 +764,14 @@ def _parameter_bindings(scope: ast.AST) -> tuple[set[str], dict]:
     pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults)
               if d is not None]
     for arg, default in pairs:
-        if _binding_text(default) is not None:
+        # The same kinds `_collect_bindings` keeps for an assigned local. Only
+        # strings were retained, so `def build(offset=timedelta(hours=-5))`
+        # left the body unable to resolve `offset` and the frozen zone passed
+        # (Codex, PR #993). A default IS a binding; which node kinds count is
+        # not a question the two should answer differently.
+        if (_binding_text(default) is not None
+                or _is_eastern_fixed_timedelta(default)
+                or isinstance(default, (ast.Name, ast.Attribute))):
             defaults[arg.arg] = default
     return names, defaults
 
@@ -922,7 +933,17 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
         # constructed offsets, which are only worth carrying when they are the
         # thing this guard looks for; a `timedelta(hours=3)` resolves to
         # nothing and shadowing is already handled by `_bound_names`.
-        if _binding_text(v) is None and not _is_eastern_fixed_timedelta(v):
+        #
+        # Plus a bare indirection. `LEGACY = "EST"; TZ = LEGACY; ZoneInfo(TZ)`
+        # is an ordinary way to name a shared setting once, and dropping a
+        # Name or Attribute right-hand side meant `TZ` resolved to nothing --
+        # so `follow`'s recursion, which exists precisely to walk chains, had
+        # no chain to walk (Codex, PR #993). Whether the chain ends in
+        # anything interesting is `follow`'s question, not this one's; the
+        # depth cap bounds it either way.
+        if (_binding_text(v) is None
+                and not _is_eastern_fixed_timedelta(v)
+                and not isinstance(v, (ast.Name, ast.Attribute))):
             continue
         for t in targets:
             if isinstance(t, ast.Name):
@@ -940,6 +961,11 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
     legacy, offsets = [], []
     rel = path.relative_to(REPO)
     envs = _scoped_envs(tree)
+    # Statement ids at module scope, and every name this module ever reads --
+    # both for the configuration-export check below.
+    _module_level = {id(n) for n in tree.body}
+    _read_names = {n.id for n in ast.walk(tree)
+                   if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
 
     def note(bucket, node, what):
         bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
@@ -963,9 +989,19 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             # scan should still see it.
             reported.add(id(arg))
         legacy_here = ALL_LEGACY if ambiguous_ok else UNAMBIGUOUS_LEGACY
-        if isinstance(arg, ast.Constant) and arg.value in legacy_here:
-            note(bucket_legacy, arg, where(repr(arg.value)))
-            return True
+        # Case-folded, because `pytz.timezone("est")` builds the same frozen
+        # zone as `pytz.timezone("EST")` and an exact tuple test reported only
+        # the second (Codex, PR #993). Safe HERE and not at the bare-constant
+        # scan: `follow` is only ever reached through a real timezone context
+        # -- a constructor argument, a `tz=` keyword, a timezone-named key --
+        # so a lowercase `est` in ordinary prose or a stop-word list is
+        # untouched, which is the distinction the non-Python patterns already
+        # make with their IGNORECASE plus a required context.
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            folded = {z.lower() for z in legacy_here}
+            if arg.value.lower() in folded:
+                note(bucket_legacy, arg, where(repr(arg.value)))
+                return True
         if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
                 and _FIXED_OFFSET_STRINGS.match(arg.value)):
             note(bucket_offsets, arg, where(repr(arg.value)))
@@ -1019,6 +1055,32 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                         and tgt.attr.lower() in _TZ_KEYWORDS):
                     follow(legacy, offsets, node, node.value, env,
                            lambda shown, a=tgt.attr: f".{a} = {shown}")
+                # `TIME_ZONE = "EST"` in a settings module. No constructor is
+                # called here because something else consumes the setting --
+                # a framework, or another module -- so waiting for a local
+                # `ZoneInfo(...)` means never seeing it. The non-Python scan
+                # already treats `time_zone=` as a context for exactly this
+                # reason; the Python path was the inconsistent one (Codex,
+                # PR #993).
+                #
+                # Reported only when the name is never READ in this module,
+                # which is the finding's own condition made precise: "another
+                # module consumes the setting". A name this file reads is
+                # reported at the read instead, with the constructor that
+                # gives it meaning -- so this branch adds the export case
+                # without double-reporting the ordinary one.
+                #
+                # Both bounds were learned by removing them. Applied at every
+                # scope and to read names alike, it reported every
+                # `tz = "EST"` anywhere, which broke twenty tests in this file
+                # -- a fair measure of how ordinary that line is, and of how
+                # much noise the unbounded rule would add to a real module.
+                if (isinstance(tgt, ast.Name)
+                        and tgt.id.lower() in _TZ_KEYWORDS
+                        and id(node) in _module_level
+                        and tgt.id not in _read_names):
+                    follow(legacy, offsets, node, node.value, env,
+                           lambda shown, n=tgt.id: f"{n} = {shown}")
 
         # Every UNAMBIGUOUS legacy name, wherever it stands, with no call-name
         # whitelist in front of it. A whitelist is a list of the constructors
@@ -1090,6 +1152,21 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         if not isinstance(node, ast.Call):
             continue
         name = env.aliases.get(_call_name(node), _call_name(node))
+
+        # `os.putenv("TZ", "EST")` and `os.environ.setdefault("TZ", "EST")`
+        # install the same process zone as `os.environ["TZ"] = "EST"`, which
+        # is handled above -- but here the key and the value are POSITIONAL
+        # arguments to a call whose name is not a timezone constructor, so the
+        # filter below skipped them before either was looked at (Codex,
+        # PR #993). Read before that filter, since the point is that the call
+        # name is not the thing that makes this a timezone context.
+        if name in _ENV_SETTER_CALLS and len(node.args) >= 2:
+            key = node.args[0]
+            if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    and key.value.lower() in _TZ_KEYWORDS):
+                follow(legacy, offsets, node, node.args[1], env,
+                       lambda shown, k=key.value, n=name: f"{n}({k!r}, {shown})")
+
         if name not in _TZ_CALLS:
             continue
         # Whether the CALL is enough of a timezone context to convict a bare
@@ -1251,13 +1328,7 @@ def test_every_scheduler_declaration_uses_the_named_zone():
 
     offenders = []
     for name, func in _shell_functions(body):
-        zoned_arrays = _arrays_carrying_timezone(func)
-        for cmd in _scheduler_commands(func):
-            if "--time-zone" in cmd:
-                continue
-            if any(a in cmd for a in zoned_arrays):
-                continue
-            offenders.append(f"{name}: {' '.join(cmd.split())[:90]}")
+        offenders.extend(_scheduler_offenders(name, func))
     assert not offenders, (
         "Cloud Scheduler defaults to UTC when --time-zone is omitted; these "
         "declarations set no timezone and expand no array that does:\n  "
@@ -1273,13 +1344,42 @@ def _shell_functions(body: str) -> list[tuple[str, str]]:
     return out
 
 
-def _arrays_carrying_timezone(func: str) -> set[str]:
-    """Names of bash arrays/vars defined in `func` whose value sets a timezone.
+def _scheduler_offenders(name: str, func: str) -> list[str]:
+    """Scheduler declarations in `func` that set no timezone.
 
-    Returned as the expansion spellings a command would contain, so the
-    caller can test membership by substring without re-parsing.
+    A named function rather than a loop body so the ordering rule below can
+    be tested against synthetic shell rather than only against `deploy.sh`.
+    An earlier test for it asserted on `_arrays_carrying_timezone`'s output
+    instead and therefore passed against the whole-function scan it was meant
+    to reject -- caught by running the injection, not by reading it.
     """
-    names = set()
+    zoned = _arrays_carrying_timezone(func)
+    out = []
+    for at, cmd in _scheduler_commands(func):
+        if "--time-zone" in cmd:
+            continue
+        # `pos <= at`, not merely membership. An array assigned LATER in the
+        # same function is still unset when this command runs, so bash expands
+        # it to nothing and the scheduler is created with no timezone -- and
+        # Cloud Scheduler's default is UTC, which is the whole point of this
+        # check (Codex, PR #993).
+        if any(a in cmd and pos <= at for a, pos in zoned.items()):
+            continue
+        out.append(f"{name}: {' '.join(cmd.split())[:90]}")
+    return out
+
+
+def _arrays_carrying_timezone(func: str) -> dict[str, int]:
+    """`expansion spelling -> the offset at which it is defined`.
+
+    Keyed by the spelling a command would contain, so the caller can test
+    membership by substring without re-parsing; valued by POSITION, because
+    bash reads a script in order. An array expanded before its assignment
+    expands to nothing, and the scheduler then receives no timezone at all --
+    while a whole-function scan reported the definition as satisfying every
+    command in the function, including the ones above it (Codex, PR #993).
+    """
+    names: dict[str, int] = {}
     for m in re.finditer(r"^\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)=\(", func,
                          re.MULTILINE):
         start = m.end()
@@ -1296,14 +1396,16 @@ def _arrays_carrying_timezone(func: str) -> set[str]:
         # it while saying nothing about the zone those schedulers would run in.
         if re.search(r"--time-zone[=\s]+[\"']?" + re.escape(EASTERN)
                      + r"[\"']?", func[start:i]):
-            names.add(m.group(1))
+            # The END of the assignment: bash has the value only after the
+            # closing paren, so a command between `(` and `)` is not covered.
+            names[m.group(1)] = i
     # `${flags[@]}` only. Bash expands a bare `$flags` to element ZERO, so for
     # the `_enrich_common` layout that passes `--location` and silently drops
     # the `--time-zone` that follows it -- and accepting the scalar spelling
     # meant that typo produced no offender while the scheduler received no
     # zone at all (Codex, PR #993). The quoted and unquoted array forms both
     # expand to every element; the scalar does not.
-    return {f"${{{n}[@]}}" for n in names}
+    return {f"${{{n}[@]}}": pos for n, pos in names.items()}
 
 
 _INVOCATION = re.compile(r"gcloud\s+scheduler\s+jobs\s+(?:create|update)\s+http")
@@ -1328,7 +1430,7 @@ def _split_invocations(statement: str) -> list[str]:
     return [p for p in parts if _INVOCATION.search(p)]
 
 
-def _scheduler_commands(func: str) -> list[str]:
+def _scheduler_commands(func: str) -> list[tuple[int, str]]:
     """Each `gcloud scheduler jobs create/update http` command, whole.
 
     A command runs to the first line that does not end in a backslash, so a
@@ -1336,16 +1438,23 @@ def _scheduler_commands(func: str) -> list[str]:
     attributed to a neighbour.
     """
     lines = func.splitlines()
+    # Character offset of each line, so a command can be compared against the
+    # position of the array assignments it expands.
+    starts, running = [], 0
+    for line in lines:
+        starts.append(running)
+        running += len(line) + 1
     out = []
     i = 0
     while i < len(lines):
         if re.search(r"gcloud\s+scheduler\s+jobs\s+(?:create|update)\s+http",
                      lines[i]):
+            at = starts[i]
             cmd = [lines[i]]
             while cmd[-1].rstrip().endswith("\\") and i + 1 < len(lines):
                 i += 1
                 cmd.append(lines[i])
-            out.extend(_split_invocations("\n".join(cmd)))
+            out.extend((at, c) for c in _split_invocations("\n".join(cmd)))
         i += 1
     return out
 
@@ -2358,3 +2467,119 @@ def test_a_directly_imported_constructor_keeps_its_provenance():
     assert _hits('def a():\n    from pytz import timezone\n    return timezone("UTC")\n'
                  '\n'
                  'def b(timezone):\n    return timezone("EST")\n') == ([], [])
+
+
+def test_an_indirection_chain_is_followed_to_its_end():
+    """`LEGACY = "EST"; TZ = LEGACY; ZoneInfo(TZ)`.
+
+    Naming a shared setting once and referring to it is ordinary, and a
+    binding map that kept only string constants and constructor calls left
+    `TZ` resolving to nothing — so `follow`'s recursion, which exists exactly
+    to walk chains, had no chain to walk (Codex, PR #993).
+    """
+    legacy, _ = _hits('LEGACY = "EST"\nTZ = LEGACY\nZoneInfo(TZ)\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    _, offsets = _hits('OFF = timedelta(hours=-5)\nTZOFF = OFF\n'
+                       'tz = timezone(TZOFF)\n')
+    assert offsets, offsets
+
+    # A chain ending in something benign is not a finding, and a chain that
+    # goes nowhere resolvable is silent rather than guessed at.
+    assert _hits('A = "UTC"\nB = A\nZoneInfo(B)\n') == ([], [])
+    assert _hits('B = unknown_thing\nZoneInfo(B)\n') == ([], [])
+
+
+def test_a_fixed_timedelta_default_is_a_binding_like_any_other():
+    """`def build(offset=timedelta(hours=-5)): return timezone(offset)`.
+
+    `_parameter_bindings` kept only string defaults, so the body could not
+    resolve `offset`. A default IS a binding, and which node kinds count is
+    not a question it and `_collect_bindings` should answer differently
+    (Codex, PR #993).
+    """
+    _, offsets = _hits('def build(offset=timedelta(hours=-5)):\n'
+                       '    return timezone(offset)\n')
+    assert offsets, offsets
+
+    assert _hits('def build(offset=timedelta(hours=1)):\n'
+                 '    return timezone(offset)\n') == ([], [])
+
+
+def test_positional_environment_setters_are_timezone_writes():
+    """`os.putenv("TZ", "EST")` sets the same process zone as the subscript
+    form, with the key and value as positional arguments to a call whose name
+    is not a timezone constructor — so the call-name filter skipped it before
+    either was looked at (Codex, PR #993)."""
+    for src in ('os.putenv("TZ", "EST")\n',
+                'os.environ.setdefault("TZ", "EST")\n',
+                'os.putenv("TZ", "-05:00")\n'):
+        assert _hits(src)[0] or _hits(src)[1], src
+
+    # The key still has to mean a timezone.
+    assert _hits('cache.setdefault("user", "est")\n') == ([], [])
+    assert _hits('os.putenv("LANG", "EST")\n') == ([], [])
+
+
+def test_a_recognised_call_matches_the_zone_in_any_casing():
+    """`pytz.timezone("est")` builds the same frozen zone as `"EST"`.
+
+    Safe here and not at the bare-constant scan: `follow` is only reached
+    through a real timezone context, so a lowercase `est` in prose or a
+    stop-word list is untouched — the same distinction the non-Python
+    patterns make with IGNORECASE plus a required context (Codex, PR #993).
+    """
+    for src in ('import pytz\npytz.timezone("est")\n',
+                'tz = ZoneInfo("Est")\n',
+                'dt.astimezone(ZoneInfo("us/eastern"))\n'):
+        assert _hits(src)[0], src
+
+    assert _hits('STOPWORDS = ["est", "edt", "gmt"]\n') == ([], [])
+    assert _hits('name = "Estonia"\n') == ([], [])
+
+
+def test_a_timezone_named_module_constant_is_a_write():
+    """`TIME_ZONE = "EST"` in a settings module needs no constructor here,
+    because a framework or another module consumes it (Codex, PR #993).
+
+    Bounded twice, and both bounds were learned by removing them: module
+    scope only, and only when nothing in this module reads the name. Without
+    them it reported every `tz = "EST"` anywhere, which broke twenty tests in
+    this file — a fair measure of how ordinary that line is.
+    """
+    for src in ('TIME_ZONE = "EST"\n', 'TZ: str = "EST"\n',
+                'timezone = "-05:00"\n'):
+        assert _hits(src)[0] or _hits(src)[1], src
+
+    # Read locally: reported at the read, with the constructor that gives it
+    # meaning, rather than twice.
+    once = _hits('TZ = "EST"\nZoneInfo(TZ)\n')[0]
+    assert len(once) == 1, once
+    # A local is not a setting another module can read.
+    assert _hits('def f():\n    tz = "EST"\n    return tz\n') == ([], [])
+    # And the name still has to mean a timezone.
+    assert _hits('LABEL = "EST"\n') == ([], [])
+
+
+def test_a_timezone_array_must_be_defined_before_it_is_expanded():
+    """Bash reads a script in order.
+
+    An array expanded before its assignment expands to nothing, so the
+    scheduler is created with no `--time-zone` and Cloud Scheduler defaults to
+    UTC — while a whole-function scan reported the later definition as
+    satisfying every command in the function, including the ones above it
+    (Codex, PR #993).
+    """
+    cmd = ('  gcloud scheduler jobs create http a --schedule "0 9 * * *" '
+           '"${flags[@]}"\n')
+    define = '  local flags=(--time-zone "America/New_York")\n'
+
+    after = "deploy() {\n" + cmd + define + "}\n"
+    assert _scheduler_offenders("deploy", after), (
+        "an array assigned after the command it is expanded into was "
+        "accepted; bash expands it to nothing and Cloud Scheduler defaults "
+        "to UTC")
+
+    before = "deploy() {\n" + define + cmd + "}\n"
+    assert not _scheduler_offenders("deploy", before), (
+        "the ordinary define-then-use order must still be accepted")
