@@ -458,7 +458,7 @@ def test_session_extremes_exclude_premarket_bars():
 
 
 def test_session_extremes_live_mode_treats_times_as_eastern():
-    """Live AV bars carry naive US/Eastern stamps; with no replay clock
+    """Live AV bars carry naive America/New_York stamps; with no replay clock
     a 09:31 stamp is RTH as-is (it would be 05:31 ET if misread as UTC,
     and the bar would be dropped)."""
     from gcp.signal_monitor import SignalMonitor

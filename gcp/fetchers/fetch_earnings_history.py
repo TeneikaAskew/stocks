@@ -73,7 +73,7 @@ def _safe_str(val) -> str | None:
 def _yahoo_timing_from_event_dt(event_dt) -> str | None:
     """Derive 'pre-market' | 'post-market' from a Yahoo earnings event datetime.
 
-    Yahoo's get_earnings_dates() returns timestamps in US/Eastern. An
+    Yahoo's get_earnings_dates() returns timestamps in America/New_York. An
     event at 16:00 ET or later is post-market (AMC); an event at
     09:30 ET or earlier is pre-market (BMO). Anything in between is
     intraday — rare for earnings, treat as None so AV reportTime
@@ -87,12 +87,12 @@ def _yahoo_timing_from_event_dt(event_dt) -> str | None:
         ts = pd.Timestamp(event_dt)
     except (TypeError, ValueError):
         return None
-    # Convert to US/Eastern if tz-aware; assume already-ET if naive
+    # Convert to America/New_York if tz-aware; assume already-ET if naive
     if ts.tzinfo is not None:
         try:
-            ts = ts.tz_convert('US/Eastern')
+            ts = ts.tz_convert('America/New_York')
         except Exception:
-            ts = ts.tz_convert('UTC').tz_convert('US/Eastern')
+            ts = ts.tz_convert('UTC').tz_convert('America/New_York')
     # Compare wall-clock time
     hr, mn = ts.hour, ts.minute
     minutes = hr * 60 + mn
@@ -107,7 +107,7 @@ def fetch_yahoo_timing_for_ticker(ticker: str, limit: int = 40) -> dict:
     """Pull the last `limit` earnings dates for `ticker` from Yahoo
     (yfinance) and return a {reported_date: 'pre-market'|'post-market'}
     map. yfinance.Ticker.get_earnings_dates() returns historical
-    timestamps in US/Eastern with the reaction-day datetime.
+    timestamps in America/New_York with the reaction-day datetime.
 
     Returns empty dict on any failure (yfinance is often noisy at the
     long tail). Caller should treat absence as 'no Yahoo data — fall
@@ -134,7 +134,7 @@ def fetch_yahoo_timing_for_ticker(ticker: str, limit: int = 40) -> dict:
         try:
             d = pd.Timestamp(ts)
             if d.tzinfo is not None:
-                d = d.tz_convert('US/Eastern')
+                d = d.tz_convert('America/New_York')
             out[d.date()] = timing
         except Exception:
             continue

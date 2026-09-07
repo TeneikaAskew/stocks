@@ -790,8 +790,12 @@ def _yahoo_time_from_ts(ts) -> str:
         else       → intraday   (TNS shows as 12:00 noon)
     """
     try:
-        if ts.tz is not None and str(ts.tz).upper() != 'US/EASTERN':
-            ts = ts.tz_convert('US/Eastern')
+        if ts.tz is not None:
+            # Converting an already-Eastern timestamp to Eastern is a no-op, so
+            # this is unconditional. It used to compare `str(ts.tz).upper()`
+            # against a zone-name literal, which silently stopped matching the
+            # moment the zone was spelled differently.
+            ts = ts.tz_convert('America/New_York')
         h = ts.hour
     except AttributeError:
         return 'unknown'

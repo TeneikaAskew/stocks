@@ -86,7 +86,7 @@ def get_expected_date() -> date:
     Get the expected date for market data.
     If today is a weekend or after market close, use last trading day.
     """
-    eastern = pytz.timezone('US/Eastern')
+    eastern = pytz.timezone('America/New_York')
     now = datetime.now(eastern)
     today = now.date()
 
@@ -344,9 +344,9 @@ def validate_minute_data(ticker: str, result: ValidationResult) -> bool:
             result.pass_check()
 
         # Validate time range covers market hours
-        eastern = pytz.timezone('US/Eastern')
+        eastern = pytz.timezone('America/New_York')
         df_et = df.copy()
-        df_et.index = df_et.index.tz_convert('US/Eastern')
+        df_et.index = df_et.index.tz_convert('America/New_York')
 
         first_time = df_et.index.min().time()
         last_time = df_et.index.max().time()
@@ -529,7 +529,7 @@ def main():
     print("Market Data Validation Pipeline")
     print("="*80)
 
-    eastern = pytz.timezone('US/Eastern')
+    eastern = pytz.timezone('America/New_York')
     now = datetime.now(eastern)
     expected_date = get_expected_date()
 

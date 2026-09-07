@@ -1200,7 +1200,7 @@ def build_level_map(
 
     return LevelMap(
         ticker=ticker,
-        as_of=pd.Timestamp.now('US/Eastern').isoformat(),
+        as_of=pd.Timestamp.now('America/New_York').isoformat(),
         current_price=current_price,
         levels=sorted(all_levels_list, key=lambda lv: lv.price),
         pmg_zones=pmg_zones,

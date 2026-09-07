@@ -635,7 +635,7 @@ def minutes_from_rth_open(ts) -> Optional[float]:
 
     Returns ``None`` for null / unparseable input so callers can fall back to
     the naive linear model rather than silently mis-time the decay. Tz-aware
-    timestamps are converted to US/Eastern; naive timestamps are assumed to be
+    timestamps are converted to America/New_York; naive timestamps are assumed to be
     exchange wall-clock (the convention the strat backtest already uses).
     """
     if ts is None:

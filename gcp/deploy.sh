@@ -3596,6 +3596,7 @@ AND NOT (protoPayload.methodName:"CreateJob" OR protoPayload.methodName:"UpdateJ
         || gcloud scheduler jobs update http "reconcile-failure-notifier-hourly" \
             --location "${REGION}" \
             --schedule "0 * * * *" \
+            --time-zone "America/New_York" \
             --uri "${service_url}/reconcile" \
             --quiet
 
@@ -3645,6 +3646,7 @@ _schedule_args() {
         gcloud scheduler jobs update http "${NAME}" \
             --location "${REGION}" \
             --schedule "${CRON}" \
+            --time-zone "America/New_York" \
             --uri "$(_job_uri "${JOB}")" \
             --message-body "${BODY}" \
             --quiet

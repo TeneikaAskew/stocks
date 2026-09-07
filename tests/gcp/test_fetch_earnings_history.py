@@ -153,27 +153,27 @@ class TestSafeStr:
 class TestYahooTimingFromEventDt:
     def test_post_market_hours(self):
         # 16:31 ET on 2026-02-25 (NVDA's actual report time)
-        ts = pd.Timestamp('2026-02-25 16:31:25', tz='US/Eastern')
+        ts = pd.Timestamp('2026-02-25 16:31:25', tz='America/New_York')
         assert _yahoo_timing_from_event_dt(ts) == 'post-market'
 
     def test_after_hours_evening(self):
         # 20:00 ET — still AMC
-        ts = pd.Timestamp('2026-02-25 20:00:00', tz='US/Eastern')
+        ts = pd.Timestamp('2026-02-25 20:00:00', tz='America/New_York')
         assert _yahoo_timing_from_event_dt(ts) == 'post-market'
 
     def test_pre_market_early(self):
         # 06:30 ET — BMO
-        ts = pd.Timestamp('2026-02-04 06:30:00', tz='US/Eastern')
+        ts = pd.Timestamp('2026-02-04 06:30:00', tz='America/New_York')
         assert _yahoo_timing_from_event_dt(ts) == 'pre-market'
 
     def test_pre_market_at_open(self):
         # 09:30 ET (market open) — boundary, treat as BMO
-        ts = pd.Timestamp('2026-02-04 09:30:00', tz='US/Eastern')
+        ts = pd.Timestamp('2026-02-04 09:30:00', tz='America/New_York')
         assert _yahoo_timing_from_event_dt(ts) == 'pre-market'
 
     def test_intraday_returns_none(self):
         # 12:00 ET — neither BMO nor AMC, return None
-        ts = pd.Timestamp('2026-02-04 12:00:00', tz='US/Eastern')
+        ts = pd.Timestamp('2026-02-04 12:00:00', tz='America/New_York')
         assert _yahoo_timing_from_event_dt(ts) is None
 
     def test_utc_input_converted(self):
@@ -194,7 +194,7 @@ class TestYahooTimingFromEventDt:
 
     def test_at_4pm_boundary(self):
         # 16:00:00 ET exactly — boundary, treat as AMC
-        ts = pd.Timestamp('2026-02-25 16:00:00', tz='US/Eastern')
+        ts = pd.Timestamp('2026-02-25 16:00:00', tz='America/New_York')
         assert _yahoo_timing_from_event_dt(ts) == 'post-market'
 
 
