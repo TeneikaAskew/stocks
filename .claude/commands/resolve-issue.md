@@ -421,12 +421,20 @@ one. While writing, the standing gates:
   A narrowing splits, and lumping the two together gets one backwards:
 
   - **A response field solyra READS that this repo will drop** — consumer
-    first, as above. solyra stops reading it, then this repo removes it.
+    first, as above. solyra stops reading it, **old bundles age out**, then
+    this repo removes it. That middle step is the same wait the request
+    narrowing needs below: a browser session open on solyra's previous bundle
+    is still reading the field after its compatible deploy, so removing it
+    here hands those tabs an absent value. solyra deploying the reader change
+    is not the same event as every reader having it.
   - **A request field solyra SENDS that this repo will stop requiring** — the
     reverse. If solyra stops sending a still-required field first, every
     request to the deployed API fails validation immediately. This repo makes
     it optional and deploys, THEN solyra stops sending, THEN this repo drops
-    it.
+    it. **solyra's request TYPE moves in its sender PR**, not in its final
+    snapshot sync — its `StratPredictRequest.timeframe` is required at
+    `src/hooks/useAdmin.ts:115`, so it cannot stop sending the field while its
+    own type still demands it.
 
     **And the last of those three is not "as soon as solyra deploys".** The
     request models here set `model_config = ConfigDict(extra="forbid")` —
@@ -849,8 +857,12 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      review is on the LAST page**; reading page 1 and finding an older "no
      findings" is exactly how #991 merged two minutes after a review it never
      saw; or
-   - the Codex summary comment showing **Completed** against the head SHA —
-     and, **again only where step 0 undrafted**, started after that transition,
+   - the Codex summary comment showing **Completed** against the head SHA,
+     **authored by the review bot** — anyone who can comment can post a
+     comment that says Completed and names the head, and the author check
+     above is about review objects, so without this clause the cheaper of the
+     two conditions is the forgeable one. And, **again only where step 0
+     undrafted**, started after that transition,
      for the same reason and with the same exemption. The previous run's
      summary keeps reading Completed for an unchanged SHA until the newly
      triggered run replaces it, so on that path a SHA-only summary check merges
