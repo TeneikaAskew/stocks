@@ -191,3 +191,5 @@ Codex reviewed head `ff1956a` and filed nine P2 findings; each was verified agai
 | drawio cleanup deleted every cell whose id ends in `_a`, including `flow_a` and eleven hand-authored job cards | ids present on `main`, absent on the branch | cleanup restricted to generated `addon_` cells; page regenerated from `main`'s copy; `check()` asserts the hand cells exist |
 
 IAM changes made the same day, all read back live and recorded in `ARCHITECTURE.md` §1, `SETUP.md` §3 and `docs/product/09-SECURITY-AUTH.md`: six viewer roles plus bucket `objectViewer` for `arch-refresh-bot@` (04:28Z, operator), `artifactregistry.writer` on both image repos (#1007), the legacy image packages retired, and the paused scheduler deleted.
+
+The first dispatch of the rebuilt workflow (`dry_run=true`, run 34083279855, from the PR branch) failed at the WIF step: the provider's attribute condition admits `refs/heads/main` only, which is the intended boundary, so the dry run is a post-merge step. Issue #1011 and draft PR #1012 that `handle-failure` opened for it were closed as not planned.

@@ -193,6 +193,15 @@ The workflow has a `dry_run` input that generates the docs but skips the PR. Use
 
 ### Trigger a dry-run manually
 
+> **Dispatch from `main` only.** The WIF provider's attribute condition is
+> `assertion.repository=='TeneikaAskew/stocks' && assertion.ref=='refs/heads/main'`
+> (SETUP.md §4a, verified live 2026-09-05), so a dispatch of this workflow on
+> any other branch fails at "Authenticate to GCP (WIF)" with
+> `The given credential is rejected by the attribute condition` before a
+> single read happens (run 34083279855 on 2026-09-07 did exactly that from a PR
+> branch, and `handle-failure` opened issue #1011 for it). Merge first, then
+> dispatch with `dry_run=true`.
+
 GitHub UI: Repo → Actions → "Monthly architecture doc refresh" → Run workflow → set `dry_run=true` → Run.
 
 CLI:
