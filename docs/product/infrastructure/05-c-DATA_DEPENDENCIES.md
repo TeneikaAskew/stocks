@@ -372,13 +372,13 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [875](../../../platform/api/routers/backtest.py#L875)
 
 ### `premarket_analysis`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3311](../../../gcp/premarket_brief.py#L3311), [3312](../../../gcp/premarket_brief.py#L3312), [3327](../../../gcp/premarket_brief.py#L3327), [3329](../../../gcp/premarket_brief.py#L3329)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3295](../../../gcp/premarket_brief.py#L3295), [3296](../../../gcp/premarket_brief.py#L3296), [3311](../../../gcp/premarket_brief.py#L3311), [3313](../../../gcp/premarket_brief.py#L3313)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [98](../../../gcp/premarket_playbook_resolver.py#L98), [478](../../../gcp/premarket_playbook_resolver.py#L478)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [544](../../../gcp/signal_monitor.py#L544)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [96](../../../scripts/backfill_history_tables.py#L96)
 
 ### `premarket_analysis_history`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3284](../../../gcp/premarket_brief.py#L3284), [3285](../../../gcp/premarket_brief.py#L3285)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3268](../../../gcp/premarket_brief.py#L3268), [3269](../../../gcp/premarket_brief.py#L3269)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [96](../../../scripts/backfill_history_tables.py#L96), [123](../../../scripts/backfill_history_tables.py#L123)
 
 ### `ranker_runs`
@@ -406,7 +406,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1743](../../../lib/strat_levels.py#L1743)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1843](../../../lib/strat_levels.py#L1843)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [25](../../../scripts/calibrate_thresholds.py#L25), [313](../../../scripts/calibrate_thresholds.py#L313), [487](../../../scripts/calibrate_thresholds.py#L487), [489](../../../scripts/calibrate_thresholds.py#L489)
@@ -677,7 +677,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [299](../../../gcp/fetchers/fetch_market_data.py#L299), [717](../../../gcp/fetchers/fetch_market_data.py#L717), [725](../../../gcp/fetchers/fetch_market_data.py#L725), [750](../../../gcp/fetchers/fetch_market_data.py#L750), [1011](../../../gcp/fetchers/fetch_market_data.py#L1011)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [13](../../../gcp/fetchers/fetch_premarket_refresh.py#L13), [146](../../../gcp/fetchers/fetch_premarket_refresh.py#L146)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [147](../../../gcp/migrate_to_gcp.py#L147)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [365](../../../gcp/premarket_brief.py#L365), [370](../../../gcp/premarket_brief.py#L370), [770](../../../gcp/premarket_brief.py#L770), [2335](../../../gcp/premarket_brief.py#L2335)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [365](../../../gcp/premarket_brief.py#L365), [370](../../../gcp/premarket_brief.py#L370), [770](../../../gcp/premarket_brief.py#L770), [2319](../../../gcp/premarket_brief.py#L2319)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [116](../../../gcp/premarket_playbook_resolver.py#L116)
 - [`gcp/refresh_earnings_views.py`](../../../gcp/refresh_earnings_views.py) — line [140](../../../gcp/refresh_earnings_views.py#L140)
 - [`gcp/research/p2_outcomes_grid.py`](../../../gcp/research/p2_outcomes_grid.py) — line [144](../../../gcp/research/p2_outcomes_grid.py#L144), [149](../../../gcp/research/p2_outcomes_grid.py#L149)
@@ -777,9 +777,9 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `premarket_analysis`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [342](../../../gcp/discord_interactions/main.py#L342), [345](../../../gcp/discord_interactions/main.py#L345)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [7](../../../gcp/premarket_brief.py#L7), [3319](../../../gcp/premarket_brief.py#L3319), [3364](../../../gcp/premarket_brief.py#L3364)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [7](../../../gcp/premarket_brief.py#L7), [3303](../../../gcp/premarket_brief.py#L3303), [3348](../../../gcp/premarket_brief.py#L3348)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [320](../../../gcp/premarket_playbook_resolver.py#L320), [326](../../../gcp/premarket_playbook_resolver.py#L326), [503](../../../gcp/premarket_playbook_resolver.py#L503), [586](../../../gcp/premarket_playbook_resolver.py#L586)
-- [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [21](../../../lib/movement_statement.py#L21), [218](../../../lib/movement_statement.py#L218), [244](../../../lib/movement_statement.py#L244)
+- [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [22](../../../lib/movement_statement.py#L22), [321](../../../lib/movement_statement.py#L321), [327](../../../lib/movement_statement.py#L327), [391](../../../lib/movement_statement.py#L391)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83), [156](../../../lib/strategies/brief_bias.py#L156)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [88](../../../platform/api/routers/dashboard.py#L88), [108](../../../platform/api/routers/dashboard.py#L108), [116](../../../platform/api/routers/dashboard.py#L116)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [3](../../../scripts/backfill_history_tables.py#L3), [104](../../../scripts/backfill_history_tables.py#L104), [106](../../../scripts/backfill_history_tables.py#L106), [127](../../../scripts/backfill_history_tables.py#L127), [128](../../../scripts/backfill_history_tables.py#L128)
@@ -831,7 +831,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `strat_levels`
 - [`lib/indicators.py`](../../../lib/indicators.py) — line [537](../../../lib/indicators.py#L537)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [623](../../../lib/strat_levels.py#L623), [959](../../../lib/strat_levels.py#L959), [1592](../../../lib/strat_levels.py#L1592)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [623](../../../lib/strat_levels.py#L623), [1006](../../../lib/strat_levels.py#L1006), [1657](../../../lib/strat_levels.py#L1657)
 
 ### `ticker_calibration`
 - [`lib/config.py`](../../../lib/config.py) — line [367](../../../lib/config.py#L367)
@@ -860,7 +860,6 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/backtest.py`](../../../lib/backtest.py) — line [11](../../../lib/backtest.py#L11), [326](../../../lib/backtest.py#L326), [357](../../../lib/backtest.py#L357), [358](../../../lib/backtest.py#L358)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [174](../../../lib/data_loader.py#L174), [598](../../../lib/data_loader.py#L598), [615](../../../lib/data_loader.py#L615)
 - [`lib/insights.py`](../../../lib/insights.py) — line [39](../../../lib/insights.py#L39), [854](../../../lib/insights.py#L854)
-- [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [221](../../../lib/movement_statement.py#L221)
 - [`lib/style_miner.py`](../../../lib/style_miner.py) — line [80](../../../lib/style_miner.py#L80)
 - [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) — line [128](../../../platform/api/routers/analytics.py#L128), [138](../../../platform/api/routers/analytics.py#L138), [143](../../../platform/api/routers/analytics.py#L143)
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [7](../../../platform/api/routers/backtest.py#L7), [190](../../../platform/api/routers/backtest.py#L190)
@@ -1038,13 +1037,13 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `refresh-earnings-views` | `gcp/refresh_earnings_views.py` | `earnings_upcoming_with_history` | `platform/api/routers/earnings.py` |
 | `regime-combo` | `gcp/regime_combo_job.py` | `indicator_correlation`, `regime_combo_results` | — |
 | `signal-monitor` | `gcp/signal_monitor.py` | `premarket_analysis`, `signal_alerts`, `strat_levels`, `trades`, `watchlists` | `gcp/db_query_job.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/indicator_correlation_job.py`, `gcp/insight_pipeline_job.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_walk_forward.py`, `gcp/signal_monitor_eod_resolver.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py` (+22) |
-| `signal-monitor-eod-resolver` | `gcp/signal_monitor_eod_resolver.py` | `signal_alerts`, `trades` | `gcp/db_query_job.py`, `gcp/indicator_correlation_job.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_walk_forward.py`, `gcp/signal_monitor.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py`, `gcp/trade_logger.py`, `gcp/weekend_review.py`, `lib/agents/summarizers.py`, `lib/backtest.py`, `lib/insights.py` (+13) |
+| `signal-monitor-eod-resolver` | `gcp/signal_monitor_eod_resolver.py` | `signal_alerts`, `trades` | `gcp/db_query_job.py`, `gcp/indicator_correlation_job.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_walk_forward.py`, `gcp/signal_monitor.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py`, `gcp/trade_logger.py`, `gcp/weekend_review.py`, `lib/agents/summarizers.py`, `lib/backtest.py`, `lib/insights.py` (+12) |
 | `signal-quality-alarm` | `gcp/signal_quality_alarm.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `signal-quality-report` | `scripts/signal_quality_report.py` | `historical_signals`, `signal_metrics` | `gcp/signal_quality_alarm.py`, `platform/api/routers/signals.py`, `scripts/analyze_timeframe_heuristic.py`, `scripts/backfill_timeframe_tags.py`, `scripts/replay_signal_monitor.py` |
 | `signal-replay` | `gcp/signal_replay.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `strat-engine` | `gcp/research/strat_engine/strat_data_builder.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `validate-brief` | `gcp/validate_brief_job.py` | — (Discord / GCS / no Cloud SQL write found) | — |
-| `weekend-review` | `gcp/weekend_review.py` | `trades` | `gcp/db_query_job.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_walk_forward.py`, `gcp/signal_monitor.py`, `lib/backtest.py`, `lib/data_loader.py`, `lib/insights.py`, `lib/movement_statement.py`, `lib/style_miner.py`, `platform/api/routers/analytics.py`, `platform/api/routers/backtest.py`, `platform/api/routers/journal.py` (+5) |
+| `weekend-review` | `gcp/weekend_review.py` | `trades` | `gcp/db_query_job.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_walk_forward.py`, `gcp/signal_monitor.py`, `lib/backtest.py`, `lib/data_loader.py`, `lib/insights.py`, `lib/style_miner.py`, `platform/api/routers/analytics.py`, `platform/api/routers/backtest.py`, `platform/api/routers/journal.py`, `scripts/analysis/per_factor_walkforward.py` (+4) |
 <!-- inventory:blast:end -->
 
 Hand-created live jobs (no `deploy_*` function, so not in the table above): `p2-build-gamma-levels` writes `gamma_levels_eod`; the `p7*`, `p45-deep-ds`, `strat-dir-features`, `exec-backtest`, `backtest-playability` and `compare-tier-fires` jobs write research tables or GCS reports only.

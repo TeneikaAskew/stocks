@@ -15,6 +15,8 @@ no GCS, no network. The invariants under test (from the Phase 2 plan):
 """
 from __future__ import annotations
 
+from datetime import date as date_type
+
 import pandas as pd
 import pytest
 
@@ -80,10 +82,31 @@ def _predict_one_ok(*_a, **_k):
     }
 
 
-def _reach_df(triggered_n, t1, t2, t3):
-    return pd.DataFrame(
-        [{"triggered_n": triggered_n, "t1_hits": t1, "t2_hits": t2, "t3_hits": t3}]
-    )
+def _reach_df(n, trigger_hits, t1, t2, t3, *, t1_n=None, t2_n=None, t3_n=None):
+    """One row in the shape of lib.movement_statement._reach_rate_sql: per-slot
+    population size and hits. Slot populations default to the trigger's."""
+    return pd.DataFrame([{
+        "trigger_n": n, "trigger_hits": trigger_hits,
+        "t1_n": n if t1_n is None else t1_n, "t1_hits": t1,
+        "t2_n": n if t2_n is None else t2_n, "t2_hits": t2,
+        "t3_n": n if t3_n is None else t3_n, "t3_hits": t3,
+    }])
+
+
+SESSION = date_type(2026, 6, 20)
+
+
+def _tracked_df(calls=(101.0, 102.0, 103.0, 104.0), puts=(99.0, 98.0, 97.0, 96.0),
+                analysis_date=SESSION, price=100.0):
+    """The premarket_analysis row for the ladder's session, as
+    _fetch_tracked_levels reads it. Defaults line up with _sample_level_map:
+    PDH 101 == calls trigger, PWH 102 == calls t1, PMH 103 == calls t2;
+    PDL 99 == puts trigger, PWL 98 == puts t1."""
+    row = {"analysis_date": analysis_date, "price": price}
+    for side, prices in (("calls", calls), ("puts", puts)):
+        for k, v in zip(("trigger", "t1", "t2", "t3"), prices):
+            row[f"{side}_{k}_price"] = v
+    return pd.DataFrame([row])
 
 
 def _mag_df(bucket=2):
@@ -105,11 +128,15 @@ def _gamma_ok(*_a, **_k):
     }
 
 
-def _make_query_fn(reach_calls_df, reach_puts_df, mag_df):
-    """Route SQL to the right mock DataFrame by table name."""
+def _make_query_fn(reach_calls_df, reach_puts_df, mag_df, tracked_df=None):
+    """Route SQL to the right mock DataFrame by table name / query shape."""
+    if tracked_df is None:
+        tracked_df = _tracked_df()
 
     def _q(sql, params=None):
         if "premarket_analysis" in sql:
+            if "FILTER" not in sql:
+                return tracked_df  # _fetch_tracked_levels
             side = "calls" if "calls_trigger_hit_ts" in sql else "puts"
             return reach_calls_df if side == "calls" else reach_puts_df
         if "magnitude_per_bar_predictions" in sql:
@@ -121,7 +148,7 @@ def _make_query_fn(reach_calls_df, reach_puts_df, mag_df):
 
 def _assemble(monkeypatch, *, enabled=True, predict=_predict_one_ok,
               query_fn=None, gamma_fn=_gamma_ok, level_map=None,
-              ticker="SPY", timeframe="15m"):
+              ticker="SPY", timeframe="15m", session_date=SESSION):
     if enabled:
         monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
     else:
@@ -131,12 +158,12 @@ def _assemble(monkeypatch, *, enabled=True, predict=_predict_one_ok,
     monkeypatch.setattr(serve, "predict_one", predict)
     if query_fn is None:
         query_fn = _make_query_fn(
-            _reach_df(50, 24, 18, 11), _reach_df(40, 19, 14, 8), _mag_df()
+            _reach_df(50, 35, 24, 18, 11), _reach_df(40, 28, 19, 14, 8), _mag_df()
         )
     return ms.assemble_movement_statement(
         ticker, timeframe,
         engine=object(), level_map=level_map or _sample_level_map(),
-        query_fn=query_fn, gamma_fn=gamma_fn,
+        query_fn=query_fn, gamma_fn=gamma_fn, session_date=session_date,
     )
 
 
@@ -185,7 +212,7 @@ def test_modifiers_do_not_move_headline(monkeypatch):
     base_prob = base["headline"]["probability"]
 
     # Explosive magnitude + negative-gamma (trending) regime.
-    qf = _make_query_fn(_reach_df(50, 24, 18, 11), _reach_df(40, 19, 14, 8),
+    qf = _make_query_fn(_reach_df(50, 35, 24, 18, 11), _reach_df(40, 28, 19, 14, 8),
                         _mag_df(bucket=3))
 
     def _gamma_neg(*_a, **_k):
@@ -203,7 +230,7 @@ def test_modifiers_do_not_move_headline(monkeypatch):
 def test_modifiers_unavailable_still_dont_break_headline(monkeypatch):
     """When BOTH modifiers are unavailable, the headline still equals the
     continuation prob (the modifiers are not consulted for it)."""
-    qf = _make_query_fn(_reach_df(50, 24, 18, 11), _reach_df(40, 19, 14, 8),
+    qf = _make_query_fn(_reach_df(50, 35, 24, 18, 11), _reach_df(40, 28, 19, 14, 8),
                         pd.DataFrame())  # no magnitude row
 
     def _gamma_unavail(*_a, **_k):
@@ -296,14 +323,14 @@ def test_reach_rates_unavailable(monkeypatch):
 
 def test_reach_rates_zero_denominator_unavailable(monkeypatch):
     """triggered_n=0 must be UNAVAILABLE (no division-by-zero fabrication)."""
-    qf = _make_query_fn(_reach_df(0, 0, 0, 0), _reach_df(0, 0, 0, 0), _mag_df())
+    qf = _make_query_fn(_reach_df(0, 0, 0, 0, 0), _reach_df(0, 0, 0, 0, 0), _mag_df())
     out = _assemble(monkeypatch, query_fn=qf)
     for entry in out["levels"]["calls"]:
         assert entry["reach_rate"]["status"] == "UNAVAILABLE"
 
 
 def test_magnitude_unavailable(monkeypatch):
-    qf = _make_query_fn(_reach_df(50, 24, 18, 11), _reach_df(40, 19, 14, 8),
+    qf = _make_query_fn(_reach_df(50, 35, 24, 18, 11), _reach_df(40, 28, 19, 14, 8),
                         pd.DataFrame())
     out = _assemble(monkeypatch, query_fn=qf)
     em = out["confidence_modifiers"]["expected_move"]
@@ -338,7 +365,7 @@ def test_level_map_missing_unavailable(monkeypatch):
     monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
     import gcp.research.strat_engine.strat_pred_serve as serve
     monkeypatch.setattr(serve, "predict_one", _predict_one_ok)
-    qf = _make_query_fn(_reach_df(50, 24, 18, 11), _reach_df(40, 19, 14, 8), _mag_df())
+    qf = _make_query_fn(_reach_df(50, 35, 24, 18, 11), _reach_df(40, 28, 19, 14, 8), _mag_df())
     out2 = ms.assemble_movement_statement(
         "SPY", "15m", engine=object(), level_map=None, query_fn=qf, gamma_fn=_gamma_ok,
     )
@@ -494,7 +521,7 @@ def test_assembler_as_of_excludes_newer_magnitude_row(monkeypatch):
 
     def _qf(sql, params=None):
         if "premarket_analysis" in sql:
-            return _reach_df(50, 24, 18, 11)
+            return _reach_df(50, 35, 24, 18, 11)
         if "magnitude_per_bar_predictions" in sql:
             seen["sql"] = sql
             seen["params"] = params
@@ -526,17 +553,21 @@ def test_assembler_as_of_excludes_newer_magnitude_row(monkeypatch):
 def test_reach_rates_carry_sample_size(monkeypatch):
     out = _assemble(monkeypatch)  # calls n=50, puts n=40
     calls = out["levels"]["calls"]
-    t1 = calls[0]["reach_rate"]
-    assert t1["status"] == "OK"
-    assert t1["sample_n"] == 50
-    assert t1["hits"] == 24
-    assert t1["reach_rate"] == round(24 / 50, 4)
-    assert t1["low_sample"] is False  # 50 >= 30
+    # PDH 101 is the playbook's calls TRIGGER on the tracked row, so the rung
+    # carries the trigger slot's unconditional population rate.
+    rr = calls[0]["reach_rate"]
+    assert rr["status"] == "OK"
+    assert rr["slot"] == "trigger"
+    assert rr["analysis_date"] == "2026-06-20"
+    assert rr["sample_n"] == 50
+    assert rr["hits"] == 35
+    assert rr["reach_rate"] == round(35 / 50, 4)
+    assert rr["low_sample"] is False  # 50 >= 30
 
 
 def test_low_sample_flagged(monkeypatch):
     """n below LOW_SAMPLE_THRESHOLD is flagged low_sample=True."""
-    qf = _make_query_fn(_reach_df(12, 6, 4, 2), _reach_df(8, 4, 2, 1), _mag_df())
+    qf = _make_query_fn(_reach_df(12, 9, 6, 4, 2), _reach_df(8, 6, 4, 2, 1), _mag_df())
     out = _assemble(monkeypatch, query_fn=qf)
     for entry in out["levels"]["calls"]:
         rr = entry["reach_rate"]
@@ -545,14 +576,363 @@ def test_low_sample_flagged(monkeypatch):
         assert rr["low_sample"] is True
 
 
-def test_tiers_map_to_ladder_positions(monkeypatch):
-    """call_levels[0]→T1, [1]→T2, [2]→T3 reach-rates."""
-    qf = _make_query_fn(_reach_df(50, 25, 17, 9), _reach_df(40, 19, 14, 8), _mag_df())
+def test_rungs_are_matched_to_slots_by_price_not_position(monkeypatch):
+    """A rung carries the rate of the slot whose tracked PRICE it is.
+
+    The ladder here is PDH 101 / PWH 102 / PMH 103. The tracked row says the
+    playbook's calls trigger was an untracked-by-the-ladder line at 100.5 (a
+    prior-day open, say), so PDH is the playbook's T1, PWH its T2, PMH its T3.
+    Positional annotation would have pinned the trigger's rate on PDH.
+    """
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(100.5, 101.0, 102.0, 103.0)),
+    )
     out = _assemble(monkeypatch, query_fn=qf)
     calls = out["levels"]["calls"]
-    assert calls[0]["reach_rate"]["hits"] == 25  # T1
-    assert calls[1]["reach_rate"]["hits"] == 17  # T2
-    assert calls[2]["reach_rate"]["hits"] == 9   # T3
+    assert [c["reach_rate"]["slot"] for c in calls] == ["t1", "t2", "t3"]
+    assert calls[0]["reach_rate"]["hits"] == 25  # PDH == t1
+    assert calls[1]["reach_rate"]["hits"] == 17  # PWH == t2
+    assert calls[2]["reach_rate"]["hits"] == 9   # PMH == t3
+
+
+def test_untracked_rung_carries_no_rate(monkeypatch):
+    """A ladder line the playbook did not track gets UNAVAILABLE, never a
+    neighbour's rate (Rule 3.7)."""
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(101.0, 105.0, 106.0, 107.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf)
+    calls = out["levels"]["calls"]
+    assert calls[0]["reach_rate"]["status"] == "OK"
+    assert calls[0]["reach_rate"]["slot"] == "trigger"
+    for rung in calls[1:]:
+        rr = rung["reach_rate"]
+        assert rr["status"] == "UNAVAILABLE"
+        assert "reach_rate" not in rr
+        assert "did not track" in rr["reason"] or "not a level" in rr["reason"]
+        assert rr["analysis_date"] == "2026-06-20"
+
+
+def test_price_match_tolerance_is_one_cent(monkeypatch):
+    """select_nearest_levels rounds to 2dp while the playbook persists the raw
+    float; a sub-cent difference is the same line, a full cent is not."""
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(101.004, 102.02, 103.0, 104.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf)
+    calls = out["levels"]["calls"]
+    assert calls[0]["reach_rate"]["slot"] == "trigger"       # 101.0 vs 101.004
+    assert calls[1]["reach_rate"]["status"] == "UNAVAILABLE"  # 102.0 vs 102.02
+
+
+def test_slots_exactly_one_cent_apart_stay_distinct(monkeypatch):
+    """select_nearest_levels and _distinct_targets treat a full cent as a
+    different line, so matching must too: a 102.01 rung must take the t1 slot
+    at 102.01, not the trigger at 102.00 that a `<=` tolerance would accept
+    first (Codex P2 on #1030)."""
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 102.00, "day", 2.0), _level("PWH", 102.01, "week", 2.01)],
+        put_levels=[], current_price=100.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(102.00, 102.01, 103.0, 104.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert calls[0]["reach_rate"]["slot"] == "trigger"
+    assert calls[1]["reach_rate"]["slot"] == "t1"
+    assert calls[1]["reach_rate"]["hits"] == 25
+
+
+def test_slot_population_is_per_slot_not_the_trigger_count(monkeypatch):
+    """Each slot's denominator is its own population (rows where that slot
+    had a real price strictly beyond the previous one), so a t2 reached on 37
+    of 81 eligible rows reads 37/81, not 37/115."""
+    qf = _make_query_fn(
+        _reach_df(115, 81, 52, 37, 28, t1_n=95, t2_n=81, t3_n=71),
+        _reach_df(115, 69, 42, 30, 20, t1_n=94, t2_n=88, t3_n=81),
+        _mag_df(),
+    )
+    out = _assemble(monkeypatch, query_fn=qf)
+    calls = out["levels"]["calls"]
+    assert (calls[0]["reach_rate"]["hits"], calls[0]["reach_rate"]["sample_n"]) == (81, 115)
+    assert (calls[1]["reach_rate"]["hits"], calls[1]["reach_rate"]["sample_n"]) == (52, 95)
+    assert (calls[2]["reach_rate"]["hits"], calls[2]["reach_rate"]["sample_n"]) == (37, 81)
+    assert calls[2]["reach_rate"]["reach_rate"] == round(37 / 81, 4)
+
+
+def test_tracked_levels_unavailable_propagates_to_every_rung(monkeypatch):
+    def _q(sql, params=None):
+        if "premarket_analysis" in sql and "FILTER" not in sql:
+            raise RuntimeError("relation premarket_analysis is being vacuumed")
+        return _make_query_fn(_reach_df(50, 35, 24, 18, 11),
+                              _reach_df(40, 28, 19, 14, 8), _mag_df())(sql, params)
+    out = _assemble(monkeypatch, query_fn=_q)
+    assert out["levels"]["status"] == "OK"  # the ladder itself still renders
+    for side in ("calls", "puts"):
+        for rung in out["levels"][side]:
+            rr = rung["reach_rate"]
+            assert rr["status"] == "UNAVAILABLE"
+            assert "vacuumed" in rr["reason"]
+            assert "reach_rate" not in rr
+
+
+def test_reach_rate_sql_excludes_zero_distance_and_nan_targets():
+    """The population for a slot requires its price to be a real number
+    STRICTLY beyond the previous slot (calls: greater; puts: less). This is
+    what keeps a T1 persisted at the trigger's own price, and a literal NaN
+    price (which Postgres orders above every real), out of both sides of the
+    ratio."""
+    calls = ms._reach_rate_sql("calls")
+    puts = ms._reach_rate_sql("puts")
+    # At least one cent beyond, on prices rounded to the cent in numeric (float8
+    # says 240.01 - 240.00 < 0.01), and CUMULATIVE: t2's population requires
+    # the t1 gap too, so a legacy trigger=100/t1=100/t2=101 row (where 101 is
+    # really the first target) is out of every downstream slot, not just t1.
+    g = lambda a, b: f"round({a}::numeric, 2) - round({b}::numeric, 2) >= 0.01"  # noqa: E731
+    # Seeded with the row's own anchor: a legacy trigger on the price's cent
+    # (which identify_triggers no longer produces) takes the row out of every
+    # population, trigger included.
+    trig_pop = calls.split("AS trigger_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
+    assert g("calls_trigger_price", "price") in trig_pop
+    assert g("price", "puts_trigger_price") in puts.split("AS trigger_n")[0]
+    assert g("calls_t1_price", "calls_trigger_price") in calls
+    assert g("calls_t2_price", "calls_t1_price") in calls
+    assert g("calls_t3_price", "calls_t2_price") in calls
+    assert g("puts_trigger_price", "puts_t1_price") in puts
+    assert g("puts_t2_price", "puts_t3_price") in puts
+    t2_pop = calls.split("AS t2_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
+    assert g("calls_t1_price", "calls_trigger_price") in t2_pop
+    assert g("calls_t2_price", "calls_t1_price") in t2_pop
+    t3_pop = calls.split("AS t3_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
+    assert g("calls_t1_price", "calls_trigger_price") in t3_pop
+    assert g("calls_trigger_price", "price") in t3_pop
+    for sql in (calls, puts):
+        assert "<> 'NaN'::float8" in sql
+        # unconditional: no `WHERE ..._trigger_hit_ts IS NOT NULL` gate
+        assert "WHERE ticker = :ticker AND outcome_resolved_at IS NOT NULL" in sql
+        assert sql.count("trigger_hit_ts IS NOT NULL") == 1  # numerator only
+
+
+def test_tracked_levels_bounded_by_as_of(monkeypatch):
+    """Rule 3.6: a replayed statement matches against the playbook row for
+    its as_of's own market date — never a later one, and never an earlier
+    one either (a line's ordinal changes between sessions)."""
+    seen = {}
+
+    def _q(sql, params=None):
+        if "premarket_analysis" in sql and "FILTER" not in sql:
+            seen["sql"] = sql
+            seen["params"] = dict(params or {})
+            return _tracked_df()
+        return _make_query_fn(_reach_df(50, 35, 24, 18, 11),
+                              _reach_df(40, 28, 19, 14, 8), _mag_df())(sql, params)
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    import gcp.research.strat_engine.strat_pred_serve as serve
+    monkeypatch.setattr(serve, "predict_one", _predict_one_ok)
+    ms.assemble_movement_statement(
+        "SPY", "15m", as_of=pd.Timestamp("2026-06-20T15:45:00Z"),
+        engine=object(), level_map=_sample_level_map(), query_fn=_q, gamma_fn=_gamma_ok,
+    )
+    assert "analysis_date = :d" in seen["sql"]
+    assert seen["params"]["d"] == date_type(2026, 6, 20)
+    assert "<=" not in seen["sql"] and "ORDER BY" not in seen["sql"]
+
+
+@pytest.mark.parametrize(
+    "as_of, expected",
+    [
+        # 01:00 UTC on the 23rd is 21:00 ET on the 22nd: still the 22nd's session.
+        (pd.Timestamp("2026-06-23T01:00:00Z"), date_type(2026, 6, 22)),
+        # Mid-session UTC is the same calendar day in Eastern.
+        (pd.Timestamp("2026-06-23T15:45:00Z"), date_type(2026, 6, 23)),
+        # Naive datetimes are Eastern wall-clock.
+        (pd.Timestamp("2026-06-23T01:00:00"), date_type(2026, 6, 23)),
+        # A bare date passes through.
+        (date_type(2026, 6, 23), date_type(2026, 6, 23)),
+        (None, None),
+    ],
+)
+def test_as_of_market_date_converts_to_eastern_before_taking_the_date(as_of, expected):
+    """Rule 3.9 / Codex P2 on #1030: the playbook and gamma reads are keyed
+    by Eastern trading date, so an evening UTC cutoff must not select the next
+    session's rows."""
+    assert ms._as_of_market_date(as_of) == expected
+
+
+def test_evening_utc_as_of_matches_the_same_sessions_playbook(monkeypatch):
+    seen = {}
+
+    def _q(sql, params=None):
+        if "premarket_analysis" in sql and "FILTER" not in sql:
+            seen["params"] = dict(params or {})
+            return _tracked_df()
+        return _make_query_fn(_reach_df(50, 35, 24, 18, 11),
+                              _reach_df(40, 28, 19, 14, 8), _mag_df())(sql, params)
+
+    gamma_seen = {}
+
+    def _gamma(ticker, as_of=None):
+        gamma_seen["as_of"] = as_of
+        return _gamma_ok()
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    import gcp.research.strat_engine.strat_pred_serve as serve
+    monkeypatch.setattr(serve, "predict_one", _predict_one_ok)
+    ms.assemble_movement_statement(
+        "SPY", "15m", as_of=pd.Timestamp("2026-06-23T01:00:00Z"),
+        engine=object(), level_map=_sample_level_map(), query_fn=_q, gamma_fn=_gamma,
+    )
+    assert seen["params"]["d"] == date_type(2026, 6, 22)
+    assert gamma_seen["as_of"] == date_type(2026, 6, 22)
+
+
+def test_no_playbook_row_for_the_session_leaves_every_rung_unavailable(monkeypatch):
+    """Overnight / weekend / brief not yet run: the ladder is anchored to a
+    session the playbook has no row for. No falling back to yesterday's row
+    (Friday's PWH is t1 on Friday and the trigger on Monday); every rung says
+    why (Codex P2 on #1030)."""
+    qf = _make_query_fn(_reach_df(50, 35, 24, 18, 11), _reach_df(40, 28, 19, 14, 8),
+                        _mag_df(), tracked_df=pd.DataFrame())
+    out = _assemble(monkeypatch, query_fn=qf, session_date=date_type(2026, 6, 22))
+    assert out["levels"]["status"] == "OK"
+    for side in ("calls", "puts"):
+        for rung in out["levels"][side]:
+            rr = rung["reach_rate"]
+            assert rr["status"] == "UNAVAILABLE"
+            assert "2026-06-22" in rr["reason"]
+            assert "reach_rate" not in rr
+
+
+def test_session_date_defaults_to_the_as_of_market_date_then_today(monkeypatch):
+    seen = []
+
+    def _q(sql, params=None):
+        if "premarket_analysis" in sql and "FILTER" not in sql:
+            seen.append(dict(params or {}))
+            return _tracked_df()
+        return _make_query_fn(_reach_df(50, 35, 24, 18, 11),
+                              _reach_df(40, 28, 19, 14, 8), _mag_df())(sql, params)
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    import gcp.research.strat_engine.strat_pred_serve as serve
+    monkeypatch.setattr(serve, "predict_one", _predict_one_ok)
+    monkeypatch.setattr(ms, "market_today", lambda: date_type(2026, 9, 7))
+    common = dict(engine=object(), level_map=_sample_level_map(), query_fn=_q, gamma_fn=_gamma_ok)
+    ms.assemble_movement_statement("SPY", "15m", as_of=pd.Timestamp("2026-06-23T01:00:00Z"), **common)
+    ms.assemble_movement_statement("SPY", "15m", **common)
+    ms.assemble_movement_statement("SPY", "15m", session_date=date_type(2026, 1, 2), **common)
+    assert [p["d"] for p in seen] == [date_type(2026, 6, 22), date_type(2026, 9, 7), date_type(2026, 1, 2)]
+
+
+def test_ladder_price_and_raw_slot_price_meet_on_the_same_cent(monkeypatch):
+    """The ladder emits a level through select_nearest_levels' cents rule; the
+    playbook persisted the SAME level raw. 292.705 raw is 292.71 on the ladder
+    (half-up, as Postgres rounds it) while Python's round() would say 292.70
+    and int(round(x*100)) would say 29270 — one rule must serve both sides
+    (Codex P2 on #1030, round 3)."""
+    from lib.strat_levels import price_cents
+    assert round(292.705, 2) == 292.7 and price_cents(292.705) == 29271
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 292.71, "day", 1.0), _level("PWH", 293.02, "week", 1.1)],
+        put_levels=[], current_price=290.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(292.705, 293.015, 294.0, 295.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1"]
+
+
+def test_legacy_session_row_slots_are_remapped_to_distinct_ordinals(monkeypatch):
+    """A legacy row persisted trigger=100 / t1=100 / t2=101 / t3=102. Under
+    the de-duplicated builder 101 is the FIRST target, and the cumulative SQL
+    counts such a line in the t1 population, so the tracked slots must say
+    t1 for 101, not the persisted t2 (Codex P2 on #1030, round 5)."""
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 100.0, "day", 1.0), _level("PWH", 101.0, "week", 2.0),
+                     _level("PMH", 102.0, "month", 3.0)],
+        put_levels=[], current_price=99.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        # price=99.0: the row's own anchor sits below the trigger, so the
+        # trigger itself is kept and only the duplicate t1 collapses.
+        tracked_df=_tracked_df(calls=(100.0, 100.0, 101.0, 102.0), price=99.0),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1", "t2"]
+    assert [c["reach_rate"]["hits"] for c in calls] == [40, 25, 17]
+
+
+def test_legacy_trigger_on_the_rows_own_cent_is_skipped(monkeypatch):
+    """A legacy row persisted a trigger on the same cent as its own premarket
+    price (100.004 vs 100.0041); identify_triggers no longer does that and
+    would have made 101.00 the trigger. The tracked slots are seeded with the
+    row's anchor so 101.00 tracks as `trigger`, not `t1` (Codex P2 on #1030,
+    round 8)."""
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 101.0, "day", 1.0), _level("PWH", 102.0, "week", 2.0)],
+        put_levels=[], current_price=100.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(100.0041, 101.0, 102.0, 103.0), price=100.004),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1"]
+    assert calls[0]["reach_rate"]["hits"] == 40
+
+
+def test_match_compares_integer_cents_not_a_float_threshold(monkeypatch):
+    """240.01 - 240.00 is 0.00999… in binary, so a `< 0.01` test called them
+    the same line and pinned the trigger's rate on the t1 rung (Codex P2 on
+    #1030). Cents are integers."""
+    assert 240.01 - 240.00 < 0.01  # the hazard, stated
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 240.00, "day", 2.0), _level("PWH", 240.01, "week", 2.01)],
+        put_levels=[], current_price=235.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(240.00, 240.01, 241.0, 242.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1"]
+    assert calls[1]["reach_rate"]["hits"] == 25
+
+
+def test_degenerate_magnitude_leaves_headline_and_levels_ok(monkeypatch):
+    """The disentanglement #1024 is for: an argmax-collapsed magnitude model
+    withholds ONLY expected_move. The headline and the levels ladder come from
+    other inputs and must render unchanged."""
+    degen = pd.DataFrame([{"pred_bucket": 0, "n": 588}])
+
+    def _q(sql, params=None):
+        if "GROUP BY pred_bucket" in sql:
+            return degen
+        return _make_query_fn(_reach_df(50, 35, 24, 18, 11),
+                              _reach_df(40, 28, 19, 14, 8), _mag_df(bucket=0))(sql, params)
+
+    out = _assemble(monkeypatch, query_fn=_q)
+    assert out["headline"]["status"] == "OK"
+    assert out["headline"]["probability"] == 0.62
+    assert out["levels"]["status"] == "OK"
+    assert out["levels"]["calls"][0]["reach_rate"]["status"] == "OK"
+    em = out["confidence_modifiers"]["expected_move"]
+    assert em["status"] == "UNAVAILABLE"
+    assert "argmax-collapsed" in em["reason"]
+    assert em["degeneracy"]["degenerate"] is True
 
 
 # ── (f) disclaimer present ─────────────────────────────────────────────────

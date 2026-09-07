@@ -393,8 +393,28 @@ def _movement_statement_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-def _build_movement_level_map(ticker: str):
+def _movement_analysis_date() -> _date_cls:
+    """Today's trading date in market time — lib.movement_statement.market_today.
+
+    One definition for the ladder anchor AND the playbook-row lookup, so the
+    two can never disagree about which session "today" is.
+    """
+    from lib.movement_statement import market_today  # noqa: PLC0415
+
+    return market_today()
+
+
+def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = None):
     """Best-effort LevelMap for the movement statement, or None.
+
+    `analysis_date` (default: today in America/New_York) is passed through to
+    build_level_map so compute_previous_levels anchors PDH/PDL to the session
+    BEFORE it. Without it that function assumes df's LAST row is today's
+    in-progress bar and reads iloc[-2]; this helper drops the NULL-close
+    premarket placeholder, so the last retained row is already yesterday's
+    complete bar and iloc[-2] is the day before — a ladder one session stale,
+    which the premarket playbook (built with analysis_date) never matched
+    (Codex P1 on #1030).
 
     The assembler degrades the levels block to an explicit UNAVAILABLE
     envelope when level_map is None (Rule 3.7 — never a fabricated ladder),
@@ -411,7 +431,7 @@ def _build_movement_level_map(ticker: str):
         import pandas as pd  # noqa: PLC0415
         from lib.data_loader import DataLoader  # noqa: PLC0415
         from lib.indicators import calculate_historical_levels  # noqa: PLC0415
-        from lib.strat_levels import build_level_map  # noqa: PLC0415
+        from lib.strat_levels import build_level_map, daily_data_freshness  # noqa: PLC0415
 
         loader = DataLoader()
         df = loader.load_daily(ticker, on_stale="warn")
@@ -431,6 +451,38 @@ def _build_movement_level_map(ticker: str):
         # block to an explicit UNAVAILABLE envelope (never a fabricated ladder).
         ohlc_cols = [c for c in ("Open", "High", "Low", close_col) if c in df.columns]
         df = df[df[ohlc_cols].notna().all(axis=1)]
+        # Same strict cutoff the premarket brief applies (gcp/premarket_brief.py,
+        # "Honour BRIEF_AS_OF"): only bars BEFORE the session. The playbook row
+        # this ladder is matched against was built premarket from exactly that
+        # frame, anchored to the prior close. Once the session's own daily row
+        # lands, an unfiltered frame would anchor to today's close instead, and
+        # a level crossed during the session flips between the call and put
+        # ladders relative to the playbook's sides, losing its slot (Codex P2
+        # on #1030, round 4).
+        session = analysis_date or _movement_analysis_date()
+        ts_col = pd.to_datetime(df["Time"] if "Time" in df.columns else pd.Series(df.index, index=df.index))
+        if getattr(ts_col.dt, "tz", None) is not None:
+            ts_col = ts_col.dt.tz_localize(None)
+        df = df[ts_col < pd.Timestamp(session)]
+        if df.empty or len(df) < 2:
+            return None
+        # Freshness AFTER the placeholder drop and the cutoff, against the
+        # session, not the wall clock: DataLoader's own on_stale check sees the
+        # same-day NULL placeholder as "fresh", so without this an old frame
+        # would publish a ladder with status OK anchored to an arbitrarily old
+        # close (Codex P2 on #1030, rounds 5 and 6). The rule is the premarket
+        # brief's own (lib.strat_levels.daily_data_freshness): the playbook row
+        # this ladder is matched against is withheld on exactly the days this
+        # refuses, weekend bridges exempt, holiday Tuesdays deliberately not.
+        last_bar = pd.Timestamp(ts_col.loc[df.index[-1]]).normalize().date()
+        is_stale, gap_days, status = daily_data_freshness(last_bar, session)
+        if is_stale:
+            logger.warning(
+                "movement-statement level map for %s: last daily bar %s is %d days "
+                "before session %s (%s); prior-session bar missing, refusing to anchor",
+                ticker, last_bar, gap_days, session, status,
+            )
+            return None
         if df.empty or len(df) < 2:
             return None
         ts = df["Time"] if "Time" in df.columns else pd.Series(df.index)
@@ -444,7 +496,11 @@ def _build_movement_level_map(ticker: str):
         # finite number, refuse to build levels rather than ship NaN downstream.
         if not pd.notna(current_price):
             return None
-        atr_col = "atr_14" if "atr_14" in df.columns else None
+        # DataLoader renames atr_14 → ATR14 (lib/data_loader.py) and the brief
+        # reads ATR14; checking only the lowercase name left this path on the
+        # percent-only staleness filter, showing lines >3 ATR away that the
+        # playbook it is matched against had excluded (Codex P2 on #1030).
+        atr_col = next((c for c in ("ATR14", "atr_14") if c in df.columns), None)
         atr_for_filter = None
         if atr_col is not None and pd.notna(df[atr_col].iloc[-1]):
             atr_for_filter = float(df[atr_col].iloc[-1]) or None
@@ -453,6 +509,7 @@ def _build_movement_level_map(ticker: str):
             daily_df=df,
             current_price=current_price,
             atr=atr_for_filter,
+            analysis_date=session,
         )
     except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
         logger.warning("movement-statement level map unavailable for %s: %s", ticker, exc)
@@ -510,9 +567,17 @@ def movement_statement(
     # UNAVAILABLE statuses for missing data; infrastructure being down is a
     # different thing and answers 503, so a caller cannot read it as "the
     # levels were consulted and had nothing".
+    #
+    # One session date for both the ladder anchor and the playbook row the
+    # rungs are matched against (Codex P2 on #1030). Inside the guard rather
+    # than above it: it is a clock read today, but a failure there is still
+    # infrastructure rather than an empty result.
     try:
-        level_map = _build_movement_level_map(ticker_u)
-        result = assemble_movement_statement(ticker_u, tf, level_map=level_map)
+        session_date = _movement_analysis_date()
+        level_map = _build_movement_level_map(ticker_u, analysis_date=session_date)
+        result = assemble_movement_statement(
+            ticker_u, tf, level_map=level_map, session_date=session_date,
+        )
     except HTTPException:
         raise
     except Exception as exc:

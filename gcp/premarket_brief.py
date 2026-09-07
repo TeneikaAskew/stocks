@@ -1841,28 +1841,12 @@ def _resolve_data_freshness(
     resolving ``last_bar_date`` from ``df.iloc[-1].name`` and
     propagating the verdict into the per-ticker dict.
     """
-    if last_bar_date is None:
-        return False, -1, 'unknown'
-    gap = (analysis_date - last_bar_date).days
-    if gap <= 1:
-        return False, gap, 'fresh'
-    # Weekend bridges where Friday's bar IS the most recent close
-    # the market has produced:
-    #   * Monday brief reading Friday → weekday=0, gap=3.
-    #   * Sunday weekly brief reading Friday → weekday=6, gap=2.
-    #     Codex P2 review on PR #336 caught the original exemption
-    #     only handling the Monday case; the Sunday weekly brief flow
-    #     at premarket_brief.py:893 is the legitimate
-    #     Sunday-with-Friday-data path that needs the same exemption.
-    # Saturday briefs are unsupported in production scheduling.
-    weekday = analysis_date.weekday()
-    weekend_exempt = (
-        (weekday == 0 and gap == 3)     # Monday → Friday
-        or (weekday == 6 and gap == 2)  # Sunday weekly brief → Friday
-    )
-    if weekend_exempt:
-        return False, gap, 'fresh'
-    return True, gap, 'STALE_DAILY_DATA'
+    # The rule itself lives in lib.strat_levels.daily_data_freshness so the
+    # movement-statement endpoint applies the SAME verdict to the ladder it
+    # matches against this brief's playbook row (#1030). Kept here as the
+    # brief's entry point; the docstring above is the contract.
+    from lib.strat_levels import daily_data_freshness
+    return daily_data_freshness(last_bar_date, analysis_date)
 
 
 def _format_data_freshness_summary(
