@@ -100,8 +100,12 @@ body:
         # search cannot see it.
         # ':!archive/' too: archive/ is retired code that does not run in
         # production, so a hit there is not a consumer.
-        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' | wc -l
-        11
+        # The other three exclude PROSE, this form included. A surface named in
+        # a placeholder here, in .claude/, or in any *.md matches itself, so the
+        # search can never reach "no consumers" — measured on TradingAlertSystem,
+        # rc=0 from this file and .claude/commands/resolve-issue.md alone.
+        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' | wc -l
+        107
         Live consumers in solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
     validations:
       required: true

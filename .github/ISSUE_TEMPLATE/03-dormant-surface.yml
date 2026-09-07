@@ -94,8 +94,21 @@ body:
         # here runs in production", so a hit there is not a consumer. Measured —
         # TradingAlertSystem matches archive/standalone-scripts/trading_alerts.py
         # and nothing live, which would block a correct retirement.
-        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/'
-        (11 hits: router, writer, tests)
+        # ':!.claude/', ':!.github/ISSUE_TEMPLATE/' and ':!*.md' exclude PROSE,
+        # THIS FILE INCLUDED. The line above names TradingAlertSystem, so without
+        # them the search for it matches this comment and .claude/commands/
+        # resolve-issue.md and returns rc=0 forever — measured, exactly those two
+        # hits and nothing else. A retirement check whose passing state is
+        # unreachable is not a check.
+        # ':!*.drawio' and the live_gcp_snapshot fixture likewise: measured, the
+        # three root .drawio diagrams and the GCP state capture they are drawn
+        # from match six of seven probe surfaces and invoke none of them. Derive
+        # this list, do not extend it per report — recipe in the resolver's
+        # Phase 2. platform/api/openapi.json deliberately stays IN: it is
+        # generated, so a retired route still named there means the snapshot was
+        # not regenerated, which the check SHOULD catch.
+        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+        (142 hits across 13 files: router, writer, tests)
 
         solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
         Both live. So this is Tier 1: stale rows rendered as today's setups.
@@ -182,7 +195,10 @@ body:
       label: Acceptance criteria
       description: Retiring and restoring have different bars. Restoring needs a writer, a schedule, a freshness SLO and a consumer guard, not just a re-run.
       placeholder: |
-        Retire: `git grep -q "<name>" -- . ':!docs/'` returns 1 — repo-wide, since
+        Retire: `git grep -q "<name>" -- . ':!docs/' ':!archive/' ':!.claude/'
+        ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio'
+        ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — the same exclusions as the
+        consumer field above, and repo-wide because
         .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs
         cannot see; the schedule is deleted; the retention/export decision is recorded;
         the cost delta is measured.

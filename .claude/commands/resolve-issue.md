@@ -421,7 +421,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 - **Establish who consumes the surface** before deciding what to fix. If nothing
   reads it, disabling the render is one line and ships today.
   ```bash
-  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/'
+  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
   ```
   **Repo-wide over tracked files, not the five source directories** — the same
   scope Phase 4's deletion check uses, and for the same reason. Excluding `archive/`
@@ -429,7 +429,54 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   `archive/README.md` says *"Retired code, kept for reference rather than
   deleted. Nothing here runs in production"*, so a hit there is not a consumer
   — measured, `TradingAlertSystem` matches
-  `archive/standalone-scripts/trading_alerts.py` and nothing live. The five-dir
+  `archive/standalone-scripts/trading_alerts.py` and nothing live.
+
+  **`.claude/`, `.github/ISSUE_TEMPLATE/` and every `*.md` come out for a
+  different reason: they are prose, and this file is some of it.** The sentence
+  above names `TradingAlertSystem` as its worked example, and
+  `.github/ISSUE_TEMPLATE/03-dormant-surface.yml` names it too — so under
+  `':!docs/' ':!archive/'` alone the search for that symbol returned **rc=0 with
+  exactly those two hits and no live code**, which is the answer "still
+  consumed" for a surface that has no consumer at all. Excluding them is not
+  tidying the output: a check whose passing state is unreachable is not a
+  check, and this is the second time that shape has shipped here — solyra's
+  dependency row cited `@tailwindcss/vite` and matched itself the same way.
+  Discounting the hits while reading is not enough, because Phase 4 asserts on
+  `rc`, not on your reading of the list. Note `':!*.md'` does not subsume
+  `':!docs/'` or `':!archive/'` here — measured, they hold 114 and 145 tracked
+  non-markdown files.
+
+  **Generated artifacts come out for the same reason, and this is where the list
+  stops being reactive.** Do not extend it one reported file at a time. Derive
+  it: run the search over a handful of real surfaces, union the files, and read
+  everything that is not source.
+
+  ```bash
+  for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
+           market_data_intraday etf_options_snapshots exit_config_overrides; do
+    git grep -l "$s" -- . ':!docs/' ':!archive/' ':!.claude/' \
+      ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' \
+      ':!tests/fixtures/live_gcp_snapshot_*.json'
+  done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
+  ```
+
+  Measured: before the last two exclusions that printed `Architecture.drawio`,
+  `Architecture-icons.drawio`, `ERD.drawio` and
+  `tests/fixtures/live_gcp_snapshot_2026-09-07.json` — the diagrams and the GCP
+  state capture `scripts/refresh_architecture_drawio.py` draws them from, none of
+  which invokes anything. After them exactly one non-source file survives, and it
+  is meant to: **`platform/api/openapi.json` stays IN the search.** It is
+  generated from the routers and `tests/api/test_openapi_snapshot.py` fails when
+  it is stale, so a retired route still named there is not a false hit — it is
+  "you deleted the router and did not regenerate the snapshot", which is exactly
+  what the check should catch.
+
+  Solyra needed the same treatment on a different artifact set (two `.drawio`
+  diagrams and its vendored `stocks-openapi.json`), and there a positive list of
+  importer extensions was **measured to be worse**: it drops `src/index.css`, the
+  only consumer of `@heroui/styles` and `tailwindcss`, and reports both dead. An
+  exclusion list fails open on a new prose format; a positive list fails closed on
+  a live consumer. The five-dir
   form (`lib/ gcp/ platform/ scripts/ tests/`) cannot see `.github/`, and CI is
   where jobs are actually dispatched. Measured on `refresh-earnings-views`: the
   five-dir search returns 5 hits and **not one of them is a caller** —
@@ -512,7 +559,7 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
+| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
 | A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself. **`basename()` is not optional**: `name` is a fully qualified resource name (`projects/…/locations/…/jobs/<job>`), so `grep -qx "<job>"` against the raw value never matches and the check reports "retired" while both resources are live. It is a no-op on an already-bare value, so it is right without resolving which shape this gcloud prints — which I cannot check here, the session's gcloud being unauthenticated (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
@@ -548,9 +595,9 @@ assertion through one function that returns on the first failure:
 # `&&`-chained, so the first failure short-circuits and IS the status.
 absent_everywhere() {
   local rc
-  git grep -q "<symbol>" -- . ':!docs/' ':!archive/'; rc=$?
+  git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc — still referenced here"; return 1; }
-  git -C ../solyra grep -q "<symbol>" -- . ':!docs/' ':!archive/'; rc=$?
+  git -C ../solyra grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc — still referenced there"; return 1; }
 }
 

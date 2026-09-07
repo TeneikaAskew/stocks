@@ -136,11 +136,23 @@ def test_every_checkbox_option_is_required(path: Path):
     # checkbox group could otherwise lose `id: attestation` and still pass,
     # which is the invariant this test claims to enforce rather than the one
     # it would actually be checking.
+    #
+    # And by POSITION, not presence. The sentence this assertion is written to
+    # defend is "every form ENDS in an evidence attestation", and `any()` does
+    # not check that: measured on 01-defect.yml with `attestation` and
+    # `acceptance` swapped — element count unchanged, so the body-budget test
+    # stayed green too — 14 passed with the attestation sitting eighth. An
+    # attestation that is not last asks the filer to swear to evidence they
+    # have not written yet, which is the failure mode, not a cosmetic one.
     boxes = [el for el in body if el.get("type") == "checkboxes"]
-    assert any(el.get("id") == "attestation" for el in boxes), (
-        f"{path.name}: no `id: attestation` checkboxes element. Every form ends "
-        "in an evidence attestation; a form without one collects no claim about "
-        f"how the evidence was produced. Found: {[el.get('id') for el in boxes]}"
+    last = body[-1]
+    assert last.get("type") == "checkboxes" and last.get("id") == "attestation", (
+        f"{path.name}: the LAST body element is not the `id: attestation` "
+        "checkboxes group. Every form ends in an evidence attestation, and "
+        "presence alone is not that — a form that keeps the element but adds "
+        "fields after it collects the claim before the evidence exists. Last "
+        f"element: type={last.get('type')!r} id={last.get('id')!r}; checkboxes "
+        f"found: {[el.get('id') for el in boxes]}"
     )
 
     for el in boxes:
