@@ -844,6 +844,26 @@ def test_ladder_price_and_raw_slot_price_meet_on_the_same_cent(monkeypatch):
     assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1"]
 
 
+def test_legacy_session_row_slots_are_remapped_to_distinct_ordinals(monkeypatch):
+    """A legacy row persisted trigger=100 / t1=100 / t2=101 / t3=102. Under
+    the de-duplicated builder 101 is the FIRST target, and the cumulative SQL
+    counts such a line in the t1 population, so the tracked slots must say
+    t1 for 101, not the persisted t2 (Codex P2 on #1030, round 5)."""
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 100.0, "day", 1.0), _level("PWH", 101.0, "week", 2.0),
+                     _level("PMH", 102.0, "month", 3.0)],
+        put_levels=[], current_price=99.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(100.0, 100.0, 101.0, 102.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1", "t2"]
+    assert [c["reach_rate"]["hits"] for c in calls] == [40, 25, 17]
+
+
 def test_match_compares_integer_cents_not_a_float_threshold(monkeypatch):
     """240.01 - 240.00 is 0.00999… in binary, so a `< 0.01` test called them
     the same line and pinned the trigger's rate on the t1 rung (Codex P2 on

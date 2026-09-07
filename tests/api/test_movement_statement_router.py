@@ -310,7 +310,7 @@ def test_flag_on_but_assembler_returns_none_is_404(monkeypatch):
 #       fabricated number, never a 500.
 
 
-def _synthetic_daily(n: int = 40, *, nan_last: bool = False):
+def _synthetic_daily(n: int = 40, *, nan_last: bool = False, end=None):
     """A hermetic daily OHLC frame; optionally append a NaN-close placeholder.
 
     Shapes the frame DataLoader.load_daily returns (Open/High/Low/Close + Time),
@@ -320,7 +320,10 @@ def _synthetic_daily(n: int = 40, *, nan_last: bool = False):
     import numpy as np  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
 
-    idx = pd.date_range("2026-04-01", periods=n, freq="D")
+    # `end` lets a test build a frame that is FRESH relative to a real date
+    # (the helper refuses a frame whose last bar is >4 days before the session).
+    idx = (pd.date_range(end=end, periods=n, freq="D") if end is not None
+           else pd.date_range("2026-04-01", periods=n, freq="D"))
     base = 100.0 + np.arange(n) * 0.5
     df = pd.DataFrame(
         {"Open": base, "High": base + 1.0, "Low": base - 1.0, "Close": base + 0.2},
@@ -352,9 +355,10 @@ def test_level_map_anchors_to_last_valid_close_not_nan(monkeypatch):
 
     df = _synthetic_daily(nan_last=True)
     expected_close = float(df["Close"].iloc[-2])  # last VALID close (row -1 is NaN)
+    session = df.index[-1].date()  # the placeholder's own day
 
     with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
-        level_map = dashboard_router._build_movement_level_map("SPY")
+        level_map = dashboard_router._build_movement_level_map("SPY", analysis_date=session)
 
     assert level_map is not None, "valid earlier closes exist → must build a map"
     assert math.isfinite(level_map.current_price), "current_price must be finite"
@@ -411,6 +415,47 @@ def test_level_map_ignores_a_complete_row_for_the_session_itself(monkeypatch):
     assert isinstance(today, _dt.date)
 
 
+def test_level_map_reads_the_loaders_ATR14_column(monkeypatch):
+    """DataLoader renames atr_14 → ATR14 and the brief reads ATR14; the helper
+    checked only the lowercase name, so the endpoint ran the percent-only
+    staleness filter and could show lines >3 ATR away that the playbook it is
+    matched against excluded (Codex P2 on #1030, round 5)."""
+    import datetime as _dt  # noqa: PLC0415
+
+    df = _synthetic_daily()
+    df["ATR14"] = 2.5
+    today = (df.index[-1] + _dt.timedelta(days=1)).date()
+    seen = {}
+
+    def _spy(*a, **k):
+        seen.update(k)
+        raise RuntimeError("stop here")
+
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df), \
+         patch("lib.strat_levels.build_level_map", side_effect=_spy):
+        dashboard_router._build_movement_level_map("SPY", analysis_date=today)
+    assert seen["atr"] == pytest.approx(2.5)
+
+
+def test_level_map_refuses_a_frame_missing_the_prior_session(monkeypatch):
+    """A daily fetcher that is behind leaves old rows that pass the cutoff.
+    The loader's own on_stale check is fooled by the same-day NULL placeholder,
+    so freshness is checked here against the session: a last bar more than
+    four calendar days before it (Fri→Mon is 3, a Monday holiday 4) means the
+    prior session is missing and no ladder is published (Codex P2 on #1030,
+    round 5)."""
+    import datetime as _dt  # noqa: PLC0415
+
+    df = _synthetic_daily(nan_last=True)
+    valid = df.dropna(subset=["Close"])
+    ten_days_on = (valid.index[-1] + _dt.timedelta(days=10)).date()
+    next_day = (valid.index[-1] + _dt.timedelta(days=1)).date()
+
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
+        assert dashboard_router._build_movement_level_map("SPY", analysis_date=ten_days_on) is None
+        assert dashboard_router._build_movement_level_map("SPY", analysis_date=next_day) is not None
+
+
 def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):
     """The default is today's date in America/New_York, not UTC, so an
     evening request does not roll the ladder forward a session (Rule 3.9)."""
@@ -423,10 +468,12 @@ def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):
         seen["analysis_date"] = k.get("analysis_date")
         raise RuntimeError("stop here")
 
-    with patch("lib.data_loader.DataLoader.load_daily", return_value=_synthetic_daily()), \
+    today_et = _dt.datetime.now(ZoneInfo("America/New_York")).date()
+    fresh = _synthetic_daily(end=today_et - _dt.timedelta(days=1))  # last bar = yesterday
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=fresh), \
          patch("lib.strat_levels.build_level_map", side_effect=_spy):
         assert dashboard_router._build_movement_level_map("SPY") is None  # RuntimeError → None
-    assert seen["analysis_date"] == _dt.datetime.now(ZoneInfo("America/New_York")).date()
+    assert seen["analysis_date"] == today_et
 
 
 def test_no_valid_close_returns_none_levels_unavailable(monkeypatch):

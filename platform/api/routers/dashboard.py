@@ -466,6 +466,26 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         df = df[ts_col < pd.Timestamp(session)]
         if df.empty or len(df) < 2:
             return None
+        # Freshness AFTER the placeholder drop and the cutoff, against the
+        # session, not the wall clock: DataLoader's own on_stale check sees the
+        # same-day NULL placeholder as "fresh" and the brief's canonical row is
+        # withheld on staleness, so without this an old frame would publish a
+        # ladder with status OK anchored to an arbitrarily old close (Codex P2
+        # on #1030, round 5). Calendar days, not the NYSE calendar: the API
+        # image (platform/api/requirements.txt) does not ship
+        # pandas-market-calendars. 4 covers Fri→Mon (3) and a Monday holiday
+        # (4); a longer gap means the prior session's bar is missing.
+        last_bar = pd.Timestamp(ts_col.loc[df.index[-1]]).normalize()
+        gap_days = (pd.Timestamp(session) - last_bar).days
+        if gap_days > 4:
+            logger.warning(
+                "movement-statement level map for %s: last daily bar %s is %d days "
+                "before session %s; prior-session bar missing, refusing to anchor",
+                ticker, last_bar.date(), gap_days, session,
+            )
+            return None
+        if df.empty or len(df) < 2:
+            return None
         ts = df["Time"] if "Time" in df.columns else pd.Series(df.index)
         levels_df = calculate_historical_levels(
             ts, df["High"], df["Low"], df["Open"], df[close_col],
@@ -477,7 +497,11 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         # finite number, refuse to build levels rather than ship NaN downstream.
         if not pd.notna(current_price):
             return None
-        atr_col = "atr_14" if "atr_14" in df.columns else None
+        # DataLoader renames atr_14 → ATR14 (lib/data_loader.py) and the brief
+        # reads ATR14; checking only the lowercase name left this path on the
+        # percent-only staleness filter, showing lines >3 ATR away that the
+        # playbook it is matched against had excluded (Codex P2 on #1030).
+        atr_col = next((c for c in ("ATR14", "atr_14") if c in df.columns), None)
         atr_for_filter = None
         if atr_col is not None and pd.notna(df[atr_col].iloc[-1]):
             atr_for_filter = float(df[atr_col].iloc[-1]) or None

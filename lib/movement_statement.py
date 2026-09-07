@@ -395,13 +395,27 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
     row = df.iloc[0].to_dict()
 
     def _side(side: str) -> list:
-        out = []
+        # Re-derive the ordinals the de-duplicated builder would have produced:
+        # keep a persisted slot only when it is a real number at least one cent
+        # beyond the last KEPT slot on this side, and name kept slots by their
+        # kept order. A legacy row trigger=100 / t1=100 / t2=101 therefore
+        # tracks 101 as t1, which is the population the cumulative SQL counts
+        # it in, rather than as the persisted "t2" (Codex P2 on #1030, round
+        # 5). New rows are already distinct (identify_triggers); this only
+        # changes what a legacy session row matches.
+        beyond = (lambda a, b: a > b) if side == "calls" else (lambda a, b: a < b)
+        out: list = []
+        last_c = None
         for k in _REACH_SLOTS:
             v = row.get(f"{side}_{k}_price")
             # NaN-safe without pandas: NaN != NaN.
             if v is None or v != v:
                 continue
-            out.append({"slot": k, "price": float(v)})
+            c = _cents(v)
+            if last_c is not None and not beyond(c, last_c):
+                continue
+            out.append({"slot": _REACH_SLOTS[len(out)], "price": float(v), "persisted_as": k})
+            last_c = c
         return out
 
     ad = row.get("analysis_date")

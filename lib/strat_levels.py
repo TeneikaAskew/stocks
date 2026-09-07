@@ -1036,7 +1036,10 @@ def identify_triggers(
     if above_fresh:
         trigger = above_fresh[0]
         targets_above = _distinct_targets(above_fresh[1:], trigger.price)
-        room = compute_room_to_run(trigger.price, all_levels, 'CALL')
+        # Room to the FIRST DISTINCT target, the one persisted and displayed —
+        # over all_levels a line on the trigger's own cent reported ~0% room
+        # while T1 sat a full percent away (Codex P2 on #1030, round 5).
+        room = compute_room_to_run(trigger.price, targets_above, 'CALL')
 
         # Stop on the OPPOSITE side must also be fresh — using a stale
         # year-low as the stop on a CALL trade gives a meaningless
@@ -1061,7 +1064,7 @@ def identify_triggers(
     if below_fresh:
         trigger = below_fresh[0]
         targets_below = _distinct_targets(below_fresh[1:], trigger.price)
-        room = compute_room_to_run(trigger.price, all_levels, 'PUT')
+        room = compute_room_to_run(trigger.price, targets_below, 'PUT')
         stop_lv = above_fresh[0] if above_fresh else None
 
         result['puts'] = {
@@ -1156,9 +1159,14 @@ def select_nearest_levels(
     """
     candidates = [lv for lv in levels.values()
                   if not level_types or lv.level_type in level_types]
-    above = sorted((lv for lv in candidates if lv.price > current_price),
+    # Partition on the shared cents rule: a level on the anchor's own cent is
+    # neither a call nor a put line at the card's precision, and two raw
+    # prices a hair either side of the anchor must not become a call rung and
+    # a put rung at the same displayed price (Codex P2 on #1030, round 5).
+    anchor_c = price_cents(current_price)
+    above = sorted((lv for lv in candidates if price_cents(lv.price) > anchor_c),
                    key=lambda lv: lv.price)
-    below = sorted((lv for lv in candidates if lv.price < current_price),
+    below = sorted((lv for lv in candidates if price_cents(lv.price) < anchor_c),
                    key=lambda lv: -lv.price)
     above = [lv for lv in above
              if _within_staleness_window(lv.price, current_price, atr)]
@@ -1179,7 +1187,7 @@ def select_nearest_levels(
                 'name': lv.name,
                 'period': lv.timeframe,
                 'level_type': lv.level_type,
-                'distance_pct': round((lv.price - current_price) / current_price * 100, 2),
+                'distance_pct': round((c / 100.0 - current_price) / current_price * 100, 2),
             })
             if len(out) >= n:
                 break

@@ -666,6 +666,20 @@ class TestIdentifyTriggers:
         assert calls['trigger_level'] == 265.00
         assert [t['price'] for t in calls['targets']] == [266.50, 268.00, 270.00]
 
+    def test_room_is_measured_to_the_first_distinct_target(self):
+        """A line on the trigger's own cent is skipped as a target, so the
+        advertised room must be to the target actually persisted, not ~0%
+        to the skipped duplicate (Codex P2 on #1030, round 5)."""
+        levels = {
+            'PDH': StratLevel('PDH', 100.004, 'day', 'high', '2U', False, ''),
+            'PWC': StratLevel('PWC', 100.0049, 'week', 'close', '', False, ''),  # same cent
+            'PMH': StratLevel('PMH', 101.00, 'month', 'high', '2U', False, ''),
+            'PDL': StratLevel('PDL', 98.00, 'day', 'low', '2D', False, ''),
+        }
+        calls = identify_triggers(99.5, levels)['calls']
+        assert [t['price'] for t in calls['targets']] == [101.00]
+        assert calls['room_to_first_target'] == pytest.approx((101.0 - 100.004) / 100.004 * 100, abs=1e-3)
+
     def test_targets_one_cent_apart_are_distinct_despite_float_error(self):
         """240.01 - 240.00 < 0.01 in binary; integer cents keep them apart."""
         levels = {
@@ -944,6 +958,20 @@ class TestSelectNearestLevels:
         }
         out = select_nearest_levels(290.0, levels, atr=5.0, n=2)
         assert [lv['price'] for lv in out['calls']] == [292.71, 294.0]
+
+    def test_levels_on_the_anchors_cent_are_neither_call_nor_put(self):
+        """current_price 100.004 with lines at 100.0041 and 100.0039 must not
+        become a call rung AND a put rung both displayed as 100.00: sides are
+        partitioned on the shared cents rule (Codex P2 on #1030, round 5)."""
+        levels = {
+            'PDH': StratLevel('PDH', 100.0041, timeframe='day', level_type='high'),
+            'PDL': StratLevel('PDL', 100.0039, timeframe='day', level_type='low'),
+            'PWH': StratLevel('PWH', 101.0, timeframe='week', level_type='high'),
+            'PWL': StratLevel('PWL', 99.0, timeframe='week', level_type='low'),
+        }
+        out = select_nearest_levels(100.004, levels, atr=5.0, n=2)
+        assert [lv['price'] for lv in out['calls']] == [101.0]
+        assert [lv['price'] for lv in out['puts']] == [99.0]
 
     def test_direction_is_positional_not_by_high_low(self):
         # a prior-month HIGH below price is a PUT (bearish) level
