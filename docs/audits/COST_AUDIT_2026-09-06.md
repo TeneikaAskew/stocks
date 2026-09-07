@@ -91,6 +91,13 @@ What shipped:
   `solyra-api`; `trading-platform` (175 versions) and
   `trading-platform-staging` (9) deleted, the guard having confirmed no
   live revision referenced either. `gcr.io` now holds only `solyra-api`.
+  **Do not dispatch `.github/workflows/deploy-staging.yml` until #990 has
+  merged**: on `main` that workflow runs `STAGING_SERVICE=1
+  ./platform/deploy.sh`, whose defaults are still `IMAGE_NAME=trading-platform`
+  and service `trading-platform-staging`, so a dispatch would rebuild the
+  retired package and deploy a revision of a service that no longer
+  exists. #990 renames both defaults to `solyra-api` /
+  `solyra-api-staging`; the workflow header carries the same warning.
 - Both image builds (`build_image`, `build_research_image`) pin before
   moving their tag and refuse to build if pinning fails; the dispatcher
   runs deploy steps one at a time (never as `a && b`) so a failed build

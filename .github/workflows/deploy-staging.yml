@@ -1,5 +1,14 @@
 name: Deploy staging
 
+# DO NOT DISPATCH until #990 (chore/rename-services-to-solyra) has merged.
+# The gcr.io/trading-platform image packages were retired on 2026-09-07
+# (docs/audits/COST_AUDIT_2026-09-06.md §3a) and the live services are
+# solyra-api-prod / solyra-api-staging. On this branch platform/deploy.sh
+# still defaults to IMAGE_NAME=trading-platform and, under
+# STAGING_SERVICE=1, to the deleted trading-platform-staging service, so a
+# dispatch would rebuild the retired package and deploy a revision of a
+# service that no longer exists. #990 renames both defaults.
+#
 # One-click redeploy of trading-platform-staging (the PUBLIC, Firebase-gated
 # staging service solyra talks to) from the current main, with the DB schema
 # rolled forward first.
