@@ -3,6 +3,12 @@
 FastAPI app: [platform/api/main.py](../platform/api/main.py)
 Routers registered: [platform/api/main.py:47-58](../platform/api/main.py#L47-L58)
 Live OpenAPI: `http://localhost:8000/docs` · `http://localhost:8000/openapi.json`
+Committed OpenAPI snapshot: [platform/api/openapi.json](../platform/api/openapi.json)
+— regenerate with `python scripts/export_openapi.py` after any route or
+response-model change; `tests/api/test_openapi_snapshot.py` fails when it is
+stale. The frontend repo (TeneikaAskew/solyra) vendors this file from `main`
+and validates its response types and mock payloads against it in CI, so the
+snapshot is the cross-repo API contract, not documentation.
 
 ## Start the API
 
