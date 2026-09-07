@@ -295,6 +295,11 @@ def _make_fake_query(calls: list):
             # match, or the tight window predicate must fail this test (not
             # just silently return unmatched rows).
             sql_lower = sql.lower()
+            # Codex on #1022 / #820: 412 simulated trades sat in the table
+            # unmarked; once marked run_kind='backfill' they must not be
+            # offered as pipeline examples.
+            assert "t.run_kind = 'live'" in sql_lower, \
+                f"pipeline SQL must restrict to run_kind='live', got: {sql}"
             assert "signal_alerts" in sql_lower, \
                 f"pipeline SQL must join signal_alerts, got: {sql}"
             assert "left join lateral" in sql_lower, \

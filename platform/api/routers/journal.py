@@ -1032,6 +1032,7 @@ def get_examples(ticker: str):
                 LIMIT 1
             ) sa ON true
             WHERE t.ticker = :ticker
+              AND t.run_kind = 'live'
               AND (t.entry_time AT TIME ZONE 'America/New_York')::time BETWEEN TIME '09:30' AND TIME '16:00'
             ORDER BY t.entry_time DESC
             """,
@@ -1313,6 +1314,7 @@ def seed_trades(ticker: str, date: str):
                    return_pct, strat_combo, exit_reason
             FROM trades
             WHERE ticker = :ticker AND trade_date = :date
+              AND run_kind = 'live'
             ORDER BY entry_time
             """,
             {"ticker": ticker_upper, "date": date},

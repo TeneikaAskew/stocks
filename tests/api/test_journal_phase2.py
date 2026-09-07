@@ -195,10 +195,18 @@ def test_seed_endpoint_converts_fraction_to_percent(monkeypatch):
             "exit_reason": "tp1",
         }
     ])
-    monkeypatch.setattr(journal_module, "_seed_query", lambda *a, **k: df)
+    seen: list = []
+
+    def _capture(sql, params=None):
+        seen.append(sql)
+        return df
+
+    monkeypatch.setattr(journal_module, "_seed_query", _capture)
 
     client = TestClient(main.app)
     r = client.get("/api/journal/seed/SPY", params={"date": "2026-07-02"})
+    # Codex on #1022 / #820: seed trades must never be backfill/replay rows.
+    assert seen and "run_kind = 'live'" in seen[0].lower(), seen
     assert r.status_code == 200
     body = r.json()
     assert body["count"] == 1

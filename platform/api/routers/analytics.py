@@ -142,6 +142,7 @@ def get_trade_summary(ticker: str, days: int = Query(90, ge=1, le=3650)) -> _Tra
         SELECT direction, return_pct, exit_time, entry_time
         FROM trades
         WHERE ticker = :ticker
+          AND run_kind = 'live'
           AND entry_time >= NOW() - make_interval(days => :days)
     """
     df = query_to_dataframe(sql, {"ticker": ticker_upper, "days": days})

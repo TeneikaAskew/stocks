@@ -594,13 +594,23 @@ class DataLoader:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         ticker: Optional[str] = None,
+        run_kind: Optional[str] = 'live',
     ) -> pd.DataFrame:
-        """Load logged trades from Cloud SQL trades table."""
+        """Load logged trades from Cloud SQL trades table.
+
+        ``run_kind`` defaults to ``'live'`` so analysis never counts replay
+        or backfill rows as production trades (trades.run_kind, #820: 412
+        simulated rows from a deleted backfill script sat unmarked in the
+        table). Pass ``None`` to read every kind.
+        """
         if not _cloud_sql_active():
             return pd.DataFrame()
 
         params: dict = {}
         conditions = []
+        if run_kind is not None:
+            conditions.append("run_kind = :run_kind")
+            params['run_kind'] = run_kind
         if ticker:
             conditions.append("ticker = :ticker")
             params['ticker'] = ticker.upper()
