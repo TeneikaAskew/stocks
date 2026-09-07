@@ -49,6 +49,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -64,6 +65,7 @@ from api import gcs_reader  # noqa: E402
 # router only loads data and shapes the HTTP contract; all scoring/benchmark
 # math lives in lib/backtest.py (CLAUDE.md: "lib/ is the shared backend spine").
 from lib.backtest import replay_labeled_trades  # noqa: E402
+from lib.single_flight import SingleFlight  # noqa: E402
 
 # Task 4.2/4.3 — style mining + labeled walk-forward. Same "lib/ is the
 # shared backend spine" rule: the router only loads data, filters to closed
@@ -111,9 +113,19 @@ def _equity_pattern(ticker_upper: str, run: str | None = None) -> str:
     return rf"^equity_{re.escape(ticker_upper)}_\d{{8}}_\d{{6}}\.csv$"
 
 # ── Caches ──────────────────────────────────────────────────────────────────
-_RESULTS_CACHE: TTLCache = TTLCache(maxsize=32, ttl=3600)   # 1h
-_EQUITY_CACHE: TTLCache = TTLCache(maxsize=32, ttl=3600)    # 1h
-_ALL_RUNS_CACHE: TTLCache = TTLCache(maxsize=16, ttl=600)   # 10m
+_RESULTS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=32, ttl=3600))   # 1h
+_EQUITY_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=32, ttl=3600))    # 1h
+_ALL_RUNS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=600))   # 10m
+# Coalesces cold misses on /api/backtest/all/{ticker}. Filling that cache
+# LISTs the bucket twice and then downloads and parses EVERY historical
+# backtest CSV for the ticker, so a page-load burst multiplied GCS traffic,
+# pandas memory and worker occupancy by the number of callers once the handler
+# moved to the threadpool — the `async def` with no `await` had serialised them
+# for free, and nobody had written that guarantee down (Codex, PR #991).
+_ALL_RUNS_FLIGHT = SingleFlight()
+# The single-run reads have the same shape and the same cost per key.
+_RESULTS_FLIGHT = SingleFlight()
+_EQUITY_FLIGHT = SingleFlight()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -174,142 +186,216 @@ def _validate_run(run: str | None) -> None:
 
 
 @router.get("/api/backtest/results/{ticker}", response_model=BacktestResultsResponse, response_model_exclude_unset=True)
-async def get_backtest_results(ticker: str, run: str | None = None):
+def get_backtest_results(ticker: str, run: str | None = None):
     """Return trades from the most recent backtest CSV for the given ticker,
     or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
     ticker_upper = ticker.upper()
     _validate_run(run)
     cache_key = f"{ticker_upper}:{run or 'latest'}"
 
-    if cache_key in _RESULTS_CACHE:
-        return _RESULTS_CACHE[cache_key]
+    cached = _RESULTS_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
-    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper, run))
-    if not blobs:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No backtest results found in GCS for ticker '{ticker_upper}'",
-        )
+    # Coalesce cold fills: one GCS list plus a CSV download and pandas parse, uncoalesced once the handler moved to
+    # the threadpool, so a burst multiplies GCS traffic, pandas memory and
+    # worker occupancy by the number of callers (Codex, PR #991).
+    with _RESULTS_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not the same as being first.
+        cached = _RESULTS_CACHE.get(cache_key, MISS)
+        if cached is not MISS:
+            return cached
+        if not mine:
+            # No wait, for the reason `_ALL_RUNS_FLIGHT` records: this
+            # fill runs longer than any wait worth holding a worker for.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Backtest results for {ticker_upper} is being read now; "
+                        f"retry shortly."),
+                headers={"Retry-After": "5"},
+            )
 
-    blob_name = blobs[0]
-    filename = blob_name.rsplit("/", 1)[-1]
-    try:
-        df = gcs_reader.download_csv(blob_name)
-    except Exception as exc:
-        log.error("Failed to download %s: %s", blob_name, exc)
-        raise HTTPException(status_code=502, detail=f"Failed to download backtest CSV from GCS: {exc}")
+        blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper, run))
+        if not blobs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No backtest results found in GCS for ticker '{ticker_upper}'",
+            )
 
-    if df.empty:
+        blob_name = blobs[0]
+        filename = blob_name.rsplit("/", 1)[-1]
+        try:
+            df = gcs_reader.download_csv(blob_name)
+        except Exception as exc:
+            log.error("Failed to download %s: %s", blob_name, exc)
+            raise HTTPException(status_code=502, detail=f"Failed to download backtest CSV from GCS: {exc}")
+
+        if df.empty:
+            resp = {
+                "ticker": ticker_upper,
+                "filename": filename,
+                "trade_count": 0,
+                "summary": {},
+                "trades": [],
+            }
+            _RESULTS_CACHE[cache_key] = resp
+            return resp
+
+        summary = _summarize_returns(df)
+        trades = _trades_to_percent_records(df)
         resp = {
             "ticker": ticker_upper,
             "filename": filename,
-            "trade_count": 0,
-            "summary": {},
-            "trades": [],
+            "trade_count": len(trades),
+            "summary": summary,
+            "trades": trades,
         }
         _RESULTS_CACHE[cache_key] = resp
         return resp
 
-    summary = _summarize_returns(df)
-    trades = _trades_to_percent_records(df)
-    resp = {
-        "ticker": ticker_upper,
-        "filename": filename,
-        "trade_count": len(trades),
-        "summary": summary,
-        "trades": trades,
-    }
-    _RESULTS_CACHE[cache_key] = resp
-    return resp
-
 
 @router.get("/api/backtest/equity/{ticker}", response_model=BacktestEquityResponse, response_model_exclude_unset=True)
-async def get_equity_curve(ticker: str, run: str | None = None):
+def get_equity_curve(ticker: str, run: str | None = None):
     """Return equity curve from the most recent equity CSV for the given ticker,
     or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
     ticker_upper = ticker.upper()
     _validate_run(run)
     cache_key = f"{ticker_upper}:{run or 'latest'}"
 
-    if cache_key in _EQUITY_CACHE:
-        return _EQUITY_CACHE[cache_key]
+    cached = _EQUITY_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
-    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _equity_pattern(ticker_upper, run))
-    if not blobs:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No equity curve found in GCS for ticker '{ticker_upper}'",
-        )
+    # Coalesce cold fills: one GCS list plus a CSV download and pandas parse, uncoalesced once the handler moved to
+    # the threadpool, so a burst multiplies GCS traffic, pandas memory and
+    # worker occupancy by the number of callers (Codex, PR #991).
+    with _EQUITY_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not the same as being first.
+        cached = _EQUITY_CACHE.get(cache_key, MISS)
+        if cached is not MISS:
+            return cached
+        if not mine:
+            # No wait, for the reason `_ALL_RUNS_FLIGHT` records: this
+            # fill runs longer than any wait worth holding a worker for.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"The equity curve for {ticker_upper} is being read now; "
+                        f"retry shortly."),
+                headers={"Retry-After": "5"},
+            )
 
-    blob_name = blobs[0]
-    filename = blob_name.rsplit("/", 1)[-1]
-    try:
-        df = gcs_reader.download_csv(blob_name)
-    except Exception as exc:
-        log.error("Failed to download %s: %s", blob_name, exc)
-        raise HTTPException(status_code=502, detail=f"Failed to download equity CSV from GCS: {exc}")
+        blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _equity_pattern(ticker_upper, run))
+        if not blobs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No equity curve found in GCS for ticker '{ticker_upper}'",
+            )
 
-    if df.empty:
-        resp = {"ticker": ticker_upper, "filename": filename, "summary": {}, "dates": [], "values": []}
+        blob_name = blobs[0]
+        filename = blob_name.rsplit("/", 1)[-1]
+        try:
+            df = gcs_reader.download_csv(blob_name)
+        except Exception as exc:
+            log.error("Failed to download %s: %s", blob_name, exc)
+            raise HTTPException(status_code=502, detail=f"Failed to download equity CSV from GCS: {exc}")
+
+        if df.empty:
+            resp = {"ticker": ticker_upper, "filename": filename, "summary": {}, "dates": [], "values": []}
+            _EQUITY_CACHE[cache_key] = resp
+            return resp
+
+        # Equity CSVs have: "Unnamed: 0" (date index) and "0" (equity value)
+        date_col = None
+        value_col = None
+        for col in df.columns:
+            if col in ("Unnamed: 0", "date", "Date", "index"):
+                date_col = col
+            elif col in ("0", "equity", "Equity", "value", "Value"):
+                value_col = col
+
+        # Fallback: first col = date, second col = value
+        if date_col is None and len(df.columns) >= 1:
+            date_col = df.columns[0]
+        if value_col is None and len(df.columns) >= 2:
+            value_col = df.columns[1]
+
+        dates = df[date_col].astype(str).tolist() if date_col else []
+        values = [float(v) if pd.notna(v) else None for v in df[value_col]] if value_col else []
+
+        # Summary stats
+        clean_values = [v for v in values if v is not None]
+        summary: dict = {}
+        if clean_values:
+            start_val = clean_values[0]
+            end_val = clean_values[-1]
+            peak = max(clean_values)
+            trough_after_peak = min(clean_values[clean_values.index(peak):])
+            max_drawdown = (trough_after_peak - peak) / peak if peak != 0 else 0.0
+            total_return = (end_val - start_val) / start_val if start_val != 0 else 0.0
+            summary = {
+                "start_value": round(start_val, 4),
+                "end_value": round(end_val, 4),
+                "peak_value": round(peak, 4),
+                "total_return_pct": round(total_return * 100, 4),
+                "max_drawdown_pct": round(max_drawdown * 100, 4),
+                "data_points": len(clean_values),
+            }
+
+        resp = {
+            "ticker": ticker_upper,
+            "filename": filename,
+            "summary": summary,
+            "dates": dates,
+            "values": values,
+        }
         _EQUITY_CACHE[cache_key] = resp
         return resp
 
-    # Equity CSVs have: "Unnamed: 0" (date index) and "0" (equity value)
-    date_col = None
-    value_col = None
-    for col in df.columns:
-        if col in ("Unnamed: 0", "date", "Date", "index"):
-            date_col = col
-        elif col in ("0", "equity", "Equity", "value", "Value"):
-            value_col = col
-
-    # Fallback: first col = date, second col = value
-    if date_col is None and len(df.columns) >= 1:
-        date_col = df.columns[0]
-    if value_col is None and len(df.columns) >= 2:
-        value_col = df.columns[1]
-
-    dates = df[date_col].astype(str).tolist() if date_col else []
-    values = [float(v) if pd.notna(v) else None for v in df[value_col]] if value_col else []
-
-    # Summary stats
-    clean_values = [v for v in values if v is not None]
-    summary: dict = {}
-    if clean_values:
-        start_val = clean_values[0]
-        end_val = clean_values[-1]
-        peak = max(clean_values)
-        trough_after_peak = min(clean_values[clean_values.index(peak):])
-        max_drawdown = (trough_after_peak - peak) / peak if peak != 0 else 0.0
-        total_return = (end_val - start_val) / start_val if start_val != 0 else 0.0
-        summary = {
-            "start_value": round(start_val, 4),
-            "end_value": round(end_val, 4),
-            "peak_value": round(peak, 4),
-            "total_return_pct": round(total_return * 100, 4),
-            "max_drawdown_pct": round(max_drawdown * 100, 4),
-            "data_points": len(clean_values),
-        }
-
-    resp = {
-        "ticker": ticker_upper,
-        "filename": filename,
-        "summary": summary,
-        "dates": dates,
-        "values": values,
-    }
-    _EQUITY_CACHE[cache_key] = resp
-    return resp
-
 
 @router.get("/api/backtest/all/{ticker}", response_model=BacktestAllResponse, response_model_exclude_unset=True)
-async def list_all_backtests(ticker: str):
+def list_all_backtests(ticker: str):
     """List all backtest runs for a ticker, sorted by timestamp descending."""
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _ALL_RUNS_CACHE:
-        return _ALL_RUNS_CACHE[ticker_upper]
+    cached = _ALL_RUNS_CACHE.get(ticker_upper, MISS)
+    if cached is not MISS:
+        return cached
 
+    with _ALL_RUNS_FLIGHT.claim(ticker_upper) as mine:
+        if not mine:
+            # Declines IMMEDIATELY -- no wait at all. The first version waited
+            # 5 s and that is worse than not waiting: the claimant LISTs the
+            # bucket twice and then downloads and parses every historical run,
+            # which routinely exceeds any wait worth taking, so a burst held
+            # one AnyIO worker per decliner for the full timeout, starved
+            # unrelated synchronous endpoints like `/api/me`, and then
+            # returned 503 to every waiter anyway (Codex, PR #991).
+            #
+            # A wait only earns a worker where the claimant usually finishes
+            # inside it -- true of the 1.7 s market-dates scan, not of this.
+            # Retry-After hands the cost back to the client, which can afford
+            # it; the worker pool cannot.
+            cached = _ALL_RUNS_CACHE.get(ticker_upper, MISS)
+            if cached is not MISS:
+                return cached
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Backtest runs for {ticker_upper} are being read now; "
+                        f"retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        # Re-read inside the claim: winning the claim does not mean being
+        # first, and a request descheduled between the miss above and the
+        # claim can take it moments after the previous claimant stored the
+        # answer.
+        cached = _ALL_RUNS_CACHE.get(ticker_upper, MISS)
+        if cached is not MISS:
+            return cached
+        return _list_all_backtests_uncached(ticker_upper)
+
+
+def _list_all_backtests_uncached(ticker_upper: str):
+    """The GCS read behind `list_all_backtests`, run by the flight claimant only."""
     backtest_blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper))
     if not backtest_blobs:
         raise HTTPException(
@@ -424,7 +510,7 @@ def _normalize_bars_for_replay(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @router.post("/api/backtest/replay-trades", response_model=ReplayTradesResponse, response_model_exclude_unset=True)
-async def replay_trades(body: ReplayTradesRequest, request: Request):
+def replay_trades(body: ReplayTradesRequest, request: Request):
     """Score the signed-in user's labeled journal trades against actual bars
     and benchmark them against the system (Task 3.2). 422 if neither
     `trade_ids` nor `session_id` is given; 404 if nothing matches; strict
@@ -602,7 +688,7 @@ def _walk_forward_metrics_to_percent(agg: dict) -> dict:
 
 
 @router.post("/api/style/mine-and-validate", response_model=MineStyleResponse, response_model_exclude_unset=True)
-async def mine_and_validate(body: MineAndValidateRequest, request: Request):
+def mine_and_validate(body: MineAndValidateRequest, request: Request):
     """Mine the caller's closed journal trades into a condition profile,
     walk-forward validate the top one, and stage the result (Task 4.3).
 

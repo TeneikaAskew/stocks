@@ -15,6 +15,7 @@ Usage:
 
 import os
 import logging
+import threading
 from typing import Optional, List
 
 import pandas as pd
@@ -23,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 # ── lazy imports so the module loads even without the cloud packages installed ──
 _engine = None
+# Guards the get_engine() singleton. Before the API handlers moved off the
+# event loop they were serialised by it, so the unlocked check-then-create
+# below could never interleave. Under threadpool dispatch two cold-start
+# requests can both see `_engine is None` and each build a Cloud SQL Connector
+# plus its own 5+2 pool, quietly multiplying the connection ceiling exactly
+# when the instance is least able to absorb it.
+_engine_lock = threading.Lock()
 
 
 def _connection_name() -> Optional[str]:
@@ -86,6 +94,18 @@ def get_engine():
     global _engine
     if _engine is not None:
         return _engine
+
+    with _engine_lock:
+        # Re-check under the lock: a contender may have built it while we
+        # waited, and returning early here is what keeps the pool a singleton.
+        if _engine is not None:
+            return _engine
+        return _build_engine()
+
+
+def _build_engine():
+    """Construct the engine. Callers MUST hold `_engine_lock`."""
+    global _engine
 
     direct_url = _direct_db_url()
     if direct_url:
@@ -758,6 +778,44 @@ def execute_sql(sql: str, params: Optional[dict] = None) -> int:
     with engine.begin() as conn:
         result = conn.execute(sqlalchemy.text(sql), params or {})
         return result.rowcount
+
+
+def execute_returning_scalar(sql: str, params: Optional[dict] = None,
+                             allow_no_row: bool = False):
+    """Execute a statement with a RETURNING clause and give back one value.
+
+    The reason this exists: an INSERT followed by a separate
+    ``SELECT ... ORDER BY created_at DESC LIMIT 1`` to learn the new row's id
+    is not atomic. Another writer can insert between the two statements and
+    the SELECT then returns THAT row's id, so the caller hands its user an
+    identifier belonging to someone else's record — and a later close or
+    delete acts on the wrong row. `RETURNING` closes the window by making the
+    insert and the read one statement.
+
+    RAISES on any failure, and raises if the statement returns no row: a
+    RETURNING clause that yields nothing means the write did not happen, and
+    fabricating an id for it (Rule 3.7) is how the bug this replaces was
+    introduced.
+
+    ``allow_no_row=True`` returns ``None`` instead of raising, for the one
+    legitimate case: an ``ON CONFLICT DO NOTHING`` whose conflict is an
+    expected outcome rather than a failure. It is opt-in so the default
+    stays loud.
+
+    Returns the first column of the first returned row.
+    """
+    engine = get_engine()
+    import sqlalchemy
+    with engine.begin() as conn:
+        result = conn.execute(sqlalchemy.text(sql), params or {})
+        row = result.first()
+        if row is None:
+            if allow_no_row:
+                return None
+            raise RuntimeError(
+                "statement returned no row from its RETURNING clause; the "
+                "write did not take effect")
+        return row[0]
 
 
 # Single source of truth for `lib.indicators.add_all_indicators()` output

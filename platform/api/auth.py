@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Awaitable, Callable, Optional
 
 from fastapi import Request, Response
@@ -49,25 +50,45 @@ _OPEN_API_EXACT = ("/api/me",)
 _OPEN_API_PREFIXES = ("/api/health", "/api/config/firebase", "/api/waitlist")
 
 _firebase_ready = False
+_FIREBASE_INIT_LOCK = threading.Lock()
 
 
 def _ensure_firebase() -> None:
-    """Initialize firebase-admin once (ADC on Cloud Run — no key file needed)."""
-    global _firebase_ready
-    if _firebase_ready:
-        return
-    import firebase_admin  # imported lazily so non-firebase modes don't need the dep
+    """Initialize firebase-admin once (ADC on Cloud Run — no key file needed).
 
-    if not firebase_admin._apps:
-        project = (
-            os.environ.get("FIREBASE_PROJECT_ID")
-            or os.environ.get("GCP_PROJECT_ID")
-            or None
-        )
-        firebase_admin.initialize_app(
-            options={"projectId": project} if project else None
-        )
-    _firebase_ready = True
+    Double-checked locking, the fourth instance of this shape in the API after
+    `get_engine()`, `model_routing._get_connector()` and
+    `gcs_reader._get_client()`. The unlocked version was safe only while every
+    handler ran on the event loop and could not interleave.
+
+    The consequence here is worse than a wasted client, which is why this one
+    is worth the lock rather than tolerating the duplicate work. Two cold
+    `/api/me` requests can both observe `_firebase_ready == False` and an
+    empty `firebase_admin._apps`; one `initialize_app()` succeeds and the
+    other raises `ValueError: The default Firebase app already exists`. That
+    exception is swallowed by `current_user_email`, so the losing request
+    answers `{"email": null, "is_admin": false}` — a signed-in admin silently
+    rendered as an anonymous visitor, on the endpoint the frontend uses to
+    decide what to show them. A fabricated identity, not a slow one.
+    """
+    global _firebase_ready
+    if _firebase_ready:                      # fast path, no lock
+        return
+    with _FIREBASE_INIT_LOCK:
+        if _firebase_ready:                  # re-check under the lock
+            return
+        import firebase_admin  # lazy: non-firebase modes don't need the dep
+
+        if not firebase_admin._apps:
+            project = (
+                os.environ.get("FIREBASE_PROJECT_ID")
+                or os.environ.get("GCP_PROJECT_ID")
+                or None
+            )
+            firebase_admin.initialize_app(
+                options={"projectId": project} if project else None
+            )
+        _firebase_ready = True
 
 
 def _verify_bearer_email(request: Request) -> Optional[str]:
