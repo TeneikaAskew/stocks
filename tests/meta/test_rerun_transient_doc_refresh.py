@@ -13,6 +13,7 @@ of -- so these tests RUN it rather than reading its shape.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -71,13 +72,79 @@ REAL_CLI_INTERNAL_ERROR = """\
 """
 
 
+
+# What actually follows a failed Gemini step in the job log: the `if: failure()`
+# artifact upload, then the runner's own post-job cleanup. Transcribed from run
+# 20 (34145300708) -- 42 lines, which is what its failed job's last 42 lines
+# hold, with no Gemini record among them. The COUNT is the point: a 40-line
+# whole-job tail cannot reach past this to the record above it.
+_POST_FAILURE_LINES = [
+    "  CLOUDSDK_PROJECT: adept-mountain-474619-d4",
+    "  GCLOUD_PROJECT: adept-mountain-474619-d4",
+    "  GOOGLE_CLOUD_PROJECT: adept-mountain-474619-d4",
+    "  CLOUDSDK_METRICS_ENVIRONMENT: github-actions-setup-gcloud",
+    "  CLOUDSDK_METRICS_ENVIRONMENT_VERSION: 2.2.1",
+    "##[endgroup]",
+    "(node:3111) [DEP0040] DeprecationWarning: The `punycode` module is deprecated.",
+    "(Use `node --trace-deprecation ...` to show where the warning was created)",
+    "Multiple search paths detected. Calculating the least common ancestor of all paths",
+    "The least common ancestor is /home/runner/work/stocks/stocks.",
+    "With the provided path, there will be 4 files uploaded",
+    "Artifact name is valid!",
+    "Root directory input is valid!",
+    "Beginning upload of artifact content to blob storage",
+    "(node:3111) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized.",
+    "Uploaded bytes 66565",
+    "Finished uploading artifact content to blob storage!",
+    "SHA256 digest of uploaded artifact zip is b93d0b136e75b7fd776f0fc4861826108405033a",
+    "Finalizing artifact upload",
+    "Artifact regenerated-docs.zip successfully finalized. Artifact ID 10027741656",
+    "Artifact regenerated-docs has been successfully uploaded! Final size is 66565 bytes.",
+    "Artifact download URL: https://github.com/TeneikaAskew/stocks/actions/runs/34145300708/artifacts/10027741656",
+    "Node 20 is being deprecated. This workflow is running with Node 24 by default.",
+    "Post job cleanup.",
+    'Removed exported credentials at "/home/runner/work/stocks/stocks/gha-creds-c9d19b5809b1981c.json".',
+    "Node 20 is being deprecated. This workflow is running with Node 24 by default.",
+    "Post job cleanup.",
+    "[command]/usr/bin/git version",
+    "git version 2.55.0",
+    "Temporarily overriding HOME before making global git config changes",
+    "Adding repository directory to the temporary git global config as a safe directory",
+    "[command]/usr/bin/git config --global --add safe.directory /home/runner/work/stocks/stocks",
+    "[command]/usr/bin/git config --local --name-only --get-regexp core.sshCommand",
+    "[command]/usr/bin/git submodule foreach --recursive sh -c 'git config core.sshCommand'",
+    "[command]/usr/bin/git config --local --name-only --get-regexp http.https://github.com/.extraheader",
+    "http.https://github.com/.extraheader",
+    "[command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader",
+    "[command]/usr/bin/git submodule foreach --recursive sh -c 'git config extraheader'",
+    "[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf.gitdir:",
+    "[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin",
+    "Cleaning up orphan processes",
+    "##[warning]Node.js 20 is deprecated.",
+]
+assert len(_POST_FAILURE_LINES) == 42, len(_POST_FAILURE_LINES)
+# The first few land in the same SECOND as the failed step's completed_at, as
+# they do in the real log: the API reports whole seconds, so the window carries
+# a second of slop by construction and these lines are inside it. They are not
+# records, so being inside changes nothing -- which is the point of checking.
+POST_FAILURE_NOISE = "".join(
+    (f"2026-09-07T17:06:59.{64 + i}Z " if i < 6 else f"2026-09-07T17:07:00.{i:02d}Z ") + line + "\n"
+    for i, line in enumerate(_POST_FAILURE_LINES))
+
+
 SCRIPT = REPO / ".github/scripts/is_transient_gemini_failure.sh"
 
 
-def _classify(log_text: str, tmp_path=None) -> bool:
+def _classify(log_text: str, window="all", tmp_path=None) -> bool:
     """Run the REAL classifier script over a log, returning whether it would
     re-run. `gh` is stubbed on PATH so the script's own API calls and its own
     parsing are exercised -- not a reconstruction of them.
+
+    `window` is the failed step's (started_at, completed_at) as the jobs API
+    reports it, or a list of them; "all" spans every timestamp in `log_text`,
+    and `()` is a job that failed with no failed step to attribute it to.
+    Spanning everything is a fixture convenience for the tests that are about
+    the RECORD's shape rather than about where it sits.
 
     An earlier helper rebuilt the condition from variables scraped out of the
     workflow and so tested a combination the workflow did not use: it reported
@@ -88,21 +155,31 @@ def _classify(log_text: str, tmp_path=None) -> bool:
     import tempfile
     d = Path(tmp_path or tempfile.mkdtemp())
     (d / "log.txt").write_text(log_text)
+
+    if window == "all":
+        stamps = sorted(re.findall(r"^(\S+Z) ", log_text, re.M))
+        window = [(stamps[0], stamps[-1])] if stamps else []
+    elif window and isinstance(window[0], str):
+        window = [window]
+    (d / "windows.txt").write_text("".join(f"{lo}\t{hi}\n" for lo, hi in window))
+
     bin_dir = d / "bin"
     bin_dir.mkdir(exist_ok=True)
     gh = bin_dir / "gh"
     gh.write_text(
         "#!/usr/bin/env bash\n"
-        # `gh api .../jobs` -> one failed job id; `gh api .../logs` -> the log.
+        # `.../jobs?per_page=` -> one failed job id; `.../jobs/<id>` -> the
+        # failed step windows; `.../jobs/<id>/logs` -> the raw log.
         'case "$*" in\n'
         '  *"/logs"*) cat "$LOG_FIXTURE" ;;\n'
+        '  *"actions/jobs/"*) cat "$WINDOW_FIXTURE" ;;\n'
         '  *) echo 1 ;;\n'
         'esac\n'
     )
     gh.chmod(0o755)
     env = dict(os.environ)
     env.update(PATH=f"{bin_dir}:{env['PATH']}", REPO="TeneikaAskew/stocks",
-               LOG_FIXTURE=str(d / "log.txt"))
+               LOG_FIXTURE=str(d / "log.txt"), WINDOW_FIXTURE=str(d / "windows.txt"))
     out = subprocess.run(["bash", str(SCRIPT), "12345"], cwd=d, env=env,
                          capture_output=True, text=True)
     return out.returncode == 0
@@ -295,11 +372,64 @@ def test_a_real_internal_cli_error_is_left_red():
     assert _classify(REAL_CLI_INTERNAL_ERROR) is False
 
 
-def test_a_stall_scrolled_out_of_the_tail_is_not_recognised():
-    """The CLI emits its fatal record last and exits, so only the tail counts.
-    This is the bound that makes echoing hard rather than merely unlikely."""
-    assert _classify(REAL_STALL + "".join(
-        f"2026-09-07T17:07:0{i%10}.0Z line {i}\n" for i in range(60))) is False
+def test_the_stall_is_recognised_behind_its_post_failure_output():
+    """The defect that made the whole workflow a no-op. (Codex P1, round 9.)
+
+    An earlier version matched in the last 40 lines of the WHOLE job. But the
+    refresh job runs `Upload the regenerated documents when a gate fails`
+    (`if: failure()`) and then the runner's post-job cleanup after the Gemini
+    step dies, and all of it lands in the same log after the fatal record.
+
+    Measured, not assumed: run 20 (34145300708) is the stall this workflow was
+    written for, and its failed job's last 42 log lines contain no Gemini
+    record at all -- they start at 17:06:59.6486851Z, after the record at
+    17:06:59.6028585Z, and run to the end of cleanup. The shipped tail would
+    have called that run "the repo's own failure" and never re-run it.
+    """
+    assert _classify(REAL_STALL + POST_FAILURE_NOISE,
+                     window=("2026-09-07T17:00:14Z", "2026-09-07T17:06:59Z")) is True
+    # And the noise alone is not a stall, so the window is doing the work.
+    assert _classify(POST_FAILURE_NOISE,
+                     window=("2026-09-07T17:00:14Z", "2026-09-07T17:06:59Z")) is False
+
+
+def test_a_record_outside_the_failed_step_does_not_count():
+    """Narrower than the old whole-job tail, not merely bigger: a record
+    emitted while a step that SUCCEEDED was running did not fail this job."""
+    log = (
+        "2026-09-07T17:00:01.0Z Error when talking to Gemini API Full report available at:"
+        " /tmp/gemini-client-error-earlier.json TypeError: terminated\n"
+        "2026-09-07T17:05:05.0Z The input file could not be read. Stopping.\n"
+        "2026-09-07T17:05:05.1Z ##[error]Process completed with exit code 1.\n"
+    )
+    assert _classify(log, window=("2026-09-07T17:05:00Z", "2026-09-07T17:05:10Z")) is False
+
+
+def test_a_job_with_no_failed_step_is_not_transient():
+    """Cancellation or a job-level timeout leaves no failed step to attribute
+    the failure to. Fail closed: the run stays red (Rule 3.7)."""
+    assert _classify(REAL_STALL, window=()) is False
+
+
+def test_the_failed_step_filter_is_the_one_the_script_runs():
+    """The window comes from a jq filter, so run THAT filter -- a stub that
+    hands back an already-filtered answer tests nothing about it."""
+    filt = re.search(r"FAILED_STEP_JQ='([^']*)'", SCRIPT.read_text()).group(1)
+    payload = {"steps": [
+        {"name": "Checkout", "conclusion": "success",
+         "started_at": "2026-09-07T16:54:00Z", "completed_at": "2026-09-07T16:54:20Z"},
+        {"name": "Regenerate 05-c-DATA_DEPENDENCIES.md", "conclusion": "failure",
+         "started_at": "2026-09-07T17:00:14Z", "completed_at": "2026-09-07T17:06:59Z"},
+        {"name": "Never started", "conclusion": "failure",
+         "started_at": None, "completed_at": None},
+        {"name": "Upload the regenerated documents when a gate fails",
+         "conclusion": "success",
+         "started_at": "2026-09-07T17:06:59Z", "completed_at": "2026-09-07T17:07:00Z"},
+    ]}
+    out = subprocess.run(["jq", "-r", filt], input=json.dumps(payload),
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == ["2026-09-07T17:00:14Z", "2026-09-07T17:06:59Z"]
 
 
 def test_the_refresh_workflow_does_not_retry_in_job():

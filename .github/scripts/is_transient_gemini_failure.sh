@@ -11,6 +11,22 @@
 # rerun-transient-doc-refresh.yml, which never invokes a model and whose
 # checkout no model has ever written to.
 #
+# WHERE IT LOOKS
+#
+# Inside the FAILED STEP's own section of the failed job's log, and nowhere
+# else. The section is cut by the step's `started_at`/`completed_at` from the
+# jobs API against the timestamp the RUNNER prefixes onto every log line --
+# both sides come from GitHub, not from the stream.
+#
+# An earlier version took the last 40 lines of the whole job instead. The
+# refresh job runs "Upload the regenerated documents when a gate fails" and
+# then the runner's own post-job cleanup AFTER the Gemini step dies, and all of
+# it lands in the same log after the fatal record: the committed sample in
+# .github/workflows/logs.txt:427-442 is 16 cleanup lines with no upload step at
+# all. A real stall would routinely scroll out of that window, the classifier
+# would call it "the repo's own failure", and the whole re-run would be a
+# silent no-op. (Codex, PR #1032.)
+#
 # WHAT IT MATCHES, AND WHAT THAT IS WORTH
 #
 # One attributable CLI error record on ONE line: the CLI's emitter, the path of
@@ -39,10 +55,9 @@ RUN_ID="${1:?run id required}"
 ATTEMPT="${2:-}"
 REPO="${REPO:?REPO required}"
 
-# Only the tail: the CLI emits its fatal record last and then exits.
-TAIL_LINES="${TAIL_LINES:-40}"
 RECORD='^Error when talking to Gemini API Full report available at: /tmp/gemini-client-error-[^ ]+ '
 TRANSPORT='(TypeError: terminated|ECONNRESET|socket hang up|UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)'
+FAILED_STEP_JQ='.steps[]? | select(.conclusion == "failure") | select(.started_at and .completed_at) | "\(.started_at)\t\(.completed_at)"'
 
 if [ -n "$ATTEMPT" ]; then
   JOBS_URL="repos/${REPO}/actions/runs/${RUN_ID}/attempts/${ATTEMPT}/jobs?per_page=100"
@@ -50,28 +65,40 @@ else
   JOBS_URL="repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100"
 fi
 
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
 # RAW per-job logs. `gh run view --log-failed` prefixes every line with job and
 # step columns (`<job>\t<step>\t<timestamp> ...`), which defeats a start-
 # anchored match entirely and would make this a silent no-op. (Codex, #1032.)
-gh api "$JOBS_URL" --jq '.jobs[] | select(.conclusion == "failure") | .id' > /tmp/failed_jobs.txt
-: > /tmp/failed.log
+gh api "$JOBS_URL" --jq '.jobs[] | select(.conclusion == "failure") | .id' > "$WORK/failed_jobs.txt"
+: > "$WORK/failed_steps.log"
 while read -r JOB_ID; do
   [ -n "$JOB_ID" ] || continue
-  gh api "repos/${REPO}/actions/jobs/${JOB_ID}/logs" >> /tmp/failed.log
-done < /tmp/failed_jobs.txt
+  gh api "repos/${REPO}/actions/jobs/${JOB_ID}" --jq "$FAILED_STEP_JQ" > "$WORK/windows.txt"
+  gh api "repos/${REPO}/actions/jobs/${JOB_ID}/logs" > "$WORK/job.log"
+  # Keep only the lines the runner stamped inside a failed step of THIS job.
+  # Compared on YYYY-MM-DDTHH:MM:SS: the log carries sub-second precision and
+  # the API does not, and a naive string compare would then drop every line in
+  # the step's first and last second.
+  awk -F'\t' 'NR==FNR { lo[++n]=substr($1,1,19); hi[n]=substr($2,1,19); next }
+              { split($0, f, " "); ts = substr(f[1], 1, 19)
+                for (i = 1; i <= n; i++) if (ts >= lo[i] && ts <= hi[i]) { print; next } }' \
+      "$WORK/windows.txt" "$WORK/job.log" >> "$WORK/failed_steps.log"
+done < "$WORK/failed_jobs.txt"
 
-if [ ! -s /tmp/failed.log ]; then
-  echo "no failed-job logs for run ${RUN_ID}${ATTEMPT:+ attempt ${ATTEMPT}}; not classifying as transient"
+if [ ! -s "$WORK/failed_steps.log" ]; then
+  echo "no failed-step log section for run ${RUN_ID}${ATTEMPT:+ attempt ${ATTEMPT}}; not classifying as transient"
   exit 1
 fi
 
-TAIL=$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' /tmp/failed.log | tail -n "$TAIL_LINES")
+SECTION=$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' "$WORK/failed_steps.log")
 
-if printf '%s\n' "$TAIL" | grep -qE "${RECORD}${TRANSPORT}"; then
-  CAUSE=$(printf '%s\n' "$TAIL" | grep -oE "${RECORD}${TRANSPORT}" | grep -oE "$TRANSPORT" | sort -u | tr '\n' ' ')
+if printf '%s\n' "$SECTION" | grep -qE "${RECORD}${TRANSPORT}"; then
+  CAUSE=$(printf '%s\n' "$SECTION" | grep -oE "${RECORD}${TRANSPORT}" | grep -oE "$TRANSPORT" | sort -u | tr '\n' ' ')
   echo "transient Vertex transport stall: ${CAUSE}"
   exit 0
 fi
 
-echo "no attributable CLI transport-error record in the last ${TAIL_LINES} lines; this is the repo's own failure"
+echo "no attributable CLI transport-error record in the failed step; this is the repo's own failure"
 exit 1
