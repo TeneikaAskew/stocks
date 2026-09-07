@@ -342,9 +342,9 @@ unless noted.
 
 ## 7. Cloud Run Services catalog
 
-Four long-lived HTTP services, all with `min-instances=0` so they cost nothing at idle.
+Four long-lived HTTP services, all with `min-instances=0` so they cost nothing at idle. `solyra-api-staging` and `solyra-api-prod` (§7.1) deploy from the Cloud Build triggers in [`gcp/cloudbuild/`](../gcp/cloudbuild/), with [`platform/deploy.sh`](../platform/deploy.sh) as the manual path; `discord-interactions` and `failure-notifier` deploy from [`gcp/deploy.sh`](../gcp/deploy.sh). `trading-platform` and `trading-platform-staging` were deleted on 2026-09-06 and are not in this count.
 
-### 7.1 `solyra-api-prod` — the dashboard
+### 7.1 `solyra-api-staging` / `solyra-api-prod` — the Solyra API
 
 | Aspect | Value |
 |---|---|
@@ -354,10 +354,11 @@ Four long-lived HTTP services, all with `min-instances=0` so they cost nothing a
 | Auth | **IAP (Identity-Aware Proxy) auto-managed** scoped to `bictech.org` Google identities. Admin email (`teneika@bictech.org`) bypasses the optional in-app token gate |
 | Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic). **No SPA**: the frontend left in #957 and the image carries no `dist/`, so `/` and every client route answer 404 |
 | Cloud SQL | `--add-cloudsql-instances` connector path |
-| URL | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app`, IAP-gated. **`stocks.insightscollective.org` no longer points here** — it was remapped on 2026-09-05 to `solyra-api-staging`, which is public at the edge and Firebase-gated with open self-signup. Diagnosing prod through that hostname reaches staging instead, under a different auth policy and against the same production data ([09](../docs/product/09-SECURITY-AUTH.md)) |
+| URL (staging) | Custom domain `api.stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, since 2026-09-06; `stocks.insightscollective.org` from 2026-09-05 until then), plus the generated `solyra-api-staging-…run.app` URL, which is what the SPA actually calls. The bare `stocks.insightscollective.org` is now the Firebase auth-email sending domain and is reserved for the SPA |
+| URL (prod) | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app`, IAP-gated. **No custom domain points here.** Diagnosing prod through either `stocks` hostname reaches staging instead, under a different auth policy and against the same production data ([09](../docs/product/09-SECURITY-AUTH.md)) |
 | Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/solyra-api`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). Two-stage staging→production CI pipeline since 2026-05-16 — see below. |
 
-This is the only thing a human directly hits in a browser.
+No human hits either service in a browser: the SPA ([TeneikaAskew/solyra](https://github.com/TeneikaAskew/solyra)) is hosted outside Cloud Run and calls `solyra-api-staging` over the API.
 
 **Deploy pipeline — rebuilt 2026-09-05.** Two Cloud Build triggers, one per service:
 
