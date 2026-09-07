@@ -33,6 +33,14 @@
 # data-dependencies attempt could alter 05-a-ARCHITECTURE.md, retry cleanly,
 # and leave that edit eligible for publication. (Codex, PR #1032.)
 #
+# refresh-inputs/ is checked rather than restored. The model can write there
+# too, and that tree is the one place the stray-write scan deliberately does
+# not look; the frozen copy is restored only AFTER all four runs, so tampering
+# would be erased without correcting the document already generated from it.
+# A retry reading altered billing or snapshot data is a different failure from
+# a transport stall, so it fails and names the files instead of quietly
+# starting over. (Codex, PR #1032.)
+#
 # The baseline is snapshotted HERE, not taken from refresh-inputs/previous/.
 # That directory is written by "Save previous doc versions", which runs BEFORE
 # "Render inventory blocks", so it holds the committed PRE-render document. In
@@ -56,6 +64,7 @@ SNAP_DIR="${RUNNER_TEMP:?RUNNER_TEMP required}/gemini-baseline/${PROMPT}"
 # captured by the freeze step BEFORE the model ran -- reading it from the
 # checkout here would re-open the hole the frozen script closes.
 WRITABLE_LIST="${GEMINI_WRITABLE_DOCS_FILE:-${RUNNER_TEMP}/frozen/writable_docs.txt}"
+FROZEN_INPUTS="${RUNNER_TEMP}/frozen/refresh-inputs"
 MAX_ATTEMPTS="${GEMINI_MAX_ATTEMPTS:-2}"
 # Seconds of backoff before a retry. Only the tests set this (to 0); the
 # workflow uses the default, because a transport stall that just timed out is
@@ -91,6 +100,16 @@ done
 
 for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
   if [ "$ATTEMPT" -gt 1 ]; then
+    # The inputs the next attempt will read must be the ones the freeze took.
+    if [ ! -d "$FROZEN_INPUTS" ]; then
+      echo "::error::no frozen refresh-inputs at ${FROZEN_INPUTS}; refusing to retry ${PROMPT} without a way to check the inputs the next attempt would read"
+      exit 1
+    fi
+    if ! diff -r -q "$FROZEN_INPUTS" refresh-inputs > "${SNAP_DIR}/inputs.diff" 2>&1; then
+      echo "::error::the failed ${PROMPT} attempt changed refresh-inputs/, which the stray-write scan does not cover and the post-model restore would erase. Retrying would generate prose from altered inputs. Not a transport failure; refusing."
+      cat "${SNAP_DIR}/inputs.diff"
+      exit 1
+    fi
     for D in "${WRITABLE[@]}"; do
       SNAP="${SNAP_DIR}/$(printf '%s' "$D" | tr '/' '_')"
       if [ ! -f "$SNAP" ]; then

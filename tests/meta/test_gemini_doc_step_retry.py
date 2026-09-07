@@ -16,6 +16,7 @@ first attempt.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import sys
 import subprocess
@@ -66,15 +67,21 @@ def _run(tmp_path: Path, stub: str, *, doc="docs/product/infrastructure/05-c-DAT
     for d in others:
         (work / d).parent.mkdir(parents=True, exist_ok=True)
         (work / d).write_text(f"OTHER {d}\n")
-    runner = tmp_path / "runner"
-    (runner / "frozen").mkdir(parents=True, exist_ok=True)
-    (runner / "frozen/writable_docs.txt").write_text("\n".join(WRITABLE) + "\n")
+    (work / "refresh-inputs").mkdir(parents=True, exist_ok=True)
+    (work / "refresh-inputs/live.json").write_text('{"jobs": 76}\n')
     if with_previous:
         # What "Save previous doc versions" wrote -- the committed PRE-render
         # copy. It is deliberately allowed to differ from what is on disk.
         prev = work / "refresh-inputs/previous" / doc
         prev.parent.mkdir(parents=True, exist_ok=True)
         prev.write_text(previous_text)
+
+    runner = tmp_path / "runner"
+    (runner / "frozen").mkdir(parents=True, exist_ok=True)
+    (runner / "frozen/writable_docs.txt").write_text("\n".join(WRITABLE) + "\n")
+    # The freeze step copies the WHOLE refresh-inputs tree, previous/ included,
+    # which is why it is snapshotted after that directory is populated.
+    shutil.copytree(work / "refresh-inputs", runner / "frozen/refresh-inputs")
 
     bin_dir = tmp_path / "bin"
     _stub_gemini(bin_dir, stub)
@@ -245,6 +252,46 @@ def test_a_failed_attempt_cannot_leave_an_edit_in_another_generated_doc(tmp_path
     left = (work / victim).read_text()
     assert "SMUGGLED" not in left, f"a failed attempt's edit to {victim} survived: {left!r}"
     assert left == f"OTHER {victim}\n"
+
+
+def test_a_failed_attempt_that_touched_refresh_inputs_is_not_retried(tmp_path):
+    """Codex P2 on 22aa7a3, reproduced.
+
+    The model can write into refresh-inputs/, and that tree is the one place
+    the stray-write scan deliberately skips. The frozen copy is restored only
+    after all four runs, so tampering would be erased without correcting the
+    document already generated from it. A retry reading altered billing or
+    snapshot data is a different failure from a transport stall, so it must
+    fail and name the files rather than quietly starting over.
+    """
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'echo \'{"jobs": 1}\' > refresh-inputs/live.json\n'
+        f'echo "{BODY_TIMEOUT}"\n'
+        'exit 1\n'
+    )
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode != 0
+    assert attempts == 1, f"it retried against tampered inputs ({attempts} attempts)"
+    assert "changed refresh-inputs/" in proc.stdout
+    assert "live.json" in proc.stdout, "the changed file is not named"
+
+
+def test_untouched_refresh_inputs_do_not_block_the_retry(tmp_path):
+    """The check above must not fire on a normal transport stall, or the
+    retry it guards never runs."""
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'N=$(wc -w < "$ATTEMPTS_FILE")\n'
+        'if [ "$N" -eq 1 ]; then\n'
+        f'  echo "{BODY_TIMEOUT}"\n'
+        '  exit 1\n'
+        'fi\n'
+        'echo done\n'
+    )
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert attempts == 2
 
 
 def test_a_transcript_that_was_not_captured_fails_the_step(tmp_path):
