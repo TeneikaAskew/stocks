@@ -234,15 +234,36 @@ fi
 # compared with the revision serving when the deploy is finally issued. See the
 # compare-and-swap in step 3. A service that does not exist yet has nothing to
 # race with, so an empty baseline is not an error here.
+#
+# FAILS CLOSED. `2>/dev/null` plus a bare `else` treated EVERY nonzero exit as
+# "the service does not exist": a transient API error, an expired credential
+# or a missing role all left the baseline empty, which silently skips the
+# compare-and-swap below and re-opens the window it exists to close. Only an
+# explicit not-found is the create case; anything else stops the deploy
+# (Codex, PR #990).
 DEPLOY_BASELINE_REVISION=""
+_describe_err="$(mktemp)"
 if gcloud run services describe "${SERVICE}" --region "${REGION}" \
-     --format=json >/tmp/solyra-deploy-baseline.json 2>/dev/null; then
+     --format=json >/tmp/solyra-deploy-baseline.json 2>"${_describe_err}"; then
+  # A nonzero exit from serving_revision.py -- nothing serving, or traffic
+  # split across revisions -- aborts here under `set -e`, and should: a
+  # compare-and-swap has no baseline to compare against in either case, and
+  # deploying over an ambiguous service is what this guard is for.
   DEPLOY_BASELINE_REVISION="$(python3 gcp/cloudbuild/serving_revision.py \
                                 < /tmp/solyra-deploy-baseline.json)"
   echo ">> ${SERVICE} is currently serving ${DEPLOY_BASELINE_REVISION}"
-else
+elif grep -qiE 'NOT_FOUND|could not be found|does not exist' "${_describe_err}"; then
   echo ">> ${SERVICE} does not exist yet; this run creates it"
+else
+  echo ">> ERROR: could not read ${SERVICE} to establish a deploy baseline." >&2
+  echo "          Not treating an unreadable service as an absent one: that" >&2
+  echo "          would skip the compare-and-swap and let a concurrent deploy" >&2
+  echo "          be overwritten silently." >&2
+  cat "${_describe_err}" >&2
+  rm -f "${_describe_err}"
+  exit 1
 fi
+rm -f "${_describe_err}"
 
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
 echo ">> building ${IMAGE}:${IMAGE_TAG}"

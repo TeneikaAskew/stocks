@@ -193,7 +193,7 @@ mount `av-api-key`, so the AV request path works on either (§0).
 
 ### 3a. Search a stock (ticker autocomplete)
 ```
-Browser  ──GET /api/insights/ticker/search?keywords=…&limit=8──▶  solyra-api-prod (Cloud Run svc, FastAPI)
+Browser  ──GET /api/insights/ticker/search?keywords=…&limit=8──▶  solyra-api-staging (Cloud Run svc, FastAPI)
   hook: useTickerSearch (platform/src/hooks/useTickerSearch.ts)
   router: routers/insights.py::search_tickers → lib.ticker_info.search_tickers
   ──HTTPS──▶  AlphaVantage  SYMBOL_SEARCH        (needs AV_API_KEY)
@@ -223,7 +223,7 @@ API services mount (§0).
 
 ### 3c. Pull AI insights (refresh → Vertex Gemini → read)
 ```
-Browser ──POST /api/insights/report/{t}/refresh[?as_of=…]──▶  solyra-api-prod (FastAPI)
+Browser ──POST /api/insights/report/{t}/refresh[?as_of=…]──▶  solyra-api-staging (FastAPI)
   hook: useRefreshInsight
   router: routers/insights.py::refresh_insight_report
      1. INSERT insight_runs (status='queued')                       ── Cloud SQL

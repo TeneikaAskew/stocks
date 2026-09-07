@@ -509,7 +509,11 @@ Things that could fail silently today because nothing watches them. Ranked by si
    Cloud Run Jobs against 76 live. Doc rot is a silent failure like any other.
    - **Fix (done 2026-09-06):** `scripts/verify_docs_against_live.py` compares
      every schedule, wall-clock, count and service-name claim in the operational
-     docs against `gcloud`, and exits non-zero on a mismatch:
+     docs against `gcloud`, and exits non-zero on a mismatch. It runs on a
+     schedule in `.github/workflows/verify-docs-against-live.yml` (09:00 ET
+     weekdays, WIF-authenticated) — a script nothing invokes is not a monitor,
+     and until that workflow existed this section described one that only ran
+     when somebody remembered (Codex, PR #990). Run it by hand with:
 
      ```bash
      python scripts/verify_docs_against_live.py            # reads live via gcloud

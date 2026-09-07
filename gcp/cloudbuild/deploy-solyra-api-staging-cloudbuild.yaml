@@ -78,6 +78,23 @@ steps:
           --image="$${DIGEST}" \
           --region=us-east1 \
           --platform=managed
+  # PIN what is now serving, so the cleanup policy cannot delete it.
+  #
+  # Every qualifying push leaves a `${_IMAGE}:${SHORT_SHA}` tag and nothing
+  # removed them, so `solyra-api` grew without bound under the policy's
+  # keep-tagged rule (Codex, PR #990). The policy now expires solyra-api
+  # versions older than 30 days -- which is only safe if the digests actually
+  # in use carry an `inuse-*` tag, and this is the step that gives them one.
+  #
+  # --no-sweep because this build runs as trading-runner@:
+  # roles/artifactregistry.writer creates and moves tags but cannot delete
+  # them, so releasing stale pins stays with the interactive gcp/deploy.sh
+  # path. Pinning is the safety step and still fails closed.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: pin
+    waitFor: [deploy]
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; ./gcp/deploy.sh pin-images --no-sweep']
 substitutions:
   _IMAGE: gcr.io/adept-mountain-474619-d4/solyra-api
 # Read by assert_no_concurrent_staging_deploy.sh in BOTH deploy paths, which is

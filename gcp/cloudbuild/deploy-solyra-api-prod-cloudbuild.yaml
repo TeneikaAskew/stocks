@@ -71,6 +71,11 @@ steps:
           --image="$$DIGEST" \
           --region=us-east1 \
           --platform=managed
+
+        # Pin the promoted digest. The cleanup policy expires solyra-api
+        # versions older than 30 days and keeps `inuse-*`, so a prod revision
+        # left unpinned could have its image deleted from under it.
+        ./gcp/deploy.sh pin-images --no-sweep
 options:
   logging: CLOUD_LOGGING_ONLY
 timeout: 1200s

@@ -80,7 +80,7 @@ flowchart LR
 
     DSC[Discord<br/>webhooks + slash]:::out
     GH[GitHub<br/>auto-issued failures]:::out
-    USR[User browser<br/>via IAP]:::out
+    USR[User browser<br/>Firebase sign-in]:::out
 
     AV & FRED & FF & EDGAR & FV & RSS & EW & UW --> JOBS
     SCH --> JOBS
@@ -89,9 +89,10 @@ flowchart LR
     JOBS -- reads --> SQL
     JOBS -- LLM calls --> VAI
 
-    USR --> SVC1
-    SVC1 -- reads --> SQL
-    SVC1 -- enqueues --> JOBS
+    USR --> SVC1S
+    SVC1S -- reads --> SQL
+    SVC1S -- enqueues --> JOBS
+    SVC1 -. same image, IAP-gated, not browser-reached .-> SQL
 
     DSC -- POST signed --> SVC2
     SVC2 -- dispatch --> JOBS
@@ -104,13 +105,13 @@ flowchart LR
     SVC3 --> GH
 
     JOBS -- pushes --> DSC
-    SECR -. injected env vars .-> JOBS & SVC1 & SVC2 & SVC3
+    SECR -. injected env vars .-> JOBS & SVC1 & SVC1S & SVC2 & SVC3
 ```
 
 **Read this diagram top-to-bottom in three lanes:**
 
 1. **Ingest lane (top)** — Cloud Scheduler fires Cloud Run Jobs that pull from external APIs and land data in Cloud SQL + GCS.
-2. **Serve lane (middle)** — `solyra-api-prod` (the dashboard) and `discord-interactions` (slash commands) read from Cloud SQL and dispatch the same Cloud Run Jobs on demand.
+2. **Serve lane (middle)** — `solyra-api-staging` is the API the browser actually reaches (`stocks.insightscollective.org` maps to it, Firebase-gated); `solyra-api-prod` runs the same image behind IAP and no browser reaches it today; `discord-interactions` handles slash commands. All three read Cloud SQL, and the two API services dispatch the same Cloud Run Jobs on demand. Diagnosing "the user-facing service" through the prod node is looking at the wrong one.
 3. **Observe lane (bottom)** — Cloud Logging watches every Cloud Run Job for errors, pipes them through Pub/Sub to the failure-notifier service, which fans out to Discord + GitHub.
 
 ---

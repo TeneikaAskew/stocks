@@ -110,8 +110,8 @@ gcloud builds triggers run deploy-solyra-api-staging --branch=main
 gcloud builds list --limit=1 --format='value(id,status)'
 ```
 
-The third trigger (`deploy-solyra-api-prod`) is manual-only and is the ONLY
-path that changes prod:
+The third trigger (`deploy-solyra-api-prod`) is manual-only and is the
+path prod is SUPPOSED to change through:
 
 ```bash
 # 1. read what staging is serving, and validate THAT
@@ -126,6 +126,17 @@ It no longer shifts traffic between tags on one service. It reads the image
 digest currently serving `solyra-api-staging` and deploys that exact digest to
 `solyra-api-prod`, so prod ships the bits staging validated rather than a fresh
 build of whatever has since merged to main. The same IAM grants above cover it.
+
+**There is a second way into prod, and it does not have this gate.**
+`./platform/deploy.sh` with its defaults (no `STAGING_SERVICE=1`) builds the
+caller's working tree and deploys it straight to `solyra-api-prod`. That path
+never consults staging, so nothing there is the digest anybody validated, and
+`_EXPECT_STAGING_REVISION` cannot apply to it. It is kept deliberately as the
+break-glass route for the case the promote trigger cannot serve — prod is
+broken and staging is too — and it is named here rather than left for an
+auditor to find, because "the only path that changes prod" was not true
+(Codex, PR #990). Use it only when the promote path cannot work, and expect
+the revision it creates to be replaced by the next promotion.
 
 `_EXPECT_STAGING_REVISION` is **required**, and it is what ties the promotion to
 what you actually looked at. "What staging is serving now" and "what was

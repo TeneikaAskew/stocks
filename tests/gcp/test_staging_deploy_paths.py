@@ -215,3 +215,51 @@ def test_promotion_requires_the_revision_the_operator_validated():
         "run time answers a different question than what was validated")
     assert 'if [ "$$EXPECT" != "$$REV" ] && [ "$$EXPECT" != "$$DIGEST" ]' in body
     assert body.index('if [ -z "$$EXPECT" ]') < body.index("gcloud run deploy")
+
+
+def test_the_baseline_read_fails_closed():
+    """An unreadable service is not an absent one.
+
+    `2>/dev/null` plus a bare `else` treated every nonzero exit as "does not
+    exist", so a transient API error or an expired credential left the
+    baseline empty and silently skipped the compare-and-swap (Codex, PR #990).
+    """
+    text = DEPLOY_SH.read_text()
+    assert "NOT_FOUND" in text, (
+        "only an explicit not-found may be treated as the create case")
+    assert "2>/dev/null" not in text.split("DEPLOY_BASELINE_REVISION")[1][:600], (
+        "the describe error is needed to tell not-found from a real failure")
+    baseline = text.index("DEPLOY_BASELINE_REVISION=\"\"")
+    tail = text[baseline:text.index("gcloud builds submit", baseline)]
+    assert "exit 1" in tail, "an unreadable service must stop the deploy"
+
+
+def test_both_triggers_pin_what_they_deployed():
+    """The cleanup policy expires build tags, so the running digest needs one.
+
+    Every qualifying push leaves a `solyra-api:<short sha>` tag; nothing
+    removed them and the policy kept every tagged version, so the repository
+    grew without bound (Codex, PR #990). Expiring them is only safe while the
+    digests in use carry an `inuse-*` tag.
+    """
+    for path in (TRIGGER, PROMOTE):
+        body = "\n".join(_all_args(step) for step in _steps(path))
+        assert "pin-images --no-sweep" in body, (
+            f"{path.name} deploys without pinning the digest it deployed")
+        assert body.index("gcloud run deploy") < body.rindex("pin-images"), (
+            f"{path.name} pins before it deploys, which pins the wrong digest")
+
+
+def test_the_cleanup_policy_expires_build_tags_but_keeps_pins():
+    text = REPO.joinpath("gcp/deploy.sh").read_text()
+    # The gcr.io policy only. The `trading` repo holds the Jobs image, whose
+    # tags are job names rather than one per commit, so keep-tagged is right
+    # there and wrong here.
+    opener = 'cat > "${gcr_policy}" <<\'EOF\'\n'
+    gcr = text[text.index(opener) + len(opener):]
+    gcr = gcr[:gcr.index("\nEOF")]
+    assert '"delete-old-solyra-api-build-tags"' in gcr
+    assert '"keep-in-use-and-latest"' in gcr
+    assert '"tagPrefixes": ["inuse-", "latest"]' in gcr
+    assert '"name": "keep-tagged"' not in gcr, (
+        "a blanket keep-tagged rule is what let the build tags accumulate")
