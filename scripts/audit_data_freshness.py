@@ -206,6 +206,26 @@ CHECKS: list[dict] = [
         "expected_lag_hours": 72,   # FRED publishes with 1-2 day lag
         "per_ticker": False,
     },
+    # playbook_cards — written by phase6-playbook (phase6-playbook-daily
+    # Cloud Scheduler, 04:30 ET Mon-Fri) and read by /api/playbook for the
+    # dashboard's "top setup" and the Playbook page. Issue #861: the job
+    # had no scheduler and this table was not in CHECKS, so it froze at
+    # analysis_date 2026-06-13 and was served as today's setups for 85
+    # days before an audit noticed. The 04:30 run keys today's card set to
+    # CURRENT_DATE, so today's partition is expected from 05:00 ET on;
+    # min_rows_per_day catches "ran but wrote nothing" (12 cards/ticker).
+    {
+        "name": "playbook_cards",
+        "ts_column": "analysis_date",
+        "ts_is_date": True,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "writer_job": "phase6-playbook",
+        "settle_hour_et": 5,
+        "min_rows_per_day": 12,
+        "gap_scan_days": 3,
+    },
     # historical_signals — written by historical-signals-watchlist daily at
     # 05:00 UTC. Audit 2026-06-02 (F11 in
     # docs/incidents/2026-06-01-pipeline-failures-audit.md) found this table

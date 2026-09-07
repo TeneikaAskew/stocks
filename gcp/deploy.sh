@@ -513,14 +513,24 @@ _env_string() {
 deploy_discord_interactions() {
     echo "Deploying discord-interactions SERVICE..."
 
-    # Discord-specific secrets only — the service queries Cloud SQL via
+    # Discord-specific configuration — the service queries Cloud SQL via
     # the same connector path as the rest of the platform.
-    local discord_app_id discord_public_key discord_bot_token
+    #
+    # DISCORD_APP_ID and DISCORD_PUBLIC_KEY are public identifiers (the
+    # public key is Discord's Ed25519 *verification* key) and ride as plain
+    # env vars. DISCORD_BOT_TOKEN is a credential and is bound by
+    # reference with --set-secrets like every other credential on this
+    # service (DB_PASS, AV_API_KEY, the webhooks, FRED, Benzinga). It used
+    # to be read into this shell and pasted into --set-env-vars, which put
+    # the token in plaintext in the revision spec of a public
+    # (--allow-unauthenticated) service, in `gcloud run services describe`
+    # output, and in every deploy log (#830, audit K2). The value is never
+    # read here any more — only its existence is checked.
+    local discord_app_id discord_public_key
     discord_app_id="$(_secret discord-app-id 2>/dev/null || true)"
     discord_public_key="$(_secret discord-public-key 2>/dev/null || true)"
-    discord_bot_token="$(_secret discord-bot-token 2>/dev/null || true)"
     if [ -z "${discord_app_id}" ] || [ -z "${discord_public_key}" ] \
-       || [ -z "${discord_bot_token}" ]; then
+       || ! gcloud secrets describe discord-bot-token --project="${PROJECT_ID}" >/dev/null 2>&1; then
         echo "ERROR: Discord secrets missing. Create discord-app-id, " \
              "discord-public-key, discord-bot-token in Secret Manager first." >&2
         return 1
@@ -530,8 +540,10 @@ deploy_discord_interactions() {
     env="$(_env_string)"
     env="${env},DISCORD_APP_ID=${discord_app_id}"
     env="${env},DISCORD_PUBLIC_KEY=${discord_public_key}"
-    env="${env},DISCORD_BOT_TOKEN=${discord_bot_token}"
     env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+    # DB_SECRET_FLAG is "--set-secrets=K=secret:ver,..."; append the token.
+    local discord_secret_flag
+    discord_secret_flag="${DB_SECRET_FLAG},DISCORD_BOT_TOKEN=discord-bot-token:latest"
 
     # Cloud Run service deploy. min-instances=1 keeps one warm container so
     # Discord's 3-sec interaction-ack window never blows up on cold start
@@ -552,7 +564,7 @@ deploy_discord_interactions() {
         --service-account "${SA_EMAIL}" \
         --command "uvicorn" \
         --args "gcp.discord_interactions.main:app,--host,0.0.0.0,--port,8080" \
-        ${DB_SECRET_FLAG} \
+        ${discord_secret_flag} \
         --set-env-vars "${env}" \
         --quiet
 
@@ -836,24 +848,38 @@ deploy_premarket_playbook_resolver() {
 # the dashboard's historical "view as of" mode (loads only bars before the
 # date — no look-ahead).
 #
-# Capacity (CLAUDE.md §0):
-#   Volume:    ~1.25M RTH 1-min bars/ticker × 3 tickers ≈ 3.75M rows. Tickers
-#              are processed one at a time (frames released between iterations),
-#              so peak working set is ONE ticker's enriched frame: 1.25M rows ×
-#              ~50 indicator columns × 8 B × pandas copy-overhead ≈ 3–5 GB.
-#              (Empirical: 4Gi OOM-killed (signal 9) after the first ticker.)
-#   Velocity:  1 Cloud SQL load per ticker (3 reads) + 1 upsert per ticker.
-#              No per-row SQL — cards are vectorised over the in-memory frame.
-#   Wall:      ~5 min/run (full-history load + 12-card scoring × 3 tickers).
-#   timeout:   3600s = 1hr (≥ 4× wall-clock; backfill runs one date per exec).
-#   memory:    8Gi (≥ 4 CPU required) — headroom over the empirical ~4 GB peak.
+# Capacity (CLAUDE.md §0), re-measured 2026-09-06 (#861):
+#   Volume:    2.0M (IWM) / 2.3M (QQQ) / 2.4M (SPY) raw 1-min bars per
+#              ticker in market_data_intraday (2015 → today, extended hours
+#              included; the RTH filter runs after load). Each ticker's
+#              enriched frame is ~50 indicator columns × 8 B × rows plus
+#              pandas copy overhead ≈ 4-6 GB peak.
+#   Velocity:  1 Cloud SQL load per ticker + 1 upsert per ticker. No per-row
+#              SQL — cards are vectorised over the in-memory frame.
+#   Wall:      ~5 min per ticker (measured: IWM alone finished in 5m00s on
+#              2026-09-06). Tasks run in parallel, so ~5 min per execution.
+#   tasks:     3, one ticker per task (scripts/analysis/phase6_playbook.py
+#              select_tickers_for_task). A single process walking all three
+#              tickers was OOM-killed (signal 9) at 8Gi on the SECOND ticker
+#              on 2026-09-06: the first ticker's frame is not returned to
+#              the OS, so the working set grew with the ticker count. Per
+#              task, peak = one ticker, independent of how many tickers run.
+#   memory:    16Gi (4 CPU) — ≥ 2× the ~6 GB single-ticker peak (Rule 0:
+#              estimate the working set, double it). 8Gi is proven for IWM
+#              alone but not for SPY, which carries 21% more bars.
+#   timeout:   3600s (≥ 4× the 5-min wall).
 #   retries:   0 (idempotent upsert on PK (ticker, card_num, analysis_date);
-#              transient retries don't help and would double-run the load).
+#              a transient retry would just re-run the 5-min load).
+#   cost:      3 tasks × ~5 min × (4 vCPU + 16Gi) ≈ $0.12/run × 21 runs/mo
+#              ≈ $2.60/month.
+# Both branches carry the sizing flags so `deploy.sh phase6-playbook`
+# converges a hand-tweaked live job back to this spec (#854).
 deploy_phase6_playbook() {
     echo "Deploying phase6-playbook job..."
     gcloud run jobs create phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 8Gi --cpu 4 --max-retries 0 \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --tasks 3 --parallelism 3 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.analysis.phase6_playbook" \
@@ -863,6 +889,9 @@ deploy_phase6_playbook() {
         --quiet 2>/dev/null || \
     gcloud run jobs update phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --tasks 3 --parallelism 3 \
+        --task-timeout 3600 \
         --command "python,-m,scripts.analysis.phase6_playbook" \
         --args="--write-db" \
         ${DB_SECRET_FLAG} \
@@ -3327,6 +3356,24 @@ deploy_schedulers() {
 
     _schedule "strat-engine-daily" "35 23 * * 1-5" "strat-engine"
 
+    # Phase 6 playbook cards — 04:30 ET Mon-Fri. Rebuilds the 12 structured
+    # setup cards per ticker into playbook_cards (the typed source
+    # /api/playbook reads) keyed to today's analysis_date, from the full
+    # 1-min history through the previous session (av-intraday-nightly lands
+    # D-1's bars at 21:00 ET, so 04:30 sees everything through yesterday).
+    # Runs before premarket-brief-daily (08:30 ET), which is when the
+    # dashboard's "top setup" is first read for the day.
+    #
+    # Issue #861: the job existed (deploy_phase6_playbook) but had NO
+    # scheduler entry, so playbook_cards froze at analysis_date 2026-06-13
+    # after the last manual backfill on 2026-06-14 and the dashboard served
+    # an 85-day-old card set as today's setups until the 2026-08-27 audit
+    # caught it. Three things now catch a repeat: this cron, the
+    # playbook_cards entry in scripts/audit_data_freshness.py CHECKS, and
+    # the MAX_PLAYBOOK_AGE_DAYS 503 guard in platform/api/routers/playbook.py.
+    # tests/gcp/test_phase6_playbook_scheduler.py pins the first two.
+    _schedule "phase6-playbook-daily" "30 4 * * 1-5" "phase6-playbook"
+
     # Daily levels enrichment — 02:00 ET Tue-Sat, comfortably AFTER the
     # strat-engine-daily base writer (23:35 ET Mon-Fri). strat_data_builder
     # documents ~15 min/ticker × 3 = ~30-45 min sequential, so a tight gap
@@ -3652,13 +3699,23 @@ deploy_schedulers() {
     _schedule "regime-combo-weekly" "0 5 * * 0" "regime-combo"
 
     # Phase 0.5 — signal-quality report.
-    # Hourly during market hours: --mode=rolling, incremental update of
-    # signal_metrics as 60m/90m/120m/240m windows close out. Cron is
-    # 14-20 UTC (10:00-16:00 ET in DST or 09:00-15:00 ET in standard
-    # time; scheduler timezone is America/New_York so cron is read in
-    # local time — 10-16 ET). 7 invocations per trading day.
-    _schedule "signal-quality-report-hourly" \
-        "0 10-16 * * 1-5" "signal-quality-report"
+    #
+    # RETIRED 2026-09-07 (#833, audit D1): `signal-quality-report-hourly`
+    # (`0 10-16 * * 1-5`, --mode=rolling) was found PAUSED live with no
+    # record of why; the pause dates to 2026-05-05, three days after #192
+    # created it. What it did: re-score the last few hours of fires into
+    # `signal_metrics` as status='pending' rows until all seven MFE
+    # windows closed. It did not evaluate or generate signals — the
+    # signal monitor does that per bar. Nothing reads 'pending' rows
+    # (gcp/signal_quality_alarm.py:168 considers status='final' only; the
+    # other readers are offline analysis over final rows), and the
+    # nightly run below has written the same rows as 'final' every night
+    # since. Seven executions a day for no consumer: removed rather than
+    # resumed. `--mode=rolling` stays in scripts/signal_quality_report.py
+    # for manual use. Delete the live scheduler with
+    #   gcloud scheduler jobs delete signal-quality-report-hourly --location us-east1
+    # gcp/audit_infra_drift.py::check_scheduler_state now flags any
+    # scheduler left PAUSED so a repeat is visible within a day.
 
     # Nightly: --mode=historical promotes rolling 'pending' rows to
     # 'final'. Tue-Sat 01:00 ET so it runs AFTER historical-signals-
@@ -3900,6 +3957,7 @@ case "${1:-help}" in
         deploy_monitor
         deploy_signal_monitor_eod_resolver
         deploy_premarket_playbook_resolver
+        deploy_phase6_playbook
         deploy_weekend
         deploy_fetchers
         setup_insight_tasks_queue
