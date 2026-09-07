@@ -136,6 +136,10 @@ SCRIPT = REPO / ".github/scripts/is_transient_gemini_failure.sh"
 
 
 def _classify(log_text: str, window="all", tmp_path=None) -> bool:
+    return _classify_rc(log_text, window, tmp_path) == 0
+
+
+def _classify_rc(log_text: str, window="all", tmp_path=None, fail_on: str = "") -> int:
     """Run the REAL classifier script over a log, returning whether it would
     re-run. `gh` is stubbed on PATH so the script's own API calls and its own
     parsing are exercised -- not a reconstruction of them.
@@ -170,6 +174,9 @@ def _classify(log_text: str, window="all", tmp_path=None) -> bool:
         "#!/usr/bin/env bash\n"
         # `.../jobs?per_page=` -> one failed job id; `.../jobs/<id>` -> the
         # failed step windows; `.../jobs/<id>/logs` -> the raw log.
+        # FAIL_ON names a request fragment that must fail the way a 403 or an
+        # unavailable log does: gh exits 1.
+        'if [ -n "$FAIL_ON" ] && [[ "$*" == *"$FAIL_ON"* ]]; then echo "gh: HTTP 403" >&2; exit 1; fi\n'
         'case "$*" in\n'
         '  *"/logs"*) cat "$LOG_FIXTURE" ;;\n'
         '  *"actions/jobs/"*) cat "$WINDOW_FIXTURE" ;;\n'
@@ -179,10 +186,11 @@ def _classify(log_text: str, window="all", tmp_path=None) -> bool:
     gh.chmod(0o755)
     env = dict(os.environ)
     env.update(PATH=f"{bin_dir}:{env['PATH']}", REPO="TeneikaAskew/stocks",
-               LOG_FIXTURE=str(d / "log.txt"), WINDOW_FIXTURE=str(d / "windows.txt"))
+               LOG_FIXTURE=str(d / "log.txt"), WINDOW_FIXTURE=str(d / "windows.txt"),
+               FAIL_ON=fail_on)
     out = subprocess.run(["bash", str(SCRIPT), "12345"], cwd=d, env=env,
                          capture_output=True, text=True)
-    return out.returncode == 0
+    return out.returncode
 
 
 def test_workflow_yaml_is_valid_and_watches_the_refresh():
@@ -244,15 +252,19 @@ def test_a_fully_forged_record_is_still_accepted_and_that_is_bounded():
         "if this now returns False the limitation is fixed -- update the docs and this test"
 
 
-def test_the_cleanup_is_gated_on_re_deriving_the_verdict():
-    """The bound that makes the forgery above tolerable: the only consequence
-    with lasting effect -- closing someone's failure PR -- re-checks attempt 1
-    rather than trusting that a re-run happened."""
-    job = DOC["jobs"]["close-obsolete-failure-pr"]
+def test_the_annotate_job_re_derives_the_verdict_and_never_closes():
+    """Round 8 asked for the verdict to be re-derived before acting; round 11
+    pointed out that the same classifier over the same attempt-1 log is not
+    independent evidence, so a forged record believed once is believed twice.
+    The re-derivation stays -- it is what distinguishes a stall from a
+    maintainer's hand re-run of a real failure, and words the comment -- but
+    the one action with lasting effect, closing someone's PR, is gone."""
+    job = DOC["jobs"]["annotate-obsolete-failure-pr"]
     run = next(st for st in job["steps"] if "run" in st)["run"]
     assert 'is_transient_gemini_failure.sh "$RUN_ID" 1' in run
-    # And it must bail out, not continue, when attempt 1 was a real failure.
-    assert "leaving its failure PR alone" in run and "exit 0" in run
+    assert "leaving its failure PR alone" in run
+    code = "\n".join(ln.split("#", 1)[0] for ln in run.splitlines())
+    assert "gh pr close" not in code and "--delete-branch" not in code
 
 
 def test_the_classifier_reads_raw_job_logs_not_gh_run_view():
@@ -281,7 +293,7 @@ def test_a_failed_recovery_is_not_silent():
     hf = DOC["jobs"]["handle-failure"]
     assert hf["uses"] == "./.github/workflows/handle-workflow-failure.yml"
     assert hf["if"] == "failure()"
-    assert set(hf["needs"]) == {"rerun", "close-obsolete-failure-pr"}
+    assert set(hf["needs"]) == {"rerun", "annotate-obsolete-failure-pr"}
     # No second placeholder PR for a failure of the thing that cleans up
     # placeholder PRs.
     assert hf["with"]["create_pr"] is False
@@ -296,14 +308,14 @@ def test_a_failed_recovery_is_not_silent():
         f"required secrets not passed to the reusable workflow: {required - set(hf.get('secrets') or {})}"
 
 
-def test_a_successful_rerun_closes_the_obsolete_failure_pr():
+def test_a_successful_rerun_annotates_the_obsolete_failure_pr():
     """The refresh workflow's handler runs with create_pr: true, so a transient
     stall leaves a draft `fix/workflow-...` PR saying a fix is required. The
-    issue is the incident record; the PR is an actionable no-op."""
-    job = DOC["jobs"]["close-obsolete-failure-pr"]
+    issue is the incident record; the PR gets told the re-run succeeded."""
+    job = DOC["jobs"]["annotate-obsolete-failure-pr"]
     cond = " ".join(job["if"].split())
     assert "conclusion == 'success'" in cond
-    assert "run_attempt > 1" in cond, "it would close the PR on a first-attempt success too"
+    assert "run_attempt > 1" in cond, "it would annotate on a first-attempt success too"
     step = next(st for st in job["steps"] if "run" in st)
     # The branch name must match what the failure handler actually builds.
     src = (REPO / "scripts/handle_workflow_failure.py").read_text()
@@ -311,18 +323,9 @@ def test_a_successful_rerun_closes_the_obsolete_failure_pr():
         "the failure handler's branch pattern changed; this job's BRANCH must follow"
     assert step["env"]["BRANCH"].startswith("fix/workflow-refresh-architecture-docs-")
     assert "run_number" in step["env"]["BRANCH"]
-    assert "gh pr close" in step["run"]
-    # `run_attempt > 1` is not evidence this workflow caused the re-run: a
-    # maintainer re-running a genuinely broken refresh by hand also lands here.
-    # The verdict must be re-derived from attempt 1. (Codex, PR #1032.)
+    assert "gh pr comment" in step["run"]
     assert 'is_transient_gemini_failure.sh "$RUN_ID" 1' in step["run"], \
-        "the cleanup trusts the attempt counter instead of re-checking attempt 1"
-    # --delete-branch would need contents: write, which this job has no other
-    # reason to hold. Comments stripped: the step explains its own absence, and
-    # a naive substring check trips on the explanation -- the third time that
-    # trap has fired on this branch.
-    run_code = "\n".join(ln.split("#", 1)[0] for ln in step["run"].splitlines())
-    assert "--delete-branch" not in run_code
+        "the job trusts the attempt counter instead of re-checking attempt 1"
     assert job["permissions"]["contents"] == "read"
 
 
@@ -336,7 +339,7 @@ def test_it_can_rerun_and_asks_for_nothing_more():
     # through the API, so it needs actions: read of its own -- an earlier
     # version had only contents/pull-requests here and would have failed on
     # its first `gh api .../actions/...` call, every time.
-    assert DOC["jobs"]["close-obsolete-failure-pr"]["permissions"] == {
+    assert DOC["jobs"]["annotate-obsolete-failure-pr"]["permissions"] == {
         "actions": "read", "contents": "read", "pull-requests": "write"}
     assert "rerun-failed-jobs" in STEP
 
@@ -451,23 +454,27 @@ def test_the_refresh_workflow_does_not_retry_in_job():
 
 # ── the cleanup step, executed ──────────────────────────────────────────────
 
-CLEANUP_STEP = next(st for st in DOC["jobs"]["close-obsolete-failure-pr"]["steps"] if "run" in st)
+CLEANUP_STEP = next(st for st in DOC["jobs"]["annotate-obsolete-failure-pr"]["steps"] if "run" in st)
+RERUN_STEP = next(st for st in DOC["jobs"]["rerun"]["steps"] if "run" in st)
 
 CLEANUP_GH_STUB = """#!/usr/bin/env bash
 echo "$@" >> "$GH_CALLS"
+if [ -n "$FAIL_ON" ] && [[ "$*" == *"$FAIL_ON"* ]]; then echo "gh: HTTP 403" >&2; exit 1; fi
 case "$*" in
   *"/logs"*)              cat "$LOG_FIXTURE" ;;
   *"actions/jobs/"*)      cat "$WINDOW_FIXTURE" ;;
   *"attempts/1/jobs"*)    echo 1 ;;
+  *"/jobs?per_page="*)    echo 1 ;;
   *"pulls?state=open&head="*) printf '%s' "$PER_RUN_PR" ;;
   *"pulls?state=open&per_page="*) printf '%s' "$OLDER_PR" ;;
   "pr comment"*)          printf '%s' "$*" >> "$GH_OUT/comments.txt" ;;
   "pr close"*)            printf '%s' "$*" >> "$GH_OUT/closes.txt" ;;
+  "api --method POST"*)   printf '%s' "$*" >> "$GH_OUT/reruns.txt" ;;
 esac
 """
 
 
-def _run_cleanup(tmp_path, *, log_text, per_run_pr="", older_pr=""):
+def _run_cleanup(tmp_path, *, log_text, per_run_pr="", older_pr="", fail_on="", step=None):
     """Run the cleanup step's own script. `gh` answers the classifier's calls
     with the given log and a window spanning it, the per-run PR lookup with
     `per_run_pr`, and the prefix lookup with `older_pr` -- both already in
@@ -487,20 +494,24 @@ def _run_cleanup(tmp_path, *, log_text, per_run_pr="", older_pr=""):
                RUN_URL="https://example.invalid/run/777",
                LOG_FIXTURE=str(d / "log.txt"), WINDOW_FIXTURE=str(d / "windows.txt"),
                GH_OUT=str(out), GH_CALLS=str(out / "calls.txt"),
-               PER_RUN_PR=per_run_pr, OLDER_PR=older_pr)
-    proc = subprocess.run(["bash", "-c", CLEANUP_STEP["run"]], cwd=REPO, env=env,
+               PER_RUN_PR=per_run_pr, OLDER_PR=older_pr, FAIL_ON=fail_on,
+               GITHUB_STEP_SUMMARY=str(out / "summary.md"))
+    proc = subprocess.run(["bash", "-c", (step or CLEANUP_STEP)["run"]], cwd=REPO, env=env,
                           capture_output=True, text=True)
     comments = (out / "comments.txt").read_text() if (out / "comments.txt").exists() else ""
     closes = (out / "closes.txt").read_text() if (out / "closes.txt").exists() else ""
     return proc, comments, closes
 
 
-def test_cleanup_closes_the_per_run_pr_after_a_verified_stall(tmp_path):
+def test_the_per_run_pr_is_annotated_and_never_closed(tmp_path):
+    """Round 11: the re-check is the same classifier over the same log, so it
+    cannot be the evidence that closes a PR. The job tells the PR what it
+    found and leaves the decision to a person."""
     proc, comments, closes = _run_cleanup(tmp_path, log_text=REAL_STALL, per_run_pr="4242")
     assert proc.returncode == 0, proc.stderr
     assert "pr comment 4242" in comments
-    assert "pr close 4242" in closes
-    assert "--delete-branch" not in closes
+    assert "not closed automatically" in comments
+    assert closes == "", closes
 
 
 def test_cleanup_annotates_but_never_closes_an_older_failure_pr(tmp_path):
@@ -526,7 +537,7 @@ def test_cleanup_touches_nothing_when_attempt_1_was_a_real_failure(tmp_path):
 def test_cleanup_is_quiet_when_no_failure_pr_exists(tmp_path):
     proc, comments, closes = _run_cleanup(tmp_path, log_text=REAL_STALL)
     assert proc.returncode == 0, proc.stderr
-    assert "nothing to close or annotate" in proc.stdout
+    assert "nothing to annotate" in proc.stdout
     assert comments == "" and closes == ""
 
 
@@ -537,3 +548,44 @@ def test_the_older_pr_lookup_matches_the_handlers_own_prefix():
     assert 'head_pattern = f"{self.owner}:fix/workflow-{workflow_base}-"' in src
     run = CLEANUP_STEP["run"]
     assert 'startswith(\\"${REPO%%/*}:${BRANCH%-*}-\\")' in run
+
+
+# ── the exit-code contract, executed ────────────────────────────────────────
+
+def test_an_api_failure_is_could_not_classify_not_a_negative():
+    """Round 11. `gh` exits 1 on a failed request and so did "not transient",
+    so a 403 or an unavailable log was indistinguishable from evidence of a
+    real failure: the caller took its negative branch and the recovery went
+    green having examined nothing. Three codes now, and every request goes
+    through a wrapper that maps its failure to 2."""
+    assert _classify_rc(REAL_STALL) == 0
+    assert _classify_rc(REAL_REFUSAL) == 1
+    assert _classify_rc(REAL_STALL, fail_on="/logs") == 2
+    assert _classify_rc(REAL_STALL, fail_on="actions/jobs/") == 2
+    assert _classify_rc(REAL_STALL, fail_on="/jobs?per_page") == 2
+
+
+def test_the_rerun_step_reruns_only_on_0_and_fails_on_2(tmp_path):
+    """The step's own script, executed. 0 re-runs, 1 leaves the run red and
+    exits clean, 2 fails the step -- which is what fires handle-failure."""
+    for log, fail_on, want_rc, want_rerun in (
+        (REAL_STALL, "", 0, True),
+        (REAL_REFUSAL, "", 0, False),
+        (REAL_STALL, "/logs", 2, False),
+    ):
+        sub = tmp_path / f"case-{len(list(tmp_path.iterdir()))}"
+        sub.mkdir()
+        proc, _, _ = _run_cleanup(sub, log_text=log, fail_on=fail_on, step=RERUN_STEP)
+        reruns = sub / "out" / "reruns.txt"
+        assert proc.returncode == want_rc, (log[:40], fail_on, proc.stdout, proc.stderr)
+        assert reruns.exists() == want_rerun, (fail_on, proc.stdout)
+        if want_rerun:
+            assert "rerun-failed-jobs" in reruns.read_text()
+
+
+def test_the_annotate_step_fails_on_2_rather_than_leaving_a_pr_quietly(tmp_path):
+    proc, comments, closes = _run_cleanup(tmp_path, log_text=REAL_STALL, per_run_pr="4242",
+                                          fail_on="/logs")
+    assert proc.returncode == 2, (proc.stdout, proc.stderr)
+    assert "could not classify" in proc.stdout
+    assert comments == "" and closes == ""

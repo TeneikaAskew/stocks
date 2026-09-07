@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 # Did a monthly-doc-refresh run fail because Vertex stalled, or because the
-# repo's own gates/prompts failed? Exit 0 for transient, 1 for anything else.
+# repo's own gates/prompts failed?
 #
 # Usage: is_transient_gemini_failure.sh <run_id> [attempt]
+#
+# EXIT CODES -- three, and callers must branch on all three:
+#
+#   0  transient: an attributable CLI transport record in the failed step
+#   1  not transient: the evidence was read and holds no such record
+#   2  could not classify: an API call or a log read failed, so there IS no
+#      evidence to rule on
+#
+# 1 and 2 were one code once, and `gh` itself exits 1 on any failed request,
+# so a 403 or a momentarily unavailable log looked exactly like "the repo's
+# own failure": the caller took its negative branch and the recovery went
+# green having examined nothing. The ERR trap below makes 2 the code for
+# ANYTHING unexpected; only the two deliberate `exit 1`s mean "not
+# transient". (Codex, PR #1032, round 11.)
 #
 # NOTE ON WHERE THIS LIVES. An earlier design put a helper in .github/scripts/
 # and had refresh-architecture-docs.yml execute it BETWEEN Gemini invocations,
@@ -44,12 +58,24 @@
 # capture stderr independently, and that file would sit in the workspace the
 # model can write to, so it is not obviously stronger.
 #
-# What bounds the damage is the job-level design rather than the match. A false
-# positive costs one re-run; it cannot publish anything, because the re-run
-# goes through every gate exactly as a first attempt does. And the cleanup job
-# re-runs this check against attempt 1 before closing anything, so a forgery
-# cannot get a still-actionable failure PR closed.
+# What bounds the damage is that nothing with lasting effect is decided on
+# this match. A false positive costs one re-run; it cannot publish anything,
+# because the re-run goes through every gate exactly as a first attempt does.
+# The annotate job runs this check again against attempt 1 only to WORD its
+# comment -- the same classifier over the same log is not independent evidence,
+# which is why that job annotates a failure PR and never closes one. (Codex,
+# PR #1032, round 11.)
 set -euo pipefail
+trap 'echo "cannot classify run ${RUN_ID:-?}: unexpected failure (exit $?) at line ${LINENO}" >&2; exit 2' ERR
+
+# Every API read goes through this so an operational failure is exit 2 with
+# the request named, never the bare exit 1 of gh.
+api() {
+  gh api "$@" || {
+    echo "cannot classify run ${RUN_ID}: request ${1} failed (exit $?)" >&2
+    exit 2
+  }
+}
 
 RUN_ID="${1:?run id required}"
 ATTEMPT="${2:-}"
@@ -71,12 +97,12 @@ trap 'rm -rf "$WORK"' EXIT
 # RAW per-job logs. `gh run view --log-failed` prefixes every line with job and
 # step columns (`<job>\t<step>\t<timestamp> ...`), which defeats a start-
 # anchored match entirely and would make this a silent no-op. (Codex, #1032.)
-gh api "$JOBS_URL" --jq '.jobs[] | select(.conclusion == "failure") | .id' > "$WORK/failed_jobs.txt"
+api "$JOBS_URL" --jq '.jobs[] | select(.conclusion == "failure") | .id' > "$WORK/failed_jobs.txt"
 : > "$WORK/failed_steps.log"
 while read -r JOB_ID; do
   [ -n "$JOB_ID" ] || continue
-  gh api "repos/${REPO}/actions/jobs/${JOB_ID}" --jq "$FAILED_STEP_JQ" > "$WORK/windows.txt"
-  gh api "repos/${REPO}/actions/jobs/${JOB_ID}/logs" > "$WORK/job.log"
+  api "repos/${REPO}/actions/jobs/${JOB_ID}" --jq "$FAILED_STEP_JQ" > "$WORK/windows.txt"
+  api "repos/${REPO}/actions/jobs/${JOB_ID}/logs" > "$WORK/job.log"
   # Keep only the lines the runner stamped inside a failed step of THIS job.
   # Compared on YYYY-MM-DDTHH:MM:SS: the log carries sub-second precision and
   # the API does not, and a naive string compare would then drop every line in
