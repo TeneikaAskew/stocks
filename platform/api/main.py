@@ -33,6 +33,16 @@ from api.auth import (
     current_user_email,
     stored_role_for,
 )
+from api.schemas import (
+    CoverageResponse,
+    HealthResponse,
+    MarketDataResponse,
+    MarketDatesResponse,
+    MeResponse,
+    MostActiveResponse,
+    ReferenceResponse,
+    SectorsResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +230,7 @@ def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
 # ── App-level API routes ─────────────────────────────────────────────────────
 
 
-@app.get("/api/health")
+@app.get("/api/health", response_model=HealthResponse, response_model_exclude_unset=True)
 async def health_check():
     return {
         "status": "ok",
@@ -231,7 +241,7 @@ async def health_check():
     }
 
 
-@app.get("/api/me")
+@app.get("/api/me", response_model=MeResponse, response_model_exclude_unset=True)
 async def get_current_user(request: Request):
     """Return the authenticated identity + role flags.
 
@@ -491,7 +501,7 @@ only working path right now; curl/CI flows return 401.</p>
     return HTMLResponse(html)
 
 
-@app.get("/api/market/dates/{ticker}")
+@app.get("/api/market/dates/{ticker}", response_model=MarketDatesResponse, response_model_exclude_unset=True)
 async def get_available_dates(ticker: str):
     """List available trading dates for a ticker (Cloud SQL → local fallback)."""
     ticker_upper = ticker.upper()
@@ -558,7 +568,7 @@ async def get_available_dates(ticker: str):
     }
 
 
-@app.get("/api/market/data/{ticker}/{date}")
+@app.get("/api/market/data/{ticker}/{date}", response_model=MarketDataResponse, response_model_exclude_unset=True)
 async def get_market_data(
     ticker: str,
     date: str,
@@ -714,7 +724,7 @@ def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
         return None
 
 
-@app.get("/api/market/reference/{ticker}/{date}")
+@app.get("/api/market/reference/{ticker}/{date}", response_model=ReferenceResponse, response_model_exclude_unset=True)
 async def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
 
@@ -884,7 +894,7 @@ def _coverage_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     return query_to_dataframe_strict(sql, params)
 
 
-@app.get("/api/market/coverage")
+@app.get("/api/market/coverage", response_model=CoverageResponse, response_model_exclude_unset=True)
 async def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
     """Data coverage per symbol — drives the type-ahead's full/daily/new badges.
 
@@ -1023,7 +1033,7 @@ def _sector_rotation_from_df(df: pd.DataFrame) -> tuple:
     return as_of, sectors
 
 
-@app.get("/api/market/sectors")
+@app.get("/api/market/sectors", response_model=SectorsResponse, response_model_exclude_unset=True)
 async def market_sectors():
     """Sector rotation snapshot computed from SPDR sector ETF daily closes.
 
@@ -1131,7 +1141,7 @@ def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[date
     return snapshot_date_str
 
 
-@app.get("/api/market/most-active")
+@app.get("/api/market/most-active", response_model=MostActiveResponse, response_model_exclude_unset=True)
 async def market_most_active():
     """Most-active tickers snapshot, with per-ticker snapshot sparklines.
 
