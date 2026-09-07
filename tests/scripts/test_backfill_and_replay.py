@@ -57,11 +57,12 @@ def test_no_private_indicator_map_or_indicator_engine_call():
 
 def test_backfill_dispatches_the_production_job():
     assert "trigger_backfill_ticker" in _defined_functions()
-    assert re.search(r"'run',\s*'jobs',\s*'execute',\s*'backfill-ticker'", SRC), \
+    assert re.search(r"'run',\s*'jobs',\s*'execute'", SRC), "jobs are executed via gcloud"
+    assert re.search(r"_execute_job\(\s*'backfill-ticker'", SRC), \
         "daily backfill must go through the backfill-ticker Cloud Run job"
     # BACKFILL_DATES is one env value; commas would split --update-env-vars,
     # and gcp.backfill_ticker._parse_dates accepts ';'.
-    assert re.search(r"BACKFILL_DATES=\{[^}]*';'\.join", SRC)
+    assert re.search(r"'BACKFILL_DATES':\s*';'\.join", SRC)
 
 
 def test_main_calls_the_job_not_a_local_pipeline():
