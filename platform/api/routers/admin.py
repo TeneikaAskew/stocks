@@ -647,8 +647,13 @@ def admin_strat_engine_predict(
         # programming error as a retryable outage -- and the coverage request
         # already expects 503, so that regression could stay green while an
         # operator diagnosed an outage that was not happening
-        # (Codex P1 on #999). ImportError IS infrastructure here: an image
-        # built without the ML extras genuinely has no predict stack.
+        # (Codex P1 on #999). A `ModuleNotFoundError` naming one of the
+        # optional ML packages IS infrastructure here (the classifier's
+        # `OPTIONAL_DEPENDENCIES`): an image built without the extras has no
+        # predict stack. Any other `ImportError` -- a renamed symbol in
+        # `strat_pred_serve`, a typo in one of our own module paths -- is a
+        # defect and re-raises, so a broken deployment cannot answer a
+        # retryable 503 forever.
         if not is_infrastructure_error(exc):
             logger.exception(
                 "strat-engine predict failed for %s %s with an INTERNAL error",

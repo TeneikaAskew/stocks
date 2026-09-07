@@ -50,18 +50,18 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 <!-- inventory:routes:start -->
 | Method | Path | Defined | Purpose |
 |---|---|---|---|
-| `GET` | `/api/admin/data-sources` | [`platform/api/routers/admin.py:1384`](../../../platform/api/routers/admin.py#L1384) | Per-dataset freshness/coverage, aggregated from the shared audit. |
-| `POST` | `/api/admin/data-sources/{source_id}/refresh` | [`platform/api/routers/admin.py:1517`](../../../platform/api/routers/admin.py#L1517) | Queue the dataset's Cloud Run fetcher job. |
+| `GET` | `/api/admin/data-sources` | [`platform/api/routers/admin.py:1389`](../../../platform/api/routers/admin.py#L1389) | Per-dataset freshness/coverage, aggregated from the shared audit. |
+| `POST` | `/api/admin/data-sources/{source_id}/refresh` | [`platform/api/routers/admin.py:1522`](../../../platform/api/routers/admin.py#L1522) | Queue the dataset's Cloud Run fetcher job. |
 | `GET` | `/api/admin/models` | [`platform/api/routers/admin.py:208`](../../../platform/api/routers/admin.py#L208) |  |
 | `GET` | `/api/admin/routes` | [`platform/api/routers/admin.py:129`](../../../platform/api/routers/admin.py#L129) |  |
 | `PUT` | `/api/admin/routes/{role}` | [`platform/api/routers/admin.py:157`](../../../platform/api/routers/admin.py#L157) |  |
 | `POST` | `/api/admin/strat-engine/predict` | [`platform/api/routers/admin.py:592`](../../../platform/api/routers/admin.py#L592) | Run the frozen strat-engine type model for ONE bar. |
 | `GET` | `/api/admin/strat-engine/state` | [`platform/api/routers/admin.py:575`](../../../platform/api/routers/admin.py#L575) | Operator snapshot of the on-shelf strat-engine model state. |
-| `POST` | `/api/admin/strat-engine/structure-continuation` | [`platform/api/routers/admin.py:728`](../../../platform/api/routers/admin.py#L728) | Read-only, feature-flagged calibrated structure-continuation probability. |
+| `POST` | `/api/admin/strat-engine/structure-continuation` | [`platform/api/routers/admin.py:733`](../../../platform/api/routers/admin.py#L733) | Read-only, feature-flagged calibrated structure-continuation probability. |
 | `GET` | `/api/admin/structure-brief` | [`platform/api/routers/admin.py:342`](../../../platform/api/routers/admin.py#L342) | Dev-only readout of the strat-engine type model's structure predictions. |
-| `GET` | `/api/admin/users` | [`platform/api/routers/admin.py:1014`](../../../platform/api/routers/admin.py#L1014) | Every Firebase account + its stored role(s). |
-| `PUT` | `/api/admin/users/{uid}/roles` | [`platform/api/routers/admin.py:1058`](../../../platform/api/routers/admin.py#L1058) | Replace an account's stored role. |
-| `PUT` | `/api/admin/users/{uid}/status` | [`platform/api/routers/admin.py:1130`](../../../platform/api/routers/admin.py#L1130) | Enable or disable a Firebase account. |
+| `GET` | `/api/admin/users` | [`platform/api/routers/admin.py:1019`](../../../platform/api/routers/admin.py#L1019) | Every Firebase account + its stored role(s). |
+| `PUT` | `/api/admin/users/{uid}/roles` | [`platform/api/routers/admin.py:1063`](../../../platform/api/routers/admin.py#L1063) | Replace an account's stored role. |
+| `PUT` | `/api/admin/users/{uid}/status` | [`platform/api/routers/admin.py:1135`](../../../platform/api/routers/admin.py#L1135) | Enable or disable a Firebase account. |
 | `GET` | `/api/analytics/summary/{ticker}` | [`platform/api/routers/analytics.py:126`](../../../platform/api/routers/analytics.py#L126) | Summarize rows from the ``trades`` table for a ticker. |
 | `POST` | `/api/analytics/trade-stats` | [`platform/api/routers/analytics.py:118`](../../../platform/api/routers/analytics.py#L118) |  |
 | `GET` | `/api/backtest/all/{ticker}` | [`platform/api/routers/backtest.py:355`](../../../platform/api/routers/backtest.py#L355) | List all backtest runs for a ticker, sorted by timestamp descending. |

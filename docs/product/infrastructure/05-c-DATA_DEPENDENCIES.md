@@ -198,7 +198,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 <!-- inventory:writes:start -->
 ### `admin_refresh_leases`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1447](../../../platform/api/routers/admin.py#L1447), [1450](../../../platform/api/routers/admin.py#L1450), [1473](../../../platform/api/routers/admin.py#L1473)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1452](../../../platform/api/routers/admin.py#L1452), [1455](../../../platform/api/routers/admin.py#L1455), [1478](../../../platform/api/routers/admin.py#L1478)
 
 ### `archive_yahoo_earnings_options_snapshots`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -436,7 +436,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/profile.py`](../../../platform/api/routers/profile.py) — line [187](../../../platform/api/routers/profile.py#L187)
 
 ### `user_roles`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1104](../../../platform/api/routers/admin.py#L1104), [1117](../../../platform/api/routers/admin.py#L1117)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1109](../../../platform/api/routers/admin.py#L1109), [1122](../../../platform/api/routers/admin.py#L1122)
 
 ### `user_style_results`
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [845](../../../platform/api/routers/backtest.py#L845)
@@ -658,7 +658,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/intraday_gex.py`](../../../lib/features/intraday_gex.py) — line [226](../../../lib/features/intraday_gex.py#L226), [227](../../../lib/features/intraday_gex.py#L227), [231](../../../lib/features/intraday_gex.py#L231), [226](../../../lib/features/intraday_gex.py#L226)
 
 ### `job_runs`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1285](../../../platform/api/routers/admin.py#L1285), [1286](../../../platform/api/routers/admin.py#L1286)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1290](../../../platform/api/routers/admin.py#L1290), [1291](../../../platform/api/routers/admin.py#L1291)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1172](../../../scripts/audit_data_freshness.py#L1172), [1173](../../../scripts/audit_data_freshness.py#L1173), [1184](../../../scripts/audit_data_freshness.py#L1184)
 
 ### `journal_entries`
@@ -878,7 +878,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `user_roles`
 - [`platform/api/auth.py`](../../../platform/api/auth.py) — line [230](../../../platform/api/auth.py#L230), [275](../../../platform/api/auth.py#L275)
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [955](../../../platform/api/routers/admin.py#L955), [980](../../../platform/api/routers/admin.py#L980), [981](../../../platform/api/routers/admin.py#L981)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [960](../../../platform/api/routers/admin.py#L960), [985](../../../platform/api/routers/admin.py#L985), [986](../../../platform/api/routers/admin.py#L986)
 
 ### `user_style_results`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
