@@ -189,3 +189,4 @@ body:
         - label: >-
             Corrections and retractions in the source report are carried across
             here rather than dropped.
+          required: true

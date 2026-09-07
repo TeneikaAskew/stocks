@@ -483,7 +483,27 @@ production. Running the candidate on `localhost:8000` changes which process
 serves the request and nothing about which database it writes. So a mutating
 route gets the same treatment as everything else in this phase: an isolated
 database, or persistence mocked at the boundary the hermetic suite already
-mocks. Read-only handlers are fine as written.
+mocks.
+
+**And the HTTP method does not tell you which handlers those are.** "It is a
+GET, so it is read-only" is a claim about the verb, not about the code, and it
+is false here in at least two places:
+
+- `GET /api/options/{ticker}/grid` takes `allow_on_demand` defaulting to
+  **True** (`platform/api/routers/grid.py:577`). For an off-list ticker with no
+  Cloud SQL data it calls `_fetch_on_demand` (`:623-646`), which hits the vendor
+  and then `upsert_dataframe(df_unique, 'etf_options_snapshots', ...)`
+  (`:544`) — a production write, on a GET, reached by choosing an unusual
+  ticker for a test.
+- `GET /api/catalysts/events?refresh=true` (`catalysts.py:158-164`) fetches
+  from Benzinga and rewrites the local cache, deliberately not coalesced away
+  for the claimant.
+
+So before exercising any handler, trace ITS outbound calls and persistence
+rather than reading the decorator: follow the call graph for `upsert_`,
+`get_engine`, `requests`/`httpx`, and any file write. Mock or isolate whatever
+you find. A read-only handler is one you have traced, not one that is spelled
+`@router.get`.
 
 **`EXPLAIN ANALYZE` on an INSERT, UPDATE or DELETE runs it.** `ANALYZE` means
 "execute and report actual timings", and Postgres makes no exception for a
@@ -845,21 +865,41 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      reachable: anything a run left behind under those three directories gets
      copied into the production image, uncommitted and unreviewed, while
      `git rev-parse` reports the merge SHA and looks clean. Use a separate
-     worktree so there is nothing to leave behind — and build it from the
-     **merge SHA**, not `origin/main`: another PR merging in between moves
-     `origin/main` past yours, so an exact-SHA assertion could never pass while
-     a loose one would ship someone else's unverified change under your issue's
-     name. `git worktree add` takes any commit-ish. If you deliberately want
-     the newer tip, say so and assert your merge is an ancestor
-     (`git merge-base --is-ancestor "$MERGE_SHA" HEAD`) rather than dropping
-     the check:
+     worktree so there is nothing to leave behind. `git worktree add` takes any
+     commit-ish; which commit-ish is the next paragraph's question, and it is
+     not simply `origin/main` — a loose "deploy the tip" ships someone else's
+     unverified change under your issue's name.
+
+     **And the merge SHA is the right source only while it is still the tip.**
+     `deploy.sh` builds a WHOLE-TREE image, so deploying an older commit ships
+     every file at that commit — it does not ship "your change" onto whatever
+     is serving. On the resumed path above, where the merge happened earlier
+     and the deploy was deferred, `main` has usually moved; building the
+     historical SHA then republishes the tree without the commits that landed
+     after it and reverts them in production. That is a rollback performed by
+     a step whose purpose is shipping a fix.
+
+     So the two failure modes bound each other, and neither is the default:
+     deploy an ancestor and you revert; deploy an unrelated tip and you ship
+     someone else's unverified work under this issue's name. Resolve it by
+     asserting the relationship and taking the tip only when it contains you:
 
      ```bash
      git fetch origin main
      MERGE_SHA=<the merge commit the PR reports>
-     git worktree add /tmp/deploy-src "$MERGE_SHA"   # NOT origin/main
+     git merge-base --is-ancestor "$MERGE_SHA" origin/main \
+       || { echo "$MERGE_SHA is not on main — do not deploy"; false; }
+     if [ "$(git rev-parse origin/main)" = "$MERGE_SHA" ]; then
+       SRC="$MERGE_SHA"                    # nothing merged since; exact SHA
+     else
+       SRC=$(git rev-parse origin/main)    # main advanced: MERGE_SHA would revert it
+       echo "main advanced past $MERGE_SHA — deploying $SRC, which contains it"
+       # Deploying the tip means shipping those commits too. Confirm CI is
+       # green on $SRC itself, not only on your PR, before continuing.
+     fi
+     git worktree add /tmp/deploy-src "$SRC"
      cd /tmp/deploy-src
-     git rev-parse HEAD                    # must equal $MERGE_SHA
+     git rev-parse HEAD                    # must equal $SRC
      test -z "$(git status --porcelain)"   # must be silent
      # Does this target run on the RESEARCH image? Derive it, do not trust a
      # list — 14 deploy functions select ${IMAGE}:research and only 4
@@ -869,9 +909,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      #   grep -n 'research_image="${IMAGE}:research"' gcp/deploy.sh
      #   grep -n '^    <target>)' gcp/deploy.sh      # does the entry build it?
      # If it selects :research and the entry does not run build_research_image,
-     # build first — otherwise you deploy, run and "verify" the OLD image:
-     #   ./gcp/deploy.sh build-research
-     ./gcp/deploy.sh <target>; rc=$?       # capture BEFORE cleanup
+     # CHAIN the build — a failed research build leaves the previous :research
+     # tag in place, and the deploy then succeeds while pointing the job at
+     # code without the fix. Its own status cannot see that:
+     { ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target>; }; rc=$?
+     # (no research image: just `./gcp/deploy.sh <target>; rc=$?`)
      cd - && git worktree remove /tmp/deploy-src
      test $rc -eq 0 || { echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"; false; }
      ```

@@ -172,3 +172,4 @@ body:
         - label: >-
             Where a code comment contradicts my measurement, I widened the
             measurement rather than overruling the comment.
+          required: true

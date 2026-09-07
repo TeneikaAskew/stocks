@@ -140,3 +140,4 @@ body:
         - label: >-
             If this is a move between repos, I re-verified the defect still
             reproduces here and updated the paths.
+          required: true
