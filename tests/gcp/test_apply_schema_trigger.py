@@ -84,3 +84,16 @@ def test_overlapping_schema_builds_apply_in_start_order():
 def test_the_image_is_the_trading_system_repo_not_the_api_image():
     subs = yaml.safe_load(CFG.read_text())["substitutions"]
     assert subs["_IMAGE"].endswith("/trading/trading-system"), subs
+
+
+def test_the_apply_passes_the_source_revision_to_the_guard():
+    """Codex on #1022: build start order is not commit order. Both schema-
+    mutating builds pass the commit SHA and committer time so gcp/apply_schema
+    refuses a revision older than the newest successfully applied one."""
+    for path in (CFG, REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"):
+        steps = yaml.safe_load(path.read_text())["steps"]
+        step = next(s for s in steps if s["id"] in ("apply", "migrate"))
+        args = _all_args(step)
+        assert 'git log -1 --format=%ct "$COMMIT_SHA"' in args, path.name
+        assert '--args="--revision=$COMMIT_SHA,--revision-time=$${COMMIT_TIME}"' in args, path.name
+        assert args.index("COMMIT_TIME=$(git log") < args.index("gcloud run jobs execute"), path.name

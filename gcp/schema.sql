@@ -4105,3 +4105,19 @@ CREATE TABLE IF NOT EXISTS admin_refresh_leases (
     job_name      TEXT         PRIMARY KEY,
     dispatched_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- ── Schema apply revision guard (#1022) ──────────────────────────────────
+-- Written by gcp/apply_schema.py after every successful apply that was
+-- started with --revision/--revision-time (both Cloud Build triggers pass
+-- the source commit and its committer time). Before applying, the applier
+-- refuses a revision whose commit_time is older than the newest row here,
+-- so a build that Cloud Build started late cannot roll CREATE OR REPLACE
+-- objects back to an older definition. The applier also creates this table
+-- itself (the guard runs before the apply); this declaration keeps the
+-- inventory honest. Rows are one per apply, tiny, no retention needed.
+CREATE TABLE IF NOT EXISTS schema_apply_history (
+    commit_sha   TEXT        NOT NULL,
+    commit_time  BIGINT      NOT NULL,
+    applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (commit_sha, applied_at)
+);

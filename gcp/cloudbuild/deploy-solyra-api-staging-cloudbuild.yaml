@@ -112,6 +112,15 @@ steps:
           echo "ERROR: could not resolve ${_IMAGE}:${SHORT_SHA} to a digest" >&2
           exit 1
         fi
+        # Source revision + committer time, for the applier's revision guard:
+        # it refuses a revision older than the newest successfully applied
+        # one, so an out-of-order build cannot roll the schema back (Codex on
+        # #1022). Main is linear (squash merges), so committer time orders it.
+        # Fail closed if the checkout cannot answer.
+        if ! COMMIT_TIME=$(git log -1 --format=%ct "$COMMIT_SHA" 2>&1); then
+          echo "ERROR: cannot read the committer time of $COMMIT_SHA: $${COMMIT_TIME}" >&2
+          exit 1
+        fi
         echo ">> apply-schema-migrations -> $${DIGEST} (this revision's schema.sql)"
         gcloud run jobs update apply-schema-migrations \
           --image="$${DIGEST}" \
@@ -119,6 +128,7 @@ steps:
           --quiet
         gcloud run jobs execute apply-schema-migrations \
           --region=us-east1 \
+          --args="--revision=$COMMIT_SHA,--revision-time=$${COMMIT_TIME}" \
           --wait
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: deploy
