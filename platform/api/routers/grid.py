@@ -1048,24 +1048,19 @@ async def get_grid_timeseries(
                 detail="Invalid `strikes` parameter — empty after parsing",
             )
     else:
-        # Use the latest snapshot's per-strike net_gamma magnitude to rank.
+        # Rank strikes by |net gamma × OI| at the latest snapshot using the
+        # same aggregation every other gamma surface uses (lib.gamma —
+        # one source of truth for math). The previous inline
+        # `float(gamma or 0) * float(open_interest or 0)` read a vendor
+        # gamma outage as "zero gamma at every strike" (#826, CLAUDE.md
+        # §3.7); coverage is gated below before anything is computed.
         latest_ts = df["snapshot_ts"].max()
         df_latest = df[df["snapshot_ts"] == latest_ts]
-        # Aggregate to per-strike net_gamma (calls add, puts subtract)
-        agg = (
-            df_latest.assign(
-                signed_gamma_oi=lambda d: d.apply(
-                    lambda r: float(r["gamma"] or 0) * float(r["open_interest"] or 0)
-                    * (1 if r["option_type"] == "calls" else -1),
-                    axis=1,
-                ),
-            )
-            .groupby("strike")["signed_gamma_oi"]
-            .sum()
-            .abs()
-            .nlargest(10)
-        )
-        strike_set = set(agg.index.tolist())
+        ranked = sorted(
+            gamma.aggregate_by_strike(_df_to_contracts(df_latest)),
+            key=lambda r: abs(r["net_gamma"]), reverse=True,
+        )[:10]
+        strike_set = {r["strike"] for r in ranked}
 
     df = df[df["strike"].isin(strike_set)]
     if df.empty:
@@ -1081,30 +1076,72 @@ async def get_grid_timeseries(
             ],
         }
 
+    def _unavailable_series(reason: str) -> dict:
+        # Typed UNAVAILABLE envelope for this endpoint's shape (CLAUDE.md
+        # §3.7 §EXTERNAL): the UI gets an empty series and the reason,
+        # never a number derived from a placeholder.
+        return {
+            "ticker": ticker_upper,
+            "expiration": expiration,
+            "lookback_hours": lookback_hours,
+            "data_source": "unavailable",
+            "series": [],
+            "warnings": [reason],
+        }
+
+    warnings: list[str] = []
+
+    # §3.7 gate on vendor gamma coverage over the whole window, mirroring
+    # lib.gamma.build_summary: 0 % is an outage (unavailable, not zero GEX);
+    # under 98 % the series is served but labelled understated (#826).
+    coverage, n_missing, n_rows = gamma.greeks_coverage(_df_to_contracts(df))
+    if n_rows > 0 and coverage == 0.0:
+        return _unavailable_series(
+            f"vendor gamma missing on ALL {n_rows} contracts in the window — "
+            "GEX unavailable (feed outage?), not zero"
+        )
+    if coverage < 0.98:
+        warnings.append(
+            f"vendor gamma missing on {n_missing}/{n_rows} contracts "
+            f"({coverage:.1%} coverage) — GEX is understated; treat the "
+            "series as degraded"
+        )
+
     # Per-snapshot per-strike net GEX (we need spot to compute dollar
     # notional — use the latest snapshot's parity-derived spot as a
     # stable reference across the lookback window. Spot doesn't move
     # enough in 1 hour to materially distort the time series).
     latest_contracts = _df_to_contracts(df[df["snapshot_ts"] == df["snapshot_ts"].max()])
     spot_est = gamma.estimate_spot(latest_contracts)
-    spot = spot_est.price if spot_est.price > 0 else 100.0  # safe default
+    if spot_est.price <= 0:
+        # No usable quotes for a parity spot. The old code substituted a
+        # literal $100 here and served GEX = net_gamma × 100² as if it
+        # were real (#825). There is no honest number without a spot.
+        return _unavailable_series(
+            f"spot unavailable: parity estimate (method={spot_est.method!r}) "
+            "produced no price — refusing to compute GEX on a placeholder"
+        )
+    spot = spot_est.price
+    if spot_est.method == "median_strike":
+        # Served, but never as if it were a quote: the dollar GEX below is
+        # scaled by a strike, not a price. build_summary surfaces the same
+        # method on /grid; the UI shows it.
+        warnings.append(
+            f"spot {spot:.2f} is the chain's median strike (no usable quotes "
+            "or deltas), not a market price — GEX notional is approximate"
+        )
 
-    # Aggregate per (snapshot_ts, strike) → signed gamma × OI, then GEX
+    # Aggregate per (snapshot_ts, strike) → signed gamma × OI via
+    # lib.gamma.aggregate_by_strike, then GEX at the reference spot.
     rows = []
     for ts in sorted(df["snapshot_ts"].unique()):
         snap = df[df["snapshot_ts"] == ts]
-        # Per-strike signed net gamma
-        for strike in sorted(strike_set):
-            cell = snap[snap["strike"] == strike]
-            if cell.empty:
+        ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+        for agg_row in gamma.aggregate_by_strike(_df_to_contracts(snap)):
+            strike = agg_row["strike"]
+            if strike not in strike_set:
                 continue
-            net_g = sum(
-                float(r["gamma"] or 0) * float(r["open_interest"] or 0)
-                * (1 if r["option_type"] == "calls" else -1)
-                for _, r in cell.iterrows()
-            )
-            gex = net_g * spot * spot * gamma.GEX_MULTIPLIER
-            ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            gex = agg_row["net_gamma"] * spot * spot * gamma.GEX_MULTIPLIER
             rows.append({
                 "snapshot_ts": ts_iso,
                 "strike": float(strike),
@@ -1123,10 +1160,12 @@ async def get_grid_timeseries(
         "ticker": ticker_upper,
         "expiration": expiration,
         "lookback_hours": lookback_hours,
-        "data_source": "realtime",
+        "data_source": "realtime_degraded" if warnings else "realtime",
         "strikes_resolved": sorted(strike_set),
         "spot_used": spot,
         "spot_method": spot_est.method,
+        "gamma_coverage": coverage,
+        "warnings": warnings,
         "series": rows,
     }
     _TIMESERIES_CACHE[cache_key] = payload

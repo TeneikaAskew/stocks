@@ -670,7 +670,13 @@ class TestGridTimeseries:
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["ticker"] == "SPY"
-        assert data["data_source"] == "realtime"
+        # This fixture carries no quotes or deltas, so the spot is the
+        # chain's median strike. Since #825 that is served but labelled:
+        # `realtime_degraded` with a warning naming the method, never a
+        # bare `realtime` as if a $102.50 spot had come from the market.
+        assert data["data_source"] == "realtime_degraded"
+        assert data["spot_method"] == "median_strike"
+        assert any("median strike" in w for w in data["warnings"])
         assert data["expiration"] is not None
         assert isinstance(data["series"], list)
         assert len(data["series"]) > 0
@@ -804,11 +810,18 @@ class TestGridTimeseriesFallbacks:
     before anything wires it up."""
 
     def test_no_spot_returns_unavailable_not_100(self, client, monkeypatch):
-        """#825: with no usable quotes the parity spot estimate is
-        price=0.0 / method='none'. The endpoint used to substitute a
-        literal $100 and compute GEX = net_gamma × 100² on it."""
+        """#825: when `gamma.estimate_spot` has nothing to work with it
+        returns price=0.0 / method='none' (empty contract list, or a chain
+        with no strikes). The endpoint used to substitute a literal $100 and
+        compute GEX = net_gamma × 100² on it. Pin the exact code path by
+        making the estimator report 'none'."""
+        from lib import gamma as g
         ts = pd.Timestamp("2026-06-01T15:55:00")
         _install_query_router(monkeypatch, realtime_df=_ts_chain(ts, with_quotes=False))
+        monkeypatch.setattr(
+            grid_router.gamma, "estimate_spot",
+            lambda contracts: g.SpotEstimate(price=0.0, method="none", note="test"),
+        )
         r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19")
         assert r.status_code == 200
         body = r.json()
@@ -867,3 +880,16 @@ class TestGridTimeseriesFallbacks:
         assert got.keys() == expected.keys()
         for k in expected:
             assert got[k] == pytest.approx(expected[k])
+
+    def test_median_strike_spot_is_labelled_not_silent(self, client, monkeypatch):
+        """With no quotes and no deltas `estimate_spot` falls back to the
+        chain's median strike (method='median_strike'). That is not a
+        market price, so the series must be labelled degraded and say so."""
+        ts = pd.Timestamp("2026-06-01T15:55:00")
+        _install_query_router(monkeypatch, realtime_df=_ts_chain(ts, with_quotes=False))
+        r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19&strikes=95,100")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["spot_method"] == "median_strike"
+        assert body["data_source"] == "realtime_degraded"
+        assert any("median strike" in w.lower() for w in body["warnings"])
