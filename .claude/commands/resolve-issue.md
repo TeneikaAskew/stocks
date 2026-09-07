@@ -290,11 +290,33 @@ one. While writing, the standing gates:
   number. Carry both explicitly, or the backend merges while the frontend sits
   uncommitted against a contract it no longer matches.
 
-  Concretely: open the solyra PR in the same session, name each PR in the
-  other's description, and merge **stocks first, then solyra**, because the
-  snapshot solyra vendors is read from stocks `main`. If you cannot do the
-  solyra half now, do not merge the stocks half either; say what is
-  outstanding.
+  Concretely: open the solyra PR in the same session and name each PR in the
+  other's description. If you cannot do the solyra half now, do not merge the
+  stocks half either; say what is outstanding.
+
+  **The consumer changes first, in both directions — not stocks first.** An
+  earlier version of this said to merge stocks first, because the snapshot
+  solyra vendors is read from stocks `main`. That derives the rollout order
+  from what keeps solyra's `contract:check` green, which is a CI question, and
+  not from what keeps the deployed app working, which is a different one. For
+  a widening it is backwards: this side merges, staging deploys, the API
+  starts emitting `null`, and the frontend in front of it still assumes the
+  old non-null shape — the runtime break the pair exists to prevent.
+
+  A widening is three steps:
+
+  1. **solyra first** — its reader tolerates BOTH shapes (null guard at the
+     presentation boundary, plus a fixture whose field is actually `null`).
+     No type or snapshot change, so its `contract:check` still passes against
+     the current stocks `main`. Merged and deployed.
+  2. **then stocks** — widen the response model, regenerate
+     `platform/api/openapi.json`, merge, deploy.
+  3. **then solyra again** — `contract:sync`, widen the TS type, update
+     fixtures.
+
+  A narrowing runs the same way: solyra stops reading or sending the field
+  first, and this repo drops it only once nothing consumes it. Say in both PR
+  descriptions which step yours is.
 - **Rule 6** — a response shape change means: regenerate
   `platform/api/openapi.json` (`python scripts/export_openapi.py`), then on the
   solyra side `npm run contract:sync` plus the `src/types/` and fixture update,
