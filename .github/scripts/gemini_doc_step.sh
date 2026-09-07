@@ -24,11 +24,20 @@
 # runs 15 and 16 must still go red, and a retry that swallowed those would be
 # the silent fallback the rule forbids.
 #
-# Each attempt starts from the same baseline. Before a retry the document is
-# restored from refresh-inputs/previous/, so a half-applied edit from the
-# failed attempt cannot compound into a double-applied one. If that frozen
-# copy is missing the script refuses to retry rather than running the prompt
-# against a workspace of unknown state.
+# Each attempt starts from the same baseline: the document exactly as this
+# step found it. A failed attempt can leave it half-edited, and a retry that
+# compounded that would be worse than the timeout.
+#
+# The baseline is snapshotted HERE, not taken from refresh-inputs/previous/.
+# That directory is written by "Save previous doc versions", which runs BEFORE
+# "Render inventory blocks", so it holds the committed PRE-render document. In
+# any month where the inventory changed, restoring it would put the stale
+# marker blocks back; the prompts correctly forbid editing inside a marker
+# block, so a successful retry would carry those stale blocks to gate_markers()
+# and fail against the fresh render -- the retry would still lose the refresh,
+# just with a different error. (Codex, PR #1032.) Snapshotting what is on disk
+# when this step starts is post-render by construction and needs no assumption
+# about step order.
 #
 # Usage: gemini_doc_step.sh <prompt-basename> <doc-path-from-repo-root>
 set -uo pipefail
@@ -37,7 +46,7 @@ PROMPT="${1:?prompt basename required}"
 DOC="${2:?document path required}"
 PROMPT_FILE=".github/prompts/${PROMPT}.md"
 LOG="${RUNNER_TEMP:?RUNNER_TEMP required}/transcripts/${PROMPT}.log"
-PREV="refresh-inputs/previous/${DOC}"
+BASELINE="${RUNNER_TEMP:?RUNNER_TEMP required}/gemini-baseline/${PROMPT}"
 MAX_ATTEMPTS="${GEMINI_MAX_ATTEMPTS:-2}"
 # Seconds of backoff before a retry. Only the tests set this (to 0); the
 # workflow uses the default, because a transport stall that just timed out is
@@ -50,16 +59,25 @@ RETRY_SLEEP="${GEMINI_RETRY_SLEEP:-20}"
 TRANSIENT='UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|TypeError: terminated|ECONNRESET|socket hang up|Error when talking to Gemini API'
 
 test -f "$PROMPT_FILE" || { echo "::error::no prompt at ${PROMPT_FILE}"; exit 1; }
-mkdir -p "$(dirname "$LOG")"
+mkdir -p "$(dirname "$LOG")" "$(dirname "$BASELINE")"
+
+# The post-render, pre-model state. Captured before attempt 1 so a retry can
+# put it back byte-for-byte.
+if [ -f "$DOC" ]; then
+  cp "$DOC" "$BASELINE"
+else
+  echo "::error::${DOC} does not exist; the render step should have left it in place"
+  exit 1
+fi
 
 for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
   if [ "$ATTEMPT" -gt 1 ]; then
-    if [ ! -f "$PREV" ]; then
-      echo "::error::no frozen previous copy at ${PREV}; refusing to retry ${PROMPT} against a workspace the failed attempt may have half-edited"
+    if [ ! -f "$BASELINE" ]; then
+      echo "::error::no baseline snapshot at ${BASELINE}; refusing to retry ${PROMPT} against a workspace the failed attempt may have half-edited"
       exit 1
     fi
-    cp "$PREV" "$DOC"
-    echo "restored ${DOC} from ${PREV} so attempt ${ATTEMPT} starts from the same baseline as attempt 1"
+    cp "$BASELINE" "$DOC"
+    echo "restored ${DOC} from the pre-attempt snapshot so attempt ${ATTEMPT} starts from the same baseline as attempt 1"
     sleep $(( (ATTEMPT - 1) * RETRY_SLEEP ))
   fi
 

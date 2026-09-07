@@ -44,7 +44,8 @@ def _stub_gemini(bin_dir: Path, script: str) -> None:
 
 
 def _run(tmp_path: Path, stub: str, *, doc="docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
-         prompt="data-dependencies", with_previous=True):
+         prompt="data-dependencies", with_previous=True,
+         on_disk="BASELINE\n", previous_text="BASELINE\n", keep_runner=False):
     """Run the real script in a sandbox repo, with `gemini` stubbed."""
     work = tmp_path / "work"
     (work / ".github/prompts").mkdir(parents=True)
@@ -53,11 +54,13 @@ def _run(tmp_path: Path, stub: str, *, doc="docs/product/infrastructure/05-c-DAT
     (work / ".github/scripts/gemini_doc_step.sh").chmod(0o755)
     (work / f".github/prompts/{prompt}.md").write_text("do the thing\n")
     (work / doc).parent.mkdir(parents=True, exist_ok=True)
-    (work / doc).write_text("BASELINE\n")
+    (work / doc).write_text(on_disk)
     if with_previous:
+        # What "Save previous doc versions" wrote -- the committed PRE-render
+        # copy. It is deliberately allowed to differ from what is on disk.
         prev = work / "refresh-inputs/previous" / doc
         prev.parent.mkdir(parents=True, exist_ok=True)
-        prev.write_text("BASELINE\n")
+        prev.write_text(previous_text)
 
     bin_dir = tmp_path / "bin"
     _stub_gemini(bin_dir, stub)
@@ -71,6 +74,8 @@ def _run(tmp_path: Path, stub: str, *, doc="docs/product/infrastructure/05-c-DAT
         DOC_PATH=doc,
     )
     (tmp_path / "runner").mkdir(exist_ok=True)
+    if not keep_runner:
+        pass
     proc = subprocess.run(
         ["bash", ".github/scripts/gemini_doc_step.sh", prompt, doc],
         cwd=work, env=env, capture_output=True, text=True,
@@ -139,14 +144,63 @@ def test_two_transport_failures_still_fail_the_run(tmp_path):
     assert "is not answering" in proc.stdout
 
 
-def test_a_missing_frozen_copy_refuses_to_retry(tmp_path):
-    """Without the baseline there is no safe state to retry from, so the
-    script says that rather than running the prompt against unknown content."""
-    stub = 'echo x >> "$ATTEMPTS_FILE"\n' f'echo "{BODY_TIMEOUT}"\n' 'exit 1\n'
-    proc, attempts, _ = _run(tmp_path, stub, with_previous=False)
+def test_a_missing_document_fails_before_calling_the_model(tmp_path):
+    """The render step is supposed to leave the document in place. If it is
+    not there, say so rather than snapshotting nothing and retrying blind."""
+    work = tmp_path / "work"
+    (work / ".github/prompts").mkdir(parents=True)
+    (work / ".github/scripts").mkdir(parents=True)
+    (work / ".github/scripts/gemini_doc_step.sh").write_bytes(SCRIPT.read_bytes())
+    (work / ".github/scripts/gemini_doc_step.sh").chmod(0o755)
+    (work / ".github/prompts/data-dependencies.md").write_text("do the thing\n")
+    bin_dir = tmp_path / "bin"
+    _stub_gemini(bin_dir, 'echo x >> "$ATTEMPTS_FILE"\necho ok\n')
+    env = dict(os.environ)
+    env.update(PATH=f"{bin_dir}:{env['PATH']}", RUNNER_TEMP=str(tmp_path / "runner"),
+               GEMINI_MODEL="stub", ATTEMPTS_FILE=str(tmp_path / "attempts"),
+               GEMINI_RETRY_SLEEP="0")
+    (tmp_path / "runner").mkdir(exist_ok=True)
+    proc = subprocess.run(
+        ["bash", ".github/scripts/gemini_doc_step.sh", "data-dependencies",
+         "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"],
+        cwd=work, env=env, capture_output=True, text=True)
     assert proc.returncode != 0
-    assert attempts == 1
-    assert "refusing to retry" in proc.stdout
+    assert "does not exist" in proc.stdout
+    assert not (tmp_path / "attempts").exists(), "the model was called anyway"
+
+
+def test_the_retry_restores_the_rendered_document_not_the_committed_one(tmp_path):
+    """Codex P1 on this PR, reproduced.
+
+    `refresh-inputs/previous/` is written by "Save previous doc versions",
+    which runs BEFORE "Render inventory blocks". In any month where the
+    inventory changed it therefore holds the document WITHOUT the fresh marker
+    blocks. Restoring it on retry would put stale blocks back; the prompts
+    forbid editing inside a marker block, so a successful retry would carry
+    them into gate_markers() and fail against a fresh render. The transport
+    retry would still lose the refresh, just with a different error.
+
+    The baseline must be the post-render, pre-model document.
+    """
+    rendered = "PROSE\n<!-- inventory:jobs:start -->\nFRESH ROWS\n<!-- inventory:jobs:end -->\n"
+    committed = "PROSE\n<!-- inventory:jobs:start -->\nSTALE ROWS\n<!-- inventory:jobs:end -->\n"
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'N=$(wc -w < "$ATTEMPTS_FILE")\n'
+        'if [ "$N" -eq 1 ]; then\n'
+        '  echo CLOBBERED > "$DOC_PATH"\n'
+        f'  echo "{BODY_TIMEOUT}"\n'
+        '  exit 1\n'
+        'fi\n'
+        'cp "$DOC_PATH" "$ATTEMPTS_FILE.seen"\n'
+        'echo done\n'
+    )
+    proc, attempts, _ = _run(tmp_path, stub, on_disk=rendered, previous_text=committed)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert attempts == 2
+    seen = (tmp_path / "attempts.seen").read_text()
+    assert "FRESH ROWS" in seen, f"retry restored the pre-render copy: {seen!r}"
+    assert "STALE ROWS" not in seen
 
 
 def test_every_gemini_step_goes_through_the_script():
