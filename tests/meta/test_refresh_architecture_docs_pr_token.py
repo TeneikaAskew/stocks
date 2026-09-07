@@ -475,3 +475,38 @@ def test_untracked_files_present_before_the_model_are_not_blamed_on_it():
     assert "refusing to attribute untracked files to the model" in restore
     # the freeze must record it AFTER refresh-inputs exists, or the list is empty
     assert freeze.index("cp -r refresh-inputs") < freeze.index("untracked.before")
+
+
+def _required_gcloud_components() -> set[str]:
+    """Every non-GA gcloud release track doc_inventory actually invokes."""
+    import ast
+    src = (REPO / "scripts/maintenance/doc_inventory.py").read_text()
+    tracks = set()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+        if name not in ("_gcloud", "_gjson"):
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and first.value in ("alpha", "beta"):
+            tracks.add(first.value)
+    return tracks
+
+
+def test_every_gcloud_track_the_inventory_uses_is_installed_on_the_runner():
+    """Run 14 died at the live snapshot with "You do not currently have this
+    command group installed: [beta]" — after WIF auth, the asset dump, IAM and
+    the billing rollup had all passed. `gcloud run domain-mappings list` does
+    not accept --region on GA, so beta is required rather than convenient, and
+    a sandbox has it installed so nothing local could reveal this.
+    Derived from the module, so a new alpha/beta call fails here first."""
+    required = _required_gcloud_components()
+    assert required, "the AST scan found no alpha/beta calls; the scan is broken, not the module"
+    setup = [s for s in _steps() if str(s.get("uses", "")).startswith("google-github-actions/setup-gcloud")]
+    assert len(setup) == 1, setup
+    installed = {c.strip() for c in (setup[0].get("with") or {}).get("install_components", "").split(",") if c.strip()}
+    assert required <= installed, (
+        f"doc_inventory calls gcloud {sorted(required)} but the workflow installs "
+        f"{sorted(installed) or 'nothing'}; the live snapshot will die on the runner")
