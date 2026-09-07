@@ -4,6 +4,22 @@ You are an automated documentation agent. Regenerate `docs/product/infrastructur
 
 **Output discipline (read this twice).** Produce the file with the **`write_file`** tool (`file_path: "docs/product/infrastructure/05-d-COST_ANALYSIS.md"`, given from the repository root, full markdown body). Never a bare `COST_ANALYSIS.md` at the root, never any other directory, and never a second copy. No stdout output, no preamble, no summary.
 
+## Live fleet counts — authoritative, already substituted below
+
+- Cloud Run Jobs: **{{LIVE_JOBS}}**
+- Cloud Scheduler jobs: **{{LIVE_SCHEDULERS}}**
+- Cloud Run Services: **{{LIVE_SERVICES}}**
+- Secret Manager secrets: **{{LIVE_SECRETS}}**
+- Cloud SQL relations: **{{LIVE_DB_TABLES}}**
+
+These five numbers were read from `live.json` and written into this prompt by
+`scripts/maintenance/render_doc_prompts.py` before you were called. They are
+correct as of this run. **Use them verbatim wherever the document states a
+count.** Do not recount them from an input file, do not derive a count by
+counting entries you can see in a truncated read, and do not carry one forward
+from the previous version of this document. A 2026-09-07 run wrote "24 Cloud
+Scheduler jobs" against a live fleet of 65 and went red on that single line.
+
 ## Inputs (under `refresh-inputs/`)
 
 - `billing_by_month.csv` — `month, cost_usd` for the trailing 90 days (read this first; it is the headline).
@@ -23,7 +39,7 @@ Table from `billing_by_month.csv`: Month | Spend (USD) | Notes. Flag partial mon
 From `billing_by_sku.csv`: Rank | Service | SKU | 90-day cost | Maps to (05-a-ARCHITECTURE.md component). If a SKU cannot be mapped, write "not attributable from billing export alone".
 
 ### 3. Per-component cost estimate
-Cloud SQL, Cloud Run Jobs (one SKU across all N jobs — allocate best-effort by runs-per-month × typical duration, from the schedulers), Cloud Run Services (per service where the SKU permits), Cloud Scheduler (N entries, 3 free), Artifact Registry, GCS, Vertex AI, Secret Manager, Pub/Sub, Logging, Cloud Build. State the allocation method. Include "Not attributable from billing export alone".
+Cloud SQL, Cloud Run Jobs (one SKU across all {{LIVE_JOBS}} jobs — allocate best-effort by runs-per-month × typical duration, from the schedulers), Cloud Run Services (per service where the SKU permits), Cloud Scheduler ({{LIVE_SCHEDULERS}} entries, 3 free), Artifact Registry, GCS, Vertex AI, Secret Manager, Pub/Sub, Logging, Cloud Build. State the allocation method. Include "Not attributable from billing export alone".
 
 ### 4. Anomalies
 Month-over-month change > 50% in any line item; $0.00 for SKUs that should be non-zero (Vertex AI when the insight pipeline runs daily); anything trending to double within 90 days. For each: probable cause, how to confirm (a gcloud or Console step), urgency.
@@ -47,7 +63,7 @@ Three, ranked by $/month, each with the resource, the exact change (gcloud comma
 - Numbers must be honest: write what the CSV says, never round for prose.
 - Total spend in the first sentence.
 - No projections beyond the data.
-- Use the live counts for N jobs / N schedulers; never hardcode a number from an older version.
+- Every count comes from the **Live fleet counts** block above, verbatim. `repo_inventory.json` → `schedulers` is for per-job cron and runs-per-month only; the number of entries you manage to read out of it is not the fleet count.
 - A missing or empty input is a hard stop: print one line naming it and stop without writing.
 - Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
 
