@@ -1,3 +1,21 @@
+<!--
+ARCHIVED 2026-09-05 — moved out of .claude/agents/ because every path it names
+is gone or moved:
+
+  * options-heatseeker/            retired in #255 at the FastAPI cutover
+  * success-report-site/, website/ now under archive/
+  * tests/test_e2e.py              now archive/tests/test_e2e.py
+  * platform/ (React + its Playwright config and specs)
+                                   moved to github.com/TeneikaAskew/solyra
+
+Left here for reference next to the tests it described. The live frontend E2E
+suite and its own playwright-tester agent live in the solyra repo; this repo is
+the API and research pipeline, and its tests are pytest under tests/.
+
+Do not restore this to .claude/agents/ without rewriting the paths — as written
+it points an agent at directories that no longer exist.
+-->
+
 ---
 name: playwright-tester
 description: Use this agent when you need to run, debug, or extend Playwright end-to-end tests for the web applications in this repository (options-heatseeker, success-report-site, website). This includes running E2E tests headlessly or headed, diagnosing browser-side failures, adding new page interaction tests, and verifying UI after changes to HTML/JS files. Examples:

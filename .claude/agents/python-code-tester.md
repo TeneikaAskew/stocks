@@ -59,9 +59,9 @@ This project has three test tiers. Always use these commands instead of discover
 
 | Tier | Command | Scope | ~Duration |
 |------|---------|-------|-----------|
-| Unit/Integration | `make test` | `tests/` excluding E2E | ~70s, 339 tests |
+| Unit/Integration | `make test` | `tests/` (all of it — E2E is no longer in this tree) | ~70s |
 | Script CLI | `make test-scripts` | `tests/scripts/test_scripts.py` | ~40s, 18 tests |
-| E2E (Playwright) | `make test-e2e` | `tests/e2e/test_e2e.py` | ~15s, 28 tests |
+| E2E (Playwright) | `make test-e2e` | `archive/tests/test_e2e.py` — ARCHIVED static pages, no API coverage, not in CI | ~100s, 11 tests |
 
 **Key conventions:**
 - Test files map to source: `tests/test_<module>.py` → `lib/<module>.py`

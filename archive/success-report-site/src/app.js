@@ -84,6 +84,60 @@ class TradingDashboard {
         }, CONFIG.AUTO_REFRESH_INTERVAL);
     }
     
+    /**
+     * Draw a Chart.js chart, degrading visibly when the library is unavailable.
+     *
+     * Chart.js is loaded from a CDN in index.html, which is EXTERNAL and can
+     * fail: an offline viewer, a blocked or down CDN, a network without egress.
+     * Before this helper each caller did `new Chart(...)` directly, so any such
+     * failure threw ReferenceError out of renderOverview(), unwound to the
+     * loadData() catch, and called showError() — which replaces the whole
+     * active tab with innerHTML.
+     *
+     * The result was badly misleading. data/sample-report.json had returned
+     * HTTP 200, all four overview metrics were computed and assigned, and then
+     * a missing *charting* library deleted them and told the user "Failed to
+     * load report data. Please check your connection." The data had loaded
+     * fine; only a decoration failed.
+     *
+     * So the chart failure is contained here and surfaced where the chart would
+     * have been. It is never silent (it renders an explicit unavailable state
+     * and logs), and it never claims the data failed. Returns null when the
+     * chart cannot be drawn, which the `if (this.charts.x)` destroy guards in
+     * each caller already handle.
+     */
+    renderChart(canvasId, config) {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) {
+            console.error(`Chart "${canvasId}" not rendered: canvas element is absent`);
+            return null;
+        }
+
+        const unavailable = (reason) => {
+            console.error(`Chart "${canvasId}" not rendered: ${reason}`);
+            const host = canvas.closest('.chart-container') || canvas.parentElement;
+            if (host) {
+                host.innerHTML = `
+                    <div class="chart-unavailable" style="text-align: center; padding: 32px; color: var(--text-secondary, #8a8a8a);">
+                        <strong>Chart unavailable</strong>
+                        <p style="margin: 6px 0 0; font-size: 0.9em;">${reason}</p>
+                    </div>
+                `;
+            }
+            return null;
+        };
+
+        if (typeof Chart === 'undefined') {
+            return unavailable('The Chart.js library failed to load. The figures shown are unaffected.');
+        }
+
+        try {
+            return new Chart(canvas.getContext('2d'), config);
+        } catch (error) {
+            return unavailable(`Chart.js could not draw this chart: ${error.message}`);
+        }
+    }
+
     showError(message) {
         // Create error message in the first tab content
         const activeContent = document.querySelector('.tab-content.active');
@@ -126,13 +180,12 @@ class TradingDashboard {
         document.getElementById('avgDaysToHit').textContent = overview.avgDaysToHit.toFixed(1);
 
         // Create overview chart
-        const ctx = document.getElementById('overviewChart').getContext('2d');
         
         if (this.charts.overview) {
             this.charts.overview.destroy();
         }
 
-        this.charts.overview = new Chart(ctx, {
+        this.charts.overview = this.renderChart('overviewChart', {
             type: 'bar',
             data: {
                 labels: ['Total Trades', 'Hits', 'Profitable', 'Multi-Day Winners'],
@@ -168,13 +221,12 @@ class TradingDashboard {
         const multiDay = this.data.multiDayProfitability;
         
         // Create multi-day chart
-        const ctx = document.getElementById('multiDayChart').getContext('2d');
         
         if (this.charts.multiDay) {
             this.charts.multiDay.destroy();
         }
 
-        this.charts.multiDay = new Chart(ctx, {
+        this.charts.multiDay = this.renderChart('multiDayChart', {
             type: 'line',
             data: {
                 labels: ['Day 0', 'Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5'],
@@ -266,13 +318,12 @@ class TradingDashboard {
         const earnings = this.data.earningsTiming;
         
         // Create earnings chart
-        const ctx = document.getElementById('earningsChart').getContext('2d');
         
         if (this.charts.earnings) {
             this.charts.earnings.destroy();
         }
 
-        this.charts.earnings = new Chart(ctx, {
+        this.charts.earnings = this.renderChart('earningsChart', {
             type: 'bar',
             data: {
                 labels: ['Pre-Earnings', 'Post-Earnings'],
@@ -336,13 +387,12 @@ class TradingDashboard {
         const strategies = this.data.strategyPerformance;
         
         // Create strategy chart
-        const ctx = document.getElementById('strategyChart').getContext('2d');
         
         if (this.charts.strategy) {
             this.charts.strategy.destroy();
         }
 
-        this.charts.strategy = new Chart(ctx, {
+        this.charts.strategy = this.renderChart('strategyChart', {
             type: 'radar',
             data: {
                 labels: strategies.map(s => s.strategy),

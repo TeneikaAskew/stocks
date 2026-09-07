@@ -1,19 +1,24 @@
 """
-End-to-end Playwright tests for static web applications.
+ARCHIVED — Playwright smoke tests for the retired static web applications.
 
-Tests the static web frontends by spinning up a local HTTP server for each:
-  - archive/success-report-site  (port 8102)
-  - archive/website              (port 8104)
+These cover archive/success-report-site and archive/website: static HTML
+pages with no connection to the Solyra API. They moved here from tests/ on
+2026-09-05 so that tests/ holds only what exercises the API and the research
+pipeline behind it. The 2026-08-27 codebase review had already flagged them as
+"a static-HTML smoke test ... unrelated to the trading platform"
+(docs/audits/2026-08-27-claude-codebase-review/03-test-coverage.md).
 
-Both moved under archive/ in dac85fa4. The pages are unchanged, so these
-smoke tests still apply — only the paths moved.
+They are NOT run by CI and are excluded from `make test`, which is the point:
+they were the only reason CI installed a Chromium binary, and that install cost
+every backtest-pipeline run about a minute for coverage of two retired pages.
 
-The legacy options-heatseeker static app was retired in #255 (cutover
-to FastAPI under platform/) — its directory no longer exists.
+Still runnable on demand, from the repo root:
+  make install-playwright                       # one-time browser download
+  pytest archive/tests/test_e2e.py -v           # headless
+  pytest archive/tests/test_e2e.py --headed     # visible browser
 
-Run these separately from the unit suite:
-  pytest tests/e2e/test_e2e.py --headed       # visible browser
-  pytest tests/e2e/test_e2e.py               # headless (CI)
+The legacy options-heatseeker static app was retired in #255 (cutover to
+FastAPI under platform/) — its directory no longer exists.
 """
 
 import http.server
@@ -28,10 +33,13 @@ import pytest
 # Repo root and app paths
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).parent.parent.parent
+# This file lives at archive/tests/, so its parent.parent IS archive/ — the
+# sites are siblings of this directory, not under a nested "archive" segment.
+# Resolving first so the paths hold when pytest is invoked from anywhere.
+ARCHIVE_ROOT = Path(__file__).resolve().parent.parent
 APPS = {
-    "success_report": REPO_ROOT / "archive" / "success-report-site",
-    "website": REPO_ROOT / "archive" / "website",
+    "success_report": ARCHIVE_ROOT / "success-report-site",
+    "website": ARCHIVE_ROOT / "website",
 }
 PORTS = {
     "success_report": 8102,

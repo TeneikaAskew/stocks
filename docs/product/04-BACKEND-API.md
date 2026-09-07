@@ -30,7 +30,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | Capability | Entry points | Trigger | Data | Target gap |
 |---|---|---|---|---|
 | Platform API | `platform/api/main.py` + 18 routers | HTTPS | Cloud SQL via `lib/data_loader`, GCS | consistent contracts, ownership, telemetry |
-| Ingestion / analysis jobs | 67 Cloud Run jobs, `gcp/**` | Cloud Scheduler (58) / manual | vendors → SQL/artifacts | idempotency, freshness, provenance — see [05](05-INFRASTRUCTURE.md) |
+| Ingestion / analysis jobs | 76 Cloud Run jobs live (67 declared in `gcp/**`) | Cloud Scheduler (65 live) / manual | vendors → SQL/artifacts | idempotency, freshness, provenance, and 8 undeclared jobs — see [05](05-INFRASTRUCTURE.md) |
 | Discord interactions | `gcp/discord_interactions/main.py` | Discord HTTPS | interaction validation | secrets via env not Secret Manager ([#830](https://github.com/TeneikaAskew/stocks/issues/830)) |
 
 ## Endpoint inventory

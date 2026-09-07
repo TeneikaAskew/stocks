@@ -1,0 +1,137 @@
+# Trigger: deploy-solyra-api-prod
+# Fires:   MANUAL ONLY — nothing auto-invokes this.
+#
+#   gcloud builds triggers run deploy-solyra-api-prod --branch=main \
+#     --substitutions=_EXPECT_STAGING_REVISION=solyra-api-staging-00005-rcc
+#
+# Promotes to prod the exact image digest that STAGING IS SERVING, rather than
+# rebuilding from main. A rebuild would pick up whatever merged since staging
+# last deployed, so prod would ship bits that were never the ones validated.
+#
+# The serving revision is resolved from the service's TRAFFIC TARGETS, not from
+# status.latestReadyRevisionName — see gcp/cloudbuild/serving_revision.py for
+# why those differ and when.
+#
+# _EXPECT_STAGING_REVISION is REQUIRED, and it is what binds this promotion to
+# the thing the operator actually looked at. Resolving the serving revision at
+# run time answers "what is staging serving NOW", which is not the same
+# question: an automatic staging deploy landing between the validation and this
+# build silently substitutes a different revision, and the promotion ships it
+# under the banner of "promote what staging validated". The staging-build
+# interlock does not cover this trigger — it has no shared tag and no preflight
+# — so nothing else stops that (Codex, PR #990). Passing the revision makes the
+# promotion a compare-and-swap: if staging moved, this aborts and the operator
+# re-validates rather than discovering it in prod.
+#
+# An image digest is accepted in place of the revision name, for an operator who
+# validated by artifact rather than by revision.
+substitutions:
+  _EXPECT_STAGING_REVISION: ''
+steps:
+  # Two promotions must not overlap. Without this, promotion A (validated
+  # revision A) and promotion B (validated revision B, started later) can both
+  # pass their expectation checks and both reach `gcloud run deploy`; whichever
+  # finishes LAST wins, so the older one can roll prod back to A after B was
+  # requested (Codex, PR #990). Same mechanism as the staging interlock, on
+  # this trigger's own tag: a build is registered and tagged before its steps
+  # run, so two promotions can see each other.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: no-concurrent-promote
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        others=""
+        if ! ongoing=$$(gcloud builds list --ongoing \
+                          --filter="tags='solyra-api-prod-promote'" \
+                          --format='value(id)' 2>&1); then
+          echo "ERROR: cannot list ongoing promotions, so a concurrent one" >&2
+          echo "       cannot be ruled out. Refusing rather than assuming." >&2
+          echo "       $$ongoing" >&2
+          exit 1
+        fi
+        for id in $$ongoing; do
+          [ "$$id" = "$BUILD_ID" ] || others="$$others $$id"
+        done
+        if [ -n "$$others" ]; then
+          echo "ERROR: another prod promotion is already running:$$others" >&2
+          echo "       Two promotions must not overlap -- the one that" >&2
+          echo "       finishes last wins, which can roll prod backwards." >&2
+          exit 1
+        fi
+        echo "no concurrent prod promotion — proceeding"
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: promote
+    waitFor: [no-concurrent-promote]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        REV=$$(gcloud run services describe solyra-api-staging \
+          --region=us-east1 --format=json \
+          | python3 gcp/cloudbuild/serving_revision.py)
+
+        DIGEST=$$(gcloud run revisions describe "$$REV" \
+          --region=us-east1 --format='value(status.imageDigest)')
+        if [ -z "$$DIGEST" ]; then
+          echo "FATAL: could not resolve an image digest from staging revision '$$REV'" >&2
+          exit 1
+        fi
+
+        EXPECT='${_EXPECT_STAGING_REVISION}'
+        if [ -z "$$EXPECT" ]; then
+          echo "FATAL: _EXPECT_STAGING_REVISION is required, so that this promotes" >&2
+          echo "       the revision you validated rather than whatever staging" >&2
+          echo "       happens to be serving when this build runs." >&2
+          echo "       Staging is serving $$REV right now:" >&2
+          echo "         image: $$DIGEST" >&2
+          echo "       Re-run with --substitutions=_EXPECT_STAGING_REVISION=$$REV" >&2
+          exit 1
+        fi
+        if [ "$$EXPECT" != "$$REV" ] && [ "$$EXPECT" != "$$DIGEST" ]; then
+          echo "FATAL: staging moved. You validated '$$EXPECT', but staging is now" >&2
+          echo "       serving $$REV ($$DIGEST)." >&2
+          echo "       Re-validate staging and promote that, rather than shipping a" >&2
+          echo "       revision nobody looked at." >&2
+          exit 1
+        fi
+
+        # And a compare-and-swap on PROD, for the window the interlock above
+        # cannot cover: a promotion that finished between this build starting
+        # and this line. Same reasoning as platform/deploy.sh's.
+        PROD_BEFORE=$$(gcloud run services describe solyra-api-prod \
+          --region=us-east1 --format=json \
+          | python3 gcp/cloudbuild/serving_revision.py)
+
+        echo "Promoting the revision STAGING IS SERVING, as validated: $$REV"
+        echo "  image: $$DIGEST"
+        echo "  prod is currently serving: $$PROD_BEFORE"
+
+        PROD_NOW=$$(gcloud run services describe solyra-api-prod \
+          --region=us-east1 --format=json \
+          | python3 gcp/cloudbuild/serving_revision.py)
+        if [ "$$PROD_NOW" != "$$PROD_BEFORE" ]; then
+          echo "FATAL: prod moved while this promotion was preparing" >&2
+          echo "       ($$PROD_BEFORE -> $$PROD_NOW). Deploying now would" >&2
+          echo "       overwrite a newer promotion with this older one." >&2
+          exit 1
+        fi
+
+        gcloud run deploy solyra-api-prod \
+          --image="$$DIGEST" \
+          --region=us-east1 \
+          --platform=managed
+
+        # Pin the promoted digest. The cleanup policy expires solyra-api
+        # versions older than 30 days and keeps `inuse-*`, so a prod revision
+        # left unpinned could have its image deleted from under it.
+        ./gcp/deploy.sh pin-images --no-sweep
+# Read by the interlock step above: a promotion can only see a peer through a
+# tag that is in this file.
+tags: [solyra-api-prod-promote]
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1200s
