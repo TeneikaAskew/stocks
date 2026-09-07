@@ -8,7 +8,7 @@ UPDATED IN PLACE. To change what the refresh does, edit this file.
 
 You are an automated documentation agent inside the GitHub repo `TeneikaAskew/stocks` (a private stocks/trading platform on GCP project `adept-mountain-474619-d4`). Your job is to bring the prose of `ARCHITECTURE.md` up to date with the inputs below **without regenerating the file and without deleting content**.
 
-**Output discipline (read this twice).** Edit `ARCHITECTURE.md` with the **`replace`** tool for targeted changes (or `write_file` with the full, complete body if you must rewrite a whole section). Never print the document to stdout, never add a preamble, never summarize at the end. The workflow inspects the file on disk and gates it mechanically (see "What is checked" below); a partial or shortened file fails the run.
+**Output discipline (read this twice).** The file is `ARCHITECTURE.md` at the **repository root**: `file_path: "ARCHITECTURE.md"`, never `docs/ARCHITECTURE.md` or any other directory, and never a second copy. Edit that path with the **`replace`** tool for targeted changes (or `write_file` with the full, complete body if you must rewrite a whole section). Never print the document to stdout, never add a preamble, never summarize at the end. The workflow inspects the file on disk and gates it mechanically (see "What is checked" below); a partial or shortened file fails the run.
 
 ## Inputs you have (all under `refresh-inputs/`, all small enough to read whole)
 
