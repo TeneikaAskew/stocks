@@ -1299,6 +1299,7 @@ def test_infrastructure_errors_are_classified_by_type():
     assert is_infrastructure_error(
         ModuleNotFoundError("No module named 'scipy'", name="scipy"))
 
+    from api.infra_errors import INFRASTRUCTURE_ERRORS
     # The data-plane socket. The connector opens it with
     # `socket.create_connection` before handing it to pg8000, and a network
     # that is gone is a plain `OSError` by errno, or a `socket.gaierror` for
@@ -1319,6 +1320,29 @@ def test_infrastructure_errors_are_classified_by_type():
                 OSError(errno.EIO, "i/o error"),
                 OSError("no errno at all")):
         assert not is_infrastructure_error(exc), (type(exc).__name__, exc)
+    # The TLS layer. The connector wraps the socket before pg8000 sees it,
+    # and a proxy restart or a certificate rotation aborts the handshake
+    # with an `ssl.SSLError` carrying the SSL library's errno, which is
+    # neither a `ConnectionError` nor a network errno (Codex P1 on #999).
+    import ssl
+    for exc in (ssl.SSLError(1, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF"),
+                ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+                ssl.SSLZeroReturnError(6, "TLS/SSL connection has been closed"),
+                ssl.SSLCertVerificationError(1, "certificate verify failed")):
+        assert is_infrastructure_error(exc), type(exc).__name__
+
+    # psycopg2's `InterfaceError` has the same two faces as pg8000's and was
+    # registered wholesale (Codex P1 on #999): the connection being gone
+    # classifies; the cursor being closed, a value the driver cannot parse,
+    # and misuse of the asynchronous API do not.
+    assert psycopg2.InterfaceError not in INFRASTRUCTURE_ERRORS
+    for message in ("connection already closed", "asynchronous connection failed"):
+        assert is_infrastructure_error(psycopg2.InterfaceError(message)), message
+    for message in ("cursor already closed", "failed to parse range: '[1,2'",
+                    "can't parse type: 'x'",
+                    "execute cannot be used while an asynchronous query is underway"):
+        assert not is_infrastructure_error(psycopg2.InterfaceError(message)), message
+    assert not is_infrastructure_error(psycopg2.InterfaceError())
 
     # The PRODUCTION driver. `model_routing.connect()` returns a bare pg8000
     # connection, so its client-side failures arrive raw and without a
@@ -1373,7 +1397,6 @@ def test_infrastructure_errors_are_classified_by_type():
     # accepted wholesale, straight past the message filter (Codex P1 on
     # #999). What it wraps decides, reached through `__cause__` and, when a
     # re-raise has stripped that, through `.orig`.
-    from api.infra_errors import INFRASTRUCTURE_ERRORS
     assert sa_exc.InterfaceError not in INFRASTRUCTURE_ERRORS
     for message, expected in (("Cursor closed", False),
                               ("identifier must be a str", False),
@@ -1387,11 +1410,13 @@ def test_infrastructure_errors_are_classified_by_type():
         bare = sa_exc.InterfaceError("SELECT 1", {}, orig)   # no __cause__
         assert bare.__cause__ is None and bare.orig is orig
         assert is_infrastructure_error(bare) is expected, (message, "orig")
-    psy = psycopg2.InterfaceError("connection already closed")
-    try:
-        raise sa_exc.InterfaceError("SELECT 1", {}, psy) from psy
-    except sa_exc.InterfaceError as wrapped_sa:
-        assert is_infrastructure_error(wrapped_sa)
+    for message, expected in (("connection already closed", True),
+                              ("cursor already closed", False)):
+        psy = psycopg2.InterfaceError(message)
+        try:
+            raise sa_exc.InterfaceError("SELECT 1", {}, psy) from psy
+        except sa_exc.InterfaceError as wrapped_sa:
+            assert is_infrastructure_error(wrapped_sa) is expected, message
 
     # The Cloud SQL connector's control plane. `Connector.connect()` fetches
     # metadata and an ephemeral certificate from the SQL Admin API over

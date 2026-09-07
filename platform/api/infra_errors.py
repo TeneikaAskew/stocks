@@ -28,6 +28,7 @@ from __future__ import annotations
 import errno
 import logging
 import socket
+import ssl
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +56,18 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         # (Codex P1 on #999). The optional-dependency case is decided by NAME
         # in `_optional_dependency_missing` instead.
     ]
-    try:                                    # psycopg2, the Cloud SQL driver
+    try:                                    # psycopg2, the direct-DSN driver
         import psycopg2                     # noqa: PLC0415
         # OperationalError: cannot connect / connection lost.
-        # InterfaceError: the connection object is already closed.
+        # InterfaceError is NOT registered by class, for the reason pg8000's
+        # is not: psycopg2 raises it for a closed connection AND for
+        # "cursor already closed", a range or hstore value it cannot parse,
+        # and every "cannot be used while ..." misuse of the API. It is
+        # decided by message in `_psycopg2_transport_failure` below
+        # (Codex P1 on #999).
         # DatabaseError is NOT included: ProgrammingError and IntegrityError
         # are its subclasses and both mean our SQL is wrong.
-        found += [psycopg2.OperationalError, psycopg2.InterfaceError]
+        found += [psycopg2.OperationalError]
     except Exception:                       # pragma: no cover - image without it
         logger.debug("psycopg2 not importable; its errors are not classified")
     # pg8000, the PRODUCTION Cloud SQL driver, is deliberately NOT registered
@@ -176,6 +182,10 @@ def _network_unreachable(exc: BaseException) -> bool:
 
 
 try:                                        # pragma: no cover - image without it
+    import psycopg2 as _psycopg2
+except Exception:                           # pragma: no cover
+    _psycopg2 = None
+try:                                        # pragma: no cover - image without it
     import pg8000.exceptions as _pg8000_exc
 except Exception:                           # pragma: no cover
     _pg8000_exc = None
@@ -200,6 +210,38 @@ def _pg8000_transport_failure(exc: BaseException) -> bool:
     if _pg8000_exc is None or not isinstance(exc, _pg8000_exc.InterfaceError):
         return False
     return bool(exc.args) and exc.args[0] in _PG8000_TRANSPORT_MESSAGES
+
+
+#: psycopg2's `InterfaceError` has the same two faces. These two messages,
+#: verbatim from the C extension (2.9.12), are the connection being gone;
+#: "cursor already closed", "failed to parse range", "can't parse type", the
+#: hstore parser and the "cannot be used while ..." family are the caller's
+#: (Codex P1 on #999).
+_PSYCOPG2_TRANSPORT_MESSAGES: frozenset[str] = frozenset(
+    {"connection already closed", "asynchronous connection failed"})
+
+
+def _psycopg2_transport_failure(exc: BaseException) -> bool:
+    """A psycopg2 `InterfaceError` that means the connection, not the caller."""
+    if _psycopg2 is None or not isinstance(exc, _psycopg2.InterfaceError):
+        return False
+    return bool(exc.args) and exc.args[0] in _PSYCOPG2_TRANSPORT_MESSAGES
+
+
+def _tls_transport_failure(exc: BaseException) -> bool:
+    """The TLS handshake or record layer failed: an `ssl.SSLError`.
+
+    The Cloud SQL connector wraps its data-plane socket with
+    `SSLContext.wrap_socket` before pg8000 sees it, and a proxy restart or a
+    certificate rotation aborts that handshake with a raw `ssl.SSLError` --
+    an `OSError` whose errno is the SSL library's, so neither the
+    `ConnectionError` classes nor `_NETWORK_ERRNOS` saw it (Codex P1 on
+    #999). The whole class is TLS transport and nothing else: no filesystem
+    error is an `SSLError`, and a verification failure during rotation is
+    exactly what the connector's forced certificate refresh on the next
+    attempt resolves, so the retry a 503 invites is the right answer.
+    """
+    return isinstance(exc, ssl.SSLError)
 
 
 #: PostgreSQL SQLSTATEs that mean the SERVER went away, not that our SQL is
@@ -243,8 +285,10 @@ def _retryable_http_response(exc: BaseException) -> bool:
 #: about and answers False for everything else.
 _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
                               _network_unreachable,
+                              _tls_transport_failure,
                               _pg8000_transport_failure,
                               _pg8000_server_gone,
+                              _psycopg2_transport_failure,
                               _retryable_http_response)
 
 #: Evaluated once at import. The set of installed drivers does not change
