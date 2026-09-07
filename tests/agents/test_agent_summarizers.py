@@ -825,3 +825,116 @@ def test_news_sentiment_explicit_lookback_overrides_default(monkeypatch):
     # Monday default would be 72h; explicit 24h must override.
     summarizers.summarize_news_sentiment("IWM", as_of=date(2026, 4, 27), lookback_hours=24)
     assert captured["params"]["hours"] == 24
+
+
+# ---------------------------------------------------------------------------
+# #822 (audit R5) — summarize_backtest_metrics reads the as-of day's own bar
+# ---------------------------------------------------------------------------
+#
+# The bundle passes `inclusive_today=False` (premarket contract: today's RTH
+# bar does not exist yet live, and is look-ahead in replay) to market, strat,
+# options and gamma — but `summarize_backtest_metrics` had no such knob and
+# always queried `date <= as_of`. On an INSIGHT_AS_OF replay of a past
+# morning, "today's pattern" was therefore built from that day's completed
+# bar (gap, volume, RSI, close-vs-SMA), i.e. the very session the brief was
+# supposed to be forecasting.
+
+
+def _cutoff_aware_query(monkeypatch, df):
+    """A fake `_query` that honours the SQL's `<` / `<=` cutoff against
+    `params['cutoff']`, so the test observes which bars the function can
+    actually see — not just the SQL text."""
+    seen: list[tuple[str, dict]] = []
+
+    def fake_query(sql: str, params=None):
+        seen.append((sql, params or {}))
+        if "market_data_daily" not in sql:
+            return pd.DataFrame()
+        cutoff = pd.Timestamp(params["cutoff"]).date()
+        dates = pd.to_datetime(df["date"]).dt.date
+        if "date < CAST(:cutoff AS date)" in sql:
+            out = df[dates < cutoff].reset_index(drop=True)
+        else:
+            assert "date <= CAST(:cutoff AS date)" in sql, sql
+            out = df[dates <= cutoff].reset_index(drop=True)
+        if "ticker <> :ticker" in sql:
+            # Cross-ticker pull carries a `ticker` column per source row.
+            out = out.assign(ticker="QQQ")
+        return out
+
+    monkeypatch.setattr(summarizers, "_query", fake_query)
+    return seen
+
+
+def test_backtest_metrics_premarket_contract_excludes_as_of_bar(monkeypatch):
+    from datetime import date as _date
+    df = _synth_daily_bars()
+    as_of = pd.Timestamp(df.iloc[-1]["date"]).date()
+    prior = pd.Timestamp(df.iloc[-2]["date"]).date()
+    seen = _cutoff_aware_query(monkeypatch, df)
+
+    out = summarizers.summarize_backtest_metrics(
+        "SPY", as_of=as_of, cross_ticker=False, inclusive_today=False)
+    assert out["available"] is True, out.get("reason")
+    assert out["pattern_today"]["date"] == str(prior), \
+        "premarket contract must build the pattern from the prior completed bar"
+    assert "date < CAST(:cutoff AS date)" in seen[0][0]
+    assert isinstance(as_of, _date)
+
+
+def test_backtest_metrics_eod_contract_keeps_as_of_bar(monkeypatch):
+    """`inclusive_today=True` (explicit EOD analytics) still admits the
+    as-of bar — the knob is a contract choice, not a blanket exclusion."""
+    df = _synth_daily_bars()
+    as_of = pd.Timestamp(df.iloc[-1]["date"]).date()
+    seen = _cutoff_aware_query(monkeypatch, df)
+
+    out = summarizers.summarize_backtest_metrics(
+        "SPY", as_of=as_of, cross_ticker=False, inclusive_today=True)
+    assert out["available"] is True, out.get("reason")
+    assert out["pattern_today"]["date"] == str(as_of)
+    assert "date <= CAST(:cutoff AS date)" in seen[0][0]
+
+
+def test_backtest_metrics_default_is_premarket_contract(monkeypatch):
+    """The default must match the bundle's default (False): a caller that
+    passes only `as_of` gets the no-look-ahead behaviour."""
+    df = _synth_daily_bars()
+    as_of = pd.Timestamp(df.iloc[-1]["date"]).date()
+    prior = pd.Timestamp(df.iloc[-2]["date"]).date()
+    _cutoff_aware_query(monkeypatch, df)
+    out = summarizers.summarize_backtest_metrics("SPY", as_of=as_of, cross_ticker=False)
+    assert out["pattern_today"]["date"] == str(prior)
+
+
+def test_backtest_metrics_cross_ticker_query_honours_the_same_cutoff(monkeypatch):
+    """The cross-ticker analog pull must use the same operator, or the
+    as-of bar leaks back in through SPY/QQQ/IWM analogs."""
+    df = _synth_daily_bars()
+    as_of = pd.Timestamp(df.iloc[-1]["date"]).date()
+    seen = _cutoff_aware_query(monkeypatch, df)
+    summarizers.summarize_backtest_metrics(
+        "SPY", as_of=as_of, cross_ticker=True, inclusive_today=False)
+    daily_sqls = [s for s, _ in seen if "market_data_daily" in s]
+    assert daily_sqls, "no market_data_daily query issued"
+    assert all("date <= CAST(:cutoff AS date)" not in s for s in daily_sqls), \
+        "a cross-ticker query still admits the as-of bar"
+
+
+def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
+    calls = {}
+
+    def fake_backtest(ticker, lookback_days=90, as_of=None, *, cross_ticker=True,
+                      inclusive_today=True):
+        calls["inclusive_today"] = inclusive_today
+        return {"available": False, "reason": "stub"}
+
+    monkeypatch.setattr(summarizers, "summarize_backtest_metrics", fake_backtest)
+    monkeypatch.setattr(summarizers, "_query", lambda sql, params=None: pd.DataFrame())
+    for name in ("summarize_market_context", "summarize_strat_status",
+                 "summarize_options_flow", "summarize_gamma_levels",
+                 "summarize_catalysts", "summarize_news_sentiment"):
+        monkeypatch.setattr(summarizers, name,
+                            lambda *a, **k: {"available": False, "reason": "stub"})
+    summarizers.build_context_bundle("SPY", inclusive_today=False)
+    assert calls["inclusive_today"] is False

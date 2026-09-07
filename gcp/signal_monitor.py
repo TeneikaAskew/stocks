@@ -364,6 +364,25 @@ class SignalMonitor:
             print(f"  Error fetching {ticker}: {e}")
             return pd.DataFrame()
 
+    def _times_to_et(self, times: pd.Series) -> pd.Series:
+        """Normalise a bar-time Series to America/New_York for session math.
+
+        One choke point for every ET-window comparison in this class
+        (level tracking, leg trackers, ORB). Three input shapes:
+
+        * tz-aware → convert (live AlphaVantage bars carry ET).
+        * naive **and replaying** → the bars came from
+          ``market_data_intraday``, whose timestamps are UTC: localise as
+          UTC, then convert. This is the branch #819 was missing in
+          ``check_orb``.
+        * naive live → already ET; returned as-is.
+        """
+        if getattr(times.dt, 'tz', None) is not None:
+            return times.dt.tz_convert(_ET)
+        if self.replay_clock_ts is not None:
+            return times.dt.tz_localize('UTC').dt.tz_convert(_ET)
+        return times
+
     def update_window(self, ticker: str, new_data: pd.DataFrame):
         """Append new data to the rolling window, keep last N bars."""
         if new_data.empty:
@@ -390,13 +409,7 @@ class SignalMonitor:
         if new_data is None or new_data.empty or 'Time' not in new_data.columns:
             return
         try:
-            times = pd.to_datetime(new_data['Time'])
-            if getattr(times.dt, 'tz', None) is not None:
-                times_et = times.dt.tz_convert(_ET)
-            elif self.replay_clock_ts is not None:
-                times_et = times.dt.tz_localize('UTC').dt.tz_convert(_ET)
-            else:
-                times_et = times
+            times_et = self._times_to_et(pd.to_datetime(new_data['Time']))
             today = self._now(_ET).date()
             rth = ((times_et.dt.date == today)
                    & (times_et.dt.time >= _RTH_OPEN)
@@ -576,13 +589,7 @@ class SignalMonitor:
         if new_data is None or new_data.empty or 'Time' not in new_data.columns:
             return
         try:
-            times = pd.to_datetime(new_data['Time'])
-            if getattr(times.dt, 'tz', None) is not None:
-                times_et = times.dt.tz_convert(_ET)
-            elif self.replay_clock_ts is not None:
-                times_et = times.dt.tz_localize('UTC').dt.tz_convert(_ET)
-            else:
-                times_et = times
+            times_et = self._times_to_et(pd.to_datetime(new_data['Time']))
             today = self._now(_ET).date()
             rth = ((times_et.dt.date == today)
                    & (times_et.dt.time >= _RTH_OPEN)
@@ -847,7 +854,13 @@ class SignalMonitor:
             return
 
         market_open = self.market_cfg.market_open_time
-        times = pd.to_datetime(df['Time'])
+        # Bar clock times must be in ET before comparing to the ET open.
+        # Live bars are ET; replay bars from market_data_intraday are UTC,
+        # and the old bare `pd.to_datetime(df['Time']).dt.time` compared
+        # 13:30 UTC bars against 09:30 ET — selecting 09:30-10:00 UTC
+        # (05:30-06:00 ET pre-market) as the opening range (#819, the
+        # 2026-05-06 V1 harness bug in production code).
+        times = self._times_to_et(pd.to_datetime(df['Time']))
         for minutes, label in [(5, '5m'), (15, '15m'), (30, '30m')]:
             orb_end = time(9, 30 + minutes) if minutes < 30 else time(10, 0)
             in_orb = (times.dt.time >= market_open) & (times.dt.time <= orb_end)

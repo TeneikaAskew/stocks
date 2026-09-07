@@ -1,5 +1,14 @@
 name: Deploy staging
 
+# DO NOT DISPATCH until #990 (chore/rename-services-to-solyra) has merged.
+# The gcr.io/trading-platform image packages were retired on 2026-09-07
+# (docs/audits/COST_AUDIT_2026-09-06.md §3a) and the live services are
+# solyra-api-prod / solyra-api-staging. On this branch platform/deploy.sh
+# still defaults to IMAGE_NAME=trading-platform and, under
+# STAGING_SERVICE=1, to the deleted trading-platform-staging service, so a
+# dispatch would rebuild the retired package and deploy a revision of a
+# service that no longer exists. #990 renames both defaults.
+#
 # One-click redeploy of trading-platform-staging (the PUBLIC, Firebase-gated
 # staging service solyra talks to) from the current main, with the DB schema
 # rolled forward first.
@@ -109,6 +118,28 @@ name: Deploy staging
 #                                      act as service account <numeric id>"
 #                                      AFTER the source tarball uploads
 #                                      (run #12)
+#   roles/artifactregistry.writer    on BOTH image repos (gcr.io, location
+#                                    us, and trading, location us-east1) —
+#                                    platform/deploy.sh now runs
+#                                    `./gcp/deploy.sh pin-images --no-sweep`
+#                                    before its build, which lists tags on
+#                                    every package a Cloud Run job or service
+#                                    runs and creates/moves inuse-* tags so
+#                                    the Artifact Registry cleanup policy
+#                                    never deletes a digest that is still
+#                                    deployed. Reader is not enough (no
+#                                    tags.create/update) and it must cover
+#                                    the trading repo too (the jobs image is
+#                                    inventoried as well). It fails closed:
+#                                    without this grant the run stops before
+#                                    building, with the failing call named.
+#                                    Granted to arch-refresh-bot@ on both
+#                                    repos 2026-09-07 (read back live). To
+#                                    re-apply after a rebuild of the SA:
+#                                      for r in "gcr.io us" "trading us-east1"; do set -- $r
+#                                        gcloud artifacts repositories add-iam-policy-binding $1 --location=$2 \
+#                                          --member=serviceAccount:arch-refresh-bot@adept-mountain-474619-d4.iam.gserviceaccount.com \
+#                                          --role=roles/artifactregistry.writer; done
 #   roles/artifactregistry.reader    on the gcr.io repo (location us) —
 #                                    `gcloud run deploy` resolves the freshly
 #                                    built image via
