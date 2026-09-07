@@ -72,7 +72,7 @@ def test_overlapping_schema_builds_apply_in_start_order():
     assert 'TAGS="apply-schema-on-change solyra-api-staging-deploy"' in src
     staging = yaml.safe_load((REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml").read_text())
     assert staging.get("tags") == ["solyra-api-staging-deploy"]
-    assert "--ongoing" in src and "createTime<'${self_start}'" in src, \
+    assert "--ongoing" in src and "createTime<'${self_create}'" in src, \
         "must wait only on builds that started earlier (total order, no deadlock)"
     code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
     assert not any("|| true" in ln for ln in code), "the guard must fail closed"
@@ -99,7 +99,12 @@ def test_the_wait_reserves_the_build_time_the_apply_and_deploy_need():
     build's createTime and timeout and stops when the remaining budget
     falls below a reserve that covers the apply job and the deploy."""
     src = WAIT.read_text()
-    assert "value(createTime,timeout)" in src, "the budget comes from the build itself"
+    # Cloud Build's `timeout` is the duration the build may RUN; queued time
+    # is bounded separately by queueTtl (Codex on #1022). So the budget is
+    # anchored to startTime, while createTime still orders peers.
+    assert "value(createTime,startTime,timeout)" in src, "the budget comes from the build itself"
+    assert 'date -u -d "${self_start_time}"' in src, "the deadline is anchored to startTime"
+    assert "createTime<'${self_create}'" in src, "peer ordering stays on createTime"
     reserve = int(src.split("RESERVE_SECONDS:-")[1].split("}")[0])
     assert reserve >= _apply_job_task_timeout() + 240, \
         "the reserve must cover the apply job's timeout plus the deploy/pin step"

@@ -35,9 +35,15 @@
 # the pin or deploy step. A fixed wait budget ignored all of that, so the
 # outer Cloud Build timeout could kill the build in the middle of the apply
 # (Codex on #1022). The budget is therefore read from the build itself:
-# createTime and timeout from `gcloud builds describe`, and the wait stops
+# startTime and timeout from `gcloud builds describe`, and the wait stops
 # once the time left before the build's own timeout falls below
 # RESERVE_SECONDS, which covers the apply job and the step after it.
+# `timeout` is the duration the build may RUN, counted from startTime;
+# time spent queued before a worker picked the build up is bounded
+# separately by queueTtl, so anchoring to createTime would charge the
+# queue wait against the run budget (Codex on #1022). createTime still
+# orders peers: a queued build is "earlier" from the moment it was
+# created, which is what keeps the order total.
 set -euo pipefail
 
 SELF="${1:-}"
@@ -50,30 +56,31 @@ if [ -z "${SELF}" ]; then
   exit 2
 fi
 
-if ! self_desc=$(gcloud builds describe "${SELF}" --format='value(createTime,timeout)' 2>&1); then
+if ! self_desc=$(gcloud builds describe "${SELF}" --format='value(createTime,startTime,timeout)' 2>&1); then
   echo "ERROR: cannot describe this build (${SELF}); cannot order it against its peers." >&2
   echo "       ${self_desc}" >&2
   exit 1
 fi
-self_start=$(printf '%s' "${self_desc}" | cut -f1)
-self_timeout=$(printf '%s' "${self_desc}" | cut -f2 | sed 's/[^0-9].*$//')
-if [ -z "${self_start}" ] || [ -z "${self_timeout}" ]; then
-  echo "ERROR: build ${SELF} has no createTime/timeout (${self_desc}); refusing to guess." >&2
+self_create=$(printf '%s' "${self_desc}" | cut -f1)
+self_start_time=$(printf '%s' "${self_desc}" | cut -f2)
+self_timeout=$(printf '%s' "${self_desc}" | cut -f3 | sed 's/[^0-9].*$//')
+if [ -z "${self_create}" ] || [ -z "${self_start_time}" ] || [ -z "${self_timeout}" ]; then
+  echo "ERROR: build ${SELF} has no createTime/startTime/timeout (${self_desc}); refusing to guess." >&2
   exit 1
 fi
-if ! self_epoch=$(date -u -d "${self_start}" +%s 2>&1); then
-  echo "ERROR: cannot parse createTime '${self_start}': ${self_epoch}" >&2
+if ! self_epoch=$(date -u -d "${self_start_time}" +%s 2>&1); then
+  echo "ERROR: cannot parse startTime '${self_start_time}': ${self_epoch}" >&2
   exit 1
 fi
 deadline_epoch=$((self_epoch + self_timeout - RESERVE_SECONDS))
-echo "build ${SELF}: created ${self_start}, timeout ${self_timeout}s, reserving ${RESERVE_SECONDS}s;" \
-     "will wait at most $((deadline_epoch - $(date -u +%s)))s for earlier schema builds"
+echo "build ${SELF}: created ${self_create}, started ${self_start_time}, timeout ${self_timeout}s," \
+     "reserving ${RESERVE_SECONDS}s; will wait at most $((deadline_epoch - $(date -u +%s)))s for earlier schema builds"
 
 while :; do
   earlier=""
   for tag in ${TAGS}; do
     if ! ongoing=$(gcloud builds list --ongoing \
-                     --filter="tags='${tag}' AND createTime<'${self_start}'" \
+                     --filter="tags='${tag}' AND createTime<'${self_create}'" \
                      --format='value(id)' 2>&1); then
       echo "ERROR: cannot list builds tagged '${tag}', so an earlier schema build" >&2
       echo "       cannot be ruled out. Refusing rather than assuming none." >&2
