@@ -19,6 +19,21 @@ body:
         #815's whole resolution is "do not add the stop", backed by 736 real
         fires and a sweep showing every stop level is worse than none.
 
+        **Not every finding has a live measurement, and that is fine.** An
+        adversarial review of static code, schema structure or test coverage
+        may have nothing safe to run against production. There the
+        re-verification is a **current-tree reproducer** — the failing test,
+        the AST walk, the grep with its output — run now against `main` as it
+        stands today, not against the tree the report was written on. Say which
+        of the two you did. What is not acceptable is claiming a live read you
+        did not make, or leaving the finding unverified because the live
+        instrument did not fit.
+
+        **Labels are not written by the form.** The Severity dropdown writes
+        body text only, so this issue carries no `severity:*` or audit label
+        until someone adds them, and `/resolve-issue` classifies partly on
+        those.
+
   - type: textarea
     id: source
     attributes:
@@ -153,17 +168,19 @@ body:
     id: attestation
     attributes:
       label: Evidence attestation
+      description: >-
+        Re-verification means running it now, not restating the report's
+        numbers. For a code-only finding that is a current-tree reproducer —
+        see the top of this form.
       options:
         - label: >-
-            The re-verification above was run against the live system while
-            filing this issue. It is not the report's original numbers restated,
-            not recalled from a previous session, and not read off a doc.
+            The re-verification above was run while filing this issue: against
+            the live system, or against the current tree where the finding is
+            code-only and I said which.
           required: true
         - label: >-
-            I will apply the labels after filing. The Severity dropdown writes
-            body text, not a label, so this issue does not carry `severity:*`
-            or its audit label until someone adds them, and `/resolve-issue`
-            classifies partly on those.
+            I will apply the severity and audit labels after filing, since the
+            dropdown does not write them.
           required: true
         - label: >-
             Where I characterised a population, I asked for the distribution
@@ -171,5 +188,4 @@ body:
           required: true
         - label: >-
             Corrections and retractions in the source report are carried across
-            here rather than dropped. The report's own retraction of a proposed
-            mechanism is worth preserving.
+            here rather than dropped.

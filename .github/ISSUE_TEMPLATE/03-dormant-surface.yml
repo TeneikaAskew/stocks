@@ -20,6 +20,12 @@ body:
         Cloud Scheduler entry at all. Reading the code would not have found
         that; `gcloud scheduler jobs list` did.
 
+        **A code-only surface has no live state, and saying so is not a gap.**
+        A module with no writer, no schedule and no execution history is filed
+        with those fields marked n/a; the importer search is then the whole of
+        the evidence. What is not acceptable is inventing a freshness number
+        for a surface that has none.
+
         **The sample outputs in the placeholders are dated measurements, not
         current facts.** They show the shape of a conclusive answer. Re-run
         every one against the live system — the staleness figure in particular
@@ -147,14 +153,14 @@ body:
     id: attestation
     attributes:
       label: Evidence attestation
+      description: >-
+        Live state is read from the live system while filing. A surface that
+        has no writer, schedule or execution history is filed with those marked
+        n/a — see the top of this form.
       options:
         - label: >-
-            Every piece of live state I reported above — whichever of freshness,
-            scheduler and execution history this surface actually has — was read
-            from the live system while filing, not from a doc, a code comment,
-            or a previous session's notes. A code-only surface with no writer,
-            schedule or execution history is filed with those marked n/a, and
-            the importer search below is then the evidence.
+            Every piece of live state above was read from the live system while
+            filing, and whatever this surface lacks is marked n/a, not guessed.
           required: true
         - label: >-
             The consumer search covered both repos, and I have said so if I

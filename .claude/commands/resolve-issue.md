@@ -333,9 +333,38 @@ changed:
 |---|---|
 | Signal, indicator, strategy or fire-path code | `python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. Hermetic, in-process, and the production path per Rule 3.6, so it runs YOUR tree. |
 | Brief or insight code | The as-of entrypoints in-process (`BRIEF_AS_OF`, `INSIGHT_AS_OF`) against the local tree, same reason. |
-| A Cloud Run Job's own behaviour, sizing or schedule | Build the candidate and run it **somewhere that is not the live job**: `gcloud builds submit`, then a throwaway `<job>-candidate` pointed at that digest, or the staging service. Say which digest ran and where. |
+| A Cloud Run Job's own behaviour, sizing or schedule | Build the candidate and run it **somewhere that is not the live job** — but read the isolation note below first: a renamed job is not an isolated one. |
 | API handler code | The hermetic suite plus a local `uvicorn`; the deployed service is not carrying your change yet. |
 | A query plan | `EXPLAIN (ANALYZE, BUFFERS)` runs against live data and is independent of any deploy, so it is valid now. |
+
+**A `<job>-candidate` isolates the Cloud Run resource, not its dependencies.**
+There is no staging database here. `gcp/deploy.sh:50` sets a single
+`DB_NAME="trading"` inside `_env_string`, which every job deploy passes
+verbatim, and `--set-secrets` hands the candidate the same credentials and the
+same Discord webhooks. So a candidate built from unreviewed code and executed
+under a new name writes to production exactly as the live job would. The rename
+changes which row in the Cloud Run console it appears under, and nothing else.
+
+Before executing any candidate, isolate what it can touch, in this order:
+
+1. **Use the job's own dry-run flag if it has one** (`gcp/apply_schema.py`,
+   `gcp/auth_email_templates.py` and `gcp/auto_refresh_top_n.py` all take
+   `--dry-run`). Name the flag in the evidence, so the reader can tell a
+   no-write run from a real one.
+2. **Otherwise run the entrypoint in-process**, the way
+   `scripts/replay_signal_monitor.py` does: production code path, DB upsert and
+   webhook mocked at the boundary. That is the Rule 3.6 path and it is
+   hermetic, so it proves behaviour without touching live state.
+3. **If neither exists, do not execute the candidate at all.** Prove the change
+   with the Rule 0.3 I/O-shape test — "N source rows of K tickers triggers
+   exactly K queries" — and defer behaviour proof to the post-merge deploy in
+   Phase 8 step 8. Say plainly in the issue that the candidate was not executed
+   and why, rather than running it against production and calling that
+   isolated.
+
+Adding a dry-run flag to a job that lacks one is a legitimate small PR before
+the audit, the same way Rule 3.6 says to add a missing as-of flag rather than
+write a throwaway harness.
 
 Data-state facts (is the table current, did the scheduler exist) are read from
 live at any time. What must not happen is presenting an old revision's run as
@@ -482,6 +511,32 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    this session did not open and was not asked to drive, so the merge is its
    author's call; or the user has said they want to merge it themselves. Never
    merge to get past a step above that has not passed.
+8. **Merging is not deploying.** If Phase 6 deferred the final proof to the
+   merged image, the issue is not closeable yet, because nothing between here
+   and Phase 9 puts that image in front of a user.
+
+   `gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml:26` says it
+   outright: *"Merging to main NEVER touches prod. Prod moves only when a human
+   runs the `deploy-solyra-api-prod` trigger."* And the staging build itself is
+   conditional — the same file records that the trigger's `includedFiles` is
+   `platform/**, lib/**, requirements.txt, gcp/database.py`, so a fix under
+   `scripts/` or `gcp/` that an API route imports at request time merges to
+   main and starts **no build at all**. Cloud Run Jobs are further out still:
+   they move only when someone runs `./gcp/deploy.sh <target>`.
+
+   So after merging, do one of these and say which:
+
+   - **Deploy it yourself where you can** — `./gcp/deploy.sh <target>` for a
+     job — then re-run the Phase 6 verification against the deployed revision
+     and paste that output. Name the digest.
+   - **Confirm the staging build actually fired** for an API change, rather
+     than assuming the merge triggered one; a merge outside `includedFiles`
+     silently does not.
+   - **Where promotion is an owner action this session cannot take**, keep the
+     issue OPEN, put the exact command in "Still open before this closes", and
+     say the fix is merged but not yet serving. Closing on candidate evidence
+     while calling it production proof is the failure this whole phase exists
+     to prevent.
 
 **A completed review with no findings posts no review at all** — Codex reacts
 👍 instead. So `get_reviews` cannot by itself distinguish "reviewed clean" from

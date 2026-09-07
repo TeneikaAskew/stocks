@@ -17,6 +17,11 @@ body:
         justification for a cache boundary, produced a wrong fix, and had to be
         corrected too.
 
+        **A metric that stands in for what you care about needs spot-checking
+        against a known case.** A coverage audit here reported 81 of 101 route
+        handlers untested — it had counted handler function names while the
+        suite drives URL paths. The real figure was 23.
+
         **The sample outputs in the placeholders are dated measurements, not
         current facts.** #861 was filed at 77 days stale and was 85 by the time
         work started — the drift was itself evidence about the writer. Re-run
@@ -152,21 +157,17 @@ body:
     id: attestation
     attributes:
       label: Evidence attestation
+      description: >-
+        "Measured" is defined at the top of this form. An honestly unverified
+        report is fine; an unmarked guess is not.
       options:
         - label: >-
-            Everything I have presented above **as measured** was produced by
-            running it against the live system while filing this issue — none
-            of it recalled from memory, copied from a doc or a code comment,
-            carried over from an older issue, or inferred from a plausible
-            mechanism. Anything I did not verify is labelled "not measured"
-            rather than stated as fact. An honestly unverified report is fine;
-            an unmarked guess is not.
+            Everything presented above **as measured** was run against the live
+            system now, and anything unverified is labelled as such.
           required: true
         - label: >-
             Where a metric stands in for the thing I actually care about, I
-            spot-checked the stand-in against a known case. A coverage audit
-            here once reported 81 of 101 handlers untested by counting function
-            names while the suite drives URL paths; the real figure was 23.
+            spot-checked the stand-in against a known case.
           required: true
         - label: >-
             Where a code comment contradicts my measurement, I widened the

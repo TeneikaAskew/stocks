@@ -128,11 +128,14 @@ body:
     id: attestation
     attributes:
       label: Evidence attestation
+      description: >-
+        Run it now. A parent PR's description is a claim about the state of the
+        code when that PR was written, and a moved issue is a claim about
+        another repo — neither is evidence about this tree today.
       options:
         - label: >-
             The evidence above was produced by running against the live system
-            or the current tree while filing this issue, not recalled from the
-            parent PR's description or a previous session.
+            or the current tree while filing this issue.
           required: true
         - label: >-
             If this is a move between repos, I re-verified the defect still
