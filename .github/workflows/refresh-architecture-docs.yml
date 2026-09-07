@@ -162,6 +162,17 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT }}
+          # The runner's gcloud ships GA surfaces only. doc_inventory reads
+          # domain mappings, and `gcloud run domain-mappings list` does NOT
+          # accept --region on GA -- only alpha and beta do -- so the beta
+          # component is required, not a convenience. Without it the live
+          # snapshot died on run 14 with "You do not currently have this
+          # command group installed", after WIF auth, the asset dump, IAM and
+          # billing had all passed. A sandbox has beta installed, so this could
+          # only ever surface on a runner. tests/meta derives the component
+          # list from doc_inventory, so adding an alpha or beta call without
+          # installing its component fails the test rather than the run.
+          install_components: beta
 
       # ── Snapshot live GCP state ───────────────────────────────────────────
       # Snapshots land in refresh-inputs/, NOT at the repo root. The root
