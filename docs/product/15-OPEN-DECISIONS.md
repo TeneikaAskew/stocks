@@ -19,7 +19,6 @@ Every item is **PRODUCT DECISION REQUIRED**; no target implementation should sil
 | Portfolio scope | journal only vs positions/exposure/risk portfolio | product boundary and ownership model | TBD |
 | Legacy surfaces | Apps Script, Pine scripts, static reports, archives | current consumers/owners | TBD |
 | `/dev` on public staging | [#943](https://github.com/TeneikaAskew/stocks/issues/943): keep and gate it, or drop it from public deployments — it exposes service account, IAP audience, revision and model state without sign-in when `STAGING_SERVICE=1` (see [09](09-SECURITY-AUTH.md)) | who uses `/dev`, and whether staging must stay public | TBD |
-| Open registration | `AUTH_OPEN_SIGNUP` defaults to `1`, so any verified Firebase identity is admitted; closing it means operating `AUTH_ALLOWED_EMAILS` | intended audience and onboarding model | TBD |
 | Stop-loss policy | [#815](https://github.com/TeneikaAskew/stocks/issues/815) proposes **not** adding a live stop-loss to match the backtest; the alternative is changing the backtest instead | which artifact is the source of truth for risk semantics | TBD |
 
 Decision records should capture date, owner, context, alternatives, outcome, consequences, affected feature/requirement IDs, rollout and reversal criteria.

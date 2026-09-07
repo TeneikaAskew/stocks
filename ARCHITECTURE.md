@@ -4,7 +4,7 @@
 
 ## 1. System overview (one paragraph, ~80-120 words)
 
-This system is a private stocks/trading platform deployed to the GCP project `adept-mountain-474619-d4`. It is designed for a single user or a small team, with no public authentication or per-user data partitioning. The primary delivery surfaces are Discord webhooks for scheduled briefs and a slash-command Cloud Run service, with a secondary internal React + FastAPI dashboard available via the `trading-platform` Cloud Run Service. The system is comprised of approximately 76 Cloud Run Jobs that handle various data fetching, processing, and analysis tasks.
+This system is a private stocks/trading platform deployed to the GCP project `adept-mountain-474619-d4`. It is designed for a single user or a small team. `solyra-api-staging` is publicly reachable and gated by Firebase sign-in with open self-registration (`AUTH_OPEN_SIGNUP=1`), while `solyra-api-prod` sits behind IAP; per-user scoping exists where a feature is per-user (journal entries and watchlists are keyed by owner) and not as a general tenancy model. The primary delivery surfaces are Discord webhooks for scheduled briefs and a slash-command Cloud Run service, with a secondary internal dashboard. The API is served by two Cloud Run services, `solyra-api-prod` (IAP) and `solyra-api-staging` (public edge, Firebase-gated); the React frontend moved to github.com/TeneikaAskew/solyra in #957 and is no longer built into this image. The system is comprised of approximately 76 Cloud Run Jobs that handle various data fetching, processing, and analysis tasks.
 
 ## 2. Component inventory (table form)
 
@@ -18,7 +18,7 @@ This system is a private stocks/trading platform deployed to the GCP project `ad
 | [`gcp/signal_monitor.py`](gcp/signal_monitor.py) | code | Real-time intraday signal monitor | `lib/signals`, AV intraday, Discord | Scheduler `signal-monitor-daily` |
 | [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) | code | AI insights generator | `lib/insights`, Cloud SQL, Vertex / Anthropic API | Scheduler `insight-pipeline-daily`, FastAPI `/insights/.../refresh` |
 | [`gcp/backtest_job.py`](gcp/backtest_job.py) | code | Runs `lib/backtest.StratBacktest` | `lib/backtest`, Cloud SQL, Discord | Job `backtest` (Discord-triggered) |
-| [`platform/api/main.py`](platform/api/main.py) | code | FastAPI app entry | `lib/`, Cloud SQL | Cloud Run service `trading-platform` |
+| [`platform/api/main.py`](platform/api/main.py) | code | FastAPI app entry | `lib/`, Cloud SQL | Cloud Run service `solyra-api-prod` |
 | [`lib/signals.py`](lib/signals.py) | code | Condition-scoring | `lib/indicators`, `lib/strat` | `signal_monitor`, FastAPI, fetchers |
 | [`lib/strategies/`](lib/strategies/) | code | Strategy package | `lib/indicators`, `alert_config.json` | `signal_monitor`, FastAPI, backtest |
 | [`lib/indicators.py`](lib/indicators.py) | code | Indicator math | | `signals`, `strat`, fetchers, FastAPI |
@@ -28,7 +28,8 @@ This system is a private stocks/trading platform deployed to the GCP project `ad
 
 | Resource | Type | Purpose | Notes |
 |---|---|---|---|
-| `trading-platform` | Cloud Run Service | FastAPI and React frontend | The main user-facing dashboard. |
+| `solyra-api-prod` | Cloud Run Service | FastAPI API only (no SPA since #957) | Production API, behind IAP. Deployed by the manual `deploy-solyra-api-prod` trigger, which promotes the digest staging validated. `platform/deploy.sh` with its defaults also reaches this service, without that gate — the break-glass path, documented in `gcp/cloudbuild/README.md`. |
+| `solyra-api-staging` | Cloud Run Service | FastAPI API only | Staging API, public edge + Firebase auth. Auto-deployed on merge to main. |
 | `discord-interactions` | Cloud Run Service | Handles Discord slash commands | Invokes Cloud Run Jobs based on commands. |
 | `failure-notifier` | Cloud Run Service | Notifies on job failures | Creates GitHub issues for failed jobs. |
 | `76 Cloud Run Jobs` | Cloud Run Job | Data fetching and processing | Scheduled and on-demand jobs. |
@@ -76,7 +77,8 @@ flowchart TD
 
     subgraph GCP
         subgraph "Cloud Run Services"
-            trading_platform["trading-platform (FastAPI + React)"]
+            solyra_api_prod["solyra-api-prod (FastAPI, IAP)"]
+            solyra_api_staging["solyra-api-staging (FastAPI, Firebase)"]
             discord_interactions["discord-interactions"]
             failure_notifier
         end
@@ -122,10 +124,10 @@ flowchart TD
 
     premarket_brief --> discord_channel
     signal_monitor --> discord_channel
-    insight_pipeline --> trading_platform
+    insight_pipeline --> solyra_api_staging
 
-    trading_platform --> user_dashboard
-    trading_platform --> tasks
+    solyra_api_staging --> user_dashboard
+    solyra_api_staging --> tasks
     tasks --> insight_pipeline
 
     discord_channel --> discord_interactions
@@ -142,7 +144,7 @@ flowchart TD
 ### Inventory resources with no clear repo reference
 
 - A number of `run.googleapis.com/Execution` resources are present in the inventory. These are historical records of job executions and can be ignored.
-- The previous `ARCHITECTURE.md` mentioned 42 jobs, but the inventory shows 76. This discrepancy should be investigated. It's likely due to new jobs being added.
+- RESOLVED 2026-09-05: an older revision of this file said 42 jobs and the inventory said 76. Counted live — `gcloud run jobs list --region=us-east1 | wc -l` returns **76**, so the inventory was right and the 42 was stale. No investigation outstanding.
 
 ### Resources the code references that are NOT in the inventory
 
