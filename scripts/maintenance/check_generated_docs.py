@@ -18,7 +18,11 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
                 a fresh render (the model must not edit inside them)
 * headings      no H2/H3 present in the previous version is missing, unless it
                 is listed under "Removed since last refresh"
-* size          each doc is at least 80% of its previous line count
+* size          each doc is at least 80% of its previous line count; a
+                REGENERATED doc is measured in bytes instead, since its
+                headings carry the month's data
+* structure     a regenerated doc carries every numbered section its prompt
+                promises, derived from the prompt
 * stale         no retired name or phrase appears outside history context
 * scaling       no doc states a fixed min-instances for a service whose
                 minInstanceCount is PATCHed on a schedule
@@ -63,6 +67,20 @@ SIZE_FLOOR = 0.80
 # README.md is a pointer map by design (2026-09-07); its length is not a
 # content signal, so it is exempt from the size floor (headings still apply).
 SIZE_FLOOR_EXEMPT = ("README.md",)
+# COST_ANALYSIS.md is REGENERATED from the month's billing digests -- its own
+# prompt says "Regenerate", not "update in place" -- and its headings carry
+# that month's values: `Cloud Run (Jobs & Services) — $94.26`,
+# `## 2. Top 10 cost line items by SKU (Partial August data)`,
+# `#1 — Implement Artifact Registry retention policies (estimated saving: $20-25/mo)`.
+# Demanding those persist demands this month's report keep last month's
+# numbers, and run 17 failed on twelve of them plus a line-count floor while
+# the document GREW 31% in bytes (6,143 -> 8,027 over 103 -> 82 lines). The
+# churn ceiling already treated it as regenerated at 0.85; these two gates did
+# not. What replaces them is stricter about the thing that matters: every
+# numbered section the prompt promises must be present, and the byte mass may
+# not collapse. (Run 17, 2026-09-07.)
+REGENERATED = ("COST_ANALYSIS.md",)
+BYTE_FLOOR = 0.80
 
 # An update that rewrites most of a document is a regeneration wearing an
 # update's clothes: the 2026-09-02 run replaced 394 lines with 158 and every
@@ -215,16 +233,56 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
         old, new = prev.read_text(), (root / doc).read_text()
         removed_section = new[new.find(REMOVED_HEADING):] if REMOVED_HEADING in new else ""
         new_heads = {h.lower() for h in _headings(new)}
-        for h in _headings(old):
+        for h in [] if doc in REGENERATED else _headings(old):
             core = re.sub(r"^[\d.]+\s*", "", h)
             if h.lower() in new_heads or core.lower() in {re.sub(r"^[\d.]+\s*", "", x) for x in new_heads}:
                 continue
             if core and core.lower() in removed_section.lower():
                 continue
             out.append(f"{doc}: heading lost since the previous version and not listed under '{REMOVED_HEADING}': {h!r}")
+        if doc in REGENERATED:
+            # Lines are the wrong unit for a document rebuilt from data: run 17
+            # lost 21 lines while gaining 1,884 bytes. Mass is the measure.
+            ob, nb = len(old.encode()), len(new.encode())
+            if nb < ob * BYTE_FLOOR:
+                out.append(f"{doc}: shrank from {ob} to {nb} bytes "
+                           f"(< {int(BYTE_FLOOR*100)}%) — content was dropped, not regenerated")
+            continue
         o, n = len(old.splitlines()), len(new.splitlines())
         if doc not in SIZE_FLOOR_EXEMPT and n < o * SIZE_FLOOR:
             out.append(f"{doc}: shrank from {o} to {n} lines (< {int(SIZE_FLOOR*100)}%) — content was dropped, not updated")
+    return out
+
+
+def _promised_sections(root: pathlib.Path, prompt: str) -> list[tuple[str, str]]:
+    """The numbered sections a regeneration prompt promises to produce.
+
+    Derived from the prompt rather than written down here, so a section added
+    to or removed from the prompt moves the gate with it.
+    """
+    f = root / ".github/prompts" / prompt
+    if not f.exists():
+        return []          # reported as a finding by the caller, not swallowed
+    body = f.read_text().split("## What to produce", 1)[-1].split("\n## ", 1)[0]
+    return re.findall(r"^#{2,4} (\d+)\. (.+)$", body, re.M)
+
+
+def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
+    """A regenerated document loses the heading-persistence gate, so its
+    sections are checked against what its prompt promises instead. The titles
+    are matched without any data suffix -- "(Partial August data)" is this
+    month's caveat, not part of the section's identity."""
+    out = []
+    for doc, prompt in (("COST_ANALYSIS.md", "cost-analysis.md"),):
+        promised = _promised_sections(root, prompt)
+        if not promised:
+            out.append(f"{prompt}: no numbered sections found; the structure gate for {doc} is not running")
+            continue
+        heads = [h.lower() for h in _headings((root / doc).read_text())]
+        for num, title in promised:
+            want = f"{num}. {title.strip().lower()}"
+            if not any(h.startswith(want) for h in heads):
+                out.append(f"{doc}: missing the section its prompt promises: {num}. {title.strip()!r}")
     return out
 
 
@@ -500,6 +558,7 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_markers(root, repo, live)
     findings += gate_diff_budget(diff_stats(root, previous_dir), allow_rewrite)
     findings += gate_headings_and_size(root, previous_dir)
+    findings += gate_regenerated_structure(root)
     findings += gate_derived_numbers(root, repo, live)
     findings += gate_new_suppressions(root, previous_dir)
     findings += gate_scheduled_scaling(root, repo)
