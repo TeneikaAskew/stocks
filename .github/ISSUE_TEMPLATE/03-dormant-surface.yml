@@ -126,7 +126,14 @@ body:
         # Measured — under that pathspec `refresh-earnings-views`, `replay_signal_monitor`,
         # `_emergency_ceiling_block` and `db_query_cr` ALL return 0 commits, so the search
         # answers "never had a consumer" for every surface in the repo.
-        $ git log --oneline --all --full-history -G "<symbol>" --no-renames \
+        # --diff-merges=separate as well: --full-history controls TRAVERSAL, not
+        # whether merge diffs are SEARCHED. An importer introduced only by a manual
+        # conflict resolution in a merge commit is invisible without it. Reproduced
+        # on git 2.43.0 (solyra#63): without it the search returned only the commit
+        # that REMOVED the importer; with it, the merge that added it appears too.
+        # "Added by nobody, removed by someone" is the tell.
+        $ git log --oneline --all --full-history --diff-merges=separate \
+            -G "<symbol>" --no-renames \
             -- lib gcp platform scripts .github tests
         <sha> (date) added it and wired it into <the caller>
         <sha> (date) rewrote that caller, silently dropping the mount
