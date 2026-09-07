@@ -99,15 +99,20 @@ class TradeLogger:
     @staticmethod
     def _filter_run_kind(df: pd.DataFrame, run_kind) -> pd.DataFrame:
         """Apply the same run_kind restriction to a Parquet fallback frame.
-        log_trade() writes every kind to those files, so the fallback would
-        otherwise return replay and backfill rows the SQL path excludes
-        (Codex on #1022). A file written before the column existed holds
-        live monitor rows, so a missing column reads as 'live'."""
+
+        The only writer of these files is the live monitor's fire_alert,
+        which stamps run_kind on every row it logs; rows written before that
+        stamp existed (files with no column, or the leading rows of a file
+        that was later appended to) carry a null. The rule is ROW-level and
+        null reads as 'live', because every such row came from that one
+        writer (internal review of #1022 round 14: a column-presence test
+        dropped the pre-stamp rows of a mixed file). An empty result keeps
+        the frame's columns.
+        """
         if run_kind is None or df.empty:
             return df
-        if 'run_kind' not in df.columns:
-            return df if run_kind == 'live' else df.iloc[0:0]
-        return df[df['run_kind'] == run_kind].reset_index(drop=True)
+        kinds = df['run_kind'] if 'run_kind' in df.columns else pd.Series(None, index=df.index, dtype=object)
+        return df[kinds.fillna('live') == run_kind].reset_index(drop=True)
 
     def get_daily_trades(self, date=None, run_kind='live') -> pd.DataFrame:
         """Load trades for a specific date (Cloud SQL preferred, Parquet fallback)."""
@@ -195,8 +200,9 @@ class TradeLogger:
         if not files:
             return pd.DataFrame()
         frames = [self._filter_run_kind(pd.read_parquet(f), run_kind) for f in files]
-        frames = [f for f in frames if not f.empty]
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        kept = [f for f in frames if not f.empty]
+        # Nothing left: an empty frame that still carries the columns.
+        return pd.concat(kept, ignore_index=True) if kept else frames[0].iloc[0:0]
 
     def _load_parquet_for_date(self, date) -> pd.DataFrame:
         path = self._daily_file(date)

@@ -105,3 +105,51 @@ def test_empty_live_query_falls_through_to_filtered_parquet(tmp_path):
     with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
          patch("gcp.database.query_to_dataframe", lambda sql, params=None: pd.DataFrame()):
         assert sorted(tl.get_daily_trades(d1)["trade_id"]) == [1]
+
+
+_REAL_COLUMNS = ['ticker', 'direction', 'entry_time', 'entry_price', 'signal_strength',
+                 'total_score', 'position_size', 'conditions_met', 'trade_date']
+
+
+def _real_row(ticker, **extra):
+    row = {'ticker': ticker, 'direction': 'CALL', 'entry_time': '2026-09-07T14:31:00',
+           'entry_price': 100.0, 'signal_strength': 6.0, 'total_score': 6, 'position_size': 1.0,
+           'conditions_met': 'x', 'trade_date': '2026-09-07'}
+    row.update(extra)
+    return row
+
+
+def test_fallback_handles_the_real_nine_column_file_and_a_mixed_file_row_by_row(tmp_path):
+    """Internal review of round 14: production Parquet files carry exactly
+    these nine columns (data/trades/2026-09-07.parquet, 523 rows) and the
+    only writer is the live monitor's fire_alert, which now stamps
+    run_kind; rows from before the stamp carry none. The rule is row-level:
+    a null run_kind reads as live, so a mixed file (pre-stamp rows appended
+    to by stamped rows) keeps its earlier rows instead of dropping them."""
+    tl = TradeLogger(output_dir=str(tmp_path))
+    d1, d2 = date(2026, 9, 6), date(2026, 9, 7)
+    _write_parquet(tl._daily_file(d1), [_real_row('SPY'), _real_row('IWM')])
+    pd.DataFrame([_real_row('QQQ')]).to_parquet(tl._daily_file(d2), index=False)
+    tl.log_trade(_real_row('DIA', run_kind='live', trade_date='2026-09-07'))
+    tl.log_trade(_real_row('XLF', run_kind='replay', trade_date='2026-09-07'))
+    mixed = pd.read_parquet(tl._daily_file(d2))
+    assert list(mixed['run_kind'].isna()) == [True, False, False], "the pre-stamp row is null, not dropped"
+    with patch("gcp.trade_logger._cloud_sql_active", return_value=False):
+        assert sorted(tl.get_daily_trades(d1)['ticker']) == ['IWM', 'SPY']
+        assert sorted(tl.get_daily_trades(d2)['ticker']) == ['DIA', 'QQQ']
+        assert sorted(tl.get_daily_trades(d2, run_kind='replay')['ticker']) == ['XLF']
+        assert sorted(tl.get_weekly_trades(d2)['ticker']) == ['DIA', 'IWM', 'QQQ', 'SPY']
+        empty = tl.get_all_trades(run_kind='backfill')
+        assert empty.empty and 'ticker' in empty.columns, "an empty result keeps the schema"
+
+
+def test_the_monitor_stamps_run_kind_on_every_logged_trade():
+    """So the Parquet files carry provenance from now on and the null-as-live
+    rule shrinks to the files written before this change."""
+    import inspect
+
+    from gcp import signal_monitor
+
+    src = inspect.getsource(signal_monitor.SignalMonitor._persist_signal_alert)
+    block = src[src.index("trade_data = {"):src.index("TradeLogger().log_trade(trade_data)")]
+    assert "'run_kind': 'live'" in block

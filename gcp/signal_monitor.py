@@ -1713,6 +1713,10 @@ class SignalMonitor:
                 'position_size': size,
                 'conditions_met': sig['conditions_met'],
                 'trade_date': str(now.date()),
+                # Provenance, matching trades.run_kind: the Parquet fallback
+                # readers filter on it, and a row without it reads as live
+                # only because this is the files' one writer (#1022).
+                'run_kind': 'live',
             }
             TradeLogger().log_trade(trade_data)
             logger.info("Trade logged for %s %s", ticker, sig['direction'])
