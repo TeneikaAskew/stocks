@@ -307,6 +307,10 @@ _TZ_CONTEXT = (
 # alternatives (`tz=`, `timezone:`, a constructor call) appear in ordinary
 # prose and in Python that another branch already reads properly, so they are
 # not evidence that a string is SQL.
+# libpq's per-connection settings: `-c timezone=EST` in `options`, or the
+# long spelling. `PGTZ=` is already a `_TZ_CONTEXT`.
+_LIBPQ_OPTION = re.compile(r"(?:^|\s)-c\s*timezone\s*=|--timezone\s*=", re.I)
+
 _SQL_STATEMENT = re.compile(
     r"(?:" + _B + r"SET\s+(?:LOCAL\s+|SESSION\s+)?TIME[ _]?ZONE"
     r"|" + _B + r"AT TIME ZONE"
@@ -344,9 +348,16 @@ NONPY_UNAMBIGUOUS = re.compile(
     + r""")['"]?"""
     r"""(?![A-Za-z0-9_/-])""", re.I
 )
+# `\` at end of line joins the next line in shell, so `export TZ=\` then
+# `EST` is one assignment. Joining the text is not an option: every shell
+# pass here is width-preserving because `_scalar_in_force` and
+# `_scheduler_commands` resolve by character offset, and a join removes a
+# newline. So the MATCHERS tolerate a continuation between context and value
+# instead, and the text stays exactly as written (Codex, PR #993).
+_GAP = r"(?:\s|\\\n)*"
 NONPY_AMBIGUOUS = re.compile(
-    r"(?:" + _TZ_CONTEXT + r")\s*"
-    r"""['"]?(?:""" + "|".join(AMBIGUOUS_LEGACY) + r""")['"]?"""
+    r"(?:" + _TZ_CONTEXT + r")" + _GAP
+    + r"""['"]?(?:""" + "|".join(AMBIGUOUS_LEGACY) + r""")['"]?"""
     r"""(?![A-Za-z0-9_/-])""", re.I
 )
 # `EST5` and `EDT4` are POSIX's fixed form -- a std abbreviation with an
@@ -381,7 +392,7 @@ _FIXED_OFFSET_TEXT = r"(?:-\s*0?[45]:?00(?::00)?|EST5|EDT4)"
 # requiring both quotes exempted it (Codex, PR #993). The lookahead keeps the
 # unquoted branch from matching a longer number.
 NONPY_FIXED_OFFSET = re.compile(
-    r"(?:" + _TZ_CONTEXT + r")\s*['\"]?\s*" + _FIXED_OFFSET_TEXT
+    r"(?:" + _TZ_CONTEXT + r")" + _GAP + r"['\"]?\s*" + _FIXED_OFFSET_TEXT
     # `:` in the lookahead, so a seconds field the pattern did NOT consume
     # rejects the match instead of leaving it matched on a prefix.
     + r"\s*['\"]?(?![A-Za-z0-9_:])", re.I
@@ -395,10 +406,55 @@ NONPY_FIXED_OFFSET = re.compile(
 # the same trap that keeps `UTC-05:00` out of `_FIXED_OFFSET_TEXT`. One
 # spelling, two opposite meanings, decided by which side of the assignment it
 # sits on.
+# `SET timezone TO '-5'` and `SET TIMEZONE = -4` are the GUC spellings of the
+# same statement -- `TIME ZONE` is the SQL-standard form, `timezone` the
+# parameter name, and both `TO` and `=` are accepted -- and the numeric
+# matcher knew only the standard form (Codex, PR #993).
+_SQL_SET_TZ = r"\bSET\s+(?:LOCAL\s+|SESSION\s+)?TIME[ _]?ZONE\s*(?:TO\s+|=\s*)?"
 NONPY_SQL_NUMERIC_OFFSET = re.compile(
-    r"\bSET\s+(?:LOCAL\s+|SESSION\s+)?TIME\s+ZONE\s+['\"]?\s*"
-    r"-\s*0?[45]\s*['\"]?(?![0-9:])", re.I
+    _SQL_SET_TZ + r"['\"]?\s*-\s*0?[45]\s*['\"]?(?![0-9:])", re.I
 )
+
+
+class _SqlIntervalOffset:
+    """`SET TIME ZONE INTERVAL '-5 hours'`, evaluated rather than spelled.
+
+    Round 18 added `INTERVAL '-05:00' HOUR TO MINUTE` as its own pattern, and
+    the unit-bearing interval was the third `INTERVAL` shape in as many
+    rounds. A fourth regex is the thing to stop: a constant interval is a
+    NUMBER with a unit, so it is totalled and compared, as `_const_number`
+    already does for folded arithmetic on the Python side (Codex, PR #993).
+
+    `finditer`/`search` so it sits in the same loop as the compiled patterns.
+    """
+    _UNIT = {"h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
+             "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60,
+             "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1}
+    _PAT = re.compile(
+        _SQL_SET_TZ + r"INTERVAL\s+'\s*([^']*?)\s*'", re.I)
+    _TERM = re.compile(r"([-+]?\d+(?:\.\d+)?)\s*([A-Za-z]+)")
+
+    def _total(self, body: str):
+        total, seen = 0.0, False
+        for num, unit in self._TERM.findall(body):
+            scale = self._UNIT.get(unit.lower())
+            if scale is None:
+                return None             # a unit not modelled: undecidable
+            total += float(num) * scale
+            seen = True
+        return total if seen else None
+
+    def finditer(self, text: str):
+        for m in self._PAT.finditer(text):
+            total = self._total(m.group(1))
+            if total is not None and total in _EASTERN_OFFSET_SECONDS:
+                yield m
+
+    def search(self, text: str):
+        return next(self.finditer(text), None)
+
+
+NONPY_SQL_INTERVAL_OFFSET = _SqlIntervalOffset()
 
 # ── Python: parsed, not pattern-matched ────────────────────────────────────
 #
@@ -1923,6 +1979,11 @@ def _python_hits(path: pathlib.Path, text: str):
             # correct. The `.sql` files got this a round earlier; the embedded
             # copies did not (Codex, PR #993).
             text = _strip_sql_comments(node.value)
+            if _LIBPQ_OPTION.search(node.value):
+                # An options string is not SQL: `--timezone=EST` begins with
+                # SQL's line-comment token and the stripper would blank the
+                # very setting this branch exists to read.
+                text = node.value
             # ...and only when the string really is a SQL STATEMENT. This
             # branch exists because Python source carries SQL, and it was
             # feeding EVERY string constant to the non-Python matchers -- so
@@ -1935,7 +1996,11 @@ def _python_hits(path: pathlib.Path, text: str):
             # A zone name reaching a timezone API is caught by the call and
             # constant branches above, which is where it means something; a
             # zone name inside prose is prose.
-            if not _SQL_STATEMENT.search(text):
+            # ...or a libpq OPTIONS string. `connect(options="-c
+            # timezone=EST")` -- and SQLAlchemy's `connect_args` carrying the
+            # same -- installs the session zone before any query runs, and
+            # `-c timezone=` is not a statement (Codex, PR #993).
+            if not (_SQL_STATEMENT.search(text) or _LIBPQ_OPTION.search(text)):
                 continue
             # `NONPY_SQL_NUMERIC_OFFSET` belongs here too. It was applied to
             # standalone `.sql` files and not to the same statement carried in
@@ -1948,7 +2013,8 @@ def _python_hits(path: pathlib.Path, text: str):
                                     (NONPY_AMBIGUOUS, legacy),
                                     (NONPY_FIXED_ZONE, offsets),
                                     (NONPY_FIXED_OFFSET, offsets),
-                                    (NONPY_SQL_NUMERIC_OFFSET, offsets)):
+                                    (NONPY_SQL_NUMERIC_OFFSET, offsets),
+                                    (NONPY_SQL_INTERVAL_OFFSET, offsets)):
                 m = pattern.search(text)
                 if m:
                     reported.add(id(node))
@@ -2143,7 +2209,10 @@ def _python_hits(path: pathlib.Path, text: str):
             positional = flat_args[1:] if seconds else flat_args
             candidate = next(
                 (a for a in positional
-                 + [v for a, v in flat_kwargs if a == "offset"]),
+                 # `tzrange` names its keyword `stdoffset`; the positional
+                 # form was already read and the keyword was not (Codex,
+                 # PR #993).
+                 + [v for a, v in flat_kwargs if a in ("offset", "stdoffset")]),
                 None)
             # Through `env`: the argument is as often a name as a literal,
             # and `_const_number` follows one to the number it holds.
@@ -2563,8 +2632,8 @@ _YAML_ENV_KEYS = {"TZ", "PGTZ", "TIMEZONE", "TIME_ZONE"}
 _YAML_ARGV_KEYS = {"args", "command", "entrypoint"}
 
 
-class _YamlHit:
-    """The two things `report` reads off a regex match, for a loader hit."""
+class _TextHit:
+    """The two things `report` reads off a regex match, for a computed hit."""
 
     def __init__(self, offset: int, shown: str):
         self._offset = offset
@@ -2626,7 +2695,7 @@ def _yaml_env_pair_hits(text: str) -> list:
                 if val is not None:
                     is_offset = _bad_zone_value(val)
                     if is_offset is not None:
-                        out.append((_YamlHit(value.start_mark.index,
+                        out.append((_TextHit(value.start_mark.index,
                                              f"name: {name} / value: {val}"),
                                     val, is_offset))
             for ks, v in keys.items():
@@ -2637,6 +2706,31 @@ def _yaml_env_pair_hits(text: str) -> list:
     # Loader order is document order reversed by the stack; callers index
     # `hits[0]`, so restore source order.
     out.sort(key=lambda h: h[0].start())
+    return out
+
+
+# Pine's builtins that take a timezone POSITIONALLY: `time(timeframe,
+# session, timezone)`, `time_close(...)`, `timestamp(timezone, year, ...)`.
+# No textual context sits next to the value, so `NONPY_AMBIGUOUS` had nothing
+# to anchor on and `time(timeframe.period, session, "EST")` was invisible in
+# the one collected language that writes it this way (Codex, PR #993).
+_PINE_TZ_CALL = re.compile(
+    r"\b(?:time|time_close|timestamp)\s*\(((?:[^()]|\([^()]*\))*)\)")
+_PINE_STRING = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'")
+
+
+def _pine_call_hits(text: str) -> list:
+    """`(hit, value, is_offset)` for each quoted bad zone inside a Pine timezone call."""
+    out = []
+    for call in _PINE_TZ_CALL.finditer(text):
+        args = call.group(1)
+        for m in _PINE_STRING.finditer(args):
+            value = m.group(1) if m.group(1) is not None else m.group(2)
+            is_offset = _bad_zone_value(value)
+            if is_offset is not None:
+                out.append((_TextHit(call.start(1) + m.start(),
+                                     f"{call.group(0)[:call.group(0).index('(')]}(... {value!r} ...)"),
+                            value, is_offset))
     return out
 
 
@@ -2660,7 +2754,7 @@ def _yaml_argv_hits(seq) -> list:
         val = val.partition("=")[2] if val.startswith("--time-zone=") else val
         is_offset = _bad_zone_value(val)
         if is_offset is not None:
-            out.append((_YamlHit(value_node.start_mark.index,
+            out.append((_TextHit(value_node.start_mark.index,
                                  f"--time-zone {val}"), val, is_offset))
     return out
 
@@ -2719,8 +2813,9 @@ def _scan() -> tuple[list[str], list[str]]:
         # first, so a commented-out value cannot supply one.
         raw = text
         if _reads_as_shell(p):
+            make = _reads_as_make(p)
             text = _expand_shell_defaults(
-                _strip_shell_comments(text, make=_reads_as_make(p)))
+                _strip_shell_comments(text, make=make), make=make)
         elif _reads_as_pine(p):
             text = _strip_pine_comments(text)
         elif p.suffix == ".sql":
@@ -2740,9 +2835,13 @@ def _scan() -> tuple[list[str], list[str]]:
                                 (NONPY_AMBIGUOUS, legacy),
                                 (NONPY_FIXED_ZONE, offsets),
                                 (NONPY_FIXED_OFFSET, offsets),
-                                (NONPY_SQL_NUMERIC_OFFSET, offsets)):
+                                (NONPY_SQL_NUMERIC_OFFSET, offsets),
+                                (NONPY_SQL_INTERVAL_OFFSET, offsets)):
             for m in pattern.finditer(text):
                 report(bucket, m)
+        if _reads_as_pine(p):
+            for m, _value, is_offset in _pine_call_hits(text):
+                report(offsets if is_offset else legacy, m)
         if p.suffix in (".yml", ".yaml"):
             # The RAW text: the loader needs the comments and quoting the
             # shell pass blanks. Offsets agree because the blanking keeps
@@ -3101,7 +3200,43 @@ def _command_end(line: str, start: int) -> int:
     return len(line)
 
 
-def _expand_shell_defaults(text: str) -> str:
+# Make's scalar assignment and reference. `LEGACY := EST` then `export TZ :=
+# $(LEGACY)` installs the fixed zone in every recipe, and the shell collector
+# reads neither the `:=` nor the `$(...)` (Codex, PR #993). Make has no
+# function scopes, so a reference sees the last assignment before it -- the
+# same in-force rule the shell scalars use, with no spans.
+#
+# SELECTIVE BY FILE. `$(...)` in a shell script is command substitution, a
+# different thing entirely, and this expansion runs only for the files
+# `_reads_as_make` names.
+_MAKE_SCALAR = re.compile(
+    r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.]*)[ \t]*"
+    r"(?:::=|:=|\?=|=)[ \t]*([^#\n]*?)[ \t]*$", re.M)
+_MAKE_TZ_VAR = re.compile(
+    r"((?:" + _TZ_CONTEXT + r")\s*[\"']?\s*)\$[({]([A-Za-z_][A-Za-z0-9_.]*)[)}]",
+    re.I)
+
+
+def _expand_make_vars(text: str) -> str:
+    """Substitute the Make scalar in force at each `$(NAME)` in a timezone context."""
+    scalars: dict = {}
+    for m in _MAKE_SCALAR.finditer(text):
+        # A recipe line (tab-indented) is shell, not a Make assignment.
+        if text[m.start():m.start() + 1] == "\t":
+            continue
+        value = m.group(2)
+        if "$" in value or not value:
+            continue                # not statically known, left unresolved
+        scalars.setdefault(m.group(1), []).append((m.start(), value, False))
+
+    def one(m):
+        value = _scalar_in_force(scalars, m.group(2), m.start())
+        return m.group(1) + value if value is not None else m.group(0)
+
+    return _MAKE_TZ_VAR.sub(one, text)
+
+
+def _expand_shell_defaults(text: str, make: bool = False) -> str:
     """Expose a TIMEZONE parameter default; blank every other one.
 
     Two steps, and both are needed. A timezone expansion is rewritten to its
@@ -3119,7 +3254,10 @@ def _expand_shell_defaults(text: str) -> str:
                    else m.group(1) + m.group(2)), text)
     text = _SHELL_OTHER_DEFAULT.sub(lambda m: " " * len(m.group(0)), text)
     # Plain `$VAR` last, so a `${VAR:-default}` is read as its default rather
-    # than as a reference to VAR.
+    # than as a reference to VAR. Make files get their own reference form
+    # first; recipe lines in them are shell and take the shell pass after.
+    if make:
+        text = _expand_make_vars(text)
     return _expand_shell_vars(text)
 
 
@@ -7583,3 +7721,96 @@ def test_a_destructuring_assignment_binds_each_name():
     assert not legacy
     legacy, _ = _probe_py(head + 'TZ, *rest = ("EST", "UTC")\nZ = ZoneInfo(TZ)\n')
     assert not legacy
+# -- Audit: the seven remaining spellings, each with its negative control --------
+
+
+def test_tzrange_reads_its_stdoffset_keyword():
+    _, offsets = _probe_py("from dateutil.tz import tzrange\nz = tzrange('ET', stdoffset=-18000)\n")
+    assert offsets
+    _, offsets = _probe_py("from dateutil.tz import tzrange\nz = tzrange('X', stdoffset=-10800)\n")
+    assert not offsets
+
+
+def test_make_variable_references_resolve_in_make_files_only():
+    def scanned(text: str, make: bool) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text, make=make), make=make)
+        return bool(NONPY_AMBIGUOUS.search(out) or NONPY_UNAMBIGUOUS.search(out))
+
+    assert scanned("LEGACY := EST\nexport TZ := $(LEGACY)\n", make=True)
+    assert scanned("LEGACY = US/Eastern\nTZ = ${LEGACY}\n", make=True)
+    assert not scanned("LEGACY := America/New_York\nexport TZ := $(LEGACY)\n", make=True)
+    # Last assignment before the reference is the one in force.
+    assert not scanned("LEGACY := EST\nLEGACY := America/New_York\nexport TZ := $(LEGACY)\n", make=True)
+    # A computed value is left unresolved, not guessed.
+    assert not scanned("LEGACY := $(shell date)\nexport TZ := $(LEGACY)\n", make=True)
+    # In a SHELL file `$(...)` is command substitution and is not expanded.
+    assert not scanned("LEGACY=EST\nexport TZ=$(LEGACY)\n", make=False)
+    # The real Makefile is clean.
+    assert not scanned((REPO / "Makefile").read_text(), make=True)
+
+
+def test_a_unit_bearing_interval_is_totalled():
+    def hit(sql: str) -> bool:
+        return NONPY_SQL_INTERVAL_OFFSET.search(_strip_sql_comments(sql)) is not None
+
+    assert hit("SET TIME ZONE INTERVAL '-5 hours'")
+    assert hit("SET TIME ZONE INTERVAL '-240 minutes'")
+    assert hit("SET LOCAL timezone TO INTERVAL '-4 hours'")
+    assert hit("SET TIME ZONE INTERVAL '-3 hours -120 minutes'")
+    assert not hit("SET TIME ZONE INTERVAL '-3 hours'")
+    assert not hit("SET TIME ZONE INTERVAL '-5 hours 30 minutes'")
+    assert not hit("SET TIME ZONE INTERVAL '-5 fortnights'")     # unmodelled unit
+    assert not hit("-- SET TIME ZONE INTERVAL '-5 hours'")
+
+
+def test_a_shell_continuation_between_context_and_value_is_read():
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out) or NONPY_FIXED_OFFSET.search(out))
+
+    assert scanned("export TZ=\\\nEST\n")
+    assert scanned("export TZ=\\\n  -05:00\n")
+    assert not scanned("export TZ=\\\nAmerica/New_York\n")
+    # The text is untouched -- the continuation is still there and every
+    # line keeps its width, so offsets still mean what they say. (The comment
+    # stripper has always dropped the final newline; that is not a join.)
+    text = "LEGACY=EST\nexport TZ=\\\n\"$LEGACY\"\n"
+    out = _expand_shell_defaults(_strip_shell_comments(text))
+    assert out.splitlines() == text.splitlines()[:1] + ["export TZ=\\", '"EST"'] or \
+        [len(l) for l in out.splitlines()] == [len(l) for l in text.splitlines()]
+    assert "export TZ=\\\n" in out
+
+
+def test_postgres_guc_spellings_of_a_numeric_offset():
+    for sql in ("SET LOCAL timezone TO '-5'", "SET TIMEZONE = -4",
+                "SET SESSION time_zone TO -5", "SET TIME ZONE -5"):
+        assert NONPY_SQL_NUMERIC_OFFSET.search(sql), sql
+    for sql in ("SET TIMEZONE = -3", "SET timezone TO '-5:30'", "SET work_mem = -5"):
+        assert not NONPY_SQL_NUMERIC_OFFSET.search(sql), sql
+
+
+def test_libpq_connection_options_install_a_session_zone():
+    legacy, _ = _probe_py('import psycopg2\nc = psycopg2.connect(options="-c timezone=EST")\n')
+    assert legacy
+    legacy, _ = _probe_py('from sqlalchemy import create_engine\n'
+                          'e = create_engine(url, connect_args={"options": "--timezone=US/Eastern"})\n')
+    assert legacy
+    legacy, _ = _probe_py('import psycopg2\nc = psycopg2.connect(options="-c timezone=America/New_York")\n')
+    assert not legacy
+    # `-c` on its own is not a timezone context.
+    legacy, _ = _probe_py('x = "-c work_mem=EST"\n')
+    assert not legacy
+
+
+def test_pine_positional_timezone_arguments_are_read():
+    assert _pine_call_hits('t = time(timeframe.period, session, "EST")')
+    assert _pine_call_hits("ts = timestamp('EDT', 2024, 1, 1, 9, 30)")
+    hits = _pine_call_hits('t = time_close(timeframe.period, "0930-1600", "-05:00")')
+    assert hits and hits[0][2] is True
+    assert not _pine_call_hits('t = time(timeframe.period, session, "America/New_York")')
+    assert not _pine_call_hits('label.new(bar_index, high, "EST")')        # not a timezone call
+    assert not _pine_call_hits('t = time(timeframe.period, session, syminfo.timezone)')
+    # Offsets point at the value, and a comment does not count.
+    src = 'x = 1\nt = time(timeframe.period, session, "EST")'
+    assert src[_pine_call_hits(src)[0][0].start():].startswith('"EST"')
+    assert not _pine_call_hits(_strip_pine_comments('// t = time(timeframe.period, session, "EST")'))
