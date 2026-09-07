@@ -114,11 +114,74 @@ def test_it_is_bounded_to_one_rerun_per_run():
     assert "github.event.workflow_run.run_attempt == 1" in cond
 
 
+# What `gh run view --log-failed` actually emits: job and step columns before
+# the timestamp. The classifier must NEVER be fed this -- a start-anchored
+# match sees the job name, not the CLI's emitter, so a real stall would stay
+# red and the workflow would be a silent no-op. (Codex, PR #1032.)
+GH_RUN_VIEW_COLUMNS = (
+    "refresh\tRegenerate 05-c-DATA_DEPENDENCIES.md\t"
+    "2026-09-07T17:06:59.6028585Z Error when talking to Gemini API Full report "
+    "available at: /tmp/gemini-client-error-x.json TypeError: terminated\n"
+)
+
+
+def test_the_classifier_reads_raw_job_logs_not_gh_run_view():
+    """`gh run view --log-failed` prefixes `<job>\\t<step>\\t<timestamp> ...`, so
+    the start-anchored record never matches and nothing is ever re-run. The raw
+    per-job log endpoint returns timestamp-first lines, which is the shape every
+    real sample in this file was taken from."""
+    # Comments only, stripped: the step explains at length WHY it does not use
+    # `gh run view --log-failed`, and a naive substring check trips on that
+    # explanation rather than on the code -- a trap this repo has hit before.
+    code = "\n".join(ln.split("#", 1)[0] for ln in STEP.splitlines())
+    assert "actions/jobs/" in code and "/logs" in code, \
+        "the classifier does not read raw per-job logs"
+    assert "--log-failed" not in code and "run view" not in code, \
+        "the classifier is back on gh run view, whose column prefixes it cannot parse"
+    # And prove it: the columned shape is not recognised, so if the workflow
+    # ever fed it that, this test fails rather than the workflow going quiet.
+    assert _classify(GH_RUN_VIEW_COLUMNS) is False
+
+
+def test_a_failed_recovery_is_not_silent():
+    """Repo convention (.github/workflows/README.md): a workflow without a
+    handle-failure job fails only on the Actions page. If the recovery itself
+    breaks -- logs unavailable, a rerun API error -- the original issue would
+    record only the stall."""
+    hf = DOC["jobs"]["handle-failure"]
+    assert hf["uses"] == "./.github/workflows/handle-workflow-failure.yml"
+    assert hf["if"] == "failure()"
+    assert set(hf["needs"]) == {"rerun", "close-obsolete-failure-pr"}
+    # No second placeholder PR for a failure of the thing that cleans up
+    # placeholder PRs.
+    assert hf["with"]["create_pr"] is False
+
+
+def test_a_successful_rerun_closes_the_obsolete_failure_pr():
+    """The refresh workflow's handler runs with create_pr: true, so a transient
+    stall leaves a draft `fix/workflow-...` PR saying a fix is required. The
+    issue is the incident record; the PR is an actionable no-op."""
+    job = DOC["jobs"]["close-obsolete-failure-pr"]
+    cond = " ".join(job["if"].split())
+    assert "conclusion == 'success'" in cond
+    assert "run_attempt > 1" in cond, "it would close the PR on a first-attempt success too"
+    step = job["steps"][0]
+    # The branch name must match what the failure handler actually builds.
+    src = (REPO / "scripts/handle_workflow_failure.py").read_text()
+    assert 'f"fix/workflow-{workflow_file.replace(\'.yml\', \'\')}-{run_number}"' in src, \
+        "the failure handler's branch pattern changed; this job's BRANCH must follow"
+    assert step["env"]["BRANCH"].startswith("fix/workflow-refresh-architecture-docs-")
+    assert "run_number" in step["env"]["BRANCH"]
+    assert "gh pr close" in step["run"]
+
+
 def test_it_can_rerun_and_asks_for_nothing_more():
     perms = DOC["permissions"]
     assert perms["actions"] == "write", "cannot re-run without actions: write"
     assert perms["contents"] == "read"
     assert set(perms) == {"actions", "contents"}, f"extra permissions: {perms}"
+    assert DOC["jobs"]["close-obsolete-failure-pr"]["permissions"] == {
+        "contents": "read", "pull-requests": "write"}
     assert "rerun-failed-jobs" in STEP
 
 

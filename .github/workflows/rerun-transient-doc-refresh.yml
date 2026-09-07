@@ -73,7 +73,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          gh run view "$RUN_ID" --repo "$REPO" --log-failed > failed.log
+          # RAW job logs, not `gh run view --log-failed`. That command prefixes
+          # every line with job and step columns -- `<job>\t<step>\t<timestamp>
+          # <line>` -- so a start-anchored match never sees the timestamp, let
+          # alone the CLI's emitter, and a run-20-shaped stall would stay red
+          # forever. The workflow would have been a silent no-op. `gh run view
+          # --help` documents the association (it prints `UNKNOWN STEP` when a
+          # line cannot be attributed). (Codex, PR #1032.)
+          #
+          # The per-job log endpoint returns the runner's own output, one line
+          # per line, timestamp first -- the shape every real sample in this
+          # project's tests was taken from.
+          gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure") | .id' > failed_jobs.txt
+          : > failed.log
+          while read -r JOB_ID; do
+            [ -n "$JOB_ID" ] || continue
+            gh api "repos/${REPO}/actions/jobs/${JOB_ID}/logs" >> failed.log
+          done < failed_jobs.txt
+          test -s failed.log
 
           # A transport failure is ONE ATTRIBUTABLE CLI ERROR RECORD, matched on
           # a single line: the CLI's own emitter, the path of the report only
@@ -116,3 +134,64 @@ jobs:
               echo "That is a real failure, so it stays red."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  # The refresh workflow's handle-failure job runs with create_pr: true, so a
+  # transient stall leaves an open draft `fix/workflow-refresh-architecture-docs-<run>`
+  # PR saying a fix is required. Keeping the ISSUE is the incident record;
+  # keeping an actionable no-op PR open forever is not. (Codex, PR #1032.)
+  close-obsolete-failure-pr:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt > 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Close the draft PR the failed first attempt opened
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # scripts/handle_workflow_failure.py:584 builds the branch as
+          # fix/workflow-{workflow_file without .yml}-{run_number}.
+          BRANCH: fix/workflow-refresh-architecture-docs-${{ github.event.workflow_run.run_number }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          PR=$(gh api "repos/${REPO}/pulls?state=open&head=${REPO%%/*}:${BRANCH}" --jq '.[0].number // empty')
+          if [ -z "$PR" ]; then
+            echo "no open failure PR for ${BRANCH}; nothing to close"
+            exit 0
+          fi
+          gh pr comment "$PR" --repo "$REPO" --body \
+            "The failure this PR was opened for was a transient Vertex transport stall. The re-run succeeded ([run]($RUN_URL)), so there is nothing to fix here and this PR is closed automatically. The failure issue stays open as the incident record."
+          gh pr close "$PR" --repo "$REPO" --delete-branch
+          echo "closed #${PR} (${BRANCH})"
+
+  # Repo convention: every workflow with a main job ends in handle-failure, or
+  # a red run is visible only on the Actions page (.github/workflows/README.md).
+  # Without it, a failure of the RECOVERY -- logs unavailable, a rerun API
+  # error -- would be silent, and the original issue would record only the
+  # stall. (Codex, PR #1032.)
+  handle-failure:
+    needs: [rerun, close-obsolete-failure-pr]
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    with:
+      workflow_name: "Doc-refresh transient re-run"
+      failure_title: "❌ Automated re-run of the monthly doc refresh failed"
+      issue_labels: "workflow-failure,architecture-docs,automated"
+      workflow_file: "rerun-transient-doc-refresh.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false
