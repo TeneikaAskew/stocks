@@ -1117,6 +1117,17 @@ def render_markdown(section: str, repo: dict[str, Any], live: dict[str, Any] | N
         rows = [[f"`{r['method']}`", f"`{r['path']}`", f"[`{r['file']}:{r['line']}`]({r['file']}#L{r['line']})", r["summary"]]
                 for r in repo["routes"]]
         return _md_table(["Method", "Path", "Defined", "Purpose"], rows)
+    if section == "routers":
+        by_file: dict[str, list[dict[str, Any]]] = {}
+        for r in repo["routes"]:
+            by_file.setdefault(r["file"], []).append(r)
+        rows = []
+        for f, rs in sorted(by_file.items()):
+            methods = ", ".join(sorted({r["method"] for r in rs}))
+            prefixes = sorted({"/".join(r["path"].split("/")[:3]) for r in rs})
+            rows.append([f"[`{f.rsplit('/', 1)[-1]}`]({f})", str(len(rs)), methods, ", ".join(f"`{x}`" for x in prefixes[:4]) + (" …" if len(prefixes) > 4 else "")])
+        rows.append(["**Total**", str(len(repo["routes"])), "", f"{len(by_file)} routers"])
+        return _md_table(["Router", "Routes", "Methods", "Path families"], rows)
     if section == "services":
         if not live:
             return "_live snapshot required_"
@@ -1163,25 +1174,39 @@ def render_markdown(section: str, repo: dict[str, Any], live: dict[str, Any] | N
     raise ValueError(f"unknown section {section!r}")
 
 
-SECTIONS = ("jobs", "schedulers", "tables", "routes", "services", "reconcile",
+SECTIONS = ("jobs", "schedulers", "tables", "routes", "routers", "services", "reconcile",
             "modules", "writes", "reads", "multiwriter", "orphans", "blast", "dbtables")
 
 
-def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None) -> bool:
+def _rebase_links(body: str, depth: int) -> str:
+    """Rendered links are repo-root-relative; a doc under docs/ needs `../`."""
+    if depth <= 0:
+        return body
+    prefix = "../" * depth
+    return re.sub(r"\]\((?!https?://|#|\.\./|/)", "](" + prefix, body)
+
+
+def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
+                  root: pathlib.Path = REPO) -> bool:
     """Replace every marker block in doc_path with freshly rendered content.
 
     Returns True when the file changed. Idempotent: rendering the same inputs
-    twice yields the same bytes.
+    twice yields the same bytes. Links inside the blocks are rebased to the
+    document's directory (docs/API.md links to ../platform/...).
     """
     text = doc_path.read_text()
     new = text
+    try:
+        depth = len(doc_path.resolve().relative_to(root.resolve()).parents) - 1
+    except ValueError:
+        depth = 0
     for name in SECTIONS:
         start, end = MARKER_START.format(name=name), MARKER_END.format(name=name)
         if start not in new:
             continue
         if end not in new:
             raise ValueError(f"{doc_path}: {start} without {end}")
-        body = render_markdown(name, repo, live)
+        body = _rebase_links(render_markdown(name, repo, live), depth)
         pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
         new = pattern.sub(lambda _m: f"{start}\n{body}\n{end}", new, count=1)
     if new != text:

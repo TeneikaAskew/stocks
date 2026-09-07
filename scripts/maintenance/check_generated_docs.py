@@ -43,7 +43,7 @@ sys.path.insert(0, str(REPO))
 from scripts.maintenance import doc_inventory as inv  # noqa: E402
 
 DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md")
-MARKER_DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md")
+MARKER_DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "docs/API.md")
 SIZE_FLOOR = 0.80
 # README.md is a pointer map by design (2026-09-07); its length is not a
 # content signal, so it is exempt from the size floor (headings still apply).
@@ -135,8 +135,9 @@ def gate_markers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]
         src = root / doc
         with tempfile.TemporaryDirectory() as td:
             tmp = pathlib.Path(td) / doc
+            tmp.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src, tmp)
-            inv.insert_blocks(tmp, repo, live)
+            inv.insert_blocks(tmp, repo, live, root=pathlib.Path(td))
             if tmp.read_text() != src.read_text():
                 out.append(f"{doc}: an inventory marker block differs from a fresh render — the model edited inside a block, or a block is missing its end marker")
     for doc in MARKER_DOCS:

@@ -21,7 +21,7 @@ Counts are read live by `python -m scripts.maintenance.doc_inventory --live`; th
 | [ERD.md](ERD.md) | the schema as entity-relationship diagrams, by cluster |
 | [docs/PIPELINE.md](docs/PIPELINE.md) | the two-lane model: live trading vs research, and the one indicator engine both share |
 | [docs/DATA_PIPELINE.md](docs/DATA_PIPELINE.md) | per-table freshness budgets and canonical writers |
-| [docs/API.md](docs/API.md) | the FastAPI route reference (partially stale; ARCHITECTURE §7.3 is generated from the code) |
+| [docs/API.md](docs/API.md) | the FastAPI route reference: every router and route, rendered from the code on each refresh |
 | [docs/GCP_IMPLEMENTATION_GUIDE.md](docs/GCP_IMPLEMENTATION_GUIDE.md) | the Python engine internals: indicators, signals, Strat, backtest, data layer |
 | [docs/product/README.md](docs/product/README.md) | the living product plan: capabilities, requirements, security, roadmap |
 | [docs/audits/](docs/audits/) | dated audits, including the 2026-09-07 architecture-doc audit that produced this layout |

@@ -145,7 +145,7 @@ def test_digest_and_render_precede_the_first_gemini_step():
     assert _index("Save previous doc versions") < first_gemini
     assert _index("Render inventory blocks") < first_gemini
     render = _steps()[_index("Render inventory blocks")]["run"]
-    assert "--insert ARCHITECTURE.md DATA_DEPENDENCIES.md" in render
+    assert "--insert ARCHITECTURE.md DATA_DEPENDENCIES.md docs/API.md" in render
 
 
 def test_digest_step_writes_the_small_files_the_prompts_read():
@@ -195,4 +195,7 @@ def test_marker_names_agree_between_module_docs_and_gate():
         assert inv.MARKER_START.format(name=name) in arch, name
     for name in ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"):
         assert inv.MARKER_START.format(name=name) in deps, name
-    assert set(gate.MARKER_DOCS) == {"ARCHITECTURE.md", "DATA_DEPENDENCIES.md"}
+    api = (REPO / "docs/API.md").read_text()
+    for name in ("routers", "routes"):
+        assert inv.MARKER_START.format(name=name) in api, name
+    assert set(gate.MARKER_DOCS) == {"ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "docs/API.md"}

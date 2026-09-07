@@ -354,7 +354,7 @@ jobs:
       # diffs).
       - name: Render inventory blocks
         run: |
-          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --insert ARCHITECTURE.md DATA_DEPENDENCIES.md
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --insert ARCHITECTURE.md DATA_DEPENDENCIES.md docs/API.md
           git --no-pager diff --stat -- ARCHITECTURE.md DATA_DEPENDENCIES.md
 
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
