@@ -1327,9 +1327,50 @@ def test_infrastructure_errors_are_classified_by_type():
     import ssl
     for exc in (ssl.SSLError(1, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF"),
                 ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
-                ssl.SSLZeroReturnError(6, "TLS/SSL connection has been closed"),
-                ssl.SSLCertVerificationError(1, "certificate verify failed")):
+                ssl.SSLZeroReturnError(6, "TLS/SSL connection has been closed")):
         assert is_infrastructure_error(exc), type(exc).__name__
+    # A certificate the endpoint presented that does not verify is a bad
+    # trust chain, a hostname mismatch or an intercepted endpoint, and no
+    # retry resolves it (Codex P2 on #999). Through aiohttp as well, where
+    # the certificate error inherits from BOTH the connection error and
+    # `SSLCertVerificationError`.
+    assert not is_infrastructure_error(
+        ssl.SSLCertVerificationError(1, "certificate verify failed"))
+
+    # psycopg2's `OperationalError` is the base of every server error in
+    # classes 08, 28, 53, 57 and 58 alike, and was registered wholesale, so a
+    # wrong password classified as an outage (Codex P2 on #999). The SQLSTATE
+    # decides; a code-less plain `OperationalError` is the driver's own
+    # connection failure.
+    import psycopg2.errors as pg_errors
+    assert psycopg2.OperationalError not in INFRASTRUCTURE_ERRORS
+    assert sa_exc.OperationalError not in INFRASTRUCTURE_ERRORS
+    for exc in (psycopg2.OperationalError("could not connect to server"),
+                psycopg2.OperationalError(
+                    "server closed the connection unexpectedly"),
+                pg_errors.ConnectionFailure("connection failure"),      # 08006
+                pg_errors.ProtocolViolation("protocol violation"),      # 08P01
+                pg_errors.AdminShutdown("terminating connection"),      # 57P01
+                pg_errors.CannotConnectNow("starting up"),              # 57P03
+                pg_errors.TooManyConnections("too many clients"),       # 53300
+                pg_errors.DiskFull("could not write"),                  # 53100
+                pg_errors.OutOfMemory("out of memory"),                 # 53200
+                pg_errors.IoError("could not read block")):             # 58030
+        assert is_infrastructure_error(exc), type(exc).__name__
+    for exc in (pg_errors.InvalidPassword("password authentication failed"),
+                pg_errors.InvalidAuthorizationSpecification("no role"),  # 28000
+                pg_errors.QueryCanceled("canceling statement"),          # 57014
+                pg_errors.ObjectInUse("database is being accessed")):    # 55006
+        assert isinstance(exc, psycopg2.OperationalError), type(exc).__name__
+        assert not is_infrastructure_error(exc), type(exc).__name__
+    # The SQLAlchemy wrapper is decided by what it wraps, in both directions.
+    for orig, expected in ((pg_errors.InvalidPassword("bad password"), False),
+                           (pg_errors.AdminShutdown("terminating"), True),
+                           (psycopg2.OperationalError("refused"), True)):
+        try:
+            raise sa_exc.OperationalError("connect", {}, orig) from orig
+        except sa_exc.OperationalError as wrapped_sa:
+            assert is_infrastructure_error(wrapped_sa) is expected, type(orig).__name__
 
     # psycopg2's `InterfaceError` has the same two faces as pg8000's and was
     # registered wholesale (Codex P1 on #999): the connection being gone
@@ -1367,10 +1408,12 @@ def test_infrastructure_errors_are_classified_by_type():
     # SQLSTATE under `C` decides. A failover's shutdown, a lost connection
     # and an exhausted server are outages; our SQL being wrong is not
     # (Codex P1 on #999).
-    for code in ("57P01", "57P02", "57P03", "08006", "08003", "08001", "53300"):
+    for code in ("57P01", "57P02", "57P03", "08006", "08003", "08001", "53300",
+                 "53100", "53200", "58030", "XX001"):
         assert is_infrastructure_error(pg8000_exc.DatabaseError(
             {"S": "FATAL", "C": code, "M": "terminating connection"})), code
-    for code in ("42601", "42P01", "23505", "22P02", "0A000", "57014"):
+    for code in ("42601", "42P01", "23505", "22P02", "0A000", "57014", "28P01",
+                 "3D000", "F0000", "55006"):
         assert not is_infrastructure_error(pg8000_exc.DatabaseError(
             {"S": "ERROR", "C": code, "M": "syntax error at or near"})), code
     assert not is_infrastructure_error(pg8000_exc.DatabaseError("no payload"))
@@ -1431,6 +1474,13 @@ def test_infrastructure_errors_are_classified_by_type():
     assert is_infrastructure_error(
         aiohttp.ClientConnectionError("Cannot connect to sqladmin.googleapis.com"))
     assert issubclass(aiohttp.ClientConnectorError, aiohttp.ClientConnectionError)
+    key = SimpleNamespace(host="sqladmin.googleapis.com", port=443, ssl=None)
+    assert not is_infrastructure_error(aiohttp.ClientConnectorCertificateError(
+        key, ssl.SSLCertVerificationError(1, "certificate verify failed")))
+    assert is_infrastructure_error(aiohttp.ClientConnectorSSLError(
+        key, ssl.SSLError(1, "[SSL: UNEXPECTED_EOF_WHILE_READING]")))
+    assert not issubclass(aiohttp.ClientConnectorSSLError,
+                          aiohttp.ClientConnectorCertificateError)
     req = SimpleNamespace(real_url="https://sqladmin.googleapis.com/sql/v1beta4/x")
     for status in (429, 500, 502, 503, 504):
         assert is_infrastructure_error(

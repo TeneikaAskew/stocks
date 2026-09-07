@@ -56,20 +56,18 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         # (Codex P1 on #999). The optional-dependency case is decided by NAME
         # in `_optional_dependency_missing` instead.
     ]
-    try:                                    # psycopg2, the direct-DSN driver
-        import psycopg2                     # noqa: PLC0415
-        # OperationalError: cannot connect / connection lost.
-        # InterfaceError is NOT registered by class, for the reason pg8000's
-        # is not: psycopg2 raises it for a closed connection AND for
-        # "cursor already closed", a range or hstore value it cannot parse,
-        # and every "cannot be used while ..." misuse of the API. It is
-        # decided by message in `_psycopg2_transport_failure` below
-        # (Codex P1 on #999).
-        # DatabaseError is NOT included: ProgrammingError and IntegrityError
-        # are its subclasses and both mean our SQL is wrong.
-        found += [psycopg2.OperationalError]
-    except Exception:                       # pragma: no cover - image without it
-        logger.debug("psycopg2 not importable; its errors are not classified")
+    # psycopg2, the direct-DSN driver, is NOT registered by class either.
+    # `OperationalError` is the base of every server error in SQLSTATE classes
+    # 08, 28, 53, 57 and 58 alike, so registering it read `InvalidPassword`
+    # (28P01) -- a permanently wrong credential -- as a retryable outage
+    # (Codex P2 on #999). `_psycopg2_operational_outage` decides it by
+    # SQLSTATE; a code-less `OperationalError` is the driver's own connection
+    # failure. `InterfaceError` is decided by message in
+    # `_psycopg2_transport_failure`: psycopg2 raises it for a closed
+    # connection AND for "cursor already closed", a range or hstore value it
+    # cannot parse, and every "cannot be used while ..." misuse of the API
+    # (Codex P1 on #999). `DatabaseError` is out: ProgrammingError and
+    # IntegrityError are its subclasses and both mean our SQL is wrong.
     # pg8000, the PRODUCTION Cloud SQL driver, is deliberately NOT registered
     # by class. `lib/agents/model_routing.py` and `gcp/database.py` both reach
     # Cloud SQL through `connector.connect(..., "pg8000")`, and the routing
@@ -78,24 +76,8 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
     # #999). But each of its two classes mixes outages with defects, so both
     # are decided by PREDICATE instead: `_pg8000_transport_failure` and
     # `_pg8000_server_gone` below.
-    try:                                    # the Cloud SQL connector's control plane
-        import aiohttp                      # noqa: PLC0415
-        # `Connector.connect()` fetches instance metadata and an ephemeral
-        # certificate from the SQL Admin API over aiohttp before any socket
-        # to the database is opened, and the lazy refresh both callers use
-        # logs and re-raises whatever that fetch raised. A network failure
-        # there is `aiohttp.ClientConnectionError` -- neither the builtin
-        # `ConnectionError` nor any google.api_core class -- so a cold
-        # connection or a certificate refresh during an Admin API outage was
-        # a bare 500 in every guard (Codex P1 on #999). A response the
-        # connector gave up on after its own 5xx retries is
-        # `ClientResponseError`, decided by STATUS in
-        # `_retryable_http_response`: 429 and 5xx are the service; a 4xx is
-        # our credentials or configuration and stays loud.
-        found += [aiohttp.ClientConnectionError]
-    except Exception:                       # pragma: no cover - image without it
-        logger.debug("aiohttp not importable; connector transport errors are "
-                     "not classified")
+    # The Cloud SQL connector's control plane is decided by predicate too:
+    # `_connector_transport_failure` and `_retryable_http_response` below.
     try:                                    # SQLAlchemy wraps the above
         from sqlalchemy import exc as sa_exc     # noqa: PLC0415
         # `sa_exc.TimeoutError` is the pool saying every configured connection
@@ -103,18 +85,19 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         # is NOT a subclass of the builtin `TimeoutError` listed above, so the
         # guards were re-raising it as a bare 500 (Codex P2 on #999).
         # `DisconnectionError` is SQLAlchemy's own, raised by pre-ping when the
-        # pooled connection is found dead.
+        # pooled connection is found dead. Both are SQLAlchemy's OWN
+        # exceptions, which is why they are the only ones registered.
         #
-        # `sa_exc.InterfaceError` is deliberately NOT here. SQLAlchemy raises
-        # its wrapper FROM the driver's exception and keeps it as `.orig`, and
-        # the wrapper's class only echoes the driver's class name -- so
-        # registering it accepted pg8000's `InterfaceError("Cursor closed")`
-        # wholesale, straight past the message filter below (Codex P1 on
-        # #999). A wrapper is decided by what it wraps: `is_infrastructure_
-        # error` walks `.orig` as well as `__cause__`, and the driver rules
-        # apply to what it finds there.
-        found += [sa_exc.OperationalError, sa_exc.DisconnectionError,
-                  sa_exc.TimeoutError]
+        # `sa_exc.InterfaceError` and `sa_exc.OperationalError` are
+        # deliberately NOT here. SQLAlchemy raises its wrapper FROM the
+        # driver's exception and keeps it as `.orig`, and the wrapper's class
+        # only echoes the driver's class name -- so registering them accepted
+        # pg8000's `InterfaceError("Cursor closed")` and psycopg2's
+        # `InvalidPassword` wholesale, straight past the driver rules below
+        # (Codex P1 and P2 on #999). A wrapper is decided by what it wraps:
+        # `is_infrastructure_error` walks `.orig` as well as `__cause__`, and
+        # the driver rules apply to what it finds there.
+        found += [sa_exc.DisconnectionError, sa_exc.TimeoutError]
     except Exception:                       # pragma: no cover
         logger.debug("sqlalchemy not importable; its errors are not classified")
     try:                                    # GCS and the rest of google-cloud
@@ -194,6 +177,26 @@ try:                                        # pragma: no cover - image without i
 except Exception:                           # pragma: no cover
     _aiohttp = None
 
+
+def _connector_transport_failure(exc: BaseException) -> bool:
+    """The Cloud SQL connector could not reach the SQL Admin API.
+
+    `Connector.connect()` fetches instance metadata and an ephemeral
+    certificate from the SQL Admin API over aiohttp before any socket to the
+    database is opened, and the lazy refresh both callers use logs and
+    re-raises whatever that fetch raised. A network failure there is
+    `aiohttp.ClientConnectionError` -- neither the builtin `ConnectionError`
+    nor any google.api_core class -- so a cold connection or a certificate
+    refresh during an Admin API outage was a bare 500 in every guard
+    (Codex P1 on #999). EXCEPT a certificate the endpoint presented that did
+    not verify: `ClientConnectorCertificateError` is a bad trust chain, a
+    hostname mismatch or an intercepted endpoint, none of which a retry
+    resolves, and it stays loud (Codex P2 on #999).
+    """
+    if _aiohttp is None or not isinstance(exc, _aiohttp.ClientConnectionError):
+        return False
+    return not isinstance(exc, _aiohttp.ClientConnectorCertificateError)
+
 #: pg8000 raises `InterfaceError` for two unrelated things. The socket failing
 #: or the connection already being gone -- these three messages, verbatim from
 #: `pg8000.core` at 1.31.5 -- is an outage. Everything else it raises under the
@@ -228,6 +231,53 @@ def _psycopg2_transport_failure(exc: BaseException) -> bool:
     return bool(exc.args) and exc.args[0] in _PSYCOPG2_TRANSPORT_MESSAGES
 
 
+def _psycopg2_sqlstates() -> dict:
+    """`{exception class: SQLSTATE}` for every server error psycopg2 names.
+
+    psycopg2 raises a class per SQLSTATE (`InvalidPassword` for 28P01,
+    `AdminShutdown` for 57P01) and sets `pgcode` from the server's response,
+    but an instance built by hand carries no `pgcode` and the classes do not
+    record their code. `psycopg2.errorcodes` names every code and
+    `psycopg2.errors.lookup` maps a code to its class, so the map is derived
+    from the driver rather than copied from it.
+    """
+    if _psycopg2 is None:
+        return {}
+    import psycopg2.errorcodes as codes        # noqa: PLC0415
+    import psycopg2.errors as errors           # noqa: PLC0415
+    out: dict = {}
+    for name, code in vars(codes).items():
+        if not (name.isupper() and isinstance(code, str) and len(code) == 5):
+            continue
+        try:
+            out.setdefault(errors.lookup(code), code)
+        except KeyError:
+            continue
+    return out
+
+
+_PSYCOPG2_SQLSTATE_OF: dict = _psycopg2_sqlstates()
+
+
+def _psycopg2_operational_outage(exc: BaseException) -> bool:
+    """A psycopg2 `OperationalError` that is the server's, not our setup.
+
+    The class is the DB-API base of every server error in SQLSTATE classes
+    08, 28, 53, 57 and 58 alike, so registering it read `InvalidPassword`
+    (28P01) -- a permanently wrong credential -- as a retryable outage
+    (Codex P2 on #999). The SQLSTATE decides, from `pgcode` when the server
+    set it and from the class otherwise. A code-less plain `OperationalError`
+    is the driver's own connection failure -- refused, "server closed the
+    connection unexpectedly", an SSL SYSCALL error -- and is an outage.
+    """
+    if _psycopg2 is None or not isinstance(exc, _psycopg2.OperationalError):
+        return False
+    code = getattr(exc, "pgcode", None) or _PSYCOPG2_SQLSTATE_OF.get(type(exc))
+    if code is None:
+        return type(exc) is _psycopg2.OperationalError
+    return _server_gone(code)
+
+
 def _tls_transport_failure(exc: BaseException) -> bool:
     """The TLS handshake or record layer failed: an `ssl.SSLError`.
 
@@ -236,21 +286,39 @@ def _tls_transport_failure(exc: BaseException) -> bool:
     certificate rotation aborts that handshake with a raw `ssl.SSLError` --
     an `OSError` whose errno is the SSL library's, so neither the
     `ConnectionError` classes nor `_NETWORK_ERRNOS` saw it (Codex P1 on
-    #999). The whole class is TLS transport and nothing else: no filesystem
-    error is an `SSLError`, and a verification failure during rotation is
-    exactly what the connector's forced certificate refresh on the next
-    attempt resolves, so the retry a 503 invites is the right answer.
+    #999). No filesystem error is an `SSLError`, so the class is TLS and
+    nothing else -- EXCEPT `SSLCertVerificationError`, which is the endpoint
+    presenting a certificate we do not trust: a bad trust chain, a hostname
+    mismatch or an intercepted endpoint, none of which a retry resolves. I
+    first classified it as an outage on the strength of certificate rotation;
+    that was wrong, because the connector fetches the instance's own CA with
+    every refresh and verifies against it, so a verification failure that
+    persists is a configuration or a security failure and stays loud
+    (Codex P2 on #999).
     """
-    return isinstance(exc, ssl.SSLError)
+    return (isinstance(exc, ssl.SSLError)
+            and not isinstance(exc, ssl.SSLCertVerificationError))
 
 
-#: PostgreSQL SQLSTATEs that mean the SERVER went away, not that our SQL is
-#: wrong. Class 08 is "connection exception". 57P01, 57P02 and 57P03 are what
-#: a Cloud SQL restart or failover sends every open session -- administrator
-#: shutdown, crash shutdown, cannot connect now. 53300 is too_many_connections,
-#: a capacity outage of the same kind as the pool's `TimeoutError` above.
-_SERVER_GONE_SQLSTATES: frozenset[str] = frozenset(
-    {"57P01", "57P02", "57P03", "53300"})
+#: PostgreSQL SQLSTATEs that mean the SERVER is gone or exhausted, not that
+#: our SQL is wrong, shared by both drivers. Class 08 is "connection
+#: exception"; 53 is "insufficient resources" (disk full, out of memory, too
+#: many connections -- capacity outages of the same kind as the pool's
+#: `TimeoutError`); 58 is "system error" (I/O); XX is "internal error", the
+#: server's own. 57P01, 57P02 and 57P03 are what a Cloud SQL restart or
+#: failover sends every open session -- administrator shutdown, crash
+#: shutdown, cannot connect now -- and are the only members of class 57:
+#: 57014 is query_canceled, a statement timeout on a query of OURS. Class 28
+#: (a bad credential), 3D (no such database), F0 (the server's config file)
+#: and 55 (an object in the wrong state) are permanent and stay loud.
+_SERVER_GONE_SQLSTATE_CLASSES: frozenset[str] = frozenset({"08", "53", "58", "XX"})
+_SERVER_GONE_SQLSTATES: frozenset[str] = frozenset({"57P01", "57P02", "57P03"})
+
+
+def _server_gone(sqlstate) -> bool:
+    return (isinstance(sqlstate, str) and len(sqlstate) == 5
+            and (sqlstate[:2] in _SERVER_GONE_SQLSTATE_CLASSES
+                 or sqlstate in _SERVER_GONE_SQLSTATES))
 
 
 def _pg8000_server_gone(exc: BaseException) -> bool:
@@ -269,9 +337,7 @@ def _pg8000_server_gone(exc: BaseException) -> bool:
     payload = exc.args[0] if exc.args else None
     if not isinstance(payload, dict):
         return False
-    code = payload.get("C")
-    return isinstance(code, str) and (
-        code.startswith("08") or code in _SERVER_GONE_SQLSTATES)
+    return _server_gone(payload.get("C"))
 
 
 def _retryable_http_response(exc: BaseException) -> bool:
@@ -289,6 +355,8 @@ _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
                               _pg8000_transport_failure,
                               _pg8000_server_gone,
                               _psycopg2_transport_failure,
+                              _psycopg2_operational_outage,
+                              _connector_transport_failure,
                               _retryable_http_response)
 
 #: Evaluated once at import. The set of installed drivers does not change
