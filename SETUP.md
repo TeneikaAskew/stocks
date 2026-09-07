@@ -48,7 +48,7 @@ echo "SA_EMAIL=${SA_EMAIL}"   # save this — you'll need it as a GitHub secret
 
 ## 3. Grant the IAM roles
 
-Five roles cover everything the workflow does:
+Five roles cover the original workflow (asset inventory, IAM dump, billing rollup, Gemini). The 2026-09-07 rebuild added a live snapshot of Cloud Run, Cloud Scheduler, Cloud Build, Cloud SQL, Secret Manager, Pub/Sub, Logging, Cloud Tasks and Artifact Registry through `scripts/maintenance/doc_inventory.py`, plus a `pg_stat_user_tables` read for live table sizes; the block after this one grants those.
 
 ```bash
 # Read asset inventory
@@ -75,6 +75,23 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/aiplatform.user"
 ```
+
+Read-only roles for the live snapshot. **Applied 2026-09-07 04:28Z** (verified against the live project policy afterwards: `arch-refresh-bot@` holds sixteen project roles, and `storage.objectViewer` on the trading-data bucket). `run.viewer`, `cloudbuild.builds.viewer`, `cloudsql.client` and `secretmanager.viewer` in the loop below are already implied by the `run.admin`, `cloudbuild.builds.editor`, `cloudsql.client` and `secretmanager.viewer` bindings the deploy path added, so on this project the loop only adds `cloudscheduler.viewer`, `cloudsql.viewer`, `pubsub.viewer`, `logging.viewer`, `cloudtasks.viewer` and `artifactregistry.reader`. It is idempotent; re-run it whenever the SA is rebuilt:
+
+```bash
+for ROLE in roles/run.viewer roles/cloudscheduler.viewer roles/cloudbuild.builds.viewer \
+            roles/cloudsql.viewer roles/cloudsql.client roles/secretmanager.viewer \
+            roles/pubsub.viewer roles/logging.viewer roles/cloudtasks.viewer \
+            roles/artifactregistry.reader; do
+  gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${SA_EMAIL}" --role="${ROLE}" --condition=None
+done
+# sql-dumps listing (pg_dump health line)
+gcloud storage buckets add-iam-policy-binding "gs://${PROJECT}-trading-data" \
+  --member="serviceAccount:${SA_EMAIL}" --role="roles/storage.objectViewer"
+```
+
+The workflow also needs the four Cloud SQL GitHub secrets (`CLOUD_SQL_CONNECTION_NAME`, `DB_USER`, `DB_PASS`, `DB_NAME`) that `deploy-staging.yml` and the calibration step already use; nothing new is stored.
 
 > **Note on `roles/bigquery.dataViewer`:** This grant is project-wide. If you'd rather scope tighter, grant it on the `billing_export` dataset specifically:
 > ```bash
@@ -175,6 +192,15 @@ Repo → Settings → Secrets and variables → Actions → New repository secre
 The workflow has a `dry_run` input that generates the docs but skips the PR. Use it for the first run.
 
 ### Trigger a dry-run manually
+
+> **Dispatch from `main` only.** The WIF provider's attribute condition is
+> `assertion.repository=='TeneikaAskew/stocks' && assertion.ref=='refs/heads/main'`
+> (SETUP.md §4a, verified live 2026-09-05), so a dispatch of this workflow on
+> any other branch fails at "Authenticate to GCP (WIF)" with
+> `The given credential is rejected by the attribute condition` before a
+> single read happens (run 34083279855 on 2026-09-07 did exactly that from a PR
+> branch, and `handle-failure` opened issue #1011 for it). Merge first, then
+> dispatch with `dry_run=true`.
 
 GitHub UI: Repo → Actions → "Monthly architecture doc refresh" → Run workflow → set `dry_run=true` → Run.
 

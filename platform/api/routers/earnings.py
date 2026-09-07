@@ -318,12 +318,17 @@ def calibration(response: Response):
 
 
 # ╭─────────────────────────────────────────────────────────────────────╮
-# │ /api/earnings/health/ping — keep-warm target (Scheduler GETs this)  │
+# │ /api/earnings/health/ping — warm-up probe (no scheduler; see below) │
 # ╰─────────────────────────────────────────────────────────────────────╯
 
 @router.get('/api/earnings/health/ping')
 def health_ping(response: Response):
-    """Lightweight warm-up endpoint hit by the keep-warm Cloud Scheduler.
+    """Lightweight warm-up probe. NOT called by a scheduler.
+
+    The keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, "Platform
+    keep-warm — DROPPED"): solyra-api-prod sits behind IAP, so an
+    unauthenticated GET is rejected at IAP and never reaches the app. The
+    endpoint is kept for manual and in-cluster warm-up.
 
     Returns 200 + a 1-statement Cloud SQL query so the Cloud SQL
     connector (and the FastAPI worker) stay hot during business hours.
