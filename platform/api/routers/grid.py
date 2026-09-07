@@ -76,6 +76,11 @@ from lib.agents.summarizers import (  # noqa: E402
     classify_gamma_freshness,
     MAX_OPTIONS_HARD_STALE_TRADING_DAYS,
 )
+from api.schemas import (
+    GammaGridResponse,
+    GammaNodesResponse,
+    GridTimeseriesResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -526,7 +531,7 @@ def _fetch_on_demand(
 # ─── /grid endpoints ───────────────────────────────────────────────────────
 
 
-@router.get("/api/options/{ticker}/grid")
+@router.get("/api/options/{ticker}/grid", response_model=GammaGridResponse, response_model_exclude_unset=True)
 async def get_grid_live(
     ticker: str,
     request: Request,
@@ -615,7 +620,7 @@ async def get_grid_live(
     return payload
 
 
-@router.get("/api/options/{ticker}/{date_str}/grid")
+@router.get("/api/options/{ticker}/{date_str}/grid", response_model=GammaGridResponse, response_model_exclude_unset=True)
 async def get_grid_historical(
     ticker: str,
     date_str: str,
@@ -791,7 +796,7 @@ def _build_nodes_payload(
     }
 
 
-@router.get("/api/options/{ticker}/nodes")
+@router.get("/api/options/{ticker}/nodes", response_model=GammaNodesResponse, response_model_exclude_unset=True)
 async def get_nodes_live(
     ticker: str,
     response: Response,
@@ -841,7 +846,7 @@ async def get_nodes_live(
     return payload
 
 
-@router.get("/api/options/{ticker}/{date_str}/nodes")
+@router.get("/api/options/{ticker}/{date_str}/nodes", response_model=GammaNodesResponse, response_model_exclude_unset=True)
 async def get_nodes_historical(
     ticker: str,
     date_str: str,
@@ -900,7 +905,7 @@ async def get_nodes_historical(
 _TIMESERIES_CACHE: TTLCache = TTLCache(maxsize=128, ttl=60)
 
 
-@router.get("/api/options/{ticker}/grid/timeseries")
+@router.get("/api/options/{ticker}/grid/timeseries", response_model=GridTimeseriesResponse, response_model_exclude_unset=True)
 async def get_grid_timeseries(
     ticker: str,
     response: Response,
