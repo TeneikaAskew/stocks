@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 import atexit
+import threading
 
 import psycopg2
 
@@ -43,17 +44,32 @@ from .schema import ALL_ROLES, AgentRole
 # Singleton Cloud SQL Connector — reused across all connect() calls so
 # we don't leak connection-pool instances on every request.
 _CONNECTOR = None
+_CONNECTOR_LOCK = threading.Lock()
 
 
 def _get_connector():
-    global _CONNECTOR
-    if _CONNECTOR is None:
-        from google.cloud.sql.connector import Connector  # type: ignore
+    """Return the process-wide Connector, building it at most once.
 
-        # lazy refresh: on-demand cert refresh — the background refresher
-        # is unreliable under Cloud Run request-based CPU throttling.
-        _CONNECTOR = Connector(refresh_strategy="lazy")
-        atexit.register(_CONNECTOR.close)
+    Double-checked locking, matching `gcp.database.get_engine()`. The
+    unlocked `if _CONNECTOR is None` was safe only because every API handler
+    ran on the event loop and could not interleave. Under threadpool
+    dispatch two cold requests can both pass the check, both construct a
+    Connector, and one is then overwritten and never closed — leaking its
+    background refresh machinery and its connections for the life of the
+    instance, exactly during the cold-start burst when the instance can
+    least absorb it.
+    """
+    global _CONNECTOR
+    if _CONNECTOR is not None:          # fast path, no lock
+        return _CONNECTOR
+    with _CONNECTOR_LOCK:
+        if _CONNECTOR is None:          # re-check under the lock
+            from google.cloud.sql.connector import Connector  # type: ignore
+
+            # lazy refresh: on-demand cert refresh — the background refresher
+            # is unreliable under Cloud Run request-based CPU throttling.
+            _CONNECTOR = Connector(refresh_strategy="lazy")
+            atexit.register(_CONNECTOR.close)
     return _CONNECTOR
 
 

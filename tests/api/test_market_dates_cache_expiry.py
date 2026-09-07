@@ -73,7 +73,7 @@ def probe_backed(monkeypatch):
     monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
     monkeypatch.setattr(main_module, "_dates_query", fake_query)
     monkeypatch.setattr(main_module, "_MARKET_DATES_CACHE",
-                        type(main_module._MARKET_DATES_CACHE)())
+                        main_module._MARKET_DATES_CACHE.fresh())
     return state
 
 

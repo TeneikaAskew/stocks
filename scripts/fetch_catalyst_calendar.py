@@ -19,6 +19,8 @@ Usage:
 
 import argparse
 import json
+import threading
+import tempfile
 import logging
 import os
 import sys
@@ -502,14 +504,38 @@ def fetch_all_catalysts(api_key, date_from, date_to, tickers=None, calendar_type
     return all_events
 
 
+# Serialises the read / merge / write below. `platform/api/routers/catalysts.py`
+# calls this from a request handler, and that handler is threadpooled now, so
+# two `refresh=true` requests (or two ticker cache misses) can be inside this
+# function at once. Unlocked, each reads the same `existing`, merges its own
+# events into it, and the later write discards the earlier one's — the merge
+# looks like it protects against that and does not, because it merges against
+# a snapshot taken before the other writer's.
+_SAVE_LOCK = threading.RLock()
+
+
 def save_catalysts(events, output_path=None):
-    """Save catalyst events to JSON."""
+    """Save catalyst events to JSON.
+
+    Read/merge/write under `_SAVE_LOCK`, published with `os.replace` so a
+    concurrent reader sees a whole file. The previous `open(path, "w")`
+    truncated in place, and `_load_cached_events` in the API treats an
+    unparseable file as a cache miss — so a reader catching the truncation
+    would refetch, and the next save would write its result over the merge in
+    progress.
+    """
     if output_path is None:
         output_path = OUTPUT_FILE
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    with _SAVE_LOCK:
+        return _save_catalysts_locked(events, output_path)
+
+
+def _save_catalysts_locked(events, output_path):
+    """The body of `save_catalysts`. Caller must hold `_SAVE_LOCK`."""
     # Merge with existing data if present
     existing = []
     if output_path.exists():
@@ -546,8 +572,20 @@ def save_catalysts(events, output_path=None):
         "events": merged,
     }
 
-    with open(output_path, "w") as f:
-        json.dump(output, f, indent=2, default=str)
+    fd, tmp = tempfile.mkstemp(dir=str(output_path.parent),
+                               prefix=f".{output_path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(output, f, indent=2, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, output_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
     logger.info("Saved %d catalyst events to %s", len(merged), output_path)
     return merged
