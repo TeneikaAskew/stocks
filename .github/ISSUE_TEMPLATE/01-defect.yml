@@ -104,10 +104,10 @@ body:
     attributes:
       label: Priority
       options:
-        - P0 — fires wrong, loses money, or serves a lie to the user right now
-        - P1 — decision-critical correctness, not currently firing
-        - P2 — architecture or parity, contained
-        - P3 — cleanup, cost, maintainability
+        - P0 (severity:critical) — fires wrong, loses money, or serves a lie now
+        - P1 (severity:high) — decision-critical correctness, not currently firing
+        - P2 (severity:medium) — architecture or parity, contained
+        - P3 (severity:low) — cleanup, cost, maintainability
     validations:
       required: true
 

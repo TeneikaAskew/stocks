@@ -174,9 +174,9 @@ body:
         see the top of this form.
       options:
         - label: >-
-            The re-verification above was run while filing this issue: against
-            the live system, or against the current tree where the finding is
-            code-only and I said which.
+            The re-verification above was run while filing this issue, against
+            the live system — or the current tree if the finding is code-only,
+            and I said which.
           required: true
         - label: >-
             I will apply the severity and audit labels after filing, since the
