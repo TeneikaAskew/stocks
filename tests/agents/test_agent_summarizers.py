@@ -853,9 +853,14 @@ def _cutoff_aware_query(monkeypatch, df):
         cutoff = pd.Timestamp(params["cutoff"]).date()
         dates = pd.to_datetime(df["date"]).dt.date
         if "date < CAST(:cutoff AS date)" in sql:
-            return df[dates < cutoff].reset_index(drop=True)
-        assert "date <= CAST(:cutoff AS date)" in sql, sql
-        return df[dates <= cutoff].reset_index(drop=True)
+            out = df[dates < cutoff].reset_index(drop=True)
+        else:
+            assert "date <= CAST(:cutoff AS date)" in sql, sql
+            out = df[dates <= cutoff].reset_index(drop=True)
+        if "ticker <> :ticker" in sql:
+            # Cross-ticker pull carries a `ticker` column per source row.
+            out = out.assign(ticker="QQQ")
+        return out
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
     return seen
