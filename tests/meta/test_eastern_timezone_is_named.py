@@ -1570,6 +1570,7 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
                 and _const_string(v) is None
                 and not _is_eastern_fixed_timedelta(v)
                 and not _is_offset_constructor_call(v)
+                and not _is_partial_call(v)
                 and _const_number(v) is None
                 and not isinstance(v, (ast.Name, ast.Attribute, ast.Dict,
                                        ast.Tuple, ast.List, ast.Set))):
@@ -1593,6 +1594,41 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
     return out
 
 
+def _is_partial_call(node: ast.AST) -> bool:
+    """`functools.partial(f, ...)` / `partial(f, ...)`, kept for `follow`.
+
+    `ET = functools.partial(ZoneInfo, "EST")` then `ET()` constructs the
+    fixed zone, and dropping the binding meant `_resolve_callable` had
+    nothing to follow (Codex, PR #993 final review).
+    """
+    return (isinstance(node, ast.Call) and node.args
+            and _call_name(node) == "partial")
+
+
+def _partial_of(name: str, env):
+    """`(callable_name, receiver, bound_args, bound_keywords)` if `name` is a partial."""
+    seen: set = set()
+    while name not in seen:
+        seen.add(name)
+        name = env.aliases.get(name, name)
+        bound = env.bindings.get(name)
+        if isinstance(bound, ast.Name):
+            name = bound.id
+            continue
+        if isinstance(bound, ast.Call) and _is_partial_call(bound):
+            target = bound.args[0]
+            if isinstance(target, ast.Name):
+                cname, receiver = _resolve_callable(target.id, env)
+            elif isinstance(target, ast.Attribute):
+                cname = target.attr
+                receiver = target.value.id if isinstance(target.value, ast.Name) else ""
+            else:
+                return None
+            return cname, receiver, list(bound.args[1:]), list(bound.keywords)
+        return None
+    return None
+
+
 def _is_offset_constructor_call(node: ast.AST) -> bool:
     """Is this a `timedelta(...)`/`FixedOffset(...)`/`tzoffset(...)` call?
 
@@ -1606,6 +1642,27 @@ def _is_offset_constructor_call(node: ast.AST) -> bool:
     return (isinstance(node, ast.Call)
             and _call_name(node) in ({"timedelta"} | _FIXED_OFFSET_CALLS
                                      | _FIXED_OFFSET_SECOND_CALLS))
+
+
+def _embedded_sql_hit(text: str):
+    """`(is_offset, shown)` for the first bad zone in a SQL statement's text.
+
+    The one list of embedded-SQL matchers, so the constant scan and the
+    folded-query branch of `execute(...)` cannot drift apart: `ZONE = "EST"`
+    then `cur.execute(f"SET TIME ZONE {ZONE}")` folds to a statement the
+    constant scan would have reported had it been written inline, and it is
+    reported by the same rule (Codex, PR #993 final review).
+    """
+    for pattern, is_offset in ((NONPY_UNAMBIGUOUS, False),
+                               (NONPY_AMBIGUOUS, False),
+                               (NONPY_FIXED_ZONE, True),
+                               (NONPY_FIXED_OFFSET, True),
+                               (NONPY_SQL_NUMERIC_OFFSET, True),
+                               (NONPY_SQL_INTERVAL_OFFSET, True)):
+        m = pattern.search(text)
+        if m:
+            return is_offset, " ".join(m.group(0).split())[:80]
+    return None
 
 
 def _python_hits(path: pathlib.Path, text: str):
@@ -2015,18 +2072,11 @@ def _python_hits(path: pathlib.Path, text: str):
             # PR #993). It is safe in this loop for the same reason it is safe
             # in the file scan: it is confined to the SQL statement forms,
             # which is what reaching this branch has just established.
-            for pattern, bucket in ((NONPY_UNAMBIGUOUS, legacy),
-                                    (NONPY_AMBIGUOUS, legacy),
-                                    (NONPY_FIXED_ZONE, offsets),
-                                    (NONPY_FIXED_OFFSET, offsets),
-                                    (NONPY_SQL_NUMERIC_OFFSET, offsets),
-                                    (NONPY_SQL_INTERVAL_OFFSET, offsets)):
-                m = pattern.search(text)
-                if m:
-                    reported.add(id(node))
-                    note(bucket, node,
-                         f"in string: {' '.join(m.group(0).split())[:80]}")
-                    break
+            hit = _embedded_sql_hit(text)
+            if hit is not None:
+                is_offset, shown = hit
+                reported.add(id(node))
+                note(offsets if is_offset else legacy, node, f"in string: {shown}")
 
         # `{"tz": "EST"}` -- a config literal read back at some other site.
         if isinstance(node, ast.Dict):
@@ -2055,7 +2105,26 @@ def _python_hits(path: pathlib.Path, text: str):
 
         if not isinstance(node, ast.Call):
             continue
+
+        _orig_call = node
         name = env.aliases.get(_call_name(node), _call_name(node))
+        # A call through a `partial` is a call to what it wraps, with the
+        # bound arguments in front: `ET = functools.partial(ZoneInfo, "EST")`
+        # then `ET()` constructs the fixed zone, and every check below --
+        # the constructor filter, the provenance lookups, the argument walk --
+        # runs on the rebuilt call so it sees `ZoneInfo("EST")`
+        # (Codex, PR #993 final review).
+        _pf = _partial_of(node.func.id, env) if isinstance(node.func, ast.Name) else None
+        if _pf is not None:
+            name, _prec, _pargs, _pkw = _pf
+            node = ast.copy_location(
+                ast.Call(func=ast.Name(id=name, ctx=ast.Load()),
+                         args=_pargs + list(node.args),
+                         keywords=_pkw + list(node.keywords)),
+                _orig_call)
+            if _prec:
+                node.func = ast.Attribute(value=ast.Name(id=_prec, ctx=ast.Load()),
+                                          attr=name, ctx=ast.Load())
 
         # `os.putenv("TZ", "EST")` and `os.environ.setdefault("TZ", "EST")`
         # install the same process zone as `os.environ["TZ"] = "EST"`, which
@@ -2125,9 +2194,25 @@ def _python_hits(path: pathlib.Path, text: str):
             # the context and its parameter were never joined
             # (Codex, PR #993).
             query = _resolve_binding(node.args[0], env)
-            if (isinstance(query, ast.Constant)
-                    and isinstance(query.value, str)
-                    and re.search(_TZ_CONTEXT, query.value, re.I)):
+            # FOLDED, not merely resolved: `ZONE = "EST"` then
+            # `cur.execute(f"SET TIME ZONE {ZONE}")` is a `JoinedStr` the
+            # constant-string evaluator already reads, and requiring an
+            # `ast.Constant` here walked past it (Codex, PR #993 final review).
+            query_text = _const_string(query, env)
+            if query_text is not None and re.search(_TZ_CONTEXT, query_text, re.I):
+                if not node.args[1:] and not isinstance(query, ast.Constant):
+                    # The zone is IN the folded text, so it is matched the way
+                    # an inline statement is -- the same six embedded-SQL
+                    # matchers the constant scan runs -- and noted at the
+                    # query. `follow` cannot do this: it reads a constant as
+                    # a zone VALUE, not as SQL carrying one. (An inline
+                    # Constant already takes the constant scan's path and is
+                    # left alone here rather than reported twice.)
+                    hit = _embedded_sql_hit(_strip_sql_comments(query_text))
+                    if hit is not None:
+                        is_offset, shown = hit
+                        note(offsets if is_offset else legacy, node.args[0],
+                             f"{name}(folded: {shown})")
                 for param in node.args[1:]:
                     items = (param.elts
                              if isinstance(param, (ast.Tuple, ast.List))
@@ -2172,6 +2257,16 @@ def _python_hits(path: pathlib.Path, text: str):
                 # legacy zone: `tzinfos={"EST": gettz("US/Eastern")}`.
                 follow(legacy, offsets, node, v, env,
                        lambda shown: f"tzinfos={{... {shown}}}")
+        # `setattr(settings, "timezone", "EST")` is the attribute assignment
+        # the branch above already reads, written as a call, and it created
+        # no assignment node for that branch to see (Codex, PR #993 final
+        # review).
+        if name == "setattr" and len(node.args) >= 3:
+            attr = _const_string(node.args[1], env)
+            if attr is not None and attr.lower() in _TZ_KEYWORDS:
+                follow(legacy, offsets, node, node.args[2], env,
+                       lambda shown, a=attr: f"setattr(..., {a!r}, {shown})")
+            continue
         if name not in _TZ_CALLS:
             continue
         # Whether the CALL is enough of a timezone context to convict a bare
@@ -2420,7 +2515,10 @@ def _classify_magic(line: str):
         return None, ""
     if name in _SHELL_LINE_MAGICS:
         return "shell", payload
-    if name == "env":
+    if name in ("env", "set_env"):
+        # `%set_env var val` / `%set_env var=val` is IPython's other
+        # documented setter, with the same two forms (Codex, PR #993 final
+        # review).
         e = _ENV_ASSIGN.match(payload)
         # `%env` and `%env NAME` READ the environment; only an assignment
         # form sets it, and that is the one that installs a zone.
@@ -2712,9 +2810,25 @@ def _yaml_env_pair_hits(text: str) -> list:
         node = stack.pop()
         if isinstance(node, yaml.MappingNode):
             keys = {}
+            # A `<<` MERGE first, so an explicit key beside it wins. The
+            # composer leaves the merge node unresolved -- `env: [{name: *key,
+            # <<: *base}]` holds a `<<` entry whose value is the `base`
+            # mapping (or a sequence of mappings), not the folded pairs -- so
+            # `value` inherited through it was never associated with `name`
+            # (Codex, PR #993 final review). The inherited scalar keeps its
+            # own mark, so the finding points at where it was written.
+            for k, v in node.value:
+                if _yaml_scalar(k) == "<<":
+                    merged = v.value if isinstance(v, yaml.SequenceNode) else [v]
+                    for mnode in merged:
+                        if isinstance(mnode, yaml.MappingNode):
+                            for mk, mv in mnode.value:
+                                mks = _yaml_scalar(mk)
+                                if mks is not None:
+                                    keys.setdefault(mks, mv)
             for k, v in node.value:
                 ks = _yaml_scalar(k)
-                if ks is not None:
+                if ks is not None and ks != "<<":
                     keys[ks] = v
                 stack.append(v)
             name, value = _yaml_scalar(keys.get("name")), keys.get("value")
@@ -2745,19 +2859,48 @@ def _yaml_env_pair_hits(text: str) -> list:
 _PINE_TZ_CALL = re.compile(
     r"\b(?:time|time_close|timestamp)\s*\(((?:[^()]|\([^()]*\))*)\)")
 _PINE_STRING = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'")
+# `const string MARKET_ZONE = "EST"` -- a Pine constant, later passed by name.
+# The call then carries no literal to read, and the repository's own scripts
+# pass variables such as `tz` to these builtins, so the literal-only reading
+# was blind to the ordinary form (Codex, PR #993 final review).
+_PINE_CONST = re.compile(
+    r"^[ \t]*(?:(?:var|varip|const)\s+)?(?:string\s+)?([A-Za-z_][A-Za-z0-9_]*)"
+    r"\s*(?::)?=\s*(?:\"([^\"\n]*)\"|'([^'\n]*)')[ \t]*$", re.M)
+_PINE_IDENT = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_(])")
+
+
+def _pine_constants(text: str) -> dict:
+    """`{NAME: value}` for every string constant assigned once at top level."""
+    out: dict = {}
+    for m in _PINE_CONST.finditer(text):
+        out.setdefault(m.group(1), m.group(2) if m.group(2) is not None else m.group(3))
+    return out
 
 
 def _pine_call_hits(text: str) -> list:
     """`(hit, value, is_offset)` for each quoted bad zone inside a Pine timezone call."""
     out = []
+    consts = _pine_constants(text)
     for call in _PINE_TZ_CALL.finditer(text):
         args = call.group(1)
+        head = call.group(0)[:call.group(0).index('(')]
         for m in _PINE_STRING.finditer(args):
             value = m.group(1) if m.group(1) is not None else m.group(2)
             is_offset = _bad_zone_value(value)
             if is_offset is not None:
                 out.append((_TextHit(call.start(1) + m.start(),
-                                     f"{call.group(0)[:call.group(0).index('(')]}(... {value!r} ...)"),
+                                     f"{head}(... {value!r} ...)"),
+                            value, is_offset))
+        # A bare identifier bound to a string constant is that string.
+        bare = _PINE_STRING.sub(lambda q: " " * len(q.group(0)), args)
+        for m in _PINE_IDENT.finditer(bare):
+            value = consts.get(m.group(1))
+            if value is None:
+                continue
+            is_offset = _bad_zone_value(value)
+            if is_offset is not None:
+                out.append((_TextHit(call.start(1) + m.start(),
+                                     f"{head}(... {m.group(1)} (= {value!r}) ...)"),
                             value, is_offset))
     return out
 
@@ -3259,17 +3402,43 @@ _MAKE_TZ_VAR = re.compile(
     re.I)
 
 
+_MAKE_REF = re.compile(r"\$[({]([A-Za-z_][A-Za-z0-9_.]*)[)}]")
+
+
+def _resolve_make_value(value: str, scalars: dict, at: int):
+    """`value` with every `$(NAME)` folded, or None if any is not static."""
+    def one(m):
+        v = _scalar_in_force(scalars, m.group(1), at)
+        if v is None:
+            raise LookupError
+        return v
+    try:
+        folded = _MAKE_REF.sub(one, value)
+    except LookupError:
+        return None
+    return None if "$" in folded else folded
+
+
 def _expand_make_vars(text: str) -> str:
     """Substitute the Make scalar in force at each `$(NAME)` in a timezone context."""
     scalars: dict = {}
+    raw: list = []
     for m in _MAKE_SCALAR.finditer(text):
         # A recipe line (tab-indented) is shell, not a Make assignment.
         if text[m.start():m.start() + 1] == "\t":
             continue
-        value = m.group(2)
-        if "$" in value or not value:
-            continue                # not statically known, left unresolved
-        scalars.setdefault(m.group(1), []).append((m.start(), value, False))
+        if m.group(2):
+            raw.append((m.start(), m.group(1), m.group(2)))
+    # CHAINS: `A := EST`, `B := $(A)`, `export TZ := $(B)`. GNU Make resolves
+    # `B` to `EST`, and discarding every value that mentions `$` left `B`
+    # unbound and the final reference unresolved (Codex, PR #993 final
+    # review). Each value is resolved against the scalars in force at ITS OWN
+    # offset, in source order, so a chain of any length folds and a reference
+    # to something not statically known stays unresolved rather than guessed.
+    for at, name, value in raw:
+        resolved = _resolve_make_value(value, scalars, at)
+        if resolved is not None:
+            scalars.setdefault(name, []).append((at, resolved, False))
 
     def one(m):
         value = _scalar_in_force(scalars, m.group(2), m.start())
@@ -3314,6 +3483,11 @@ def _opens_escape_string(text: str, i: int) -> bool:
     return i < 2 or not re.match(r"[A-Za-z0-9_]", text[i - 2])
 
 
+# `$$` or `$tag$`: a PostgreSQL dollar-quote delimiter, matched at an opening
+# `$` outside any other literal.
+_DOLLAR_QUOTE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
 def _strip_pine_comments(text: str) -> str:
     """Blank Pine's `//` line comments and `/* ... */` blocks.
 
@@ -3325,9 +3499,11 @@ def _strip_pine_comments(text: str) -> str:
     branch was given comment stripping for two rounds ago, in the one
     collected language that still had none (Codex, PR #993).
 
-    Pine has no escape-string literal, so backslash escapes are off.
+    Pine has no `E'...'` literal, but EVERY Pine string honours a backslash,
+    so `backslash_escapes` is on (Codex, PR #993 final review).
     """
-    return _blank_comments(text, "//", escape_strings=False)
+    return _blank_comments(text, "//", escape_strings=False,
+                           backslash_escapes=True)
 
 
 def _strip_sql_comments(text: str) -> str:
@@ -3359,16 +3535,27 @@ def _strip_sql_comments(text: str) -> str:
     Only `E'...'` honours backslashes at PostgreSQL's default
     `standard_conforming_strings = on`, so an ordinary literal is unchanged.
     """
-    return _blank_comments(text, "--", escape_strings=True)
+    return _blank_comments(text, "--", escape_strings=True, dollar_quotes=True)
 
 
-def _blank_comments(text: str, line_token: str, escape_strings: bool) -> str:
+def _blank_comments(text: str, line_token: str, escape_strings: bool,
+                    backslash_escapes: bool = False,
+                    dollar_quotes: bool = False) -> str:
     """Blank line and `/* */` comments, honouring quotes.
 
     Shared by the SQL and Pine strippers: they differ only in the line-comment
-    token and in whether the language has backslash escape strings. Blanked in
-    spaces of the same width, keeping newlines, so every line and column still
-    means what it says.
+    token and in how their string literals are delimited. Blanked in spaces of
+    the same width, keeping newlines, so every line and column still means
+    what it says.
+
+    `escape_strings`: PostgreSQL's `E'...'`, where a backslash escapes inside
+    that literal only. `backslash_escapes`: every literal honours a backslash,
+    which is Pine's rule -- `"literal \" // still data"` keeps its `//` inside
+    the string, and reading the escaped quote as the closing one blanked the
+    real `timezone = "EST"` after it (Codex, PR #993 final review).
+    `dollar_quotes`: PostgreSQL's `$$...$$` and `$tag$...$tag$`, inside which
+    `--` is data; `SELECT $$ -- still data $$; SET TIME ZONE 'EST';` lost the
+    SET the same way (Codex, PR #993 final review).
     """
     out = []
     quote = None
@@ -3378,6 +3565,14 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool) -> str:
     while i < len(text):
         ch = text[i]
         nxt = text[i + 1] if i + 1 < len(text) else ""
+        if dollar_quotes and not quote and not block and ch == "$":
+            m = _DOLLAR_QUOTE.match(text, i)
+            if m:
+                tag = m.group(0)
+                end = text.find(tag, m.end())
+                stop = len(text) if end < 0 else end + len(tag)
+                out.append(text[i:stop]); i = stop
+                continue
         if block:
             if ch == "*" and nxt == "/":
                 out.append("  "); i += 2; block = False
@@ -3386,7 +3581,7 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool) -> str:
             continue
         if quote:
             out.append(ch)
-            if escapes and ch == "\\" and i + 1 < len(text):
+            if (escapes or backslash_escapes) and ch == "\\" and i + 1 < len(text):
                 # The escaped character is data whatever it is, including a
                 # quote, so it cannot close the literal.
                 out.append(text[i + 1]); i += 2
@@ -3434,6 +3629,15 @@ _SHELL_SCALAR = re.compile(
     re.M)
 
 
+# A declaring builtin with its options and ALL of its `NAME=value` operands.
+_SHELL_DECL_MULTI = re.compile(
+    r"(?:^|[;&|][ \t]*)[ \t]*(export|local|declare|typeset|readonly)[ \t]+"
+    r"(?:-[A-Za-z]+[ \t]+)*((?:[A-Za-z_][A-Za-z0-9_]*="
+    r"(?:\"[^\"$`\\\n]*\"|'[^'\n]*'|[^\s\"'$`;|&\n]+)[ \t]*)+)", re.M)
+_SHELL_DECL_OPERAND = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*)=(?:\"([^\"$`\\\n]*)\"|'([^'\n]*)'|([^\s\"'$`;|&\n]+))")
+
+
 def _shell_scalars(text: str) -> dict:
     """`{NAME: [(offset, value, function-scoped), ...]}`, in source order.
 
@@ -3462,6 +3666,20 @@ def _shell_scalars(text: str) -> dict:
         # The NAME's offset, not the match's: the match may begin at the
         # separator that ended the previous command.
         out.setdefault(m.group(2), []).append((m.start(2), value, local))
+    # A declaring builtin takes SEVERAL operands: `local X=x LEGACY=EST`. The
+    # anchored pattern above reads only the first, because the second begins
+    # after whitespace rather than at a command boundary, so `LEGACY` was
+    # never collected (Codex, PR #993 final review).
+    for m in _SHELL_DECL_MULTI.finditer(text):
+        local = m.group(1) in ("local", "declare", "typeset")
+        for o in _SHELL_DECL_OPERAND.finditer(m.group(2)):
+            value = next(g for g in o.groups()[1:] if g is not None)
+            at = m.start(2) + o.start(1)
+            entries = out.setdefault(o.group(1), [])
+            if not any(e[0] == at for e in entries):
+                entries.append((at, value, local))
+    for entries in out.values():
+        entries.sort(key=lambda e: e[0])
     return out
 
 
@@ -3510,13 +3728,27 @@ def _function_spans(text: str) -> list[tuple[int, int]]:
     at = 0
     depth = 0
     start = None
+    pending = None                              # header awaiting its `{`
     for line in text.splitlines(keepends=True):
+        if depth == 0 and pending is not None:
+            p_start = pending
+            pending = None
+            if line.strip().startswith("{"):
+                start = p_start
+                depth = _brace_delta(line)
+                if depth <= 0:
+                    spans.append((start, at + len(line)))
+                    depth, start = 0, None
+                at += len(line)
+                continue
         if depth == 0 and header.match(line):
             start = at
             depth = _brace_delta(line)
             if depth <= 0:                      # a one-line function body
                 spans.append((start, at + len(line)))
                 depth, start = 0, None
+        elif depth == 0 and _HEADER_NO_BRACE.match(line):
+            pending = at                        # same layout as `_shell_functions`
         elif depth:
             depth += _brace_delta(line)
             if depth <= 0:
@@ -3526,6 +3758,13 @@ def _function_spans(text: str) -> list[tuple[int, int]]:
     if start is not None:                       # unterminated, to end of file
         spans.append((start, at))
     return spans
+
+
+# A function header WITHOUT its brace: `helper()` or `function helper`, with
+# the `{` expected alone on the next line.
+_HEADER_NO_BRACE = re.compile(
+    r"^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\)\s*)?"
+    r"|([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*)$")
 
 
 def _shell_functions(body: str) -> list[tuple[str, str]]:
@@ -3554,8 +3793,24 @@ def _shell_functions(body: str) -> list[tuple[str, str]]:
         r"^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\)\s*)?"
         r"|([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*)\{")
     depth = 0
-    for line in lines:
+    pending = None      # a `name()` header whose `{` is on the NEXT line
+    for idx, line in enumerate(lines):
         if depth == 0:
+            if pending is not None:
+                # The standard K&R-less layout: `helper()` then `{` alone on
+                # the following line. Recognising only a same-line brace
+                # opened no scope for it, so the helper's `local` zoned array
+                # was read as file scope (Codex, PR #993 final review).
+                name, header_line = pending
+                pending = None
+                if line.strip().startswith("{"):
+                    out.append((name, [header_line, line]))
+                    depth = _brace_delta(line)
+                    if depth <= 0:
+                        depth = 0
+                        out.append(("<top level>", []))
+                    continue
+                out[-1][1].append(header_line)      # not a function after all
             m = header.match(line)
             if m:
                 out.append((m.group(1) or m.group(2), [line]))
@@ -3563,6 +3818,10 @@ def _shell_functions(body: str) -> list[tuple[str, str]]:
                 if depth <= 0:          # a one-line function body
                     depth = 0
                     out.append(("<top level>", []))
+                continue
+            h = _HEADER_NO_BRACE.match(line)
+            if h:
+                pending = (h.group(1) or h.group(2), line)
                 continue
             out[-1][1].append(line)
             continue
@@ -3725,6 +3984,25 @@ def _array_expansions(cmd: str) -> set[str]:
     return out
 
 
+def _elements_carry_zone(body: str) -> bool:
+    """Do the ELEMENTS of an array literal pass `--time-zone America/New_York`?
+
+    `shlex` splits the body the way bash does, so a flag inside a quoted
+    element is that element's text. On unbalanced quoting there is nothing to
+    tokenise and the body cannot vouch for a zone.
+    """
+    try:
+        toks = shlex.split(body.replace("\\\n", " "))
+    except ValueError:
+        return False
+    for n, t in enumerate(toks):
+        if t == "--time-zone" and n + 1 < len(toks) and toks[n + 1] == EASTERN:
+            return True
+        if t == f"--time-zone={EASTERN}":
+            return True
+    return False
+
+
 def _arrays_carrying_timezone(func: str) -> dict[str, list]:
     """`expansion spelling -> [(offset, carries the zone), ...]`, in order.
 
@@ -3765,8 +4043,13 @@ def _arrays_carrying_timezone(func: str) -> dict[str, list]:
         # The LITERAL zone, not merely the flag. An array holding
         # `--time-zone "${SCHEDULER_TZ}"` satisfied every command that expanded
         # it while saying nothing about the zone those schedulers would run in.
-        carries = bool(re.search(r"--time-zone[=\s]+[\"']?" + re.escape(EASTERN)
-                                 + r"[\"']?", func[start:i]))
+        # TOKENISED, not searched. `flags=(--message-body 'note --time-zone
+        # America/New_York')` is one element whose text mentions the flag; bash
+        # passes a message body and no timezone. The substring read marked the
+        # array as carrying the zone, and the file-wide assertion saw the same
+        # payload text, so a zoneless scheduler passed the whole guard
+        # (Codex, PR #993 final review).
+        carries = _elements_carry_zone(func[start:i - 1])
         # `+=(` APPENDS. Reading it as a rebind lost the elements already
         # there, so `flags=(--location ...)` then `flags+=(--time-zone ...)`
         # recorded the zoneless assignment as the one in force and reported a
@@ -8046,3 +8329,287 @@ def test_each_scope_is_traversed_once():
     assert len(calls) == 4, calls
     # And the helpers still accept a scope alone.
     assert _bound_names(tree) == _bound_names(tree, nodes)
+
+
+# -- Final review (Codex, PR #993) -------------------------------------------
+#
+# Twelve findings on `e1f3132c`, requested as a full-PR pass. All twelve fixed;
+# each test was run against the pre-fix module first and reported nothing (or,
+# for the two strippers, blanked the statement it exists to read).
+
+
+def _scanned_shell(text: str, make: bool = False) -> bool:
+    """Would the non-Python scan report `text`? All four matchers `_scan` runs."""
+    out = _expand_shell_defaults(_strip_shell_comments(text, make=make), make=make)
+    return bool(NONPY_AMBIGUOUS.search(out) or NONPY_UNAMBIGUOUS.search(out)
+                or NONPY_FIXED_ZONE.search(out) or NONPY_FIXED_OFFSET.search(out))
+
+
+def _offenders(body: str) -> list:
+    return [o for n, seg in _shell_functions(_strip_shell_comments(body))
+            for o in _scheduler_offenders(n, seg)]
+
+
+def _python_hit_lists(src: str):
+    """`_python_hits` on `src`, written UNDER the repository.
+
+    `_python_hits` reports paths relative to `REPO`, so pytest's `tmp_path`
+    (outside it) raises. A unique directory inside the checkout, removed
+    afterwards, is what `test_the_scan_reads_only_tracked_files` does too.
+    """
+    import shutil
+    d = REPO / f"tmp_probe_{uuid.uuid4().hex}"
+    d.mkdir()
+    try:
+        f = d / "m.py"
+        f.write_text(src)
+        return _python_hits(f.resolve(), src)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _python_finds(_tmp_path, src: str) -> bool:
+    r = _python_hit_lists(src)
+    return bool(r and (r[0] or r[1]))
+
+
+def test_a_dollar_quoted_literal_is_data():
+    """`SELECT $$ -- still data $$; SET TIME ZONE 'EST';` runs the SET.
+
+    Inside PostgreSQL's `$$...$$` and `$tag$...$tag$` a `--` is text, and the
+    stripper read it as a comment and blanked the executable statement after
+    it -- the third stripper defect of this shape, after escape strings and
+    the shell's escaped quote (Codex, PR #993 final review).
+    """
+    for src in ("SELECT $$ -- still data $$; SET TIME ZONE 'EST';",
+                "SELECT $tag$ -- x $tag$; SET TIME ZONE 'EST';",
+                "SELECT $q$it's -- fine$q$; SET TIME ZONE 'EST';"):
+        assert "SET TIME ZONE 'EST'" in _strip_sql_comments(src), src
+    # A real comment after the literal is still blanked, and an unterminated
+    # dollar quote runs to the end rather than resurrecting a comment.
+    assert _strip_sql_comments("SELECT $$x$$; -- SET TIME ZONE 'EST'").rstrip() == "SELECT $$x$$;"
+    # An unterminated dollar quote runs to the end of the text: everything
+    # after it is literal, so nothing is blanked and nothing is invented.
+    src = "SELECT $$ open -- SET TIME ZONE 'EST'"
+    assert _strip_sql_comments(src) == src
+    # `$1` is a positional parameter, not a delimiter.
+    assert _strip_sql_comments("SELECT $1; -- c").rstrip() == "SELECT $1;"
+
+
+def test_a_pine_escaped_quote_does_not_end_the_string():
+    """`x = "literal \" // still data"; timezone = "EST"` keeps the assignment.
+
+    Every Pine string honours a backslash. With escapes off, the escaped quote
+    closed the string, `//` read as a comment, and the real setting after it
+    was blanked (Codex, PR #993 final review).
+    """
+    src = 'x = "literal ' + chr(92) + '" // still data"; timezone = "EST"'
+    assert 'timezone = "EST"' in _strip_pine_comments(src)
+    assert not _strip_pine_comments('// timezone = "EST"').strip()
+    assert 'msg = "a // b"' in _strip_pine_comments('msg = "a // b"  // note')
+    # SQL keeps its own rule: a backslash in an ordinary literal is a character.
+    assert _strip_sql_comments("SELECT 'a" + chr(92) + "'; -- c").rstrip() == "SELECT 'a" + chr(92) + "';"
+
+
+def test_a_pine_constant_reaches_the_call():
+    """`const string MARKET_ZONE = "EST"` then `time(..., MARKET_ZONE)` reports.
+
+    The call carries no literal, and the repository's own scripts pass
+    variables such as `tz` to these builtins, so reading only quoted literals
+    inside the call was blind to the ordinary form (Codex, PR #993 final
+    review).
+    """
+    src = ('const string MARKET_ZONE = "EST"' + "\n"
+           't = time(timeframe.period, session, MARKET_ZONE)' + "\n")
+    hits = _pine_call_hits(_strip_pine_comments(src))
+    assert hits and hits[0][1] == "EST" and hits[0][2] is False, hits
+    assert "MARKET_ZONE" in hits[0][0].group(0)
+    # `var`/`:=` spellings, and an offset value.
+    src2 = 'var string zone = "-05:00"' + "\n" + 'ts = timestamp(zone, 2026, 1, 1)' + "\n"
+    hits2 = _pine_call_hits(_strip_pine_comments(src2))
+    assert hits2 and hits2[0][2] is True, hits2
+    # The canonical zone by name, an unrelated variable, and a variable that
+    # is not a string constant all stay quiet.
+    for quiet in ('const string Z = "America/New_York"' + "\n" + "t = time(tf, s, Z)" + "\n",
+                  'const string NOTE = "EST"' + "\n" + "t = time(tf, s, tz)" + "\n",
+                  "Z = input.string()" + "\n" + "t = time(tf, s, Z)" + "\n"):
+        assert not _pine_call_hits(_strip_pine_comments(quiet)), quiet
+
+
+def test_an_array_element_carrying_flag_text_is_not_a_flag():
+    """`flags=(--message-body 'note --time-zone America/New_York')` is zoneless.
+
+    Bash passes one message-body element and no timezone; the substring read
+    marked the array as carrying the zone, and the file-wide assertion saw
+    the same payload text, so a UTC scheduler passed the whole guard
+    (Codex, PR #993 final review).
+    """
+    body = ("flags=(--message-body 'note --time-zone America/New_York')" + "\n"
+            'gcloud scheduler jobs create http j "${flags[@]}"' + "\n")
+    assert _offenders(body), "a payload is not a flag"
+    # The real spellings still carry it, as separate elements or as `=`.
+    for real in ("flags=(--location us-east1 --time-zone America/New_York)",
+                 'flags=(--time-zone "America/New_York")',
+                 "flags=(--time-zone=America/New_York)"):
+        assert not _offenders(real + "\n" + 'gcloud scheduler jobs create http j "${flags[@]}"' + "\n"), real
+    assert _elements_carry_zone("--time-zone America/New_York")
+    assert not _elements_carry_zone("--message-body 'x --time-zone America/New_York'")
+    assert not _elements_carry_zone("--time-zone 'unterminated")
+
+
+def test_a_function_brace_on_the_next_line_opens_a_scope():
+    """`helper()` then `{` alone on the next line is a function.
+
+    The header pattern wanted the brace on the same line, so the standard
+    layout opened no scope and the helper's `local` zoned array covered a
+    later top-level command that expands an unset array (Codex, PR #993
+    final review).
+    """
+    for header in ("helper()", "function helper", "function helper()"):
+        body = (header + "\n{\n"
+                "  local flags=(--time-zone America/New_York)\n"
+                '  gcloud scheduler jobs create http a "${flags[@]}"\n'
+                "}\n"
+                'gcloud scheduler jobs create http b "${flags[@]}"\n')
+        found = _offenders(body)
+        assert len(found) == 1 and "http b" in found[0], (header, found)
+        assert [n for n, _ in _shell_functions(body)] == ["<top level>", "helper"], header
+        assert len(_function_spans(body)) == 1, header
+    # A bare `helper()` NOT followed by a brace is not a function header.
+    body = "helper()\necho x\n" + 'gcloud scheduler jobs create http b "${flags[@]}"\n'
+    assert [n for n, _ in _shell_functions(body)] == ["<top level>"]
+    assert _function_spans(body) == []
+
+
+def test_every_operand_of_a_declaring_builtin_is_collected():
+    """`local X=x LEGACY=EST` binds both, so `export TZ="$LEGACY"` reports.
+
+    The anchored pattern read only the first operand; the second begins after
+    whitespace rather than a command boundary (Codex, PR #993 final review).
+    """
+    body = 'helper() {\n  local X=x LEGACY=EST\n  export TZ="$LEGACY"\n}\n'
+    assert _scanned_shell(body)
+    scal = _shell_scalars(body)
+    assert "LEGACY" in scal and scal["LEGACY"][0][1] == "EST" and scal["LEGACY"][0][2] is True
+    assert "X" in scal
+    assert _scanned_shell('declare -r A=1 B="2" LEGACY=EST; export TZ="$LEGACY"')
+    assert _scanned_shell("export A=1 LEGACY=EST\n" + 'export TZ="$LEGACY"\n')
+    # Not statically known, and the canonical zone, stay quiet; a single
+    # operand is recorded exactly once.
+    assert not _scanned_shell('local X=x LEGACY="$OTHER"; export TZ="$LEGACY"')
+    assert not _scanned_shell('local X=x LEGACY=America/New_York; export TZ="$LEGACY"')
+    assert len(_shell_scalars("local LEGACY=EST\n")["LEGACY"]) == 1
+
+
+def test_make_variable_chains_resolve():
+    """`A := EST`, `B := $(A)`, `export TZ := $(B)` installs the fixed zone.
+
+    GNU Make resolves `B` to `EST`; discarding every value that mentions `$`
+    left `B` unbound and the final reference unresolved (Codex, PR #993 final
+    review). Each value folds against the scalars in force at its own offset.
+    """
+    assert _scanned_shell("A := EST\nB := $(A)\nexport TZ := $(B)\n", make=True)
+    assert _scanned_shell("A := EST\nB := ${A}\nC := $(B)\nexport TZ := $(C)\n", make=True)
+    assert _scanned_shell("A := -05\nB := $(A):00\nexport TZ := $(B)\n", make=True)
+    # A reference to something not static, a later reassignment, and the
+    # canonical zone stay quiet.
+    assert not _scanned_shell("A := $(shell date)\nB := $(A)\nexport TZ := $(B)\n", make=True)
+    assert not _scanned_shell("A := EST\nB := $(A)\nA := America/New_York\nexport TZ := $(A)\n", make=True)
+    assert not _scanned_shell("A := America/New_York\nB := $(A)\nexport TZ := $(B)\n", make=True)
+    # A self-referencing chain terminates rather than spinning.
+    assert not _scanned_shell("A := $(A)\nexport TZ := $(A)\n", make=True)
+
+
+def test_a_yaml_merge_key_is_applied():
+    """`env: [{name: *key, <<: *base}]` with `base: &base {value: EST}` reports.
+
+    The composer leaves `<<` unresolved, so the inherited `value` was never
+    associated with the explicit `name` (Codex, PR #993 final review). The
+    inherited scalar keeps its own mark.
+    """
+    text = "base: &base {value: EST}\nkey: &key TZ\nenv: [{name: *key, <<: *base}]\n"
+    hits = _yaml_env_pair_hits(text)
+    assert hits and hits[0][1] == "EST", hits
+    assert text[hits[0][0].start():].startswith("EST")
+    # A sequence of merges, and an explicit key winning over an inherited one.
+    text2 = ("a: &a {value: America/New_York}\nb: &b {name: TZ}\n"
+             "env:\n  - <<: [*a, *b]\n    value: EST\n")
+    assert _yaml_env_pair_hits(text2)[0][1] == "EST"
+    assert not _yaml_env_pair_hits("base: &base {value: America/New_York}\nenv: [{name: TZ, <<: *base}]\n")
+    assert not _yaml_env_pair_hits("base: &base {value: EST}\nenv: [{name: REGION, <<: *base}]\n")
+
+
+def test_set_env_is_an_environment_setter():
+    """`%set_env TZ EST` and `%set_env TZ=EST` reach the shell pass.
+
+    IPython's other documented setter, with the same two forms as `%env`
+    (Codex, PR #993 final review).
+    """
+    assert _classify_magic("%set_env TZ EST") == ("env", "export TZ=EST")
+    assert _classify_magic("%set_env TZ=EST") == ("env", "export TZ=EST")
+    assert _classify_magic("%set_env PGTZ -05:00")[0] == "env"
+    # Read-only forms set nothing.
+    assert _classify_magic("%set_env")[0] is None
+    # `%set_env NAME` without a value is a READ, exactly like `%env NAME`.
+    assert _classify_magic("%set_env TZ")[0] is None
+    assert _classify_magic("%set_env TZ")[0] == _classify_magic("%env TZ")[0]
+
+
+def test_a_partial_of_a_timezone_constructor_is_followed(tmp_path):
+    """`ET = functools.partial(ZoneInfo, "EST")` then `ET()` reports.
+
+    The binding collector dropped the `partial(...)` call and the callable
+    resolver followed only names and attributes, so the bare `EST` -- ignored
+    outside a timezone context by design -- was never given one (Codex,
+    PR #993 final review). The call is rebuilt as `ZoneInfo("EST")` so every
+    check below the loop head runs on what actually executes.
+    """
+    assert _python_finds(tmp_path, "import functools\nfrom zoneinfo import ZoneInfo\n"
+                                   "ET = functools.partial(ZoneInfo, 'EST')\nz = ET()\n")
+    assert _python_finds(tmp_path, "from functools import partial\nfrom zoneinfo import ZoneInfo\n"
+                                   "ET = partial(ZoneInfo, 'EST')\nz = ET()\n")
+    assert _python_finds(tmp_path, "import functools, pytz\n"
+                                   "ET = functools.partial(pytz.timezone, 'EST')\nz = ET()\n")
+    assert _python_finds(tmp_path, "import functools\nfrom zoneinfo import ZoneInfo\n"
+                                   "mk = functools.partial(ZoneInfo)\nz = mk('EST')\n")
+    assert not _python_finds(tmp_path, "import functools\nfrom zoneinfo import ZoneInfo\n"
+                                       "ET = functools.partial(ZoneInfo, 'America/New_York')\nz = ET()\n")
+    assert not _python_finds(tmp_path, "import functools\nlog = functools.partial(print, 'EST')\nlog()\n")
+
+
+def test_a_folded_query_is_matched_as_a_statement(tmp_path):
+    """`ZONE = "EST"` then `cur.execute(f"SET TIME ZONE {ZONE}")` reports.
+
+    The branch accepted only an `ast.Constant` query while the constant-string
+    evaluator could already fold the `JoinedStr`; the folded text now goes
+    through the same six embedded-SQL matchers the constant scan uses, from
+    one shared list, and is noted at the query (Codex, PR #993 final review).
+    """
+    assert _python_finds(tmp_path, "ZONE = 'EST'\ncur.execute(f'SET TIME ZONE {ZONE}')\n")
+    assert _python_finds(tmp_path, "ZONE = 'EST'\ncur.execute('SET TIME ZONE ' + ZONE)\n")
+    assert _python_finds(tmp_path, "OFF = '-05:00'\ncur.execute(f\"SET TIME ZONE '{OFF}'\")\n")
+    assert not _python_finds(tmp_path, "ZONE = 'America/New_York'\ncur.execute(f'SET TIME ZONE {ZONE}')\n")
+    assert not _python_finds(tmp_path, "T = 'EST'\ncur.execute(f'SELECT * FROM t WHERE tag = {T}')\n")
+    assert not _python_finds(tmp_path, "cur.execute(f'SET TIME ZONE {zone_from_request()}')\n")
+    # A commented half of a folded statement is still a comment.
+    assert not _python_finds(tmp_path, "Z='EST'\ncur.execute(f'-- old: SET TIME ZONE EST\\nSET TIME ZONE America/New_York')\n")
+    # The inline form reports exactly once, through the constant scan.
+    legacy, offsets = _python_hit_lists("cur.execute(\"SET TIME ZONE 'EST'\")\n")
+    assert len(legacy) + len(offsets) == 1
+    assert _embedded_sql_hit("SET TIME ZONE 'EST'") == (False, "SET TIME ZONE 'EST'")
+    assert _embedded_sql_hit("SELECT 1") is None
+
+
+def test_setattr_of_a_timezone_attribute_is_an_assignment(tmp_path):
+    """`setattr(settings, "timezone", "EST")` is `settings.timezone = "EST"`.
+
+    The call created no assignment node for the attribute branch to read
+    (Codex, PR #993 final review). The attribute name goes through the
+    environment like every other named constant here.
+    """
+    assert _python_finds(tmp_path, "setattr(settings, 'timezone', 'EST')\n")
+    assert _python_finds(tmp_path, "ATTR = 'time_zone'\nsetattr(cfg, ATTR, 'US/Eastern')\n")
+    assert _python_finds(tmp_path, "setattr(cfg, 'tz', '-05:00')\n")
+    assert not _python_finds(tmp_path, "setattr(settings, 'timezone', 'America/New_York')\n")
+    assert not _python_finds(tmp_path, "setattr(settings, 'region', 'EST')\n")
+    assert not _python_finds(tmp_path, "setattr(settings, name, 'EST')\n")
