@@ -2528,8 +2528,15 @@ def test_every_scheduler_declaration_uses_the_named_zone():
     # left it as {America/New_York}, and satisfied the per-declaration check
     # below merely by containing the flag (Codex, PR #993). A value this guard
     # cannot read is a value it cannot vouch for, so it has to fail here.
+    # Continuations joined FIRST. `--time-zone \` with the value on the next
+    # line is ordinary wrapping, and reading the raw text captured the
+    # backslash itself as the zone -- `zones == {'\\'}` -- so a correctly
+    # zoned command failed this assertion (Codex, PR #993).
+    # `_scheduler_commands` already joins them for the offender check; this
+    # half of the test did not.
+    joined = re.sub(r"\\\n\s*", " ", body)
     zones = set(re.findall(
-        r"--time-zone[=\s]+[\"']?([^\s\"']+)[\"']?", body))
+        r"--time-zone[=\s]+[\"']?([^\s\"']+)[\"']?", joined))
     assert zones, "no --time-zone flags found -- has deploy.sh moved?"
     assert zones == {EASTERN}, f"non-Eastern scheduler timezones in deploy.sh: {sorted(zones - {EASTERN})}"
 
@@ -2559,9 +2566,23 @@ def _strip_shell_comments(text: str) -> str:
     for line in text.splitlines():
         quote = None
         cut = len(line)
+        escaped = False
         for i, ch in enumerate(line):
+            if escaped:
+                # The previous character was a backslash inside double
+                # quotes, so this one is literal whatever it is. Without it,
+                # an escaped quote read as the CLOSING quote, the following
+                # `#` was taken for a comment, and the rest of the line went
+                # with it -- including a real `export TZ=EST` after a `;`.
+                # The same shape as the `${path#*/}` finding one round
+                # earlier: the stripper destroying the assignment it exists
+                # to find (Codex, PR #993).
+                escaped = False
+                continue
             if quote:
-                if ch == quote:
+                if ch == '\\' and quote == '"':
+                    escaped = True      # single quotes take no escapes
+                elif ch == quote:
                     quote = None
             elif ch in "\"'":
                 quote = ch
@@ -2650,6 +2671,36 @@ _SHELL_REDIRECT = re.compile(r">>?|\||(?<![A-Za-z0-9_-])tee(?![A-Za-z0-9_-])")
 _SHELL_QUOTED = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'")
 
 
+def _redirects_outside_quotes(text: str) -> bool:
+    """Is there a `>`, `|` or `tee` the shell would actually act on?
+
+    Searching the raw text found the `|` inside
+    `echo 'Never set TZ=EST | use America/New_York'`, concluded the line was
+    writing configuration, and left the quoted prose to be reported as a
+    setting (Codex, PR #993). I named this failure shape when the redirect
+    check went in last round and did not close it; an operator has to be
+    outside quotes to mean anything.
+    """
+    quote = None
+    escaped = False
+    for i, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if quote:
+            if ch == '\\' and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "\"'":
+            quote = ch
+            continue
+        if _SHELL_REDIRECT.match(text, i):
+            return True
+    return False
+
+
 def _blank_shell_output(text: str) -> str:
     """Empty the quoted arguments of a command that only prints them.
 
@@ -2666,7 +2717,7 @@ def _blank_shell_output(text: str) -> str:
         m = _SHELL_OUTPUT_CMD.search(line)
         if m:
             rest = line[m.end():]
-            if not _SHELL_REDIRECT.search(rest):
+            if not _redirects_outside_quotes(rest):
                 rest = _SHELL_QUOTED.sub(
                     lambda q: (q.group(0)[0] + " " * (len(q.group(0)) - 2)
                                + q.group(0)[-1]),
@@ -2792,12 +2843,77 @@ def _scalar_in_force(scalars: dict, name: str, at: int):
 
 
 def _shell_functions(body: str) -> list[tuple[str, str]]:
-    """[(name, text)] for each top-level shell function, plus the file scope."""
-    parts = re.split(r"\n(?=([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{)", body)
-    out = [("<top level>", parts[0])]
-    for i in range(1, len(parts), 2):
-        out.append((parts[i], parts[i + 1]))
-    return out
+    """[(name, text)] for each top-level shell function, plus the file scope.
+
+    A function ends at its CLOSING BRACE, and everything after it belongs to
+    the file scope again. Splitting only at the openings ran each function to
+    the start of the next one, so a top-level command written after a helper
+    was placed inside that helper -- and `_scheduler_offenders` then treated
+    the helper's `local` array as visible to it. A genuinely zoneless
+    top-level `gcloud scheduler jobs create` reported no offender, which is a
+    UTC scheduler the guard calls fine (Codex, PR #993).
+
+    Brace depth, tracked outside quotes and comments, because a `}` inside a
+    string or a comment closes nothing.
+    """
+    lines = body.splitlines(keepends=True)
+    out: list[tuple[str, list]] = [("<top level>", [])]
+    header = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{")
+    depth = 0
+    for line in lines:
+        if depth == 0:
+            m = header.match(line)
+            if m:
+                out.append((m.group(1), [line]))
+                depth = _brace_delta(line)
+                if depth <= 0:          # a one-line function body
+                    depth = 0
+                    out.append(("<top level>", []))
+                continue
+            out[-1][1].append(line)
+            continue
+        out[-1][1].append(line)
+        depth += _brace_delta(line)
+        if depth <= 0:
+            depth = 0
+            out.append(("<top level>", []))
+    merged: dict = {}
+    ordered: list[tuple[str, str]] = []
+    for name, chunk in out:
+        text = "".join(chunk)
+        if name == "<top level>":
+            merged.setdefault(name, []).append(text)
+        else:
+            ordered.append((name, text))
+    # One `<top level>` entry holding every file-scope region, so a caller
+    # that looks up a name still finds one segment for it.
+    return [("<top level>", "".join(merged.get("<top level>", [])))] + ordered
+
+
+def _brace_delta(line: str) -> int:
+    """`{` minus `}` in this line, ignoring quoted and commented braces."""
+    depth = 0
+    quote = None
+    escaped = False
+    for ch in line:
+        if escaped:
+            escaped = False
+            continue
+        if quote:
+            if ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch == "#":
+            break
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    return depth
 
 
 def _scheduler_offenders(name: str, func: str) -> list[str]:
@@ -6041,3 +6157,140 @@ def test_embedded_sql_is_scanned_for_a_numeric_offset():
 # proposed there covers the whole class -- every one of these ends in a real
 # zone object being constructed or a real session being configured -- and
 # rounds 18-21 measured what each additional matcher costs.
+
+
+# ── Round 23 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# Four fixed, three deferred. Two of the four are the shell text handling
+# destroying or misreading the very line it exists to scan, one is a scope
+# splitter that silently disabled the scheduler check for top-level commands,
+# and one is a false CI failure on correctly wrapped shell.
+
+
+def test_an_escaped_quote_does_not_end_the_quoted_string():
+    """`printf "literal \\" # still quoted"; export TZ=EST` runs the export.
+
+    The comment stripper treated the escaped quote as the CLOSING one, took
+    the following `#` for a comment, and deleted the rest of the line --
+    including the real assignment after the `;`. The same shape as the
+    `${path#*/}` finding one round earlier, in the same function
+    (Codex, PR #993).
+    """
+    kept = _strip_shell_comments(
+        'printf "literal \\" # still quoted"; export TZ=EST')
+    assert "export TZ=EST" in kept, kept
+    assert NONPY_AMBIGUOUS.search(kept)
+
+    # Single quotes take no escapes in shell, so a backslash inside them is
+    # an ordinary character and must not start an escape.
+    assert _strip_shell_comments("a='x\\'; export TZ=EST") == "a='x\\'; export TZ=EST"
+
+    # Real comments are still cut, in all three positions.
+    assert _strip_shell_comments("export TZ=EST # why") == "export TZ=EST"
+    assert _strip_shell_comments("# export TZ=EST").strip() == ""
+    assert _strip_shell_comments("run;# note") == "run;"
+
+
+def test_a_quoted_redirect_character_is_not_a_redirect():
+    """`echo 'Never set TZ=EST | use America/New_York'` only prints.
+
+    The redirect check searched the raw text, found the `|` inside the quoted
+    prose, concluded the line was writing configuration, and left the
+    argument to be reported as a setting (Codex, PR #993).
+
+    I named this failure shape in the thread where the redirect check went in
+    and did not close it. The operator has to be outside quotes to mean
+    anything.
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    assert not scanned("echo 'Never set TZ=EST | use America/New_York'")
+    assert not scanned('echo "TZ=EST > not a redirect"')
+
+    # A real redirect still means configuration, so the round-22 property
+    # holds.
+    assert scanned("echo 'TZ=EST' > /tmp/app.env")
+    assert scanned("echo 'TZ=EST' | tee app.env")
+
+    assert _redirects_outside_quotes("echo x > f")
+    assert not _redirects_outside_quotes("echo 'a | b'")
+    assert not _redirects_outside_quotes('echo "a > b"')
+
+
+def test_a_shell_function_scope_ends_at_its_closing_brace():
+    """A command written AFTER a helper is not inside it.
+
+    Splitting only at function openings ran each one to the start of the
+    next, so a top-level `gcloud scheduler jobs create` was placed inside the
+    preceding helper and `_scheduler_offenders` treated that helper's `local`
+    array as visible to it. A genuinely zoneless command reported nothing,
+    which is a UTC scheduler the guard calls fine (Codex, PR #993).
+    """
+    body = ('helper() {\n'
+            '  local flags=(--time-zone America/New_York)\n'
+            '}\n'
+            'gcloud scheduler jobs create http j "${flags[@]}"\n')
+    offenders = []
+    for name, func in _shell_functions(body):
+        offenders.extend(_scheduler_offenders(name, func))
+    assert offenders, (
+        "the top-level command expands an array that is local to the helper, "
+        "so it receives no timezone")
+
+    # The same command INSIDE the helper really does see the array, and must
+    # not be reported -- otherwise this fix would be a false positive.
+    inside = ('helper() {\n'
+              '  local flags=(--time-zone America/New_York)\n'
+              '  gcloud scheduler jobs create http j "${flags[@]}"\n'
+              '}\n')
+    offenders = []
+    for name, func in _shell_functions(inside):
+        offenders.extend(_scheduler_offenders(name, func))
+    assert not offenders, offenders
+
+    # A brace inside a string or a comment closes nothing.
+    assert _brace_delta('msg="}"') == 0
+    assert _brace_delta("run  # }") == 0
+    assert _brace_delta("f() {") == 1
+    assert _brace_delta("}") == -1
+
+
+def test_a_wrapped_time_zone_flag_reads_its_value():
+    """`--time-zone \\` then `"America/New_York"` is one flag.
+
+    The zone-flag scan read the raw text and captured the continuation
+    backslash as the zone, so a correctly wrapped and correctly zoned command
+    failed the assertion (Codex, PR #993). `_scheduler_commands` already
+    joined continuations for the offender half of the same test; this half
+    did not.
+    """
+    body = ('gcloud scheduler jobs create http j \\\n'
+            '    --time-zone \\\n'
+            '    "America/New_York"\n')
+    joined = re.sub(r"\\\n\s*", " ", body)
+    zones = set(re.findall(
+        r"--time-zone[=\s]+[\"']?([^\s\"']+)[\"']?", joined))
+    assert zones == {"America/New_York"}, zones
+
+    # The unjoined text is what produced the bad value, kept here so the
+    # reason for the join cannot be optimised away.
+    raw = set(re.findall(
+        r"--time-zone[=\s]+[\"']?([^\s\"']+)[\"']?", body))
+    assert raw == {"\\"}, raw
+
+
+# Three findings from this round are NOT fixed here, for the reason recorded
+# on issue #1019: each is a new spelling needing its own matcher, and rounds
+# 19-23 have each produced a regression from the previous round's fix.
+#
+#   * `dateutil.tz.tzrange("ET", stdoffset=-18000)` -- the keyword filter
+#     accepts only `offset`
+#   * `%env TZ EST` -- IPython's whitespace form of the environment magic
+#   * `env: [{name: TZ, value: EST}]` -- flow-style YAML, where the matcher
+#     requires a newline between the two keys
+#
+# All three end in a real zone or a real process environment, so the runtime
+# assertion on #1019 covers them.
