@@ -372,13 +372,13 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [875](platform/api/routers/backtest.py#L875)
 
 ### `premarket_analysis`
-- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3289](gcp/premarket_brief.py#L3289), [3290](gcp/premarket_brief.py#L3290), [3305](gcp/premarket_brief.py#L3305), [3307](gcp/premarket_brief.py#L3307)
+- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3273](gcp/premarket_brief.py#L3273), [3274](gcp/premarket_brief.py#L3274), [3289](gcp/premarket_brief.py#L3289), [3291](gcp/premarket_brief.py#L3291)
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [98](gcp/premarket_playbook_resolver.py#L98), [478](gcp/premarket_playbook_resolver.py#L478)
 - [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [544](gcp/signal_monitor.py#L544)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [96](scripts/backfill_history_tables.py#L96)
 
 ### `premarket_analysis_history`
-- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3262](gcp/premarket_brief.py#L3262), [3263](gcp/premarket_brief.py#L3263)
+- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3246](gcp/premarket_brief.py#L3246), [3247](gcp/premarket_brief.py#L3247)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [96](scripts/backfill_history_tables.py#L96), [123](scripts/backfill_history_tables.py#L123)
 
 ### `ranker_runs`
@@ -406,7 +406,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](lib/strat_levels.py) — line [1790](lib/strat_levels.py#L1790)
+- [`lib/strat_levels.py`](lib/strat_levels.py) — line [1825](lib/strat_levels.py#L1825)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](scripts/calibrate_thresholds.py) — line [25](scripts/calibrate_thresholds.py#L25), [313](scripts/calibrate_thresholds.py#L313), [487](scripts/calibrate_thresholds.py#L487), [489](scripts/calibrate_thresholds.py#L489)
@@ -677,7 +677,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_market_data.py`](gcp/fetchers/fetch_market_data.py) — line [299](gcp/fetchers/fetch_market_data.py#L299), [717](gcp/fetchers/fetch_market_data.py#L717), [725](gcp/fetchers/fetch_market_data.py#L725), [750](gcp/fetchers/fetch_market_data.py#L750), [1011](gcp/fetchers/fetch_market_data.py#L1011)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](gcp/fetchers/fetch_premarket_refresh.py) — line [13](gcp/fetchers/fetch_premarket_refresh.py#L13), [146](gcp/fetchers/fetch_premarket_refresh.py#L146)
 - [`gcp/migrate_to_gcp.py`](gcp/migrate_to_gcp.py) — line [147](gcp/migrate_to_gcp.py#L147)
-- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [365](gcp/premarket_brief.py#L365), [370](gcp/premarket_brief.py#L370), [770](gcp/premarket_brief.py#L770), [2313](gcp/premarket_brief.py#L2313)
+- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [365](gcp/premarket_brief.py#L365), [370](gcp/premarket_brief.py#L370), [770](gcp/premarket_brief.py#L770), [2297](gcp/premarket_brief.py#L2297)
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [116](gcp/premarket_playbook_resolver.py#L116)
 - [`gcp/refresh_earnings_views.py`](gcp/refresh_earnings_views.py) — line [140](gcp/refresh_earnings_views.py#L140)
 - [`gcp/research/p2_outcomes_grid.py`](gcp/research/p2_outcomes_grid.py) — line [144](gcp/research/p2_outcomes_grid.py#L144), [149](gcp/research/p2_outcomes_grid.py#L149)
@@ -777,7 +777,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `premarket_analysis`
 - [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) — line [342](gcp/discord_interactions/main.py#L342), [345](gcp/discord_interactions/main.py#L345)
-- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [7](gcp/premarket_brief.py#L7), [3297](gcp/premarket_brief.py#L3297), [3342](gcp/premarket_brief.py#L3342)
+- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [7](gcp/premarket_brief.py#L7), [3281](gcp/premarket_brief.py#L3281), [3326](gcp/premarket_brief.py#L3326)
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [320](gcp/premarket_playbook_resolver.py#L320), [326](gcp/premarket_playbook_resolver.py#L326), [503](gcp/premarket_playbook_resolver.py#L503), [586](gcp/premarket_playbook_resolver.py#L586)
 - [`lib/movement_statement.py`](lib/movement_statement.py) — line [22](lib/movement_statement.py#L22), [312](lib/movement_statement.py#L312), [318](lib/movement_statement.py#L318), [382](lib/movement_statement.py#L382)
 - [`lib/strategies/brief_bias.py`](lib/strategies/brief_bias.py) — line [83](lib/strategies/brief_bias.py#L83), [156](lib/strategies/brief_bias.py#L156)

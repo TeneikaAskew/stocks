@@ -431,7 +431,7 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         import pandas as pd  # noqa: PLC0415
         from lib.data_loader import DataLoader  # noqa: PLC0415
         from lib.indicators import calculate_historical_levels  # noqa: PLC0415
-        from lib.strat_levels import build_level_map  # noqa: PLC0415
+        from lib.strat_levels import build_level_map, daily_data_freshness  # noqa: PLC0415
 
         loader = DataLoader()
         df = loader.load_daily(ticker, on_stale="warn")
@@ -468,20 +468,19 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
             return None
         # Freshness AFTER the placeholder drop and the cutoff, against the
         # session, not the wall clock: DataLoader's own on_stale check sees the
-        # same-day NULL placeholder as "fresh" and the brief's canonical row is
-        # withheld on staleness, so without this an old frame would publish a
-        # ladder with status OK anchored to an arbitrarily old close (Codex P2
-        # on #1030, round 5). Calendar days, not the NYSE calendar: the API
-        # image (platform/api/requirements.txt) does not ship
-        # pandas-market-calendars. 4 covers Fri→Mon (3) and a Monday holiday
-        # (4); a longer gap means the prior session's bar is missing.
-        last_bar = pd.Timestamp(ts_col.loc[df.index[-1]]).normalize()
-        gap_days = (pd.Timestamp(session) - last_bar).days
-        if gap_days > 4:
+        # same-day NULL placeholder as "fresh", so without this an old frame
+        # would publish a ladder with status OK anchored to an arbitrarily old
+        # close (Codex P2 on #1030, rounds 5 and 6). The rule is the premarket
+        # brief's own (lib.strat_levels.daily_data_freshness): the playbook row
+        # this ladder is matched against is withheld on exactly the days this
+        # refuses, weekend bridges exempt, holiday Tuesdays deliberately not.
+        last_bar = pd.Timestamp(ts_col.loc[df.index[-1]]).normalize().date()
+        is_stale, gap_days, status = daily_data_freshness(last_bar, session)
+        if is_stale:
             logger.warning(
                 "movement-statement level map for %s: last daily bar %s is %d days "
-                "before session %s; prior-session bar missing, refusing to anchor",
-                ticker, last_bar.date(), gap_days, session,
+                "before session %s (%s); prior-session bar missing, refusing to anchor",
+                ticker, last_bar, gap_days, session, status,
             )
             return None
         if df.empty or len(df) < 2:

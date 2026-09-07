@@ -441,9 +441,9 @@ def test_level_map_refuses_a_frame_missing_the_prior_session(monkeypatch):
     """A daily fetcher that is behind leaves old rows that pass the cutoff.
     The loader's own on_stale check is fooled by the same-day NULL placeholder,
     so freshness is checked here against the session: a last bar more than
-    four calendar days before it (Fri→Mon is 3, a Monday holiday 4) means the
-    prior session is missing and no ladder is published (Codex P2 on #1030,
-    round 5)."""
+    the brief's own freshness rule (lib.strat_levels.daily_data_freshness)
+    decides whether the prior session is present; when it is not, no ladder
+    is published (Codex P2 on #1030, rounds 5 and 6)."""
     import datetime as _dt  # noqa: PLC0415
 
     df = _synthetic_daily(nan_last=True)
@@ -454,6 +454,17 @@ def test_level_map_refuses_a_frame_missing_the_prior_session(monkeypatch):
     with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
         assert dashboard_router._build_movement_level_map("SPY", analysis_date=ten_days_on) is None
         assert dashboard_router._build_movement_level_map("SPY", analysis_date=next_day) is not None
+
+    # The rule is the brief's: a Monday reading Friday is fresh (weekend
+    # bridge), a Monday whose Friday bar is missing and reads Thursday is
+    # not, even though both gaps are under a week (Codex P2, round 6).
+    monday = _dt.date(2026, 9, 14)
+    ends_friday = _synthetic_daily(end=_dt.date(2026, 9, 11))
+    ends_thursday = _synthetic_daily(end=_dt.date(2026, 9, 10))
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=ends_friday):
+        assert dashboard_router._build_movement_level_map("SPY", analysis_date=monday) is not None
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=ends_thursday):
+        assert dashboard_router._build_movement_level_map("SPY", analysis_date=monday) is None
 
 
 def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):

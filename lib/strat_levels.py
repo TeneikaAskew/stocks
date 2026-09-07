@@ -1659,6 +1659,41 @@ class StaleSourceDataError(RuntimeError):
     """
 
 
+def daily_data_freshness(
+    last_bar_date: Optional[date_type], analysis_date: date_type,
+) -> tuple[bool, int, str]:
+    """Is a daily frame whose last bar is `last_bar_date` fresh for a session
+    dated `analysis_date`? ONE rule for the premarket brief and the
+    movement-statement endpoint, so the playbook row and the ladder matched
+    against it are withheld on the same days (Codex P2 on #1030, round 6).
+
+    Returns (is_stale, gap_days, status). gap_days is the calendar-day gap;
+    None input maps to -1 / 'unknown'. Fresh when the gap is <= 1 day, or on
+    the two weekend bridges where Friday's bar IS the market's most recent
+    close: a Monday session reading Friday (gap 3) and a Sunday weekly brief
+    reading Friday (gap 2). Anything else, including a Monday reading
+    Thursday (gap 4) and a Tuesday after a Monday holiday (gap 4), is
+    'STALE_DAILY_DATA': the deliberate bias is toward over-flagging on
+    holiday weeks, because under-flagging republished a frozen 2026-04-27 bar
+    four mornings running (Track B audit G.P0.4). Pure; no calendar library,
+    so it behaves identically in the API image, which does not ship
+    pandas-market-calendars.
+    """
+    if last_bar_date is None:
+        return False, -1, 'unknown'
+    gap = (analysis_date - last_bar_date).days
+    if gap <= 1:
+        return False, gap, 'fresh'
+    weekday = analysis_date.weekday()
+    weekend_exempt = (
+        (weekday == 0 and gap == 3)     # Monday → Friday
+        or (weekday == 6 and gap == 2)  # Sunday weekly brief → Friday
+    )
+    if weekend_exempt:
+        return False, gap, 'fresh'
+    return True, gap, 'STALE_DAILY_DATA'
+
+
 def _trading_days_between(source_ts: pd.Timestamp, ref_ts: pd.Timestamp) -> int:
     """Count NYSE trading days from source_ts (exclusive) to ref_ts (inclusive).
 

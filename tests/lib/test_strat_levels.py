@@ -1011,3 +1011,49 @@ class TestSelectNearestLevels:
             assert lv['price'] > price
         for lv in lm.put_levels:
             assert lv['price'] < price
+
+
+# ─── daily_data_freshness (shared with the premarket brief) ──────────────
+
+
+class TestDailyDataFreshness:
+    """One rule for the brief's playbook row and the movement-statement
+    ladder matched against it (Codex P2 on #1030, round 6)."""
+
+    def test_same_or_next_day_is_fresh(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(2026, 9, 10), date(2026, 9, 11)) == (False, 1, 'fresh')
+
+    def test_monday_reading_friday_is_fresh(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(2026, 9, 11), date(2026, 9, 14)) == (False, 3, 'fresh')
+
+    def test_monday_reading_thursday_is_stale(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        stale, gap, status = daily_data_freshness(date(2026, 9, 10), date(2026, 9, 14))
+        assert (stale, gap, status) == (True, 4, 'STALE_DAILY_DATA')
+
+    def test_tuesday_reading_friday_is_stale_by_design(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(2026, 9, 11), date(2026, 9, 15))[0] is True
+
+    def test_sunday_weekly_reading_friday_is_fresh(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(2026, 9, 11), date(2026, 9, 13)) == (False, 2, 'fresh')
+
+    def test_none_is_unknown(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(None, date(2026, 9, 14)) == (False, -1, 'unknown')
+
+    def test_brief_entry_point_delegates_here(self):
+        from datetime import date
+        from gcp.premarket_brief import _resolve_data_freshness
+        from lib.strat_levels import daily_data_freshness
+        for last, ad in ((date(2026, 9, 10), date(2026, 9, 14)), (date(2026, 9, 11), date(2026, 9, 14)), (None, date(2026, 9, 14))):
+            assert _resolve_data_freshness(last, ad) == daily_data_freshness(last, ad)
