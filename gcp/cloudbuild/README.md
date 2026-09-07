@@ -6,6 +6,26 @@ repo. They live here for traceability / version control; the
 authoritative copies are the trigger definitions in Cloud Build
 itself (`gcloud builds triggers describe <NAME>`).
 
+**A merged change to one of these files does not run until it is imported
+into its trigger.** Nothing does that automatically. Read live on
+2026-09-07 (#1033), both API deploy triggers still ran the three-step
+configs they were created with on 2026-05-31; every change merged here
+since (#990, #1004, #1030) had never executed. After merging a change to
+any file in this directory:
+
+```bash
+./gcp/deploy.sh cloudbuild-triggers --check   # show the drift, change nothing
+./gcp/deploy.sh cloudbuild-triggers           # import each file into its trigger
+```
+
+The target exports the live trigger, replaces only its `build` block with
+the committed file, and imports it back; the event filter, `includedFiles`,
+repository and service account on the trigger are untouched. Run `--check`
+whenever a deploy behaves like the old config, and after importing run the
+staging trigger once (`gcloud builds triggers run deploy-solyra-api-staging
+--branch=main`) rather than waiting for the next merge to find out whether
+the new steps run under `trading-runner@`.
+
 | File | Trigger | GHA workflow replaced |
 |------|---------|----------------------|
 | `apply-schema-cloudbuild.yaml`           | `apply-schema-on-change` (push to main on `gcp/schema.sql`) | `.github/workflows/apply-schema-migrations-on-change.yml` |
