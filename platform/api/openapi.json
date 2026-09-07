@@ -13355,7 +13355,7 @@
     },
     "/api/options/dates/{ticker}": {
       "get": {
-        "description": "Return up to 1000 most-recent snapshot dates that have AlphaVantage data\nin Cloud SQL for the given ticker (newest first).\n\nUses a widening-range scan: tries a 60-day window first, expanding to 1y,\n3y, 10y, and then unbounded if fewer than 40 dates are found. This keeps\ncold queries bounded when the covering index on (ticker, data_source,\nsnapshot_date) isn't yet in place.",
+        "description": "Return the `limit` most-recent snapshot dates with AlphaVantage data.\n\nNewest first. `limit=1` is the cheap path used by any view that renders\nonly the latest snapshot; the full list is for date pickers.",
         "operationId": "get_options_dates_api_options_dates__ticker__get",
         "parameters": [
           {
@@ -13365,6 +13365,20 @@
             "schema": {
               "title": "Ticker",
               "type": "string"
+            }
+          },
+          {
+            "description": "How many snapshot dates to return, newest first. Callers that only render the latest snapshot should pass limit=1 — cost scales with this value.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "description": "How many snapshot dates to return, newest first. Callers that only render the latest snapshot should pass limit=1 — cost scales with this value.",
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
             }
           }
         ],

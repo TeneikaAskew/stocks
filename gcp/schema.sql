@@ -215,6 +215,19 @@ ALTER TABLE etf_options_snapshots
 
 CREATE INDEX IF NOT EXISTS idx_etf_options_ticker_date
     ON etf_options_snapshots (ticker, snapshot_date DESC);
+-- Composite covering the dates endpoint's loose index scan
+-- (platform/api/routers/options.py). It exists in production -- it shows up in
+-- EXPLAIN as `idx_etf_options_ticker_source_date` -- but was created by hand
+-- and never added here, so a database provisioned from this file did NOT have
+-- it and the recursive walk fell back to heap-filtering data_source, losing
+-- the guarantee that cost scales with `limit`.
+--
+-- data_source must be the second column: the query filters ticker AND
+-- data_source for equality, then walks snapshot_date. Ordering it after
+-- snapshot_date would not let the index skip Yahoo rows during the walk.
+CREATE INDEX IF NOT EXISTS idx_etf_options_ticker_source_date
+    ON etf_options_snapshots (ticker, data_source, snapshot_date DESC);
+
 CREATE INDEX IF NOT EXISTS idx_etf_options_expiry
     ON etf_options_snapshots (ticker, expiration, strike);
 
@@ -2126,7 +2139,7 @@ CREATE INDEX IF NOT EXISTS idx_news_sentiment_match_method
 
 -- ── watchlists: per-user ticker subscriptions, durably stored ───────────────
 -- Replaces the alert_config.json file-based watchlist that was writing to
--- the trading-platform Cloud Run service's ephemeral filesystem (lost on
+-- the solyra-api-prod Cloud Run service's ephemeral filesystem (lost on
 -- every restart, never reached the fetcher containers).
 --
 -- Schema is per-user from day one so a future auth layer can flip on

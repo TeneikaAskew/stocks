@@ -7,7 +7,7 @@
                 <mxCell id="title" value="Stocks Trading Platform — GCP Architecture (project: adept-mountain-474619-d4, region: us-east1)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;fontColor=#222222;" parent="1" vertex="1">
                     <mxGeometry x="40" y="20" width="2320" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="subtitle" value="42 Cloud Run Jobs • 3 Cloud Run Services • ~49 Cloud Scheduler crons • 44-table Cloud SQL (~33 user-facing) • 3 Discord channels (insights/signals/earnings) • verified 2026-05-22 against gcp/deploy.sh" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                <mxCell id="subtitle" value="42 Cloud Run Jobs • 5 Cloud Run Services (3 from this repo + 2 Solyra API) • ~49 Cloud Scheduler crons • 44-table Cloud SQL (~33 user-facing) • 3 Discord channels (insights/signals/earnings) • verified 2026-05-22 against gcp/deploy.sh" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
                     <mxGeometry x="40" y="48" width="2320" height="20" as="geometry"/>
                 </mxCell>
                 <mxCell id="ext_group" value="① External APIs &amp; Delivery Surfaces" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
@@ -218,22 +218,22 @@
                     <mxGeometry x="1000" y="725" width="160" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="svc_group" value="⑦ Cloud Run Services (always-on)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
-                    <mxGeometry x="1200" y="640" width="1160" height="130" as="geometry"/>
+                    <mxGeometry x="1200" y="640" width="1160" height="160" as="geometry"/>
                 </mxCell>
-                <mxCell id="svc_tp" value="trading-platform&#xa;FastAPI + React (mounts 13 routers:&#xa;insights, live, options, playbook,&#xa;backtest, signals, journal, dashboard,&#xa;catalysts, admin, analytics, config, health)&#xa;▸ prod domain: stocks.insightscollective.org (IAP + managed TLS)&#xa;▸ deploy: staging revision → promote workflow&#xa;▸ --no-cpu-throttling (PR #507) for BackgroundTasks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
-                    <mxGeometry x="1220" y="675" width="240" height="105" as="geometry"/>
+                <mxCell id="svc_tp" value="solyra-api-staging + solyra-api-prod&#xa;FastAPI ONLY — no React in the image since #957&#xa;(mounts 13 routers: insights, live, options, playbook,&#xa;backtest, signals, journal, dashboard,&#xa;catalysts, admin, analytics, config, health)&#xa;▸ BROWSER → solyra-api-staging (public at the edge,&#xa;   Firebase login gates the API); the SPA is hosted off Cloud Run&#xa;▸ api.stocks.insightscollective.org → solyra-api-staging&#xa;   (managed TLS, since 2026-09-06); stocks.insightscollective.org&#xa;   is now the Firebase auth-email domain, reserved for the SPA&#xa;▸ solyra-api-prod is IAP-gated and NOT browser-facing today&#xa;▸ deploy: push to main → staging; promote deploys the DIGEST&#xa;   staging is serving, never a fresh build&#xa;▸ --no-cpu-throttling (PR #507) for BackgroundTasks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="1220" y="675" width="240" height="120" as="geometry"/>
                 </mxCell>
                 <mxCell id="svc_di" value="discord-interactions&#xa;Discord slash-cmd HTTP endpoint&#xa;(verifies via discord-public-key)&#xa;invokes Run Jobs via Run API&#xa;★ /replay-signals (PR #510) routes signal-replay Job" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
-                    <mxGeometry x="1480" y="675" width="240" height="95" as="geometry"/>
+                    <mxGeometry x="1664" y="675" width="200" height="95" as="geometry"/>
                 </mxCell>
                 <mxCell id="svc_fn" value="failure-notifier&#xa;Pub/Sub-driven&#xa;creates labeled GitHub issues&#xa;(github-pat + github-repo secrets)&#xa;★ close-on-success reconciler (PR #493)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
-                    <mxGeometry x="1740" y="675" width="240" height="95" as="geometry"/>
+                    <mxGeometry x="1876" y="675" width="190" height="95" as="geometry"/>
                 </mxCell>
                 <mxCell id="svc_sm_orphan" value="✓ signal-monitor (Service)&#xa;DELETED 2026-05-15&#xa;(Job of same name remains active)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#388e3c;fontSize=10;fontStyle=2;" parent="1" vertex="1">
-                    <mxGeometry x="2000" y="675" width="220" height="80" as="geometry"/>
+                    <mxGeometry x="2078" y="675" width="160" height="80" as="geometry"/>
                 </mxCell>
                 <mxCell id="svc_runner" value="trading-runner SA&#xa;runtime identity for all Jobs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" parent="1" vertex="1">
-                    <mxGeometry x="2240" y="685" width="100" height="60" as="geometry"/>
+                    <mxGeometry x="2250" y="685" width="90" height="60" as="geometry"/>
                 </mxCell>
                 <mxCell id="data_group" value="⑧ GCP Data Plane — single source of truth" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="40" y="800" width="1140" height="200" as="geometry"/>
@@ -343,7 +343,7 @@
                 <mxCell id="flow_b" value="🌅 Daily Morning Read (pre-market 7-9am ET)&#xa;&#xa;1️⃣  7:00 ET — economic-events, insider-transactions populate&#xa;2️⃣  7:15 ET — earnings-calendar refreshes today&#39;s reporters&#xa;3️⃣  8:20 ET — premarket-refresh polls AV intraday → gap_pct, pre_high/low/vwap&#xa;4️⃣  8:30 ET — premarket-brief reads everything → Discord (multi-embed)&#xa;5️⃣  8:45 ET — insight-pipeline runs multi-agent AI for SPY/IWM/QQQ&#xa;6️⃣  9:15 ET — insight-discord-push posts daily digest&#xa;7️⃣  9:25 ET — signal-monitor starts 60s loop until 16:00, posts CALL/PUT alerts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#4d7eb8;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
                     <mxGeometry x="520" y="1280" width="440" height="170" as="geometry"/>
                 </mxCell>
-                <mxCell id="flow_c" value="⚡ On-Demand AI Insight Refresh (Cloud Tasks)&#xa;&#xa;1️⃣  User clicks &quot;Refresh insight&quot; in React dashboard&#xa;2️⃣  Browser → trading-platform Cloud Run Service&#xa;3️⃣  platform/api/routers/insights.py POST /refresh enqueues Cloud Tasks&#xa;4️⃣  insight-pipeline-queue (max-attempts=2, dispatch=5/s) delivers task&#xa;5️⃣  insight-pipeline Job picks up env (INSIGHT_RUN_ID + INSIGHT_TICKER)&#xa;6️⃣  Single-ticker pipeline writes one row to insight_reports/insight_runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                <mxCell id="flow_c" value="⚡ On-Demand AI Insight Refresh (Cloud Tasks)&#xa;&#xa;1️⃣  User clicks &quot;Refresh insight&quot; in React dashboard&#xa;2️⃣  Browser → solyra-api-staging Cloud Run Service (the browser-facing one)&#xa;3️⃣  platform/api/routers/insights.py POST /refresh enqueues Cloud Tasks&#xa;4️⃣  insight-pipeline-queue (max-attempts=2, dispatch=5/s) delivers task&#xa;5️⃣  insight-pipeline Job picks up env (INSIGHT_RUN_ID + INSIGHT_TICKER)&#xa;6️⃣  Single-ticker pipeline writes one row to insight_reports/insight_runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
                     <mxGeometry x="980" y="1280" width="440" height="170" as="geometry"/>
                 </mxCell>
                 <mxCell id="flow_d" value="🚨 Failure Notification Pipeline&#xa;&#xa;1️⃣  Cloud Run Job exits non-zero OR logs severity≥ERROR&#xa;2️⃣  gcp-job-failures-sink filters log entry (job_name≠failure-notifier)&#xa;3️⃣  Sink writes to gcp-job-failures Pub/Sub topic&#xa;4️⃣  gcp-job-failures-push subscription delivers to failure-notifier Cloud Run&#xa;5️⃣  Service uses github-pat + github-repo secrets → labeled GitHub issue&#xa;&#xa;Note: signal-quality-alarm is a deliberate non-zero exit when 7d clean-rate drops 3pp" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
@@ -691,7 +691,7 @@
                 <mxCell id="p4_browser" value="Browser&#xa;React dashboard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="80" y="150" width="200" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p4_tp" value="trading-platform&#xa;Cloud Run Service&#xa;FastAPI + React" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p4_tp" value="solyra-api-staging / -prod&#xa;Cloud Run Services&#xa;FastAPI only (no React)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="340" y="150" width="220" height="90" as="geometry"/>
                 </mxCell>
                 <mxCell id="p4_router" value="platform/api/routers/insights.py&#xa;POST /api/insights/report/{ticker}/refresh" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">

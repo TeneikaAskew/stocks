@@ -23,7 +23,8 @@ The script aggregates findings and posts a compact summary to
 output, not the exit code; we don't want CR's auto-retry machinery
 spamming when there IS drift, just the once-a-day Discord post.
 
-Scheduled daily by `infra-drift-detector-daily` Cloud Scheduler entry.
+Scheduled daily by the `audit-infra-drift-daily` Cloud Scheduler entry
+(`30 12 * * *`, `America/New_York` — verified live 2026-09-06).
 Add new checks here as new incident families arise.
 """
 from __future__ import annotations
