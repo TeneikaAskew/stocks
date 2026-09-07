@@ -656,3 +656,52 @@ def test_the_workflow_uploads_the_snapshot_the_comparison_actually_read():
     assert uploads[0]["with"]["path"] == "live.json"
     assert uploads[0]["if"] == "always()", (
         "the drift run exits nonzero, which is exactly when the snapshot matters")
+
+
+def test_a_noun_first_scheduler_count_is_checked(tmp_path):
+    """`Schedulers (66)` — the form RUNBOOK.md's recovery table uses.
+
+    The noun-first patterns covered Jobs and Services but not Schedulers, so
+    `| **Cloud Run Jobs (76 jobs) + Schedulers (66)** |` reported the jobs half
+    and walked past the schedulers half on the same line (Codex, PR #1014).
+    """
+    n_jobs = len(LIVE["run_jobs"])
+    n_sched = len(LIVE["schedulers"])
+
+    out = _check(tmp_path,
+                 f"| **Cloud Run Jobs ({n_jobs} jobs) + Schedulers (66)** | 60-90 min |",
+                 name="RUNBOOK.md")
+    assert [f.check for f in out] == ["count-drift"], out
+    assert f"claims 66 Cloud Scheduler jobs; live count is {n_sched}" == out[0].detail
+
+    # Both halves correct is not a finding — and the jobs half must not be
+    # reported twice now that a second pattern can reach the same line.
+    assert _check(tmp_path,
+                  f"| **Cloud Run Jobs ({n_jobs} jobs) + Schedulers ({n_sched})** |",
+                  name="RUNBOOK.md") == []
+
+
+def test_a_history_word_does_not_suppress_a_count_claim(tmp_path):
+    """`RETIRED_OK` exempts a line for naming a retired SERVICE, not for
+    stating a count.
+
+    Its vocabulary is ordinary past tense — `was`, `were`, `deleted`, `old` —
+    so `Cloud Scheduler (66 jobs) ... premarket-brief schedulers were
+    recreated` had its count suppressed by the word `were`, and a stale
+    disaster-recovery figure sat behind an advertised clean run
+    (Codex, PR #1014).
+    """
+    line = ("| **Cloud Scheduler (66 jobs)** | ✅ Implicitly tested | Last-tested "
+            "2026-05-01 when premarket-brief schedulers were recreated. |")
+    out = _check(tmp_path, line, name="RUNBOOK.md")
+    assert [f.check for f in out] == ["count-drift"], out
+
+    # A genuinely historical count says so where a reader can see it.
+    marked = ("<!-- verify-docs-ok: quotes the wrong historical claim -->\n" + line)
+    assert _check(tmp_path, marked, name="RUNBOOK.md") == []
+
+    # And a retired SERVICE name on the same line is still exempted, because
+    # that is what RETIRED_OK is for.
+    assert [f.check for f in _check(
+        tmp_path, "`trading-platform` was deleted on 2026-09-06.",
+        name="RUNBOOK.md")] == []

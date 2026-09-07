@@ -65,7 +65,7 @@ flowchart LR
     EW[Earnings Whispers]:::ext
     UW[Unusual Whales]:::ext
 
-    SCH[Cloud Scheduler<br/>66 cron triggers]:::gcp
+    SCH[Cloud Scheduler<br/>65 cron triggers]:::gcp
     JOBS[Cloud Run Jobs<br/>34 fetchers + analyzers]:::gcp
     SVC1[Cloud Run Service:<br/>solyra-api-prod<br/>FastAPI API + IAP]:::gcp
     SVC1S[Cloud Run Service:<br/>solyra-api-staging<br/>FastAPI API + Firebase]:::gcp
@@ -125,7 +125,7 @@ Every GCP service the system actually uses, with the role it plays.
 | **Cloud SQL (Postgres 15)** | Single source of truth for all structured data. **39 tables (34 logical + 5 partition children of `market_data_intraday`)**. Always-on. | ❌ No free tier — $35–50/mo |
 | **Cloud Run Jobs** | All scheduled batch work. Every fetcher, every analyzer, every backfill is a Cloud Run Job. | ✅ Mostly within free tier (180k vCPU-sec, 360k GB-sec/mo) |
 | **Cloud Run Services** | 4 long-lived HTTP services, all `min-instances=0`. | ✅ Free at idle |
-| **Cloud Scheduler** | **66 cron triggers** (read live 2026-09-07 from `gcloud scheduler jobs list --location=us-east1`: 65 ENABLED and one PAUSED, `signal-quality-report-hourly`). Each is an HTTP push that invokes a Cloud Run Job's `:run` endpoint with OAuth identity = the runtime SA. | ⚠️ Only 3 free; 63 paid jobs ≈ $6.30/mo |
+| **Cloud Scheduler** | **65 cron triggers** (read live 2026-09-07 from `gcloud scheduler jobs list --location=us-east1`: all 65 ENABLED, none paused, and 0 in every other Cloud Scheduler location). Each is an HTTP push that invokes a Cloud Run Job's `:run` endpoint with OAuth identity = the runtime SA. | ⚠️ Only 3 free; 62 paid jobs ≈ $6.20/mo |
 | **Artifact Registry** | Two Docker repos (read live 2026-09-07): `trading` holds the `trading-system` Jobs image, `gcr.io` holds the `solyra-api` API image both API services run. | ⚠️ 0.5 GB free; cleanup policy keeps it near |
 | **Cloud Build** | Builds the Docker image when `gcp/deploy.sh build` runs. | ✅ 120 min/day free, plenty |
 | **Cloud Storage (GCS)** | Raw parquet archives, daily snapshots, archived Yahoo data. Bucket lifecycle rule moves old objects to nearline. | ✅ 5 GB-month free |
@@ -319,7 +319,7 @@ unless noted.
 | `signal-monitor` | 2 GiB / 8 hr | weekdays 09:25 (runs until close) | Polls AV every 60 sec → maintains rolling indicator window → fires `signal_alerts` + writes `trades` on close |
 | `signal-monitor` (ORB modes) | 2 GiB / – | weekdays 09:45 (15-min ORB), 10:00 (30-min ORB) | Same image, different `--args`: `--mode=orb-snapshot --window=15m / 30m` |
 | `signal-monitor-eod-resolver` | 1 GiB / 1 hr / `--max-retries 0` | weekdays 16:30 | Post-close reconciliation of the day's `signal_alerts` — resolves each fire's outcome (target hit / stopped / time-expiry) |
-| `signal-quality-report` | 1 GiB / 60 min / `--max-retries 0` ([`gcp/deploy.sh:184`](../gcp/deploy.sh#L184)) | nightly Tue–Sat 01:00; the weekdays-hourly 10:00–16:00 entry (`signal-quality-report-hourly`) is **paused** and does not fire | Phase 0.5 quality monitoring — computes trailing clean-rate / fire-rate / agreement metrics across `signal_alerts` and writes to `signal_metrics`. |
+| `signal-quality-report` | 1 GiB / 60 min / `--max-retries 0` ([`gcp/deploy.sh:184`](../gcp/deploy.sh#L184)) | nightly Tue–Sat 01:00. The weekdays-hourly 10:00–16:00 entry (`signal-quality-report-hourly`) was **retired and deleted** on 2026-09-07 (#833): it had been paused since 2026-05-05 writing `status='pending'` rows nothing reads, and the nightly run writes the same rows as `'final'` | Phase 0.5 quality monitoring — computes trailing clean-rate / fire-rate / agreement metrics across `signal_alerts` and writes to `signal_metrics`. |
 | `signal-quality-alarm` | 512 MiB / 2 min / `--max-retries 0` ([`gcp/deploy.sh:225`](../gcp/deploy.sh#L225)) | weekdays Tue–Sat 02:00 | Reads `signal_metrics`; deliberately exits non-zero when trailing-7d clean-rate drops > 3 pp vs prior 7d, which the failure-notifier converts into a labeled GitHub issue. |
 | `weekend-review` | 1 GiB / – | Sat 09:00 | Aggregates the week's trades, compares actual vs backtest, posts Discord summary |
 | `evaluate-ew-strikes` | 512 MiB / 10 min | weekdays 23:00 | Scores how each EW strike pick played out: HIT / MISS / KEPT / ASSIGNED + minutes-to-hit + minutes-in-zone |
@@ -416,7 +416,7 @@ operator use; it is marked legacy in the script and is not what CI runs.
 
 ## 8. Cloud Scheduler — the daily timeline
 
-**66 scheduler jobs** (read live 2026-09-07 from `gcloud scheduler jobs list --location=us-east1`). The per-hour `news-sentiment-{0800..1700}` / `news-topics-{0805..1705}` loops an earlier revision of this line described are gone: #1004 consolidated them into single `news-sentiment-hourly` and `news-topics-hourly` entries, and the four `sec-filings-{0700,1000,1300,1700}` triggers into one `sec-filings-intraday`. All times Eastern. **Weekdays = Mon–Fri** unless otherwise noted.
+**65 scheduler jobs** (read live 2026-09-07 from `gcloud scheduler jobs list --location=us-east1`). The per-hour `news-sentiment-{0800..1700}` / `news-topics-{0805..1705}` loops an earlier revision of this line described are gone: #1004 consolidated them into single `news-sentiment-hourly` and `news-topics-hourly` entries, and the four `sec-filings-{0700,1000,1300,1700}` triggers into one `sec-filings-intraday`. All times Eastern. **Weekdays = Mon–Fri** unless otherwise noted.
 
 ```mermaid
 gantt
@@ -441,7 +441,6 @@ gantt
     orb-15m-alert                 :b3, 09:45, 5m
     orb-30m-alert                 :b4, 10:00, 5m
     fetch-sec-filings (slot 2/4)  :b5, 10:00, 5m
-    signal-quality-report-hourly (paused) :b6, 10:00, 60m
     fetch-sec-filings (slot 3/4)  :b7, 13:00, 5m
     fetch-news-sentiment*         :b8, 14:00, 10m
 
@@ -694,7 +693,7 @@ Estimated monthly run-rate at current usage. **Cloud SQL is ~70% of the bill.**
 | Service | Estimate | Notes |
 |---|---|---|
 | Cloud SQL `db-g1-small` + 55 GB SSD + backups + PITR | **$35–50** | Always-on, never-free. Biggest lever: stop instance during quiet windows or downsize to `db-f1-micro` |
-| Cloud Scheduler (66 jobs, 3 free) | **$6.30** | Each paid job is $0.10/mo |
+| Cloud Scheduler (65 jobs, 3 free) | **$6.20** | Each paid job is $0.10/mo |
 | Cloud Run Jobs vCPU + memory | **$1–5** | Slight overage on the 180k vCPU-sec free tier; biggest consumers are signal-monitor (8 hr/day) and historical-signals-watchlist |
 | Cloud Run Services | **$0–1** | All min-instances=0, near-zero idle cost |
 | Vertex AI Gemini Flash | **$3–5** | Per-brief ~$0.005, per-insight ~$0.10. Can be killed via `BRIEF_LLM_DISABLE=1` |

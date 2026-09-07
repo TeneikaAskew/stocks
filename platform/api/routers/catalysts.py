@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from api.schemas import (
+    CatalystTypesResponse,
+    CatalystsResponse,
+)
 
 from lib.single_flight import SingleFlight
 
@@ -151,7 +155,7 @@ def _fetch_live_events(date_from, date_to, tickers=None, calendar_types=None):
     return events
 
 
-@router.get("/api/catalysts/events")
+@router.get("/api/catalysts/events", response_model=CatalystsResponse, response_model_exclude_unset=True)
 def get_catalyst_events(
     date_from: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
     date_to: Optional[str] = Query(None, description="End date YYYY-MM-DD"),
@@ -721,7 +725,7 @@ def get_catalyst_snapshot(
     }
 
 
-@router.get("/api/catalysts/types")
+@router.get("/api/catalysts/types", response_model=CatalystTypesResponse, response_model_exclude_unset=True)
 def get_catalyst_types():
     """Return available catalyst types and WSH upgrade info."""
     return {

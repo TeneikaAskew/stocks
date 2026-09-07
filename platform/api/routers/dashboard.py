@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
+from api.schemas import (
+    DashboardBriefResponse,
+    MovementStatementResponse,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -74,7 +78,7 @@ def _trading_days_between(start: _date_cls, end: _date_cls) -> int:
     return count
 
 
-@router.get("/api/dashboard/brief/{ticker}")
+@router.get("/api/dashboard/brief/{ticker}", response_model=DashboardBriefResponse, response_model_exclude_unset=True)
 async def dashboard_brief(
     ticker: str,
     date: Optional[str] = Query(None, description="Historical date as YYYY-MM-DD. If omitted, returns latest."),
@@ -455,7 +459,7 @@ def _build_movement_level_map(ticker: str):
         return None
 
 
-@router.get("/api/movement-statement")
+@router.get("/api/movement-statement", response_model=MovementStatementResponse, response_model_exclude_unset=True)
 def movement_statement(
     ticker: str = Query(..., description="One of IWM / SPY / QQQ (validated cells)."),
     timeframe: str = Query("15m", description="5m or 15m ONLY (30m is never consulted)."),

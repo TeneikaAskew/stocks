@@ -32,11 +32,16 @@ from api.routers.live import (  # noqa: E402
     MARKET_HOLIDAYS_2026,
 )
 from lib.config import load_config  # noqa: E402
+from api.schemas import (
+    IndicatorConfigResponse,
+    MarketHoursResponse,
+    RuntimeConfigResponse,
+)
 
 router = APIRouter()
 
 
-@router.get("/api/config/firebase")
+@router.get("/api/config/firebase", response_model=RuntimeConfigResponse, response_model_exclude_unset=True)
 def get_firebase_config() -> dict:
     """Public runtime auth config for the frontend bootstrap.
 
@@ -63,7 +68,7 @@ def _time_to_str(t: time) -> str:
     return t.strftime("%H:%M")
 
 
-@router.get("/api/config/indicators")
+@router.get("/api/config/indicators", response_model=IndicatorConfigResponse, response_model_exclude_unset=True)
 def get_indicator_config() -> dict:
     """Return indicator periods, signal thresholds, and zone labels."""
     cfg = load_config()
@@ -119,7 +124,7 @@ def get_indicator_config() -> dict:
     }
 
 
-@router.get("/api/config/market-hours")
+@router.get("/api/config/market-hours", response_model=MarketHoursResponse, response_model_exclude_unset=True)
 def get_market_hours() -> dict:
     """Return US equity market session windows + 2026 holidays."""
     return {

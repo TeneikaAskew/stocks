@@ -17,6 +17,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from lib.single_flight import SingleFlight
+from api.schemas import (
+    FreshnessResponse,
+)
 
 # Add project root so we can import the script module
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -125,7 +128,7 @@ def _run_audit_and_cache(now: float) -> dict:
     return response
 
 
-@router.get("/api/health/freshness")
+@router.get("/api/health/freshness", response_model=FreshnessResponse, response_model_exclude_unset=True)
 def get_freshness():
     """Return the cached freshness report (see freshness_report_dict).
 

@@ -21,6 +21,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from api.schemas import (
+    WaitlistResponse,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -78,7 +81,7 @@ def _rate_limited(ip: str) -> bool:
     return False
 
 
-@router.post("/api/waitlist")
+@router.post("/api/waitlist", response_model=WaitlistResponse, response_model_exclude_unset=True)
 def join_waitlist(body: WaitlistBody, request: Request) -> dict:
     if body.website:
         # Honeypot tripped — bot traffic. Fake success, write nothing.

@@ -40,6 +40,12 @@ import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
 # Server-verified identity for per-user watchlist scoping (mirrors journal.py).
 from api.auth import current_user_email  # noqa: E402
+from api.schemas import (
+    InsightHistoryResponse,
+    TickerSearchResponse,
+    WatchlistRemoveResponse,
+    WatchlistResponse,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -449,7 +455,7 @@ class WatchlistAddResponse(BaseModel):
     watchlist: list[str]
 
 
-@router.get("/api/insights/ticker/search")
+@router.get("/api/insights/ticker/search", response_model=TickerSearchResponse, response_model_exclude_unset=True)
 def search_tickers(keywords: str, limit: int = 10):
     """Search for tickers by keyword (company name, symbol, etc).
 
@@ -504,7 +510,7 @@ def get_ticker_peers(ticker: str):
     return {"ticker": ticker.upper(), "peers": peers}
 
 
-@router.post("/api/insights/watchlist/add")
+@router.post("/api/insights/watchlist/add", response_model=WatchlistAddResponse, response_model_exclude_unset=True)
 def add_to_watchlist(body: WatchlistAddRequest, request: Request):
     """Add a ticker to the watchlist and return its info + quote.
 
@@ -581,7 +587,7 @@ def add_to_watchlist(body: WatchlistAddRequest, request: Request):
     )
 
 
-@router.delete("/api/insights/watchlist/{ticker}")
+@router.delete("/api/insights/watchlist/{ticker}", response_model=WatchlistRemoveResponse, response_model_exclude_unset=True)
 def remove_from_watchlist(ticker: str, request: Request):
     """Soft-delete a ticker from the watchlist (sets removed_at=NOW()).
 
@@ -614,7 +620,7 @@ def remove_from_watchlist(ticker: str, request: Request):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/insights/watchlist")
+@router.get("/api/insights/watchlist", response_model=WatchlistResponse, response_model_exclude_unset=True)
 def get_watchlist(
     request: Request,
     catalyst: Optional[str] = None,
@@ -698,7 +704,7 @@ def get_insight_report(ticker: str, as_of: Optional[str] = None):
     )
 
 
-@router.get("/api/insights/report/{ticker}/history")
+@router.get("/api/insights/report/{ticker}/history", response_model=InsightHistoryResponse, response_model_exclude_unset=True)
 def get_insight_history(ticker: str, limit: int = 20):
     """Return a scannable list of recent reports for the ticker."""
     if limit < 1 or limit > 100:
@@ -733,6 +739,18 @@ def get_insight_report_by_id(report_id: str):
     )
 
 
+# Plain `def` on purpose. Scheduling a `BackgroundTask` does not make the
+# REQUEST path asynchronous, and this one is not: `_insert_run` opens and
+# commits a Cloud SQL connection, and in production `_enqueue_cloud_task`
+# makes a synchronous Cloud Tasks call — both before the response is built. As
+# `async def` those ran on the event loop, so a slow database or a slow Cloud
+# Tasks round trip stalled every other request. FastAPI injects
+# `BackgroundTasks` into a plain `def` handler exactly the same way, so
+# nothing else changes.
+#
+# A comment rather than docstring text: #1013 made docstrings the public
+# OpenAPI `description`, and why a handler is threadpooled is not something an
+# API consumer should be reading.
 @router.post(
     "/api/insights/report/{ticker}/refresh",
     response_model=RefreshResponse,
@@ -743,15 +761,6 @@ def refresh_insight_report(
     as_of: Optional[str] = None,
 ):
     """Enqueue a fresh pipeline run for the ticker.
-
-    Plain `def` on purpose. Scheduling a `BackgroundTask` does not make the
-    REQUEST path asynchronous, and this one is not: `_insert_run` opens and
-    commits a Cloud SQL connection, and in production `_enqueue_cloud_task`
-    makes a synchronous Cloud Tasks call — both before the response is
-    built. As `async def` those ran on the event loop, so a slow database or
-    a slow Cloud Tasks round trip stalled every other request. FastAPI
-    injects `BackgroundTasks` into a plain `def` handler exactly the same
-    way, so nothing else changes.
 
     Local dev: runs via FastAPI BackgroundTasks. Durable within the
     process but not across restarts — acceptable for dev only.

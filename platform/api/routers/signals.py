@@ -31,6 +31,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from api import gcs_reader  # noqa: E402
+from api.schemas import (
+    SignalsResponse,
+    SimilarResponse,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -154,7 +158,7 @@ def _query_signals_sql(
     return (total, records)
 
 
-@router.get("/api/signals/{ticker}")
+@router.get("/api/signals/{ticker}", response_model=SignalsResponse, response_model_exclude_unset=True)
 def get_signals(
     ticker: str,
     limit: int = Query(default=5000, le=50000),
@@ -256,7 +260,7 @@ def get_signals(
 # bucket query, so when CLOUD_SQL_CONNECTION_NAME is unset this returns
 # 404 rather than degrading silently.
 
-@router.get("/api/signals/{ticker}/similar")
+@router.get("/api/signals/{ticker}/similar", response_model=SimilarResponse, response_model_exclude_unset=True)
 def get_similar_signals(
     ticker: str,
     direction: str = Query(..., description="CALL or PUT — the direction we're scouting"),

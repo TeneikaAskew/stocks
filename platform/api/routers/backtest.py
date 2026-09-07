@@ -78,6 +78,13 @@ from lib.config import load_config  # noqa: E402
 # use elsewhere (platform/api/routers/journal.py). Imported rather than
 # duplicated so the two routers can never drift on what "owner" means.
 from .journal import _journal_owner  # noqa: E402
+from api.schemas import (
+    BacktestAllResponse,
+    BacktestEquityResponse,
+    BacktestResultsResponse,
+    MineStyleResponse,
+    ReplayTradesResponse,
+)
 
 try:
     from gcp.database import is_cloud_sql_configured, query_to_dataframe, execute_sql
@@ -167,7 +174,7 @@ def _validate_run(run: str | None) -> None:
         raise HTTPException(status_code=422, detail="run must be YYYYMMDD_HHMMSS")
 
 
-@router.get("/api/backtest/results/{ticker}")
+@router.get("/api/backtest/results/{ticker}", response_model=BacktestResultsResponse, response_model_exclude_unset=True)
 def get_backtest_results(ticker: str, run: str | None = None):
     """Return trades from the most recent backtest CSV for the given ticker,
     or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
@@ -218,7 +225,7 @@ def get_backtest_results(ticker: str, run: str | None = None):
     return resp
 
 
-@router.get("/api/backtest/equity/{ticker}")
+@router.get("/api/backtest/equity/{ticker}", response_model=BacktestEquityResponse, response_model_exclude_unset=True)
 def get_equity_curve(ticker: str, run: str | None = None):
     """Return equity curve from the most recent equity CSV for the given ticker,
     or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
@@ -298,7 +305,7 @@ def get_equity_curve(ticker: str, run: str | None = None):
     return resp
 
 
-@router.get("/api/backtest/all/{ticker}")
+@router.get("/api/backtest/all/{ticker}", response_model=BacktestAllResponse, response_model_exclude_unset=True)
 def list_all_backtests(ticker: str):
     """List all backtest runs for a ticker, sorted by timestamp descending."""
     ticker_upper = ticker.upper()
@@ -420,7 +427,7 @@ def _normalize_bars_for_replay(df: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-@router.post("/api/backtest/replay-trades")
+@router.post("/api/backtest/replay-trades", response_model=ReplayTradesResponse, response_model_exclude_unset=True)
 def replay_trades(body: ReplayTradesRequest, request: Request):
     """Score the signed-in user's labeled journal trades against actual bars
     and benchmark them against the system (Task 3.2). 422 if neither
@@ -598,7 +605,7 @@ def _walk_forward_metrics_to_percent(agg: dict) -> dict:
     return out
 
 
-@router.post("/api/style/mine-and-validate")
+@router.post("/api/style/mine-and-validate", response_model=MineStyleResponse, response_model_exclude_unset=True)
 def mine_and_validate(body: MineAndValidateRequest, request: Request):
     """Mine the caller's closed journal trades into a condition profile,
     walk-forward validate the top one, and stage the result (Task 4.3).

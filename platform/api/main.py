@@ -44,6 +44,16 @@ from api.auth import (
     current_user_email,
     stored_role_for,
 )
+from api.schemas import (
+    CoverageResponse,
+    HealthResponse,
+    MarketDataResponse,
+    MarketDatesResponse,
+    MeResponse,
+    MostActiveResponse,
+    ReferenceResponse,
+    SectorsResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -238,24 +248,28 @@ def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
 _LIB_DIR_EXISTS = (PROJECT_ROOT / "lib").is_dir()
 
 
-@app.get("/api/health")
+# `async def`, and the ONLY handler in this file that should be. This is a
+# comment rather than part of the docstring because #1013 made docstrings the
+# public OpenAPI `description`, and the reason a handler is on the event loop
+# is not something an API consumer should be reading.
+#
+# Everything else here is `def` on purpose: a synchronous handler belongs on
+# the threadpool so a blocking query cannot stall the loop. This one is the
+# exception, and for the opposite reason. It exists to answer while the
+# service is in trouble, and the trouble worth reporting is usually worker
+# saturation — a burst of DB requests queued behind the 5+2 SQLAlchemy pool
+# can hold every AnyIO worker token for up to the 30-second pool timeout. A
+# threadpooled health check waits in that same queue, so the probe goes silent
+# exactly when the answer matters (Codex, PR #991).
+#
+# It holds the loop for microseconds and touches nothing: no database, no
+# filesystem, no network. `_LIB_DIR_EXISTS` is read at import for that reason.
+# If this handler ever grows a call that blocks, it belongs back on the
+# threadpool and the exemption in tests/api/test_api_handler_dispatch.py must
+# go with it.
+@app.get("/api/health", response_model=HealthResponse, response_model_exclude_unset=True)
 async def health_check():
-    """`async def`, and the ONLY handler in this file that should be.
-
-    Everything else here is `def` on purpose: a synchronous handler belongs on
-    the threadpool so a blocking query cannot stall the loop. This one is the
-    exception, and for the opposite reason. It exists to answer while the
-    service is in trouble, and the trouble worth reporting is usually worker
-    saturation — a burst of DB requests queued behind the 5+2 SQLAlchemy pool
-    can hold every AnyIO worker token for up to the 30-second pool timeout.
-    A threadpooled health check waits in that same queue, so the probe goes
-    silent exactly when the answer matters (Codex, PR #991).
-
-    It holds the loop for microseconds and touches nothing: no database, no
-    filesystem, no network. `_LIB_DIR_EXISTS` is read at import for that
-    reason. If this handler ever grows a call that blocks, it belongs back on
-    the threadpool and the exemption must go with it.
-    """
+    """Liveness probe: reports the service version and its configured backends."""
     return {
         "status": "ok",
         "project_root": str(PROJECT_ROOT),
@@ -265,7 +279,7 @@ async def health_check():
     }
 
 
-@app.get("/api/me")
+@app.get("/api/me", response_model=MeResponse, response_model_exclude_unset=True)
 def get_current_user(request: Request):
     """Return the authenticated identity + role flags.
 
@@ -579,7 +593,7 @@ def _dates_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
     return query_to_dataframe_strict(sql, params)
 
 
-@app.get("/api/market/dates/{ticker}")
+@app.get("/api/market/dates/{ticker}", response_model=MarketDatesResponse, response_model_exclude_unset=True)
 def get_available_dates(ticker: str):
     """List available trading dates for a ticker (Cloud SQL → local fallback)."""
     ticker_upper = ticker.upper()
@@ -832,7 +846,7 @@ def get_available_dates(ticker: str):
     return payload
 
 
-@app.get("/api/market/data/{ticker}/{date}")
+@app.get("/api/market/data/{ticker}/{date}", response_model=MarketDataResponse, response_model_exclude_unset=True)
 def get_market_data(
     ticker: str,
     date: str,
@@ -988,7 +1002,7 @@ def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
         return None
 
 
-@app.get("/api/market/reference/{ticker}/{date}")
+@app.get("/api/market/reference/{ticker}/{date}", response_model=ReferenceResponse, response_model_exclude_unset=True)
 def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
 
@@ -1158,7 +1172,7 @@ def _coverage_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     return query_to_dataframe_strict(sql, params)
 
 
-@app.get("/api/market/coverage")
+@app.get("/api/market/coverage", response_model=CoverageResponse, response_model_exclude_unset=True)
 def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
     """Data coverage per symbol — drives the type-ahead's full/daily/new badges.
 
@@ -1329,7 +1343,7 @@ def _sector_rotation_from_df(df: pd.DataFrame) -> tuple:
     return as_of, sectors
 
 
-@app.get("/api/market/sectors")
+@app.get("/api/market/sectors", response_model=SectorsResponse, response_model_exclude_unset=True)
 def market_sectors():
     """Sector rotation snapshot computed from SPDR sector ETF daily closes.
 
@@ -1437,7 +1451,7 @@ def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[date
     return snapshot_date_str
 
 
-@app.get("/api/market/most-active")
+@app.get("/api/market/most-active", response_model=MostActiveResponse, response_model_exclude_unset=True)
 def market_most_active():
     """Most-active tickers snapshot, with per-ticker snapshot sparklines.
 

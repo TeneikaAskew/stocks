@@ -60,6 +60,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from api import gcs_reader  # noqa: E402
+from api.schemas import (
+    PlaybookEvaluateResponse,
+    PlaybookResponse,
+    ReportListResponse,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -293,7 +298,7 @@ def _raise_if_stale(ticker_upper: str, analysis_date: date_cls,
     return age
 
 
-@router.get("/api/playbook/{ticker}")
+@router.get("/api/playbook/{ticker}", response_model=PlaybookResponse, response_model_exclude_unset=True)
 def get_playbook(ticker: str, date: str | None = None):
     """Return structured setup cards for a ticker from ``playbook_cards``.
 
@@ -354,7 +359,7 @@ def get_playbook(ticker: str, date: str | None = None):
     return {**result, "age_days": age}
 
 
-@router.get("/api/reports/list/{ticker}")
+@router.get("/api/reports/list/{ticker}", response_model=ReportListResponse, response_model_exclude_unset=True)
 def list_reports(ticker: str):
     """List available phase report files for a given ticker (from GCS)."""
     ticker_lower = ticker.lower()
@@ -702,7 +707,7 @@ def _eval_condition(raw: str, s: _Snapshot) -> _EvalResult:
     return _EvalResult(status="unknown", reason="unrecognized")
 
 
-@router.post("/api/playbook/evaluate")
+@router.post("/api/playbook/evaluate", response_model=PlaybookEvaluateResponse, response_model_exclude_unset=True)
 def evaluate_playbook(req: _EvaluateRequest) -> dict:
     """Evaluate playbook condition strings against a live snapshot.
 

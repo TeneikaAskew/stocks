@@ -43,6 +43,9 @@ if str(PROJECT_ROOT) not in sys.path:
 # monkeypatch api.auth.AUTH_MODE and this router sees it — same convention as
 # tests/api/test_platform_auth.py's setattr-over-reload rationale.
 from api import auth
+from api.schemas import (
+    PreferencesResponse,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -126,7 +129,7 @@ def _select_row(owner: str) -> Optional[dict]:
     return None if row is None else dict(row)
 
 
-@router.get("/api/me/preferences")
+@router.get("/api/me/preferences", response_model=PreferencesResponse, response_model_exclude_unset=True)
 def get_preferences(request: Request) -> dict:
     owner = _prefs_owner(request)
     try:
@@ -143,7 +146,7 @@ def get_preferences(request: Request) -> dict:
     return row
 
 
-@router.put("/api/me/preferences")
+@router.put("/api/me/preferences", response_model=PreferencesResponse, response_model_exclude_unset=True)
 def put_preferences(body: PreferencesUpdate, request: Request) -> dict:
     """Upsert the provided subset of fields and return the full stored row.
 
