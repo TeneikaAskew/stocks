@@ -440,9 +440,14 @@ def _cost_pair(tmp_path):
 def test_a_regenerated_cost_report_may_change_its_data_bearing_headings(tmp_path):
     """Run 17 failed COST_ANALYSIS.md on twelve "lost" headings, every one of
     which embeds that month's data — `Cloud Run (Jobs & Services) — $94.26`,
-    `2. Top 10 cost line items by SKU (Partial August data)`. Its prompt says
+    `A. Month-over-month comparison not possible`. Its prompt says
     "Regenerate", not "update in place". Demanding those persist demands this
-    month's report keep last month's numbers."""
+    month's report keep last month's numbers.
+
+    The count is derived from the committed document, not pinned: the report
+    is regenerated monthly and its headings move every time, so a literal
+    number here would go stale on the next refresh and fail the refresh's own
+    pull request."""
     root, prev = _cost_pair(tmp_path)
     findings = gate.gate_headings_and_size(root, prev)
     assert [f for f in findings if gate.COST in f] == [], findings
@@ -450,8 +455,10 @@ def test_a_regenerated_cost_report_may_change_its_data_bearing_headings(tmp_path
     saved = gate.REGENERATED
     try:
         gate.REGENERATED = ()
-        assert len([f for f in gate.gate_headings_and_size(root, prev)
-                    if gate.COST in f]) >= 12
+        lost = [f for f in gate.gate_headings_and_size(root, prev) if gate.COST in f]
+        subheads = [h for h in gate._headings((prev / gate.COST).read_text())
+                    if not re.match(r"^\d+\.", h.strip())]
+        assert len(lost) >= len(subheads) > 5, (len(lost), len(subheads))
     finally:
         gate.REGENERATED = saved
 
@@ -476,7 +483,7 @@ def test_a_regenerated_doc_must_carry_every_section_its_prompt_promises(tmp_path
     c = root / gate.COST
     c.write_text(c.read_text().replace("## 4. Anomalies", "## Anomalies of note"))
     findings = gate.gate_regenerated_structure(root)
-    assert any("missing the section its prompt promises: 4. 'Anomalies'" in f for f in findings), findings
+    assert any("must be exactly '4. Anomalies'" in f for f in findings), findings
 
 
 def test_the_other_documents_keep_heading_persistence(tmp_path):
@@ -1190,24 +1197,69 @@ def test_an_emptied_cost_report_is_still_caught_without_the_ceiling(tmp_path):
     assert len(gate.gate_regenerated_structure(root)) == 5
 
 
-def test_a_retitled_section_is_still_a_finding(tmp_path):
-    """The prompt's headings are the spec, and the gate stays strict about
-    them: run 29 wrote "2. Top 10 Cost Line Items (90-Day Trailing)" for "2.
-    Top 10 cost line items by SKU" and went red. An APPENDED qualifier is
-    already tolerated -- the same run's "3. Per-Component Cost Estimate
-    (90-Day Trailing)" passed -- so what fails is replacing words inside the
-    promised title, which is what the prompt now forbids."""
+def test_the_whole_heading_must_match_not_a_prefix_of_it(tmp_path):
+    """A prefix test tolerated an appended qualifier, so `2. ... by SKU
+    (90-day trailing)` passed while the prompt said to copy the heading
+    exactly -- a rule stated and not enforced, which is how the drift it
+    exists to prevent gets in. Run 29 retitled all five headings; only the one
+    that changed a word INSIDE the title was caught. (Codex, PR #1063.)
+
+    Case is folded, because GitHub lowercases heading anchors: Title Case
+    breaks no link, adding or rewording a word does."""
     root = tmp_path
     _copy(REPO / gate.COST, root / gate.COST)
     _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
     body = (root / gate.COST).read_text()
+    for bad in ("## 2. Top 10 Cost Line Items (90-Day Trailing)",
+                "## 2. Top 10 cost line items by SKU (90-day trailing)",
+                "## 2. Top 10 cost line items"):
+        (root / gate.COST).write_text(body.replace("## 2. Top 10 cost line items by SKU", bad))
+        findings = gate.gate_regenerated_structure(root)
+        assert any("must be exactly '2. Top 10 cost line items by SKU'" in f
+                   for f in findings), (bad, findings)
+    # capitalisation alone is accepted
     (root / gate.COST).write_text(body.replace(
-        "## 2. Top 10 cost line items by SKU",
-        "## 2. Top 10 Cost Line Items (90-Day Trailing)"))
-    findings = gate.gate_regenerated_structure(root)
-    assert any("Top 10 cost line items by SKU" in f for f in findings), findings
-    # appended, not replaced: still recognised as the same section
-    (root / gate.COST).write_text(body.replace(
-        "## 2. Top 10 cost line items by SKU",
-        "## 2. Top 10 cost line items by SKU (90-day trailing)"))
+        "## 2. Top 10 cost line items by SKU", "## 2. TOP 10 COST LINE ITEMS BY SKU"))
     assert gate.gate_regenerated_structure(root) == []
+
+
+def test_prose_shaped_like_a_cost_report_is_a_finding(tmp_path):
+    """Dropping the churn ceiling removed the only check that noticed a
+    wholesale replacement, and nothing that remained looked at what is IN the
+    document. This is the exact scenario: generic prose carrying the five
+    headings, one dollar figure and plenty of bytes. (Codex, PR #1063.)"""
+    root = tmp_path
+    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    body = ["# Cost Analysis (Trailing 90 days)", "", "Total spend was $222.71.", ""]
+    for num, title in gate._promised_sections(REPO, "cost-analysis.md"):
+        body += [f"## {num}. {title}", "",
+                 "This section discusses the relevant costs at length without stating any.",
+                 "Further discussion follows here.", ""]
+    (root / gate.COST).write_text("\n".join(body) + "\n")
+    assert gate.gate_regenerated_structure(root) == [], "it keeps every promised heading"
+    findings = gate.gate_cost_content(root)
+    assert any("cost figures" in f for f in findings), findings
+    assert any("§1 has 0 table row" in f for f in findings), findings
+    assert any("§2 has 0 table row" in f for f in findings), findings
+    assert any("§5 lists 0 recommendation" in f for f in findings), findings
+
+
+def test_every_real_version_of_the_cost_report_passes_the_content_floors(tmp_path):
+    """Calibration, not invention. Every floor was measured against the three
+    real versions -- the copy on main, run 28's and run 29's -- and set below
+    the minimum observed. A floor that failed an honest report would be worse
+    than no floor at all, so the committed document is checked here."""
+    assert gate.gate_cost_content(REPO) == []
+
+
+def test_a_heading_with_nothing_under_it_is_a_finding(tmp_path):
+    root = tmp_path
+    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
+    _copy(REPO / gate.COST, root / gate.COST)
+    text = (root / gate.COST).read_text()
+    head = "## 4. Anomalies"
+    body, _, tail = text.partition(head)
+    (root / gate.COST).write_text(body + head + "\n\n" + tail.split("\n## ", 1)[-1].join(["## ", ""]))
+    assert any("nothing beneath it" in f for f in gate.gate_cost_content(root)), \
+        gate.gate_cost_content(root)

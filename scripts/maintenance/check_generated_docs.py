@@ -602,20 +602,111 @@ def _promised_sections(root: pathlib.Path, prompt: str) -> list[tuple[str, str]]
 
 def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
     """A regenerated document loses the heading-persistence gate, so its
-    sections are checked against what its prompt promises instead. The titles
-    are matched without any data suffix -- "(Partial August data)" is this
-    month's caveat, not part of the section's identity."""
+    sections are checked against what its prompt promises instead.
+
+    The whole heading must match, not a prefix of it. A prefix test tolerated
+    an appended qualifier, so "2. Top 10 cost line items by SKU (90-day
+    trailing)" passed while the prompt said to copy the heading exactly --
+    a rule stated and not enforced, which is how the heading drift it exists
+    to prevent gets in. This month's caveat belongs in the sentence under the
+    heading. Case is folded because GitHub lowercases anchors, so Title Case
+    breaks no link; adding or rewording a word does. (Codex, PR #1063.)
+    """
     out = []
     for doc, prompt in ((COST, "cost-analysis.md"),):
         promised = _promised_sections(root, prompt)
         if not promised:
             out.append(f"{prompt}: no numbered sections found; the structure gate for {doc} is not running")
             continue
-        heads = [h.lower() for h in _headings((root / doc).read_text())]
+        heads = [h.strip().casefold() for h in _headings((root / doc).read_text())]
         for num, title in promised:
-            want = f"{num}. {title.strip().lower()}"
-            if not any(h.startswith(want) for h in heads):
-                out.append(f"{doc}: missing the section its prompt promises: {num}. {title.strip()!r}")
+            want = f"{num}. {title.strip()}"
+            if want.casefold() not in heads:
+                out.append(f"{doc}: section heading must be exactly '{want}'; "
+                           f"the prompt lists it and this gate compares the whole line. "
+                           f"Found: {[h for h in heads if h.startswith(num + '. ')] or 'nothing with that number'}")
+    return out
+
+
+# Floors for 05-d's substance, every one of them measured against the three
+# real versions of the document rather than chosen: the copy on main, run 28's
+# and run 29's.
+#
+#   metric                     main  run28  run29   floor
+#   cost figures (whole doc)     37     18     33     12
+#   §1 table data rows            2      3      3      2
+#   §2 table data rows           10     10     10      8
+#   §5 recommendation entries     3      5      6      3
+#   non-blank lines, per §      6-20   2-28   3-28      2
+#
+# §3 is deliberately unfloored beyond the per-section minimum: it was a bullet
+# list in two versions and a table in the third, and run 28 carried only two
+# lines with a cost figure in it, so any threshold worth having would fail an
+# honest document.
+COST_FIGURE = re.compile(r"\$?\b\d+\.\d{2}\b")
+COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
+COST_MIN_FIGURES = 12
+COST_MIN_SECTION_LINES = 2
+COST_MIN_ROWS = {"1": 2, "2": 8}
+COST_MIN_RECOMMENDATIONS = 3
+
+
+def _numbered_sections(text: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    cur = None
+    for line in text.split("\n"):
+        m = re.match(r"^#{2,4}\s+(\d+)\.", line)
+        if m:
+            cur = m.group(1)
+            out.setdefault(cur, [])
+        elif cur is not None:
+            out[cur].append(line)
+    return out
+
+
+def _table_rows(body: list[str]) -> int:
+    """Data rows of the first markdown table in a section: pipe lines, minus
+    the header, minus the `|---|` separator."""
+    rows = [l for l in body if l.strip().startswith("|")
+            and not re.fullmatch(r"\|[\s|:-]+\|", l.strip())]
+    return max(len(rows) - 1, 0)
+
+
+def gate_cost_content(root: pathlib.Path) -> list[str]:
+    """05-d must still contain a cost report, not prose shaped like one.
+
+    Dropping the churn ceiling for this document (run 29) removed the only
+    check that noticed a wholesale replacement, and nothing that remains looks
+    at what is IN it: generic prose carrying the five headings, one dollar
+    figure and 80% of the previous byte count would pass the byte floor, the
+    structure gate, and every prose gate. That is the hole this closes.
+    (Codex, PR #1063.)
+    """
+    f = root / COST
+    if not f.exists():
+        return []
+    text = f.read_text()
+    out = []
+    figures = len(COST_FIGURE.findall(text))
+    if figures < COST_MIN_FIGURES:
+        out.append(f"{COST}: only {figures} cost figures in the whole document "
+                   f"(floor {COST_MIN_FIGURES}); the three real versions carry 18 to 37. "
+                   "This is prose where a billing report should be")
+    secs = _numbered_sections(text)
+    for num, floor in sorted(COST_MIN_ROWS.items()):
+        rows = _table_rows(secs.get(num, []))
+        if rows < floor:
+            out.append(f"{COST}: §{num} has {rows} table row(s), floor {floor} — "
+                       "the table its prompt asks for is missing or empty")
+    recs = len([l for l in secs.get("5", []) if COST_REC.match(l)])
+    if recs < COST_MIN_RECOMMENDATIONS:
+        out.append(f"{COST}: §5 lists {recs} recommendation(s), floor "
+                   f"{COST_MIN_RECOMMENDATIONS} — its prompt asks for three, ranked")
+    for num in sorted(secs):
+        n = len([l for l in secs[num] if l.strip()])
+        if n < COST_MIN_SECTION_LINES:
+            out.append(f"{COST}: §{num} has {n} non-blank line(s) under its heading — "
+                       "the section is a heading with nothing beneath it")
     return out
 
 
@@ -981,6 +1072,7 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_stale_asof(root, live)
     findings += gate_prose_floor(root, previous_dir)
     findings += gate_regenerated_structure(root)
+    findings += gate_cost_content(root)
     findings += gate_derived_numbers(root, repo, live)
     findings += gate_new_suppressions(root, previous_dir)
     findings += gate_scheduled_scaling(root, repo)
