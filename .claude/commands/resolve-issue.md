@@ -2276,7 +2276,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # measured case was `absent_everywhere 'ab*c'` next to a file named `abc`,
   # which rebuilt pathsym as the literal `abc` and then missed a tracked
   # lib/ac.py, certifying the retirement.
-  local pathsym= _psa _psn _psp _pspre _pspost _psi=$IFS _psg=
+  local pathsym= _psa _psn _psp _pspre _pspost _pspan _pssep _psi=$IFS _psg=
   case $- in *f*) _psg=on;; esac
   set -f
   IFS='|'
@@ -2286,7 +2286,42 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       *'['*)
         _psp=$_psa
         while case $_psp in *'['*']'*) true;; *) false;; esac; do
-          _pspre=${_psp%%[*}; _pspost=${_psp#*[}; _pspost=${_pspost#*]}
+          _pspre=${_psp%%[*}; _pspost=${_psp#*[}
+          _pspan=${_pspost%%]*}; _pspost=${_pspost#*]}
+          # A CLASS HOLDING NOTHING BUT ONE SEPARATOR IS NOT A SEPARATOR RULE.
+          # The bypass above exists because a caller who writes a class has
+          # authored the rule themselves — but `foo[_]bar` authors nothing; it
+          # is `foo_bar` respelled, and the plain spelling WOULD be normalised.
+          # Left verbatim it matches one separator only. Measured at 8d8a59f,
+          # both directions, each with the named file tracked and its contents
+          # naming neither spelling:
+          #     absent_everywhere 'foo[_]bar'    -> 0   lib/foo-bar.py survives
+          #     absent_everywhere 'qzfoo[-]bar'  -> 0   lib/qzfoo_bar.py survives
+          # while the plain `foo_bar` correctly returns 1, because it is the
+          # one that gets normalised. Refused rather than widened to `[-_]`,
+          # for the reason the mixed-form refusal beside it gives: rewriting
+          # inside a class the caller wrote is the defect round 52 fixed, and
+          # widening a one-sided class is that same rewrite. The passing state
+          # is the spelling both messages already name.
+          # THE TEST IS ON THE SPAN, and only where the span is separators and
+          # nothing else. `d[0-9]`, `foo[a[b]bar` and `[^_]` all carry a
+          # non-separator character and are left exactly as typed — checked,
+          # all three still accepted.
+          case $_pspan in
+            ''|*[!_-]*) ;;
+            *)
+              _pssep=both
+              case $_pspan in *-*) ;; *) _pssep=one;; esac
+              case $_pspan in *_*) ;; *) _pssep=one;; esac
+              test "$_pssep" = both || {
+                echo "'$_psa' writes a separator as the one-sided class"
+                echo "  '[$_pspan]'. A class is left exactly as typed, so that"
+                echo "  matches only the spelling inside it and a path using the"
+                echo "  other separator would read as absent."
+                echo "  Write both, e.g.  foo[-_]bar"
+                IFS=$_psi; test -n "$_psg" || set +f
+                return 1; };;
+          esac
           _psp="$_pspre$_pspost"
         done
         case $_psp in
