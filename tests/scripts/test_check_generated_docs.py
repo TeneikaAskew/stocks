@@ -1133,3 +1133,81 @@ def test_the_other_documents_are_not_required_to_carry_asof_labels(live, repo, t
                     (root / gate.ARCH).read_text()).group(1)
     assert gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"}) == []
     assert set(gate.REQUIRED_ASOF) == {gate.ARCH}
+
+
+def test_the_cost_report_is_exempt_from_the_churn_ceiling(tmp_path):
+    """Its prompt says "Regenerate ... with write_file", so a full rewrite is
+    the specified behaviour and churn answers "did this month's billing differ
+    from last month's" -- which it always does. Run 28 measured 81% and run 29
+    96%, so a 0.85 ceiling sat inside the normal range and fired at random on
+    good output, which is worse than no ceiling: it teaches the operator to
+    disregard a red run. (Run 29.)"""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    old = (prev / gate.COST).read_text().splitlines()
+    (root / gate.COST).write_text(
+        "\n".join(f"Every line rewritten, number {i}." for i in range(len(old))) + "\n")
+    stats = {st["doc"]: st for st in gate.diff_stats(root, prev)}
+    assert stats[gate.COST]["churn"] == 1.0, stats[gate.COST]["churn"]
+    assert gate.gate_diff_budget(list(stats.values())) == []
+
+
+def test_every_other_document_still_has_a_churn_ceiling(tmp_path):
+    """The exemption is one document wide. 05-a and 05-c are updated in place,
+    so a rewrite there is the 2026-09-02 failure mode and must still stop the
+    run."""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    for doc in (gate.ARCH, gate.DEPS, "README.md"):
+        old = (prev / doc).read_text().splitlines()
+        (root / doc).write_text(
+            "\n".join(f"Every line rewritten, number {i}." for i in range(len(old))) + "\n")
+    findings = gate.gate_diff_budget(gate.diff_stats(root, prev))
+    for doc in (gate.ARCH, gate.DEPS, "README.md"):
+        assert any(doc in f and "rewrite" in f for f in findings), (doc, findings)
+    assert gate.CHURN_EXEMPT == (gate.COST,)
+
+
+def test_an_emptied_cost_report_is_still_caught_without_the_ceiling(tmp_path):
+    """What replaces churn for that document. Removing a gate is only safe if
+    the degradation it was meant to catch is still caught: the byte floor stops
+    a rewrite that loses mass, and the structure gate stops one that drops a
+    section the prompt promises."""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    (root / gate.COST).write_text("# Cost Analysis\n\nSpend was $1.00.\n")
+    assert any("bytes" in f or "%" in f for f in gate.gate_headings_and_size(root, prev))
+    assert len(gate.gate_regenerated_structure(root)) == 5
+
+
+def test_a_retitled_section_is_still_a_finding(tmp_path):
+    """The prompt's headings are the spec, and the gate stays strict about
+    them: run 29 wrote "2. Top 10 Cost Line Items (90-Day Trailing)" for "2.
+    Top 10 cost line items by SKU" and went red. An APPENDED qualifier is
+    already tolerated -- the same run's "3. Per-Component Cost Estimate
+    (90-Day Trailing)" passed -- so what fails is replacing words inside the
+    promised title, which is what the prompt now forbids."""
+    root = tmp_path
+    _copy(REPO / gate.COST, root / gate.COST)
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    body = (root / gate.COST).read_text()
+    (root / gate.COST).write_text(body.replace(
+        "## 2. Top 10 cost line items by SKU",
+        "## 2. Top 10 Cost Line Items (90-Day Trailing)"))
+    findings = gate.gate_regenerated_structure(root)
+    assert any("Top 10 cost line items by SKU" in f for f in findings), findings
+    # appended, not replaced: still recognised as the same section
+    (root / gate.COST).write_text(body.replace(
+        "## 2. Top 10 cost line items by SKU",
+        "## 2. Top 10 cost line items by SKU (90-day trailing)"))
+    assert gate.gate_regenerated_structure(root) == []

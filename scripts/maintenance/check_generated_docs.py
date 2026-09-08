@@ -22,7 +22,9 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
                 REGENERATED doc is measured in bytes instead, since its
                 headings carry the month's data
 * structure     a regenerated doc carries every numbered section its prompt
-                promises, derived from the prompt
+                promises, derived from the prompt. COST_ANALYSIS.md is exempt
+                from the churn ceiling for the same reason: it is told to
+                regenerate, so churn measures nothing about it
 * elision       no prose line is only an ellipsis: a `replace` that writes
                 `...` deletes the paragraph it stood in (run 27)
 * prose floor   prose outside the marker blocks keeps 80% of its characters
@@ -115,18 +117,31 @@ PROSE_FLOOR = 0.80
 # the report says which sections moved.
 CHURN_CEILING = 0.50
 # Documents that are wholly rendered from the inventory legitimately churn
-# hard when the fleet changes, so they carry a higher ceiling.
-# Two documents are legitimately re-derived in full every month rather than
-# edited in place, so a high churn there is normal and a 50% ceiling would
-# block the refresh for doing its job:
-#   05-e-API.md      — every line comes from the router files
-#   COST_ANALYSIS.md — written wholesale from the billing CSVs; when the SKU
-#                      ordering shifts, most of its table rows change
-# They are not unprotected: the size floor is the real guard for
-# COST_ANALYSIS.md, and it catches the degradation that matters. In the
-# 2026-09-02 incident it fell 163 -> 103 lines (63% of its previous size,
-# under the 80% floor) and would have been stopped on that alone.
-CHURN_CEILING_RENDERED = {API: 0.90, COST: 0.85}
+# hard when the fleet changes, so 05-e-API.md carries a higher ceiling: every
+# line of it comes from the router files.
+#
+# COST_ANALYSIS.md has NO ceiling, because churn does not measure anything
+# about it. Its prompt says "Regenerate ... with write_file", so a full
+# rewrite is the specified behaviour, not a symptom; churn there answers "did
+# this month's billing differ from last month's", which it always does.
+# Measured across the two runs that got far enough to be measured, run 28 came
+# in at 81% and run 29 at 96% -- a ceiling of 0.85 sits inside the normal
+# range and fires at random on good output, which is worse than no ceiling
+# because it teaches the operator to disregard a red run. Run 29's document
+# was read line by line before this was changed: correct service names,
+# pasteable commands, a per-component table that reconciles to the SKU table
+# with an explicit rounding row, and implemented-vs-outstanding recommendations.
+# It failed only for having rewritten what it was told to rewrite.
+#
+# What guards it instead, none of which depends on textual continuity:
+# BYTE_FLOOR (mass), gate_regenerated_structure (every promised section),
+# gate_elided_prose, gate_duplicated_tail, gate_derived_numbers, gate_stale,
+# gate_links, the workflow's own "must contain a dollar figure / must not call
+# itself a placeholder" checks, and verify_docs_against_live on every name.
+# The churn figure is still computed and printed in the run's diff report,
+# where a human can read it. (Run 29.)
+CHURN_CEILING_RENDERED = {API: 0.90}
+CHURN_EXEMPT = (COST,)
 DIFF_DOCS = DOCS + (API,)
 REMOVED_HEADING = "Removed since last refresh"
 
@@ -659,7 +674,7 @@ def gate_diff_budget(stats: list[dict], allow_rewrite: tuple[str, ...] = ()) -> 
         ceiling = CHURN_CEILING_RENDERED.get(st["doc"], CHURN_CEILING)
         if st["doc"] in allow_rewrite:
             continue
-        if st["churn"] > ceiling:
+        if st["doc"] not in CHURN_EXEMPT and st["churn"] > ceiling:
             out.append(
                 f"{st['doc']}: {st['removed']} of {st['lines_before']} previous lines were replaced "
                 f"or deleted ({st['churn']:.0%} churn, ceiling {ceiling:.0%}) — this is a rewrite, "
