@@ -222,7 +222,12 @@ body:
         # come back as their own scopes — measured, `code-reviewer` goes to 0
         # under the exclusion and 1 with .claude/agents searched separately.
         # Same three-scope shape the resolver's consumed() uses.
-        $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
+        # ANCHORED, like the consumer searches above and for the same reason:
+        # measured from platform/, the first search below finds 2 commits where
+        # the root finds 5, and from gcp/ the .claude scopes return ZERO with
+        # rc=0 — a successful empty result that reads as "no history".
+        $ git -C "$root" log --oneline --all --full-history \
+            --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames \
             -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
                ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
@@ -235,7 +240,8 @@ body:
         # without them the top hit is c19ab32, a docs-refresh commit; restricted
         # to the snapshot fixture alone it still matches, and restricted to
         # everything else it does not appear at all.
-        $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
+        $ git -C "$root" log --oneline --all --full-history \
+            --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames -- .claude/agents .github/prompts CLAUDE.md
         <sha> (date) added it and wired it into <the caller>
         <sha> (date) rewrote that caller, silently dropping the mount
@@ -243,7 +249,8 @@ body:
         # Then .claude/commands SEPARATELY. For a slash-command surface these ARE
         # its implementation history; for anything else they are this resolver's
         # own prose about the example. Read them knowing which you have.
-        $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
+        $ git -C "$root" log --oneline --all --full-history \
+            --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames -- .claude/commands
 
         The shape of a conclusive answer: the second commit enumerates the new code's

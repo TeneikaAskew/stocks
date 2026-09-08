@@ -981,12 +981,27 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # would have no passing state — the unreachable-assertion shape again. The
     # symbol is split on `|`, which is the documented coupled-retirement form,
     # and each alternative compared for equality.
+    # THE VALUE MATTERS TOO, not just the key. npm aliases let a manifest say
+    # `"charts": "npm:d3@^7"`: source imports `charts`, installs still fetch
+    # `d3`, and a key-only comparison for `d3` finds nothing — measured, that
+    # manifest certifies d3 as retired while npm keeps installing it. So the
+    # alias TARGET is compared as well, parsed off the value: `npm:` stripped,
+    # then the version suffix, keeping a leading `@scope/`. Measured on four
+    # shapes: npm:d3@^7.0.0 -> d3, npm:@heroui/react@^3.1.0 -> @heroui/react,
+    # npm:lodash@latest -> lodash, npm:zod -> zod.
     local dep
     dep=$(printf '%s' "$pkg" | jq -r --arg s "$sym" '
+            def alias_target:
+              ltrimstr("npm:") as $t
+              | if ($t | startswith("@"))
+                then ($t | split("@") | if length > 2 then "@" + .[1] else $t end)
+                else ($t | split("@") | .[0]) end;
             ($s | split("|")) as $alts
             | [.dependencies, .devDependencies, .peerDependencies,
                .optionalDependencies]
-            | map(select(. != null)) | add // {} | keys[]
+            | map(select(. != null)) | add // {} | to_entries[]
+            | (.key, (select(.value | type == "string" and startswith("npm:"))
+                      | .value | alias_target))
             | select(. as $k | $alts | index($k))') \
       || { echo "could not read package.json's dependency sections"; return 2; }
     test -z "$dep" || d=0
@@ -1106,7 +1121,16 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # files, each passing every shape check, and the whole command scope is
   # excluded — debug-workflow certified absent again, one layer below the check
   # that stopped it. Word splitting and pathname expansion both go away with
-  # "${arr[@]}", and an unset name is a zero-length array rather than a glob.
+  # "${arr[@]}".
+  # THAT COMMENT USED TO CLAIM an unset name is a zero-length array. It is not,
+  # under `set -u`: measured on bash 5.2.21, `${#REVIEWED[@]}` on an unset name
+  # raises "REVIEWED: unbound variable" and the whole gate dies before it runs,
+  # and this repo's scripts are `set -euo pipefail`. The obvious repair does not
+  # work either — `${#REVIEWED[@]-0}` is a "bad substitution". Define the arrays
+  # only when they do not already exist, which is nounset-safe and does not
+  # clobber a real approval: measured, 0 when unset and still 2 when set.
+  declare -p REVIEWED        >/dev/null 2>&1 || REVIEWED=()
+  declare -p REVIEWED_SOLYRA >/dev/null 2>&1 || REVIEWED_SOLYRA=()
   test $(( ${#REVIEWED[@]} + ${#REVIEWED_SOLYRA[@]} )) -eq 0 \
     || test "${REVIEWED_FOR:-}" = "$sym" || {
     echo "REVIEWED was approved for '${REVIEWED_FOR:-<unset>}', not '$sym'."
@@ -1122,7 +1146,14 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # Leave REVIEWED=() until consumed() has actually printed lines and you have
   # read them; pre-filling it is how a route gets waved through as an example.
   EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )
-  consumed "$sym" "${REVIEWED[@]}"; rc=$?
+  # `if`, for the reason the probes INSIDE consumed() take one: rc=1 is the
+  # expected answer for a correctly deleted symbol, and under `set -e` this
+  # caller died before `rc=$?` — measured, `bash -e -c 'absent_everywhere
+  # <absent symbol>'` printed nothing at all and never reached the path scan or
+  # the solyra half, while the same call without -e completed with rc=0. Fixing
+  # the probes and leaving their callers is the same one-level-short miss this
+  # file keeps making.
+  if consumed "$sym" "${REVIEWED[@]}"; then rc=0; else rc=$?; fi
   test $rc -eq 1 || { echo "stocks: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
   # PIN THE REVISION, and fetch it first. An existing checkout is not a current
   # one: it can be parked on an old branch, or on a feature branch that already
@@ -1195,9 +1226,25 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # "no path left", a clean pass — while -E names scripts/validate_track2_live.py,
   # which is tracked and whose contents do not mention its own basename, so the
   # content searches cannot see it either and the coupled deletion certifies.
+  # SEPARATORS DIFFER BETWEEN A RESOURCE NAME AND ITS FILE, and matching the
+  # resource regex against paths cannot bridge that. A Cloud Run job is
+  # `premarket-brief`; its implementation is gcp/premarket_brief.py, which
+  # contains no hyphenated spelling for the content search to catch either —
+  # measured, NO tracked path matches the hyphenated name while the module sits
+  # right there, so the retirement certified with the code untouched. `-` and
+  # `_` therefore match interchangeably ON PATHS. Built with a sentinel rather
+  # than two substitutions: `${sym//-/[-_]}` then `${.../_/[-_]}` rewrites the
+  # `_` inside the class it just inserted and yields `[-[-_]]`.
+  # NOT applied to the CONTENT searches, deliberately. rc=0 "consumed" has no
+  # escape hatch, so widening those would make a resource-only retirement — the
+  # job goes, the module stays, which this file explicitly supports —
+  # permanently unpassable. That is the unreachable-state class, and a false
+  # BLOCK here is visible (the paths are printed) where a false PASS is not.
+  local pathsym=${sym//_/$'\x01'}; pathsym=${pathsym//-/$'\x01'}
+  pathsym=${pathsym//$'\x01'/[-_]}
   # `if` for errexit, as in consumed(): a clean miss is rc=1 and an untested
   # nonzero assignment kills the shell under `set -e` — measured.
-  if leftover=$(printf '%s\n' "$files" | grep -E -- "$sym"); then st=0
+  if leftover=$(printf '%s\n' "$files" | grep -E -- "$pathsym"); then st=0
   else st=$?; fi
   test "$st" -le 1 \
     || { echo "path scan errored (rc=$st) — asserting nothing"; return 1; }
@@ -1210,7 +1257,11 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     return 1
   fi
   _solyra_ok || return 1
-  ( cd "$SOLYRA" || exit 2
+  # The SUBSHELL needs the same `if` as everything else: it is a simple command
+  # as far as errexit is concerned, so a nonzero exit from it kills the parent
+  # before `rc=$?`. `$?` inside an else branch is the condition's status —
+  # measured, a function returning 7 gives `$?=7` there.
+  if ( cd "$SOLYRA" || exit 2
     git fetch -q origin main \
       || { echo "solyra: fetch failed — no current revision to search"; exit 2; }
     REV=$(git rev-parse FETCH_HEAD) || exit 2
@@ -1230,7 +1281,9 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     # -E here too. The index-versus-working-tree correction the stocks half
     # needs does NOT apply over here: ls-tree reads a committed revision, where
     # there is no unstaged deletion and no untracked file to miss.
-    if sleft=$(printf '%s\n' "$sfiles" | grep -E -- "$sym"); then sst=0
+    # Same separator normalisation as the stocks half; $pathsym is the caller's
+    # local, visible in here because a subshell inherits it.
+    if sleft=$(printf '%s\n' "$sfiles" | grep -E -- "$pathsym"); then sst=0
     else sst=$?; fi
     test "$sst" -le 1 \
       || { echo "solyra: path scan errored (rc=$sst)"; exit 2; }
@@ -1240,7 +1293,8 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
       exit 1
     fi
     EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
-    consumed "$sym" "${REVIEWED_SOLYRA[@]}" ); rc=$?
+    if consumed "$sym" "${REVIEWED_SOLYRA[@]}"; then exit 0; else exit $?; fi )
+  then rc=0; else rc=$?; fi
   test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
 }
 
