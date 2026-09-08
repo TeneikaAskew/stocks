@@ -173,8 +173,57 @@ body:
         Read the two or three lines and say which. The resolver's Phase 4
         helper returns a distinct exit code for exactly this case.
 
+        # AND SOLYRA, WITH A COMMAND. This box asks for consumers in BOTH
+        # repos, and every probe above is anchored to the stocks checkout —
+        # `git -C "$root"` cannot see the frontend. Without this, the field can
+        # be completed with a prose claim about solyra and no search behind it,
+        # which is how a surface with a surviving frontend caller gets filed as
+        # dormant. Same three scopes as above, under solyra's own exclusion set
+        # (it vendors stocks' OpenAPI snapshot, so that file names routes
+        # nothing there calls).
+        # CHECK THE ORIGIN, not just that it is a git checkout. `rev-parse
+        # --git-dir` exits 0 for any repo, so a stale SOLYRA or a typo makes
+        # every symbol absent "over there" — the answer this box exists to
+        # distrust, arriving with the confidence of a successful search. Four
+        # literal forms, no glob: a suffix pattern checks the path and says
+        # nothing about the HOST. Same rule the resolver's gate applies.
+        $ at_solyra() {
+            local s=${SOLYRA:-} o
+            if [ -z "$s" ]; then
+              s=$(git rev-parse --show-toplevel 2>/dev/null); s=${s:+$s/../solyra}
+            fi
+            git -C "${s:-/nonexistent}" rev-parse --git-dir >/dev/null 2>&1 \
+              || { echo "no solyra checkout at '${s:-<unresolved>}' — set" >&2
+                   echo "SOLYRA=<path>; this probe did not run" >&2
+                   return 2; }
+            o=$(git -C "$s" remote get-url origin 2>/dev/null); o=${o%/}; o=${o%.git}
+            case "$o" in
+              https://github.com/TeneikaAskew/solyra|\
+              ssh://git@github.com/TeneikaAskew/solyra|\
+              git://github.com/TeneikaAskew/solyra|\
+              git@github.com:TeneikaAskew/solyra) ;;
+              *) echo "'$s' is a checkout, but origin is '${o:-<none>}' — that is" >&2
+                 echo "not solyra; this probe did not run" >&2
+                 return 2;;
+            esac
+            git -C "$s" "$@"
+          }
+        $ at_solyra grep -nE "<surface>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
+            ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!package-lock.json' \
+            ':!bun.lock' ':!package.json' ':!tests/fixtures/stocks-openapi.json'
+        $ at_solyra grep -nE "<surface>" -- .claude/agents .claude/commands CLAUDE.md
+        src/pages/DashboardPage.tsx:142:  const { data } = useQuery(['<surface>', d])
+        src/pages/PlaybookPage.tsx:88:    fetch(`/api/<surface>?date=${d}`)
+
         solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
         Both live. So this is Tier 1: stale rows rendered as today's setups.
+
+        # THAT IS YOUR WORKING TREE, not the revision anyone is serving. The
+        # resolver's Phase 4 gate re-asks the same question against solyra's
+        # fetched origin/main, because a consumer deleted there five minutes ago
+        # is still running in every open tab — a different question, and that one
+        # decides whether the surface may go. This box is triage evidence: paste
+        # what the commands returned, including "no matches".
     validations:
       required: true
 

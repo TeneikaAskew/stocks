@@ -544,17 +544,37 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   Then:
 
   ```bash
-  EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )       # required; consumed() returns 2 without it
-  # CAPTURE THE STATUS. A bare call is a failed simple command under `set -e`
-  # for the answer this phase is looking for — rc=1, nothing consumes it — so
-  # the shell exits before the table below can be read. Every other caller in
-  # this file takes the `if`/`else` form for exactly this reason; this one was
-  # added in round 40 without it.
-  if consumed "<table|endpoint|function>"; then c=0; else c=$?; fi
-  echo "consumed rc=$c"
+  # SAME SHELL AS THOSE DEFINITIONS, OR SOURCE WHAT THAT FENCE WROTE. "Load it
+  # now" only holds if this block runs in the same shell, and every tool
+  # invocation is a fresh bash. Measured without them: `consumed` is 127, the
+  # block prints `consumed rc=127` and exits 0 — a code the table below does not
+  # list, from a search that never ran. `EXCLUDE_STOCKS` is unset in that shell
+  # too, and `"${EXCLUDE_STOCKS[@]}"` on an unset array is NOT an error under
+  # `set -u` on bash 5.2, so EXCLUDE arrives EMPTY rather than loudly missing —
+  # which is the one state consumed() refuses by construction.
+  type -t consumed >/dev/null 2>&1 || . "${HELPERS:-/tmp/resolve-issue-helpers.sh}"
+  phase2_consumers() {
+    type -t consumed >/dev/null 2>&1 || {
+      echo "consumed() is not defined in this shell, and"
+      echo "${HELPERS:-/tmp/resolve-issue-helpers.sh} did not provide it."
+      echo "Load Phase 4's DEFINITIONS fence first — it writes that file — or"
+      echo "paste it here. NOT reporting a result: 127 is not one of the codes."
+      return 2; }
+    EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )     # required; consumed() returns 2 without it
+    # CAPTURE THE STATUS. A bare call is a failed simple command under `set -e`
+    # for the answer this phase is looking for — rc=1, nothing consumes it — so
+    # the shell exits before the table below can be read. Every other caller in
+    # this file takes the `if`/`else` form for exactly this reason; this one was
+    # added in round 40 without it.
+    local c
+    if consumed "<table|endpoint|function>"; then c=0; else c=$?; fi
+    echo "consumed rc=$c"
+  }
+  phase2_consumers      # BARE
   #   0  consumed — it PRINTS the hits, so read them before believing the code
   #   1  nothing, in any of the six executable scopes
-  #   2  refuses to assert (bad regex, unreadable tree, jq missing, EXCLUDE unset)
+  #   2  refuses to assert (bad regex, unreadable tree, jq missing, EXCLUDE
+  #      unset, or the helpers not loaded — it says which)
   #   3  only .claude/commands/ matched — routing or prose, read the lines
   ```
 
@@ -686,8 +706,8 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   silently calls a live command dead. Phase 4 tests `rc -eq 1`, so 3 fails
   closed, which is the correct default when the answer is "I cannot tell".
 
-  The helper itself is defined in **Phase 4**, in the same fence as the
-  assertion that reads its exit status, and deliberately not duplicated here:
+  The helper itself is defined in **Phase 4**, in the definitions fence that the
+  assertion sources, and deliberately not duplicated here:
   two copies in two fences drift, and the one that matters is the one the gate
   runs. What this phase needs is the hits, not a boolean — so read them.
 
@@ -704,25 +724,35 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   # measurement: the `|| echo` guard reported and carried on, and the loop then
   # searched the CWD.
   artifact_probe() {
-    local root d s
+    local root d s hits
     root=$(git rev-parse --show-toplevel) \
       || { echo "not in a checkout — nothing below ran"; return 1; }
     test -n "$root" || { echo "empty top level — nothing below ran"; return 1; }
-    # A symbol with no hits is rc=1 and is ordinary here. Under `set -e` that
-    # kills the loop's SUBSHELL — the loop is a pipeline stage — and the union
-    # is silently truncated at whichever symbol missed first, with the pipeline
-    # still exiting 0. So a miss continues and only rc>1 leaves, loudly.
-    # The trailing `grep -v` returns 1 when every hit is source, which is the
-    # answer "no generated artifacts": accepted, not treated as an error.
-    if for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
-                market_data_intraday etf_options_snapshots exit_config_overrides; do
-         git -C "$root" grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
-           ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
-           ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
-           ':!.github/workflows/logs.txt' || { test $? -eq 1 || exit 3; }
-       done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
+    # THE PRODUCER IS NOT IN THE PIPELINE. A symbol with no hits is rc=1 and is
+    # ordinary here, so a miss continues and only rc>1 leaves — but `exit 3`
+    # from the loop cannot be read off the pipeline. Under `pipefail` bash
+    # reports the RIGHTMOST nonzero status, and when the loop dies before
+    # emitting a non-source path the trailing `grep -v` returns 1 for its empty
+    # input, so the pipeline is 1 and reads as a clean miss; without pipefail it
+    # is the grep's 1 as well. Measured both ways: a producer that errors before
+    # any non-source path gives d=1 and the broken inventory was accepted as
+    # "no generated artifacts". So the union is collected first, in a command
+    # substitution whose status is checked on its own line, and only the filter
+    # runs in a pipe.
+    hits=$(for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
+                    market_data_intraday etf_options_snapshots exit_config_overrides; do
+             git -C "$root" grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+               ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
+               ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
+               ':!.github/workflows/logs.txt' || { test $? -eq 1 || exit 3; }
+           done) \
+      || { echo "the derivation probe errored (rc=$?) — asserting nothing"; return 1; }
+    # An empty union is a real answer, and `printf '%s\n' ""` is not: it emits a
+    # blank line that `grep -v` keeps, which would print an empty "artifact".
+    test -n "$hits" || { echo "no hits for any probe symbol — nothing to derive"; return 0; }
+    if printf '%s\n' "$hits" | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
     then d=0; else d=$?; fi
-    test "$d" -le 1 || { echo "the derivation probe errored (rc=$d)"; return 1; }
+    test "$d" -le 1 || { echo "the artifact filter errored (rc=$d)"; return 1; }
   }
   artifact_probe      # BARE
   ```
@@ -878,11 +908,14 @@ assertion through one function that returns on the first failure:
 # there; do NOT skip the solyra half, because "I could not look" and "nothing
 # uses it" are the two answers this whole phase exists to keep apart.
 
-# Defined HERE, in the same fence as the assertion. Shell functions do not
-# survive between tool invocations — measured, calling `consumed` in a fresh
-# bash exits **127**, and `test $rc -eq 1` then rejects every correctly
-# deleted surface, so the before/after proof this phase demands could never
-# be produced. Phase 2 describes the search; this block is what runs.
+# Defined HERE, and persisted at the end of this fence for the shell that runs
+# the assertion. Shell functions do not survive between tool invocations —
+# measured, calling `consumed` in a fresh bash exits **127**, and `test $rc -eq 1`
+# then rejects every correctly deleted surface, so the before/after proof this
+# phase demands could never be produced. Round 43 split the gate's invocation
+# out of this fence so Phase 2 could source it safely; the persistence at the
+# bottom is what keeps the two halves usable in different shells.
+# Phase 2 describes the search; this block is what runs.
 # THE EXCLUSION SET IS PER-REPO, and consumed() runs in BOTH. Hardcoding
 # stocks' set and then `cd`-ing into solyra leaves solyra's own generated
 # artifacts in the search — measured, retiring an API surface leaves exactly one
@@ -2176,6 +2209,40 @@ fully_retired() {   # $1 sym $2 job|none $3 impl|none $4 sched|none [$5 proj] [$
     absent_everywhere "$1" "$3" && retired_everywhere "$2" "$4" "${@:5}"
   fi; }
 
+# PERSIST WHAT THIS FENCE DEFINED. Every tool invocation is a FRESH shell, so a
+# function defined here is gone by the next block — measured, `fully_retired` in
+# a new bash exits **127**, and the gate reads 127 as a failed assertion rather
+# than as a missing helper. Round 43 moved the gate's invocation into its own
+# fence so Phase 2 could source these definitions without firing it on
+# placeholders; that split is what makes this step load-bearing rather than a
+# convenience. `declare -f` re-emits the bodies (the nested `_gone` comes with
+# retired_everywhere) and `declare -p` the arrays — measured round-trip: a fresh
+# shell sourcing the result gives consumed rc=0/1 and the arity refusals
+# unchanged, against 127 without it.
+# `-ga`, not `-a`: `declare -a` inside a function creates a LOCAL, so a caller
+# that sources this file from within a function would get exclusion arrays that
+# vanish on return.
+persist_helpers() {
+  declare -f _ere_literal _solyra_ok consumed absent_everywhere \
+             retired_everywhere fully_retired > "$HELPERS" \
+    || { echo "could not write $HELPERS"; return 1; }
+  declare -p EXCLUDE_SHARED EXCLUDE_STOCKS EXCLUDE_SOLYRA PRESERVE_STOCKS \
+    | sed 's/^declare -a/declare -ga/' >> "$HELPERS" \
+    || { echo "wrote the functions but not the exclusion arrays — removing it,"
+         echo "half a helper file is worse than none"
+         rm -f "$HELPERS"; return 1; }
+}
+HELPERS=${HELPERS:-/tmp/resolve-issue-helpers.sh}
+# CONSUMED, NOT DROPPED. Sourcing this fence must not kill the caller's shell —
+# that was round 43's finding, and a `set -e` shell dies on a bare nonzero here
+# exactly as it did on the gate template that used to sit at this spot. So the
+# status is reported and the gate below refuses when the helpers are missing;
+# it is handled downstream, not swallowed.
+if persist_helpers; then echo "helpers written to $HELPERS"
+else
+  echo "NOTE: paste this fence into the shell that runs the gate instead."
+fi
+
 ```
 
 **The fence above is DEFINITIONS ONLY, and that is load-bearing.** Phase 2
@@ -2206,7 +2273,23 @@ free and the acceptance call stays bare where it belongs.
 # invokes the checks rather than in the checks themselves. Uncomment one:
 # absent_everywhere "<symbol>"     # code only
 # retired_everywhere none "<sched>"  # resource only
-fully_retired "<symbol>" "<job>" "<implementation>" "<scheduler>"  # BARE
+# SAME SHELL AS THE DEFINITIONS, OR SOURCE WHAT THAT FENCE WROTE. This block is
+# only the call; the functions live in the definitions fence above, and shell
+# functions do not survive between tool invocations — measured, `fully_retired`
+# in a fresh bash exits 127. A 127 here is indistinguishable from a failed
+# assertion at a glance, which is the worst way for this gate to be wrong, so
+# the wrapper checks before calling and refuses with 2 instead.
+type -t fully_retired >/dev/null 2>&1 || . "${HELPERS:-/tmp/resolve-issue-helpers.sh}"
+run_gate() {
+  type -t fully_retired >/dev/null 2>&1 || {
+    echo "fully_retired is not defined in this shell, and"
+    echo "${HELPERS:-/tmp/resolve-issue-helpers.sh} did not provide it."
+    echo "Run the Phase 4 DEFINITIONS fence first — it writes that file — or"
+    echo "paste it into this shell. NOT reporting a result."
+    return 2; }
+  fully_retired "<symbol>" "<job>" "<implementation>" "<scheduler>"
+}
+run_gate      # BARE
 ```
 
 Skipping the before half is what is never acceptable. "It passes now" says
@@ -3036,14 +3119,50 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          SRC="$MERGE_SHA"                  # nothing merged since; exact SHA
        else
          SRC=$MAIN                         # main advanced: MERGE_SHA would revert it
-         echo "main advanced past $MERGE_SHA — $SRC REACHES it; check it still HAS it"
+         echo "main advanced past $MERGE_SHA — $SRC REACHES it; it may not HAVE it"
          # Ancestry is reachability, not presence: a revert of your merge is
-         # also a descendant of it, and --is-ancestor still says yes. Before
-         # deploying $SRC, confirm the change is actually in that tree —
-         # `git log --oneline "$MERGE_SHA..$SRC" | grep -i revert` for the
-         # cheap look, and then the issue's own check against $SRC for the
-         # real one. Deploying the tip also ships those commits, so CI must
-         # be green on $SRC itself, not only on your PR.
+         # also a descendant of it, and --is-ancestor still says yes. Deploying
+         # the tip also ships every other commit in that range, so CI has to be
+         # green on $SRC itself and not only on your PR.
+         #
+         # A GATE, NOT A REMINDER. This branch used to print those two checks
+         # and then fall straight through into the worktree, the build and the
+         # deploy, so whenever main moved the recipe published an unvalidated
+         # whole-tree tip while every check in the function passed. That is the
+         # same shape as the concurrency probe that sat in prose BELOW the
+         # invocation it guarded, one fix up.
+         #
+         # The revert scan is the cheap half and runs here. Captured first, not
+         # piped: under `pipefail` a failed `git log` beside a grep that finds
+         # nothing yields the grep's 1, and rc=1 is the answer "nothing looks
+         # like a revert".
+         local _range _hits _d
+         _range=$(git log --oneline "$MERGE_SHA..$SRC") \
+           || { echo "could not list what main added since $MERGE_SHA"; return 1; }
+         if _hits=$(printf '%s\n' "$_range" | grep -iE 'revert|roll[ -]?back')
+         then _d=0; else _d=$?; fi
+         test "$_d" -le 1 \
+           || { echo "the revert scan errored (rc=$_d) — asserting nothing"; return 1; }
+         test "$_d" -eq 1 || {
+           echo "these commits between $MERGE_SHA and $SRC mention a revert:"
+           printf '%s\n' "$_hits" | sed 's/^/  /'
+           echo "read them before validating the tip."; }
+         #
+         # The other half cannot be checked from here and is not pretended at:
+         # the issue's own check is issue-specific, and this session's `gh` 403s
+         # on repo-scoped endpoints (CLAUDE.md, "GitHub API access from the
+         # sandbox"), so CI on $SRC is not readable either. What is enforceable
+         # is that a human says they did both, FOR THIS EXACT TREE. Bound to
+         # $SRC, like SOLYRA_ROLLED_OUT is bound to symbol@commit: an
+         # acknowledgement of yesterday's tip must not clear today's.
+         test "${TIP_VALIDATED:-}" = "$SRC" || {
+           echo "refusing to deploy $SRC unvalidated. Against that exact tree:"
+           echo "  1. run the issue's own check — the change is PRESENT, not"
+           echo "     merely reachable"
+           echo "  2. confirm CI is green on $SRC itself"
+           echo "then re-run with:"
+           printf '  TIP_VALIDATED=%q\n' "$SRC"
+           return 1; }
        fi
        wt=$(mktemp -d -t deploy-src-XXXXXX) && rmdir "$wt"
        git worktree add "$wt" "$SRC" || return 1
