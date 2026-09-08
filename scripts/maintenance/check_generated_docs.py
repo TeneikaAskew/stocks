@@ -477,7 +477,18 @@ def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
 # occurrences of `2026-09-07`, and all but these are records of when something
 # was corrected, deleted or audited and must NOT move.
 ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
-               re.compile(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*"))
+               re.compile(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*"),
+               # 05-a's closing line carries TWO dates: "Generated <date> ...
+               # from the <date> live snapshot". The first is already required
+               # to be today by the workflow's own step 1, which greps every
+               # one of the four documents for `Generated ${TODAY}` before
+               # this script runs; the second is checked nowhere else, and a
+               # refresh that updated only one of the pair would leave the
+               # line self-contradicting. Only the second is added here: the
+               # committed 05-d legitimately carries `Generated 2026-09-02`
+               # (the last run that regenerated it), so gating the first would
+               # fail an honest tree outside the workflow. (Codex, PR #1062.)
+               re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
 
 
 def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:

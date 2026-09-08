@@ -916,7 +916,9 @@ def test_the_committed_asof_labels_match_their_own_snapshot():
     caught the moment the snapshot moves. A gate that fired on neither, or on
     everything, would pass the constructed cases above just as well."""
     assert gate.gate_stale_asof(gate.REPO, {"read_at": "2026-09-07T04:35:16Z"}) == []
-    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "2026-09-08T17:48:56Z"})) == 2
+    # Three labels: the header note, §3's table column, and the snapshot date
+    # in the closing line.
+    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "2026-09-08T17:48:56Z"})) == 3
 
 
 def test_no_snapshot_means_no_asof_finding(tmp_path):
@@ -1015,3 +1017,24 @@ def test_prose_about_materialized_views_is_not_mistaken_for_a_breakdown(live, re
                  "\n`apply_schema.py` drops and recreates the two earnings materialized views.\n"
                  "\nThe twelve `strat_features_*` tables are created at runtime.\n")
     assert gate.gate_derived_numbers(root, repo, live) == []
+
+
+def test_the_snapshot_date_in_the_closing_line_is_an_asof_label(tmp_path):
+    """05-a's closing line carries two dates: `Generated <date> ... from the
+    <date> live snapshot`. A refresh that updated one and not the other would
+    leave the line contradicting itself.
+
+    Only the second is gated here. The first is already required to equal
+    today by the workflow's own step 1, which greps all four documents for
+    `Generated ${TODAY}` before this script runs, and gating it here would
+    fail an honest tree: the committed 05-d carries `Generated 2026-09-02`,
+    the last run that regenerated it. (Codex, PR #1062.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Generated 2026-09-08 by the refresh; blocks rendered "
+                   "from the 2026-09-07 live snapshot.\n")
+    out = gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"})
+    assert len(out) == 1, out
+    assert "2026-09-07 live snapshot" in out[0]
+    doc.write_text(doc.read_text().replace("the 2026-09-07 live", "the 2026-09-08 live"))
+    assert gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"}) == []

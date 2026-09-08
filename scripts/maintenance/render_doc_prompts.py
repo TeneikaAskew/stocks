@@ -96,6 +96,22 @@ def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str
                 f"{name} is {raw[name]} in live.json but the verifier's snapshot has "
                 f"{n} {key}. Handing the model either number would fail a gate; "
                 "the two snapshots disagree and that is the bug to fix.")
+    # Counts agreeing does not mean names agree. The two snapshots come from
+    # two separate sets of gcloud calls at different points in the run, so a
+    # service renamed or replaced between them leaves the fleet SIZE unchanged
+    # and the NAMES different -- and it is the names that are now substituted.
+    # The verifier checks the generated document against its own snapshot, so
+    # rendering a name only live.json has would fail the run on a name this
+    # pipeline supplied, which is the exact failure VERIFIED exists to
+    # prevent. (Codex, PR #1062.)
+    if set(names["LIVE_SERVICE_NAMES"]) != set(verify_live["services"]):
+        only_live = sorted(set(names["LIVE_SERVICE_NAMES"]) - set(verify_live["services"]))
+        only_verify = sorted(set(verify_live["services"]) - set(names["LIVE_SERVICE_NAMES"]))
+        raise SystemExit(
+            "the two live snapshots name different Cloud Run services: "
+            f"only in live.json: {only_live or '-'}; only in the verifier's snapshot: "
+            f"{only_verify or '-'}. Handing the model either list would fail the "
+            "verifier on a name this pipeline supplied.")
     out = {name: str(value) for name, value in raw.items()}
     out.update({name: ", ".join(f"`{v}`" for v in value) for name, value in names.items()})
     return out

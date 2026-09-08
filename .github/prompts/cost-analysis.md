@@ -51,8 +51,13 @@ Three, ranked by $/month, each with the resource, the exact change (gcloud comma
 ## Rules
 
 - Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
-- **Every infrastructure name you write must be copied from the lists above,
-  character for character.** Do not shorten, singularise or reconstruct one.
+- **Copy every infrastructure name character for character from wherever you
+  read it.** The Cloud Run **service** names are listed above and must be
+  copied from there. Every other resource this document names — jobs, the
+  Cloud SQL instance, Artifact Registry repositories, schedulers, buckets —
+  is not in that list, so take each one from the input file you found it in
+  (`live.json`, `repo_inventory.json`, `billing_by_sku.csv`) and copy it
+  exactly. Never shorten, singularise or reconstruct a name from memory.
   Run 28 wrote `solyra-api` twice in this document, dropping the environment
   suffix from a service listed above, and the run failed on a service that
   does not exist. A truncated name is the same failure as an invented
