@@ -819,3 +819,111 @@ def test_a_dotted_label_is_still_a_label(tmp_path):
     out = gate.gate_elided_prose(tmp_path)
     assert len(out) == 3, out
     assert not any("complete sentence" in f for f in out), out
+
+
+def test_a_line_that_is_the_tail_of_the_one_above_is_a_finding(tmp_path):
+    """Run 28's 05-a ended with the last line's own tail, starting mid-word:
+
+        ... from the 2026-09-08 live snapshot. The monthly refresh updates this line.
+        pshot. The monthly refresh updates this line.
+
+    A `replace` rewrote the trailing span and left the end of the old text
+    behind. The elision gate does not see it, the churn was 12%, the headings
+    were intact, and it names no infrastructure, so the live verifier had
+    nothing to check either. It reached the artifact with 0 findings.
+    """
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "Generated 2026-09-08; inventory blocks rendered by `doc_inventory.py` "
+        "from the 2026-09-08 live snapshot. The monthly refresh updates this line.\n"
+        "pshot. The monthly refresh updates this line.\n")
+    out = gate.gate_duplicated_tail(tmp_path)
+    assert len(out) == 1, out
+    assert "tail of the one above" in out[0]
+
+
+def test_the_committed_documents_carry_no_duplicated_tail(tmp_path):
+    """Calibration, not decoration. The threshold and the single direction were
+    chosen by measuring every markdown file under `docs/` plus README against
+    all four shapes: this one fires once, on the real defect. A future
+    loosening that starts flagging honest prose fails here."""
+    assert gate.gate_duplicated_tail(gate.REPO) == []
+
+
+def test_a_repeated_command_prefix_is_not_a_duplicated_tail(tmp_path):
+    """Both lines below are lifted from the committed corpus, because an
+    invented example proves nothing about it -- a first draft of this test
+    hand-wrote a `gcloud` continuation that WAS a duplicated tail, which the
+    real file at `COST_AUDIT_2026-09-06.md:260` is not.
+
+    `docs/alpha-vantage-quickstart.md:26` shows the same command twice with an
+    extra flag, so each line is a PREFIX of the next; `COST_AUDIT` wraps a
+    `gcloud` invocation so the following line ENDS WITH the one before it.
+    Gating on either shape would fail an honest document, so neither is gated.
+    """
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "python scripts/fetch_alphavantage_intraday.py --symbol IWM --show\n"
+        "python scripts/fetch_alphavantage_intraday.py --symbol IWM --show --rows 200\n"
+        "    trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com \\\n"
+        "    --member=serviceAccount:trading-runner@adept-mountain-474619-d4.iam"
+        ".gserviceaccount.com \\\n")
+    assert gate.gate_duplicated_tail(tmp_path) == []
+
+
+def test_a_short_repeated_ending_is_not_a_duplicated_tail(tmp_path):
+    """Two rows ending in the same short cell are a table, not a botched
+    replace. The 20-character floor is what separates them."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("| `signal-monitor` | main |\n| main |\n")
+    assert gate.gate_duplicated_tail(tmp_path) == []
+
+
+def test_an_asof_label_naming_an_older_snapshot_is_a_finding(tmp_path):
+    """Run 28 updated 05-a's header to `read on **2026-09-08**` and left §3's
+    table header at `Live 2026-09-07`, so a table of the current fleet
+    announced itself as a day old. On the monthly cadence the label is a month
+    out. The dates inside the marker blocks are rendered and were right; these
+    two are prose."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("> Live state below was read on **2026-09-08** with `gcloud`.\n"
+                   "\n| Service | Role | Live 2026-09-07 |\n")
+    out = gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"})
+    assert len(out) == 1, out
+    assert "Live 2026-09-07" in out[0]
+
+
+def test_a_historical_date_is_not_an_asof_label(tmp_path):
+    """05-a carries 33 occurrences of `2026-09-07`, and all but two record when
+    something was corrected, deleted or audited. A gate that moved those would
+    rewrite the document's history, so only the two literal label shapes are
+    matched."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Storage corrected 2026-09-07 in this doc, which had said 55 GB.\n"
+                   "`signal-quality-report-hourly` deleted 2026-09-07.\n"
+                   "See [the audit](../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md).\n")
+    assert gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"}) == []
+
+
+def test_the_committed_asof_labels_match_their_own_snapshot():
+    """Calibration against the real corpus, in both directions: the committed
+    documents are clean as of the date they were written, and both labels are
+    caught the moment the snapshot moves. A gate that fired on neither, or on
+    everything, would pass the constructed cases above just as well."""
+    assert gate.gate_stale_asof(gate.REPO, {"read_at": "2026-09-07T04:35:16Z"}) == []
+    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "2026-09-08T17:48:56Z"})) == 2
+
+
+def test_no_snapshot_means_no_asof_finding(tmp_path):
+    """A local run without `--snapshot` has nothing to compare against, and
+    guessing today's date would fail every document written yesterday."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("| Service | Role | Live 2020-01-01 |\n")
+    assert gate.gate_stale_asof(tmp_path, None) == []
+    assert gate.gate_stale_asof(tmp_path, {}) == []

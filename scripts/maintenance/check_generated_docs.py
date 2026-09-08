@@ -23,6 +23,13 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
                 headings carry the month's data
 * structure     a regenerated doc carries every numbered section its prompt
                 promises, derived from the prompt
+* elision       no prose line is only an ellipsis: a `replace` that writes
+                `...` deletes the paragraph it stood in (run 27)
+* prose floor   prose outside the marker blocks keeps 80% of its characters
+* tail          no line is the tail of the line above it: a `replace` that
+                rewrote a span and left the end of the old text (run 28)
+* as-of         the "Live <date>" and "read on <date>" labels in prose name
+                the snapshot this run actually read (run 28)
 * stale         no retired name or phrase appears outside history context
 * scaling       no doc states a fixed min-instances for a service whose
                 minInstanceCount is PATCHed on a schedule
@@ -420,6 +427,89 @@ def gate_elided_prose(root: pathlib.Path) -> list[str]:
     return out
 
 
+# A leftover fragment is only a fragment if it is long enough to be one. Below
+# this, `...` and short repeated table cells start matching. Measured over every
+# markdown file in docs/ plus README.md plus run 28's four regenerated
+# documents: exactly one hit, the real one.
+TAIL_FRAGMENT_MIN = 20
+
+
+def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
+    """A line that is the tail of the line above it — a botched `replace`.
+
+    Run 28 finished 05-a-ARCHITECTURE.md with:
+
+        Generated 2026-09-08 ... from the 2026-09-08 live snapshot. The
+        monthly refresh updates this line.
+        pshot. The monthly refresh updates this line.
+
+    The model replaced the trailing span and left the tail of the old text
+    behind as its own line, beginning mid-word. Every other gate passed it:
+    it is not an ellipsis, the churn was 12%, the headings were intact and it
+    names no infrastructure, so `verify_docs_against_live.py` had nothing to
+    check. It is caught here as a shape — a line whose whole text is the end
+    of the line before it, which no sentence in this corpus legitimately is.
+
+    Only this direction is checked. A line that is a PREFIX of its neighbour
+    is a repeated CLI example (`docs/alpha-vantage-quickstart.md` has eleven),
+    and a line the NEXT one ends with is a wrapped shell continuation
+    (`COST_AUDIT_2026-09-06.md:262`). Both shapes are legitimate here, so
+    gating on them would fail honest documents.
+    """
+    out = []
+    for doc in DOCS:
+        f = root / doc
+        if not f.exists():
+            continue
+        lines = _prose_lines(f.read_text())
+        for i in range(1, len(lines)):
+            prev, cur = lines[i - 1].strip(), lines[i].strip()
+            if len(cur) >= TAIL_FRAGMENT_MIN and cur != prev and prev.endswith(cur):
+                out.append(f"{doc}: line is the tail of the one above it: {cur!r} "
+                           f"(prose line {i + 1}) — a `replace` rewrote the span and "
+                           "left the end of the old text behind")
+    return out
+
+
+# The two "as of" labels a human wrote into the prose, both of which have to
+# track the snapshot the run was taken from. Deliberately literal: a looser
+# pattern would sweep up the historical dates beside them -- 05-a carries 33
+# occurrences of `2026-09-07`, and all but these are records of when something
+# was corrected, deleted or audited and must NOT move.
+ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
+               re.compile(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*"))
+
+
+def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
+    """An "as of" label that still names an older snapshot.
+
+    Run 28 updated 05-a's header to `read on **2026-09-08**` and left §3's
+    table header at `| Service | Role | Live 2026-09-07 |`, so a table of the
+    current fleet announced itself as a day old. On a monthly cadence that
+    label is a month out, which is long enough for a reader to discount a
+    table that is in fact current.
+
+    The dates the marker blocks carry are rendered, so they are already right;
+    these two are prose and were not. Both are checked against `read_at` from
+    the same snapshot the blocks were rendered from.
+    """
+    out = []
+    if not live or not live.get("read_at"):
+        return out
+    day = live["read_at"][:10]
+    for doc in DOCS:
+        f = root / doc
+        if not f.exists():
+            continue
+        for i, line in enumerate(_prose_lines(f.read_text()), 1):
+            for pat in ASOF_LABELS:
+                for m in pat.finditer(line):
+                    if m.group(1) != day:
+                        out.append(f"{doc}: as-of label says {m.group(1)} but this run read "
+                                   f"live state on {day} (prose line {i}): {m.group(0)!r}")
+    return out
+
+
 def gate_prose_floor(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[str]:
     """Prose outside the rendered blocks must not collapse.
 
@@ -754,6 +844,8 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_diff_budget(diff_stats(root, previous_dir), allow_rewrite)
     findings += gate_headings_and_size(root, previous_dir)
     findings += gate_elided_prose(root)
+    findings += gate_duplicated_tail(root)
+    findings += gate_stale_asof(root, live)
     findings += gate_prose_floor(root, previous_dir)
     findings += gate_regenerated_structure(root)
     findings += gate_derived_numbers(root, repo, live)

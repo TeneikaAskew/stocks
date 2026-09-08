@@ -47,7 +47,13 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
 2. Update every prose claim that the inputs contradict: counts in the header note, §1, §2 diagram labels, §3, §4 (tier, disk, IP config, backups, latest dump), §6 intro (live vs declared counts, hand-created jobs, retry split), §7.1 (services, auth modes, domain mappings, images, triggers), §8 intro and the daily-rhythm table (from `schedulers.md`), §9 (model names from `gcp/schema.sql` `model_routing` seed and `gcp/brief_explanations.py`), §14 (workflows and triggers from `repo_inventory.json`), §15 interpretation, §17 open questions.
 3. If a job, scheduler, service, table, route, workflow or trigger appeared since the previous version, make sure the prose that groups or explains it mentions it (§6 groups, §8 rhythm, §10 flows, §14). If one disappeared, remove it from the prose and add a dated bullet under "§18 Removed since last refresh" naming it and why.
 4. Keep every existing H2/H3 heading. If a section genuinely no longer applies, keep the heading, replace the body with one sentence saying so, and record it under §18.
-5. Update the read date in the header note and the final `Generated YYYY-MM-DD …` line to today.
+5. Update **every** as-of date to today: the header note's `read on **YYYY-MM-DD**`,
+   the `| Service | Role | Live YYYY-MM-DD |` column header in §3, and the final
+   `Generated YYYY-MM-DD …` line. Run 28 updated the header and left §3 a day
+   behind, so a table of the current fleet announced itself as stale; a gate now
+   fails the run on either label. Leave every OTHER date alone — the dates in
+   §4, §15 and §18 record when something was corrected, deleted or audited and
+   are history, not as-of labels.
 6. Cite: every claim about code carries a `file:line` markdown link; every claim about live state says it was read live with the date. Never write "approximately N" where the inputs give N.
 
 ## Two facts to keep asserting
@@ -69,6 +75,7 @@ survive (carried forward from PR #990):
 ## Rules
 
 - **Never write `...` or `…` as a stand-in for text you are not changing.** A `replace` call rewrites exactly the span you give it, so an elision marker does not mean "the rest is unchanged" — it deletes the paragraph and leaves three dots in the document. Run 27 did this to five section introductions and four bullets in this file at once, destroying 4,035 characters while every other gate stayed green. If a paragraph needs no change, do not call `replace` on it at all. A gate now fails the run on any line that is only an ellipsis.
+- **A `replace` rewrites exactly the span you give it, including its end.** After every call, re-read the region you changed and check that no fragment of the old text survives as its own line. Run 28 finished this file with `pshot. The monthly refresh updates this line.` sitting under the closing line — the tail of the `...live snapshot.` it had just rewritten, starting mid-word. Every other gate passed it. A gate now fails the run on any line that is the tail of the line above it.
 
 - Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - **Update in place; never regenerate from scratch.** The previous version is the baseline, not a style reference.

@@ -58,6 +58,13 @@ Three, ranked by $/month, each with the resource, the exact change (gcloud comma
   does not exist. A truncated name is the same failure as an invented
   one: `verify_docs_against_live.py` checks every name in this file against
   live GCP and fails the refresh on any that has no match.
+- **Every command you write must survive being pasted into a shell.** A
+  `gcloud logging read` filter contains spaces and its own quotes, so it needs
+  ONE pair of outer quotes and a different quote character inside:
+  `gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="X"' --project=... --limit=100`.
+  Run 28 wrote the filter with double quotes inside double quotes, which the
+  shell splits into four arguments and `gcloud` rejects. A command that errors
+  on the first paste costs the reader more than no command at all.
 - **The project is `adept-mountain-474619-d4`, region `us-east1`.** Every
   `gcloud` command you write must use that project id. A 2026-09-07 dry run of
   this prompt invented `solyra-trader` in a confirmation command, which makes
