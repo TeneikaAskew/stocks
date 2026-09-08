@@ -111,7 +111,13 @@ body:
         # Phase 2. platform/api/openapi.json deliberately stays IN: it is
         # generated, so a retired route still named there means the snapshot was
         # not regenerated, which the check SHOULD catch.
-        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
+        # ANCHOR AT THE REPO ROOT. `.` and the four Claude scopes are relative
+        # to your CWD, and a pathspec that does not exist there is a CLEAN MISS
+        # rather than an error. Measured from gcp/: all five searches below
+        # return rc=1 for debug-workflow — "no consumers, dormant" — while the
+        # root .claude/commands/ really does route to it.
+        $ root=$(git rev-parse --show-toplevel)
+        $ git -C "$root" grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
         (142 matching LINES across 13 files: router, writer, tests. Lines, not
         occurrences — `git grep -c`/`wc -l` count lines, and 7 of these carry
         both alternatives, so the pattern occurs 149 times. Use `git grep -Eo`
@@ -126,10 +132,10 @@ body:
         # deploy. So run these two as well, and exclude the surface's OWN
         # definition file — an agent always matches itself, which would make
         # every agent look consumed:
-        $ git grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ git grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
-        $ git grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
-        $ git grep -nE "<surface>" -- CLAUDE.md
+        $ git -C "$root" grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ git -C "$root" grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ git -C "$root" grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        $ git -C "$root" grep -nE "<surface>" -- CLAUDE.md
         CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
         mistake for prose: Claude Code loads it automatically and it routes by
         name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and
@@ -220,7 +226,15 @@ body:
             -G "<symbol>" --no-renames \
             -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
                ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
-               ':!*.drawio'
+               ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
+               ':!.github/workflows/logs.txt'
+        # The generated artifacts belong here too, even though history is a
+        # different question from consumers. -G matches the commit that WROTE
+        # the artifact, and --no-patch hides which file matched, so it reads as
+        # "the change that wired a real caller". Measured on fetch_market_data:
+        # without them the top hit is c19ab32, a docs-refresh commit; restricted
+        # to the snapshot fixture alone it still matches, and restricted to
+        # everything else it does not appear at all.
         $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames -- .claude/agents .github/prompts CLAUDE.md
         <sha> (date) added it and wired it into <the caller>
@@ -287,23 +301,28 @@ body:
         contents need not contain its basename, so both come back "no consumers"
         with the implementation still on disk — measured on two dormant agents
         in this repo. Assert it on PATHS instead — and the assertion needs
-        all three of these, each of which a shorter form gets wrong: anchored
+        all four of these, each of which a shorter form gets wrong: anchored
         at the repo ROOT (from gcp/ a bare ls-files sees 171 paths, not 1330,
         and misses every root-level definition), over the WORKING TREE rather
         than the index (Phase 4 runs before anything is staged, so a deleted
-        entry is still listed and holds the bar closed), and skipping paths a
+        entry is still listed and holds the bar closed), skipping paths a
         retirement deliberately KEEPS (a fully retired workflow keeps its
         *.yml.disabled file by this repo's own convention, and archive/ holds
-        code that is meant to stay):
+        code that is meant to stay), and with the listing's STATUS CHECKED —
+        piped straight into grep, a failed inventory feeds it empty input, grep
+        returns 1, and "no output" is indistinguishable from the passing answer:
 
-          $ root=$(git rev-parse --show-toplevel)
-          $ git -C "$root" ls-files --cached --others --exclude-standard \
-                -- . ':!*.disabled' ':!archive/' ':!gcp/research/_archive/' |
+          $ root=$(git rev-parse --show-toplevel) || echo "not in a checkout"
+          $ files=$(git -C "$root" ls-files --cached --others --exclude-standard \
+                      -- . ':!*.disabled' ':!archive/' ':!gcp/research/_archive/') \
+              || echo "listing FAILED — assert nothing"
+          $ printf '%s\n' "$files" |
               while IFS= read -r p; do
+                test -n "$p" || continue
                 test -e "$root/$p" || test -L "$root/$p" || continue
                 printf '%s\n' "$p"; done |
               grep -E "<name>"
-          (no output)
+          (no output, and only after both commands above succeeded)
 
         `/resolve-issue`'s `absent_everywhere` runs exactly that, alongside the
         consumer searches, in both repos — prefer it to re-typing this; the

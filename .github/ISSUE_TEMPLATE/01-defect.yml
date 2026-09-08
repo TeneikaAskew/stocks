@@ -115,7 +115,13 @@ body:
         # a hit, 1 is a clean miss, anything else means the count is meaningless.
         # `wc -l` also counts matching LINES, not occurrences — a line with two
         # matches counts once. Say which you mean; `git grep -Eo` counts those.
-        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
+        # ANCHOR AT THE REPO ROOT. `.` and the four Claude scopes are relative
+        # to your CWD, and a pathspec that does not exist there is a CLEAN MISS
+        # rather than an error. Measured from gcp/: all five searches below
+        # return rc=1 for debug-workflow — "no consumers, dormant" — while the
+        # root .claude/commands/ really does route to it.
+        $ root=$(git rev-parse --show-toplevel)
+        $ git -C "$root" grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
         107
         grep rc=0
         # AND the executable Claude scopes, which the search above excludes as
@@ -124,10 +130,10 @@ body:
         # .claude/agents/pre-deploy-check.md:75 delegates to it on every deploy.
         # Exclude the surface's own definition file: an agent always matches
         # itself, which would make every agent look consumed.
-        $ git grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ git grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
-        $ git grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
-        $ git grep -nE "<surface>" -- CLAUDE.md
+        $ git -C "$root" grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ git -C "$root" grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ git -C "$root" grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        $ git -C "$root" grep -nE "<surface>" -- CLAUDE.md
         CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
         mistake for prose: Claude Code loads it automatically and it routes by
         name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and

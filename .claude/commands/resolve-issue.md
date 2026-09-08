@@ -332,13 +332,23 @@ baselines() {
   # discarding everything: a RETURN trap cannot change the function's return
   # value — measured, `trap false RETURN` around `return 0` still returns 0 —
   # so being loud is the only way a failed cleanup can reach anyone.
+  # GUARDED BY FUNCNAME, because a RETURN trap is INHERITED by called functions
+  # under `set -T` / `set -o functrace`. Measured with tracing on: the trap
+  # fired the moment the FIRST new_tree returned — cleaning up MAIN_TREE, whose
+  # measurement had not happened yet, and clearing itself — so BASE_TREE was
+  # then created with no cleanup at all. One measurement path deleted, the other
+  # leaked, and `baselines` still returned 0. FUNCNAME[0] inside the trap names
+  # the function that is actually returning, so the inherited fires are no-ops
+  # and the real one still runs exactly once with both trees set.
   local REPO; REPO=$(git rev-parse --show-toplevel) || return 1
-  trap 'cd "$REPO" || echo "cannot return to $REPO — worktrees may leak" >&2
-        for t in "$BASE_TREE" "$MAIN_TREE"; do
-          [ -n "$t" ] || continue
-          git worktree remove --force "$t" \
-            || echo "could not remove worktree $t" >&2
-        done; trap - RETURN' RETURN
+  trap 'if [ "${FUNCNAME[0]}" = baselines ]; then
+          cd "$REPO" || echo "cannot return to $REPO — worktrees may leak" >&2
+          for t in "$BASE_TREE" "$MAIN_TREE"; do
+            [ -n "$t" ] || continue
+            git worktree remove --force "$t" \
+              || echo "could not remove worktree $t" >&2
+          done; trap - RETURN
+        fi' RETURN
 
   new_tree MAIN_TREE origin/main || return 1      # validity: is it still real?
   new_tree BASE_TREE "$(git merge-base origin/main <headRefName>)" || return 1
@@ -848,16 +858,27 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # rc=1 "absent" for that pattern while -E returns 0 and names gcp/deploy.sh,
   # gcp/schema.sql, platform/api/openapi.json and the backtest router. A
   # coupled retirement would certify BOTH surfaces gone while both were live.
-  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}"; a=$?
+  # `if`/`else` rather than `cmd; a=$?` on every one of these, because rc=1 is
+  # the EXPECTED answer here and under `set -e` an untested nonzero kills the
+  # shell before the capture runs. Measured: `bash -e -c '. fence; consumed
+  # <absent symbol>'` produced no output at all and never reached the end of the
+  # function, while the same line without -e returned 1 and finished. This repo
+  # runs `set -e` in its own scripts (gcp/deploy.sh), so a session that sources
+  # this block into one gets a silent death instead of an answer. A condition
+  # context suppresses errexit and preserves the exact status.
+  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}"
+  then a=0; else a=$?; fi
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
   # file as the only hit. Excluding a path that does not exist (the surface is
   # not an agent) is safe — measured rc=1, not 128.
-  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/agents \
-    ":!.claude/agents/$sym.md"; b=$?
-  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
-    ":!.claude/commands/$sym.md" "${reviewed[@]}"; c=$?
+  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/agents \
+       ":!.claude/agents/$sym.md"
+  then b=0; else b=$?; fi
+  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
+       ":!.claude/commands/$sym.md" "${reviewed[@]}"
+  then c=0; else c=$?; fi
   # FOURTH executable-markdown scope. .github/prompts/*.md reach Gemini through
   # .github/workflows/refresh-architecture-docs.yml: scripts/maintenance/
   # render_doc_prompts.py renders them into $RUNNER_TEMP/prompts/ (`:425`) and
@@ -876,8 +897,9 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # file's own worked example. Self-exclusion for symmetry with the agent scope,
   # and the whole scope is a safe no-op where the directory does not exist —
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
-  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .github/prompts \
-    ":!.github/prompts/$sym.md"; e=$?
+  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .github/prompts \
+       ":!.github/prompts/$sym.md"
+  then e=0; else e=$?; fi
   # SIXTH executable-markdown scope, and the one that is easiest to read as
   # prose because it is called "documentation". CLAUDE.md is the project
   # instruction file every session loads automatically, and it routes by name:
@@ -887,7 +909,8 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # away: code 1, agents 1, prompts 1 — "absent, safe to delete" — while
   # CLAUDE.md still routes sessions to it. A hit here is a CONSUMER, like an
   # agent or a prompt. Only the root file: docs/*.md and the rest stay prose.
-  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- CLAUDE.md; f=$?
+  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- CLAUDE.md
+  then f=0; else f=$?; fi
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
   # `scripts` block is EXECUTABLE: `npm run contract:sync` invokes
@@ -926,16 +949,22 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   if [ -n "$pkg" ]; then
     command -v jq >/dev/null \
       || { echo "jq not found — cannot inspect package.json scripts"; return 2; }
-    printf '%s' "$pkg" \
-      | jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"' \
-      | grep -qE -- "$sym"    # -E, not -F: same alternation, same false clear
-    # CAPTURE THE WHOLE ARRAY FIRST. Measured: `d=$?` resets PIPESTATUS to (0),
-    # the assignment's own status, and jq's real exit is gone. A jq failure is
-    # otherwise invisible here — measured, malformed JSON gives jq rc=5 and grep
-    # rc=1, and rc=1 reads as "not found", i.e. absent.
-    # THREE stages now, so jq is [1] and grep is [2]. Getting these indices
-    # wrong is silent: st[1] would read jq's status as the match result.
-    st=( "${PIPESTATUS[@]}" ); d=${st[2]}
+    # CAPTURE THE WHOLE ARRAY, AS THE FIRST STATEMENT OF EITHER BRANCH.
+    # Measured: `d=$?` resets PIPESTATUS to (0), the assignment's own status,
+    # and jq's real exit is gone. A jq failure is otherwise invisible here —
+    # measured, malformed JSON gives jq rc=5 and grep rc=1, and rc=1 reads as
+    # "not found", i.e. absent. THREE stages, so jq is [1] and grep is [2];
+    # getting these indices wrong is silent, since st[1] would read jq's status
+    # as the match result.
+    # The `if` is the errexit fix, same as the scopes above — a clean no-match
+    # is rc=1 and would kill the shell. PIPESTATUS survives into the branch as
+    # long as nothing runs first: measured, a failing middle stage still reads
+    # `0 1 0` when captured on the branch's opening line.
+    if printf '%s' "$pkg" \
+         | jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"' \
+         | grep -qE -- "$sym"   # -E, not -F: same alternation, same false clear
+    then st=( "${PIPESTATUS[@]}" ); else st=( "${PIPESTATUS[@]}" ); fi
+    d=${st[2]}
     test "${st[1]}" -eq 0 \
       || { echo "jq failed on package.json (rc=${st[1]}) — asserting nothing"
            return 2; }
@@ -1166,7 +1195,10 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # "no path left", a clean pass — while -E names scripts/validate_track2_live.py,
   # which is tracked and whose contents do not mention its own basename, so the
   # content searches cannot see it either and the coupled deletion certifies.
-  leftover=$(printf '%s\n' "$files" | grep -E -- "$sym"); st=$?
+  # `if` for errexit, as in consumed(): a clean miss is rc=1 and an untested
+  # nonzero assignment kills the shell under `set -e` — measured.
+  if leftover=$(printf '%s\n' "$files" | grep -E -- "$sym"); then st=0
+  else st=$?; fi
   test "$st" -le 1 \
     || { echo "path scan errored (rc=$st) — asserting nothing"; return 1; }
   if [ -n "$leftover" ]; then
@@ -1198,7 +1230,8 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     # -E here too. The index-versus-working-tree correction the stocks half
     # needs does NOT apply over here: ls-tree reads a committed revision, where
     # there is no unstaged deletion and no untracked file to miss.
-    sleft=$(printf '%s\n' "$sfiles" | grep -E -- "$sym"); sst=$?
+    if sleft=$(printf '%s\n' "$sfiles" | grep -E -- "$sym"); then sst=0
+    else sst=$?; fi
     test "$sst" -le 1 \
       || { echo "solyra: path scan errored (rc=$sst)"; exit 2; }
     if [ -n "$sleft" ]; then
