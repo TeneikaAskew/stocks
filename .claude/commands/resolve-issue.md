@@ -1050,19 +1050,37 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # demands a check that FAILS before and PASSES after, and this one could not
   # fail. Self-exclusion is right for finding a dormant consumer and wrong for
   # asserting the retirement, so the two are now separate questions.
-  # Root-anchored for the same reason consumed() is: from a subdirectory these
-  # relative paths find nothing and the definition reads as already deleted.
-  local d root
+  # ANY TRACKED PATH NAMING THE SYMBOL, not just the three Claude ones.
+  # consumed() searches CONTENTS, and a module need not mention its own
+  # basename. Measured on a script in this repo that does not: the file is
+  # present while a repo-wide content search for its module name returns rc=1,
+  # so the unchanged module certifies as deleted. (Not named here — writing a
+  # live path into this file makes it a permanent commands-scope hit, which has
+  # already happened twice and once corrupted the verification of the fix.)
+  # Matching on the PATH catches it and subsumes the Claude cases, which are
+  # just paths containing the symbol: measured, an agent and a command each
+  # resolve to their own definition file, while three live code symbols and an
+  # invented one match no path at all, so this adds no noise.
+  # Root-anchored for the same reason consumed() is.
+  local root files st leftover
   root=$(git rev-parse --show-toplevel) \
     || { echo "not inside a git repository — asserting nothing"; return 1; }
-  for d in ".claude/agents/$sym.md" ".claude/commands/$sym.md" \
-           ".github/prompts/$sym.md"; do
-    test -e "$root/$d" || continue
-    echo "$d still exists — the surface's own definition has not been deleted."
-    echo "consumed() excludes it so the surface does not match itself; that"
-    echo "exclusion is not a licence to leave it behind."
+  files=$(git -C "$root" ls-files) \
+    || { echo "could not list tracked files — asserting nothing"; return 1; }
+  # NOT `git ls-files | grep`: grep would supply the pipeline's status, so a
+  # failed listing feeds it empty input, it returns 1, and "no leftovers" is
+  # exactly the wrong answer. Same swallowed-status shape as everywhere else.
+  leftover=$(printf '%s\n' "$files" | grep -F -- "$sym"); st=$?
+  test "$st" -le 1 \
+    || { echo "path scan errored (rc=$st) — asserting nothing"; return 1; }
+  if [ -n "$leftover" ]; then
+    echo "these tracked paths still contain '$sym':"
+    printf '  %s\n' $leftover
+    echo "a retirement deletes the surface's own files too. consumed() excludes"
+    echo "a Claude surface's own definition so it does not match itself, and it"
+    echo "searches contents, which a module's own file need not match."
     return 1
-  done
+  fi
   _solyra_ok || return 1
   ( cd "$SOLYRA" || exit 2
     git fetch -q origin main \
@@ -1075,12 +1093,18 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     # surface whose implementation lives in solyra returns rc=1 there with its
     # definition still committed on main, and the cross-repo check accepts it.
     # Same self-exclusion-versus-retirement split, on the other side.
-    for d in ".claude/agents/$sym.md" ".claude/commands/$sym.md" \
-             ".github/prompts/$sym.md"; do
-      test -n "$(git ls-tree --name-only "$REV" -- "$d")" || continue
-      echo "solyra $d still exists at ${REV:0:12} — its definition is not deleted"
+    # Same generalisation as the stocks half, against the pinned rev: any
+    # tracked PATH naming the symbol, not only the three Claude ones.
+    sfiles=$(git ls-tree -r --name-only "$REV") \
+      || { echo "solyra: could not list files at ${REV:0:12}"; exit 2; }
+    sleft=$(printf '%s\n' "$sfiles" | grep -F -- "$sym"); sst=$?
+    test "$sst" -le 1 \
+      || { echo "solyra: path scan errored (rc=$sst)"; exit 2; }
+    if [ -n "$sleft" ]; then
+      echo "solyra paths still containing '$sym' at ${REV:0:12}:"
+      printf '  %s\n' $sleft
       exit 1
-    done
+    fi
     EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
     consumed "$sym" "${REVIEWED_SOLYRA[@]}" ); rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
@@ -1254,8 +1278,18 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
 # resources are gone, `absent_everywhere` returns 1, `retired_everywhere` then
 # returns 0, and the block reports success. Measured — first-fails plus
 # second-passes exits 0.
-fully_retired() {
-  absent_everywhere "<symbol>" && retired_everywhere "<job>" "<scheduler>"; }
+# It TAKES the names. Embedding the placeholders in the body meant
+# `fully_retired "$symbol" "$job" "$scheduler"` ignored every argument and
+# checked the literal strings — and `<job>` cannot exist in GCP, so the resource
+# half passed having inspected nothing while the real job stayed live. A check
+# that cannot fail, one more time, in the wrapper rather than in either half.
+fully_retired() {   # $1 = symbol, $2 = job|none, $3 = scheduler|none, [$4 project]
+  test $# -ge 3 || {
+    echo "usage: fully_retired <symbol> <job|none> <scheduler|none> [project]"
+    return 1; }
+  # "${@:4}" and not "$4": an absent fourth argument must stay ABSENT, because
+  # retired_everywhere uses $# to tell an omitted project from an empty one.
+  absent_everywhere "$1" && retired_everywhere "$2" "$3" "${@:4}"; }
 
 # CALL THE ONE YOUR RESOLUTION EARNS, not always this composition. It asserts
 # that the code is gone AND a cloud resource is gone, and half the resolutions
@@ -1274,7 +1308,7 @@ fully_retired() {
 # invokes the checks rather than in the checks themselves. Uncomment one:
 # absent_everywhere "<symbol>"     # code only
 # retired_everywhere none "<sched>"  # resource only
-fully_retired                      # both — BARE, nothing follows it
+fully_retired "<symbol>" "<job>" "<scheduler>"   # both — BARE, nothing after
 ```
 
 Skipping the before half is what is never acceptable. "It passes now" says
