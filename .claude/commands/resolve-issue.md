@@ -773,7 +773,35 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     || { echo "EXCLUDE unset — set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA first;"
          echo "an empty exclusion set searches prose and generated files too."
          return 2; }
-  for rc in "$@"; do reviewed+=(":!$rc"); done
+  # EACH REVIEWED ENTRY MUST NAME ONE COMMAND FILE. Binding the approval to its
+  # symbol (below) says WHICH symbol it is for and nothing about WHAT it hides.
+  # Measured: `REVIEWED=.claude/commands/` and `REVIEWED='*'` both excluded the
+  # whole scope and returned rc=1 for debug-workflow, whose only live routes are
+  # in resolve-issue.md — the same false certification the symbol binding was
+  # added to stop, through the other half of the pair. So a reviewed entry is a
+  # concrete `.claude/commands/<name>.md`: no directory, no glob, no `..`, and
+  # it has to exist.
+  for rc in "$@"; do
+    case "$rc" in
+      *[][*?]*|*/../*|*/..|../*|*/)
+        echo "REVIEWED entry '$rc' is a glob, a directory or a traversal."
+        echo "Name one .claude/commands/<name>.md file per entry — a pathspec"
+        echo "that hides the whole scope hides the routes you are checking for."
+        return 2;;
+    esac
+    case "$rc" in
+      .claude/commands/*.md) ;;
+      *) echo "REVIEWED entry '$rc' is not under .claude/commands/."
+         echo "rc=3 is about command-file prose; nothing else clears it."
+         return 2;;
+    esac
+    # Only when reading the working tree. Under a pinned REV the checkout need
+    # not carry the file, and refusing on that would be the unreachable-state
+    # defect again.
+    test ${#rev[@]} -gt 0 || test -f "$rc" \
+      || { echo "REVIEWED entry '$rc' does not exist"; return 2; }
+    reviewed+=(":!$rc")
+  done
   # -E on EVERY scope. The forms demonstrate coupled retirements with
   # alternation — `playbook_cards|/api/playbook` is the dormant form's own
   # example — and git grep defaults to BASIC regex, where `|` is a literal
@@ -975,7 +1003,20 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
   # still passes. The default is now a literal, an override is a deliberate
   # THIRD ARGUMENT, and the project queried is echoed, because a check whose
   # target you cannot see in its output is a check you cannot audit.
-  local proj=${3:-adept-mountain-474619-d4}
+  # An OMITTED third argument means "production". An argument that is PRESENT
+  # but empty means an unset or misspelled variable — `retired_everywhere job
+  # trigger "$PROJECT"` with PROJECT unset — and `${3:-…}` cannot tell those
+  # apart: measured, $# is 3 and the default still wins, so the check silently
+  # queries production while the resources live in the project the caller meant.
+  # The first two arguments already refuse empty for exactly this reason.
+  local proj=adept-mountain-474619-d4
+  if [ $# -ge 3 ]; then
+    test -n "$3" || { echo "third argument (project) is present but EMPTY —"
+                      echo "an unset variable, not a request for production."
+                      echo "Omit it to mean production, or pass a project id."
+                      return 1; }
+    proj=$3
+  fi
   local job=$1 sched=$2 list
   test -n "$job" && test -n "$sched" || {
     echo "usage: retired_everywhere <job|none> <scheduler|none> [project]"

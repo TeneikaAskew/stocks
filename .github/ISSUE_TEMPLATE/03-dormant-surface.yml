@@ -196,11 +196,26 @@ body:
         # returned FOUR commits, every one of them an edit to
         # .claude/commands/resolve-issue.md and none a consumer change — and
         # --no-patch shows only summaries, so they read like real history.
-        # Split, and label which is which:
+        #
+        # SCOPE IT LIKE THE CONSUMER SEARCH: repo-wide minus prose, not a list of
+        # source directories. The consumer field above is already repo-wide for
+        # this reason and the history search lagged behind it — measured,
+        # `pipeline-fast` is defined at Makefile:50 and NOTHING else, so the
+        # directory list returned 0 commits and read as "it never had a
+        # consumer", while repo-wide returns 1. Root-level executables
+        # (Makefile, Dockerfiles, dependency manifests) are code.
+        #
+        # But ':!*.md' then hides the executable markdown, so agents and prompts
+        # come back as their own scopes — measured, `code-reviewer` goes to 0
+        # under the exclusion and 1 with .claude/agents searched separately.
+        # Same three-scope shape the resolver's consumed() uses.
         $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames \
-            -- lib gcp platform scripts .github tests .claude/agents \
-               ':!.github/ISSUE_TEMPLATE/'
+            -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+               ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
+               ':!*.drawio'
+        $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
+            -G "<symbol>" --no-renames -- .claude/agents .github/prompts
         <sha> (date) added it and wired it into <the caller>
         <sha> (date) rewrote that caller, silently dropping the mount
 
