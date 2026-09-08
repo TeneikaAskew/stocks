@@ -8,7 +8,7 @@
 > figures are frozen as of that date and do not track the live fleet; see
 > [`README.md`](README.md) for how to refresh a copy by hand.
 
-> The single architecture reference for this repo: every Cloud Run job and service, scheduler, table, API route, deploy path, data flow and failure path, with each claim cited to a file:line, a live `gcloud` read, or a pull request. The visual companion is [`Architecture.drawio`](../../../../Architecture.drawio); the per-table write/read graph is [`05-c-DATA_DEPENDENCIES.md`](../05-c-DATA_DEPENDENCIES.md); cost is [`05-d-COST_ANALYSIS.md`](../05-d-COST_ANALYSIS.md).
+> The single architecture reference for this repo: every Cloud Run job and service, scheduler, table, API route, deploy path, data flow and failure path, with each claim cited to a file:line, a live `gcloud` read, or a pull request. The visual companion is [`Architecture.drawio`](../../../../Architecture.drawio); the per-table write/read graph is [`05-c-DATA_DEPENDENCIES.md`](05-c-DATA_DEPENDENCIES.md); cost is [`05-d-COST_ANALYSIS.md`](05-d-COST_ANALYSIS.md), both the hand-maintained copies in this folder.
 >
 > **How the ORIGINAL is maintained** (this copy is not): in [`../05-a-ARCHITECTURE.md`](../05-a-ARCHITECTURE.md) the tables between `<!-- inventory:*:start/end -->` markers are rendered by [`scripts/maintenance/doc_inventory.py`](../../../../scripts/maintenance/doc_inventory.py) from `gcp/deploy.sh`, `gcp/schema.sql`, `platform/api` and a live `gcloud` snapshot, and the monthly refresh workflow re-renders them and updates the prose around them in place. Here every line, marker blocks included, is yours to edit. `docs/GCP_ARCHITECTURE.md` was merged into this file on 2026-09-07; its redirect stub was deleted when this document moved to `docs/product/infrastructure/` on the same day.
 >
@@ -812,7 +812,7 @@ Job logs `severity>=ERROR` → sink `gcp-job-failures-sink` (filter excludes `fa
 
 ## 12. Cost
 
-See [`05-d-COST_ANALYSIS.md`](../05-d-COST_ANALYSIS.md) (regenerated monthly from the BigQuery billing export) and the 2026-09-06 audit [`docs/audits/COST_AUDIT_2026-09-06.md`](../../../audits/COST_AUDIT_2026-09-06.md) (#1004): run rate about $6.50/day list, dominated by Cloud SQL, Cloud Run job CPU and, until the cleanup policy took effect, Artifact Registry storage.
+See [`05-d-COST_ANALYSIS.md`](05-d-COST_ANALYSIS.md) (this folder's frozen copy; the original is regenerated monthly from the BigQuery billing export) and the 2026-09-06 audit [`docs/audits/COST_AUDIT_2026-09-06.md`](../../../audits/COST_AUDIT_2026-09-06.md) (#1004): run rate about $6.50/day list, dominated by Cloud SQL, Cloud Run job CPU and, until the cleanup policy took effect, Artifact Registry storage.
 
 ## 13. Runbook anchors
 

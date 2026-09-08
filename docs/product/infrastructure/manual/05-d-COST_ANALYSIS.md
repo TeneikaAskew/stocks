@@ -11,7 +11,7 @@
 **WARNING: Incomplete data.** The source `refresh-inputs/billing.json` was truncated during the read process. The analysis below is based on partial data for **August 2026 only**. A 90-day trailing window analysis is not possible. All numbers should be considered lower bounds.
 
 **Source data:** `refresh-inputs/billing.json` (partial)
-**Component map:** [ARCHITECTURE.md](../05-a-ARCHITECTURE.md)
+**Component map:** [ARCHITECTURE.md](05-a-ARCHITECTURE.md)
 
 ---
 

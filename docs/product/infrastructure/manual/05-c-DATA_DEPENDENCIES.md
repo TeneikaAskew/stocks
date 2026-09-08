@@ -10,7 +10,7 @@
 
 **Generated 2026-09-07** from [`gcp/schema.sql`](../../../../gcp/schema.sql), a whole-word scan of `gcp/`, `lib/`, `scripts/` and `platform/api` (tests and `archive/` excluded), and the 2026-09-07 live table statistics, by [`scripts/maintenance/doc_inventory.py`](../../../../scripts/maintenance/doc_inventory.py). Every citation is a `file:line` you can open. In the original, [`../05-c-DATA_DEPENDENCIES.md`](../05-c-DATA_DEPENDENCIES.md), the blocks between `<!-- inventory:*:start/end -->` markers are re-rendered by the monthly refresh; in this copy nothing is, and every line is yours to edit.
 
-This doc complements [ARCHITECTURE.md](../05-a-ARCHITECTURE.md) §5 (schema by domain) and §6 (jobs). Where ARCHITECTURE says "job X runs module Y", this doc answers "module Y writes table Z, and Z is read by A, B, C".
+This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by domain) and §6 (jobs). Where ARCHITECTURE says "job X runs module Y", this doc answers "module Y writes table Z, and Z is read by A, B, C".
 
 > **Partition handling.** `market_data_intraday` is LIST-partitioned by ticker; the five children (`_spy`, `_iwm`, `_qqq`, `_spx`, `_other`) are routed by Postgres and never named in code, so they appear in §1 and §5 but have no entries of their own in §2/§3.
 >

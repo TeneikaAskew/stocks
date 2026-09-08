@@ -321,6 +321,31 @@ def test_the_manual_readme_points_at_its_own_siblings():
     assert "](../../../../RUNBOOK.md)" in text
 
 
+def test_a_manual_copy_links_to_its_siblings_not_to_the_refreshed_originals():
+    """The three companion pointers (05-a -> 05-c/05-d, 05-c -> 05-a,
+    05-d -> 05-a) still crossed into the auto-refreshed folder, so a reader in
+    the frozen snapshot who followed one landed in a document the monthly
+    workflow rewrites. A link to a refreshed document is allowed only on a
+    line that says it is talking ABOUT the original. (Codex, PR #1044.)"""
+    import re
+    manual = REPO / "docs/product/infrastructure/manual"
+    copied = {"05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md",
+              "05-d-COST_ANALYSIS.md", "../../../../README.md"}
+    # a line may point at the refreshed original only while describing it
+    describes_original = ("ORIGINAL", "the original", "taken on 2026", "regenerated monthly")
+    offenders = []
+    for f in sorted(manual.glob("*.md")):
+        for i, line in enumerate(f.read_text().splitlines(), 1):
+            for target in re.findall(r"\]\((\.\./[^)\s#`]+)", line):
+                name = target.rsplit("/", 1)[-1]
+                if name not in copied and target not in copied:
+                    continue
+                if any(k in line for k in describes_original):
+                    continue
+                offenders.append(f"{f.name}:{i} -> {target}")
+    assert not offenders, offenders
+
+
 def test_the_hand_maintained_copies_exist_and_link_correctly():
     manual = REPO / "docs/product/infrastructure/manual"
     for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md", "05-d-COST_ANALYSIS.md", "ROOT-README.md", "README.md"):

@@ -11,6 +11,7 @@ blocks whose flags live in a bash array above the call.
 """
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 
@@ -833,6 +834,187 @@ def test_a_docstring_line_is_never_a_reference_and_str_join_is_not_sql(mini_repo
     assert not inv.READ_RE.search("return '\\n'.join(lines)") and inv.READ_RE.search("a JOIN b")
 
 
+def test_a_relation_name_in_a_tuple_reaches_the_sql_through_its_loop_variable(mini_repo):
+    """refresh-earnings-views iterates _WEEKLY_VIEWS = ("earnings_event_outcomes",
+    "earnings_ticker_lean") and passes each to REFRESH MATERIALIZED VIEW, but
+    only scalar `NAME = "table"` assignments were followed, so both views were
+    rendered as readers with no writer at all. The comment above the tuple
+    ("... is built FROM ...") is also not SQL context, and a name bound as a
+    dict VALUE is a bind parameter, not a relation. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "# Ordered: earnings_ticker_lean is built FROM trades, so refresh that first.\n"
+           '_VIEWS = ("earnings_ticker_lean", "trades")\n'
+           "\n"
+           "def _populated(conn, view):\n"
+           '    return conn.execute("SELECT relispopulated FROM pg_class WHERE relname = :v", {"v": view})\n'
+           "\n"
+           "def _one(conn, view):\n"
+           "    if _populated(conn, view):\n"
+           '        execute_sql(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view}")\n'
+           "\n"
+           "def run(conn):\n"
+           "    for view in _VIEWS:\n"
+           "        _one(conn, view)\n")
+    refs = inv.table_refs(mini_repo, ["earnings_ticker_lean", "trades"])
+    for t_ in ("earnings_ticker_lean", "trades"):
+        assert [r["line"] for r in refs[t_]["writes"]] == [9], refs[t_]
+        assert [r["line"] for r in refs[t_]["mentions"]] == [2], (
+            "the tuple itself is a mention: the comment above it is not SQL context")
+        assert 5 not in [r["line"] for r in refs[t_]["reads"]], (
+            '{"v": view} binds the NAME as a parameter; the query reads pg_class')
+
+
+def test_a_keyed_container_carries_only_its_own_key_into_the_query(mini_repo):
+    """audit_data_freshness declares CHECKS = [{"name": <table>, "ts_column":
+    <column>}, ...] and queries `FROM {check['name']}`. Following the whole
+    element would make the ts_column line a reference too."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           'CHECKS = [{"name": "trades", "ts_column": "trades_at"}]\n'
+           "\n"
+           "def one(check):\n"
+           "    order = check['ts_column']\n"
+           '    return read_sql(f"SELECT max({order}) FROM {check[\'name\']}")\n'
+           "\n"
+           "def run():\n"
+           "    for check in CHECKS:\n"
+           "        one(check)\n")
+    refs = inv.table_refs(mini_repo, ["trades"])
+    assert [r["line"] for r in refs["trades"]["reads"]] == [5], refs["trades"]
+    assert 4 not in [r["line"] for r in refs["trades"]["reads"]], "ts_column is not the table name"
+    assert inv._keyed_elems(ast.parse('[{"name": "trades", "ts_column": "t"}]').body[0].value) == \
+        {"name": {"trades"}, "ts_column": {"t"}}
+
+
+def test_a_parameter_default_binds_its_table_only_inside_that_function(mini_repo):
+    """lib/features/intraday_gex.py reads `FROM {table}` where `table: str =
+    "intraday_gex_15m"` is a parameter default; an AST rewrite that looked only
+    at assignments lost the binding. A conditional expression binds both arms
+    (lib/data_loader.py:538)."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           'def load(engine, table: str = "trades"):\n'
+           '    return read_sql(f"SELECT * FROM {table}", engine)\n'
+           "\n"
+           "def unrelated(table):\n"
+           '    return read_sql(f"SELECT * FROM {table}", None)\n'
+           "\n"
+           "def pick(engine, source):\n"
+           "    table = 'market_data_intraday' if source == 'x' else 'trades'\n"
+           '    return read_sql(f"SELECT * FROM {table}", engine)\n')
+    refs = inv.table_refs(mini_repo, ["trades", "market_data_intraday"])
+    lines = sorted(r["line"] for r in refs["trades"]["reads"])
+    assert lines == [2, 8, 9], refs["trades"]["reads"]
+    assert 5 not in lines, "the default binds `table` only within its own function"
+    assert sorted(r["line"] for r in refs["market_data_intraday"]["reads"]) == [8, 9]
+
+
+def test_a_declared_cli_value_prunes_the_modes_the_job_cannot_run(mini_repo):
+    """`alpha` is deployed with `--mode=full`, so `main()`'s `--mode=lite`
+    branch is not reachable through it and neither is the writer that branch
+    calls. The entry module used to be marked whole-file, so every function in
+    it counted for every configuration. The `orb-15m` scheduler overrides the
+    same job with `--mode=orb-snapshot`, and that mode is reachable too: the
+    constraint is the UNION over the job and every scheduler that targets it.
+    (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse\n"
+           "\n"
+           "def write_full(conn):\n"
+           '    conn.execute("INSERT INTO trades VALUES (1)")\n'
+           "\n"
+           "def write_lite(conn):\n"
+           '    conn.execute("INSERT INTO market_data_intraday VALUES (1)")\n'
+           "\n"
+           "def write_orb(conn):\n"
+           '    conn.execute("INSERT INTO earnings_ticker_lean VALUES (1)")\n'
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--mode', default='full')\n"
+           "    args = p.parse_args()\n"
+           "    if args.mode == 'full':\n"
+           "        write_full(None)\n"
+           "    elif args.mode == 'lite':\n"
+           "        write_lite(None)\n"
+           "    elif args.mode == 'orb-snapshot':\n"
+           "        write_orb(None)\n"
+           "\n"
+           "if __name__ == '__main__':\n"
+           "    main()\n")
+    repo = inv.repo_inventory(mini_repo)
+    job = next(j for j in repo["jobs"] if j["name"] == "alpha")
+    # enrich-daily redirects the job to another module, so _job_scope gives it
+    # its own argv; the schedulers that leave the entry module in place union
+    # with the job's own args.
+    same_module = [s for s in repo["schedulers"] if s["name"] in ("alpha-daily", "alpha-weekly", "orb-15m")]
+    assert inv.declared_argv(job, same_module) == {"mode": {"full", "orb-snapshot"}, "window": {"15m"}}
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["writes"] == ["earnings_ticker_lean", "trades"], e["alpha"]
+    assert "market_data_intraday" not in e["alpha"]["writes"], \
+        "no configuration of this job passes --mode=lite"
+
+
+def test_only_an_unambiguous_scalar_string_flag_is_read_as_a_constraint(mini_repo):
+    """`--args "--tickers,SPY IWM QQQ SPX,--from-latest"` is ONE value holding
+    spaces, and the comma boundaries are gone by the time the args string is
+    parsed, so reading `SPY` as the whole value pruned real branches out of
+    fetch-av-options-backfill. Only `--flag=value` is read, and only for a
+    dest with no nargs, no list/bool action, and no non-str type.
+    (Codex, PR #1044.)"""
+    job = {"name": "j", "command": "python -m m", "args": "--tickers SPY IWM QQQ --mode=full --skip"}
+    assert inv.declared_argv(job, None) == {"mode": {"full"}}
+    src = ("import argparse\n"
+           "p = argparse.ArgumentParser()\n"
+           "p.add_argument('--tickers', nargs='+')\n"
+           "p.add_argument('--horizon', type=int)\n"
+           "p.add_argument('--verbose', action='store_true')\n"
+           "p.add_argument('--out-dir', dest='outdir')\n"
+           "p.add_argument('--mode', default='full')\n"
+           "args = p.parse_args()\n")
+    ns, dests = inv._argparse_dests(ast.parse(src))
+    assert ns == {"args"}
+    assert dests == {"outdir", "mode"}, dests
+
+
+def test_a_scheduler_override_constrains_only_the_module_it_selects(mini_repo):
+    """`strat-enrich-daily` selects `strat_enrich_levels` with
+    `--mode=backfill-all`; applying that mode to `strat-engine`'s own entry
+    module, which that scheduler never runs, would prune branches of a module
+    the flag was never given to. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse\n"
+           "\n"
+           "def w(conn):\n"
+           '    conn.execute("INSERT INTO trades VALUES (1)")\n'
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--mode', default='full')\n"
+           "    args = p.parse_args()\n"
+           "    if args.mode == 'all':\n"
+           "        w(None)\n"
+           "\n"
+           "main()\n")
+    _write(mini_repo, "gcp/research/enrich.py",
+           "import argparse\n"
+           "\n"
+           "def w(conn):\n"
+           '    conn.execute("INSERT INTO market_data_intraday VALUES (1)")\n'
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--mode', default='none')\n"
+           "    args = p.parse_args()\n"
+           "    if args.mode == 'all':\n"
+           "        w(None)\n"
+           "\n"
+           "main()\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    # enrich-daily selects gcp.research.enrich with --mode=all, so THAT
+    # module's branch is live; alpha's own --mode=full never reaches its own.
+    assert e["alpha"]["writes"] == ["market_data_intraday"], e["alpha"]
+
+
 def test_a_configured_subprocess_module_is_a_root_of_the_job(mini_repo):
     """audit-walkforward enters through gcp/audit_job_runner.py, which runs
     AUDIT_SCRIPT_MODULE in a subprocess; the digest showed the job as dashes."""
@@ -877,7 +1059,57 @@ def test_a_dynamically_named_runtime_relation_is_attributed(mini_repo):
                           "strat_features_1m": {"kind": "table", "rows": 7, "size": "8 kB"},
                           "spy_30m_predictions": {"kind": "table", "rows": 7, "size": "8 kB"}}}
     row = next(l for l in inv.render_markdown("refs_digest", repo, live).splitlines() if l.startswith("| `alpha` |"))
-    assert "`strat_features_1m` (runtime-created)" in row and "`spy_30m_predictions` (runtime-created)" in row, row
+    # both names are assembled from a bare parameter here, so each is rendered
+    # as one member of its template's family rather than asserted on its own
+    assert "one of `strat_features_{tf}` (name assembled at run time): `strat_features_1m`" in row, row
+    assert "one of `{ticker}_30m_predictions` (name assembled at run time): `spy_30m_predictions`" in row, row
+
+
+def test_an_unresolved_template_is_marked_instead_of_asserting_every_relation(mini_repo):
+    """A dynamic template was expanded to EVERY live relation it matched, so
+    the digest said magnitude-inference reads all six strat_features_*
+    timeframes although DEFAULT_CELLS holds only 5m and 15m and the deployed
+    job sets no override. Where the placeholder's values are known the
+    expansion is now exact; where they are not, the family is grouped under
+    its template rather than asserted member by member. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import main\n\ndef run():\n    main(None)\n")
+    _write(mini_repo, "gcp/helpers.py",
+           'TFS = ("1m", "5m")\n'
+           "\n"
+           "def read_all(conn):\n"
+           "    for tf in TFS:\n"
+           '        conn.execute(f"SELECT * FROM demo_{tf}")\n'
+           "\n"
+           "def read_one(conn, tf):\n"
+           '    conn.execute(f"SELECT * FROM strat_features_{tf}")\n'
+           "\n"
+           "def main(conn):\n"
+           "    read_all(conn)\n"
+           "    read_one(conn, _from_env())\n")
+    names = ["demo_1m", "demo_5m", "demo_30m", "strat_features_1m", "strat_features_5m"]
+    dyn = inv.table_refs_dynamic(mini_repo, names)
+    assert dyn["demo_30m"] == {"writes": [], "reads": [], "mentions": []}, \
+        "TFS holds 1m and 5m, so the template cannot name demo_30m"
+    assert [r["line"] for r in dyn["demo_1m"]["reads"]] == [5], dyn["demo_1m"]
+    assert all(r["resolved"] for r in dyn["demo_1m"]["reads"])
+    assert [r["line"] for r in dyn["strat_features_1m"]["reads"]] == [8]
+    assert not any(r["resolved"] for r in dyn["strat_features_1m"]["reads"]), \
+        "`tf` here comes from a call, so its values are unknown"
+    assert inv._values_at(inv._resolved_values(mini_repo, "gcp/helpers.py"), "tf", 5) == {"1m", "5m"}
+    assert inv._values_at(inv._resolved_values(mini_repo, "gcp/helpers.py"), "tf", 8) is None
+
+    repo = inv.repo_inventory(mini_repo)
+    ok = {"last_execution": {"result": "ok", "time": "2026-09-07T00:00:00Z"},
+          "memory": "4Gi", "cpu": "1", "task_timeout": "3600", "max_retries": 0, "tasks": 1}
+    live = {"jobs": {"alpha": dict(ok, command="python", args="-m gcp.research.alpha")}, "schedulers": {},
+            "db_tables": {n: {"kind": "table", "rows": 1, "size": "8 kB"} for n in names}}
+    row = next(l for l in inv.render_markdown("refs_digest", repo, live).splitlines() if l.startswith("| `alpha` |"))
+    assert "`demo_1m` (runtime-created)" in row and "`demo_5m` (runtime-created)" in row, row
+    assert "demo_30m" not in row, row
+    assert "one of `strat_features_{tf}` (name assembled at run time): " \
+        "`strat_features_1m`, `strat_features_5m`" in row, row
+    assert "`strat_features_1m` (runtime-created)" not in row, \
+        "an unresolved member is only ever named inside its family group"
 
 
 def test_a_subprocess_target_in_reached_code_is_a_root(mini_repo):
