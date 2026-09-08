@@ -369,7 +369,11 @@ def research_namespace(label_mode: str | None,
         # different bucket definitions would share a namespace, which is the
         # collision this partition exists to prevent (Codex on #1055).
         # repr() round-trips exactly for every float.
-        parts.append("t" + "-".join(repr(float(v)) for v in thresholds))
+        # "_" and not "-": repr(1e-07) is '1e-07', so a "-" separator is also
+        # part of the value and t1e-07-2e-07-3e-07 cannot be split back. The
+        # training run would still write under that slug while every
+        # contract-aware reader rejected it (Codex on #1055).
+        parts.append("t" + "_".join(repr(float(v)) for v in thresholds))
     return "__".join(parts) if parts else None
 
 
@@ -386,11 +390,11 @@ def parse_research_namespace(slug: str) -> tuple[str, tuple[float, ...]]:
     thresholds = MAGNITUDE_THRESHOLDS
     seen_threshold = False
     for part in slug.split("__"):
-        if part.startswith("t") and "-" in part:
+        if part.startswith("t") and "_" in part:
             if seen_threshold:
                 raise ValueError(f"research slug {slug!r} has two threshold parts")
             try:
-                thresholds = tuple(float(v) for v in part[1:].split("-"))
+                thresholds = tuple(float(v) for v in part[1:].split("_"))
             except ValueError as e:
                 raise ValueError(
                     f"research slug {slug!r}: cannot read thresholds from "
@@ -405,7 +409,7 @@ def parse_research_namespace(slug: str) -> tuple[str, tuple[float, ...]]:
         else:
             raise ValueError(
                 f"research slug {slug!r}: {part!r} is neither a label mode "
-                f"{LABEL_MODES} nor a threshold part like 't0.35-0.75-1.25'")
+                f"{LABEL_MODES} nor a threshold part like 't0.35_0.75_1.25'")
     if research_namespace(label_mode, thresholds) != slug:
         raise ValueError(
             f"research slug {slug!r} does not round-trip; the namespace for "

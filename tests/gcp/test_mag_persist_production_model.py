@@ -998,7 +998,7 @@ def test_analysis_loader_reads_the_research_namespace():
         gcs_run_prefix("phase0", "SPY", "15m",
                        label_mode="excursion",
                        thresholds=(0.5, 1.0, 1.5)) + "/"
-    assert research_prefix("phase0", "SPY", "15m", "t0.35-0.75-1.25") == \
+    assert research_prefix("phase0", "SPY", "15m", "t0.35_0.75_1.25") == \
         gcs_run_prefix("phase0", "SPY", "15m", label_mode="body",
                        thresholds=(0.35, 0.75, 1.25)) + "/"
 
@@ -1066,7 +1066,7 @@ def test_near_identical_thresholds_do_not_share_a_namespace():
 def test_malformed_research_slug_is_refused():
     from gcp.research.magnitude_engine.mag_config import parse_research_namespace
 
-    for bad in ("nonsense", "t0.5-1.0", "body__body", "t1-2-3__t4-5-6",
+    for bad in ("nonsense", "t0.5_1.0", "body__body", "t1_2_3__t4_5_6",
                 "excursion__banana"):
         with pytest.raises(ValueError):
             parse_research_namespace(bad)
@@ -1109,7 +1109,7 @@ def test_contract_comes_from_the_namespace(isolated_mag_thresholds):
 
     # and a threshold namespace exports the cut points, so the dataset builder
     # buckets the way the model was trained rather than at the defaults
-    mode, thr = apply_research_contract("t0.35-0.75-1.25")
+    mode, thr = apply_research_contract("t0.35_0.75_1.25")
     assert (mode, thr) == (DEFAULT_LABEL_MODE, (0.35, 0.75, 1.25))
     from gcp.research.magnitude_engine.mag_config import resolve_magnitude_thresholds
     assert resolve_magnitude_thresholds() == (0.35, 0.75, 1.25)
@@ -1152,3 +1152,56 @@ def test_movement_sim_writes_into_its_own_namespace():
     src = pathlib.Path("scripts/magnitude_movement_sim.py").read_text()
     assert "research_prefix(args.phase, args.ticker, args.tf, args.research)" in src
     assert 'blob = (f"research/magnitude_engine/{args.phase}' not in src
+
+
+# ─────────────── round 4: contract resolution order and scope ───────────────
+
+@pytest.mark.parametrize("thresholds", [
+    (1e-7, 2e-7, 3e-7),          # repr() uses a negative exponent
+    (0.5, 1.0, 1.5e0),
+    (0.25, 0.6, 1.1),
+])
+def test_slug_survives_scientific_notation(thresholds):
+    """repr(1e-07) is '1e-07', so a '-' separator was also part of the value:
+    t1e-07-2e-07-3e-07 could not be split back, and a training run would write
+    under a slug every contract-aware reader rejected."""
+    from gcp.research.magnitude_engine.mag_config import (
+        research_namespace, parse_research_namespace)
+
+    slug = research_namespace("body", thresholds)
+    if slug is None:          # the default set has no namespace
+        return
+    assert parse_research_namespace(slug) == ("body", tuple(thresholds))
+
+
+def test_default_contract_clears_an_ambient_threshold_override(
+        isolated_mag_thresholds):
+    """A MAG_THRESHOLDS left in the environment would have the dataset bucket
+    at the ambient values while the contract reports the defaults, so the
+    analysis describes a different target than the predictions it loaded."""
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import apply_research_contract
+    from gcp.research.magnitude_engine.mag_config import (
+        MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds)
+
+    os.environ["MAG_THRESHOLDS"] = "0.35,0.75,1.25"
+    # a namespace with default cut points must REPLACE, not inherit
+    _, thresholds = apply_research_contract("put")
+    assert thresholds == tuple(MAGNITUDE_THRESHOLDS)
+    assert resolve_magnitude_thresholds() == tuple(MAGNITUDE_THRESHOLDS)
+
+    os.environ["MAG_THRESHOLDS"] = "0.35,0.75,1.25"
+    apply_research_contract(None)
+    assert resolve_magnitude_thresholds() == tuple(MAGNITUDE_THRESHOLDS)
+
+
+def test_gate7_resolves_the_contract_before_reading_label_mode():
+    """`iv_option_type` is chosen FROM label_mode, so resolving the contract
+    after that line picked call IV for a put run: realized move put-specific,
+    premium not."""
+    src = pathlib.Path("scripts/implied_vs_realized_check.py").read_text()
+    resolve_at = src.index("apply_research_contract(")
+    iv_leg_at = src.index('iv_option_type = "puts"')
+    assert resolve_at < iv_leg_at, (
+        "the label contract must be resolved before anything reads "
+        "args.label_mode")

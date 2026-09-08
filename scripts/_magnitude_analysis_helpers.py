@@ -64,8 +64,14 @@ def apply_research_contract(research: str | None,
                 f"--label-mode={label_mode} contradicts --research={research}, "
                 f"which was trained with label_mode={resolved}. The namespace "
                 f"carries the contract; drop --label-mode or make it match.")
+    # Replace, never merely add: an ambient MAG_THRESHOLDS left in place for a
+    # default-threshold contract would have the dataset bucket at the ambient
+    # values while this function reports the defaults, so the analysis would
+    # describe a different target than the predictions it loaded.
     if tuple(thresholds) != tuple(MAGNITUDE_THRESHOLDS):
         os.environ["MAG_THRESHOLDS"] = ",".join(repr(float(v)) for v in thresholds)
+    else:
+        os.environ.pop("MAG_THRESHOLDS", None)
     return resolved, tuple(thresholds)
 
 

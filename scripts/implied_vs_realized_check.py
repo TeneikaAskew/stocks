@@ -164,14 +164,18 @@ def main():
                         "(straddle range); call=(next_high-next_open) upside vs CALL "
                         "IV; put=(next_open-next_low) downside vs PUT IV.")
     args = p.parse_args()
+    # FIRST, before anything reads args.label_mode: the namespace carries the
+    # label contract, and a defaulted --label-mode would score a put model
+    # against body realizations. The IV leg below is chosen FROM label_mode,
+    # so resolving after it picked calls for a put run — the realized move
+    # put-specific, the premium not (Codex on #1055).
+    args.label_mode, _thresholds = apply_research_contract(
+        args.research, args.label_mode)
+
     # Implied benchmark uses the matching option leg's IV.
     iv_option_type = "puts" if args.label_mode == "put" else "calls"
 
     # Load model predictions for EXPLOSIVE filtering
-    # The namespace carries the label contract; a mismatched or defaulted
-    # --label-mode here would score a put model against body realizations.
-    args.label_mode, _thresholds = apply_research_contract(
-        args.research, args.label_mode)
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
                                  research=args.research)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
