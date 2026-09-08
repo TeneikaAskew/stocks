@@ -409,6 +409,23 @@ NONPY_AMBIGUOUS = re.compile(
 # The POSIX fixed forms in one place, so the text matchers that need them
 # with a context and the one that needs them without agree on the spelling.
 _POSIX_EASTERN_FIXED = r"EST\+?0?5(?::00(?::00)?)?|EDT\+?0?4(?::00(?::00)?)?"
+# The same POSIX form with `UTC` or `GMT` as the abbreviation. `TZ=UTC+5`
+# names a zone called "UTC" at 5 hours WEST -- POSIX's sign -- so it is the
+# same frozen UTC-5 as `EST5`, and `GMT+4` the same frozen UTC-4 as `EDT4`;
+# the `+` and the leading zero are optional exactly as they are for `EST5`.
+# Captured live: glibc `TZ=UTC+5 date` prints -0500, `TZ=GMT+4` -0400, and
+# Postgres 16 `SET TIME ZONE 'GMT+4'` prints -04:00, which is what `PGTZ`
+# issues; `TZ=UTC-5` prints +0500 and is not Eastern in either season.
+# NOT folded into `_POSIX_EASTERN_FIXED`, because that pattern also serves
+# contexts that read the sign the other way -- `pd.Timestamp(tz="UTC+5")`
+# is UTC plus five -- while `EST5` has no second meaning anywhere. This one
+# applies only where the value is known to be a process or session `TZ`
+# (Codex, PR #993 final review).
+_POSIX_UTC_FIXED = (r"(?:UTC|GMT)\+?0?5(?::00(?::00)?)?"
+                    r"|(?:UTC|GMT)\+?0?4(?::00(?::00)?)?")
+_POSIX_UTC_FIXED_VALUE = re.compile(r"(?:" + _POSIX_UTC_FIXED + r")")
+#: The environment variables a process or libpq reads as a POSIX `TZ`.
+_POSIX_TZ_KEYS = {"TZ", "PGTZ"}
 _FIXED_OFFSET_TEXT = r"(?:-\s*0?[45]:?00(?::00)?|" + _POSIX_EASTERN_FIXED + r")"
 # Quotes optional, like the legacy-name pattern above and for the same reason:
 # `timezone=-05:00` in a shell or YAML file is the ordinary spelling, and
@@ -420,6 +437,17 @@ NONPY_FIXED_OFFSET = re.compile(
     # rejects the match instead of leaving it matched on a prefix.
     + r"\s*['\"]?(?![A-Za-z0-9_:])", re.I
 )
+# Only where the value is a process or session `TZ`: an assignment to `TZ`
+# or `PGTZ` in a shell, Make, `.env` or Dockerfile (`=`, `:=`, `?=`, `+=`),
+# a YAML `TZ:` key, or Dockerfile's `ENV TZ value` form. Not the generic
+# `tz=`/`timezone=` contexts, whose readers may take the sign the other way.
+# Case-sensitive on purpose: `tz` is another variable, and the POSIX sign
+# belongs to `TZ`.
+_POSIX_ENV_CONTEXT = (r"(?<![A-Za-z0-9_])(?:TZ|PGTZ)" + _GAP + r"(?:[:?+]?=|:)" + _GAP
+                      + r"|" + _B + r"ENV\s+(?:TZ|PGTZ)\s+")
+NONPY_POSIX_ENV_OFFSET = re.compile(
+    r"(?:" + _POSIX_ENV_CONTEXT + r")['\"]?\s*(?:" + _POSIX_UTC_FIXED
+    + r")\s*['\"]?(?![A-Za-z0-9_:])")
 # Postgres also takes a bare number: `SET TIME ZONE -5` installs the same
 # frozen UTC-5 session zone as `SET TIME ZONE '-05:00'`, and the matcher above
 # requires the trailing `00` (Codex, PR #993).
@@ -565,6 +593,24 @@ _TZ_KEYWORDS = {"tz", "tzinfo", "timezone", "time_zone", "pgtz"}
 # the process timezone when the key is `TZ`, and neither is a timezone
 # constructor, so the call-name filter walked past them.
 _ENV_SETTER_CALLS = {"putenv", "setdefault"}
+
+
+def _posix_tz_offset(key_text, value, env):
+    """`value`'s text when `key_text` names a process TZ and the text is a
+    POSIX `UTC+5`/`GMT+4` fixed offset; else None.
+
+    `os.environ["TZ"] = "UTC+5"` installs the same frozen UTC-5 as
+    `"EST5"` -- the process reads the sign the POSIX way, whatever language
+    wrote the variable -- and `follow` reads a string the pandas way, where
+    `UTC+5` is UTC plus five, so the assignment passed (Codex, PR #993 final
+    review). Decided by the KEY, which is what settles the sign.
+    """
+    if key_text is None or key_text.upper() not in _POSIX_TZ_KEYS or value is None:
+        return None
+    text = _const_string(value, env)
+    if text is not None and _POSIX_UTC_FIXED_VALUE.fullmatch(text.strip()):
+        return text
+    return None
 # `os.environ.update(...)`, whose argument is a whole mapping rather than a
 # key and a value in two positions.
 _ENV_UPDATE_CALLS = {"update"}
@@ -675,8 +721,19 @@ def _resolve_callable(name: str, env, seen=None):
     if isinstance(bound, ast.Name):
         return _resolve_callable(bound.id, env, seen)
     if isinstance(bound, ast.Attribute):
+        # The receiver is the LAST attribute before the constructor, exactly
+        # as `_call_receiver` reads a direct call: `make = zoneinfo.ZoneInfo
+        # .no_cache` is made on `ZoneInfo`. Reading only a bare Name left it
+        # with no receiver and so no provenance, and `make("EST")` was
+        # ignored while `zoneinfo.ZoneInfo.no_cache("EST")` was found
+        # (Codex, PR #993 final review).
         inner = bound.value
-        receiver = inner.id if isinstance(inner, ast.Name) else ""
+        if isinstance(inner, ast.Name):
+            receiver = inner.id
+        elif isinstance(inner, ast.Attribute):
+            receiver = inner.attr
+        else:
+            receiver = ""
         return bound.attr, receiver
     return name, ""
 
@@ -1674,6 +1731,27 @@ def _collect_bindings(nodes, out: dict[str, ast.AST], aliases=None):
                 for element in node.iter.elts:
                     _keep(out, node.target.id, element)
             continue
+        # `zone = "US/"` then `zone += "Eastern"` builds the legacy name in
+        # two statements. `_bound_names` marked the name as written, but the
+        # collector skipped every `AugAssign`, so the call resolved to the
+        # harmless prefix while each fragment passed on its own (Codex,
+        # PR #993 final review). A string `+=` whose prior value and operand
+        # are both statically known folds, in source order, to the value the
+        # name holds afterwards; the operand may be a constant or a name
+        # bound to one. Anything else stays as it was -- unresolved rather
+        # than guessed -- and `_keep` decides the precedence as it does for
+        # every other binding.
+        if isinstance(node, ast.AugAssign):
+            if isinstance(node.op, ast.Add) and isinstance(node.target, ast.Name):
+                operand = node.value
+                if isinstance(operand, ast.Name):
+                    operand = out.get(operand.id)
+                prior = _binding_text(out.get(node.target.id))
+                added = _binding_text(operand)
+                if prior is not None and added is not None:
+                    _keep(out, node.target.id,
+                          ast.copy_location(ast.Constant(prior + added), node))
+            continue
         if isinstance(node, ast.Assign):
             targets = node.targets
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
@@ -2246,6 +2324,9 @@ def _python_hits(path: pathlib.Path, text: str):
                 if key_text is not None and key_text.lower() in _TZ_KEYWORDS:
                     follow(legacy, offsets, node, value, env,
                            lambda shown, k=key_text: f"[{k!r}] = {shown}")
+                    posix = _posix_tz_offset(key_text, value, env)
+                    if posix is not None:
+                        note(offsets, node, f"[{key_text!r}] = {posix!r}")
                 # `settings.timezone = "EST"` -- an attribute target binds no
                 # NAME either, so the same argument applies to it as to the
                 # subscript above, and it was missed for the same reason
@@ -2455,6 +2536,9 @@ def _python_hits(path: pathlib.Path, text: str):
                     and key_text.lower() in _TZ_KEYWORDS):
                 follow(legacy, offsets, node, value, env,
                        lambda shown, k=key_text, n=name: f"{n}({k!r}, {shown})")
+                posix = _posix_tz_offset(key_text, value, env)
+                if posix is not None:
+                    note(offsets, node, f"{name}({key_text!r}, {posix!r})")
 
         # `os.environ.update(...)` takes a mapping OR an iterable of pairs,
         # and both install the process zone. `update` is not a two-positional
@@ -2484,6 +2568,9 @@ def _python_hits(path: pathlib.Path, text: str):
                         follow(legacy, offsets, node, v, env,
                                lambda shown, kk=key_text, nn=name:
                                    f"{nn}({{{kk!r}: {shown}}})")
+                        posix = _posix_tz_offset(key_text, v, env)
+                        if posix is not None:
+                            note(offsets, node, f"{name}({{{key_text!r}: {posix!r}}})")
 
         # `make_zone = ZoneInfo; make_zone("EST")`. Round 13 resolved IMPORT
         # aliases, which live in `env.aliases`; an ASSIGNMENT alias lives in
@@ -2738,9 +2825,16 @@ def _reads_as_shell(p: pathlib.Path) -> bool:
     # `rules.mk` failed while the identical line in `Makefile` did not --
     # a difference with no reason behind it, and one this branch created when
     # it taught the context matcher Make's `:=` (Codex, PR #993).
-    return (p.suffix in (".sh", ".yml", ".yaml", ".mk")
+    # Every name `_reads_as_make` knows, through that predicate rather than a
+    # second list: `GNUmakefile` and `makefile` were collected and classified
+    # as Make, but this test still spelled `Makefile` alone, so neither was
+    # expanded or comment-stripped -- `A = EST` then `export TZ = $(A)`
+    # passed, and a commented `# export TZ = EST` failed (Codex, PR #993
+    # final review).
+    return (p.suffix in (".sh", ".yml", ".yaml")
             or p.suffix == _ENV_TEMPLATE_SUFFIX
-            or p.name.startswith(("Dockerfile", "Makefile")))
+            or p.name.startswith("Dockerfile")
+            or _reads_as_make(p))
 
 
 def _notebook_cells(text: str):
@@ -3169,6 +3263,10 @@ def _yaml_env_pair_hits(text: str) -> list:
                 val = _yaml_scalar(value)
                 if val is not None:
                     is_offset = _bad_zone_value(val)
+                    # A container's `TZ` is a process `TZ`: POSIX's sign.
+                    if (is_offset is None and name.upper() in _POSIX_TZ_KEYS
+                            and _POSIX_UTC_FIXED_VALUE.fullmatch(val.strip())):
+                        is_offset = True
                     if is_offset is not None:
                         out.append((_TextHit(value.start_mark.index,
                                              f"name: {name} / value: {val}"),
@@ -3361,6 +3459,26 @@ def _pine_constant_at(consts: dict, name: str, at: int, spans=()):
     return latest
 
 
+# Pine's own fixed-offset spelling, read only inside a timezone-taking call.
+# `time(timeframe.period, session, "UTC-5")` fixes the session at UTC-5 and
+# `"GMT-05:00"` is the same zone; Pine reads the sign the conventional way,
+# so `"UTC+5"` is UTC plus five and is not Eastern. `_bad_zone_value` leaves
+# every `UTC`-prefixed offset out because a shell `TZ` reads that sign the
+# POSIX way, and reusing it here made a valid Pine call clean (Codex, PR #993
+# final review). The call context has already settled which way the sign
+# reads, so this is where the Pine spelling belongs -- not in the generic
+# checker, which still has no context to settle it with.
+_PINE_FIXED_OFFSET = re.compile(r"(?:UTC|GMT)-0?[45](?::?00)?")
+
+
+def _pine_bad_zone_value(value: str):
+    """`_bad_zone_value`, plus the fixed offsets Pine spells with `UTC`/`GMT`."""
+    is_offset = _bad_zone_value(value)
+    if is_offset is None and _PINE_FIXED_OFFSET.fullmatch(value.strip()):
+        return True
+    return is_offset
+
+
 def _pine_call_hits(text: str) -> list:
     """`(hit, value, is_offset)` for each quoted bad zone inside a Pine timezone call."""
     out = []
@@ -3374,7 +3492,7 @@ def _pine_call_hits(text: str) -> list:
             # review).
             whole = _pine_string_expr(arg, consts, start, spans)
             if whole is not None:
-                is_offset = _bad_zone_value(whole)
+                is_offset = _pine_bad_zone_value(whole)
                 if is_offset is not None:
                     text_ = arg.strip()
                     shown = (repr(whole) if _PINE_STRING.fullmatch(text_)
@@ -3386,7 +3504,7 @@ def _pine_call_hits(text: str) -> list:
             # Otherwise its literals and bound names one by one, as before.
             for m in _PINE_STRING.finditer(arg):
                 value = m.group(1) if m.group(1) is not None else m.group(2)
-                is_offset = _bad_zone_value(value)
+                is_offset = _pine_bad_zone_value(value)
                 if is_offset is not None:
                     out.append((_TextHit(args_start + off + m.start(),
                                          f"{head}(... {value!r} ...)"),
@@ -3396,7 +3514,7 @@ def _pine_call_hits(text: str) -> list:
                 value = _pine_constant_at(consts, m.group(1), start, spans)
                 if value is None:
                     continue
-                is_offset = _bad_zone_value(value)
+                is_offset = _pine_bad_zone_value(value)
                 if is_offset is not None:
                     out.append((_TextHit(args_start + off + m.start(),
                                          f"{head}(... {m.group(1)} (= {value!r}) ...)"),
@@ -3505,6 +3623,7 @@ def _scan() -> tuple[list[str], list[str]]:
                                 (NONPY_AMBIGUOUS, legacy),
                                 (NONPY_FIXED_ZONE, offsets),
                                 (NONPY_FIXED_OFFSET, offsets),
+                                (NONPY_POSIX_ENV_OFFSET, offsets),
                                 (NONPY_SQL_NUMERIC_OFFSET, offsets),
                                 (NONPY_SQL_INTERVAL_OFFSET, offsets)):
             for m in pattern.finditer(text):
@@ -4117,6 +4236,7 @@ def _expand_shell_defaults(text: str, make: bool = False) -> str:
     # Output arguments go first, so a usage message quoting `${TZ:-EST}` is
     # emptied before the expansion pass can promote its default.
     text = _blank_shell_output(text)
+    text = _join_shell_fragments(text)
     text = _SHELL_DEFAULT.sub(
         lambda m: (m.group(0) if _single_quoted(m.group(1))
                    else m.group(1) + m.group(2)), text)
@@ -4191,9 +4311,60 @@ def _strip_sql_comments(text: str) -> str:
 
     Only `E'...'` honours backslashes at PostgreSQL's default
     `standard_conforming_strings = on`, so an ordinary literal is unchanged.
+
+    Then the OTHER delimiters are rewritten as plain quotes, so the matchers
+    that run on the result read `$$EST$$` and `E'EST'` as they read `'EST'`
+    -- see `_normalize_sql_strings`.
     """
-    return _blank_comments(text, "--", escape_strings=True, dollar_quotes=True,
-                           nested_blocks=True)
+    return _normalize_sql_strings(
+        _blank_comments(text, "--", escape_strings=True, dollar_quotes=True,
+                        nested_blocks=True))
+
+
+# A string-literal prefix that is its own token: `E'...'` (escape string),
+# `N'...'` (national) and `U&'...'` (Unicode escapes). `CASE'x'` is not one.
+_SQL_STRING_PREFIX = re.compile(r"(?<![A-Za-z0-9_])(U&|[EeNn])(?=')")
+
+
+def _normalize_sql_strings(text: str) -> str:
+    """PostgreSQL's other string delimiters as plain quotes, width kept.
+
+    `SET TIME ZONE $$EST$$`, `SET TIME ZONE E'EST'` and
+    `set_config('timezone', $tz$-05:00$tz$, false)` install exactly what the
+    single-quoted forms install, and every matcher that runs on stripped SQL
+    allows at most one bare quote between the context and the value, so all
+    three passed both guards while the stripper -- which already reads these
+    literals as strings when it looks for comments -- preserved them as
+    written (Codex, PR #993 final review).
+
+    A prefix letter becomes a space: `E'EST'` -> ` 'EST'`, `U&'EST'` ->
+    `  'EST'`. A dollar delimiter becomes a quote at the end that touches
+    the body and spaces elsewhere: `$$EST$$` -> ` 'EST' `, `$tz$EST$tz$` ->
+    `   'EST'   `. Nothing moves, so every offset still means what it says.
+    An opener with no matching closer is left as written, as the stripper
+    leaves it. The body is taken literally: an escape inside `E'...'` is
+    not decoded, which loses an evasion this guard was never meant to chase
+    and changes nothing for the ordinary spellings.
+    """
+    text = _SQL_STRING_PREFIX.sub(lambda m: " " * len(m.group(1)), text)
+    out, i = [], 0
+    while True:
+        m = _DOLLAR_QUOTE.search(text, i)
+        if m is None:
+            out.append(text[i:])
+            break
+        close = text.find(m.group(0), m.end())
+        if close < 0:
+            out.append(text[i:m.end()])
+            i = m.end()
+            continue
+        width = len(m.group(0))
+        out.append(text[i:m.start()])
+        out.append(" " * (width - 1) + "'")
+        out.append(text[m.end():close])
+        out.append("'" + " " * (width - 1))
+        i = close + width
+    return "".join(out)
 
 
 def _blank_comments(text: str, line_token: str, escape_strings: bool,
@@ -4293,10 +4464,18 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool,
 # PR #993 final review). So do the reserved words that precede a command --
 # `if true; then LEGACY=EST; fi` runs the assignment and it was never
 # collected -- and a case arm's `)` (Codex, PR #993 final review).
+# A value is one shell WORD: adjacent quoted and bare fragments, which the
+# shell concatenates. `export TZ="E""ST"`, `export TZ="US/"Eastern` and
+# `export TZ=-"05:00"` are the same assignments as their single-literal
+# forms, and a value pattern that accepted one fragment left the collector
+# holding `E`, `US/` and `-` while no matcher ever saw the zone (Codex,
+# PR #993 final review). `_shell_word` reads the fragments back.
+_SHELL_WORD = r"(?:\"[^\"`\\\n]*\"|'[^'\n]*'|[^\s\"'`;|&\n]+)+"
+_SHELL_FRAGMENT = re.compile(r"\"([^\"`\\\n]*)\"|'([^'\n]*)'|([^\s\"'`;|&\n]+)")
 _SHELL_SCALAR = re.compile(
     r"(?:^|[;&|{()][ \t]*|\b(?:then|do|else|elif|if|while|until)[ \t]+)[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*)?([A-Za-z_][A-Za-z0-9_]*)="
-    r"(?:\"([^\"`\\\n]*)\"|'([^'\n]*)'|([^\s\"'`;|&\n]+))[ \t]*(?=$|[;&|)}])",
+    r"(" + _SHELL_WORD + r")[ \t]*(?=$|[;&|)}])",
     re.M)
 
 
@@ -4304,9 +4483,64 @@ _SHELL_SCALAR = re.compile(
 _SHELL_DECL_MULTI = re.compile(
     r"(?:^|[;&|{()][ \t]*|\b(?:then|do|else|elif|if|while|until)[ \t]+)[ \t]*(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*((?:[A-Za-z_][A-Za-z0-9_]*="
-    r"(?:\"[^\"`\\\n]*\"|'[^'\n]*'|[^\s\"'`;|&\n]+)[ \t]*)+)", re.M)
+    + _SHELL_WORD + r"[ \t]*)+)", re.M)
 _SHELL_DECL_OPERAND = re.compile(
-    r"([A-Za-z_][A-Za-z0-9_]*)=(?:\"([^\"`\\\n]*)\"|'([^'\n]*)'|([^\s\"'`;|&\n]+))")
+    r"([A-Za-z_][A-Za-z0-9_]*)=(" + _SHELL_WORD + r")")
+
+
+def _shell_word(word: str) -> list:
+    """`(text, literal)` per fragment of one shell word, in order.
+
+    `literal` is a single-quoted fragment, which the shell does not expand;
+    a double-quoted or bare fragment may hold a `$NAME` reference that
+    `_shell_scalars` resolves at the assignment's own offset.
+    """
+    out = []
+    for m in _SHELL_FRAGMENT.finditer(word):
+        if m.group(1) is not None:
+            out.append((m.group(1), False))
+        elif m.group(2) is not None:
+            out.append((m.group(2), True))
+        else:
+            out.append((m.group(3), False))
+    return out
+
+
+def _join_shell_fragments(text: str) -> str:
+    """Each multi-fragment assignment value as one double-quoted word.
+
+    `_shell_scalars` reads every fragment itself; this pass exposes the
+    joined word to the TEXT matchers, which read the assignment as written.
+    A word carrying a reference is replaced by the value the collector
+    resolved for it, or left alone when it resolved nothing. Newlines are
+    never touched, so line numbers hold; the value is padded to the width
+    it replaced where it fits.
+    """
+    scalars = _shell_scalars(text)
+    edits = []
+
+    def consider(name: str, name_at: int, start: int, end: int, word: str) -> None:
+        fragments = _shell_word(word)
+        if len(fragments) < 2:
+            return
+        if any("$" in fragment for fragment, _literal in fragments):
+            resolved = next((value for at, value, _local in scalars.get(name, ())
+                             if at == name_at), None)
+            if resolved is None:
+                return
+        else:
+            resolved = "".join(fragment for fragment, _literal in fragments)
+        edits.append((start, end, ('"' + resolved + '"').ljust(end - start)))
+
+    for m in _SHELL_SCALAR.finditer(text):
+        consider(m.group(2), m.start(2), m.start(3), m.end(3), m.group(3))
+    for m in _SHELL_DECL_MULTI.finditer(text):
+        for o in _SHELL_DECL_OPERAND.finditer(m.group(2)):
+            consider(o.group(1), m.start(2) + o.start(1),
+                     m.start(2) + o.start(2), m.start(2) + o.end(2), o.group(2))
+    for start, end, replacement in sorted(set(edits), reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text
 
 
 # A simple reference inside a value: `$NAME` or `${NAME}`. Anything more --
@@ -4345,9 +4579,9 @@ def _shell_scalars(text: str) -> dict:
     round earlier, and the same ordering mistake `_arrays_carrying_timezone`
     already records for scheduler flag arrays.
     """
-    raw: list[tuple[int, str, str, bool, bool]] = []
+    raw: list[tuple[int, str, list, bool]] = []
     for m in _SHELL_SCALAR.finditer(text):
-        value = next(g for g in m.groups()[2:] if g is not None)
+        word = _shell_word(m.group(3))
         # `local`, and `declare`/`typeset` inside a function, bind in the
         # function's scope only. `export`, `readonly` and a bare assignment
         # bind globally. `_scalar_in_force` decides what a given reference can
@@ -4355,7 +4589,7 @@ def _shell_scalars(text: str) -> dict:
         local = m.group(1) in ("local", "declare", "typeset")
         # The NAME's offset, not the match's: the match may begin at the
         # separator that ended the previous command.
-        raw.append((m.start(2), m.group(2), value, local, m.group(4) is not None))
+        raw.append((m.start(2), m.group(2), word, local))
     # A declaring builtin takes SEVERAL operands: `local X=x LEGACY=EST`. The
     # anchored pattern above reads only the first, because the second begins
     # after whitespace rather than at a command boundary, so `LEGACY` was
@@ -4363,10 +4597,9 @@ def _shell_scalars(text: str) -> dict:
     for m in _SHELL_DECL_MULTI.finditer(text):
         local = m.group(1) in ("local", "declare", "typeset")
         for o in _SHELL_DECL_OPERAND.finditer(m.group(2)):
-            value = next(g for g in o.groups()[1:] if g is not None)
             at = m.start(2) + o.start(1)
             if not any(r[0] == at for r in raw):
-                raw.append((at, o.group(1), value, local, o.group(3) is not None))
+                raw.append((at, o.group(1), _shell_word(o.group(2)), local))
     # CHAINS: `A=EST`, `B="$A"`, `export TZ="$B"`. The shell resolves `B` to
     # `EST` at ITS assignment, so each value is folded against the scalars in
     # force at its own offset, in source order -- exactly as `_expand_make_vars`
@@ -4389,28 +4622,32 @@ def _shell_scalars(text: str) -> dict:
     spans = [(s, e) for _, s, e in named]
     invoked: dict[str, list] = {}
     applied: list = []
-    for i, (at, name, value, local, single) in enumerate(raw):
+    for i, (at, name, word, local) in enumerate(raw):
         if local:
             continue
         body = next(((fn, s, e) for fn, s, e in named if s <= at < e), None)
         if body is None:
             continue
         fn, _s, end = body
-        raw[i] = (at, name, value, True, single)
+        raw[i] = (at, name, word, True)
         if fn not in invoked:
             # `end` is the offset just past the body's closing line, so a call
             # on the very next line starts AT it.
             invoked[fn] = [c for c in _invoked_at(text, fn, named) if c >= end]
-        applied.extend((c, name, value, False, single) for c in invoked[fn])
+        applied.extend((c, name, word, False) for c in invoked[fn])
     raw.extend(applied)
     raw.sort(key=lambda r: r[0])
     out: dict[str, list] = {}
-    for at, name, value, local, single in raw:
-        if "$" in value and not single:
-            value = _resolve_shell_value(value, out, at, spans)
-            if value is None:
-                continue
-        out.setdefault(name, []).append((at, value, local))
+    for at, name, word, local in raw:
+        parts = []
+        for fragment, literal in word:
+            if "$" in fragment and not literal:
+                fragment = _resolve_shell_value(fragment, out, at, spans)
+                if fragment is None:
+                    break
+            parts.append(fragment)
+        else:
+            out.setdefault(name, []).append((at, "".join(parts), local))
     return out
 
 
@@ -9114,7 +9351,8 @@ def _scanned_shell(text: str, make: bool = False) -> bool:
     """Would the non-Python scan report `text`? All four matchers `_scan` runs."""
     out = _expand_shell_defaults(_strip_shell_comments(text, make=make), make=make)
     return bool(NONPY_AMBIGUOUS.search(out) or NONPY_UNAMBIGUOUS.search(out)
-                or NONPY_FIXED_ZONE.search(out) or NONPY_FIXED_OFFSET.search(out))
+                or NONPY_FIXED_ZONE.search(out) or NONPY_FIXED_OFFSET.search(out)
+                or NONPY_POSIX_ENV_OFFSET.search(out))
 
 
 def _offenders(body: str) -> list:
@@ -9159,7 +9397,7 @@ def test_a_dollar_quoted_literal_is_data():
         assert "SET TIME ZONE 'EST'" in _strip_sql_comments(src), src
     # A real comment after the literal is still blanked, and an unterminated
     # dollar quote runs to the end rather than resurrecting a comment.
-    assert _strip_sql_comments("SELECT $$x$$; -- SET TIME ZONE 'EST'").rstrip() == "SELECT $$x$$;"
+    assert _strip_sql_comments("SELECT $$x$$; -- SET TIME ZONE 'EST'").rstrip() == "SELECT  'x' ;"
     # An unterminated dollar quote runs to the end of the text: everything
     # after it is literal, so nothing is blanked and nothing is invented.
     src = "SELECT $$ open -- SET TIME ZONE 'EST'"
@@ -9933,3 +10171,132 @@ def test_env_setter_arguments_are_unpacked(tmp_path):
     assert _python_finds(tmp_path, 'import os\nos.putenv(*["TZ"], **{"value": "EST"})\n')
     assert not _python_finds(tmp_path, 'import os\nos.putenv(*("PATH", "EST"))\n')
     assert not _python_finds(tmp_path, 'import os\nos.putenv(*args)\n')
+
+
+def test_postgres_alternate_string_delimiters_are_read():
+    """`SET TIME ZONE $$EST$$`, `E'EST'` and `$tz$-05:00$tz$` install what the
+    single-quoted forms install, and the matchers read them the same way
+    (Codex, PR #993 final review)."""
+    for sql in ("SET TIME ZONE $$EST$$;", "SET TIME ZONE E'EST';",
+                "SET TIME ZONE $tz$EST$tz$;", "SET TIME ZONE N'EST';",
+                "SET TIME ZONE U&'EST';", "set time zone e'EST';"):
+        out = _strip_sql_comments(sql)
+        assert len(out) == len(sql), sql
+        assert NONPY_AMBIGUOUS.search(out), (sql, out)
+    out = _strip_sql_comments("SELECT set_config('timezone', $$-05:00$$, false);")
+    assert NONPY_FIXED_OFFSET.search(out), out
+    out = _strip_sql_comments("SET TIME ZONE $$-5$$;")
+    assert NONPY_SQL_NUMERIC_OFFSET.search(out), out
+    # Width kept; a comment inside the body stays data; an unmatched opener
+    # and an identifier that happens to end in E are left as written.
+    assert _strip_sql_comments("SELECT $$-- x$$;") == "SELECT  '-- x' ;"
+    assert _strip_sql_comments("SELECT $$oops;") == "SELECT $$oops;"
+    assert _strip_sql_comments("SELECT CASE'x' END;") == "SELECT CASE'x' END;"
+    # And through a Python string.
+    legacy, _ = _probe_py('cur.execute("SET TIME ZONE $$EST$$")\n')
+    assert legacy, "a dollar-quoted zone in an embedded statement"
+    legacy, _ = _probe_py('cur.execute("SET TIME ZONE E\'EST\'")\n')
+    assert legacy, "an escape-string zone in an embedded statement"
+
+
+def test_a_posix_tz_with_utc_or_gmt_is_a_fixed_offset(tmp_path):
+    """`TZ=UTC+5` is UTC-5 all year, POSIX's sign; `TZ=UTC-5` is not Eastern.
+    Only where the value is a process or session TZ (Codex, PR #993 final
+    review)."""
+    for line in ("export TZ=UTC+5", "export TZ=GMT+05:00", "PGTZ=GMT+4",
+                 "TZ=UTC5", "export TZ='GMT+4'", 'TZ="UTC+05:00:00"'):
+        assert _scanned_shell(line), line
+    for line in ("export TZ=UTC-5", "export TZ=UTC+5:30", "export TZ=UTC+9",
+                 "export TZ=UTC", "export TZ=GMT+4EDT", "tz=UTC+5",
+                 "timezone=GMT+5", "export TZ=UTC+05:00:30"):
+        assert not _scanned_shell(line), line
+    assert _scanned_shell("export TZ := UTC+5", make=True)
+    assert NONPY_POSIX_ENV_OFFSET.search("ENV TZ GMT+05:00")
+    assert NONPY_POSIX_ENV_OFFSET.search("ENV TZ=UTC+5")
+    assert NONPY_POSIX_ENV_OFFSET.search("TZ: UTC+5")
+    assert not NONPY_POSIX_ENV_OFFSET.search("ENV TIMEZONE UTC+5")
+    hits = _yaml_env_pair_hits("- name: TZ\n  value: UTC+5\n")
+    assert hits and hits[0][2] is True, hits
+    hits = _yaml_env_pair_hits("- name: PGTZ\n  value: GMT+4\n")
+    assert hits and hits[0][2] is True, hits
+    assert not _yaml_env_pair_hits("- name: TIMEZONE\n  value: UTC+5\n")
+    assert not _yaml_env_pair_hits("- name: TZ\n  value: UTC-5\n")
+    assert _python_finds(tmp_path, 'import os\nos.environ["TZ"] = "UTC+5"\n')
+    assert _python_finds(tmp_path, 'import os\nos.environ.setdefault("PGTZ", "GMT+4")\n')
+    assert _python_finds(tmp_path, 'import os\nos.putenv("TZ", "GMT+05:00")\n')
+    assert _python_finds(tmp_path, 'import os\nZONE = "UTC+5"\nos.environ["TZ"] = ZONE\n')
+    assert _python_finds(tmp_path, 'import os\nos.environ.update({"TZ": "UTC+5"})\n')
+    assert not _python_finds(tmp_path, 'import os\nos.environ["TZ"] = "UTC-5"\n')
+    assert not _python_finds(tmp_path, 'import os\nos.environ["TZ"] = "UTC+9"\n')
+    assert not _python_finds(tmp_path, 'import pandas as pd\npd.Timestamp.now(tz="UTC+5")\n')
+    assert not _python_finds(tmp_path, 'settings = {}\nsettings["timezone"] = "UTC+5"\n')
+    # The generic checker is unchanged: it has no context to settle the sign.
+    assert _bad_zone_value("UTC+5") is None
+
+
+def test_every_make_name_is_preprocessed_as_make():
+    """Expansion and comment stripping follow `_reads_as_make`, not a second
+    list that knew only `Makefile` (Codex, PR #993 final review)."""
+    for name in ("Makefile", "GNUmakefile", "makefile", "rules.mk"):
+        assert _reads_as_shell(pathlib.Path(name)), name
+    assert not _reads_as_shell(pathlib.Path("notes.md"))
+    # What that decision buys, through the preprocessing `_scan` applies to
+    # a file it reads as Make: the variable resolves, the comment does not.
+    assert _scanned_shell("A = EST\nexport TZ = $(A)\n", make=True)
+    assert not _scanned_shell("# export TZ = EST\n", make=True)
+
+
+def test_pine_fixed_utc_offsets_are_read_in_a_timezone_call():
+    """Inside `time`/`timestamp`, `"UTC-5"` is a fixed UTC-5 and `"UTC+5"` is
+    not Eastern: Pine reads the sign the conventional way (Codex, PR #993
+    final review)."""
+    for src, value in (('time(timeframe.period, session, "UTC-5")', "UTC-5"),
+                       ('timestamp("GMT-05:00", 2024, 1, 1, 0, 0)', "GMT-05:00"),
+                       ('time(timeframe.period, session, "UTC-4")', "UTC-4"),
+                       ('z = "GMT-5"\ntime(timeframe.period, session, z)', "GMT-5")):
+        hits = _pine_call_hits(src)
+        assert [(h[1], h[2]) for h in hits] == [(value, True)], (src, hits)
+    for src in ('time(timeframe.period, session, "UTC+5")',
+                'time(timeframe.period, session, "GMT-0530")',
+                'time(timeframe.period, session, "UTC-9")',
+                'time(timeframe.period, session, "America/New_York")'):
+        assert not _pine_call_hits(src), src
+    # The generic checker is unchanged: a shell `TZ` reads the sign the other way.
+    assert _bad_zone_value("UTC-5") is None
+
+
+def test_a_static_string_augmented_assignment_folds(tmp_path):
+    """`zone = "US/"; zone += "Eastern"; ZoneInfo(zone)` names the legacy zone
+    (Codex, PR #993 final review)."""
+    head = "from zoneinfo import ZoneInfo\n"
+    assert _python_finds(tmp_path, head + 'zone = "US/"\nzone += "Eastern"\nZoneInfo(zone)\n')
+    assert _python_finds(tmp_path, head + 'zone = "E"\nzone += "ST"\nZoneInfo(zone)\n')
+    assert _python_finds(tmp_path, head + 'a = "US/"\nb = "Eastern"\na += b\nZoneInfo(a)\n')
+    assert not _python_finds(tmp_path, head + 'zone = "America/"\nzone += "New_York"\nZoneInfo(zone)\n')
+    assert not _python_finds(tmp_path, head + 'zone = "US/"\nzone += suffix\nZoneInfo(zone)\n')
+    assert not _python_finds(tmp_path, head + 'n = 1\nn += 2\nZoneInfo("America/New_York")\n')
+
+
+def test_an_alias_of_a_nested_constructor_keeps_its_receiver(tmp_path):
+    """`make = zoneinfo.ZoneInfo.no_cache; make("EST")` is made on `ZoneInfo`
+    (Codex, PR #993 final review)."""
+    assert _python_finds(tmp_path, 'import zoneinfo\nmake = zoneinfo.ZoneInfo.no_cache\nmake("EST")\n')
+    assert _python_finds(tmp_path, 'import zoneinfo as zi\nmake = zi.ZoneInfo.no_cache\nmake("EST")\n')
+    assert not _python_finds(tmp_path, 'import zoneinfo\nmake = zoneinfo.ZoneInfo.no_cache\nmake("America/New_York")\n')
+
+
+def test_adjacent_shell_fragments_form_one_word():
+    """`export TZ="E""ST"` assigns `EST`: the shell concatenates adjacent
+    fragments (Codex, PR #993 final review)."""
+    for line in ('export TZ="E""ST"', 'export TZ="US/"Eastern', 'export TZ=-"05:00"',
+                 "export TZ='US/'\"Eastern\"", 'SUFFIX=Eastern\nexport TZ="US/"$SUFFIX',
+                 'local TZ="E""ST" X=1'):
+        assert _scanned_shell(line), line
+    assert not _scanned_shell('export TZ="America/"New_York')
+    assert not _scanned_shell("A=E\nexport TZ='$A'\"ST\"")     # single quotes are literal
+    assert _shell_scalars('export TZ="E""ST"\n')["TZ"] == [(7, "EST", False)]
+    assert _shell_scalars('SUFFIX=Eastern\nexport TZ="US/"$SUFFIX\n')["TZ"][0][1] == "US/Eastern"
+    assert _shell_scalars("A=E\nexport TZ='$A'\"ST\"\n")["TZ"][0][1] == "$AST"
+    out = _expand_shell_defaults('export TZ="E""ST"\necho\n')
+    assert out.splitlines()[0] == 'export TZ="EST"  ', out      # width kept
+
