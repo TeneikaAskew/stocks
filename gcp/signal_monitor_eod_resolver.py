@@ -63,6 +63,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from lib.eastern_time import ET
 
 import pandas as pd
 import requests
@@ -73,7 +74,7 @@ from lib.indicators import calculate_rsi
 
 
 logger = logging.getLogger(__name__)
-_ET = ZoneInfo("America/New_York")
+_ET = ET
 _SESSION_CLOSE_ET = dt_time(16, 0)  # 4:00 PM ET — same as MarketConfig default
 # `av-intraday-nightly` (gcp/deploy.sh) writes a calendar day's own intraday
 # partition at 21:00 ET. Before this, a same-day skip is the expected

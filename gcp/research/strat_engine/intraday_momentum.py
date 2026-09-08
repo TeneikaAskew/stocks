@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from lib.eastern_time import ET_NAME
 
 from gcp.database import get_engine
 from gcp.research.strat_engine.strat_config import (
@@ -65,7 +66,7 @@ def _load_halfhour(engine, ticker: str) -> pd.DataFrame:
         df = pd.read_sql(sql, conn, params={"t": ticker})
     if df.empty:
         return df
-    ts_et = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("America/New_York")
+    ts_et = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(ET_NAME)
     df["minute_of_day"] = ts_et.dt.hour * 60 + ts_et.dt.minute
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     df["ret"] = (df["close"] - df["open"]) / df["open"]

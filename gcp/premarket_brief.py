@@ -19,6 +19,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from lib.eastern_time import ET, ET_NAME
 
 from lib.data_loader import DataLoader
 from lib.indicators import add_brief_indicators
@@ -1061,7 +1062,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         last_bar_date_obj = (
             last_bar_ts.date() if hasattr(last_bar_ts, 'date') else None
         )
-        # Anchor `data_as_of` to 16:00 ET (US/Eastern market close) on
+        # Anchor `data_as_of` to 16:00 ET (America/New_York market close) on
         # the bar's date, regardless of whether `latest.name` came in as
         # a tz-naive UTC midnight, a tz-aware UTC timestamp, or a plain
         # date object. The W6 v1 writer used `latest.name` directly,
@@ -1076,7 +1077,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         if last_bar_date_obj is not None:
             data_as_of_anchored = (
                 pd.Timestamp(last_bar_date_obj)
-                .tz_localize('America/New_York')
+                .tz_localize(ET_NAME)
                 .replace(hour=16, minute=0, second=0)
             )
         else:
@@ -1949,8 +1950,7 @@ def _fmt_gamma_ts(ts_iso: Optional[str]) -> str:
         return str(ts_iso)
     # Convert to ET (America/New_York). zoneinfo is stdlib on Py 3.9+.
     try:
-        from zoneinfo import ZoneInfo
-        dt = dt.astimezone(ZoneInfo("America/New_York"))
+        dt = dt.astimezone(ET)
     except Exception:
         # Cleanup — original tz used if zoneinfo lookup fails on a minimal
         # base image; the footer still renders, just in UTC.

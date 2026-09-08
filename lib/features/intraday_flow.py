@@ -37,6 +37,7 @@ CAPACITY (CLAUDE.md Rule 0):
 """
 from __future__ import annotations
 
+from lib.eastern_time import ET_NAME
 import logging
 
 import numpy as np
@@ -77,7 +78,7 @@ def compute_derived(buckets: pd.DataFrame) -> pd.DataFrame:
     b["ts"] = pd.to_datetime(b["ts"], utc=True)
     b = b.sort_values("ts").reset_index(drop=True)
     # ET calendar date for within-day grouping (matches strat bar_date).
-    bar_date = b["ts"].dt.tz_convert("America/New_York").dt.date
+    bar_date = b["ts"].dt.tz_convert(ET_NAME).dt.date
 
     tot = pd.to_numeric(b["tot_vol"], errors="coerce")
     signed = pd.to_numeric(b["signed_vol"], errors="coerce")

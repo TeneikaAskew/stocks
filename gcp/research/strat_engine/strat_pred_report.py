@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from lib.eastern_time import ET_NAME
 
 from gcp.database import get_engine
 from gcp.research.strat_engine.strat_config import (
@@ -146,7 +147,7 @@ def main():
         "move_pct": move_pct,
         "dir_hit": dir_hit,
     })
-    rep["ts"] = pd.to_datetime(rep["ts"], utc=True).dt.tz_convert("America/New_York")
+    rep["ts"] = pd.to_datetime(rep["ts"], utc=True).dt.tz_convert(ET_NAME)
 
     # ── TABLE 1 — SUMMARY ──
     log.info("=" * 70)

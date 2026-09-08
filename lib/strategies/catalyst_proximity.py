@@ -22,17 +22,16 @@ contexts without a live Cloud SQL.
 """
 from __future__ import annotations
 
+from lib.eastern_time import ET
 import logging
 from datetime import datetime, time as dtime, timedelta
 from functools import lru_cache
 from typing import Optional, Literal
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-ET = ZoneInfo("America/New_York")
 
 # ── Tier B: high-impact economic event names (universal-but-tested) ───
 # Each key is the canonical type label written into next/last_catalyst_type;

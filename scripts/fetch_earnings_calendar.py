@@ -791,7 +791,7 @@ def _yahoo_time_from_ts(ts) -> str:
     """
     try:
         if ts.tz is not None and str(ts.tz).upper() != 'US/EASTERN':
-            ts = ts.tz_convert('US/Eastern')
+            ts = ts.tz_convert("America/New_York")
         h = ts.hour
     except AttributeError:
         return 'unknown'

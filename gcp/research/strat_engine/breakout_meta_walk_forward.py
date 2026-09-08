@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from lib.eastern_time import ET_NAME
 
 from gcp.database import get_engine
 from gcp.research.strat_engine.strat_config import (
@@ -348,7 +349,7 @@ def _load_1min(engine, ticker: str) -> dict | None:
         "open": m["open"].astype(float).values,
         "high": m["high"].astype(float).values,
         "low": m["low"].astype(float).values,
-        "date": ts.dt.tz_convert("America/New_York").dt.normalize().dt.tz_localize(None)
+        "date": ts.dt.tz_convert(ET_NAME).dt.normalize().dt.tz_localize(None)
                   .values.astype("datetime64[D]"),
     }
 

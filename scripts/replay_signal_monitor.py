@@ -56,6 +56,7 @@ from gcp.signal_monitor import rvol_gate_verdict
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
+from lib.eastern_time import ET_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +198,8 @@ def filter_to_rth(bars: pd.DataFrame) -> pd.DataFrame:
     """
     if bars.empty or 'Time' not in bars.columns:
         return bars
-    et = bars['Time'].dt.tz_convert('America/New_York') if bars['Time'].dt.tz \
-        else bars['Time'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
+    et = bars['Time'].dt.tz_convert(ET_NAME) if bars['Time'].dt.tz \
+        else bars['Time'].dt.tz_localize('UTC').dt.tz_convert(ET_NAME)
     rth_mask = (et.dt.time >= time(9, 30)) & (et.dt.time < time(16, 0))
     return bars[rth_mask].reset_index(drop=True)
 

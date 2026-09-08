@@ -9,7 +9,6 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from collections import OrderedDict
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -36,6 +35,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from lib.single_flight import SingleFlight
+from lib.eastern_time import ET, ET_NAME
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
 from api.auth import (
     AUTH_MODE,
@@ -1320,7 +1320,7 @@ _SECTORS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=1, ttl=600)) 
 _MARKET_DATES_FLIGHT = SingleFlight()
 _MARKET_DATES_WAIT_S = 2.5
 
-_ET_TZ = ZoneInfo("America/New_York")
+_ET_TZ = ET
 
 
 
@@ -1668,7 +1668,7 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 df = df.drop(columns=["ts", "data_source"], errors="ignore")
                 if df.index.tz is not None:
                     if is_yfinance:
-                        df.index = (df.index.tz_convert("America/New_York")
+                        df.index = (df.index.tz_convert(ET_NAME)
                                             .tz_localize(None))
                     else:
                         df.index = df.index.tz_localize(None)
