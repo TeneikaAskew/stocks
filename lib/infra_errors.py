@@ -32,6 +32,7 @@ and only this module can tell the two apart (Codex P1 on #999). See
 from __future__ import annotations
 
 import errno
+import http.client
 import logging
 import socket
 import ssl
@@ -206,6 +207,14 @@ try:                                        # pragma: no cover - image without i
     from google.auth import exceptions as _gauth_exc
 except Exception:                           # pragma: no cover
     _gauth_exc = None
+try:                                        # pragma: no cover - image without it
+    from requests import exceptions as _requests_exc
+except Exception:                           # pragma: no cover
+    _requests_exc = None
+try:                                        # pragma: no cover - image without it
+    from urllib3 import exceptions as _urllib3_exc
+except Exception:                           # pragma: no cover
+    _urllib3_exc = None
 
 
 def _connector_transport_failure(exc: BaseException) -> bool:
@@ -554,6 +563,61 @@ def _auth_transport_outage(exc: BaseException) -> bool:
     return True
 
 
+def _storage_transport_types() -> tuple[type[BaseException], ...]:
+    """The requests / urllib3 / http.client transport wrappers that
+    google-cloud-storage's DEFAULT_RETRY treats as retryable
+    (`google.cloud.storage.retry._RETRYABLE_TYPES`), minus the ones already
+    classified elsewhere: the builtin `ConnectionError` and the google.api_core
+    5xx classes. Built defensively so an image without `requests` still
+    classifies the `http.client` protocol errors.
+    """
+    types: list[type[BaseException]] = [
+        http.client.BadStatusLine, http.client.IncompleteRead,
+        http.client.ResponseNotReady,
+    ]
+    if _requests_exc is not None:
+        types += [_requests_exc.ConnectionError,
+                  _requests_exc.ChunkedEncodingError, _requests_exc.Timeout]
+    if _urllib3_exc is not None:
+        types += [_urllib3_exc.PoolError, _urllib3_exc.ProtocolError,
+                  _urllib3_exc.SSLError, _urllib3_exc.TimeoutError]
+    return tuple(types)
+
+
+#: Evaluated once at import, like the driver tuple: the installed HTTP stack
+#: does not change while the process runs.
+_STORAGE_TRANSPORT_TYPES = _storage_transport_types()
+
+
+def _storage_transport_outage(exc: BaseException) -> bool:
+    """A GCS request-layer transport failure google-cloud-storage would have
+    retried, unless it is a certificate-verification failure.
+
+    `google.cloud.storage.retry._RETRYABLE_TYPES` treats
+    `requests.exceptions.ConnectionError` / `ChunkedEncodingError` / `Timeout`,
+    the `http.client` protocol errors, and urllib3's `PoolError` /
+    `ProtocolError` / `SSLError` / `TimeoutError` as retryable. When
+    `blob.exists()` or `download_as_bytes()` exhausts DEFAULT_RETRY after a
+    reset, read timeout, or truncated response it raises one of these, and none
+    subclasses the builtin `ConnectionError`, the google.api_core 5xx classes,
+    or google-auth's `TransportError` -- so a real storage outage swallowed to
+    None and answered 200 instead of 503 (Codex P1 on #999). A
+    certificate-verification failure stays loud like the raw ssl, aiohttp, and
+    auth-transport cases: `requests`/`urllib3` `SSLError` is in the retryable
+    set, but a bad trust chain is a deployment fault, not an outage.
+    """
+    if not isinstance(exc, _STORAGE_TRANSPORT_TYPES):
+        return False
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if _is_certificate_failure(cur):
+            return False
+        cur = cur.__cause__ or cur.__context__
+    return True
+
+
 def _retryable_auth_refresh(exc: BaseException) -> bool:
     """google-auth's `RefreshError`, when google-auth itself marked it retryable.
 
@@ -583,6 +647,7 @@ _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
                               _connector_transport_failure,
                               _retryable_http_response,
                               _auth_transport_outage,
+                              _storage_transport_outage,
                               _retryable_auth_refresh)
 
 #: The same rules minus "a feature this image cannot serve": what a library

@@ -1857,6 +1857,31 @@ def test_a_retryable_credential_refresh_is_an_outage_and_a_missing_package_is_no
     cert2 = gauth.TransportError(
         "HTTPSConnectionPool: certificate verify failed: self-signed certificate")
     assert not is_infrastructure_error(cert2)
+
+    # google-cloud-storage's DEFAULT_RETRY retries requests/urllib3/http.client
+    # transport wrappers that subclass none of the classes registered above, so
+    # an exhausted-retry storage outage 503s instead of swallowing to a 200
+    # unavailable payload (Codex P1 on #999). Certificate failures stay loud.
+    from requests import exceptions as _rexc
+    from urllib3 import exceptions as _uexc
+    import http.client as _http
+    for exc in (_rexc.ConnectionError("reset"), _rexc.Timeout("read timed out"),
+                _rexc.ReadTimeout("read timed out"),
+                _rexc.ChunkedEncodingError("truncated response"),
+                _rexc.SSLError("EOF occurred in violation of protocol"),
+                _uexc.ProtocolError("Connection broken"),
+                _uexc.ReadTimeoutError(None, "u", "read timed out"),
+                _uexc.NewConnectionError(None, "failed to establish"),
+                _uexc.MaxRetryError(None, "u", reason=None),
+                _http.IncompleteRead(b"partial"),
+                _http.BadStatusLine("garbage")):
+        assert is_backend_outage(exc), type(exc).__name__
+    cert_conn = _rexc.ConnectionError("wrap")
+    cert_conn.__cause__ = _ssl.SSLCertVerificationError("certificate verify failed")
+    for exc in (_rexc.SSLError("certificate verify failed"),
+                _uexc.SSLError("self-signed certificate in chain"),
+                cert_conn):
+        assert not is_infrastructure_error(exc), type(exc).__name__
     for exc in (psycopg2.OperationalError(_REFUSED),
                 gauth.RefreshError("server_error", retryable=True),
                 ConnectionRefusedError()):
