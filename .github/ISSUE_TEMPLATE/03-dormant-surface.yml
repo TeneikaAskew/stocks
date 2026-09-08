@@ -226,6 +226,18 @@ body:
         # measured from platform/, the first search below finds 2 commits where
         # the root finds 5, and from gcp/ the .claude scopes return ZERO with
         # rc=0 — a successful empty result that reads as "no history".
+        # RESOLVE $root HERE. This is a different issue-form field from the
+        # Consumers one, and form fields are independent placeholders — a filer
+        # working through this box in a fresh shell has no $root from up there.
+        # `git -C ""` does NOT fail: measured on git 2.43.0 it silently runs in
+        # the CURRENT directory, so an unset $root turns every probe below back
+        # into the CWD-relative search this comment exists to prevent — 5
+        # history lines from the root, 0 from gcp/, rc=0 both times. Under
+        # `set -u` it aborts instead, which is at least loud. Re-resolve and
+        # check it, rather than inheriting it.
+        $ root=$(git rev-parse --show-toplevel) \
+            || { echo "not inside a git checkout — cannot run the forensics"; }
+        $ test -n "$root" || echo "empty top level — do not run the probes below"
         $ git -C "$root" log --oneline --all --full-history \
             --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames \

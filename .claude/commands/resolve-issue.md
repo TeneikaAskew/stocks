@@ -1341,6 +1341,15 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # work either — `${#REVIEWED[@]-0}` is a "bad substitution". Define the arrays
   # only when they do not already exist, which is nounset-safe and does not
   # clobber a real approval: measured, 0 when unset and still 2 when set.
+  # AND `${arr[@]+"${arr[@]}"}` AT EVERY OUTER EXPANSION OF THESE TWO, for the
+  # reason the inner ones carry it: defaulting them to `()` here makes them
+  # DECLARED and EMPTY, which is precisely the shape bash 3.2 rejects under
+  # `set -u`. Round 44 made `reviewed`, `rev` and `untr` portable INSIDE
+  # consumed() and left the four call sites and loops out here bare — the same
+  # sibling miss, one scope up, in the round that was fixing it. Four sites: the
+  # two `consumed` calls and the two approval loops. `PRESERVE_STOCKS` is
+  # deliberately NOT changed: it is a fixed three-element constant and can never
+  # be empty, so the guard would be noise.
   declare -p REVIEWED        >/dev/null 2>&1 || REVIEWED=()
   declare -p REVIEWED_SOLYRA >/dev/null 2>&1 || REVIEWED_SOLYRA=()
   test $(( ${#REVIEWED[@]} + ${#REVIEWED_SOLYRA[@]} )) -eq 0 \
@@ -1365,7 +1374,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # the solyra half, while the same call without -e completed with rc=0. Fixing
   # the probes and leaving their callers is the same one-level-short miss this
   # file keeps making.
-  if consumed "$sym" "${REVIEWED[@]}"; then rc=0; else rc=$?; fi
+  if consumed "$sym" ${REVIEWED[@]+"${REVIEWED[@]}"}; then rc=0; else rc=$?; fi
   test $rc -eq 1 || { echo "stocks: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
   # PIN THE REVISION, and fetch it first. An existing checkout is not a current
   # one: it can be parked on an old branch, or on a feature branch that already
@@ -1450,7 +1459,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
             test -e "$root/$p" || test -L "$root/$p" || continue
             if [ -z "$IMPL_RE" ] || ! printf '%s' "$p" | grep -qE -- "$IMPL_RE"
             then
-              for ap in "${REVIEWED[@]}"; do
+              for ap in ${REVIEWED[@]+"${REVIEWED[@]}"}; do
                 test "$p" != "$ap" || { p=; break; }
               done
             fi
@@ -1539,7 +1548,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
                test -n "$p" || continue
                if [ -z "$IMPL_RE" ] || ! printf '%s' "$p" | grep -qE -- "$IMPL_RE"
                then
-                 for ap in "${REVIEWED_SOLYRA[@]}"; do
+                 for ap in ${REVIEWED_SOLYRA[@]+"${REVIEWED_SOLYRA[@]}"}; do
                    test "$p" != "$ap" || { p=; break; }
                  done
                fi
@@ -1584,7 +1593,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # stays consumed()'s throughout: 0 consumed, 1 absent, 2 error, 3 commands,
     # 4 a path survives, and now 5 for a rollout that has not been confirmed.
     # The outer check still accepts only 1.
-    if consumed "$sym" "${REVIEWED_SOLYRA[@]}"; then exit 0; else scode=$?; fi
+    if consumed "$sym" ${REVIEWED_SOLYRA[@]+"${REVIEWED_SOLYRA[@]}"}; then exit 0; else scode=$?; fi
     test "$scode" -eq 1 || exit "$scode"
     # MAIN IS NOT DEPLOYED, AND THIS FILE ARGUES THAT AT LENGTH ELSEWHERE.
     # The rollout section says a deploy and every client having it are different
