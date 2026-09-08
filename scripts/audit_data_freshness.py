@@ -229,22 +229,32 @@ CHECKS: list[dict] = [
         "min_rows_per_day": 12,
         "gap_scan_days": 3,
     },
-    # historical_signals — written by historical-signals-watchlist daily at
-    # 05:00 UTC. Audit 2026-06-02 (F11 in
+    # historical_signals — written by historical-signals-watchlist
+    # (`0 1 * * 2-6` ET, gcp/deploy.sh:4830 — Tue-Sat 01:00 ET). Audit
+    # 2026-06-02 (F11 in
     # docs/incidents/2026-06-01-pipeline-failures-audit.md) found this table
     # going stale silently because the writer job's per-ticker exception
     # handler swallowed errors and reported `success` even when ALL tickers
     # crashed. Tracking it here means the next watchdog run after a silent
     # zero-output day will flag it.
+    #
+    # Issue #1051: like av-intraday-nightly, the Tue-Sat cron fires the
+    # NEXT trading day and resumes from MAX(entry_time)+1min, so it writes
+    # the PREVIOUS session's close (Tue 01:00 ET processes Mon's data).
+    # Without settle_lag_days=1 the watchdog anchored expected freshness at
+    # "today" instead of the last session the cron actually delivers,
+    # producing a false 87h/36h stale alert every run after a holiday or
+    # weekend gap (run freshness-watchdog-n79mf, 2026-09-08T22:05Z: job
+    # completed successfully and correctly inserted nothing for Labor Day).
     {
         "name": "historical_signals",
         "ts_column": "inserted_at",
         "ts_is_date": False,
-        "expected_lag_hours": 36,           # daily cron at 05:00 UTC + 6h buffer
+        "expected_lag_hours": 36,           # cron fires 01:00 ET + buffer
         "per_ticker": False,
         "writer_job": "historical-signals-watchlist",
-        "settle_hour_et": 1,                # 05:00 UTC ≈ 01:00 ET
-        "tolerate_holidays": True,
+        "settle_hour_et": 1,                # 0 1 * * 2-6 ET
+        "settle_lag_days": 1,               # cron writes the PREVIOUS trading day
     },
     # strat_features_5m / _15m / _30m — written by strat-engine in
     # default-mode (incremental). 2026-06-19 investigation found these

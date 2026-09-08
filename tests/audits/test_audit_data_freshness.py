@@ -590,6 +590,13 @@ def test_check_dicts_declare_settle_hour_for_after_hours_fetchers():
     # (Tue 21 ET writes Mon's bars). Codex P2 on PR #494.
     assert by_name["market_data_intraday"]["settle_hour_et"] == 21
     assert by_name["market_data_intraday"]["settle_lag_days"] == 1
+    # historical_signals — 01:00 ET cron Tue-Sat (gcp/deploy.sh:4830),
+    # same D-1 shape as market_data_intraday. Issue #1051: missing this
+    # lag anchored freshness at "today" and false-flagged every run
+    # after a holiday/weekend gap even though the writer ran and
+    # correctly inserted nothing.
+    assert by_name["historical_signals"]["settle_hour_et"] == 1
+    assert by_name["historical_signals"]["settle_lag_days"] == 1
 
 
 def test_spx_not_monitored_in_market_data_daily():
@@ -667,3 +674,41 @@ def test_recent_trading_days_with_lag_1():
     days = _recent_trading_days(now, n=3, settle_hour_et=21, settle_lag_days=1)
     # Anchor=Wed (post-21 ET), lag=1 → end at Tue 5/12, going back: Tue, Mon, Fri
     assert days == [date(2026, 5, 12), date(2026, 5, 11), date(2026, 5, 8)]
+
+
+def test_historical_signals_settle_lag_matches_production_incident(monkeypatch):
+    """Issue #1051: freshness-watchdog reported historical_signals STALE
+    (lag 87.0h, limit 36h) at 2026-09-08T22:00:48Z, nine hourly runs in a
+    row, even though historical-signals-watchlist (cron `0 1 * * 2-6` ET,
+    gcp/deploy.sh:4830) had run to completion every day and correctly
+    inserted nothing over the Labor Day (2026-09-07) gap.
+
+    Reproduces the exact incident numbers without the fix (87.0h, stale)
+    and confirms settle_lag_days=1 — the market_data_intraday pattern —
+    fixes it (0h, ok), using the CHECKS entry itself so a future edit to
+    the dict is caught by this test rather than only by production."""
+    from scripts.audit_data_freshness import (
+        CHECKS, _query_freshness_one, most_recent_trading_day,
+    )
+
+    check = next(c for c in CHECKS if c["name"] == "historical_signals")
+    now = datetime(2026, 9, 8, 22, 0, 48)  # matches freshness-watchdog-n79mf
+    last_dt = datetime(2026, 9, 5, 5, 1, 44, 860000)  # Sat cron wrote Fri's close
+    _patch_query(monkeypatch, pd.DataFrame([{"last_row_at": last_dt, "row_count_recent": 16}]))
+
+    # Without the lag (the bug as shipped): expected day anchors at "today"
+    # (Tue 9/8), so lag is measured against Tue's close → false 87h stale.
+    buggy_expected = most_recent_trading_day(now, settle_hour_et=check["settle_hour_et"])
+    buggy_row = _query_freshness_one(dict(check, settle_lag_days=0), buggy_expected, now_utc=now)
+    assert buggy_row.lag_hours == pytest.approx(87.0, abs=0.05)
+    assert buggy_row.status == "stale"
+
+    # With the fix: expected day rolls back to the last session the Tue-Sat
+    # cron actually delivers (Fri 9/4, skipping the 9/7 holiday + weekend).
+    fixed_expected = most_recent_trading_day(
+        now, settle_hour_et=check["settle_hour_et"], settle_lag_days=check["settle_lag_days"],
+    )
+    assert fixed_expected == date(2026, 9, 4)
+    fixed_row = _query_freshness_one(check, fixed_expected, now_utc=now)
+    assert fixed_row.lag_hours == 0.0
+    assert fixed_row.status == "ok"
