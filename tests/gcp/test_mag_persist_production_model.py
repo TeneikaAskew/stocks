@@ -1129,6 +1129,31 @@ def test_label_mode_contradicting_the_namespace_is_refused(isolated_mag_threshol
     assert apply_research_contract("put", None)[0] == "put"
 
 
+def test_every_label_building_script_takes_its_labels_from_the_contract():
+    """Enumerated from the code rather than from a list I maintain.
+
+    The previous version of this test named the scripts I had wired, which I
+    had found by auditing callers of load_predictions — the wrong axis. It
+    passed while naive_calendar_lookup_baseline.py, which builds labels but
+    loads no predictions, still computed a body/default baseline for every
+    research run, so its gate counts could not say whether the model beat the
+    calendar prior (Codex on #1055). Enumerating the real callers is what
+    makes the check survive the next script.
+    """
+    builders = sorted(
+        f for f in pathlib.Path("scripts").glob("*.py")
+        if "load_magnitude_dataset(engine" in f.read_text()
+    )
+    assert builders, "no label-building scripts found; the probe is broken"
+    for f in builders:
+        src = f.read_text()
+        assert "add_research_arg(p)" in src, f"{f.name} cannot name a namespace"
+        assert "apply_research_contract(" in src, f"{f.name} ignores the contract"
+        assert src.index("apply_research_contract(") < src.index(
+            "load_magnitude_dataset(engine"), (
+            f"{f.name}: the contract must be adopted before the dataset is built")
+
+
 def test_label_building_scripts_take_their_labels_from_the_contract():
     """Loading the right predictions and then rebuilding labels at the
     defaults scores a model against a target it never predicted."""
