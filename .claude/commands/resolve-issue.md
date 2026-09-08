@@ -1346,11 +1346,21 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # is not part of any path, so absent_everywhere's path scan is blind to it
     # as well. A package whose imports are all gone then certifies as retired
     # while installs keep pulling it.
-    # EXACT KEYS, not a grep of the manifest. `-E "$sym"` over the names is a
-    # substring match, so retiring `react` would match `react-dom` and the check
-    # would have no passing state — the unreachable-assertion shape again. The
-    # symbol is split on `|`, which is the documented coupled-retirement form,
-    # and each alternative compared for equality.
+    # ANCHORED, not a substring and not string equality. `-E "$sym"` over the
+    # names is a substring match, so retiring `react` would match `react-dom`
+    # and the check would have no passing state — the unreachable-assertion
+    # shape again. Equality fixed that and broke the other half: `$sym` is an
+    # ERE everywhere else in this helper, and `index($k)` compares it as a
+    # LITERAL, so a supported bracket form silently stopped matching. Measured
+    # on a manifest declaring d3 with the symbol `d[0-9]`: every grep-based
+    # scope matches it, package.json is excluded from all of them, and this
+    # scope returned 1 — `consumed` said ABSENT with d3 a live direct
+    # dependency. Rejecting non-literal patterns here was the other option and
+    # is wrong: this file documents `foo[-_]bar` and `foo[0-9][-_]bar` as
+    # supported spellings, so refusing them at one scope would make its own
+    # guidance unusable. `^(…)$` keeps what equality was protecting — measured,
+    # `react` still matches `react` and not `react-dom` — and the anchors make
+    # the split on `|` unnecessary, since the alternation is inside the group.
     # THE VALUE MATTERS TOO, not just the key. npm aliases let a manifest say
     # `"charts": "npm:d3@^7"`: source imports `charts`, installs still fetch
     # `d3`, and a key-only comparison for `d3` finds nothing — measured, that
@@ -1373,14 +1383,13 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
               | if ($t | startswith("@"))
                 then ($t | split("@") | if length > 2 then "@" + .[1] else $t end)
                 else ($t | split("@") | .[0]) end;
-            ($s | split("|")) as $alts
-            | [.dependencies, .devDependencies, .peerDependencies,
-               .optionalDependencies]
+            [.dependencies, .devDependencies, .peerDependencies,
+             .optionalDependencies]
             | map(select(. != null)) | add // {} | to_entries[]
             | . as $e
             | [ $e.key, ($e.value | select(type == "string" and
                                            startswith("npm:")) | alias_target) ]
-            | select(any(.[]; . as $k | $alts | index($k)))
+            | select(any(.[]; test("^(" + $s + ")$")))
             | "\($e.key) \($e.value)"') \
       || { echo "could not read package.json's dependency sections"; return 2; }
     test -z "$dep" || d=0
@@ -1598,7 +1607,32 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
   local _q=$1 _mode=${2:-} _span _bare= _out= _c
   while case $_q in *'['*']'*) true;; *) false;; esac; do
     _bare=$_bare${_q%%[*}
-    _q=${_q#*[}; _span=${_q%%]*}
+    _q=${_q#*[}
+    # A LEADING `]` IS A MEMBER, NOT THE TERMINATOR. POSIX: `]` first in a
+    # bracket expression (or first after `^`) is a literal member, so `[]|_]`
+    # is the three-element class `]`, `|`, `_`. The scan below takes that first
+    # `]` as the close, sees an empty span, and misses the pipe inside —
+    # measured, `foo[]|_]bar` was ACCEPTED and the `IFS='|'` split then rebuilt
+    # `foo[]|[-_]]bar`, which matches none of foo_bar.py, foo]bar.py or
+    # foo|bar.py. `[^]|_]` slips through the same way. Reading the form
+    # correctly means the bracket parser rounds 53, 54 and 55 each declined —
+    # `[]]`, `[^]]` and `[[:alpha:]]` all end in different places — so this
+    # refuses it, which is the conservative half of the finding's own offer and
+    # costs one `case`. Nothing this file documents opens a class with `]`:
+    # `foo[-_]bar`, `foo[0-9][-_]bar`, `foo[^0-9]bar` and `foo[$]bar` are all
+    # unaffected, measured.
+    case $_q in
+      ']'*|'^]'*)
+        echo "'$1' opens a bracket expression with ']', which POSIX reads as a"
+        echo "  literal member rather than the close. The bracket walk in this"
+        echo "  file reads it as the close, so a '|' inside would be missed and"
+        echo "  the split would rebuild a pattern matching neither spelling —"
+        echo "  measured. Put the ']' elsewhere in the class if the tool you"
+        echo "  are retiring really needs one, or name the file in an"
+        echo "  implementation argument."
+        return 1;;
+    esac
+    _span=${_q%%]*}
     case $_span in
       *'|'*) echo "'$1' has a '|' inside a bracket expression. The three splits"
              echo "  on '|' in this file would cut there and rebuild a pattern"
