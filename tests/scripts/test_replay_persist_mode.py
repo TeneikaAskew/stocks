@@ -727,3 +727,94 @@ def test_a_non_positive_limit_is_rejected_rather_than_ignored():
     for bad in (0, -1):
         with _pytest.raises(ValueError, match="limit"):
             limit_to_evaluated_bars(bars, bad)
+
+
+def test_a_zero_volume_premarket_bar_is_never_treated_as_a_restamp():
+    """The exemption `_et_as_utc_restamps` documents must exist in the code.
+
+    A flat quote with nothing trading is the one realistic way two DIFFERENT
+    minutes match on all five OHLCV fields, so the docstring says a bar with
+    no volume is never flagged. It said so while the comprehension did not
+    check volume at all: the edit that added the guard was lost to a failed
+    assertion in the same patch and only the prose landed (Codex on #1022,
+    round 25). On a thin ticker that removes a genuine warm-up bar, which is
+    exactly the divergence from live the trim exists to prevent.
+
+    Such a bar carries no VWAP weight either, so exempting it costs nothing.
+    """
+    import pandas as pd
+
+    from scripts.replay_signal_monitor import trim_to_live_window_scope
+
+    def bar(t, close, vol):
+        return {"Time": t, "Open": close, "High": close, "Low": close,
+                "Close": close, "Volume": vol}
+
+    rows = []
+    # A thin premarket: every bar flat at one price, nothing trading.
+    pre = pd.date_range("2026-09-02 06:00", "2026-09-02 09:29", freq="1min",
+                        tz="America/New_York")
+    for t in pre:
+        rows.append(bar(t.tz_convert("UTC"), 50.0, 0))
+    # RTH at the same flat price, also untraded for the first stretch, so the
+    # +4h twin of a warm-up bar exists and is byte-identical.
+    rth = pd.date_range("2026-09-02 09:30", "2026-09-02 15:59", freq="1min",
+                        tz="America/New_York")
+    for t in rth:
+        rows.append(bar(t.tz_convert("UTC"), 50.0, 0))
+
+    bars = pd.DataFrame(rows).sort_values("Time").reset_index(drop=True)
+    out = trim_to_live_window_scope(bars, warmup_bars=99)
+
+    et = out["Time"].dt.tz_convert("America/New_York")
+    premarket_kept = int((et.dt.time < time(9, 30)).sum())
+    assert premarket_kept == 99, (
+        "a zero-volume premarket bar is a flat quote, not an ET-as-UTC copy; "
+        "the warm-up must still be 99 bars deep, got %d" % premarket_kept)
+    assert len(out) == 99 + len(rth), len(out)
+
+
+def test_the_restamp_offset_follows_the_zone_into_standard_time():
+    """The docstring says the offset is taken per row from the Eastern zone,
+    so it is 4 hours in September and 5 in January without a second rule.
+    That is a claim about behaviour, and the volume exemption in the same
+    docstring turned out to be described but not implemented, so it is pinned
+    rather than trusted (Codex on #1022, round 25)."""
+    import pandas as pd
+
+    from scripts.replay_signal_monitor import trim_to_live_window_scope
+
+    def bar(t, close, vol):
+        return {"Time": t, "Open": close, "High": close, "Low": close,
+                "Close": close, "Volume": vol}
+
+    # January: EST, so the ET-as-UTC copy lands FIVE hours early.
+    day = "2026-01-14"
+    rows = []
+    pre = pd.date_range(f"{day} 06:00", f"{day} 09:29", freq="1min",
+                        tz="America/New_York")
+    for i, t in enumerate(pre):
+        rows.append(bar(t.tz_convert("UTC"), 290.0 + i * 0.001, 800))
+    rth = pd.date_range(f"{day} 09:30", f"{day} 15:59", freq="1min",
+                        tz="America/New_York")
+    for i, t in enumerate(rth):
+        rows.append(bar(t.tz_convert("UTC"), 295.0 + i * 0.01, 19400))
+
+    copies = []
+    for offset in (145, 165, 185):
+        src = rth[offset].tz_convert("UTC")
+        off = src.tz_convert("America/New_York").utcoffset()
+        assert off == -pd.Timedelta(hours=5), ("this date must be EST: %s" % off)
+        copies.append(src - off)          # five hours earlier, under EST
+        rows.append(bar(src - off, 295.0 + offset * 0.01, 19400))
+
+    bars = pd.DataFrame(rows).sort_values("Time").reset_index(drop=True)
+    out = trim_to_live_window_scope(bars, warmup_bars=99)
+    et_out = out["Time"].dt.tz_convert("America/New_York")
+    premarket_out = out[et_out.dt.time < time(9, 30)]
+
+    assert (premarket_out["Volume"] == 800).all(), (
+        "a five-hour EST restamp must be dropped too: %s"
+        % premarket_out[premarket_out["Volume"] != 800].to_dict("records"))
+    assert len(premarket_out) == 99, len(premarket_out)
+    assert len(out) == 99 + len(rth), len(out)

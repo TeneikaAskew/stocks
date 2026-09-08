@@ -347,7 +347,19 @@ def _et_as_utc_restamps(bars: pd.DataFrame, ts_utc: pd.Series,
     they cannot warm a window live never held.
     """
     cols = [c for c in _OHLCV if c in bars.columns]
-    if not cols or not candidates.any():
+    if len(cols) < len(_OHLCV) or not candidates.any():
+        # EVERY field, or the match is not byte-identical and the rule turns
+        # into a guess. A frame missing one is not one this can judge.
+        return pd.Series(False, index=bars.index)
+    # The exemption this function's docstring promises, which an earlier edit
+    # described without implementing: a flat quote with nothing trading is the
+    # one realistic way two DIFFERENT minutes match on all five fields, and on
+    # a thin ticker flagging those removed the entire warm-up (Codex on #1022,
+    # round 25). Such a bar carries no VWAP weight either, so exempting it
+    # costs nothing.
+    traded = pd.to_numeric(bars['Volume'], errors='coerce').fillna(0) > 0
+    candidates = candidates & traded
+    if not candidates.any():
         return pd.Series(False, index=bars.index)
     # One Eastern UTC offset, per row: raw stamp minus Eastern wall clock.
     offset = ts_utc.dt.tz_convert('UTC').dt.tz_localize(None) \
