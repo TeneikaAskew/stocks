@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+from lib.eastern_time import ET
 
 from gcp.database import is_cloud_sql_configured, query_to_dataframe  # noqa: E402
 
@@ -375,7 +376,7 @@ def most_recent_trading_day(
     Converts UTC to America/New_York to handle EDT/EST correctly (UTC-4
     in summer, UTC-5 in winter) before checking against settle_hour_et.
     """
-    et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York"))
+    et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(ET)
     # Step 1: anchor on the most recent CALENDAR day whose settle-hour
     # has passed. For lag-0 fetchers this is just "today if past
     # settle_hour else yesterday." For lag-1 fetchers (intraday cron is
@@ -1042,7 +1043,7 @@ def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
     # report row, never a silent pass (Rule 3.7): "skipped" does not
     # count as ok -- it says so, with the window, in the report.
     et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(
-        ZoneInfo("America/New_York"))
+        ET)
     lo, hi = _ENRICHMENT_WINDOW_ET
     if not (lo <= et_now.hour < hi):
         return [FreshnessRow(

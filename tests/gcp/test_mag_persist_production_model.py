@@ -71,6 +71,41 @@ def _promotable_model(y):
     return m
 
 
+def _passing_gates(n_ok: int = 8) -> dict:
+    """A cell whose walk-forward verdict is PASS on gates 1-4.
+
+    Promotion needs this as well as a sane prediction distribution
+    (#1025), so every test of the successful publish path has to hand one
+    over — the same reason _promotable_model exists for the distribution.
+    """
+    return {
+        "n_ok_folds": n_ok,
+        "g1_logloss_beat_folds": n_ok, "g1_pass": True,
+        "g2_ece_pass_folds": n_ok, "g2_pass": True,
+        "g3_monotone_folds": n_ok, "g3_pass": True,
+        "g4_lift_pass_folds": n_ok, "g4_pass": True,
+        "cell_pass_gates_1_to_4": True,
+    }
+
+
+def _slv7m_gates() -> dict:
+    """SPY/15m's real walk-forward verdict from magnitude-engine-slv7m.
+
+    Read from research/magnitude_engine/phase0/spy_15m/
+    walk_forward_magnitude-engine-slv7m.json. Its argmax spread passed the
+    distribution criteria and it was promoted to LATEST on 2026-09-07
+    despite beating the baseline on 0 of 8 folds.
+    """
+    return {
+        "n_ok_folds": 8,
+        "g1_logloss_beat_folds": 0, "g1_pass": False,
+        "g2_ece_pass_folds": 2, "g2_pass": False,
+        "g3_monotone_folds": 8, "g3_pass": True,
+        "g4_lift_pass_folds": 8, "g4_pass": True,
+        "cell_pass_gates_1_to_4": False,
+    }
+
+
 def _capture_blob_uploads():
     """Wire up a MagicMock google.cloud.storage that records every
     upload_from_string call. Returns (fake_client, captured_dict).
@@ -118,7 +153,7 @@ def test_persists_three_blobs_with_correct_names(monkeypatch, joblib_dump_stub):
             "IWM", "5m", run_id="testrun-001",
             X_full=X, y_full=y,
             feature_cols=["rsi_14", "atr_14", "ema_9", "vwap"],
-            calibration="none",
+            gates=_passing_gates(), calibration="none",
         )
 
     # Atomic-publish: blobs land under a run-scoped path and a LATEST
@@ -147,7 +182,7 @@ def test_version_blob_is_the_run_id(monkeypatch, joblib_dump_stub):
         mwf._persist_production_model_artifact(
             "SPY", "5m", run_id="walk-forward-2026-06-13-SPY-5m-v3",
             X_full=X, y_full=y,
-            feature_cols=["x"], calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), calibration="none",
         )
 
     run_id = "walk-forward-2026-06-13-SPY-5m-v3"
@@ -168,7 +203,7 @@ def test_feature_cols_blob_is_newline_delimited(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "QQQ", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=cols, calibration="none",
+            feature_cols=cols, gates=_passing_gates(), calibration="none",
         )
 
     blob = captured["magnitude-models/production/QQQ/5m/r/feature_cols.txt"]
@@ -190,7 +225,7 @@ def test_returns_none_on_upload_failure_no_raise(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         got = mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=["x"], calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), calibration="none",
         )
     assert got is None
 
@@ -222,7 +257,7 @@ def test_latest_pointer_updated_last(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="rX", X_full=X, y_full=y,
-            feature_cols=["x"], calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), calibration="none",
         )
 
     # LATEST must be the last write in the upload sequence.
@@ -255,7 +290,7 @@ def test_uses_calibrated_wrapper_when_calibration_not_none(monkeypatch, joblib_d
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=["x"], calibration="sigmoid", cv=3,
+            feature_cols=["x"], gates=_passing_gates(), calibration="sigmoid", cv=3,
         )
 
     assert len(ccv_seen) == 1
@@ -547,7 +582,7 @@ def test_blocked_promotion_leaves_latest_untouched(monkeypatch, joblib_dump_stub
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         uri = mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="collapsed-001",
-            X_full=X, y_full=y, feature_cols=["x"], calibration="none",
+            X_full=X, y_full=y, feature_cols=["x"], gates=_passing_gates(), calibration="none",
         )
 
     assert uri is None, "a blocked promotion must not report success"
@@ -577,8 +612,138 @@ def test_isotonic_calibration_does_not_bypass_the_gate(monkeypatch, joblib_dump_
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         uri = mwf._persist_production_model_artifact(
             "IWM", "15m", run_id="iso-001",
-            X_full=X, y_full=y, feature_cols=["x"], calibration="isotonic",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_passing_gates(), calibration="isotonic",
         )
 
     assert uri is None
     assert "magnitude-models/production/IWM/15m/LATEST" not in captured
+
+
+# ─────────────── walk-forward gate (promotion criterion 2, #1025) ───────────
+
+def test_walk_forward_gate_reason_is_none_when_the_cell_passed():
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    assert mwf.walk_forward_gate_reason(_passing_gates()) is None
+
+
+def test_walk_forward_gate_reason_names_each_failing_gate_and_its_folds():
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    reason = mwf.walk_forward_gate_reason(_slv7m_gates())
+    assert reason is not None
+    # The two that failed are named with the counts behind them; the two
+    # that passed are not, so the log line says what to go fix.
+    assert "g1 log-loss beat 0/8 folds" in reason
+    assert "g2 ECE within ceiling 2/8 folds" in reason
+    assert "g3" not in reason and "g4" not in reason
+
+
+def test_walk_forward_gate_reason_raises_when_the_verdict_is_absent():
+    """A caller that cannot say whether the cell passed must not promote by
+    omission — CLAUDE.md §3.7, the failure is INTERNAL so it fails loud."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    for bad in ({}, {"g1_pass": True}, None, "PASS"):
+        with pytest.raises(ValueError, match="cell_pass_gates_1_to_4"):
+            mwf.walk_forward_gate_reason(bad)
+
+
+def test_failed_walk_forward_gates_block_promotion(monkeypatch, joblib_dump_stub):
+    """The slv7m regression: a candidate whose argmax spread is fine but whose
+    cell verdict is FAIL must NOT flip LATEST.
+
+    SPY/15m promoted on 2026-09-07 with exactly this shape and served the
+    Expected-Move card from probabilities that beat the class-prior baseline
+    on 0 of 8 folds.
+    """
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "SPY", "15m", run_id="slv7m-shape",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_slv7m_gates(), calibration="none",
+        )
+
+    assert uri is None, "a cell that failed gates 1-4 must not be promoted"
+    assert "magnitude-models/production/SPY/15m/LATEST" not in captured, \
+        "LATEST must still point at the previous production model"
+
+    blocked = captured["magnitude-models/production/SPY/15m/slv7m-shape/PROMOTION_BLOCKED"]
+    payload = json.loads(blocked.decode())
+    assert payload["ok"] is False
+    assert "g1 log-loss beat 0/8 folds" in payload["reason"]
+    # The gate counts ride along so the block can be diagnosed without
+    # re-running an 8-fold job.
+    assert payload["walk_forward_gates"]["g2_ece_pass_folds"] == 2
+    assert payload["walk_forward_gates"]["cell_pass_gates_1_to_4"] is False
+    # Artifacts are still kept under the run prefix for diagnosis.
+    assert "magnitude-models/production/SPY/15m/slv7m-shape/model.joblib" in captured
+
+
+def test_both_criteria_are_reported_when_both_fail(monkeypatch, joblib_dump_stub):
+    """A collapsed model in a failing cell records both reasons, not the
+    first one to trip."""
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    collapsed = MagicMock()
+    collapsed.predict.return_value = np.zeros(len(y), dtype=np.int64)
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=collapsed), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "IWM", "15m", run_id="both-001",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_slv7m_gates(), calibration="none",
+        )
+
+    assert uri is None
+    payload = json.loads(
+        captured["magnitude-models/production/IWM/15m/both-001/PROMOTION_BLOCKED"].decode())
+    assert "collapsed" in payload["reason"]
+    assert "walk-forward gates" in payload["reason"]
+
+
+def test_passing_cell_still_promotes_and_records_its_gates(monkeypatch, joblib_dump_stub):
+    """The new criterion must not block a cell that cleared gates 1-4 — the
+    promotion path stays reachable."""
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "QQQ", "15m", run_id="good-001",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_passing_gates(), calibration="none",
+        )
+
+    assert uri == "gs://test-bucket/magnitude-models/production/QQQ/15m/"
+    assert captured["magnitude-models/production/QQQ/15m/LATEST"] == b"good-001"
+    assert "magnitude-models/production/QQQ/15m/good-001/PROMOTION_BLOCKED" not in captured
+
+
+def test_persist_call_site_hands_over_the_cells_own_gates():
+    """walk_forward must pass the gates it just computed, not a fresh or
+    empty dict — the guard is worthless if the call site fabricates one."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    assert "gates=gates," in src, \
+        "walk_forward must forward its own _evaluate_phase_gate result"
+    # And the parameter is required, so a caller cannot silently omit it.
+    sig = inspect.signature(mwf._persist_production_model_artifact)
+    assert sig.parameters["gates"].default is inspect.Parameter.empty

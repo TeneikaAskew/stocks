@@ -9,6 +9,7 @@ Extracted from trading_analysis.py (canonical Wilder's implementations) and
 analyze_market_data_enhanced.py (Bollinger, MACD, consecutive moves).
 """
 
+from lib.eastern_time import ET_NAME
 import pandas as pd
 import numpy as np
 from datetime import datetime, time, timedelta
@@ -254,7 +255,7 @@ def calculate_rvol_vs_baseline(
     This function compares each bar to the MEDIAN volume historically
     traded at that same minute of the session, which is what "relative
     volume" means. `baseline` maps minute-of-day (``hour*60 + minute``,
-    US/Eastern) to that median, built by
+    America/New_York) to that median, built by
     ``minute_of_day_volume_baseline`` from prior sessions.
 
     Minutes absent from `baseline` yield NaN, never a fabricated 1.0
@@ -566,7 +567,7 @@ def calculate_premarket_context(
     ts = pd.to_datetime(times)
     if hasattr(ts, 'dt'):
         # If tz-aware, convert to ET; else assume already-ET
-        ts_et = ts.dt.tz_convert('America/New_York') if ts.dt.tz is not None else ts
+        ts_et = ts.dt.tz_convert(ET_NAME) if ts.dt.tz is not None else ts
         time_of_day = ts_et.dt.time
     else:
         time_of_day = pd.Series([t.time() if hasattr(t, 'time') else t for t in ts])

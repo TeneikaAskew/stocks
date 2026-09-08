@@ -35,12 +35,13 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from lib.eastern_time import ET
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-_ET = ZoneInfo("America/New_York")
+_ET = ET
 _UTC = ZoneInfo("UTC")
 _REPLAY_COLOR = 0x95a5a6   # gray — distinguishes replays from live alerts
 _MAX_ALERTS = 200          # safety cap; narrow the window if exceeded

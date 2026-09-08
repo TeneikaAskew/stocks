@@ -45,6 +45,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from lib.eastern_time import ET_NAME
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -224,7 +225,7 @@ def migrate_market_data_intraday(data_dir: Path, dry_run: bool):
             if isinstance(df.index, pd.DatetimeIndex):
                 df['ts'] = df.index
                 if df['ts'].dt.tz is None:
-                    df['ts'] = df['ts'].dt.tz_localize('America/New_York').dt.tz_convert('UTC')
+                    df['ts'] = df['ts'].dt.tz_localize(ET_NAME).dt.tz_convert('UTC')
             elif 'timestamp' in df.columns:
                 df['ts'] = pd.to_datetime(df['timestamp'], utc=True)
 

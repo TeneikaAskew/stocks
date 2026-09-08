@@ -64,6 +64,7 @@ Usage
 """
 from __future__ import annotations
 
+from lib.eastern_time import ET_NAME
 import logging
 from datetime import date, datetime, timedelta
 from typing import Callable, Literal, Optional
@@ -641,7 +642,7 @@ def minutes_from_rth_open(ts) -> Optional[float]:
 
     Returns ``None`` for null / unparseable input so callers can fall back to
     the naive linear model rather than silently mis-time the decay. Tz-aware
-    timestamps are converted to US/Eastern; naive timestamps are assumed to be
+    timestamps are converted to America/New_York; naive timestamps are assumed to be
     exchange wall-clock (the convention the strat backtest already uses).
     """
     if ts is None:
@@ -653,7 +654,7 @@ def minutes_from_rth_open(ts) -> Optional[float]:
     if pd.isna(t):
         return None
     if t.tzinfo is not None:
-        t = t.tz_convert("America/New_York")
+        t = t.tz_convert(ET_NAME)
     return float(t.hour * 60 + t.minute - _RTH_OPEN_MIN)
 
 

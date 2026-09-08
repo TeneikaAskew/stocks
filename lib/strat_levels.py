@@ -14,6 +14,7 @@ Dependencies:
   - lib/indicators.py (calculate_historical_levels for Prev_* columns)
 """
 
+from lib.eastern_time import ET_NAME
 import pandas as pd
 import numpy as np
 import re
@@ -1265,7 +1266,7 @@ def build_level_map(
 
     return LevelMap(
         ticker=ticker,
-        as_of=pd.Timestamp.now('US/Eastern').isoformat(),
+        as_of=pd.Timestamp.now(ET_NAME).isoformat(),
         current_price=current_price,
         levels=sorted(all_levels_list, key=lambda lv: lv.price),
         pmg_zones=pmg_zones,

@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from lib.eastern_time import ET
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 
@@ -869,8 +870,7 @@ def _run_backfill() -> None:
 
     Skip + smart-switch keep this idempotent and cheap on re-runs:
     already-current tickers do zero AV calls."""
-    from zoneinfo import ZoneInfo
-    now_et = datetime.now(ZoneInfo("America/New_York"))
+    now_et = datetime.now(ET)
     today_et = now_et.date()
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
@@ -964,8 +964,7 @@ def _assert_fetch_date_fresh(fetch_date: str, today_et: date | None = None,
     Tuesday (4 calendar days back).
     """
     if today_et is None:
-        from zoneinfo import ZoneInfo
-        today_et = datetime.now(ZoneInfo("America/New_York")).date()
+        today_et = datetime.now(ET).date()
     fetch_d = datetime.strptime(fetch_date, '%Y-%m-%d').date()
     stale_days = (today_et - fetch_d).days
     if stale_days > max_stale_days:
@@ -1090,8 +1089,7 @@ def main():
     # discards everything, write_intraday_to_sql gets empty df, nothing
     # is persisted. Symptom: cron exits 0, but market_data_intraday goes
     # stale. See docs/incidents/2026-05-01-fetch-market-data-tz-bug.md.
-    from zoneinfo import ZoneInfo
-    _ET = ZoneInfo("America/New_York")
+    _ET = ET
     fetch_date = args.date or datetime.now(_ET).date().strftime('%Y-%m-%d')
     if args.allow_stale_date:
         log.warning(

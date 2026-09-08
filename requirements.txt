@@ -53,6 +53,7 @@ py_vollib_vectorized>=0.1.1
 # Date and time handling
 python-dateutil>=2.8.0
 pytz>=2025.1
+tzdata>=2025.1  # guarantees America/New_York on slim images; see lib/eastern_time.py
 
 # API and data formats
 protobuf>=4.24.0

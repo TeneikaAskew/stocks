@@ -50,6 +50,7 @@ from typing import Any, Optional
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from lib.eastern_time import ET_NAME
 
 from gcp.database import execute_sql, get_engine, upsert_dataframe
 from lib.gamma import GammaSummary, Level, SpotEstimate
@@ -244,7 +245,7 @@ def _build_summary_from_levels(ticker: str, snap_date: _date,
 
 def _tod_bucket(ts: pd.Timestamp) -> str:
     """Bucket a bar timestamp into open / midday / afternoon / close."""
-    t = ts.tz_convert("America/New_York").time()
+    t = ts.tz_convert(ET_NAME).time()
     if t <= datetime.strptime("10:30", "%H:%M").time():
         return "open"
     if t <= datetime.strptime("13:00", "%H:%M").time():
