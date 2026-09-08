@@ -713,7 +713,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
     # The listing's OWN status, captured before the pipe. Under `pipefail` a
     # failed `git ls-files` beside a grep that then finds nothing yields 1, the
     # grep's — a broken measurement wearing a clean miss's exit code.
-    paths=$(git -C "$root" ls-files) \
+    paths=$(git -C "$root" -c core.quotepath=false ls-files) \
       || { echo "could not list tracked files — asserting nothing"; return 1; }
     # THE GREP'S STATUS, NOT SORT'S. A clean miss is 1 and is ordinary here, so
     # only rc>1 refuses — but `sort -u` at the end of the pipe supplies the
@@ -1679,7 +1679,20 @@ _solyra_ok() {          # 0 usable, 1 refuse (and say why)
        echo "NOT asserting — searching the wrong repo reports 'no consumers'"
        echo "for every symbol you ask about."
        return 1;;
-  esac; }
+  esac
+  # RE-ANCHOR AT THE CHECKOUT ROOT. Everything above passes for a SUBDIRECTORY
+  # of the right repo — `rev-parse --git-dir` succeeds there and origin is the
+  # same URL — and then every `git -C "$SOLYRA" … -- .` searches only that
+  # subtree. Measured on the real checkout: `useQuery` matches 42 files from the
+  # root and 39 from `src/`, so three live consumers outside it are invisible
+  # and the dormant-surface evidence would recommend retiring a surface the
+  # frontend still uses. This is the CWD-relative defect the comment at the top
+  # of this function already describes, arriving through the operator's SOLYRA
+  # rather than through `..`. Rewriting SOLYRA is deliberate: every later probe
+  # and the `cd "$SOLYRA"` subshell read this same variable.
+  SOLYRA=$(git -C "$SOLYRA" rev-parse --show-toplevel) \
+    || { echo "could not resolve the solyra checkout root — asserting nothing"
+         return 1; }; }
 
 # AN IMPLEMENTATION ARGUMENT IS A PATH, NOT A PATTERN. `$sym` is documented as
 # an ERE and the alternation form depends on that; the paths beside it are
@@ -1744,6 +1757,17 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
     # costs one `case`. Nothing this file documents opens a class with `]`:
     # `foo[-_]bar`, `foo[0-9][-_]bar`, `foo[^0-9]bar` and `foo[$]bar` are all
     # unaffected, measured.
+    # A NESTED POSIX CLASS ENDS SOMEWHERE ELSE. `[:alpha:]`, `[=d=]` and
+    # `[.x.]` are constructs INSIDE a bracket expression, and their own `]`
+    # is not the outer close. The scan below takes the first `]` it sees, so
+    # measured on `foo[[:alpha:]|_]bar` the span read as `[:alpha:`, the pipe
+    # inside was missed, `_sym_ok` ACCEPTED it, and the split then cut there —
+    # giving `[foo[[:alpha:]] [_]bar]`, two alternatives that match neither
+    # spelling. Reading it properly is the nested bracket parser rounds 53
+    # through 61 all declined; this refuses the form, and the file already
+    # cites `[[:alpha:]]` as one of the reasons that parser is not worth
+    # writing. `[:` anywhere in the span, not only at its start, because
+    # `[a[:digit:]]` opens one too.
     case $_q in
       ']'*|'^]'*)
         echo "'$1' opens a bracket expression with ']', which POSIX reads as a"
@@ -1756,6 +1780,16 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
         return 1;;
     esac
     _span=${_q%%]*}
+    case $_span in
+      *'[:'*|*'[='*|*'[.'*)
+        echo "'$1' nests a POSIX class — [:alpha:], [=x=] or [.x.] — inside a"
+        echo "  bracket expression. Its own ']' is not the outer close, so the"
+        echo "  bracket walk in this file reads the class as ending early and"
+        echo "  a '|' after it would be split as an alternation — measured."
+        echo "  Spell the class out, e.g. foo[a-zA-Z_]bar, or name the file in"
+        echo "  an implementation argument."
+        return 1;;
+    esac
     case $_span in
       *'|'*) echo "'$1' has a '|' inside a bracket expression. The three splits"
              echo "  on '|' in this file would cut there and rebuild a pattern"
@@ -1787,7 +1821,30 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
   while [ -n "$_bare" ]; do
     _c=${_bare%"${_bare#?}"}; _bare=${_bare#?}
     if [ "$_c" = '\' ]; then
-      case ${_bare%"${_bare#?}"} in -|_) _esc_sep=${_bare%"${_bare#?}"};; esac
+      case ${_bare%"${_bare#?}"} in
+        -|_) _esc_sep=${_bare%"${_bare#?}"};;
+        # AN ESCAPED ALPHANUMERIC IS WHERE THE TWO ENGINES DISAGREE. Every
+        # scope but one matches with `grep -E`, POSIX ERE, where `\d` is just a
+        # literal `d`; the package.json dependency scope matches with jq's
+        # `test()`, Oniguruma, where `\d` is a digit class. So `\d3` matches
+        # `d3` in every grep scope and not in the dependency one — and
+        # package.json is excluded from all the grep scopes, so a package
+        # surviving only as a declared dependency reads as absent while installs
+        # keep fetching it. Refusing the construct is the "restrict and validate
+        # the accepted syntax" half of the finding, and it costs one case in a
+        # walk that was already consuming these pairs. What is left is the
+        # language both engines agree on: literals, bracket expressions (minus
+        # the nested POSIX forms refused above), alternation, grouping,
+        # quantifiers, and escaped PUNCTUATION, which both read as literal.
+        [A-Za-z0-9])
+          echo "'$1' escapes an alphanumeric ('\${_bare%"${_bare#?}"}'). Those"
+          echo "  are character classes to jq's regex engine and plain literals"
+          echo "  to grep -E, and this file uses both — the package.json"
+          echo "  dependency scan is jq, every other scope is grep. Measured:"
+          echo "  the two disagree, so a dependency can read as absent while"
+          echo "  npm still installs it. Spell the class out, e.g. [0-9]."
+          return 1;;
+      esac
       _bare=${_bare#?}; continue
     fi
     _out=$_out$_c
@@ -2063,7 +2120,17 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # retired workflow KEEPS its *.yml.disabled file by this repo's own
   # convention, and the path scan matching it made the assertion unpassable for
   # a retirement that was already correct and complete.
-  files=$(git -C "$root" ls-files --cached --others --exclude-standard \
+  # `-c core.quotepath=false`. By default git C-QUOTES a pathname containing a
+  # non-ASCII byte — measured, `café_module.py` is emitted as
+  # `"caf\303\251_module.py"` — and the quoted spelling is not a path that
+  # exists, so the existence filter drops the tracked file and the scan below
+  # matches a name nothing on disk has. Both inventories get the flag, since
+  # the two halves must frame paths identically. This closes the QUOTING; a
+  # pathname containing a literal newline is still outside what a
+  # newline-delimited inventory can represent, before this change and after,
+  # and the honest fix for that is a NUL-delimited rewrite of both scans and
+  # every filter between them, which is not this round's defect.
+  files=$(git -C "$root" -c core.quotepath=false ls-files --cached --others --exclude-standard \
             -- . "${PRESERVE_STOCKS[@]}") \
     || { echo "could not list files — asserting nothing"; return 1; }
   # `-e` is false for a broken symlink, which is still a path that exists, so
@@ -2251,7 +2318,9 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # tracked PATH naming the symbol, not only the three Claude ones.
     # No preserved-path exclusions over here, and no pathspec at all — see
     # PRESERVE_STOCKS above for why that is measured rather than an oversight.
-    sfiles=$(git ls-tree -r --name-only "$REV") \
+    # Same flag as the stocks inventory — the two halves must frame paths
+    # identically, and ls-tree quotes exactly as ls-files does.
+    sfiles=$(git -c core.quotepath=false ls-tree -r --name-only "$REV") \
       || { echo "solyra: could not list files at ${REV:0:12}"; exit 2; }
     # The solyra approval filters the solyra path list, same as the stocks half
     # — INCLUDING the implementation protection that half gained last round. The

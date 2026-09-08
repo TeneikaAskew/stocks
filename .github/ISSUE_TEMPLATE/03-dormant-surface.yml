@@ -234,6 +234,13 @@ body:
                  echo "not solyra; this probe did not run" >&2
                  return 2;;
             esac
+            # RE-ANCHOR AT THE ROOT. Everything above passes for a
+            # SUBDIRECTORY of the right repo — it is a git checkout and origin
+            # matches — and then `git -C "$s" … -- .` searches only that
+            # subtree. Measured on the real checkout: `useQuery` matches 42
+            # files from the root and 39 from `src/`, so consumers outside it
+            # are invisible and this evidence would read as "no consumers".
+            s=$(git -C "$s" rev-parse --show-toplevel) || return 2
             git -C "$s" "$@"
           }
         $ at_solyra grep -nE -e "<surface>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
