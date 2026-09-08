@@ -57,6 +57,19 @@ import os
 from datetime import datetime as datetime_type
 from typing import Any, Optional
 
+from lib.infra_errors import is_backend_outage
+
+# Every read below catches `Exception` and answers a typed UNAVAILABLE
+# envelope, which is right for a corrupt artifact or an empty population:
+# the rest of the statement still assembles. It is wrong for Cloud SQL being
+# unreachable, because that is not one source's failure -- every block would
+# carry the same reason -- and the API's route guard, which answers 503 for
+# exactly that, never saw it: the statement assembled as a 200 whose every
+# field said "query failed" (Codex P1 on #999). So each handler re-raises a
+# backend OUTAGE before it builds the envelope. A feature this image cannot
+# serve (the research stack's `ModuleNotFoundError`) is not an outage and
+# stays an envelope.
+
 log = logging.getLogger(__name__)
 
 
@@ -168,6 +181,8 @@ def _build_continuation(engine, ticker: str, tf: str, as_of) -> dict:
         # surface that as a typed UNAVAILABLE envelope (Rule 3.7) rather than
         # letting it crash the whole assemble_movement_statement call — the
         # rest of the statement (levels, modifiers, scope) must still assemble.
+        if is_backend_outage(e):   # Cloud SQL down is not this source's failure
+            raise
         log.warning(
             "continuation predict_one failed for %s %s: %s", ticker, tf, e
         )
@@ -339,6 +354,8 @@ def _fetch_reach_rates(ticker: str, side: str, query_fn) -> dict:
     try:
         df = query_fn(_reach_rate_sql(side), {"ticker": ticker.upper()})
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
+        if is_backend_outage(e):   # Cloud SQL down is not this source's failure
+            raise
         log.warning("reach-rate query failed for %s %s: %s", ticker, side, e)
         return _unavailable(f"reach-rate query failed: {e}")
 
@@ -394,6 +411,8 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
     try:
         df = query_fn(sql, params)
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
+        if is_backend_outage(e):   # Cloud SQL down is not this source's failure
+            raise
         log.warning("tracked-levels query failed for %s: %s", ticker, e)
         return _unavailable(f"tracked-levels query failed: {e}")
     if df is None or getattr(df, "empty", True):
@@ -595,6 +614,8 @@ def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict
     try:
         df = query_fn(sql, params)
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
+        if is_backend_outage(e):   # Cloud SQL down is not this source's failure
+            raise
         log.warning("degeneracy check failed for %s %s: %s", ticker, tf, e)
         return _unavailable(f"degeneracy check query failed: {e}")
 
@@ -652,6 +673,8 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     try:
         df = query_fn(sql, params)
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
+        if is_backend_outage(e):   # Cloud SQL down is not this source's failure
+            raise
         log.warning("magnitude query failed for %s %s: %s", ticker, tf, e)
         return _unavailable(f"magnitude query failed: {e}", role="context")
 
@@ -701,6 +724,8 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
             atr_20 = float(av) if av is not None and av == av else None
             current_price = float(cv) if cv is not None and cv == cv else None
     except Exception as e:  # EXTERNAL: surface, don't fabricate
+        if is_backend_outage(e):   # Cloud SQL down is not this source's failure
+            raise
         log.warning("expected_move ATR lookup failed for %s %s: %s", ticker, tf, e)
 
     return _ok(
@@ -735,6 +760,8 @@ def _build_regime(ticker: str, as_of, gamma_fn) -> dict:
     try:
         g = gamma_fn(ticker, as_of=as_of)
     except Exception as e:  # EXTERNAL: chain load — surface, don't fabricate
+        if is_backend_outage(e):   # Cloud SQL down is not this source's failure
+            raise
         log.warning("gamma summary failed for %s: %s", ticker, e)
         return _unavailable(f"gamma summary failed: {e}", role="context")
 

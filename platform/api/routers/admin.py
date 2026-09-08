@@ -38,6 +38,7 @@ from lib.agents.model_routing import (  # noqa: E402
 from lib.agents.schema import ALL_ROLES, AgentRole  # noqa: E402
 from api import auth as auth_state  # noqa: E402 — module ref: AUTH_MODE read at call time
 from api.auth import configured_admin_email, current_user_email, is_admin_email  # noqa: E402
+from lib.infra_errors import is_infrastructure_error  # noqa: E402
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -128,7 +129,28 @@ def _model_to_row(m: AvailableModel) -> AvailableModelRow:
 @router.get("/routes", response_model=RouteListResponse)
 def admin_list_routes(request: Request):
     _require_admin(request)
-    rows = [_route_to_row(r) for r in list_routes()]
+    try:
+        rows = [_route_to_row(r) for r in list_routes()]
+    except Exception as exc:
+        # `list_routes()` opens its own Cloud SQL connection. Unguarded, a
+        # connection failure reached FastAPI as an unhandled exception: 500
+        # with a plain-text body, which the admin UI cannot render and which
+        # reads as a bug in our code rather than an unreachable database.
+        # Verified against a real `psycopg2.OperationalError` in
+        # tests/api/test_route_coverage.py.
+        #
+        # Narrowed with the three guards Codex flagged on #999, though it was
+        # not one of them: `_route_to_row` shapes every row inside this try, so
+        # the same conflation was here. Fixing the named three and leaving this
+        # one is how the five bare 500s in `insights.py` came to be fixed one
+        # at a time in the first place.
+        if not is_infrastructure_error(exc):
+            logger.exception("model route listing failed with an INTERNAL error")
+            raise
+        logger.error("model route listing failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="model route store temporarily unavailable"
+        ) from exc
     return RouteListResponse(routes=rows)
 
 
@@ -145,8 +167,39 @@ def admin_update_route(
         set_route(role, body.provider, body.model, updated_by="admin-ui")  # type: ignore[arg-type]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    # Return the updated row
-    for r in list_routes():
+    except Exception as exc:
+        # `set_route` opens its own Cloud SQL connection. Only `ValueError`
+        # was caught, so a connection failure reached FastAPI as a bare 500
+        # with a plain-text body -- the same shape as `admin_list_routes`
+        # above, and invisible to the route sweep because its request was
+        # covered through the adapter-validation branch that 400s first.
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "model route write failed for %s with an INTERNAL error", role)
+            raise
+        logger.error("model route write failed for %s: %s", role, exc)
+        raise HTTPException(
+            status_code=503, detail="model route store temporarily unavailable"
+        ) from exc
+    # Return the updated row.
+    #
+    # `list_routes()` opens its OWN connection, so the write succeeding says
+    # nothing about this read succeeding: a transient read failure after a
+    # committed write still escaped as a bare 500, past the 503 handling the
+    # write just gained (Codex, PR #999). Same contract as the write.
+    try:
+        rows = list_routes()
+    except Exception as exc:
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "model route reload failed after writing %s with an INTERNAL "
+                "error", role)
+            raise
+        logger.error("model route reload failed after writing %s: %s", role, exc)
+        raise HTTPException(
+            status_code=503, detail="model route store temporarily unavailable"
+        ) from exc
+    for r in rows:
         if r.role == role:
             return _route_to_row(r)
     raise HTTPException(status_code=500, detail="update succeeded but row not found")
@@ -322,6 +375,47 @@ def admin_structure_brief(
 # and is NOT triggered by any scheduler. Production triggers are blocked
 # until a documented use case + a fresh validation pass land.
 # ---------------------------------------------------------------------------
+
+
+def _parse_as_of(raw: Optional[str]):
+    """ISO-8601 -> a pandas Timestamp, or a 400 naming the bad input.
+
+    Parsed BEFORE the infrastructure guard in both callers below. Inside it,
+    a malformed timestamp came back as "strat engine temporarily unavailable"
+    with a 503 -- telling an authenticated admin to retry a request that can
+    never succeed, while the backend it accuses is healthy (Codex, PR #999).
+
+    Still `pandas.to_datetime`, not `datetime.fromisoformat`: the set of
+    accepted spellings is part of the contract and a stricter parser would
+    reject inputs that work today. Only the error mapping changes.
+    """
+    if not raw:
+        return None
+    import pandas as _pd  # noqa: PLC0415
+    try:
+        parsed = _pd.to_datetime(raw)
+    except (ValueError, TypeError, OverflowError) as exc:
+        # The parser's own rejections, and only those. pandas raises
+        # `ParserError` and `OutOfBoundsDatetime` (both `ValueError`) for a
+        # string it cannot read, `TypeError` for the wrong type, and
+        # `OverflowError` for a value past its range. Anything else --
+        # an `AttributeError` from an integration regression -- is our
+        # defect, and `except Exception` was reporting even a VALID timestamp
+        # as the caller's mistake when that happened (Codex P2 on #999).
+        raise HTTPException(
+            status_code=400,
+            detail=f"as_of_timestamp must be an ISO-8601 timestamp; got {raw!r}",
+        ) from exc
+    if _pd.isna(parsed):
+        # `to_datetime` returns NaT for some inputs rather than raising, and a
+        # NaT reaching `predict_one` is the fabricated-value shape all over
+        # again: a request for "no particular bar" that the caller asked to be
+        # a specific one.
+        raise HTTPException(
+            status_code=400,
+            detail=f"as_of_timestamp must be an ISO-8601 timestamp; got {raw!r}",
+        )
+    return parsed
 
 
 class StratEnginePredictRequest(BaseModel):
@@ -530,13 +624,46 @@ def admin_strat_engine_predict(
     # Lazy-import the predict path so the API container doesn't have
     # lightgbm + scikit-learn loaded into memory unless this endpoint
     # is actually hit. Heavy module-load only when needed.
-    from gcp.database import get_engine  # noqa: PLC0415
-    from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
-    import pandas as _pd  # noqa: PLC0415
+    # The IMPORT is inside the guard too, not just the calls. `strat_pred_serve`
+    # pulls lightgbm and scikit-learn, so a container built without them raises
+    # ModuleNotFoundError before `get_engine()` is ever reached -- another bare
+    # 500, and the one that actually fires in an API image that skipped the
+    # heavy ML extras. An unavailable predict stack IS "strat engine
+    # temporarily unavailable"; it is not a crash. (Codex, PR #999)
+    as_of = _parse_as_of(body.as_of_timestamp)
 
-    as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
-    engine = get_engine()
-    result = predict_one(engine, ticker, tf, as_of=as_of)
+    try:
+        from gcp.database import get_engine  # noqa: PLC0415
+        from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
+
+        engine = get_engine()
+        result = predict_one(engine, ticker, tf, as_of=as_of)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Only an INFRASTRUCTURE failure converts. This guard covers the whole
+        # inference, not just the import and `get_engine()`, so with a
+        # reachable database `except Exception` reported a model or schema
+        # programming error as a retryable outage -- and the coverage request
+        # already expects 503, so that regression could stay green while an
+        # operator diagnosed an outage that was not happening
+        # (Codex P1 on #999). A `ModuleNotFoundError` naming one of the
+        # optional ML packages IS infrastructure here (the classifier's
+        # `OPTIONAL_DEPENDENCIES`): an image built without the extras has no
+        # predict stack. Any other `ImportError` -- a renamed symbol in
+        # `strat_pred_serve`, a typo in one of our own module paths -- is a
+        # defect and re-raises, so a broken deployment cannot answer a
+        # retryable 503 forever.
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "strat-engine predict failed for %s %s with an INTERNAL error",
+                ticker, tf)
+            raise
+        logger.error("strat-engine predict failed for %s %s: %s: %s",
+                     ticker, tf, type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=503, detail="strat engine temporarily unavailable"
+        ) from exc
     return StratEnginePredictResponse(**result)
 
 
@@ -648,14 +775,39 @@ def admin_structure_continuation(
             ),
         )
 
-    # Lazy-import the heavy predict path only when the endpoint is hit.
-    from gcp.database import get_engine  # noqa: PLC0415
-    from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
-    import pandas as _pd  # noqa: PLC0415
+    # Same unguarded path as the predict endpoint above -- imports included,
+    # since `strat_pred_serve` pulls lightgbm and scikit-learn and a container
+    # without them raises before `get_engine()`. A backend outage on the
+    # ENABLED path became a bare 500, which the route sweep could not see
+    # while the flag defaulted OFF (Codex, PR #999).
+    #
+    # This endpoint's own contract is an explicit UNAVAILABLE envelope for
+    # "the model cannot produce one" -- but unreachable infrastructure is not
+    # a consulted-and-empty model, so it answers 503 rather than a 200
+    # envelope that would tell the caller the opposite of what happened.
+    as_of = _parse_as_of(body.as_of_timestamp)
 
-    as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
-    engine = get_engine()
-    result = predict_one(engine, ticker, tf, as_of=as_of)
+    try:
+        from gcp.database import get_engine  # noqa: PLC0415
+        from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
+
+        engine = get_engine()
+        result = predict_one(engine, ticker, tf, as_of=as_of)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Narrowed with the predict endpoint above, as Codex asked: the same
+        # guard covers the same whole inference here (Codex P1 on #999).
+        if not is_infrastructure_error(exc):
+            logger.exception(
+                "structure-continuation predict failed for %s %s with an "
+                "INTERNAL error", ticker, tf)
+            raise
+        logger.error("structure-continuation predict failed for %s %s: %s: %s",
+                     ticker, tf, type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=503, detail="strat engine temporarily unavailable"
+        ) from exc
 
     base = {
         "ticker": result.get("ticker", ticker),
@@ -773,8 +925,33 @@ def _fb_auth():
     """
     from api.auth import _ensure_firebase  # noqa: PLC0415
 
-    _ensure_firebase()
-    from firebase_admin import auth as fb_auth  # noqa: PLC0415
+    try:
+        _ensure_firebase()
+        from firebase_admin import auth as fb_auth  # noqa: PLC0415
+    except Exception as exc:
+        # firebase-admin is an optional dependency (`import firebase_admin`
+        # inside `_ensure_firebase`), and initialization needs ADC. On an
+        # instance without either, this raised `ModuleNotFoundError` /
+        # `DefaultCredentialsError` from OUTSIDE every try block in the three
+        # callers below, so FastAPI answered 500 with the plain-text body
+        # "Internal Server Error" — while those same callers already answer
+        # 503 "user directory temporarily unavailable" for a firebase call
+        # that fails one line later. Same failure, two different answers,
+        # because the guard was around the call and not the import.
+        #
+        # Only an INFRASTRUCTURE failure converts -- the classifier already
+        # recognises a missing `firebase_admin` and a `DefaultCredentialsError`.
+        # A `TypeError` raised inside `_ensure_firebase` is a defect in our
+        # initialisation, and rewriting it as "temporarily unavailable" for
+        # all three admin-user operations hid it (Codex P1 on #999).
+        if not is_infrastructure_error(exc):
+            logger.exception("firebase-admin initialisation failed with an "
+                             "INTERNAL error")
+            raise
+        logger.error("firebase-admin unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="user directory temporarily unavailable"
+        ) from exc
 
     return fb_auth
 

@@ -40,6 +40,7 @@ import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
 # Server-verified identity for per-user watchlist scoping (mirrors journal.py).
 from api.auth import current_user_email  # noqa: E402
+from lib.infra_errors import is_infrastructure_error  # noqa: E402
 from api.schemas import (
     InsightHistoryResponse,
     TickerSearchResponse,
@@ -135,6 +136,51 @@ class ReportEnvelope(BaseModel):
 # ---------------------------------------------------------------------------
 # DB helpers (raw SQL via the existing model_routing connection)
 # ---------------------------------------------------------------------------
+
+
+def _db_call(what: str, fn, *args, **kwargs):
+    """Run a Cloud SQL helper, turning an infrastructure failure into a 503.
+
+    Every helper below opens its own psycopg2 connection via
+    `model_routing.connect()`. When Cloud SQL is unreachable that raises
+    `OperationalError` from inside the handler, and FastAPI answers **500 with
+    the plain-text body "Internal Server Error"** — no JSON envelope, so the
+    frontend's error path has nothing to render and the failure is
+    indistinguishable from a bug in our own code.
+
+    Five handlers in this router had that shape and none of them was ever
+    requested by a test. `tests/test_route_coverage.py` found the first
+    (`/api/insights/reports/{report_id}`), which was then fixed with a
+    try/except in that one handler; driving requests past the pre-handler
+    gates in that same file found the other four. Fixing them one at a time
+    was how one got fixed and four did not, so the conversion lives here once.
+
+    This is not a fallback (Rule 3.7): nothing is fabricated and nothing is
+    substituted. A DB failure becomes an explicit 503 naming the exception
+    type, which is the same contract every other DB-backed router in this app
+    already answers with. `HTTPException` passes through untouched so a
+    deliberate 404/400 raised inside `fn` keeps its own status.
+
+    Only an INFRASTRUCTURE failure converts. `fn` is a whole helper, not a
+    connection boundary -- it also indexes rows, formats timestamps and builds
+    envelopes -- so `except Exception` rewrote a `KeyError` from a schema
+    regression into a retryable 503, and the coverage test asserting 503 stayed
+    green through it (Codex P1 on #999). Rule 3.7's own split says why that is
+    wrong: an EXTERNAL failure is reported, an INTERNAL one is a bug and must
+    fail loudly. Anything `is_infrastructure_error` does not recognise is
+    re-raised untouched and reaches FastAPI as a 500.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if not is_infrastructure_error(exc):
+            logger.exception("%s failed with an INTERNAL error: %s", what, exc)
+            raise
+        logger.exception("%s failed: %s", what, exc)
+        raise HTTPException(
+            status_code=503, detail=f"{what} failed: {type(exc).__name__}")
 
 
 def _fetch_latest_report(
@@ -684,7 +730,7 @@ def get_insight_report(ticker: str, as_of: Optional[str] = None):
     rather than falling through to a newer report (no look-ahead, §3.6/§3.7).
     """
     cutoff = _parse_as_of_param(as_of)
-    row = _fetch_latest_report(ticker, cutoff)
+    row = _db_call("report lookup", _fetch_latest_report, ticker, cutoff)
     if row is None:
         suffix = f" as of {as_of}" if cutoff is not None else ""
         raise HTTPException(
@@ -709,7 +755,8 @@ def get_insight_history(ticker: str, limit: int = 20):
     """Return a scannable list of recent reports for the ticker."""
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
-    rows = _fetch_report_history(ticker, limit)
+    rows = _db_call("report history lookup", _fetch_report_history,
+                    ticker, limit)
     return {"ticker": ticker.upper(), "count": len(rows), "reports": rows}
 
 
@@ -726,7 +773,7 @@ def get_insight_report_by_id(report_id: str):
         UUID(report_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="report_id must be a UUID")
-    row = _fetch_report_by_id(report_id)
+    row = _db_call("report lookup", _fetch_report_by_id, report_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"report {report_id} not found")
     return ReportEnvelope(
@@ -781,7 +828,7 @@ def refresh_insight_report(
     ticker_up = ticker.upper()
     parsed_as_of = _parse_as_of_param(as_of)
     trigger = "local_dev" if _is_local_dev() else "on_demand"
-    run_id = _insert_run(ticker_up, trigger=trigger)
+    run_id = _db_call("run insert", _insert_run, ticker_up, trigger=trigger)
 
     if _is_local_dev():
         background_tasks.add_task(_sync_run, run_id, ticker_up, parsed_as_of)
@@ -882,7 +929,7 @@ def get_run_status(run_id: str):
         UUID(run_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="run_id must be a UUID")
-    row = _fetch_run(run_id)
+    row = _db_call("run lookup", _fetch_run, run_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
     return RunStatus(**row)
