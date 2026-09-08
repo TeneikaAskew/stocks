@@ -1276,16 +1276,83 @@ def test_research_help_shows_slugs_the_generator_actually_makes():
 
 # ─── round 6: the supported dispatch path must be able to run the experiment ───
 
+# Flags `gcloud run jobs execute` actually accepts, from
+# `gcloud run jobs execute --help` on SDK 583.0.0. `--parallelism` is NOT
+# among them: it is a JOB-level setting (`gcloud run jobs update/deploy`),
+# not an execution override, and passing it makes real gcloud exit 2 with
+# "unrecognized arguments". The dispatcher passed it on all three plan
+# branches from #810 until it was removed, and no test caught it for one
+# reason: the old stub here echoed its argv and exited 0, so it accepted
+# every flag including invented ones. A stub that cannot fail cannot
+# verify a command line. This one rejects what real gcloud rejects.
+_EXECUTE_FLAGS = {
+    "--region", "--update-env-vars", "--args", "--tasks", "--async",
+    "--wait", "--project", "--task-timeout", "--format", "--quiet",
+}
+
+
 def _dispatch(*args, tmp_path):
-    """Run the dispatcher against a stub gcloud and return what it would call."""
-    import subprocess, os, stat
+    """Run the dispatcher against a stub gcloud and return what it would call.
+
+    The stub validates flags the way real gcloud does, so an unsupported
+    flag fails the test instead of being echoed back as if it worked.
+    """
+    import subprocess, os, stat, shlex
+    allowed = " ".join(sorted(_EXECUTE_FLAGS))
     stub = tmp_path / "gcloud"
-    stub.write_text("#!/usr/bin/env bash\necho \"GCLOUD_CALL: $*\"\n")
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f"ALLOWED=\"{allowed}\"\n"
+        'if [ "$1" = "run" ] && [ "$2" = "jobs" ] && [ "$3" = "execute" ]; then\n'
+        '  shift 3\n'
+        '  for a in "$@"; do\n'
+        '    case "$a" in\n'
+        '      --*) f="${a%%=*}"\n'
+        '           case " $ALLOWED " in\n'
+        '             *" $f "*) ;;\n'
+        '             *) echo "ERROR: (gcloud.run.jobs.execute) unrecognized'
+        ' arguments: $a" >&2; exit 2 ;;\n'
+        '           esac ;;\n'
+        '    esac\n'
+        '  done\n'
+        'fi\n'
+        'echo "GCLOUD_CALL: $*"\n'
+    )
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
     env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}")
     out = subprocess.run(["bash", "scripts/dispatch_magnitude_phase.sh", *args],
                          capture_output=True, text=True, env=env)
     return out.stdout + out.stderr
+
+
+def test_every_plan_branch_uses_flags_gcloud_accepts(tmp_path):
+    """Reproduces the live failure: `./dispatch_magnitude_phase.sh phase0
+    --label-mode=excursion` died with
+
+        ERROR: (gcloud.run.jobs.execute) unrecognized arguments: --parallelism=9
+
+    on the first real invocation after #1055 merged. Every plan branch is
+    driven here because the flag was on all three."""
+    for plan in ("phase0", "phase1", "no_backfill", "audit"):
+        out = _dispatch(plan, tmp_path=tmp_path)
+        assert "unrecognized arguments" not in out, (plan, out)
+        assert "GCLOUD_CALL:" in out, (plan, out)
+    # and the experiment forms, which is how the bug was actually hit
+    for extra in ("--label-mode=excursion", "--thresholds=0.35,0.75,1.25"):
+        out = _dispatch("phase0", extra, tmp_path=tmp_path)
+        assert "unrecognized arguments" not in out, (extra, out)
+        assert "GCLOUD_CALL:" in out, (extra, out)
+
+
+def test_parallelism_is_not_passed_to_an_execution(tmp_path):
+    """--parallelism is a job-level setting configured by gcp/deploy.sh
+    (magnitude-engine runs parallelism=27), not an execution override.
+    Dropping it does not serialize anything: an execution's task fan-out
+    is bounded by the job's parallelism, which is >= every --tasks value
+    the dispatcher uses."""
+    src = pathlib.Path("scripts/dispatch_magnitude_phase.sh").read_text()
+    assert "--parallelism" not in src, (
+        "--parallelism on `run jobs execute` makes gcloud exit 2")
 
 
 def test_dispatcher_can_launch_a_label_definition_experiment(tmp_path):

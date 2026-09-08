@@ -98,7 +98,7 @@ case "$plan" in
     gcloud run jobs execute "$JOB" --region="$REGION" \
         --update-env-vars="MAG_PLAN=" \
         --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m" \
-        --tasks=1 --parallelism=1 \
+        --tasks=1 \
         --wait
     ;;
   no_backfill)
@@ -106,7 +106,7 @@ case "$plan" in
     gcloud run jobs execute "$JOB" --region="$REGION" \
         "$env_flag" \
         --args="${mag_args}" \
-        --tasks=27 --parallelism=27 \
+        --tasks=27 \
         --async
     ;;
   phase0|phase1|phase2|phase3|phase4|phase_calendar)
@@ -114,7 +114,7 @@ case "$plan" in
     gcloud run jobs execute "$JOB" --region="$REGION" \
         "$env_flag" \
         --args="${mag_args}" \
-        --tasks=9 --parallelism=9 \
+        --tasks=9 \
         --async
     ;;
   *)
