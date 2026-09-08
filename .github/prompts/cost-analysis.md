@@ -49,6 +49,7 @@ Three, ranked by $/month, each with the resource, the exact change (gcloud comma
 
 ## Rules
 
+- Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - **The project is `adept-mountain-474619-d4`, region `us-east1`.** Every
   `gcloud` command you write must use that project id. A 2026-09-07 dry run of
   this prompt invented `solyra-trader` in a confirmation command, which makes

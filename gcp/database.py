@@ -728,13 +728,14 @@ def bulk_insert_dataframe(
 
 
 def table_exists(table: str) -> bool:
-    """Return True if the table exists in the connected database."""
-    try:
-        engine = get_engine()
-        import sqlalchemy
-        return sqlalchemy.inspect(engine).has_table(table)
-    except Exception:
-        return False
+    """Return True if the table exists in the connected database.
+
+    Raises on a database failure: returning False on any error read an
+    unreachable database as "the table is missing" (audit P2-#6,
+    CLAUDE.md 3.7).
+    """
+    import sqlalchemy
+    return sqlalchemy.inspect(get_engine()).has_table(table)
 
 
 def row_exists(table: str, where: dict) -> bool:

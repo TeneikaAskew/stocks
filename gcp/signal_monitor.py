@@ -178,6 +178,14 @@ class SignalMonitor:
         self.level_refresh_success_count: dict = {t: 0 for t in self.tickers}
         self.level_refresh_empty_df_count: dict = {t: 0 for t in self.tickers}
         self.level_refresh_exception_count: dict = {t: 0 for t in self.tickers}
+        # Persist-path failures (signal_alerts upsert, trades log). They were
+        # logged at WARNING with no counter, so a day of silent write
+        # failures looked like a quiet day (the 4/14-4/30 gap shape).
+        self.persist_alert_failure_count: dict = {t: 0 for t in self.tickers}
+        self.persist_trade_failure_count: dict = {t: 0 for t in self.tickers}
+        # Times the disabled_directions kill switch could not be read and a
+        # stand-alone momentum fire was suppressed for it (fail closed).
+        self.kill_switch_failure_count: dict = {t: 0 for t in self.tickers}
         # Open positions awaiting exit. Each tick the exit-watcher walks
         # this list and fires TARGET HIT / TIME STOP / RSI EXIT alerts +
         # writes the exit details back to signal_alerts. Lifetime is the
@@ -538,9 +546,9 @@ class SignalMonitor:
         """
         try:
             from gcp.database import execute_sql
-            today = (pd.Timestamp(self.replay_clock_ts).date()
-                     if self.replay_clock_ts is not None
-                     else self._now(_ET).date())
+            # ET session date via the one clock choke point (a raw replay
+            # stamp's .date() is the UTC date for tz-aware stamps; #823).
+            today = self._now(_ET).date()
             rows = execute_sql(
                 "UPDATE premarket_analysis SET "
                 "  puts_reanchor_open = :o, puts_reanchor_trigger = :t, "
@@ -722,6 +730,102 @@ class SignalMonitor:
         )
         return add_signal_indicators(df, close_col='Close', indicator_config=cfg)
 
+    @staticmethod
+    def _bound_daily_frame(df: pd.DataFrame, analysis_date) -> pd.DataFrame:
+        """Rows dated strictly before ``analysis_date`` (#823).
+
+        Mirrors the premarket brief's cutoff (gcp/premarket_brief.py,
+        `df.loc[idx < cutoff]`). The date axis is the DatetimeIndex
+        DataLoader.load_daily returns (named 'Time'), or a 'Time' column
+        for callers that pass a RangeIndex frame; tz-aware axes compare
+        on the naive wall date. A frame with no recognisable date axis
+        raises: an as-of filter that silently does not filter is the
+        §3.7 shape, and the caller's except path already counts and
+        logs it.
+        """
+        cutoff = pd.Timestamp(analysis_date)
+        if isinstance(df.index, pd.DatetimeIndex):
+            idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
+        elif 'Time' in df.columns:
+            idx = pd.to_datetime(df['Time'])
+            if getattr(idx.dt, 'tz', None) is not None:
+                idx = idx.dt.tz_localize(None)
+            idx = pd.DatetimeIndex(idx)
+        else:
+            raise ValueError(
+                "daily frame has neither a DatetimeIndex nor a 'Time' column; "
+                "cannot apply the as-of bound (#823)")
+        return df.loc[np.asarray(idx < cutoff)]
+
+    # Per-ticker containers that survive a session reset: observability
+    # counters, which describe the run, not the session.
+    # tests/gcp/test_replay_daily_cap.py enumerates every per-ticker dict on
+    # a fresh monitor and fails when one is neither reset below nor listed
+    # here, so a new per-session field cannot silently carry across days.
+    SESSION_KEEP = frozenset({
+        'momentum_evaluated_count', 'momentum_fired_count',
+        'level_refresh_success_count', 'level_refresh_empty_df_count',
+        'level_refresh_exception_count',
+        'persist_alert_failure_count', 'persist_trade_failure_count',
+        'kill_switch_failure_count',
+    })
+
+    def reset_session_state(self, ticker: str) -> None:
+        """Return ``ticker`` to the state a fresh SignalMonitor starts a
+        session with.
+
+        Production runs one monitor per trading day, so every per-session
+        field starts empty each morning. A multi-day replay drives many
+        sessions through one instance (scripts/replay_signal_monitor.py),
+        and resetting fields one at a time kept missing some: the brief
+        cache is keyed by ticker only, so day 2's leg trackers were built
+        from day 1's brief, and last_prices / fired_breaks let the first
+        bar false-cross yesterday's close while suppressing a repeat
+        crossing (Codex on #1022); the insight cache is keyed by ticker
+        with a wall-clock staleness window. This is the one list, and
+        SESSION_KEEP names the only exceptions.
+
+        The rolling bar window IS session state: fetch_latest_bar keeps
+        today's bars only, so production evaluates nothing until
+        min_bars_for_signals (30) bars of the new session exist. A window
+        kept warm across the boundary let days 2..N of a replay fire from
+        09:30 on indicators seeded from yesterday's tail, and let check_orb
+        and _corrected_rvol read yesterday's bars (internal review of
+        #1022).
+
+        What a replay cannot reproduce: the replay harness captures fires
+        without appending to active_positions, so _check_exits, the
+        emergency ceiling and the risk-control shadow never see a position
+        in replay. Their columns are recorded as zero exposure there, and
+        the daily cap is the one exposure bound a replay exercises.
+        """
+        self.windows[ticker] = pd.DataFrame()
+        self.daily_trades[ticker] = 0
+        self.daily_pnl[ticker] = 0.0
+        self.active_positions[ticker] = []
+        self.orb_levels[ticker] = {}
+        self.session_extremes[ticker] = {}
+        self.leg_trackers[ticker] = {}
+        self.volume_baselines[ticker] = {}
+        self.level_maps[ticker] = None
+        self.level_map_atr.pop(ticker, None)
+        self.last_prices[ticker] = None
+        self.fired_breaks = {k for k in self.fired_breaks if k[0] != ticker}
+        self._brief_bias_cache.pop(ticker, None)
+        self._last_fire_ts.pop(ticker, None)
+        # The insight cache is keyed by ticker with a 60 s wall-clock
+        # staleness window, so a replay crossing into the next session
+        # within that window would gate day 2's signals on day 1's
+        # insight (Codex on #1022).
+        self.insight_cache.evict(ticker)
+        self.insight_invalidated.pop(ticker, None)
+        # Process-wide, not per ticker: the proximity lookup is keyed on a
+        # 5-minute floor of the bar time, so day 2 never hits day 1's entry,
+        # but its own docstring names the start of a monitor day as the
+        # moment to clear it, and a long replay would otherwise only evict.
+        from lib.strategies import catalyst_proximity  # noqa: PLC0415
+        catalyst_proximity.reset_cache()
+
     def refresh_level_map(self, ticker: str) -> None:
         """Load the latest market_data_daily row + indicators and rebuild
         the LevelMap for this ticker. Called at startup and periodically
@@ -754,7 +858,47 @@ class SignalMonitor:
                 )
                 self.level_maps[ticker] = None
                 return
+            # As-of bound (#823 / audit R6). load_daily has no upper date
+            # bound, so the frame ends at whatever market_data_daily holds:
+            # live, fetch-premarket-refresh has INSERTed today's row at
+            # 08:20 ET with pre_* fields only (OHLC NULL until the 23:00 ET
+            # fill), so the last row is today's unfilled bar and iloc[-1]
+            # is NaN; on replay it is D's COMPLETED bar plus every bar
+            # after it. Structural levels derive from completed prior
+            # periods only, and the premarket brief already applies
+            # `idx < analysis_date` before it builds — apply the same
+            # cutoff here so a D-replay and the D-live session build the
+            # map from identical rows. analysis_date is the session's ET
+            # date via _now(_ET) — the same clock every other "today" in
+            # this class uses (session extremes, leg trackers, brief
+            # bias). The raw replay stamp's .date() is NOT that: a
+            # tz-aware UTC stamp in the 00:00-03:59 UTC block of D is
+            # ET evening of D-1, and a map anchored on D there would
+            # admit a daily bar the rest of the bar's state excludes.
+            _analysis_date = self._now(_ET).date()
+            df = self._bound_daily_frame(df, _analysis_date)
+            # Same defensive drop as the brief (premarket_brief.py, the
+            # 2026-04-30 NULL-OHLCV placeholder incident): a prior-day
+            # placeholder row survives the bound and would become
+            # iloc[-1] -> current_price NaN. Fewer than 2 rows cannot
+            # produce previous-period levels (compute_current_levels
+            # returns {} for a 1-row frame), so treat it as no data
+            # rather than a successful, empty map.
             close_col = 'Close' if 'Close' in df.columns else 'Last'
+            if not df.empty:
+                df = df[df[close_col].notna()]
+            if df.empty or len(df) < 2:
+                self.level_refresh_empty_df_count[ticker] = (
+                    self.level_refresh_empty_df_count.get(ticker, 0) + 1
+                )
+                logger.warning(
+                    "refresh_level_map(%s): %d usable daily rows dated before "
+                    "analysis_date=%s (need >= 2); level_map will be None "
+                    "for this cycle",
+                    ticker, len(df), _analysis_date,
+                )
+                self.level_maps[ticker] = None
+                return
             ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
             levels_df = calculate_historical_levels(
                 ts, df['High'], df['Low'], df['Open'], df[close_col],
@@ -785,13 +929,9 @@ class SignalMonitor:
             self.level_map_atr[ticker] = _atr
             # PR #400 fix applied to this code path: pass analysis_date
             # so build_level_map → compute_previous_levels uses period-
-            # filter semantics. Replay-aware: use the replay clock when
-            # set, fall back to today's ET date in live mode. Without
-            # this, replay runs picked day-before-yesterday's PDH/PDL.
-            if self.replay_clock_ts is not None:
-                _analysis_date = pd.Timestamp(self.replay_clock_ts).date()
-            else:
-                _analysis_date = datetime.now(_ET).date()
+            # filter semantics. Without this, replay runs picked
+            # day-before-yesterday's PDH/PDL. Same date the frame was
+            # bounded with above.
             self.level_maps[ticker] = build_level_map(
                 ticker=ticker, daily_df=df, current_price=current_price,
                 analysis_date=_analysis_date,
@@ -862,9 +1002,16 @@ class SignalMonitor:
         # (05:30-06:00 ET pre-market) as the opening range (#819, the
         # 2026-05-06 V1 harness bug in production code).
         times = self._times_to_et(pd.to_datetime(df['Time']))
+        # This session only: after a rollover the window can still hold
+        # yesterday's opening range (a thin ticker, a --limit run), and a
+        # time-of-day filter alone rebuilt the ORB from it (internal review
+        # of #1022). Same guard as _update_session_extremes and the leg
+        # trackers.
+        today = self._now(_ET).date()
         for minutes, label in [(5, '5m'), (15, '15m'), (30, '30m')]:
             orb_end = time(9, 30 + minutes) if minutes < 30 else time(10, 0)
-            in_orb = (times.dt.time >= market_open) & (times.dt.time <= orb_end)
+            in_orb = ((times.dt.date == today)
+                      & (times.dt.time >= market_open) & (times.dt.time <= orb_end))
             orb_data = df[in_orb]
             if not orb_data.empty:
                 self.orb_levels[ticker][f'{label}_high'] = orb_data['High'].max()
@@ -994,27 +1141,34 @@ class SignalMonitor:
             # too — pre-Codex-P2 (PR #371) the kill switch lived only
             # inside `lib.signals.evaluate_signal`, so a momentum-only
             # PUT on a `["PUT"]`-disabled ticker (e.g. QQQ) would have
-            # bypassed the same protection mr respects. Resolver
-            # exception is non-fatal: log and degrade to "no kill
-            # switch known" rather than blocking a fire on a transient
-            # DB error (mirrors the resolver-failure handling inside
-            # evaluate_signal at lib/signals.py:207-210).
+            # bypassed the same protection mr respects. A kill switch
+            # that cannot be read is unknown, and the safe reading of an
+            # unknown risk control is CLOSED: the fire is suppressed for
+            # this bar, counted and logged (it used to "degrade open",
+            # the C-04 shape; CLAUDE.md 3.7). evaluate_signal fails
+            # closed the same way.
             try:
                 from lib.strategies.exit_config_overrides import (
                     get_disabled_directions,
                 )
-                if mom_signal.direction.upper() in get_disabled_directions(ticker):
-                    logger.info(
-                        "%s standalone momentum %s suppressed: direction in disabled_directions",
-                        ticker, mom_signal.direction,
-                    )
-                    return None, None
+                disabled = get_disabled_directions(ticker)
             except Exception:
-                logger.exception(
-                    "get_disabled_directions(%s) raised; allowing momentum fire "
-                    "(degrade-open mirrors evaluate_signal's resolver-failure handling)",
-                    ticker,
+                self.kill_switch_failure_count[ticker] = (
+                    self.kill_switch_failure_count.get(ticker, 0) + 1
                 )
+                logger.exception(
+                    "get_disabled_directions(%s) raised; suppressing the stand-alone "
+                    "momentum %s fire for this bar (failure #%d this run)",
+                    ticker, mom_signal.direction,
+                    self.kill_switch_failure_count[ticker],
+                )
+                return None, None
+            if mom_signal.direction.upper() in disabled:
+                logger.info(
+                    "%s standalone momentum %s suppressed: direction in disabled_directions",
+                    ticker, mom_signal.direction,
+                )
+                return None, None
 
             logger.info(
                 "%s standalone momentum fire: %s base_score=%.1f core=%d call_range=%s tier=%s put_range=%s tier=%s",
@@ -1157,11 +1311,13 @@ class SignalMonitor:
         # showed 8-10pp lower clean rate); 'next_day' gets 1.10x
         # amplification (3pp higher clean rate).
         try:
-            # Use the bar's clock during replay so proximity is keyed
-            # to bar-time, not wall-clock. Live runs are unaffected
-            # (`_now()` falls through to `datetime.now()`).
+            # Keyed to the ET bar time in replay and the ET wall clock live.
+            # A bare `_now()` was naive UTC in both (the container clock is
+            # UTC), and catalyst_proximity localises a naive timestamp AS
+            # ET, so every fire was scored against catalysts 4-5 hours
+            # later than the bar (internal review of #1022).
             self._latest_proximity = get_catalyst_context(
-                ticker, pd.Timestamp(self._now())
+                ticker, self._catalyst_as_of()
             )
         except Exception as e:
             from lib.strategies.catalyst_proximity import EMPTY_CONTEXT
@@ -1256,7 +1412,7 @@ class SignalMonitor:
             self.risk.max_daily_trades,
         )
         direction = sig['direction']
-        price = latest.get('Close', latest.get('Last', 0))
+        price = self._bar_price(latest)
         agreement = getattr(self, '_latest_agreement', None)
 
         # RVOL entry gate (audit 2026-08-25 §10). Verdict is computed for
@@ -1303,7 +1459,7 @@ class SignalMonitor:
         # Never gates: the stop-loss counterfactual (−12.70pct over 736 real
         # fires, every swept level worse than none) is why a control that
         # looks prudent gets measured here before it is switched on.
-        _risk_shadow = self._risk_control_shadow(ticker, float(price or 0))
+        _risk_shadow = self._risk_control_shadow(ticker, price)
         self._latest_risk_shadow = _risk_shadow
         if _risk_shadow['would_block_concurrent'] or _risk_shadow['would_block_mtm_loss']:
             logger.info(
@@ -1497,7 +1653,9 @@ class SignalMonitor:
         if not is_cloud_sql_configured():
             return
 
-        now = datetime.now()
+        # Naive UTC, matching alert_ts's convention; through the monitor's
+        # clock so a replay that reaches this path stamps bar time.
+        now = self._now()
         agreement = getattr(self, '_latest_agreement', None)
         row = {
             'ticker': ticker,
@@ -1509,11 +1667,14 @@ class SignalMonitor:
             'total_score': total_score,
             'strength_label': strength,
             'position_size': size,
-            'price_at_signal': float(latest.get('Close', latest.get('Last', 0))),
+            'price_at_signal': self._bar_price(latest),
             'target_price': float(target),
             'time_stop_minutes': int(time_stop),
-            'rsi': float(latest.get(self.indicator_cfg.rsi_col, 0)),
-            'rvol': float(latest.get('RVOL', 0)),
+            # None when the bar has no value: the gate above refuses a 0
+            # default for RVOL (CLAUDE.md 3.7) and the persisted columns
+            # must not fabricate one either (internal review of #1022).
+            'rsi': self._bar_float(latest, self.indicator_cfg.rsi_col),
+            'rvol': self._bar_float(latest, 'RVOL'),
             'orb_5m_high': self.orb_levels[ticker].get('5m_high'),
             'orb_5m_low': self.orb_levels[ticker].get('5m_low'),
             'orb_15m_high': self.orb_levels[ticker].get('15m_high'),
@@ -1594,12 +1755,19 @@ class SignalMonitor:
         proximity = getattr(self, '_latest_proximity', None) or EMPTY_CONTEXT.copy()
         row.update(proximity)
 
+        # The two writes below must not stop the monitor loop, but a failed
+        # write is not a quiet minute: each increments a structured counter
+        # and logs the traceback (CLAUDE.md 3.7: count at the call site
+        # instead of swallowing).
         try:
             df = pd.DataFrame([row])
             n = upsert_dataframe(df, 'signal_alerts', ['ticker', 'alert_ts'])
             logger.info("Upserted %d row(s) to signal_alerts for %s", n, ticker)
-        except Exception as e:
-            logger.warning("signal_alerts upsert failed: %s", e)
+        except Exception:
+            self.persist_alert_failure_count[ticker] = \
+                self.persist_alert_failure_count.get(ticker, 0) + 1
+            logger.exception("signal_alerts upsert failed for %s (failure #%d this run)",
+                             ticker, self.persist_alert_failure_count[ticker])
 
         # Also log as a trade entry via TradeLogger
         try:
@@ -1608,17 +1776,25 @@ class SignalMonitor:
                 'ticker': ticker,
                 'direction': sig['direction'],
                 'entry_time': now,
-                'entry_price': float(latest.get('Close', latest.get('Last', 0))),
+                'entry_price': self._bar_price(latest),
                 'signal_strength': total_score,
                 'total_score': total_score,
                 'position_size': size,
                 'conditions_met': sig['conditions_met'],
                 'trade_date': str(now.date()),
+                # Provenance, matching trades.run_kind: the Parquet fallback
+                # readers filter on it, and a row without it reads as live
+                # only because this is the files' one writer (#1022).
+                'run_kind': 'live',
             }
             TradeLogger().log_trade(trade_data)
             logger.info("Trade logged for %s %s", ticker, sig['direction'])
-        except Exception as e:
-            logger.warning("Trade logging failed: %s", e)
+        except Exception:
+            self.persist_trade_failure_count[ticker] = \
+                self.persist_trade_failure_count.get(ticker, 0) + 1
+            logger.exception("Trade logging failed for %s (failure #%d this run); the "
+                             "signal_alerts row exists without its trades row",
+                             ticker, self.persist_trade_failure_count[ticker])
 
         # Track the open position for the exit-watcher. alert_ts here is
         # the same naive UTC value written to the DB row, so the UPDATE
@@ -1640,6 +1816,35 @@ class SignalMonitor:
             # 5-20× (typical sizes are 5-20% per trade).
             'size': float(size),
         })
+
+    def _catalyst_as_of(self) -> pd.Timestamp:
+        """The tz-aware ET instant catalyst proximity is measured from."""
+        return pd.Timestamp(self._now(_ET))
+
+    @staticmethod
+    def _bar_float(latest, col: str) -> Optional[float]:
+        """A bar field as a float, or None when absent or NaN. Never 0:
+        rsi/rvol/price columns must not read a missing value as a real
+        zero (CLAUDE.md 3.7)."""
+        v = latest.get(col)
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(f) else f
+
+    @classmethod
+    def _bar_price(cls, latest) -> float:
+        """The bar's price (Close, else Last). A bar with neither cannot
+        have fired, so this is an INTERNAL invariant and raises rather
+        than fabricating a $0 entry."""
+        for col in ('Close', 'Last'):
+            v = cls._bar_float(latest, col)
+            if v is not None:
+                return v
+        raise ValueError("bar has neither Close nor Last; cannot price the fire")
 
     def _now(self, tz: Optional[ZoneInfo] = None) -> datetime:
         """Return current time, respecting the replay clock override.
@@ -1866,7 +2071,9 @@ class SignalMonitor:
             return
 
         rsi_col = self.indicator_cfg.rsi_col
-        current_rsi = float(latest.get(rsi_col, 0) or 0)
+        # None when the bar has no RSI: no RSI exit can fire on it, and no
+        # fabricated 0 reaches the alert (CLAUDE.md 3.7).
+        current_rsi = self._bar_float(latest, rsi_col)
         # Naive UTC — matches alert_ts in signal_alerts so elapsed math
         # and the UPDATE WHERE clause stay consistent.
         now_utc = datetime.now()
@@ -1894,14 +2101,14 @@ class SignalMonitor:
                     exit_reason = 'target_hit'
                 elif elapsed_min >= pos['time_stop_minutes']:
                     exit_reason = 'time_stop'
-                elif current_rsi >= self.exit.call_rsi_exit:
+                elif current_rsi is not None and current_rsi >= self.exit.call_rsi_exit:
                     exit_reason = 'rsi_extreme'
             else:  # PUT
                 if current_price <= pos['target_price']:
                     exit_reason = 'target_hit'
                 elif elapsed_min >= pos['time_stop_minutes']:
                     exit_reason = 'time_stop'
-                elif 0 < current_rsi <= self.exit.put_rsi_exit:
+                elif current_rsi is not None and current_rsi <= self.exit.put_rsi_exit:
                     exit_reason = 'rsi_extreme'
 
             if exit_reason:
@@ -2211,6 +2418,7 @@ class SignalMonitor:
                    is_open          = FALSE
              WHERE ticker   = :ticker
                AND alert_ts = :alert_ts
+               AND run_kind = 'live'
         """)
         # return_pct is the direction-aware underlying-move percent
         # ((exit-entry)/entry*100 for CALL, negated for PUT) — the same
@@ -2224,6 +2432,7 @@ class SignalMonitor:
                    return_pct  = :ret
              WHERE ticker     = :ticker
                AND entry_time = :entry_time
+               AND run_kind   = 'live'
                AND exit_time IS NULL
         """)
         try:
@@ -2379,10 +2588,19 @@ def main():
     parser.add_argument('--date', default=os.environ.get('REPLAY_DATE'),
                         help='[replay] Single date YYYY-MM-DD '
                              '(alias for --start = --end)')
+    # Eastern, not UTC: these are forwarded verbatim to
+    # scripts.replay_signal_monitor.resolve_window, which frames the window
+    # in ET because a session is an Eastern day (CLAUDE.md 3.9). The help
+    # here said UTC after the harness moved, so a documented
+    # 2026-09-01..2026-09-02 window read as 04:00Z-04:00Z under EDT and
+    # quietly changed which extended-hours bars the replay saw (Codex on
+    # #1022). The words are what was wrong; converting a UTC date here
+    # would put back the off-by-one the harness change removed.
     parser.add_argument('--start', default=os.environ.get('REPLAY_START'),
-                        help='[replay] UTC start date YYYY-MM-DD')
+                        help='[replay] Eastern start date YYYY-MM-DD '
+                             '(a session is an ET day)')
     parser.add_argument('--end', default=os.environ.get('REPLAY_END'),
-                        help='[replay] UTC end date YYYY-MM-DD (exclusive)')
+                        help='[replay] Eastern end date YYYY-MM-DD (exclusive)')
     parser.add_argument('--limit', type=int, default=None,
                         help='[replay] Max bars per ticker (debug/dev)')
     parser.add_argument('--json', action='store_true',

@@ -1,0 +1,94 @@
+"""/api/analytics/summary reads production trades only.
+
+Codex on #1022 (#820): 412 simulated trades from a deleted backfill script
+sat in `trades` unmarked. Once marked run_kind='backfill' (schema in this
+PR), the user-facing win-rate summary must not count them.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+pytest.importorskip("fastapi")
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PLATFORM_DIR = PROJECT_ROOT / "platform"
+if str(PLATFORM_DIR) not in sys.path:
+    sys.path.insert(0, str(PLATFORM_DIR))
+
+_original_cwd = os.getcwd()
+os.chdir(str(PLATFORM_DIR))
+try:
+    from api import main
+    from api.routers import analytics as analytics_module
+finally:
+    os.chdir(_original_cwd)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+
+def test_summary_restricts_to_live_trades(monkeypatch):
+    seen: list = []
+
+    def _capture(sql, params=None):
+        seen.append((sql, params))
+        return pd.DataFrame(columns=["direction", "return_pct", "exit_time", "entry_time"])
+
+    monkeypatch.setattr(analytics_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(analytics_module, "query_to_dataframe_strict", _capture)
+    r = TestClient(main.app).get("/api/analytics/summary/SPY", params={"days": 30})
+    assert r.status_code == 200, r.text
+    assert len(seen) == 1
+    sql = seen[0][0].lower()
+    assert "from trades" in sql and "run_kind = 'live'" in sql, sql
+    assert seen[0][1] == {"ticker": "SPY", "days": 30}
+
+
+def test_summary_is_not_a_flat_zero_when_the_query_fails(monkeypatch,
+                                                        application_defect):
+    """Internal review of #1022 (trade-reader round): the endpoint read
+    through the swallowing query_to_dataframe, so a failed query rendered as
+    HTTP 200 with every stat at 0, a legitimate-looking flat summary.
+    CLAUDE.md 3.7: an INTERNAL failure fails loud.
+
+    This version of the test asserted 503 while its own docstring named the
+    failure as "the run_kind column missing until the schema is applied" —
+    which is a defect, not an outage. A 503 there tells an operator to retry
+    a schema regression that retrying cannot fix, and the assertion would
+    have held even if the handler answered 503 for literally everything
+    (Codex on #1022, round 23). It is a 500 now, and the outage case is the
+    test below."""
+
+    def _boom(sql, params=None):
+        raise application_defect('column "run_kind" does not exist')
+
+    monkeypatch.setattr(analytics_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(analytics_module, "query_to_dataframe_strict", _boom)
+    loud = TestClient(main.app, raise_server_exceptions=False)
+    r = loud.get("/api/analytics/summary/SPY", params={"days": 30})
+    assert r.status_code == 500, r.text
+
+
+def test_summary_is_503_when_cloud_sql_is_unreachable(monkeypatch,
+                                                      cloud_sql_outage):
+    """The other half: a real outage IS retryable and keeps the 503."""
+
+    def _boom(sql, params=None):
+        raise cloud_sql_outage()
+
+    monkeypatch.setattr(analytics_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(analytics_module, "query_to_dataframe_strict", _boom)
+    r = TestClient(main.app).get("/api/analytics/summary/SPY", params={"days": 30})
+    assert r.status_code == 503, r.text
+    assert "unavailable" in r.json()["detail"].lower()
+
+
+def test_summary_reads_through_the_strict_query():
+    import inspect
+    src = inspect.getsource(analytics_module)
+    assert "query_to_dataframe_strict" in src
+    assert "from gcp.database import is_cloud_sql_configured, query_to_dataframe\n" not in src

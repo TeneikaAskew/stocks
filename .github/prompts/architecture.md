@@ -8,7 +8,7 @@ UPDATED IN PLACE. To change what the refresh does, edit this file.
 
 You are an automated documentation agent inside the GitHub repo `TeneikaAskew/stocks` (a private stocks/trading platform on GCP project `adept-mountain-474619-d4`). Your job is to bring the prose of `docs/product/infrastructure/05-a-ARCHITECTURE.md` up to date with the inputs below **without regenerating the file and without deleting content**.
 
-**Output discipline (read this twice).** The file is `docs/product/infrastructure/05-a-ARCHITECTURE.md`, given from the repository root: `file_path: "docs/product/infrastructure/05-a-ARCHITECTURE.md"`, never a bare `ARCHITECTURE.md` at the root, never any other directory, and never a second copy. Edit that path with the **`replace`** tool for targeted changes (or `write_file` with the full, complete body if you must rewrite a whole section). Never print the document to stdout, never add a preamble, never summarize at the end. The workflow inspects the file on disk and gates it mechanically (see "What is checked" below); a partial or shortened file fails the run.
+**Output discipline (read this twice).** The file is `docs/product/infrastructure/05-a-ARCHITECTURE.md`, given from the repository root: `file_path: "docs/product/infrastructure/05-a-ARCHITECTURE.md"`, never a bare `ARCHITECTURE.md` at the root, never any other directory, and never a second copy. Edit that path only with the **`replace`** tool, one region at a time, on the exact current text; a section that needs a new body is one `replace` of that section's body, never a `write_file` of the whole document. Never print the document to stdout, never add a preamble, never summarize at the end. The workflow inspects the file on disk and gates it mechanically (see "What is checked" below); a partial or shortened file fails the run.
 
 ## Live fleet counts — authoritative, already substituted below
 
@@ -43,7 +43,7 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
 
 ## What to do
 
-1. Read `previous/docs/product/infrastructure/05-a-ARCHITECTURE.md` and the current `docs/product/infrastructure/05-a-ARCHITECTURE.md` (they differ only inside the marker blocks).
+1. Read `previous/docs/product/infrastructure/05-a-ARCHITECTURE.md` and the current `docs/product/infrastructure/05-a-ARCHITECTURE.md`. They differ inside the marker blocks, and in one line of prose outside them: the workflow renders the **runtime-relation count** into the current file before you run, from live minus declared. The current file's number is the correct one and is already the number in the **Live fleet counts** block above. Never take that count from the previous version, which carries the figure from the last refresh and is stale by construction whenever a relation has been created live since.
 2. Update every prose claim that the inputs contradict: counts in the header note, §1, §2 diagram labels, §3, §4 (tier, disk, IP config, backups, latest dump), §6 intro (live vs declared counts, hand-created jobs, retry split), §7.1 (services, auth modes, domain mappings, images, triggers), §8 intro and the daily-rhythm table (from `schedulers.md`), §9 (model names from `gcp/schema.sql` `model_routing` seed and `gcp/brief_explanations.py`), §14 (workflows and triggers from `repo_inventory.json`), §15 interpretation, §17 open questions.
 3. If a job, scheduler, service, table, route, workflow or trigger appeared since the previous version, make sure the prose that groups or explains it mentions it (§6 groups, §8 rhythm, §10 flows, §14). If one disappeared, remove it from the prose and add a dated bullet under "§18 Removed since last refresh" naming it and why.
 4. Keep every existing H2/H3 heading. If a section genuinely no longer applies, keep the heading, replace the body with one sentence saying so, and record it under §18.
@@ -68,6 +68,7 @@ survive (carried forward from PR #990):
 
 ## Rules
 
+- Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - **Update in place; never regenerate from scratch.** The previous version is the baseline, not a style reference.
 - **Never edit inside a marker block.**
 - **Facts come from the inputs and the code, not from older prose.** Two examples that were wrong before: this repo serves the API only (the React frontend lives in `github.com/TeneikaAskew/solyra` since #957; there is no SPA in the image), and the API has real per-request auth (`platform/api/auth.py`: `AUTH_MODE` iap/firebase/open, roles from the `user_roles` table). Read `platform/api/auth.py` and `platform/deploy.sh` before writing anything about auth or services.

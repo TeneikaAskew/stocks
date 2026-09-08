@@ -74,7 +74,7 @@ def scoped(monkeypatch):
         return "generated-id"
 
     monkeypatch.setattr(journal, "_HAS_CLOUD_SQL", True, raising=False)
-    monkeypatch.setattr(journal, "query_to_dataframe", fake_q, raising=False)
+    monkeypatch.setattr(journal, "query_to_dataframe_strict", fake_q, raising=False)
     monkeypatch.setattr(journal, "execute_sql", fake_x, raising=False)
     monkeypatch.setattr(journal, "execute_returning_scalar", fake_returning,
                         raising=False)
@@ -160,16 +160,16 @@ def test_open_mode_defaults_to_local(scoped, monkeypatch):
     assert calls["q"][-1][1]["user_email"] == "local"
 
 
-def test_auth_mode_db_failure_fails_closed(scoped, monkeypatch):
+def test_auth_mode_db_failure_fails_closed(scoped, monkeypatch, cloud_sql_outage):
     """A signed-in user must NOT get the shared local file on a Cloud SQL error
     (cross-user leak + Rule 3.7) — it fails loud with a 503 instead."""
     j, _ = scoped
 
     def boom(sql, params=None):
-        raise RuntimeError("cloud sql down")
+        raise cloud_sql_outage()
 
     _as(monkeypatch, "alice@x.com")
-    monkeypatch.setattr(j, "query_to_dataframe", boom, raising=False)
+    monkeypatch.setattr(j, "query_to_dataframe_strict", boom, raising=False)
     with pytest.raises(HTTPException) as ei:
         _run(j.get_trades("spy", object()))
     assert ei.value.status_code == 503

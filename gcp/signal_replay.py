@@ -117,6 +117,7 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime,
                exit_ts, exit_reason, exit_price, exit_return_pct
           FROM signal_alerts
          WHERE alert_ts >= :start AND alert_ts < :end
+           AND run_kind = 'live'
          ORDER BY alert_ts
     """)
     with get_engine().connect() as conn:

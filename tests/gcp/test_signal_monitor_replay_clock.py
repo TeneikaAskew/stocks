@@ -149,3 +149,60 @@ def test_replay_clock_can_be_cleared():
     live_now = monitor._now()
     assert abs((live_now - datetime.now()).total_seconds()) < 5, \
         "after clearing, _now() should return wall-clock time"
+
+
+# ── catalyst proximity is keyed to the ET bar time ────────────────────
+
+def test_catalyst_context_is_keyed_to_the_et_bar_time():
+    """Internal review of #1022 (monitor round): evaluate_ticker handed
+    get_catalyst_context a bare `_now()`, naive UTC in both live (the
+    container clock is UTC) and replay (the bar stamp), and
+    catalyst_proximity localises a naive timestamp AS ET, so every fire
+    was scored against catalysts 4-5 hours later than the bar: a 10:31
+    ET fire keyed on 14:31 ET, crossing every proximity window."""
+    import inspect
+
+    from gcp.signal_monitor import SignalMonitor
+
+    m = SignalMonitor()
+    m.webhook_url = ""
+    m.replay_clock_ts = pd.Timestamp("2026-08-28 14:31:00")      # naive UTC bar
+    ts = m._catalyst_as_of()
+    assert ts == pd.Timestamp("2026-08-28 10:31:00", tz="America/New_York"), ts
+    assert ts.tz is not None, "an aware timestamp cannot be re-localised as ET"
+    src = inspect.getsource(SignalMonitor.evaluate_ticker)
+    assert "get_catalyst_context(" in src
+    call = src[src.index("get_catalyst_context("):]
+    call = call[:call.index(")") + 1]
+    assert "self._catalyst_as_of()" in call, call
+    assert "pd.Timestamp(self._now())" not in src
+
+
+def test_the_job_wrapper_advertises_the_same_date_contract_as_the_harness():
+    """`gcp.signal_monitor --mode=replay` forwards --date/--start/--end to
+    scripts.replay_signal_monitor unchanged, so the two help texts describe
+    ONE contract. The wrapper still said UTC after the harness moved to
+    Eastern (Codex on #1022): a documented 2026-09-01..2026-09-02 window
+    would be read as 04:00Z-04:00Z under EDT rather than 00:00Z-00:00Z,
+    silently changing which extended-hours bars a replay sees.
+
+    The fix is the wrapper's WORDS, not a conversion: a session is an
+    Eastern day (CLAUDE.md 3.9), and converting a UTC date here would put
+    back the off-by-one the harness change removed."""
+    import re
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    wrapper = (repo / "gcp/signal_monitor.py").read_text()
+    harness = (repo / "scripts/replay_signal_monitor.py").read_text()
+
+    block = wrapper[wrapper.index("'--start'"):wrapper.index("'--limit'")]
+    assert "UTC" not in block, (
+        "the wrapper still calls the replay window UTC; it is forwarded "
+        "verbatim to an Eastern reader")
+    assert re.search(r"Eastern", block), "the wrapper must say Eastern"
+    for flag in ("--start", "--end"):
+        assert re.search(rf'"{flag}", help="Eastern', harness) or \
+            re.search(rf'"{flag}",\s*\n?\s*help="Eastern', harness) or \
+            f'"{flag}", help="Eastern' in harness, \
+            f"{flag} lost its Eastern wording in the harness"

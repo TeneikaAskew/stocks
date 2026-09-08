@@ -73,3 +73,58 @@ def test_matches_db_writer_interpretation():
 def test_unparseable_becomes_nat_not_crash():
     out = _trade_times_to_utc(pd.Series(["not-a-time"]))
     assert out.isna().all()
+
+
+# ── migrate_trades and the run_kind stamp (internal review of #1022) ─────
+
+def _trades_dir(tmp_path, rows):
+    d = tmp_path / "trades"
+    d.mkdir()
+    pd.DataFrame(rows).to_parquet(d / "2026-09-07.parquet", index=False)
+    return tmp_path
+
+
+def test_migrate_trades_stamps_pre_stamp_rows_as_live(tmp_path, monkeypatch, caplog):
+    """A Parquet file written today holds pre-stamp rows with a null
+    run_kind; upsert_dataframe binds every column, so the NOT NULL column
+    rejected the whole file and the per-file warning swallowed it: a day
+    of trades silently missing from a restore. The files have one writer,
+    the live monitor (see TradeLogger._filter_run_kind), so a null is
+    recorded as live, and the count is logged."""
+    import logging
+    from gcp import migrate_to_gcp
+    seen: list = []
+    monkeypatch.setattr("gcp.database.upsert_dataframe",
+                        lambda df, table, keys: seen.append(df.copy()) or len(df))
+    data_dir = _trades_dir(tmp_path, [
+        {"ticker": "SPY", "entry_time": "2026-09-07 14:31:00", "run_kind": None},
+        {"ticker": "SPY", "entry_time": "2026-09-07 14:32:00", "run_kind": "replay"},
+    ])
+    with caplog.at_level(logging.INFO, logger="gcp.migrate_to_gcp"):
+        migrate_to_gcp.migrate_trades(data_dir, dry_run=False)
+    assert len(seen) == 1
+    assert list(seen[0]["run_kind"]) == ["live", "replay"]
+    assert "1 row(s) predate the run_kind stamp" in caplog.text
+
+
+def test_migrate_trades_stamps_a_file_with_no_run_kind_column(tmp_path, monkeypatch):
+    from gcp import migrate_to_gcp
+    seen: list = []
+    monkeypatch.setattr("gcp.database.upsert_dataframe",
+                        lambda df, table, keys: seen.append(df.copy()) or len(df))
+    data_dir = _trades_dir(tmp_path, [{"ticker": "SPY", "entry_time": "2026-09-07 14:31:00"}])
+    migrate_to_gcp.migrate_trades(data_dir, dry_run=False)
+    assert list(seen[0]["run_kind"]) == ["live"]
+
+
+def test_migrate_trades_raises_instead_of_warning_on_a_failed_file(tmp_path, monkeypatch):
+    import pytest
+    from gcp import migrate_to_gcp
+
+    def _boom(df, table, keys):
+        raise RuntimeError("null value in column run_kind")
+
+    monkeypatch.setattr("gcp.database.upsert_dataframe", _boom)
+    data_dir = _trades_dir(tmp_path, [{"ticker": "SPY", "entry_time": "2026-09-07 14:31:00", "run_kind": "live"}])
+    with pytest.raises(RuntimeError, match="run_kind"):
+        migrate_to_gcp.migrate_trades(data_dir, dry_run=False)

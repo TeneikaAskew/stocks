@@ -295,6 +295,11 @@ def _make_fake_query(calls: list):
             # match, or the tight window predicate must fail this test (not
             # just silently return unmatched rows).
             sql_lower = sql.lower()
+            # Codex on #1022 / #820: 412 simulated trades sat in the table
+            # unmarked; once marked run_kind='backfill' they must not be
+            # offered as pipeline examples.
+            assert "t.run_kind = 'live'" in sql_lower, \
+                f"pipeline SQL must restrict to run_kind='live', got: {sql}"
             assert "signal_alerts" in sql_lower, \
                 f"pipeline SQL must join signal_alerts, got: {sql}"
             assert "left join lateral" in sql_lower, \
@@ -544,9 +549,13 @@ def test_examples_unknown_ticker_returns_empty(monkeypatch, cloud_sql_client):
 # ── DB-unavailable envelope parity (Rule 3.7) ───────────────────────────────
 
 
-def test_examples_503_on_db_query_failure(monkeypatch, cloud_sql_client):
+def test_examples_503_on_db_query_failure(monkeypatch, cloud_sql_client,
+                                          cloud_sql_outage):
+    """A real outage, not a bare RuntimeError: only an infrastructure
+    failure earns the retryable 503 now, so staging a defect here would
+    assert the wrong thing (Codex on #1022, round 23)."""
     def boom(*a, **k):
-        raise RuntimeError("db down")
+        raise cloud_sql_outage()
 
     monkeypatch.setattr(journal_module, "_journal_query", boom)
     r = cloud_sql_client.get("/api/journal/examples/SPY")
@@ -690,14 +699,14 @@ def test_examples_pipeline_excludes_extended_hours_rows(monkeypatch, cloud_sql_c
     assert "BETWEEN TIME '09:30' AND TIME '16:00'" in pipeline_sql
 
 
-def test_examples_503_when_pipeline_query_fails(monkeypatch, cloud_sql_client):
+def test_examples_503_when_pipeline_query_fails(monkeypatch, cloud_sql_client, cloud_sql_outage):
     """A real pipeline-query failure fails the WHOLE endpoint loud (503) —
     never a silent degrade to admin-only rows (CLAUDE.md Rule 3.7)."""
     inner = _make_fake_query([])
 
     def flaky(sql, params=None):
         if _is_pipeline_sql(sql):
-            raise RuntimeError("pipeline db down")
+            raise cloud_sql_outage()
         return inner(sql, params)
 
     monkeypatch.setattr(journal_module, "_journal_query", flaky)
@@ -919,3 +928,25 @@ def test_examples_pipeline_alert_join_tiebreaker_lower_id_wins(monkeypatch, clou
 
     pipeline_calls = [sql for sql, _params in calls if _is_pipeline_sql(sql)]
     assert len(pipeline_calls) == 1
+
+
+def test_journal_query_forwards_to_the_strict_variant():
+    """Internal review of #1022 (trade-reader round): every `try:
+    _journal_query(...) except: 503` in this router was inert because
+    `_journal_query` forwarded to the swallowing query_to_dataframe, so
+    /api/journal/examples answered 200 with `source: cloud_sql` and no
+    rows when the pipeline query failed, the exact "silently degrades to
+    admin-only" its docstring promises never happens."""
+    import inspect
+    src = inspect.getsource(journal_module._journal_query)
+    assert "query_to_dataframe_strict(" in src and "query_to_dataframe(" not in src.replace("query_to_dataframe_strict(", "")
+
+
+def test_examples_pipeline_join_matches_live_alerts_only(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query(calls))
+    monkeypatch.setattr(journal_module, "current_user_email", lambda req: ADMIN_EMAIL)
+    TestClient(main.app).get("/api/journal/examples/SPY")
+    pipeline_sql = next(sql for sql, _ in calls if "LEFT JOIN LATERAL" in sql)
+    assert "sa2.run_kind = 'live'" in pipeline_sql

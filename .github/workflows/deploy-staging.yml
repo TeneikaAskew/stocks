@@ -216,6 +216,10 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The schema apply below hands the revision guard this commit's
+          # rev-list, which orders a same-second revision tie.
+          fetch-depth: 100
 
       - name: Authenticate to GCP (WIF)
         uses: google-github-actions/auth@v2
@@ -254,8 +258,64 @@ jobs:
           DB_PASS: ${{ secrets.DB_PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
+          # ONE deadline for the whole step, shared by both waits below.
+          # Sized apart they summed past this step's own timeout: a 1200 s
+          # build scan, then gcp.apply_schema's 900 s default lock wait, is
+          # 2100 s against 1800 — so a correctly serialized deploy could be
+          # cancelled mid-apply while each wait stayed inside its own limit
+          # (Codex on #1022). Whatever the scan spends, the lock wait gets
+          # what is left; the reserve keeps the apply itself out of both.
+          step_start=$(date -u +%s)
+          STEP_TIMEOUT_SECONDS=1800   # keep in sync with timeout-minutes above
+          # What the deadline holds back for the apply ITSELF, so neither
+          # wait can eat it. A full apply measured 75 s (execution
+          # apply-schema-migrations-8q6d5, 2026-09-07: 251 units incl. the
+          # 22-46 s earnings mat-view refresh), and this runner adds the
+          # Cloud SQL connector's own round-trips on top, so 400 is over
+          # the 4x Rule 0.5 asks for. It covers this step only; the
+          # recovery execute below is a separate step with its own timeout.
+          APPLY_RESERVE_SECONDS=400
           pip install --quiet sqlalchemy pg8000 pandas cloud-sql-python-connector
-          python -m gcp.apply_schema
+          # Same ordering and record as the trigger builds: wait for any
+          # schema-mutating Cloud Build in flight (this runner is not a
+          # build, so it waits for all of them under its own budget), then
+          # apply through the revision guard so schema_apply_history
+          # records this apply. A bare `python -m gcp.apply_schema` here
+          # ran outside both, so the guard's "last row is the schema in
+          # force" contract was false right after it (internal review of
+          # #1022, schema-apply round).
+          #
+          # The tag scan below is ordering, not exclusion: it cannot see a
+          # build that STARTS while this runner is applying, and that build
+          # cannot see this runner at all. Both would pass the revision
+          # guard before either recorded, and the one finishing last would
+          # roll the other's CREATE OR REPLACE objects back (Codex on
+          # #1022). What actually serialises them is a Postgres advisory
+          # lock that gcp/apply_schema.py holds across guard -> apply ->
+          # record: every applier reaches the same database, whatever
+          # started it. The wait below still helps by not queueing behind
+          # the lock when a build is already known to be running.
+          apply_deadline=$(( step_start + STEP_TIMEOUT_SECONDS - APPLY_RESERVE_SECONDS ))
+          scan_remaining=$(( apply_deadline - $(date -u +%s) ))
+          if [ "${scan_remaining}" -le 0 ]; then
+            echo "ERROR: no time left in the ${STEP_TIMEOUT_SECONDS}s step budget to" >&2
+            echo "       wait for schema builds. Not starting an apply this step" >&2
+            echo "       cannot finish. Re-run the workflow." >&2
+            exit 1
+          fi
+          WAIT_BUDGET_SECONDS="${scan_remaining}" bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh --external
+          # Second wait, same deadline: the lock wait is only ever what the
+          # scan left behind.
+          lock_remaining=$(( apply_deadline - $(date -u +%s) ))
+          if [ "${lock_remaining}" -le 0 ]; then
+            echo "ERROR: the schema-build scan consumed the step's budget; no time" >&2
+            echo "       left to wait for the apply lock. Re-run the workflow." >&2
+            exit 1
+          fi
+          SCHEMA_APPLY_LOCK_WAIT="${lock_remaining}" python -m gcp.apply_schema \
+            --revision="$(git rev-parse HEAD)" \
+            --revision-time="$(git log -1 --format=%ct HEAD)" \
+            --revision-ancestors="$(git rev-list --max-count=100 HEAD | tr '\n' ' ')"
 
       # The apply above just recreated earnings_event_outcomes and
       # earnings_ticker_lean WITH NO DATA (deliberate in gcp/schema.sql so a

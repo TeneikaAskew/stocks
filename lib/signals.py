@@ -160,6 +160,21 @@ def check_put_conditions(
     return score, conditions
 
 
+#: Every condition name `check_call_conditions` / `check_put_conditions` can
+#: record, and therefore the only names `disabled_conditions` may carry. A
+#: name outside this set disables nothing while looking like it does, so it
+#: is rejected rather than ignored (Codex on #1022). Kept honest by
+#: tests/lib/test_signals_per_ticker_overrides.py::
+#: test_the_disableable_condition_set_matches_what_the_checks_emit.
+DISABLEABLE_CONDITIONS = frozenset({
+    "above_vwap", "below_vwap",
+    "consecutive_down", "consecutive_up",
+    "level_break_pdh", "level_break_pdl",
+    "rsi_overbought_zone", "rsi_oversold_zone",
+    "stoch_rsi_overbought", "stoch_rsi_oversold",
+})
+
+
 def evaluate_signal(
     row: pd.Series,
     min_conditions: int = 3,
@@ -250,27 +265,45 @@ def evaluate_signal(
             )
             ov = _latest_overrides(ticker.upper())
             if ov:
-                dc = ov.get("disabled_conditions") or []
+                # NOT `or []`: that ran before any shape check, so `{}`, `0`,
+                # `""` and `False` all became "nothing is disabled" and failed
+                # OPEN on the operator config C-04 deliberately made fail
+                # closed. Only None means nothing is disabled (Codex on #1022,
+                # round 23).
+                dc = ov.get("disabled_conditions")
                 if isinstance(dc, str):
                     import json as _json
                     try:
                         dc = _json.loads(dc)
-                    except Exception:
-                        # AUDIT-2026-09-07: silent fallback (audit C-04) --
-                        # malformed disabled_conditions JSON becomes "nothing
-                        # is disabled", so a condition an operator switched
-                        # OFF for risk reasons is silently switched back on.
-                        # Now logged, so the failure is visible; still
-                        # degrades, because what a resolver failure should do
-                        # to a live signal is a product decision, not a
-                        # refactor. Tracked as OPEN in
-                        # docs/audits/FALLBACK_AUDIT_2026-05-13.md §12.1.
-                        log.warning(
-                            "%s: disabled_conditions is not valid JSON (%r) — "
-                            "treating as EMPTY, so any condition disabled for "
-                            "this ticker is re-enabled for this evaluation",
+                    except ValueError:
+                        # Audit C-04, closed the safe way round: a malformed
+                        # disabled_conditions used to become "nothing is
+                        # disabled", so a condition an operator switched OFF
+                        # for risk was switched back on. Operator config we
+                        # own is an INTERNAL failure; no signal fires for
+                        # this bar until it is fixed (CLAUDE.md 3.7).
+                        log.exception(
+                            "%s: exit_config_overrides.disabled_conditions is not "
+                            "valid JSON (%r); no mean-reversion signal fires for this "
+                            "bar until the override row is fixed",
                             ticker, dc)
-                        dc = []
+                        return None
+                if dc is not None:
+                    # A dict passes `set(...)` and yields its KEYS, so
+                    # `{"above_vwap": False}` disabled the very condition it
+                    # recorded as not disabled — the inverse of the operator's
+                    # intent. And an unrecognised name disables nothing while
+                    # looking like it does, which is how a typo becomes a
+                    # silent no-op. Both fail closed, like the decode above.
+                    if not isinstance(dc, (list, tuple)) or \
+                            any(c not in DISABLEABLE_CONDITIONS for c in dc):
+                        log.error(
+                            "%s: exit_config_overrides.disabled_conditions is not a "
+                            "list of known condition names (%r); no mean-reversion "
+                            "signal fires for this bar until the override row is "
+                            "fixed. Known: %s",
+                            ticker, dc, sorted(DISABLEABLE_CONDITIONS))
+                        return None
                 if dc:
                     disabled_set = set(dc)
                     pre_call = len(call_conds)
@@ -280,19 +313,20 @@ def evaluate_signal(
                     call_score -= (pre_call - len(call_conds))
                     put_score -= (pre_put - len(put_conds))
             disabled_directions = get_disabled_directions(ticker.upper())
-        except Exception as exc:
-            # AUDIT-2026-09-07: silent fallback (audit C-04) -- degrades to
-            # Tier-B (legacy behaviour) on any resolver failure.
-            #
-            # The old comment said "the resolver itself logs the cause". That
-            # is only true when the resolver ran: a failure in the import, in
-            # `_json.loads`, or in the list comprehensions above never reaches
-            # it, so those degraded in total silence. Logged here instead of
-            # relying on a layer that may not have been entered.
-            log.warning(
-                "%s: exit-override resolver failed (%s: %s) — evaluating "
-                "with NO disabled conditions or directions applied",
-                ticker, type(exc).__name__, exc)
+        except Exception:
+            # Audit C-04, closed the safe way round: the resolver failing
+            # used to evaluate "with NO disabled conditions or directions
+            # applied", so a side switched OFF for risk fired. A kill
+            # switch that cannot be read is unknown, and the safe reading
+            # of an unknown risk control is CLOSED: no mean-reversion
+            # signal fires for this bar. The failure (import, DB, parse) is
+            # logged here with its traceback, whichever layer raised it;
+            # the bar recurs every 60 s, so a transient blip costs one
+            # evaluation, not a fire on a disabled side (CLAUDE.md 3.7).
+            log.exception(
+                "%s: exit-override resolver failed; no mean-reversion signal "
+                "fires for this bar", ticker)
+            return None
 
     signal = None
 

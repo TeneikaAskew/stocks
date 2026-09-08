@@ -197,18 +197,28 @@ def test_is_usable_int():
 
 
 class TestLatestOverridesFallsBackOnDbError:
-    """If the exit_config_overrides table doesn't exist (PR-E1
-    migration not yet applied) or get_engine raises (no GCP creds in
-    unit-test env), `_latest_overrides` must return None instead of
-    crashing — every resolver call falls back to Tier-B and live
-    alerts keep firing with the existing ExitConfig defaults."""
+    """A read failure raises; the exit-target getters catch it.
 
-    def test_undefined_table_returns_none(self, monkeypatch):
+    These tests asserted that `_latest_overrides` answers None for ANY
+    failure, which is the contract that made the kill switch fail OPEN:
+    `get_disabled_directions` read that None as "no row" and returned
+    "nothing is disabled", so the fail-closed handler above it never ran
+    (Codex on #1022; CLAUDE.md 3.7.1, "a swallowing helper defeats a
+    strict caller").
+
+    The split the getters actually need: "no usable row" is None and means
+    Tier-B, while "could not read" raises `OverridesUnavailable`. The
+    Tier-B getters go through `_latest_overrides_or_default`, so their
+    behaviour here is unchanged — live alerts keep firing on the ExitConfig
+    defaults when the table is missing or the creds are absent."""
+
+    def test_undefined_table_raises_but_the_target_getters_degrade(self, monkeypatch):
         eco._latest_overrides.cache_clear()
         monkeypatch.setattr('gcp.database.is_cloud_sql_configured',
                             lambda: True)
         # pd.read_sql raises (e.g. UndefinedTable when PR-E1 migration not yet applied)
         import pandas as pd
+        import pytest
 
         def _boom(*a, **kw):
             raise RuntimeError(
@@ -218,20 +228,42 @@ class TestLatestOverridesFallsBackOnDbError:
         monkeypatch.setattr(pd, 'read_sql', _boom)
         # Mock get_engine so it doesn't fail first on creds
         monkeypatch.setattr('gcp.database.get_engine', lambda: object())
-        assert eco._latest_overrides('QQQ') is None
+        with pytest.raises(eco.OverridesUnavailable):
+            eco._latest_overrides('QQQ')
+        assert eco._latest_overrides_or_default('QQQ') is None
         assert eco.get_call_target('QQQ') == DEFAULTS.call_target
 
-    def test_get_engine_credential_error_returns_none(self, monkeypatch):
+    def test_get_engine_credential_error_raises_but_the_target_getters_degrade(self, monkeypatch):
         eco._latest_overrides.cache_clear()
         monkeypatch.setattr('gcp.database.is_cloud_sql_configured',
                             lambda: True)
+        import pytest
 
         def _no_creds():
             raise Exception('DefaultCredentialsError: no ADC configured')
 
         monkeypatch.setattr('gcp.database.get_engine', _no_creds)
-        assert eco._latest_overrides('SPY') is None
+        with pytest.raises(eco.OverridesUnavailable):
+            eco._latest_overrides('SPY')
+        assert eco._latest_overrides_or_default('SPY') is None
         assert eco.get_put_target('SPY') == DEFAULTS.put_target
+
+    def test_the_kill_switch_does_not_degrade(self, monkeypatch):
+        """The whole point of the split: the same failure that lets a
+        target fall back to Tier-B must NOT let a disabled direction
+        through."""
+        eco._latest_overrides.cache_clear()
+        monkeypatch.setattr('gcp.database.is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr('gcp.database.get_engine', lambda: object())
+        import pandas as pd
+        import pytest
+
+        def _boom(*a, **kw):
+            raise RuntimeError('connection lost')
+
+        monkeypatch.setattr(pd, 'read_sql', _boom)
+        with pytest.raises(eco.OverridesUnavailable):
+            eco.get_disabled_directions('QQQ')
 
 
 # ── consecutive_periods (walk-forward calibration knob) ──────────────
@@ -272,3 +304,37 @@ def test_consecutive_periods_resolution_tier():
         assert eco.get_resolution_tier("QQQ", "consecutive_periods") == "A"
     with patch.object(eco, "_latest_overrides", return_value=None):
         assert eco.get_resolution_tier("QQQ", "consecutive_periods") == "B"
+
+
+def test_a_json_object_is_not_a_list_of_directions(monkeypatch):
+    """`hasattr(dd, "__iter__")` is true for a dict, so `{"PUT": false}`
+    iterated to `{"PUT"}` — disabling a side the operator had explicitly
+    switched OFF in that object — and `{}` became an empty set, failing
+    open without reaching the callers' suppression (Codex on #1022).
+
+    The payload must be an actual list, and every entry must name a side
+    the monitor knows."""
+    import pytest
+
+    for payload in ({"PUT": False}, {}, {"CALL": True, "PUT": True}):
+        with patch.object(eco, "_latest_overrides",
+                          return_value=_row(disabled_directions=payload)):
+            with pytest.raises(ValueError, match="must be a list"):
+                eco.get_disabled_directions("QQQ")
+
+
+def test_an_unknown_direction_is_rejected(monkeypatch):
+    """A typo like ["PUTS"] would silently disable nothing. Only CALL and
+    PUT exist; anything else is operator config we own and is INTERNAL."""
+    import pytest
+
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(disabled_directions=["PUTS"])):
+        with pytest.raises(ValueError, match="PUTS"):
+            eco.get_disabled_directions("QQQ")
+
+
+def test_a_well_formed_list_still_works(monkeypatch):
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(disabled_directions=["put"])):
+        assert eco.get_disabled_directions("QQQ") == {"PUT"}

@@ -107,7 +107,7 @@ class TestSignalsAPI:
             calls["n"] += 1
             return count_df.copy() if calls["n"] == 1 else rows_df.copy()
 
-        monkeypatch.setattr(database, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(database, "query_to_dataframe_strict", fake_query)
         return calls
 
     def test_signals_live(self, client, monkeypatch):
@@ -247,7 +247,7 @@ class TestSimilarSignalsAPI:
             # Stats query is always called first; matches second
             return stats_df.copy() if calls["n"] == 1 else matches_df.copy()
 
-        monkeypatch.setattr(database, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(database, "query_to_dataframe_strict", fake_query)
         return calls
 
     def test_similar_invalid_direction_returns_400(self, client, monkeypatch):
@@ -364,7 +364,7 @@ class TestJournalCRUD:
     """`/api/journal/trades` — Cloud SQL CRUD with local fallback.
 
     The router has two code paths (`_HAS_CLOUD_SQL` ON/OFF). We test
-    both: Cloud SQL with monkeypatched `execute_sql`/`query_to_dataframe`
+    both: Cloud SQL with monkeypatched `execute_sql`/`query_to_dataframe_strict`
     capturing the SQL+params, and local fallback with `tmp_path`.
     """
 
@@ -401,7 +401,7 @@ class TestJournalCRUD:
         monkeypatch.setattr(journal_module, "execute_sql", fake_execute)
         monkeypatch.setattr(journal_module, "execute_returning_scalar",
                             fake_returning)
-        monkeypatch.setattr(journal_module, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(journal_module, "query_to_dataframe_strict", fake_query)
         return captured
 
     def test_post_call_trade_round_trip_cloud_sql(self, client, monkeypatch):
@@ -489,16 +489,26 @@ class TestJournalCRUD:
         assert "user_email = :user_email" in del_sql
         assert del_params == {"id": "abc-123", "user_email": "local"}
 
-    def test_post_falls_back_to_local_on_cloud_sql_failure(self, client, monkeypatch, tmp_path):
-        """If Cloud SQL throws, the router writes to a local JSON file
-        keyed by ticker (the gitignored `data/journal/{ticker}_journal.json`)."""
+    def test_post_falls_back_to_local_on_cloud_sql_failure(
+            self, client, monkeypatch, tmp_path, cloud_sql_outage):
+        """If Cloud SQL is UNREACHABLE, the router writes to a local JSON file
+        keyed by ticker (the gitignored `data/journal/{ticker}_journal.json`).
+
+        The outage has to be a real one now. This staged a bare RuntimeError,
+        which is a defect, and a defect must not reach a fallback at all — see
+        the test below (Codex on #1022, round 23)."""
         from api.routers import journal as journal_module
 
-        # Force Cloud SQL "ON" but make execute_sql raise
+        # Force Cloud SQL "ON" and make the insert this path actually calls
+        # raise. It patched `execute_sql`, which `create_trade` never calls —
+        # it goes through `_insert_cloud_sql_trade` — so the failure the test
+        # saw was the real `get_engine` raising "Cloud SQL not configured",
+        # and the blanket handler caught that and fell back. The test passed
+        # for a reason unrelated to its name.
         monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
         monkeypatch.setattr(
-            journal_module, "execute_sql",
-            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("DB down")),
+            journal_module, "_insert_cloud_sql_trade",
+            lambda **k: (_ for _ in ()).throw(cloud_sql_outage()),
         )
         # Redirect the local journal dir to tmp_path so we don't pollute
         # the real data/ directory
@@ -536,6 +546,37 @@ class TestMarketDataAPI:
     The endpoints bind `query_to_dataframe` and `_CLOUD_SQL` at module
     import time, so tests patch them on the `api.main` module object.
     """
+
+
+    def test_post_does_not_fall_back_to_local_on_an_application_defect(
+            self, client, monkeypatch, tmp_path, application_defect):
+        """A local-file write is a fallback for an OUTAGE. Reaching it on a
+        defect writes the trade somewhere no one reads and reports success,
+        which is the fabricated-success case CLAUDE.md 3.7 forbids."""
+        from api.routers import journal as journal_module
+
+        monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+        monkeypatch.setattr(
+            journal_module, "_insert_cloud_sql_trade",
+            lambda **k: (_ for _ in ()).throw(
+                application_defect('column "return_pct" does not exist')),
+        )
+        monkeypatch.setattr(journal_module, "LOCAL_JOURNAL_DIR", tmp_path)
+
+        body = {
+            "ticker": "IWM", "direction": "CALL",
+            "entry_date": "2026-04-25", "entry_time": "10:00",
+            "entry_price": 200.0,
+            "exit_date": "2026-04-25", "exit_time": "10:30",
+            "exit_price": 202.0,
+        }
+        from starlette.testclient import TestClient as _TC
+        loud = _TC(client.app, raise_server_exceptions=False)
+        r = loud.post("/api/journal/trades", json=body)
+        assert r.status_code == 500, r.text
+        assert not list(tmp_path.glob("*.json")), (
+            "a defect must not write the trade to the local journal: %s"
+            % list(tmp_path.glob("*.json")))
 
     def _patch_intraday(self, monkeypatch, df):
         """Force Cloud SQL ON in api.main and install a fake
@@ -1245,6 +1286,39 @@ class TestHealthFreshnessAPI:
         assert r.status_code == 500
         assert "DB down" in r.json()["detail"]
 
+    def test_freshness_503_when_the_database_is_unreachable(self, client, monkeypatch):
+        """An unreachable Cloud SQL is EXTERNAL (CLAUDE.md 3.7): the caller
+        gets an explicit, retryable 503, not a 500.
+
+        `table_exists()` used to answer False for any error, so a connection
+        failure read as "the table is missing" and the audit reported a
+        fabricated status (audit P2-#6, closed on #1022). With it raising,
+        every failure reached this handler as a 500 — including the outage,
+        where a 500 tells an operator to look for a bug in code that is fine.
+        `lib/infra_errors.is_infrastructure_error` (#999) is what tells the
+        two apart, so the outage answers 503 and a real defect still 500s."""
+        import psycopg2
+        import sqlalchemy.exc
+
+        from api.routers import health as health_module
+        self._reset_cache()
+
+        import audit_data_freshness as audit_mod
+        outage = sqlalchemy.exc.OperationalError(
+            "SELECT 1", {},
+            psycopg2.OperationalError(
+                'connection to server at "127.0.0.1", port 5432 failed: '
+                "Connection refused"),
+        )
+        monkeypatch.setattr(
+            audit_mod, "audit_all",
+            lambda: (_ for _ in ()).throw(outage),
+        )
+
+        r = client.get("/api/health/freshness")
+        assert r.status_code == 503, r.text
+        assert "unavailable" in r.json()["detail"].lower()
+
     def test_freshness_cache_does_not_persist_500(self, client, monkeypatch):
         """An exception from `audit_all` must NOT poison the cache —
         the next request after recovery should re-run the audit."""
@@ -1886,6 +1960,10 @@ class TestReviewModeIntegration:
             return signal_count.copy() if sig_calls["n"] % 2 == 1 else signal_rows.copy()
 
         monkeypatch.setattr(database, "query_to_dataframe", fake_signal_query)
+        # the signals router reads through its own strict wrapper (a later
+        # patch of database.query_to_dataframe_strict in this method serves
+        # other routers)
+        monkeypatch.setattr(signals_module, "_query_or_503", fake_signal_query)
 
         # ── Dashboard brief (Cloud SQL) ──────────────────────────────────
         daily = pd.DataFrame([{
@@ -2008,3 +2086,107 @@ class TestReviewModeIntegration:
         data = r.json()
         # Should return the day BEFORE the review date
         assert data["date"] < self.REVIEW_DATE_COMPACT
+
+
+class TestSignalsAPIFailsLoud:
+    """Audit P1-#2 (docs/audits/FALLBACK_AUDIT_2026-05-13.md 12.4): with
+    Cloud SQL configured, a failed query fell back to the legacy GCS
+    parquet at log.warning, and the response's `source` field was the
+    only tell, which no consumer reads (CLAUDE.md 3.7.1). And the query
+    itself went through the swallowing query_to_dataframe, so the failure
+    never even reached that branch: it served zero rows from Cloud SQL."""
+
+    def test_signals_is_503_when_the_cloud_sql_query_fails(self, client, monkeypatch):
+        import psycopg2
+        import sqlalchemy.exc
+
+        from gcp import database
+        from api.routers import signals as signals_module
+
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
+
+        # A real driver outage, not a bare RuntimeError: the router now asks
+        # lib.infra_errors which kind of failure this is, and only this kind
+        # earns the retryable 503.
+        outage = sqlalchemy.exc.OperationalError(
+            "SELECT 1", {},
+            psycopg2.OperationalError(
+                'connection to server at "127.0.0.1", port 5432 failed: '
+                "Connection refused"),
+        )
+
+        def _boom(sql, params=None):
+            raise outage
+
+        monkeypatch.setattr(database, "query_to_dataframe_strict", _boom)
+        monkeypatch.setattr(signals_module, "_load_ticker_df_parquet",
+                            lambda t: pytest.fail("must not fall back to parquet on a Cloud SQL failure"))
+        r = client.get("/api/signals/IWM?limit=5")
+        assert r.status_code == 503, r.text
+        assert "unavailable" in r.json()["detail"].lower()
+
+    def test_similar_is_503_when_the_cloud_sql_query_fails(self, client, monkeypatch):
+        import psycopg2
+        import sqlalchemy.exc
+
+        from gcp import database
+        from api.routers import signals as signals_module
+
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
+
+        outage = sqlalchemy.exc.OperationalError(
+            "SELECT 1", {},
+            psycopg2.OperationalError(
+                'connection to server at "127.0.0.1", port 5432 failed: '
+                "Connection refused"),
+        )
+
+        def _boom(sql, params=None):
+            raise outage
+
+        monkeypatch.setattr(database, "query_to_dataframe_strict", _boom)
+        r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=50&ema9_diff=0&ema20_diff=0&score=3")
+        assert r.status_code == 503, r.text
+
+    def test_signals_query_defect_is_500_not_a_fabricated_503(self, client, monkeypatch):
+        """`except Exception -> 503` conflates the two failure kinds the whole
+        of CLAUDE.md 3.7 exists to separate. Cloud SQL being unreachable is
+        EXTERNAL and retryable; a KeyError from a row we shaped wrong is a
+        defect, and answering 503 for it tells an operator to retry code that
+        will never succeed while hiding the bug behind an outage that is not
+        happening. `lib/infra_errors.is_infrastructure_error` tells them
+        apart, exactly as the freshness handler already does (Codex on #1022,
+        round 22)."""
+        from gcp import database
+        from api.routers import signals as signals_module
+
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
+
+        from starlette.testclient import TestClient
+
+        def _defect(sql, params=None):
+            raise KeyError("entry_time")
+
+        monkeypatch.setattr(database, "query_to_dataframe_strict", _defect)
+        monkeypatch.setattr(signals_module, "_load_ticker_df_parquet",
+                            lambda t: pytest.fail("must not fall back to parquet on a defect"))
+        # The shared fixture re-raises server exceptions, which is the
+        # TestClient's own behaviour and not a status code. Ask for the
+        # response the way uvicorn would render it.
+        loud = TestClient(client.app, raise_server_exceptions=False)
+        r = loud.get("/api/signals/IWM?limit=5")
+        assert r.status_code == 500, (
+            "an internal defect must stay a loud 500, not a retryable 503: %s" % r.text
+        )
+        # And the defect keeps its type on the way out: it is re-raised, not
+        # repackaged, so the traceback reaches the error handler intact.
+        with pytest.raises(KeyError):
+            client.get("/api/signals/IWM?limit=5")
+
+    def test_router_reads_through_the_strict_query_only(self):
+        from api.routers import signals as signals_module
+        import inspect
+        src = inspect.getsource(signals_module)
+        assert "query_to_dataframe_strict" in src
+        assert "from gcp.database import query_to_dataframe  # lazy import" not in src
+        assert "falling back to parquet" not in src

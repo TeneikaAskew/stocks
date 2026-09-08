@@ -32,6 +32,8 @@ import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from api.http_errors import raise_unless_infrastructure, unavailable
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -71,12 +73,12 @@ _IMPORT_READ_CHUNK_SIZE = 1024 * 1024  # 1 MiB
 _ALLOWED_BROKERS = {"robinhood", "webull", "generic"}
 
 # ── Cloud SQL availability check ─────────────────────────────────────────────
-try:
-    from gcp.database import (is_cloud_sql_configured, query_to_dataframe,
-                              execute_sql, execute_returning_scalar)
-    _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
-except Exception:
-    _HAS_CLOUD_SQL = False
+# gcp.database is first-party: an import failure is a bug and fails the
+# app at import rather than silently running the journal in local mode.
+from gcp.database import (is_cloud_sql_configured, query_to_dataframe_strict,
+                          execute_sql, execute_returning_scalar)
+
+_HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 
 # Task 2 broker-import core (lib/broker_import.py) — pure parse/pairing, no
 # I/O. This router owns duplicate detection and DB writes (see module
@@ -112,7 +114,12 @@ _ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").strip().lowe
 # take effect, which keeps the older test suites (that patch the plain names)
 # working alongside new tests that patch the indirection directly.
 def _journal_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
-    return query_to_dataframe(sql, params)
+    """Forwards to the STRICT query: every `try: _journal_query(...)
+    except: 503` in this router was inert while this forwarded to the
+    swallowing query_to_dataframe, so /api/journal/examples answered 200
+    with `source: cloud_sql` and no rows when its query failed (internal
+    review of #1022; CLAUDE.md 3.7)."""
+    return query_to_dataframe_strict(sql, params)
 
 
 def _journal_exec(sql: str, params: Optional[dict] = None) -> int:
@@ -887,7 +894,10 @@ def get_trades(ticker: str, request: Request):
             )
             trades = [] if df.empty else _rows_to_trades(df)
             return {"ticker": ticker_upper, "source": "cloud_sql", "count": len(trades), "trades": trades}
-        except Exception:
+        except Exception as exc:
+            # A defect is never a fallback: only an OUTAGE may reach the
+            # 503 or the local-dev path below (Codex on #1022, round 23).
+            raise_unless_infrastructure(exc)
             # Authenticated deployment (real owner): a Cloud SQL failure must NOT
             # fall back to the shared, owner-less local JSON file — that would
             # return another user's trades and silently serve stale data
@@ -978,7 +988,8 @@ def get_examples(ticker: str):
             """,
             {"ticker": ticker_upper, "user_email": _ADMIN_EMAIL},
         )
-    except Exception:
+    except Exception as exc:
+        raise_unless_infrastructure(exc)   # a defect is never a fallback
         # Mirrors get_trades' except path exactly (same 503 + same detail
         # string). No owner=="local" branch here (unlike get_trades) because
         # this endpoint always reads the admin's Cloud-SQL data, never a
@@ -1026,18 +1037,21 @@ def get_examples(ticker: str):
                 SELECT sa2.target_price, sa2.time_stop_minutes, sa2.level_broken, sa2.total_score
                 FROM signal_alerts sa2
                 WHERE sa2.ticker = t.ticker AND sa2.direction = t.direction
+                  AND sa2.run_kind = 'live'
                   AND sa2.alert_ts BETWEEN t.entry_time - INTERVAL '5 seconds'
                                         AND t.entry_time + INTERVAL '5 seconds'
                 ORDER BY ABS(EXTRACT(EPOCH FROM (t.entry_time - sa2.alert_ts))), sa2.id
                 LIMIT 1
             ) sa ON true
             WHERE t.ticker = :ticker
+              AND t.run_kind = 'live'
               AND (t.entry_time AT TIME ZONE 'America/New_York')::time BETWEEN TIME '09:30' AND TIME '16:00'
             ORDER BY t.entry_time DESC
             """,
             {"ticker": ticker_upper},
         )
-    except Exception:
+    except Exception as exc:
+        raise_unless_infrastructure(exc)   # a defect is never a fallback
         # Same fail-loud stance as the admin query above — never a partial
         # admin-only success when the pipeline half is unreachable.
         raise HTTPException(status_code=503, detail="journal temporarily unavailable")
@@ -1095,7 +1109,8 @@ def create_trade(trade: JournalTradeCreate, request: Request):
                 status=status, source=trade.source, session_id=trade.session_id,
             )
             return {"source": "cloud_sql", "id": new_id, "return_pct": ret_pct_rounded, "status": status}
-        except Exception:
+        except Exception as exc:
+            raise_unless_infrastructure(exc)   # a defect is never a fallback
             # Auth mode: never write to the shared owner-less local file (would
             # be visible to other users) — fail loud. Local fallback is open-dev
             # only. See get_trades for the full rationale.
@@ -1196,7 +1211,8 @@ def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
             return {"source": "cloud_sql", "id": trade_id, "return_pct": ret_pct_out, "status": new_status}
         except HTTPException:
             raise
-        except Exception:
+        except Exception as exc:
+            raise_unless_infrastructure(exc)   # a defect is never a fallback
             # Auth mode: don't fall back to the cross-user local file. Fail loud.
             if owner != "local":
                 raise HTTPException(status_code=503, detail="journal temporarily unavailable")
@@ -1235,7 +1251,8 @@ def delete_trade(trade_id: str, request: Request, ticker: str = ""):
                 {"id": trade_id, "user_email": owner},
             )
             return {"source": "cloud_sql", "deleted": trade_id}
-        except Exception:
+        except Exception as exc:
+            raise_unless_infrastructure(exc)   # a defect is never a fallback
             # Auth mode: don't fall back to the cross-user local file. Fail loud.
             if owner != "local":
                 raise HTTPException(status_code=503, detail="journal temporarily unavailable")
@@ -1313,13 +1330,14 @@ def seed_trades(ticker: str, date: str):
                    return_pct, strat_combo, exit_reason
             FROM trades
             WHERE ticker = :ticker AND trade_date = :date
+              AND run_kind = 'live'
             ORDER BY entry_time
             """,
             {"ticker": ticker_upper, "date": date},
         )
     except Exception as e:
         logger.error("journal seed query failed: %s", e)
-        raise HTTPException(status_code=503, detail=f"seed query failed: {type(e).__name__}")
+        unavailable(f"seed query failed: {type(e).__name__}", e)
 
     trades: list[dict] = []
     if df is not None and not df.empty:
@@ -1474,10 +1492,11 @@ async def import_preview(
     tickers = sorted({t.ticker for t in preview.trades})
     try:
         existing_keys = _existing_entry_keys(owner, tickers)
-    except Exception:
-        if owner != "local":
-            raise HTTPException(status_code=503, detail="journal temporarily unavailable")
-        existing_keys = set()
+    except Exception as exc:
+        raise_unless_infrastructure(exc)   # a defect is never a fallback
+        # For every owner: an empty key set on a failed lookup re-imported
+        # every trade already in the journal (audit 12.3).
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     trades_out = []
     for t in preview.trades:
@@ -1540,10 +1559,11 @@ def import_commit(body: ImportCommitRequest, request: Request):
 
     try:
         existing_keys = _existing_entry_keys(owner, tickers)
-    except Exception:
-        if owner != "local":
-            raise HTTPException(status_code=503, detail="journal temporarily unavailable")
-        existing_keys = set()
+    except Exception as exc:
+        raise_unless_infrastructure(exc)   # a defect is never a fallback
+        # For every owner: an empty key set on a failed lookup re-imported
+        # every trade already in the journal (audit 12.3).
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     imported = 0
     skipped_duplicates = 0
@@ -1590,7 +1610,8 @@ def import_commit(body: ImportCommitRequest, request: Request):
                 # a second round-trip to the DB.
                 existing_keys.add(key)
                 continue
-            except Exception:
+            except Exception as exc:
+                raise_unless_infrastructure(exc)   # a defect is never a fallback
                 # Auth mode: never fall back to the shared owner-less local
                 # file for a real user — fail loud (same convention as
                 # create_trade / delete_trade elsewhere in this router).

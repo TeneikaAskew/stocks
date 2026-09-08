@@ -4,7 +4,7 @@
 -- (Codex P2, PR #802).
 --
 -- Cohort: resolved (exit_return_pct IS NOT NULL), non-replay
--- (run_kind IS DISTINCT FROM 'replay') fires with a stored fire-time
+-- (run_kind = 'live') fires with a stored fire-time
 -- rvol; 2,918 rows spanning 2026-03-19 .. 2026-08-27 at analysis time.
 -- Verdict reconstruction: rvol >= 1.0 -> 'pass' else 'below', matching
 -- gcp/signal_monitor.py:rvol_gate_verdict at the production
@@ -25,7 +25,7 @@ SELECT date_trunc('month', alert_date)::date AS mth,
 FROM signal_alerts
 WHERE rvol IS NOT NULL
   AND exit_return_pct IS NOT NULL
-  AND run_kind IS DISTINCT FROM 'replay'
+  AND run_kind = 'live'
 GROUP BY 1, 2
 ORDER BY 1, 2;
 
@@ -44,7 +44,7 @@ SELECT CASE WHEN rvol >= 2.0 THEN 'd:>=2.0'
 FROM signal_alerts
 WHERE rvol IS NOT NULL
   AND exit_return_pct IS NOT NULL
-  AND run_kind IS DISTINCT FROM 'replay'
+  AND run_kind = 'live'
 GROUP BY 1
 ORDER BY 1;
 
@@ -63,7 +63,7 @@ SELECT ticker,
 FROM signal_alerts
 WHERE rvol IS NOT NULL
   AND exit_return_pct IS NOT NULL
-  AND run_kind IS DISTINCT FROM 'replay'
+  AND run_kind = 'live'
 GROUP BY 1, 2, 3, 4
 HAVING count(*) >= 20
 ORDER BY 1, 2, 3, 4;

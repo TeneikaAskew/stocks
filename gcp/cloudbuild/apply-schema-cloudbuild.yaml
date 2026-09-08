@@ -1,15 +1,169 @@
-# Auto-dispatches the apply-schema-migrations Cloud Run Job whenever
-# gcp/schema.sql changes on main. Replaces the GHA workflow
-# .github/workflows/apply-schema-migrations-on-change.yml.
+# Trigger: apply-schema-on-change
+# Fires:   push to main touching gcp/schema.sql
+#
+# Applies THIS revision's gcp/schema.sql, not whatever schema.sql the
+# apply-schema-migrations job's image happened to be built with.
+#
+# The previous config was a single `gcloud run jobs execute` of the already
+# deployed job. That job reads gcp/schema.sql from inside its own image
+# (gcp/apply_schema.py DEFAULT_SCHEMA), and the trading-system image is only
+# built by a manual `./gcp/deploy.sh build`, so the trigger applied a stale
+# schema while the deploy-solyra-api-staging trigger shipped code that read
+# the new columns (Codex on #1022: the trades.run_kind filter would have
+# failed on every /api/analytics/summary request until someone ran the
+# manual step; and because that endpoint read through the swallowing
+# query_to_dataframe, the failure rendered as a flat all-zero summary, not
+# a 500, which is why nobody would have noticed).
+#
+# Same shape as deploy-solyra-api-staging-cloudbuild.yaml: build the image
+# from the triggering source, push an immutable ${SHORT_SHA} tag, resolve it
+# to a digest, move the job to that digest, execute, pin.
+#
+# The build context is the repository checkout; gcp/Dockerfile COPYs
+# requirements-gcp.txt, lib/, gcp/, scripts/ and alert_config.json from the
+# root, the same set gcp/deploy.sh build_image stages (data/ is gitignored,
+# so the 4 GB local directory never reaches Cloud Build).
+#
+# The live trigger holds this config INLINE (gcloud builds triggers describe
+# apply-schema-on-change). After changing this file, re-import it:
+#   gcloud builds triggers update github apply-schema-on-change \
+#     --region=global --inline-config=gcp/cloudbuild/apply-schema-cloudbuild.yaml
+#
+# Ordering against the API deploy: this trigger and deploy-solyra-api-staging
+# fire on the same push and cannot see each other, so the staging build
+# applies this revision's schema itself (its `migrate` step, from the API
+# image it just built) BEFORE it deploys the service. Both builds' job
+# mutations are serialized in start order by wait_for_earlier_schema_builds.sh;
+# every statement in schema.sql is IF NOT EXISTS / OR REPLACE, so the second
+# application of the same revision is a no-op.
+#
+# Required IAM on the trigger SA (trading-runner@): see README.md in this dir
+# (artifactregistry.writer for the push, run.developer for the job update and
+# execute).
 steps:
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    entrypoint: gcloud
+    id: preflight
+    entrypoint: bash
     args:
-      - run
-      - jobs
-      - execute
-      - apply-schema-migrations
-      - --region=us-east1
-      - --wait
+      - -c
+      - |
+        set -euo pipefail
+        # SHORT_SHA is populated for trigger-started builds only; refuse to
+        # push a nameless tag if this config is submitted by hand.
+        if [ -z "$SHORT_SHA" ]; then
+          echo "ERROR: SHORT_SHA is empty. This config is for the" >&2
+          echo "       apply-schema-on-change trigger; by hand use" >&2
+          echo "       ./gcp/deploy.sh apply-schema then execute the job." >&2
+          exit 1
+        fi
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    waitFor: [preflight]
+    args: [build, --file, gcp/Dockerfile, --tag, '${_IMAGE}:${SHORT_SHA}', .]
+  - name: gcr.io/cloud-builders/docker
+    id: push
+    waitFor: [build]
+    args: [push, '${_IMAGE}:${SHORT_SHA}']
+  # Builds of this trigger apply in START order. Two schema pushes minutes
+  # apart would otherwise race on the shared job and the later-finishing
+  # (possibly older) build would win (Codex on #1022). The image builds
+  # above run concurrently; only the job mutation is serialized.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: serialize
+    waitFor: [push]
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh "$BUILD_ID"']
+  # allowFailure: the pin step below must run whatever this step's outcome
+  # (a failed execute after a successful update leaves the job on a digest
+  # only the build tag keeps alive), so this step records its exit code in
+  # /workspace/apply.rc and the verify step fails the build with it.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: apply
+    waitFor: [serialize]
+    allowFailure: true
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo 1 > /workspace/apply.rc
+        DIGEST=$(gcloud artifacts docker images describe "${_IMAGE}:${SHORT_SHA}" \
+                   --format='value(image_summary.fully_qualified_digest)')
+        if [ -z "$${DIGEST}" ]; then
+          echo "ERROR: could not resolve ${_IMAGE}:${SHORT_SHA} to a digest" >&2
+          exit 1
+        fi
+        # Source revision + committer time, for the applier's revision guard:
+        # it refuses a revision older than the newest successfully applied
+        # one, so an out-of-order build cannot roll the schema back (Codex on
+        # #1022). Main is linear (squash merges), so committer time orders it.
+        # Fail closed if the checkout cannot answer.
+        # Ancestry for the guard's tie-break: main carries adjacent commits
+        # with the same committer second (38 pairs measured 2026-09-07), so
+        # an equal time is ordered only by the newest applied revision being
+        # an ancestor of this one (Codex on #1022). The trigger checkout is
+        # a single-revision fetch (FETCHSOURCE: `* branch <sha> -> FETCH_HEAD`),
+        # so deepen it first. A checkout that cannot be deepened is reported
+        # here, and the applier then refuses a tie rather than guessing.
+        if ! git fetch --deepen=100 origin "$COMMIT_SHA"; then
+          echo "WARNING: could not deepen the checkout; the applier will refuse a" >&2
+          echo "         same-second revision tie instead of ordering it." >&2
+        fi
+        ANCESTORS=$(git rev-list --max-count=100 "$COMMIT_SHA" | tr '\n' ' ')
+        if ! COMMIT_TIME=$(git log -1 --format=%ct "$COMMIT_SHA" 2>&1); then
+          echo "ERROR: cannot read the committer time of $COMMIT_SHA: $${COMMIT_TIME}" >&2
+          exit 1
+        fi
+        # The job must already exist: `jobs update` cannot create it, and
+        # its env, secrets and service account are owned by gcp/deploy.sh,
+        # so the build refuses with the bootstrap command rather than
+        # creating a partial job (Codex on #1022). `all)` creates it too.
+        if ! gcloud run jobs describe apply-schema-migrations --region=us-east1 \
+               --format='value(name)' >/dev/null; then
+          echo "ERROR: the apply-schema-migrations job does not exist (or cannot be" >&2
+          echo "       described). Bootstrap it with ./gcp/deploy.sh apply-schema" >&2
+          echo "       (or ./gcp/deploy.sh all), then re-run this build." >&2
+          exit 1
+        fi
+        # Only the image moves here. Memory, CPU, timeout, env and secrets
+        # are declared once in gcp/deploy.sh (_apply_schema_job_flags) and
+        # reach the live job through ./gcp/deploy.sh apply-schema, so a
+        # sizing change there is not picked up by this build.
+        echo ">> apply-schema-migrations -> $${DIGEST}"
+        gcloud run jobs update apply-schema-migrations \
+          --image="$${DIGEST}" \
+          --region=us-east1 \
+          --quiet
+        gcloud run jobs execute apply-schema-migrations \
+          --region=us-east1 \
+          --args="--revision=$COMMIT_SHA,--revision-time=$${COMMIT_TIME},--revision-ancestors=$${ANCESTORS}" \
+          --wait
+        echo 0 > /workspace/apply.rc
+  # Pin the digest the job now runs so the registry cleanup policy cannot
+  # delete it (same reasoning as the staging trigger). --no-sweep is a
+  # policy choice: trading-runner@ can move tags (the artifactRegistryTagMover
+  # role, README.md), but releasing stale pins stays with the interactive
+  # gcp/deploy.sh path. Runs whatever the apply's outcome.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: pin
+    waitFor: [apply]
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; ./gcp/deploy.sh pin-images --no-sweep']
+  # The build's verdict is the apply's.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: verify
+    waitFor: [pin]
+    entrypoint: bash
+    args: ['-c', 'rc=$(cat /workspace/apply.rc); [ "$rc" = 0 ] || echo "ERROR: the apply step failed (exit $rc); see its log above." >&2; exit "$rc"']
+substitutions:
+  _IMAGE: us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system
+# Read by wait_for_earlier_schema_builds.sh: the tag is how one build of this
+# trigger sees another.
+tags: [apply-schema-on-change]
 options:
   logging: CLOUD_LOGGING_ONLY
+# 7200 s: image build (~5 min) + waiting out an earlier schema build's
+# apply + this build's apply (job timeout 1800 s, plus ~90 s measured
+# before the execution starts) + pin. The serializer reads this value and
+# stops waiting once less than its 2400 s reserve is left.
+timeout: 7200s

@@ -56,6 +56,33 @@ _DF_FLIGHT = SingleFlight()
 _DF_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=8, ttl=3600))
 
 
+def _query_or_503(sql: str, params: dict) -> pd.DataFrame:
+    """Run a Cloud SQL query through the STRICT variant and turn an OUTAGE
+    into a 503. The swallowing query_to_dataframe returned an empty frame
+    on failure, which this router served as "zero signals from Cloud SQL"
+    (and get_signals then fell back to the legacy parquet, which no
+    consumer could tell apart: audit P1-#2, CLAUDE.md 3.7.1).
+
+    A blanket ``except Exception -> 503`` would trade that swallow for a
+    smaller one: it conflates Cloud SQL being unreachable, which is EXTERNAL
+    and worth retrying, with a KeyError from a row we shaped wrong, which is
+    a defect. A 503 on the defect tells an operator to retry code that will
+    never succeed and hides the bug behind an outage that is not happening,
+    so only `lib.infra_errors.is_infrastructure_error` may answer 503 —
+    the same split the freshness handler makes (Codex on #1022, round 22).
+    Everything else keeps its traceback and surfaces as a 500."""
+    from gcp.database import query_to_dataframe_strict  # lazy import
+    from lib.infra_errors import is_infrastructure_error  # noqa: PLC0415
+    try:
+        return query_to_dataframe_strict(sql, params)
+    except Exception as exc:
+        log.exception("signals query failed")
+        if is_infrastructure_error(exc):
+            raise HTTPException(
+                status_code=503, detail="signals temporarily unavailable") from exc
+        raise
+
+
 def _pattern(ticker_lower: str) -> str:
     return rf"^historical_{re.escape(ticker_lower)}_\d{{8}}_\d{{8}}_signals\.parquet$"
 
@@ -118,8 +145,8 @@ def _query_signals_sql(
     end_date: Optional[str],
     end_time: Optional[str],
 ) -> tuple[int, list[dict]]:
-    """Cloud SQL query path. Returns (total_count_in_window, rows[<=limit])."""
-    from gcp.database import query_to_dataframe  # lazy import
+    """Cloud SQL query path. Returns (total_count_in_window, rows[<=limit]).
+    Raises HTTPException(503) when the query fails."""
 
     where = ['ticker = :ticker']
     params: dict = {'ticker': ticker_upper}
@@ -138,7 +165,7 @@ def _query_signals_sql(
     where_sql = ' AND '.join(where)
 
     # Total count first (cheap with the (ticker, entry_time) index)
-    count_df = query_to_dataframe(
+    count_df = _query_or_503(
         f'SELECT COUNT(*) AS n FROM historical_signals WHERE {where_sql}',
         params,
     )
@@ -149,7 +176,7 @@ def _query_signals_sql(
 
     # Most-recent N rows. Fetch ASC so the response order matches the legacy
     # parquet behaviour (`out.tail(limit)` produced ascending entries).
-    rows_df = query_to_dataframe(
+    rows_df = _query_or_503(
         f"""
         SELECT * FROM (
             SELECT entry_time AS time,
@@ -190,30 +217,28 @@ def get_signals(
 ):
     """Return historical signals for a ticker.
 
-    Reads from Cloud SQL ``historical_signals`` when configured, falls back
-    to the legacy GCS parquet otherwise. Supports point-in-time review via
-    ``end_date`` (+ optional ``end_time``).
+    Reads from Cloud SQL ``historical_signals`` when configured; a failed
+    query is a 503, never the legacy parquet (Cloud SQL is the system of
+    record, and a fallback nothing can tell apart is a silent one: audit
+    P1-#2, CLAUDE.md 3.7.1). The legacy GCS parquet path serves only when
+    Cloud SQL is NOT configured (local dev). Supports point-in-time review
+    via ``end_date`` (+ optional ``end_time``).
     """
     ticker_upper = ticker.upper()
 
     if _CLOUD_SQL:
-        try:
-            total, records = _query_signals_sql(
-                ticker_upper, limit, direction, min_score, end_date, end_time
-            )
-            return {
-                "ticker": ticker_upper,
-                "count": total,
-                "returned": len(records),
-                "source": "cloud_sql",
-                "signals": records,
-            }
-        except HTTPException:
-            raise
-        except Exception as exc:
-            log.warning("Cloud SQL signals query failed (%s) — falling back to parquet", exc)
+        total, records = _query_signals_sql(
+            ticker_upper, limit, direction, min_score, end_date, end_time
+        )
+        return {
+            "ticker": ticker_upper,
+            "count": total,
+            "returned": len(records),
+            "source": "cloud_sql",
+            "signals": records,
+        }
 
-    # ── Fallback: legacy GCS parquet path ────────────────────────────────
+    # ── Cloud SQL not configured: legacy GCS parquet path ───────────────
     filename, df = _load_ticker_df_parquet(ticker_upper)
     df = df.copy()
 
@@ -314,8 +339,6 @@ def get_similar_signals(
     rsi_lo = rsi - rsi_band
     rsi_hi = rsi + rsi_band
 
-    from gcp.database import query_to_dataframe  # lazy import
-
     where = (
         "ticker = :ticker AND UPPER(trade_type) = :direction "
         "AND signal_strength = :score AND entry_rsi BETWEEN :rsi_lo AND :rsi_hi"
@@ -329,7 +352,7 @@ def get_similar_signals(
     }
 
     # Aggregated stats — one query, server-side percentiles.
-    stats_df = query_to_dataframe(
+    stats_df = _query_or_503(
         f"""
         SELECT
           COUNT(*)                                              AS count,
@@ -374,7 +397,7 @@ def get_similar_signals(
     }
 
     # Recent matches — same WHERE + LIMIT, ORDER BY entry_time DESC.
-    matches_df = query_to_dataframe(
+    matches_df = _query_or_503(
         f"""
         SELECT entry_time AS time,
                UPPER(trade_type) AS direction,

@@ -344,10 +344,42 @@ class TestCheckOrbTimezone:
         lv = m.orb_levels["IWM"]
         assert lv["30m_high"] < 250.0, "ORB built from pre-market UTC bars"
 
-    def test_live_tz_aware_et_bars_unchanged(self):
-        """Live path: tz-aware ET timestamps keep working exactly as before."""
+    def test_replay_ignores_the_previous_sessions_opening_range(self):
+        """Internal review of #1022 (monitor round): check_orb filtered on
+        time-of-day only, so after a session rollover it recomputed the ORB
+        from the PREVIOUS day's 09:30-10:00 bars still in the window (a thin
+        or --limit-truncated replay keeps them inside 200 bars), and that
+        ORB fed orb_trend, the strat bonus and the persisted orb_* columns.
+        Session extremes and leg trackers already filter on the ET date."""
         import pandas as pd
         m = _build_monitor()
+        day1 = self._utc_bars("2026-05-05 13:25:00", 45, base=300.0)   # yesterday, higher
+        day2 = self._utc_bars("2026-05-06 13:25:00", 45, base=200.0)
+        df = pd.concat([day1, day2], ignore_index=True)
+        m.replay_clock_ts = pd.Timestamp("2026-05-06 14:10:00")
+        m.check_orb("IWM", df)
+        lv = m.orb_levels["IWM"]
+        assert lv["5m_high"] == pytest.approx(200.0 + 10 * 0.1), "ORB built from yesterday's opening range"
+        assert lv["30m_high"] == pytest.approx(200.0 + 35 * 0.1)
+
+    def test_live_tz_aware_et_bars_unchanged(self, monkeypatch):
+        """Live path: tz-aware ET timestamps keep working exactly as before.
+        The wall clock is frozen on the bars' session (check_orb takes this
+        session's bars only), through the real `_now` fall-through rather
+        than the replay clock."""
+        from datetime import datetime as _dt, timezone as _tz
+        import pandas as pd
+        import gcp.signal_monitor as mod
+
+        class _Frozen(_dt):
+            @classmethod
+            def now(cls, tz=None):
+                fixed = _dt(2026, 5, 6, 18, 10, tzinfo=_tz.utc)     # 14:10 ET
+                return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+
+        monkeypatch.setattr(mod, "datetime", _Frozen)
+        m = _build_monitor()
+        assert m.replay_clock_ts is None
         df = self._utc_bars("2026-05-06 13:25:00", 45)
         df["Time"] = df["Time"].dt.tz_localize("UTC").dt.tz_convert("America/New_York")
         m.check_orb("IWM", df)

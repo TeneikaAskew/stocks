@@ -167,6 +167,30 @@ production data work · **L** multi-day, or a policy/research decision.
 Each fix was preceded by a failing test committed on its own
 (`test: reproduce the Wave 1 critical audit findings before fixing them`).
 
+### Wave 2 status (2026-09-07, all on PR #1022)
+
+Same method: evidence posted to the PR first, a failing test committed
+before each fix, one commit per issue. Production writes and deploys were
+denied by the sandbox's permission classifier this session, so every data
+step below is an operator step with the exact command recorded on the issue.
+
+| Issue | Commit | What landed | Operator step after merge |
+|---|---|---|---|
+| #829 + #834 | `fix(deploy)` codify p2-build-gamma-levels | `deploy_p2_build_gamma_levels()` reproducing the live spec flag for flag; `gamma-levels)` target; `all)` now creates every scheduled job (12 were missing, research jobs included) | `./gcp/deploy.sh gamma-levels` (the describe diff is the #834 no-op check) |
+| #831 | `fix(deploy)` discord jobs | the three backing jobs deployed with the service from `discord)` and `all)`; `tests/gcp/test_deploy_reachability.py` pins scheduler-target, dispatcher and `all)` reachability | none |
+| #823 | `fix(signal-monitor)` as-of bound | `idx < analysis_date` on the level-map frame (the brief's cutoff), ET clock via `_now`, null-close drop, <2-row path, no-date-axis raises | after deploy: `REPLAY_DATE` replay of 2026-08-31..09-04 to re-derive the 14 pre-fix put re-anchor shadow rows |
+| #812 | none (code was #942) | before-state re-measured: 54 candidate days, all with source chains; the nightly job still runs the pre-#942 research digest `aa651cf0…` | `build-research` → `gamma-levels` → six targeted recomputes → requery → NULL only unresolved candidates (issue comment 5571510197) |
+| #820 | `fix(scripts)` remove backfill_signals | contamination quantified: 432 alerts + 412 trades, 2026-03-19..04-13, inserted 2026-04-18 02:59 UTC; script deleted; `trades.run_kind` added; sanctioned-writer test | mark the 432 (`run_kind='backfill'`), apply schema, mark the 412 by the alert join |
+| #821 | `fix(scripts)` remove compare_tier_fires | script deleted; fire-harness allowlist test; live calibration state recorded (SPY/IWM Tier-A from 2026-05-04, QQQ Tier-B since 2026-07-01 drift flag) | delete the hand-made job; seed-replay-revert Tier-A vs Tier-B re-derivation |
+| #824 | `fix(scripts)` route backfill_and_replay | divergence list (14 keys each way); 1686 stored rows identified; script dispatches `backfill-ticker` instead of its own pipeline | one `backfill-ticker` execution each for AMD, CARS, NVDA, MCK |
+
+Follow-ups surfaced and left out of the PR: the monitor's `LevelMap` is
+built without `atr=` while the brief passes it (parity gap in which levels
+`check_level_breaks` iterates); `level_maps` is keyed by ticker only, so a
+multi-date replay reuses the first day's map; ten hand-made research jobs
+still have no deploy function; `scripts/analysis/momentum_eligibility.py`
+has the #821 shape but writes only a report.
+
 ## 4. Order of work
 
 1. **#861** (this branch) — code pushed, job run, scheduler created, issue updated.

@@ -1092,6 +1092,15 @@ CREATE TABLE IF NOT EXISTS signal_alerts (
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_ticker_date
     ON signal_alerts (ticker, alert_date DESC);
 
+-- gcp/signal_monitor.py and scripts/replay_signal_monitor.py upsert on
+-- (ticker, alert_ts) (ON CONFLICT). Production has carried this as
+-- `uq_signal_alerts` (pg_indexes, measured 2026-09-07) but schema.sql never
+-- declared it, so a fresh apply (the integration-tests Postgres) had no key
+-- for the ON CONFLICT to land on: the uq_trades shape (#722) a second time.
+-- IF NOT EXISTS makes this a no-op in production.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_signal_alerts
+    ON signal_alerts (ticker, alert_ts);
+
 -- v2 strat refactor: record which Strat level a signal broke (PDH, PDL, PWH, ...).
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS level_broken VARCHAR(20);
@@ -2852,6 +2861,41 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_run_kind
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_replay_id
     ON signal_alerts(replay_id) WHERE replay_id IS NOT NULL;
 
+-- Provenance on trades, same convention as signal_alerts.run_kind
+-- (#820 R3). An earlier revision of scripts/backfill_signals.py wrote
+-- 412 simulated trades (entry_time 2026-03-19 .. 2026-04-13, ftfc_score 0,
+-- exit_reason target_hit/time_stop, all inserted 2026-04-18 02:59 UTC)
+-- with no marker, so they were indistinguishable from resolver-written
+-- trades. 'live' (default) | 'replay' | 'backfill'. The default stamps
+-- every existing row 'live', the 412 included, and the 432 alerts they
+-- join are 'live' for the same reason, so marking them is a separate,
+-- count-checked step: gcp/queries/mark_backfill_rows_2026-04-18.sql
+-- (attributes measured in production 2026-09-07; raises and commits
+-- nothing unless exactly 432 alerts and 412 trades match).
+ALTER TABLE trades
+    ADD COLUMN IF NOT EXISTS run_kind VARCHAR(16) NOT NULL DEFAULT 'live';
+
+CREATE INDEX IF NOT EXISTS idx_trades_run_kind
+    ON trades(run_kind) WHERE run_kind != 'live';
+
+-- The three kinds are the whole taxonomy; a typo ('Live', 'backfil') would
+-- be excluded from every reader forever with no error anywhere.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'trades_run_kind_check') THEN
+        ALTER TABLE trades DROP CONSTRAINT trades_run_kind_check;
+    END IF;
+    ALTER TABLE trades
+        ADD CONSTRAINT trades_run_kind_check
+        CHECK (run_kind IN ('live', 'replay', 'backfill'));
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'signal_alerts_run_kind_check') THEN
+        ALTER TABLE signal_alerts DROP CONSTRAINT signal_alerts_run_kind_check;
+    END IF;
+    ALTER TABLE signal_alerts
+        ADD CONSTRAINT signal_alerts_run_kind_check
+        CHECK (run_kind IN ('live', 'replay', 'backfill'));
+END $$;
+
 -- Phase 1 direction gate (per docs/audits/2026-05-10-risk-reviewer-validation.md):
 -- the live signal_monitor reads insight_reports and decides whether
 -- to suppress / downgrade / tag the fire. These columns record the
@@ -4088,3 +4132,38 @@ CREATE TABLE IF NOT EXISTS admin_refresh_leases (
     job_name      TEXT         PRIMARY KEY,
     dispatched_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- ── Schema apply revision guard (#1022) ──────────────────────────────────
+-- Written by gcp/apply_schema.py after every successful apply that was
+-- started with --revision/--revision-time (both Cloud Build triggers pass
+-- the source commit and its committer time). Before applying, the applier
+-- refuses a revision whose commit_time is older than the newest row here,
+-- so a build that Cloud Build started late cannot roll CREATE OR REPLACE
+-- objects back to an older definition. The applier also creates this table
+-- itself (the guard runs before the apply); this declaration keeps the
+-- inventory honest. Rows are one per apply, tiny, no retention needed.
+CREATE TABLE IF NOT EXISTS schema_apply_history (
+    commit_sha   TEXT        NOT NULL,
+    commit_time  BIGINT      NOT NULL,
+    applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- space-separated `git rev-list` of commit_sha, as deep as the build
+    -- could see. It lets the guard refuse an ancestor of the last applied
+    -- revision whatever the committer clocks say (Codex on #1022)
+    ancestors    TEXT        NOT NULL DEFAULT '',
+    -- SHA-256 of the schema.sql text applied. An apply whose text equals
+    -- the newest applied row's is recorded but not run (every staging
+    -- deploy applies the schema, and each run holds the earnings mat
+    -- views' lock for the refresh)
+    schema_sha256 TEXT       NOT NULL DEFAULT '',
+    -- forced: an operator bypassed the ordering check (--force-revision).
+    -- status: 'ok' when every unit ran, 'partial' when some failed after
+    -- others committed; a partial row still orders later revisions but
+    -- its digest is never one an apply can skip on
+    forced        BOOLEAN     NOT NULL DEFAULT FALSE,
+    status        TEXT        NOT NULL DEFAULT 'ok',
+    PRIMARY KEY (commit_sha, applied_at)
+);
+ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS ancestors TEXT NOT NULL DEFAULT '';
+ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS schema_sha256 TEXT NOT NULL DEFAULT '';
+ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS forced BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';

@@ -69,7 +69,7 @@ WORD_NUMBERS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
 
 EXPECTED_MARKERS = {
     ARCH: ("jobs", "schedulers", "tables", "dbtables", "routes", "services", "reconcile", "modules"),
-    DEPS: ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"),
+    DEPS: ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast", "graph"),
     API: ("routers", "routes"),
 }
 SIZE_FLOOR = 0.80
@@ -211,10 +211,8 @@ def relation_counts(repo: dict, live: dict) -> tuple[int, int]:
     wrote 26, 28 and 30 "runtime relations" against a true 27 because the
     model was handed the live and table counts and left to derive this one.
     """
-    declared_names = ({t_["name"] for t_ in repo["tables"]}
-                      | {v["name"] for v in repo["materialized_views"]}
-                      | {v["name"] for v in repo["views"]})
-    return len(declared_names), len(set(live["db_tables"]) - declared_names)
+    declared_names = inv.declared_relation_names(repo)
+    return len(declared_names), len(inv.runtime_relations(repo, live))
 
 
 def gate_markers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
@@ -484,7 +482,10 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
         declared, runtime = relation_counts(repo, live)
         for doc in (ARCH, DEPS):
             body = (root / doc).read_text()
-            for m in re.finditer(r"(\d+) runtime[- ](?:created )?relations", body):
+            # The same compiled pattern the renderer rewrites, imported rather
+            # than repeated: a gate matching a different shape from the render
+            # would flag a number the render had already fixed.
+            for m in inv.RUNTIME_RELATION_COUNT.finditer(body):
                 if int(m.group(1)) != runtime:
                     out.append(f"{doc}: claims {m.group(1)} runtime relations; "
                                f"{len(live['db_tables'])} live minus {declared} declared is {runtime}")
