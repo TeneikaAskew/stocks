@@ -115,9 +115,29 @@ automatically and a stale draft PR is the usual reason two branches diverge:
 # leaving the function stops anything. So every stop in this phase is a
 # `return` inside a function, and every function is called BARE — `|| echo`
 # would exit 0 and swallow the very stop it is reporting.
+# NAME THE REFS. `git fetch origin` fetches what `remote.origin.fetch`
+# configures, and a narrowed refspec makes it exit 0 while leaving the very
+# refs this phase consumes untouched — measured on a clone configured with
+# `+refs/heads/other:refs/remotes/origin/other`: main advanced upstream, `git
+# fetch origin` returned 0, and `origin/main` stayed on its old SHA. Branch
+# selection and the baseline would then both run against yesterday's code
+# while the fetch reported success, which is the same shape as the cached
+# listing this phase's comment above already warns about — one level lower.
+# An explicit refspec is not subject to the configured one, and writing the
+# remote-tracking ref keeps every later `origin/main` / `origin/<head>`
+# reference working unchanged. `+` to allow a force-update, since a PR head
+# can be force-pushed between runs.
 sync_refs() {
-  git fetch origin \
-    || { echo "FETCH FAILED — refs are stale, so branch selection and the baseline would both run against yesterday's main"; return 1; }
+  git fetch origin "+refs/heads/main:refs/remotes/origin/main" \
+    || { echo "FETCH FAILED for main — refs are stale, so branch selection and the baseline would both run against yesterday's main"; return 1; }
+}
+
+# The PR head is fetched by the branch flow that needs it, by name, for the
+# same reason: it is not enough that `git fetch origin` succeeded.
+sync_head_ref() {
+  test -n "${1:-}" || { echo "sync_head_ref needs the head ref name"; return 1; }
+  git fetch origin "+refs/heads/$1:refs/remotes/origin/$1" \
+    || { echo "FETCH FAILED for $1 — the PR head ref is stale or gone"; return 1; }
 }
 
 survey_existing_work() {
@@ -277,6 +297,7 @@ use_existing_pr_head() {
   # a fence is pasted in pieces and the stop belongs where the checkout is.
   clean_worktree || return 1
   sync_refs || return 1
+  sync_head_ref "<headRefName>" || return 1   # the ref THIS case consumes
   if git show-ref --verify --quiet "refs/heads/<headRefName>"; then
     # CHAINED, not two statements. An unchecked `checkout` that fails leaves
     # you on the previous branch, and the merge then runs there — succeeding
@@ -1276,7 +1297,17 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # approving it, and the path scan's approval filter removes it. Split on `|`
   # and emit a pathspec per alternative, so the exclusion means what the
   # comment below has always said it means.
-  local _alt _selfx=()
+  # `set -f` AROUND THE SPLIT, restored to whatever the caller had. An
+  # unquoted `$sym` gets pathname expansion AFTER the IFS split, so an
+  # alternative containing glob syntax is replaced by whatever matches in the
+  # CALLER'S CURRENT DIRECTORY — measured, with a file named `abc` present,
+  # `ab*c` split to `abc`, and in a directory without one it stayed `ab*c`.
+  # The same symbol then means two different things depending on where the
+  # operator stood. `case $- in *f*)` remembers the caller's setting rather
+  # than assuming it was off, and every exit path below restores it.
+  local _alt _selfx=() _selfg=
+  case $- in *f*) _selfg=on;; esac
+  set -f
   local _oldifs=$IFS; IFS='|'
   for _alt in $sym; do
     test -n "$_alt" || continue
@@ -1285,6 +1316,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
               ":(exclude,literal).github/prompts/$_alt.md" )
   done
   IFS=$_oldifs
+  test -n "$_selfg" || set +f
   # `:(exclude,literal)`, NOT `:!`. `$sym` is an ERE and a pathspec is a GLOB,
   # and they share `*`, `?` and `[`. Under `:!` the alternative is pasted into
   # a glob, so it can exclude a file that is not the surface's definition at
@@ -2059,7 +2091,10 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # approvable, and without approving them the check has no passing state at
   # all. A definition path is `<scope>/<alternative>.md` exactly; a substring
   # collision is not. There is no .claude/agents/react.md — checked.
-  local _defs=() _a
+  # `set -f` around this split too — same reason as the self-exclusions above.
+  local _defs=() _a _defg=
+  case $- in *f*) _defg=on;; esac
+  set -f
   local _oi=$IFS; IFS='|'
   for _a in $sym; do
     test -n "$_a" || continue
@@ -2067,6 +2102,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
              ".github/prompts/$_a.md" )
   done
   IFS=$_oi
+  test -n "$_defg" || set +f
   # AN APPROVAL CANNOT REMOVE AN IMPLEMENTATION YOU JUST NAMED. This filter runs
   # BEFORE the path scan, so a file listed in REVIEWED left the inventory before
   # the scan could see it — measured, with scripts/run_historical_signals.py
@@ -2138,7 +2174,13 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # needs no parser: strip each `[…]` span, shortest first, and look at what is
   # left. The passing state is reachable and is exactly what the message asks
   # for, `foo[0-9][-_]bar`, which strips to `foobar` and is accepted verbatim.
-  local pathsym= _psa _psn _psp _pspre _pspost _psi=$IFS
+  # `set -f` around the third and last split. This one matters most: the
+  # measured case was `absent_everywhere 'ab*c'` next to a file named `abc`,
+  # which rebuilt pathsym as the literal `abc` and then missed a tracked
+  # lib/ac.py, certifying the retirement.
+  local pathsym= _psa _psn _psp _pspre _pspost _psi=$IFS _psg=
+  case $- in *f*) _psg=on;; esac
+  set -f
   IFS='|'
   for _psa in $sym; do
     test -n "$_psa" || continue
@@ -2156,7 +2198,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
             echo "  author, so that separator would match only the spelling you"
             echo "  typed and a path using the other one would read as absent."
             echo "  Write it explicitly, e.g.  foo[0-9][-_]bar"
-            IFS=$_psi
+            IFS=$_psi; test -n "$_psg" || set +f
             return 1;;
         esac
         _psn=$_psa;;
@@ -2166,6 +2208,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     pathsym="${pathsym:+$pathsym|}$_psn"
   done
   IFS=$_psi
+  test -n "$_psg" || set +f
   # `if` for errexit, as in consumed(): a clean miss is rc=1 and an untested
   # nonzero assignment kills the shell under `set -e` — measured.
   # Every implementation the caller named is scanned the same way as the symbol,
