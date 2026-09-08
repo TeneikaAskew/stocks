@@ -1816,7 +1816,7 @@ _ere_literal() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/[]^$*+?(){}|.[]/\
 # finds the pipes supplies the spans, so this costs one accumulator, not a
 # second parser.
 _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say why
-  local _q=$1 _mode=${2:-} _span _bare= _out= _c _d
+  local _q=$1 _mode=${2:-} _span _bare= _out= _c _d _e
   while case $_q in *'['*']'*) true;; *) false;; esac; do
     _bare=$_bare${_q%%[*}
     _q=${_q#*[}
@@ -1924,8 +1924,16 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
   while [ -n "$_bare" ]; do
     _c=${_bare%"${_bare#?}"}; _bare=${_bare#?}
     if [ "$_c" = '\' ]; then
-      case ${_bare%"${_bare#?}"} in
-        -|_) _esc_sep=${_bare%"${_bare#?}"};;
+      # NAMED ONCE, because the message that re-derived it printed the
+      # derivation instead of the character: inside double quotes the `\$` in
+      # `'\${_bare%"${_bare#?}"}'` escapes the `$`, so `\bd3` reported
+      # `escapes an alphanumeric ('${_bare%d3}')` — not the offending `b`, and
+      # the `d3` shown is the REST of the symbol. Measured at 97b92ab. The
+      # refusal was correct; only its text was not, and a second branch below
+      # would have copied it.
+      _e=${_bare%"${_bare#?}"}
+      case $_e in
+        -|_) _esc_sep=$_e;;
         # AN ESCAPED ALPHANUMERIC IS WHERE THE TWO ENGINES DISAGREE. Every
         # scope but one matches with `grep -E`, POSIX ERE, where `\d` is just a
         # literal `d`; the package.json dependency scope matches with jq's
@@ -1938,14 +1946,48 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
         # walk that was already consuming these pairs. What is left is the
         # language both engines agree on: literals, bracket expressions (minus
         # the nested POSIX forms refused above), alternation, grouping,
-        # quantifiers, and escaped PUNCTUATION, which both read as literal.
+        # quantifiers, and escaped punctuation MINUS the four below.
         [A-Za-z0-9])
-          echo "'$1' escapes an alphanumeric ('\${_bare%"${_bare#?}"}'). Those"
+          echo "'$1' escapes an alphanumeric ('$_e'). Those"
           echo "  are character classes to jq's regex engine and plain literals"
           echo "  to grep -E, and this file uses both — the package.json"
           echo "  dependency scan is jq, every other scope is grep. Measured:"
           echo "  the two disagree, so a dependency can read as absent while"
           echo "  npm still installs it. Spell the class out, e.g. [0-9]."
+          return 1;;
+        # AND ESCAPED PUNCTUATION IS NOT ALL LITERAL. The line above used to
+        # end "and escaped PUNCTUATION, which both read as literal", and four
+        # characters make that false — GNU grep's own extension: `\<` and `\>`
+        # are word boundaries, `` \` `` and `\'` are buffer anchors. This is
+        # round 69's defect one construct over, which is the standing shape: a
+        # restriction settled on ONE family leaves its siblings open.
+        # ENUMERATED, not guessed. All 32 ASCII punctuation marks, each in
+        # three positions — `\c`+foo against `foo`, foo+`\c` against `foo`, and
+        # `\c` against the bare character — under `grep -E` and jq `test()`.
+        # The two engines disagree on EXACTLY these four and agree on the
+        # other 28, so this branch is the whole divergence, not a sample:
+        #     grep -E '\<d3'   matches d3     jq test("\\<d3")   false
+        #     grep -E 'd3\>'   matches d3     jq test("d3\\>")   false
+        #     grep -E '\`d3'   matches d3     jq test("\\`d3")   false
+        #     grep -E "d3\\'"  matches d3     jq test("d3\\'")   false
+        # `\b` is NOT one of them: it is alphanumeric, so the branch above
+        # already refuses it, and the engines agree on it anyway.
+        # End to end at 97b92ab, on round 69's own manifest — `d3` declared
+        # and package.json excluded from every grep scope, as EXCLUDE_SOLYRA
+        # has it — `consumed 'd3'` returned 0 while `\<d3`, `d3\>`, `` \`d3 ``
+        # and `d3\'` each returned 1: the dependency reads as absent while npm
+        # keeps installing it. Nothing in this file spells a symbol with one —
+        # checked, zero occurrences — so refusing costs no existing usage.
+        '<'|'>'|'`'|"'")
+          echo "'$1' escapes '$_e', which GNU grep reads as an ASSERTION, not"
+          echo "  a literal: '\\<' and '\\>' are word boundaries, '\\\`' and"
+          echo "  \"\\'\" are buffer anchors. jq's engine reads all four as the"
+          echo "  escaped character, and this file uses both — the package.json"
+          echo "  dependency scan is jq, every other scope is grep. Measured:"
+          echo "  the two disagree, so a dependency can read as absent while"
+          echo "  npm still installs it. Drop the assertion — an unanchored"
+          echo "  symbol matches more, not less, and an implementation"
+          echo "  argument names one exact file."
           return 1;;
       esac
       _bare=${_bare#?}; continue
