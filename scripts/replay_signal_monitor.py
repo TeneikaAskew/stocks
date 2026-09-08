@@ -129,6 +129,7 @@ def load_intraday_for_replay(
 def replay_ticker(
     monitor, ticker: str, bars: pd.DataFrame,
     captured_fires: list[FireRecord],
+    evaluate_rth_only: bool = False,
 ) -> tuple[int, int]:
     """Replay one ticker's bars through the live monitor code path.
 
@@ -138,12 +139,26 @@ def replay_ticker(
     (with our patches) calls a stub fire_alert that captures the fire
     instead of actually posting to Discord.
 
-    Returns (bars_processed, signals_fired).
+    ``evaluate_rth_only`` separates what the window HOLDS from what can
+    FIRE. Persist mode used to drop premarket bars before they reached
+    this function, so each session began at 09:30 with an empty window
+    and evaluate_ticker suppressed every bar until min_bars_for_signals
+    (30) RTH bars existed — roughly 09:30 to 09:59 missing from every
+    replayed day (Codex on #1022). Live does not start empty: run_loop's
+    first in-hours fetch asks for `extended_hours=true` with
+    `outputsize=compact`, so at the open the window already carries ~100
+    of that day's premarket bars. Premarket bars now enter the window
+    exactly as they do live, and only RTH bars are evaluated, which is
+    what keeps replayed fire counts comparable to live signal_alerts.
+
+    Returns (bars_evaluated, signals_fired) — bars fed to the window but
+    not evaluated are warm-up, not work.
     """
     if bars.empty:
         return (0, 0)
 
     fires_before = len(captured_fires)
+    evaluated = 0
 
     # Rolling-window replay: feed bars one at a time so the monitor
     # operates on the same shape it sees in production (1-bar deltas).
@@ -185,6 +200,9 @@ def replay_ticker(
                     ticker, prev_date, _bar_date)
             prev_date = _bar_date
         monitor.update_window(ticker, single_bar)
+        if evaluate_rth_only and not _is_rth(single_bar):
+            continue          # warm-up only, as live's premarket bars are
+        evaluated += 1
         try:
             monitor.evaluate_ticker(ticker)
         except Exception as e:
@@ -194,7 +212,20 @@ def replay_ticker(
     monitor.replay_clock_ts = None
 
     fires_after = len(captured_fires)
-    return (len(bars), fires_after - fires_before)
+    return (evaluated, fires_after - fires_before)
+
+
+def _is_rth(bar: pd.DataFrame) -> bool:
+    """True when this one bar falls inside 09:30-16:00 ET.
+
+    The single-bar form of filter_to_rth, used to gate EVALUATION while
+    the bar still enters the window (see replay_ticker).
+    """
+    if bar.empty or 'Time' not in bar.columns:
+        return True
+    ts = pd.Timestamp(bar['Time'].iloc[0])
+    et = ts.tz_convert(_ET) if ts.tz is not None else ts.tz_localize('UTC').tz_convert(_ET)
+    return time(9, 30) <= et.time() < time(16, 0)
 
 
 def filter_to_rth(bars: pd.DataFrame) -> pd.DataFrame:
@@ -537,16 +568,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             bars = load_intraday_for_replay(engine, ticker, start, end)
             if persist_mode:
                 # Match live signal-monitor scope (RTH only, 9:30-16:00 ET)
-                # so persisted fire counts are comparable to live signal_alerts.
-                pre_n = len(bars)
-                bars = filter_to_rth(bars)
-                logger.info("ticker=%s persist mode: filtered %d -> %d RTH bars",
-                            ticker, pre_n, len(bars))
+                # so persisted fire counts are comparable to live
+                # signal_alerts. The bars are NOT dropped: premarket bars
+                # feed the window exactly as they do live, where the first
+                # in-hours fetch returns them, and only RTH bars are
+                # evaluated. Dropping them left every session's 09:30-09:59
+                # unevaluated for want of min_bars_for_signals (Codex on
+                # #1022).
+                rth_n = int(len(filter_to_rth(bars)))
+                logger.info("ticker=%s persist mode: %d bars loaded, %d RTH "
+                            "bars will be evaluated; the rest are warm-up",
+                            ticker, len(bars), rth_n)
             if args.limit:
                 bars = bars.head(args.limit)
             logger.info("ticker=%s loaded %d bars", ticker, len(bars))
             ticker_fires_before = len(captured_fires)
-            n_bars, n_fires = replay_ticker(monitor, ticker, bars, captured_fires)
+            n_bars, n_fires = replay_ticker(monitor, ticker, bars, captured_fires,
+                                            evaluate_rth_only=persist_mode)
             summary_per_ticker[ticker] = (n_bars, n_fires)
 
             # Persist this ticker's captured fires to signal_alerts

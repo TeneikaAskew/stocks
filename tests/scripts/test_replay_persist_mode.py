@@ -259,3 +259,81 @@ def test_persist_default_false(monkeypatch):
     from scripts.replay_signal_monitor import parse_args
     args = parse_args(['--ticker', 'SPY', '--date', '2026-05-06'])
     assert args.persist is False
+
+
+# ── premarket warm-up parity (#1022) ─────────────────────────────────
+
+
+def _two_day_bars():
+    """Two ET sessions, each with premarket bars then RTH bars."""
+    import pandas as pd
+
+    rows = []
+    for day in ("2026-09-02", "2026-09-03"):
+        # 40 premarket minutes ending 09:29, then 40 RTH minutes from 09:30.
+        pre = pd.date_range(f"{day} 08:50", periods=40, freq="1min", tz="America/New_York")
+        rth = pd.date_range(f"{day} 09:30", periods=40, freq="1min", tz="America/New_York")
+        for ts in list(pre) + list(rth):
+            rows.append({"Time": ts.tz_convert("UTC"), "Open": 100.0, "High": 100.5,
+                         "Low": 99.5, "Close": 100.2, "Volume": 1000})
+    return pd.DataFrame(rows)
+
+
+def test_a_persisted_session_is_evaluated_with_its_own_premarket_warm_up():
+    """A persisted replay dropped premarket bars before they reached the
+    window, so each session began at 09:30 with nothing in it and
+    evaluate_ticker suppressed every bar until min_bars_for_signals (30)
+    RTH bars existed — roughly 09:30 to 09:59 missing from every day
+    (Codex on #1022).
+
+    Live does not start empty: run_loop's first in-hours fetch asks for
+    `extended_hours=true, outputsize=compact`, so at 09:30 the window
+    already holds ~100 of that day's premarket bars and the open is
+    evaluable. Filtering to RTH is right for what FIRES and wrong for what
+    the window HOLDS; the two are now separate."""
+    from unittest.mock import MagicMock
+
+    from scripts.replay_signal_monitor import replay_ticker
+
+    monitor = MagicMock()
+    monitor.replay_clock_ts = None
+    windows = {}
+    seen_eval_times = []
+
+    def _update(ticker, bar):
+        import pandas as pd
+        windows[ticker] = pd.concat([windows.get(ticker, pd.DataFrame()), bar])
+
+    def _now(tz=None):
+        return monitor.replay_clock_ts.tz_convert("America/New_York")
+
+    def _evaluate(ticker):
+        seen_eval_times.append((monitor.replay_clock_ts, len(windows[ticker])))
+
+    def _reset(ticker):
+        import pandas as pd
+        windows[ticker] = pd.DataFrame()
+
+    monitor.update_window.side_effect = _update
+    monitor.evaluate_ticker.side_effect = _evaluate
+    monitor.reset_session_state.side_effect = _reset
+    monitor._now.side_effect = _now
+
+    bars = _two_day_bars()
+    replay_ticker(monitor, "IWM", bars, [], evaluate_rth_only=True)
+
+    et = [t.tz_convert("America/New_York") for t, _ in seen_eval_times]
+    assert et, "nothing was evaluated"
+    assert all(t.time() >= __import__("datetime").time(9, 30) for t in et), \
+        "premarket bars must not be evaluated; only the window sees them"
+
+    # Day 2's FIRST evaluated bar must already have its own premarket
+    # history behind it, the way live does.
+    day2 = [(t, n) for t, n in seen_eval_times
+            if t.tz_convert("America/New_York").date().isoformat() == "2026-09-03"]
+    assert day2, "day 2 was never evaluated"
+    first_ts, first_len = day2[0]
+    assert first_ts.tz_convert("America/New_York").time() == __import__("datetime").time(9, 30)
+    assert first_len >= 30, (
+        "day 2's open was evaluated with %d bars in the window; live has that "
+        "day's premarket behind it, so the open is not blind" % first_len)
