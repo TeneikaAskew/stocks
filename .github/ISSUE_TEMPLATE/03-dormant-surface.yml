@@ -109,7 +109,7 @@ body:
         # Phase 2. platform/api/openapi.json deliberately stays IN: it is
         # generated, so a retired route still named there means the snapshot was
         # not regenerated, which the check SHOULD catch.
-        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
         (142 matching LINES across 13 files: router, writer, tests. Lines, not
         occurrences — `git grep -c`/`wc -l` count lines, and 7 of these carry
         both alternatives, so the pattern occurs 149 times. Use `git grep -Eo`
@@ -201,8 +201,8 @@ body:
       description: Retiring and restoring have different bars. Restoring needs a writer, a schedule, a freshness SLO and a consumer guard, not just a re-run.
       placeholder: |
         Retire: `git grep -q "<name>" -- . ':!docs/' ':!archive/'
-        ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio'
-        ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — the same exclusions as the
+        ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
+        ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — the same exclusions as the
         consumer field above, and repo-wide because
         .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs
         cannot see; the schedule is deleted; the retention/export decision is recorded;

@@ -433,7 +433,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 - **Establish who consumes the surface** before deciding what to fix. If nothing
   reads it, disabling the render is one line and ships today.
   ```bash
-  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
   ```
   **Repo-wide over tracked files, not the five source directories** — the same
   scope Phase 4's deletion check uses, and for the same reason. Excluding `archive/`
@@ -442,6 +442,24 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   deleted. Nothing here runs in production"*, so a hit there is not a consumer
   — measured, `TradingAlertSystem` matches
   `archive/standalone-scripts/trading_alerts.py` and nothing live.
+
+  **And `archive/` is not the only retired scope this repo defines — enumerate
+  them, do not assume the root one is all of them.** `gcp/research/_archive/`
+  holds 10 files its own README calls *"Quarantined 2026-05-26 ... kept (NOT
+  deleted) because the negative results + methodology audit are worth
+  preserving"*, and `*.yml.disabled` is this repo's documented marker for a
+  fully retired workflow (see the retirement convention in `CLAUDE.md`).
+  Measured: `_score_edge` matches `gcp/research/_archive/` and **nothing
+  else**, so without that exclusion a symbol with no live consumer anywhere
+  reports rc=0 forever, and retiring it would mean deleting history the repo
+  deliberately keeps. Enumerate the scopes rather than adding the one that
+  just bit you:
+
+  ```bash
+  git ls-files | grep -oE '(^|/)(archive|_archive|deprecated|retired|quarantined?)/' | sort -u
+  git ls-files | grep -oE '\.(disabled|retired)$' | sort -u
+  grep -rliE 'quarantin|retired|not run in production' $(git ls-files '*README*')
+  ```
 
   **`.claude/`, `.github/ISSUE_TEMPLATE/` and every `*.md` come out for a
   different reason: they are prose, and this file is some of it.** The sentence
@@ -475,8 +493,9 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   ```bash
   for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
            market_data_intraday etf_options_snapshots exit_config_overrides; do
-    git grep -l "$s" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' \
-      ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+    git grep -l "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+      ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' \
+      ':!tests/fixtures/live_gcp_snapshot_*.json'
   done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
   ```
 
@@ -579,7 +598,7 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
+| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
 | A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself. **`basename()` is not optional**: `name` is a fully qualified resource name (`projects/…/locations/…/jobs/<job>`), so `grep -qx "<job>"` against the raw value never matches and the check reports "retired" while both resources are live. It is a no-op on an already-bare value, so it is right without resolving which shape this gcloud prints — which I cannot check here, the session's gcloud being unauthenticated (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
@@ -615,27 +634,41 @@ assertion through one function that returns on the first failure:
 # `&&`-chained, so the first failure short-circuits and IS the status.
 absent_everywhere() {
   local rc
-  git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
+  git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc — still referenced here"; return 1; }
-  git -C ../solyra grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
+  git -C ../solyra grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc — still referenced there"; return 1; }
 }
 
-retired_everywhere() {
-  local list
+# TWO names, not one. A Cloud Scheduler trigger and the Cloud Run Job it fires
+# are different resources with different names, and substituting `<job>` into
+# both greps is the failure this function was written to prevent, one level
+# down. `grep -qx` is a WHOLE-LINE match, so looking for `phase6-playbook` in a
+# scheduler inventory containing `phase6-playbook-daily` finds nothing, `!` makes
+# that a pass, and the check reports "retired" while the trigger is still firing
+# at a job you just deleted. Measured, that is not an edge case here: ALL NINE
+# `_schedule` entries in gcp/deploy.sh name a trigger that differs from its job
+# (`_schedule "phase6-playbook-daily" "30 4 * * 1-5" "phase6-playbook"`), and not
+# one of them matches. Read the real trigger name out of `_schedule`; do not
+# assume it is `<job>`, and do not assume it is `<job>-daily` either — the
+# suffixes in use include -daily, -weekly, -nightly, -sunday and more.
+retired_everywhere() {   # $1 = Cloud Run Job name, $2 = Cloud Scheduler name
+  local job=$1 sched=$2 list
+  test -n "$job" && test -n "$sched" \
+    || { echo "need BOTH names: retired_everywhere <job> <scheduler>"; return 1; }
   list=$(gcloud run jobs list --region=us-east1 --format='value(name.basename())') \
     || { echo "job listing FAILED — asserting nothing"; return 1; }
-  ! grep -qx "<job>" <<<"$list" || { echo "<job> still exists"; return 1; }
+  ! grep -qx "$job" <<<"$list" || { echo "$job still exists"; return 1; }
   list=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') \
     || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
-  ! grep -qx "<job>" <<<"$list" || { echo "<job> trigger still exists"; return 1; }
+  ! grep -qx "$sched" <<<"$list" || { echo "$sched trigger still exists"; return 1; }
 }
 # ONE call, `&&`-chained. Two bare calls have the same defect the functions
 # were written to remove, one level up: if the code is still referenced but both
 # resources are gone, `absent_everywhere` returns 1, `retired_everywhere` then
 # returns 0, and the block reports success. Measured — first-fails plus
 # second-passes exits 0.
-fully_retired() { absent_everywhere && retired_everywhere; }
+fully_retired() { absent_everywhere && retired_everywhere "<job>" "<scheduler>"; }
 fully_retired            # BARE
 ```
 

@@ -104,7 +104,7 @@ body:
         # a placeholder here, in .claude/, or in any *.md matches itself, so the
         # search can never reach "no consumers" — measured on TradingAlertSystem,
         # rc=0 from this file and .claude/commands/resolve-issue.md alone.
-        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' | wc -l
+        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' | wc -l
         107
         # `wc -l` counts matching LINES, not occurrences — a line with two
         # matches counts once. Say which you mean; `git grep -Eo | wc -l` counts
