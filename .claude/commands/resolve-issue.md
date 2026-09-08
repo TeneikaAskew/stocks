@@ -340,14 +340,24 @@ baselines() {
   # leaked, and `baselines` still returned 0. FUNCNAME[0] inside the trap names
   # the function that is actually returning, so the inherited fires are no-ops
   # and the real one still runs exactly once with both trees set.
-  local REPO; REPO=$(git rev-parse --show-toplevel) || return 1
+  # AND IT RESTORES WHAT IT REPLACED. A trap is global, not scoped to the
+  # function that installs it, so `trap ... RETURN` here overwrites a caller's
+  # own RETURN handler and `trap - RETURN` then deletes it outright. Measured
+  # under `set -T` with a caller that had installed its own cleanup: "CALLER
+  # cleanup ran" never printed. Saving `trap -p RETURN` first and eval'ing it
+  # back restores it — same measurement, the caller's cleanup runs. `$PREV_RT`
+  # is a local of this function and the trap body fires while it is still on the
+  # stack, so it is in scope; the `:-` covers "there was no previous trap".
+  local REPO PREV_RT
+  REPO=$(git rev-parse --show-toplevel) || return 1
+  PREV_RT=$(trap -p RETURN)
   trap 'if [ "${FUNCNAME[0]}" = baselines ]; then
           cd "$REPO" || echo "cannot return to $REPO — worktrees may leak" >&2
           for t in "$BASE_TREE" "$MAIN_TREE"; do
             [ -n "$t" ] || continue
             git worktree remove --force "$t" \
               || echo "could not remove worktree $t" >&2
-          done; trap - RETURN
+          done; eval "${PREV_RT:-trap - RETURN}"
         fi' RETURN
 
   new_tree MAIN_TREE origin/main || return 1      # validity: is it still real?
@@ -821,12 +831,24 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
         echo "that hides the whole scope hides the routes you are checking for."
         return 2;;
     esac
-    case "$rc" in
-      .claude/commands/*.md) ;;
-      *) echo "REVIEWED entry '$rc' is not under .claude/commands/."
-         echo "rc=3 is about command-file prose; nothing else clears it."
-         return 2;;
-    esac
+    # NO LONGER RESTRICTED TO .claude/commands/. It was, on the reasoning that
+    # rc=3 is about command-file prose — but the same ambiguity exists in code
+    # the moment the symbol is an ordinary word. Measured on `react`, which the
+    # round-30 dependency check made a legitimate thing to retire: a repo-wide
+    # search of STOCKS returns rc=0 "consumed" from prose inside .py files
+    # ("a trader would react to", "first touches react ~80% of the time"), so
+    # `absent_everywhere react` could never pass however clean solyra was.
+    # Word boundaries do NOT fix it — measured, `\breact\b` still matches all
+    # four of those lines — and they would break a symbol that begins or ends
+    # with a non-word character, which the documented alternation form
+    # (`playbook_cards|/api/playbook`) does.
+    # What clears it is the same thing that clears the commands scope: you read
+    # the lines and name the files. Every other check below still applies —
+    # one concrete existing file per entry, no glob, no directory, no
+    # traversal, it must MENTION the symbol, and REVIEWED_FOR must name this
+    # symbol — so an entry is still a record of an inspection rather than a
+    # switch. The path restriction was one belt on top of those braces; the
+    # braces are what stop a blanket exclusion, and they are unchanged.
     # Only when reading the working tree. Under a pinned REV the checkout need
     # not carry the file, and refusing on that would be the unreachable-state
     # defect again.
@@ -846,7 +868,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # one command file, so a six-entry glob drags in five that match nothing.
     git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- "$rc" \
       || { echo "REVIEWED entry '$rc' does not mention '$sym'."
-           echo "Name only the files the rc=3 report printed. An entry that"
+           echo "Name only files the rc=0 or rc=3 report printed. An entry that"
            echo "matches nothing is either a typo or a glob that expanded."
            return 2; }
     reviewed+=(":!$rc")
@@ -866,15 +888,22 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # runs `set -e` in its own scripts (gcp/deploy.sh), so a session that sources
   # this block into one gets a silent death instead of an answer. A condition
   # context suppresses errexit and preserves the exact status.
-  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}"
+  # "${reviewed[@]}" applies HERE too now, for the ordinary-word case above.
+  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}" \
+       "${reviewed[@]}"
   then a=0; else a=$?; fi
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
   # file as the only hit. Excluding a path that does not exist (the surface is
   # not an agent) is safe — measured rc=1, not 128.
+  # "${reviewed[@]}" here too. The ordinary-word ambiguity is not confined to
+  # code: measured, `react` matches .claude/agents/fallback-guard.md through
+  # the word `earnings_reactions` in a path list, so clearing the code scope
+  # alone still left the check unpassable. Applying the approval to one scope
+  # and not its siblings is the miss this file keeps making.
   if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/agents \
-       ":!.claude/agents/$sym.md"
+       ":!.claude/agents/$sym.md" "${reviewed[@]}"
   then b=0; else b=$?; fi
   if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
        ":!.claude/commands/$sym.md" "${reviewed[@]}"
@@ -898,7 +927,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # and the whole scope is a safe no-op where the directory does not exist —
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
   if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .github/prompts \
-       ":!.github/prompts/$sym.md"
+       ":!.github/prompts/$sym.md" "${reviewed[@]}"
   then e=0; else e=$?; fi
   # SIXTH executable-markdown scope, and the one that is easiest to read as
   # prose because it is called "documentation". CLAUDE.md is the project
@@ -909,7 +938,8 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # away: code 1, agents 1, prompts 1 — "absent, safe to delete" — while
   # CLAUDE.md still routes sessions to it. A hit here is a CONSUMER, like an
   # agent or a prompt. Only the root file: docs/*.md and the rest stay prose.
-  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- CLAUDE.md
+  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- CLAUDE.md \
+       "${reviewed[@]}"
   then f=0; else f=$?; fi
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
@@ -1027,7 +1057,27 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   done
   # code, an agent, an npm script, a workflow prompt, or CLAUDE.md uses it
   if [ "$a" -eq 0 ] || [ "$b" -eq 0 ] || [ "$d" -eq 0 ] || [ "$e" -eq 0 ] \
-     || [ "$f" -eq 0 ]; then return 0; fi
+     || [ "$f" -eq 0 ]; then
+    # SAY WHAT MATCHED. rc=0 used to return in silence, which is fine when the
+    # hits are real consumers and useless when they are prose that happens to
+    # contain an ordinary word — and the remedy for the second case is to read
+    # those lines and name their files in REVIEWED, which you cannot do if the
+    # check will not show them. Only the code scope is printed: the other four
+    # are single files or narrow directories you can look at directly, and the
+    # rc=3 branch below already prints the commands scope.
+    # No status check on this one, deliberately: it is a diagnostic printed
+    # only after `a` has already been read, and `git grep` was run with the
+    # same arguments a moment ago.
+    if [ "$a" -eq 0 ]; then
+      echo "code/config mentions '$sym':"
+      git -C "$root" grep -nE "${untr[@]}" "$sym" "${rev[@]}" -- . \
+        "${EXCLUDE[@]}" "${reviewed[@]}"
+      echo "If every line above is prose rather than a caller — an ordinary"
+      echo "word inside a comment, say — read them, then re-run naming those"
+      echo "files:  REVIEWED=( <file> … ); REVIEWED_FOR=$sym"
+    fi
+    return 0
+  fi
   test "$c" -eq 0 || return 1                  # nothing, anywhere
   # rc=3 is "a grep cannot tell" — and it has to be ESCAPABLE, or a symbol this
   # file names as an example can never be retired. TradingAlertSystem is exactly
