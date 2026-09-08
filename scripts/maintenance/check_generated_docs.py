@@ -471,8 +471,8 @@ def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
     return out
 
 
-# The two "as of" labels a human wrote into the prose, both of which have to
-# track the snapshot the run was taken from. Deliberately literal: a looser
+# The three "as of" labels a human wrote into the prose, every one of which has
+# to track the snapshot the run was taken from. Deliberately literal: a looser
 # pattern would sweep up the historical dates beside them -- 05-a carries 33
 # occurrences of `2026-09-07`, and all but these are records of when something
 # was corrected, deleted or audited and must NOT move.
@@ -501,8 +501,10 @@ def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
     table that is in fact current.
 
     The dates the marker blocks carry are rendered, so they are already right;
-    these two are prose and were not. Both are checked against `read_at` from
-    the same snapshot the blocks were rendered from.
+    these three are prose and were not. All are checked against `read_at` from
+    the same snapshot the blocks were rendered from -- and `read_at`, not
+    today, because a run that snapshots before UTC midnight and writes after
+    it has two different days. The prompt is handed the same value.
     """
     out = []
     if not live or not live.get("read_at"):
