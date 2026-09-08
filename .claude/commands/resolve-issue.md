@@ -796,9 +796,11 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # REV pins the search to a COMMITTED revision instead of the working tree.
   # Empty for this repo, where the deletion under test IS the working tree and a
   # committed-only search would not see it. Set for solyra, where the question
-  # is "does the deployed frontend still call this" and the answer must not
-  # depend on which branch that checkout happens to be parked on — see
-  # absent_everywhere. A bad rev exits 128, which the numeric check below
+  # is "does solyra's main still call this" and the answer must not depend on
+  # which branch that checkout happens to be parked on — see absent_everywhere.
+  # NOT "does the deployed frontend", which is what this comment used to say and
+  # is a different, later question; the rollout check at the end of the solyra
+  # half is what asks it. A bad rev exits 128, which the numeric check below
   # already refuses.
   # ANCHOR EVERY PATH AT THE REPO ROOT. `.` and `.claude/…` are relative to the
   # CWD, and a missing pathspec is a CLEAN MISS rather than an error — measured
@@ -1224,9 +1226,10 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # PIN THE REVISION, and fetch it first. An existing checkout is not a current
   # one: it can be parked on an old branch, or on a feature branch that already
   # deleted the consumer, and searching its working tree answers "does THIS
-  # checkout use it" when the question is "does the deployed frontend use it".
+  # checkout use it" when the question is "does solyra's main use it".
   # A stale tree returning rc=1 lets the backend retirement pass and breaks the
-  # frontend. FETCH_HEAD rather than origin/main, because a single-branch or
+  # frontend. This comment used to say "the deployed frontend" — it does not
+  # answer that, and the rollout check below is what does. FETCH_HEAD rather than origin/main, because a single-branch or
   # shallow clone need not carry the +refs/heads/*:refs/remotes/origin/* refspec
   # that keeps origin/main current — measured, `git fetch origin main` sets
   # FETCH_HEAD unconditionally and both resolved to the same commit here. A
@@ -1387,10 +1390,55 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
       exit 4
     fi
     EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
-    if consumed "$sym" "${REVIEWED_SOLYRA[@]}"; then exit 0; else exit $?; fi )
+    # KEEP consumed()'s VOCABULARY. The first draft of this block mapped a
+    # passing rollout to `exit 0`, which is consumed()'s code for CONSUMED —
+    # the round-35 collision rebuilt while adding a step. The subshell's status
+    # stays consumed()'s throughout: 0 consumed, 1 absent, 2 error, 3 commands,
+    # 4 a path survives, and now 5 for a rollout that has not been confirmed.
+    # The outer check still accepts only 1.
+    if consumed "$sym" "${REVIEWED_SOLYRA[@]}"; then exit 0; else scode=$?; fi
+    test "$scode" -eq 1 || exit "$scode"
+    # MAIN IS NOT DEPLOYED, AND THIS FILE ARGUES THAT AT LENGTH ELSEWHERE.
+    # The rollout section says a deploy and every client having it are different
+    # events, that solyra registers no service worker and no update prompt, and
+    # that "old bundles age out" is its own step — then this check searched
+    # main and two comments called the answer "the deployed frontend". A
+    # consumer removed on main five minutes ago is gone from the source and
+    # still running in every open tab, so certifying the backend surface here
+    # breaks exactly the readers that ordering protects.
+    #
+    # What is mechanically knowable from here: whether solyra EVER used it.
+    # `git log -G` over the pinned rev separates the two cases, and they need
+    # different things — measured, an invented symbol returns 0 commits while a
+    # real removed consumer returns several with a last-touched date.
+    #   never used  -> nothing was ever shipped to a browser, nothing to age out
+    #   used, now gone -> the removal must be DEPLOYED and its bundles expired
+    # What is NOT knowable from here: solyra's serving revision. It has no
+    # deploy workflow in the repo (checked: no Dockerfile, no cloudbuild, no
+    # netlify/vercel/firebase-hosting config; the deploy is Lovable-driven and
+    # outside both repos), so there is nothing to query. That makes the second
+    # case a human confirmation, and the honest thing is to require it by name
+    # rather than to let the search imply it.
+    shist=$(git log --oneline -G"$sym" "$REV" -- .) \
+      || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
+    if [ -n "$shist" ]; then
+      test "${SOLYRA_ROLLED_OUT:-}" = "$sym" || {
+        echo "solyra: main no longer uses '$sym', but it once did:"
+        printf '%s\n' "$shist" | head -5
+        echo "last touched: $(git log -1 --format='%h %cI %s' -G"$sym" "$REV" -- .)"
+        echo "That removal has to be DEPLOYED and its old bundles aged out"
+        echo "before this repo drops the surface — see the rollout section:"
+        echo "solyra registers no service worker and no update prompt, so a tab"
+        echo "keeps its bundle until someone reloads. This repo cannot resolve"
+        echo "solyra's serving revision (no deploy config in it), so confirm it"
+        echo "yourself, then re-run with SOLYRA_ROLLED_OUT=$sym"
+        exit 5; }
+    fi
+    exit 1 )      # absent from main AND the rollout confirmed
   then rc=0; else rc=$?; fi
   test $rc -eq 1 \
-    || { echo "solyra: rc=$rc (0=consumed 2=error 3=see above 4=a path survives)"
+    || { echo "solyra: rc=$rc (0=consumed 2=error 3=see above 4=a path survives"
+         echo "        5=gone from main, rollout unconfirmed)"
          return 1; }
 }
 
@@ -1875,17 +1923,42 @@ evaluations:
 
 ```bash
 replay_check() {
-  local rc n log
+  local rc n log gst PREV_RT
   # mktemp, not a fixed /tmp path: two sessions running this concurrently
   # share that path, and one can read the other's summary — a replay that
   # raised on every bar consuming a clean positive-bar count.
-  log=$(mktemp -t replay-XXXXXX); trap 'rm -f "$log"' RETURN
+  # THE SAME TWO TRAP DEFECTS baselines was fixed for in rounds 32 and 34, in a
+  # trap added without looking for others in this file. A RETURN trap is global,
+  # not scoped to the function that sets it, and under `set -T` it is inherited
+  # by everything this function calls. Measured on this exact shape: a caller's
+  # own RETURN cleanup never ran, and `trap -p RETURN` still showed `rm -f
+  # "$log"` installed after replay_check had returned — pointing at a `log` that
+  # is out of scope. Guard on FUNCNAME so inherited fires are no-ops, and put
+  # back whatever handler was there.
+  log=$(mktemp -t replay-XXXXXX)
+  PREV_RT=$(trap -p RETURN)
+  trap 'if [ "${FUNCNAME[0]}" = replay_check ]; then
+          rm -f "$log"; eval "${PREV_RT:-trap - RETURN}"
+        fi' RETURN
   # No pipe: redirect instead of `| tee`, so there is no pipeline status to
   # get wrong and no `pipefail` to remember. Read it after with `tail`.
-  env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor \
-      --date <D> --tickers SPY,IWM,QQQ > "$log" 2>&1; rc=$?
+  # `if`, not `cmd; rc=$?`: a failing replay is the case this whole block is
+  # here to report, and under `set -e` an untested nonzero would exit before
+  # the tail below ever printed the reason. Same shape as the grep two lines
+  # down, and as consumed()'s probes.
+  if env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor \
+       --date <D> --tickers SPY,IWM,QQQ > "$log" 2>&1
+  then rc=0; else rc=$?; fi
   test $rc -eq 0 || { tail -20 "$log"; echo "replay exited $rc"; return 1; }
-  n=$(grep -c "evaluate_ticker raised" "$log")
+  # `grep -c` PRINTS 0 and RETURNS 1 when it finds nothing, and finding nothing
+  # is the passing answer here — so under `set -e` the command substitution
+  # killed the shell on a clean replay. Measured: `bash -uec 'n=$(grep -c x
+  # file)'` on a file without a match produces no further output at all.
+  # `|| true` would work and is wrong for the reason the rest of this file
+  # gives: it also swallows a real grep error (rc=2, unreadable file), which
+  # would then read as zero raises. Capture the status and check it.
+  if n=$(grep -c "evaluate_ticker raised" "$log"); then gst=0; else gst=$?; fi
+  test "$gst" -le 1 || { echo "grep failed on the log (rc=$gst)"; return 1; }
   test "$n" -eq 0 || { echo "$n tickers raised"; return 1; }
   # and the positive check, PER TICKER. `grep -q "Bars"` matches the summary
   # COLUMN HEADER, printed unconditionally at
