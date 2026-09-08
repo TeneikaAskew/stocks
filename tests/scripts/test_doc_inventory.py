@@ -1320,6 +1320,31 @@ def test_the_runtime_relation_count_is_rendered_not_left_to_the_model(mini_repo,
     assert [m.group(1) for m in inv.RUNTIME_RELATION_COUNT.finditer(body)] == ["2", "2"]
 
 
+def test_restoring_a_block_does_not_correct_a_model_written_count(mini_repo, tmp_path):
+    """`restore_blocks` runs AFTER the model and calls `insert_blocks`, so the
+    count substitution reached the restore path and silently corrected a number
+    the model got wrong -- before `gate_derived_numbers` could report it. The
+    count is rendered once, before the model; restoration touches marker blocks
+    only. (Codex, PR #1058.)"""
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    repo = inv.repo_inventory(mini_repo)
+    declared = inv.declared_relation_names(repo)
+    live = {"db_tables": {n: {"kind": "table", "rows": 0, "size": "16 kB"}
+                          for n in set(declared) | {"strat_features_1m"}},
+            "jobs": {}, "schedulers": {}, "services": {}, "counts": {}}
+    assert len(inv.runtime_relations(repo, live)) == 1
+    # a document whose marker block AND count the model has both edited
+    doc.write_text("<!-- inventory:tables:start -->\nthe model wrote this\n"
+                   "<!-- inventory:tables:end -->\n"
+                   "\n99 runtime-created relations sit outside the schema.\n")
+    names = inv.restore_blocks(doc, repo, live, root=mini_repo)
+    body = doc.read_text()
+    assert names == ["tables"], names
+    assert "the model wrote this" not in body, "the block must be restored"
+    assert "99 runtime-created relations" in body, \
+        "restore must leave the model's count alone so the gate can report it"
+
+
 def test_the_runtime_relation_count_is_left_alone_without_a_live_snapshot(mini_repo, tmp_path):
     """The count comes from live minus declared, so with no live snapshot there
     is nothing to render and the prose must survive untouched rather than be

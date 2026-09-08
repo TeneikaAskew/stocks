@@ -4076,7 +4076,12 @@ def restore_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str,
     """
     names = [name for name, _first_diff in differing_blocks(doc_path, repo, live, root)]
     if names:
-        insert_blocks(doc_path, repo, live, root=root)
+        # counts=False: this runs AFTER the model. Re-rendering the
+        # runtime-relation count here would silently correct a number the model
+        # got wrong, before the gate that exists to report exactly that, and
+        # restoration is defined as affecting marker blocks only. The count is
+        # rendered once, before the model, in insert_blocks. (Codex, PR #1058.)
+        insert_blocks(doc_path, repo, live, root=root, counts=False)
     return names
 
 
@@ -4087,9 +4092,11 @@ RUNTIME_RELATION_COUNT = re.compile(r"(\d+)( runtime[- ](?:created )?relations)"
 
 
 def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
-                  root: pathlib.Path = REPO) -> bool:
+                  root: pathlib.Path = REPO, counts: bool = True) -> bool:
     """Replace every marker block in doc_path with freshly rendered content,
-    and render the runtime-relation count that appears in prose beside them.
+    and, when `counts`, render the runtime-relation count in the prose beside
+    them. `restore_blocks` passes counts=False: it runs after the model, where
+    correcting that number would hide the edit the gate is there to report.
 
     Returns True when the file changed. Idempotent: rendering the same inputs
     twice yields the same bytes. Links inside the blocks are rebased to the
@@ -4117,10 +4124,13 @@ def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, 
     # stopped across four attempts. Rendering it HERE, before the model runs,
     # means the document it edits already carries the right number and it has
     # no reason to touch the line; the gate still checks the number afterwards,
-    # so a model that changes it anyway is still caught. Deliberately not done
-    # on the `--restore` path: that runs after the model, and silently
-    # rewriting its output would hide an edit rather than render an input.
-    if live and live.get("db_tables"):
+    # so a model that changes it anyway is still caught -- which is why
+    # `restore_blocks` calls this with counts=False. It runs after the model,
+    # and it reaches this function, so without that flag the substitution would
+    # silently rewrite the model's wrong number before the gate saw it, and an
+    # earlier revision of this comment claimed the restore path was exempt when
+    # the call it makes was not. (Codex, PR #1058.)
+    if counts and live and live.get("db_tables"):
         n = len(runtime_relations(repo, live))
         new = RUNTIME_RELATION_COUNT.sub(lambda m: f"{n}{m.group(2)}", new)
     if new != text:
