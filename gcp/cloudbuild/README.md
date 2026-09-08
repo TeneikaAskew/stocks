@@ -112,8 +112,9 @@ account holds `roles/run.admin` (the reads) but only
 `roles/artifactregistry.writer` on both repos on 2026-09-07; the workflow
 header carries the commands in case the SA is ever rebuilt.
 
-It also holds `artifactregistry.tags.delete`, through the project custom
-role `artifactRegistryTagMover` bound at repository level on `trading`
+`trading-runner@` (the triggers' identity, not the workflow's) also holds
+`artifactregistry.tags.delete`, through the project custom role
+`artifactRegistryTagMover` bound at repository level on `trading`
 (us-east1) and `gcr.io` (us) on 2026-09-07. That permission is not for
 sweeping: **re-pointing an existing tag is a delete plus a create in
 Artifact Registry**, so every re-pin of a job whose image moved is a tag
