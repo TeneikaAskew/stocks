@@ -823,6 +823,31 @@ ANSWERED = {200, 204, 304, 400, 401, 403, 404, 409, 422, 429, 500, 502, 503}
 NOT_A_CRASH = ANSWERED - {500}
 
 
+# A 204 or a 304 carries no body by definition (RFC 9110 §15.3.5 and
+# §15.4.5) and so no content-type. Both are in ANSWERED, and the envelope
+# check ran on every status alike, which would have failed the sweep the
+# first time an operation answered 204 (Codex P2 on #999). None does today;
+# the gate must not be what forbids it.
+BODYLESS = frozenset({204, 304})
+
+
+def _assert_json_envelope(label: str, response) -> None:
+    """Every answer that may carry a body carries a JSON envelope.
+
+    Not a stack trace or a bare "Internal Server Error" string: the nine
+    handlers this file fixed all answered `text/plain` before. A bodyless
+    status is held to the opposite, that it really sent nothing.
+    """
+    if response.status_code in BODYLESS:
+        assert not response.content, (
+            f"{label} answered {response.status_code} with a body: "
+            f"{response.content[:200]!r}")
+        return
+    assert response.headers.get("content-type", "").startswith("application/json"), (
+        f"{label} answered {response.status_code} with content-type "
+        f"{response.headers.get('content-type')!r}")
+
+
 @pytest.mark.parametrize("req", REQUESTS, ids=lambda r: r.label)
 def test_operation_answers(client, req: Req):
     r = client.request(req.method, req.url, json=req.json)
@@ -832,17 +857,62 @@ def test_operation_answers(client, req: Req):
         f"exception reaching FastAPI, not an error the frontend can render.\n"
         f"body: {r.text[:400]}")
 
-    # An error still has to be a JSON envelope, not a stack trace or a bare
-    # "Internal Server Error" string. The nine handlers this file fixed all
-    # answered `text/plain` before.
-    assert r.headers.get("content-type", "").startswith("application/json"), (
-        f"{req.label} answered {r.status_code} with content-type "
-        f"{r.headers.get('content-type')!r}")
+    _assert_json_envelope(req.label, r)
 
     assert r.status_code == req.expect, (
         f"{req.label} answered {r.status_code}, the table says {req.expect}. "
         f"Either this is a regression or the contract changed and the table "
         f"needs updating — both deserve a look.\nbody: {r.text[:400]}")
+
+
+def test_a_bodyless_answer_passes_the_envelope_check():
+    """204 and 304 have no body, and the check must not demand a JSON one.
+
+    Exercised through a real FastAPI app so the assertion sees exactly what
+    the sweep sees. A 204 declared on the decorator still carries
+    `content-type: application/json` (FastAPI serialises the `None`), so
+    the old check happened to pass it; a `Response(status_code=204)` and
+    a 304 carry no content-type at all, and the old check failed both.
+    Then the two failures the check must still catch: a body-bearing
+    status without a JSON envelope, and a bodyless status that sent bytes
+    anyway.
+    """
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from fastapi.responses import PlainTextResponse, Response
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+
+    @app.delete("/declared", status_code=204)
+    def _declared() -> None:
+        return None
+
+    @app.delete("/explicit")
+    def _explicit():
+        return Response(status_code=204)
+
+    @app.get("/cached")
+    def _cached():
+        return Response(status_code=304)
+
+    @app.get("/plain")
+    def _plain():
+        return PlainTextResponse("Internal Server Error", status_code=500)
+
+    with TestClient(app) as tc:
+        for method, path, status, typed in (("DELETE", "/declared", 204, True),
+                                            ("DELETE", "/explicit", 204, False),
+                                            ("GET", "/cached", 304, False)):
+            r = tc.request(method, path)
+            assert r.status_code == status and not r.content, r.text[:100]
+            assert ("content-type" in r.headers) is typed, r.headers
+            _assert_json_envelope(f"{method} {path}", r)
+        with pytest.raises(AssertionError, match="content-type 'text/plain"):
+            _assert_json_envelope("GET /plain", tc.get("/plain"))
+    with pytest.raises(AssertionError, match="with a body"):
+        _assert_json_envelope("DELETE /leaky", SimpleNamespace(
+            status_code=204, headers={}, content=b"{}"))
 
 
 def _handler_ran(response) -> bool:
@@ -991,8 +1061,7 @@ def test_insight_report_lookups_are_503_not_a_bare_500(client, monkeypatch):
         # a `RuntimeError` here would assert 503 against a classification path
         # production never reaches -- and would have kept passing after the
         # narrowing that this test exists to constrain (Codex P1 on #999).
-        raise psycopg2.OperationalError(
-            "connection to server at 127.0.0.1:5432 refused")
+        raise psycopg2.OperationalError(_REFUSED)
 
     for name in ("_fetch_latest_report", "_fetch_report_history",
                  "_fetch_report_by_id", "_insert_run", "_fetch_run"):
@@ -1357,23 +1426,59 @@ def test_infrastructure_errors_are_classified_by_type():
     import psycopg2.errors as pg_errors
     assert psycopg2.OperationalError not in INFRASTRUCTURE_ERRORS
     assert sa_exc.OperationalError not in INFRASTRUCTURE_ERRORS
-    # A code-less OperationalError is the driver's own. libpq 17's spellings
-    # of a connection FAILING classify (captured live: a refused port, an
-    # unresolvable host, a connect timeout); a connection OPTION it could not
-    # read is a broken deployment and stays loud (Codex P2 on #999).
-    for exc in (psycopg2.OperationalError("could not connect to server"),
+    # A code-less OperationalError is the driver's own, and libpq wraps every
+    # failed connection attempt identically, so the failure named after the
+    # wrapper decides. Captured live through psycopg2 2.9.12 / libpq 17
+    # against Postgres 16: a refused port, a role over its connection limit
+    # and the server terminating mid-query are outages; no password, a wrong
+    # one, an unknown database and a server without SSL are deployments,
+    # under the same wrapper with the same `pgcode` None (Codex P2 on #999,
+    # twice). The exact texts are in `_LIBPQ_*` in infra_errors.py.
+    for exc in (psycopg2.OperationalError(
+                    "could not connect to server: Connection refused\n"
+                    '\tIs the server running on host "db" (10.0.0.5) and '
+                    "accepting\n\tTCP/IP connections on port 5432?"),  # libpq < 14
                 psycopg2.OperationalError(
-                    "server closed the connection unexpectedly"),
+                    "server closed the connection unexpectedly\n"
+                    "\tThis probably means the server terminated abnormally\n"
+                    "\tbefore or while processing the request.\n"),
+                psycopg2.OperationalError(_REFUSED),
                 psycopg2.OperationalError(
-                    'connection to server at "127.0.0.1", port 1 failed: '
-                    "Connection refused"),
+                    'connection to server at "127.0.0.1", port 54329 failed: '
+                    "Connection refused\n\tIs the server running on that host "
+                    "and accepting TCP/IP connections?\n"),
+                psycopg2.OperationalError(                # one attempt per address
+                    'connection to server at "localhost" (::1), port 5432 failed: '
+                    "Connection refused\n\tIs the server running on that host "
+                    "and accepting TCP/IP connections?\n"
+                    'connection to server at "localhost" (127.0.0.1), port 5432 '
+                    "failed: Connection refused\n\tIs the server running on "
+                    "that host and accepting TCP/IP connections?\n"),
                 psycopg2.OperationalError(
                     'connection to server at "10.255.255.1", port 5432 failed: '
                     "timeout expired"),
                 psycopg2.OperationalError(
+                    'connection to server at "db", port 5432 failed: '
+                    "No route to host"),
+                psycopg2.OperationalError(
+                    'connection to server on socket "/cloudsql/p:r:i/.s.PGSQL.5432" '
+                    "failed: Connection refused"),
+                psycopg2.OperationalError(
+                    'connection to server at "127.0.0.1", port 54329 failed: '
+                    'FATAL:  too many connections for role "app"\n'),  # 53300
+                psycopg2.OperationalError(
+                    'connection to server at "db", port 5432 failed: '
+                    "FATAL:  the database system is starting up\n"),   # 57P03
+                psycopg2.OperationalError(
+                    'connection to server at "db", port 5432 failed: '
+                    "FATAL:  remaining connection slots are reserved for roles "
+                    "with the SUPERUSER attribute\n"),                 # 53300
+                psycopg2.OperationalError(
                     'could not translate host name "db.invalid" to address: '
                     "Name or service not known"),
                 psycopg2.OperationalError("SSL SYSCALL error: EOF detected"),
+                psycopg2.OperationalError(
+                    "could not receive data from server: Connection reset by peer"),
                 pg_errors.ConnectionFailure("connection failure"),      # 08006
                 pg_errors.ProtocolViolation("protocol violation"),      # 08P01
                 pg_errors.AdminShutdown("terminating connection"),      # 57P01
@@ -1389,6 +1494,35 @@ def test_infrastructure_errors_are_classified_by_type():
                     'invalid integer value "abc" for connection option "port"'),
                 psycopg2.OperationalError('invalid sslmode value: "bogus"'),
                 psycopg2.OperationalError("some new message"),
+                psycopg2.OperationalError("could not connect to server"),  # names no failure
+                psycopg2.OperationalError(                # DB_PASS unset: live text
+                    'connection to server at "127.0.0.1", port 54329 failed: '
+                    "fe_sendauth: no password supplied\n"),
+                psycopg2.OperationalError(
+                    'connection to server at "127.0.0.1", port 54329 failed: '
+                    'FATAL:  password authentication failed for user "postgres"\n'),
+                psycopg2.OperationalError(
+                    'connection to server at "127.0.0.1", port 54329 failed: '
+                    'FATAL:  database "nope" does not exist\n'),
+                psycopg2.OperationalError(
+                    'connection to server at "db", port 5432 failed: '
+                    'FATAL:  no pg_hba.conf entry for host "10.0.0.9", user "app", '
+                    'database "trading", no encryption\n'),
+                psycopg2.OperationalError(
+                    'connection to server at "127.0.0.1", port 54329 failed: '
+                    "server does not support SSL, but SSL was required\n"),
+                psycopg2.OperationalError(
+                    'connection to server at "db", port 5432 failed: '
+                    "SSL error: certificate verify failed: self-signed certificate\n"),
+                psycopg2.OperationalError(
+                    'connection to server on socket "/cloudsql/p:r:i/.s.PGSQL.5432" '
+                    "failed: No such file or directory\n"),
+                psycopg2.OperationalError(                # refused, then rejected
+                    'connection to server at "localhost" (::1), port 5432 failed: '
+                    "Connection refused\n\tIs the server running on that host "
+                    "and accepting TCP/IP connections?\n"
+                    'connection to server at "localhost" (127.0.0.1), port 5432 '
+                    'failed: FATAL:  password authentication failed for user "x"\n'),
                 pg_errors.InvalidPassword("password authentication failed"),
                 pg_errors.InvalidAuthorizationSpecification("no role"),  # 28000
                 pg_errors.QueryCanceled("canceling statement"),          # 57014

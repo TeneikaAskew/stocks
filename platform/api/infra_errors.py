@@ -261,27 +261,125 @@ def _psycopg2_sqlstates() -> dict:
 
 _PSYCOPG2_SQLSTATE_OF: dict = _psycopg2_sqlstates()
 
-#: How libpq begins the message of a CONNECTION failure it reports without a
-#: SQLSTATE, verbatim from libpq 17 (older releases spelled the first two
-#: "could not connect to server" and a bare "timeout expired", kept for
-#: them). A code-less `OperationalError` is also what a malformed connection
-#: option raises -- `invalid integer value "abc" for connection option
-#: "port"`, `invalid sslmode value` -- and that is a broken deployment, not
-#: an outage; accepting the whole code-less class answered a retryable 503
-#: for it indefinitely (Codex P2 on #999).
-_PSYCOPG2_CONNECTION_PREFIXES: tuple[str, ...] = (
-    "connection to server",              # refused, timed out, reset, no route
-    "could not connect to server",
-    "could not translate host name",     # DNS
+#: How libpq 14+ reports each failed connection ATTEMPT, one line per
+#: address it tried, verbatim from fe-connect.c (`emitHostIdentifier`);
+#: older releases spelled it `could not connect to server: `. What follows
+#: the wrapper is the failure itself, and that is where an outage and a
+#: broken deployment part ways. Captured live through psycopg2 2.9.12 /
+#: libpq 17 against Postgres 16, all under this one wrapper and all with
+#: `pgcode` None: `Connection refused` and `FATAL:  too many connections
+#: for role "app"` are outages; `fe_sendauth: no password supplied`,
+#: `FATAL:  password authentication failed for user "x"`, `FATAL:
+#: database "x" does not exist` and `server does not support SSL, but SSL
+#: was required` are deployments -- and the first is exactly what
+#: `model_routing.connect()` raises with `DB_PASS` unset, so matching the
+#: wrapper alone answered a retryable 503 for a missing secret
+#: indefinitely (Codex P2 on #999).
+_LIBPQ_ATTEMPT_WRAPPERS: tuple[str, ...] = (
+    "connection to server at ",         # TCP: `at "host" (ip), port N failed: `
+    "connection to server on socket ",  # Unix socket: `on socket "path" failed: `
+    "could not connect to server: ",    # libpq < 14
+)
+
+#: The failures libpq itself reports -- inside an attempt wrapper or, once
+#: connected, bare -- that are outages: the operating system's socket
+#: errors as libpq renders `strerror()` (glibc and BSD spellings), the
+#: resource exhaustion `_NETWORK_ERRNOS` already accepts, and libpq 17's
+#: own transport messages: `timeout expired` and `server closed the
+#: connection unexpectedly` (fe-misc.c), `could not receive/send data`
+#: (fe-secure.c), the two SSL texts (fe-secure-openssl.c) and the DNS one
+#: (fe-connect.c), which classifies here as `socket.gaierror` does in
+#: `_network_unreachable`. Not here: `No such file or directory` on a
+#: socket path, which is either the proxy not running or the wrong path
+#: and the text cannot say which; `server does not support SSL, but SSL
+#: was required`, `received invalid response to SSL negotiation` and
+#: `expected authentication request from server`, which are talking to the
+#: wrong endpoint; `SSL error: certificate verify failed`, which
+#: `_tls_transport_failure` keeps loud for the same reason; and every
+#: `fe_sendauth:` line, which is the client failing to authenticate.
+_LIBPQ_TRANSPORT_FAILURES: tuple[str, ...] = (
+    "Connection refused",
+    "Connection timed out",
+    "Operation timed out",
+    "Connection reset by peer",
+    "Software caused connection abort",
+    "Broken pipe",
+    "No route to host",
+    "Network is unreachable",
+    "Network is down",
+    "Host is down",
+    "Too many open files",
+    "No buffer space available",
+    "Cannot assign requested address",
+    "timeout expired",
+    "could not translate host name",
     "server closed the connection unexpectedly",
     "could not receive data from server",
     "could not send data to server",
-    "lost synchronization with server",
     "SSL SYSCALL error",
     "SSL connection has been closed unexpectedly",
-    "terminating connection",
-    "timeout expired",
 )
+
+#: A server FATAL libpq relays inside a failed attempt as `FATAL:  <text>`,
+#: without the SQLSTATE the server sent because a failed connect carries
+#: none across to the driver. These are the texts PostgreSQL 17 raises
+#: under the codes `_server_gone` accepts and no others: 57P03
+#: cannot_connect_now (backend_startup.c), 53300 too_many_connections
+#: (postinit.c, miscinit.c, proc.c), 53200 out_of_memory (mcxt.c), 57P01
+#: admin_shutdown, 57P02 crash_shutdown and 57P05 idle_session_timeout
+#: (postgres.c). `password authentication failed`, `no pg_hba.conf entry`
+#: and `role "x" does not exist` (class 28) and `database "x" does not
+#: exist` (3D000) are not among them, so they stay loud here exactly as
+#: they do when the SQLSTATE arrives.
+_LIBPQ_SERVER_GONE_FATALS: tuple[str, ...] = (
+    "the database system is starting up",
+    "the database system is not yet accepting connections",
+    "the database system is not accepting connections",
+    "the database system is shutting down",
+    "the database system is in recovery mode",
+    "sorry, too many clients already",
+    "remaining connection slots are reserved",
+    "too many connections for role",
+    "too many connections for database",
+    "number of requested standby connections exceeds",
+    "out of memory",
+    "terminating connection due to administrator command",
+    "terminating connection due to immediate shutdown command",
+    "terminating connection because of unexpected SIGQUIT signal",
+    "terminating connection because of crash of another server process",
+    "terminating connection due to idle-session timeout",
+)
+
+
+def _libpq_failure_is_outage(failure: str) -> bool:
+    """One libpq failure text, any attempt wrapper already removed."""
+    if failure.startswith("FATAL:"):
+        return failure[len("FATAL:"):].lstrip().startswith(_LIBPQ_SERVER_GONE_FATALS)
+    return failure.startswith(_LIBPQ_TRANSPORT_FAILURES)
+
+
+def _libpq_reports_outage(message: str) -> bool:
+    """Read a code-less libpq message: is every failure it names an outage?
+
+    A host with several addresses yields one wrapped attempt per address,
+    each followed by an indented hint line; a message with no wrapper is
+    the driver reporting a transport failure on an open connection. Every
+    attempt must be an outage: an address that answered and refused the
+    credential is not retried away by the one before it being unreachable.
+    A message that names no failure at all is not an outage either.
+    """
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    if not lines:
+        return False
+    attempts = [line for line in lines if line.startswith(_LIBPQ_ATTEMPT_WRAPPERS)]
+    if not attempts:
+        return _libpq_failure_is_outage(lines[0])
+    outcomes = []
+    for line in attempts:
+        marker = " failed: " if line.startswith("connection to server") else ": "
+        _wrapper, found, failure = line.partition(marker)
+        outcomes.append(bool(found) and _libpq_failure_is_outage(failure))
+    return all(outcomes)
 
 
 def _psycopg2_server_gone(exc: BaseException) -> bool:
@@ -297,20 +395,20 @@ def _psycopg2_server_gone(exc: BaseException) -> bool:
     #999). So every `DatabaseError` subclass is decided by SQLSTATE, from
     `pgcode` when the server set it and from the class otherwise, through the
     same code sets pg8000 uses. A code-less plain `OperationalError` is the
-    driver's own connection failure -- refused, "server closed the connection
-    unexpectedly", an SSL SYSCALL error -- and is an outage when its message
-    says so; a code-less error about a connection OPTION libpq could not read
-    is a broken deployment and stays loud (Codex P2 on #999), as does any
-    other code-less error.
+    driver's own report, and libpq wraps a refused port, a missing password
+    and a wrong one identically (Codex P2 on #999, twice), so the failure it
+    names decides through `_libpq_reports_outage`; a connection OPTION libpq
+    could not read names no failure and stays loud, as does any other
+    code-less error.
     """
     if _psycopg2 is None or not isinstance(exc, _psycopg2.DatabaseError):
         return False
     code = getattr(exc, "pgcode", None) or _PSYCOPG2_SQLSTATE_OF.get(type(exc))
     if code is None:
-        # The driver's own, with no server behind it: the connection failing
-        # is an outage; a connection OPTION it cannot read is not.
+        # The driver's own, with no SQLSTATE behind it: the failure libpq
+        # names decides, and only a named outage counts.
         return (type(exc) is _psycopg2.OperationalError
-                and str(exc).lstrip().startswith(_PSYCOPG2_CONNECTION_PREFIXES))
+                and _libpq_reports_outage(str(exc)))
     return _server_gone(code)
 
 
