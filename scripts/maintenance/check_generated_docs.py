@@ -512,6 +512,9 @@ def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
 # through -- a rule welded onto a bullet or a CLI flag, the same defect with
 # dash-prefixed content. (Codex, PR #1064.)
 INLINE_RULE = re.compile(r"^\s{0,3}-{3,}(?!-)\s*\S")
+# A code fence: three or more backticks or tildes. Captured whole so the
+# closing run can be required to match the opener in character and length.
+FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 
 
 def gate_inline_rule(root: pathlib.Path) -> list[str]:
@@ -528,12 +531,31 @@ def gate_inline_rule(root: pathlib.Path) -> list[str]:
         f = root / doc
         if not f.exists():
             continue
-        fenced = False
+        fence: str | None = None   # the OPENING delimiter, verbatim
         for i, line in enumerate(_prose_lines(f.read_text()), 1):
-            if line.lstrip().startswith("```"):
-                fenced = not fenced
+            # A fence is three or more backticks OR tildes, and only a run of
+            # the same character at least as long closes it. `startswith("```")`
+            # missed `~~~yaml` entirely and let a ``` inside a ```` block close
+            # it early, either of which puts the scan back inside code.
+            # (Codex, PR #1064.)
+            m = FENCE.match(line)
+            if m:
+                run = m.group(1)
+                if fence is None:
+                    fence = run
+                elif run[0] == fence[0] and len(run) >= len(fence):
+                    fence = None
                 continue
-            if fenced:
+            if TABLE_SEP.fullmatch(line.strip()) and "|" in line:
+                # `--- | --- | ---` is the separator of a table written without
+                # outer pipes, which `_table_rows` accepts. Reading it as a rule
+                # with text welded on would fail a document for the very
+                # formatting this module just started allowing -- a gate
+                # contradicting its own sibling. Requiring a `|` keeps a bare
+                # `-----` (which TABLE_SEP also matches) out of the exemption.
+                # (Codex, PR #1064.)
+                continue
+            if fence is not None:
                 # Inside a fence `---` is not a thematic rule and never was:
                 # a YAML document marker (`--- # production`), a unified diff
                 # header (`--- a/gcp/deploy.sh`) and an ASCII table border all
@@ -574,7 +596,14 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
 # lost its provenance and the gate stayed clean. Each label is now paired with
 # the line that must carry it. (Codex, PR #1064.)
 REQUIRED_ASOF = {ARCH: (
-    (ASOF_LABELS[1], re.compile(r"Live state below was read on"), "the header note"),
+    # Located by SHAPE, not by its exact sentence. `Live state below was read
+    # on` rejected `Infrastructure state below was read on **DATE**` and even
+    # `The live state below was read on ...`; the prompt specifies the location
+    # and the `read on **DATE**` form, never that literal prefix, so a one-word
+    # rewrite was reported as the label being missing. The header note is the
+    # blockquote at the top of the document, which nothing else in 05-a is.
+    # (Codex, PR #1064.)
+    (ASOF_LABELS[1], re.compile(r"^>.*\bread on \*\*\d{4}-\d{2}-\d{2}\*\*"), "the header note"),
     (ASOF_LABELS[0], re.compile(r"^\|\s*Service\s*\|\s*Role\s*\|"), "§3's table header"),
     (ASOF_LABELS[2], re.compile(r"^Generated\b"), "the closing line"),
 )}
@@ -703,7 +732,7 @@ def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
 # and run 29's.
 #
 #   metric                     main  run28  run29   floor
-#   monetary values (whole doc)  43     15     14      8
+#   monetary values (whole doc)  43     28     36     15
 #   §1 table data rows            2      3      3      2
 #   §2 table data rows           10     10     10      8
 #   §5 recommendation entries     3      5      6      3
@@ -713,14 +742,34 @@ def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
 # list in two versions and a table in the third, and run 28 carried only two
 # lines with a cost figure in it, so any threshold worth having would fail an
 # honest document.
-# Only MONETARY values count. The optional `$` let any decimal satisfy the
-# floor, so a degraded report carrying the workflow's one required dollar
-# figure plus eleven percentages or durations scored twelve (Codex, PR #1064).
-# Re-measured with `$` required: main 43, run 28 15, run 29 14, run 30 11 --
-# so the floor moves to 8, still under every real version.
-COST_FIGURE = re.compile(r"\$\s?\d+(?:\.\d{2})?\b")
+# Only MONETARY values count -- but requiring a `$` counted the wrong
+# population. An optional `$` let any decimal in (eleven percentages scored
+# eleven); requiring one missed the amounts the model actually writes, because
+# under headers named `Spend (USD)` and `90-day cost (USD)` it writes `222.71`,
+# not `$222.71`. Measured over the four real documents: main 43/0, run 28
+# 15/13, run 29 14/22, run 30 11/22 ($-prefixed / bare). A floor set on the
+# $-count alone would have failed a correct report on its currency formatting;
+# run 30 cleared 8 by three.
+#
+# So: a `$` amount anywhere, OR a table cell whose ENTIRE content is a decimal
+# amount. A cell is the unit that makes a bare number unambiguous -- `50.00%`
+# and `1.5 GiB` are not decimal cells, and prose decimals are not cells at all.
+#
+#   counted   main 43   run 28 28   run 29 36   run 30 33
+#   degraded report: one $ figure + eleven percentages -> 1
+#
+# The two populations separate by more than an order of magnitude, so the
+# floor sits at 15: half the smallest real document, fifteen times the
+# degraded one. (Codex, PR #1064.)
+COST_FIGURE = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?\b")
+COST_MONEY_CELL = re.compile(r"(?<=\|)\s*\d[\d,]*\.\d{2}\s*(?=\|)")
+
+
+def cost_figures(text: str) -> int:
+    """Monetary values, whether or not they carry a currency symbol."""
+    return len(COST_FIGURE.findall(text)) + len(COST_MONEY_CELL.findall(text))
 COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
-COST_MIN_FIGURES = 8
+COST_MIN_FIGURES = 15
 COST_MIN_SECTION_LINES = 2
 COST_MIN_ROWS = {"1": 2, "2": 8}
 COST_MIN_RECOMMENDATIONS = 3
@@ -752,18 +801,34 @@ TABLE_SEP = re.compile(r"^\|?[\s|:-]+\|?$")
 
 
 def _table_rows(body: list[str]) -> int:
-    """Data rows of the first markdown table in a section: table lines, minus
-    the header, minus the `|---|` separator."""
-    rows = []
-    for line in body:
-        st = line.strip()
-        if not st or "|" not in st:
+    """Data rows of the first markdown table in a section.
+
+    A table is a separator row with rows attached to it, not any run of lines
+    carrying pipes. Counting every two-pipe line and subtracting one for a
+    header let nine lines of `1 | Cloud Run | $1.00` -- no header, no
+    separator, not a table at all -- clear the section-2 floor of 8 exactly.
+    That is the prose-shaped-like-a-report case this floor exists to reject,
+    so the floor was failing open. Anchoring on the separator means a section
+    with no table counts zero rather than counting its prose. (Codex, PR #1064.)
+    """
+    lines = [l.strip() for l in body]
+    for i, st in enumerate(lines):
+        if not (TABLE_SEP.fullmatch(st) and "|" in st):
             continue
-        if TABLE_SEP.fullmatch(st):
-            continue
-        if st.startswith("|") or st.count("|") >= 2:
-            rows.append(st)
-    return max(len(rows) - 1, 0)
+        # The separator defines the table's shape, so a row is a line with the
+        # same pipe count. Testing "two or more pipes" instead rejected a
+        # two-column table written without outer pipes, which carries exactly
+        # one -- the formatting this module set out to accept.
+        width = st.count("|")
+        if i == 0 or lines[i - 1].count("|") != width:
+            continue          # a separator with no header above it is not a table
+        n = 0
+        for st2 in lines[i + 1:]:
+            if not st2 or st2.count("|") != width:
+                break
+            n += 1
+        return n
+    return 0
 
 
 def gate_cost_content(root: pathlib.Path) -> list[str]:
@@ -781,10 +846,10 @@ def gate_cost_content(root: pathlib.Path) -> list[str]:
         return []
     text = f.read_text()
     out = []
-    figures = len(COST_FIGURE.findall(text))
+    figures = cost_figures(text)
     if figures < COST_MIN_FIGURES:
         out.append(f"{COST}: only {figures} monetary values in the whole document "
-                   f"(floor {COST_MIN_FIGURES}); the four real versions carry 11 to 43. "
+                   f"(floor {COST_MIN_FIGURES}); the four real versions carry 28 to 43. "
                    "This is prose where a billing report should be")
     secs = _numbered_sections(text)
     for num, floor in sorted(COST_MIN_ROWS.items()):
@@ -972,6 +1037,9 @@ RELATION_TOTAL = re.compile(r"declares \*{0,2}(\d+)(?: relations?)?\*{0,2}\s*(?=
 # their own line, so requiring it costs nothing and removes the whole class.
 # (Codex, PR #1064.)
 RELATION_ANCHOR = re.compile(r"`gcp/schema\.sql`")
+# Every `.sql` path named on a line, in order, so a count can be bound to
+# the file it is actually about rather than to any mention on the line.
+SQL_PATH = re.compile(r"([\w./-]+\.sql)")
 RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
 # What may sit between a declared total and the first of its parts: an opening
 # bracket, a dash, a colon.
@@ -1071,6 +1139,15 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
             if not RELATION_ANCHOR.search(line):
                 continue
             for m in RELATION_TOTAL.finditer(line):
+                # The anchor being SOMEWHERE on the line is not enough: a line
+                # contrasting the two schemas ("Unlike `gcp/schema.sql`,
+                # `p7_schema.sql` declares 3 (2 tables, 1 view)") carries it and
+                # the count belongs to the other file. The count binds to the
+                # nearest `.sql` named before it, which must be the canonical
+                # one. (Codex, PR #1064.)
+                before = SQL_PATH.findall(line[:m.start()])
+                if before and before[-1] != "gcp/schema.sql":
+                    continue
                 matched += 1
                 claimed = m.group(1) or m.group(2)
                 if int(claimed) != total:

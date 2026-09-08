@@ -1546,3 +1546,106 @@ def test_the_runtime_relations_are_not_claimed_to_have_no_schema_file(tmp_path):
         assert f"CREATE TABLE" in (REPO / path).read_text(), path
         assert name in (REPO / path).read_text(), f"{name} is not declared in {path}"
     assert "gcp/queries/" in body, "05-a should say where the runtime relations' DDL does live"
+
+
+def test_a_pipe_table_separator_is_not_a_welded_rule(tmp_path):
+    """`--- | --- | ---` is the separator of a table written without outer
+    pipes, which `_table_rows` accepts. Reading it as a rule with text welded
+    on failed a document for the formatting this module had just started
+    allowing. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Prose.\n\nMonth | Spend | Notes\n--- | --- | ---\n2026-07 | 4.77 | partial\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+    # a bare rule run is still not a finding, and a real weld still is
+    doc.write_text("Prose.\n\n--------\n\n--- welded onto prose\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1, out
+
+
+def test_every_fence_delimiter_is_tracked(tmp_path):
+    """A fence is three or more backticks OR tildes, closed only by a run of
+    the same character at least as long. `startswith("```")` missed `~~~yaml`
+    and let a ``` inside a ```` block close it early, either of which puts the
+    scan back inside code. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("p\n\n~~~yaml\n--- # production\n~~~\n")
+    assert gate.gate_inline_rule(tmp_path) == [], "a tilde fence is a fence"
+    doc.write_text("p\n\n````md\n```\n--- # inner\n```\n--- # still inside\n````\n")
+    assert gate.gate_inline_rule(tmp_path) == [], "a shorter run must not close a longer fence"
+    doc.write_text("p\n\n~~~yaml\nx: 1\n~~~\n\n--- welded onto prose\n")
+    assert len(gate.gate_inline_rule(tmp_path)) == 1, "and the fence must still close"
+
+
+def test_a_relation_count_binds_to_the_file_it_names(tmp_path, repo):
+    """The anchor being somewhere on the line is not enough: a line contrasting
+    the two schemas carries `gcp/schema.sql` while the count belongs to the
+    other file. (Codex, PR #1064.)"""
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / gate.DEPS).write_text("nothing\n")
+    total = len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"])
+    breakdown = (f"{len(repo['tables'])} tables, {len(repo['materialized_views'])} "
+                 f"materialized views, {len(repo['views'])} view")
+    (tmp_path / gate.ARCH).write_text(
+        "Unlike `gcp/schema.sql`, `gcp/queries/p7_schema.sql` declares 3 (2 tables, 1 view).\n"
+        f"`gcp/schema.sql` declares **{total} relations** ({breakdown}).\n")
+    assert gate.gate_derived_numbers(tmp_path, repo, None) == []
+    (tmp_path / gate.ARCH).write_text(
+        f"`gcp/schema.sql` declares **{total + 1} relations** ({breakdown}).\n")
+    assert any("declared relations" in f for f in gate.gate_derived_numbers(tmp_path, repo, None))
+
+
+def test_a_bare_decimal_in_a_money_cell_counts_as_a_cost_figure(tmp_path):
+    """Requiring `$` counted the wrong population: under headers named
+    `Spend (USD)` the model writes `222.71`. Measured over the four real
+    documents, $-prefixed / bare: main 43/0, run 28 15/13, run 29 14/22,
+    run 30 11/22. (Codex, PR #1064.)"""
+    rows = "".join(f"| svc-{i} | {100 + i}.00 |\n" for i in range(20))
+    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n" + rows) == 20
+    # a percentage in a cell is not an amount, and neither is prose
+    assert gate.cost_figures("| a | b |\n|---|---|\n" + "| x | 50.00% |\n" * 11 + "cost $1.00\n") == 1
+    for doc in (REPO / gate.COST,):
+        assert gate.cost_figures(doc.read_text()) >= gate.COST_MIN_FIGURES
+
+
+def test_pipe_shaped_prose_is_not_a_table(tmp_path):
+    """Counting every two-pipe line and subtracting a header let nine lines of
+    `1 | Cloud Run | $1.00` -- no header, no separator -- clear §2's floor of 8
+    exactly, so the floor that exists to catch a report with no tables was
+    failing open. A table is a separator with rows attached. (Codex, PR #1064.)"""
+    assert gate._table_rows([f"{i} | Cloud Run | $1.00" for i in range(1, 10)]) == 0
+    assert gate._table_rows(["Run `a | b` to pipe one into the other."]) == 0
+    # both real styles still parse, including two columns without outer pipes
+    assert gate._table_rows(["Month | Spend", "--- | ---", "a | 1.00", "b | 2.00"]) == 2
+    assert gate._table_rows(["| M | S | N |", "|---|---|---|", "| a | 1 | x |"]) == 1
+
+
+def test_the_header_note_is_located_by_shape_not_by_its_sentence(tmp_path, live):
+    """`Live state below was read on` rejected `Infrastructure state below was
+    read on **DATE**`. The prompt specifies the location and the
+    `read on **DATE**` form, never that literal prefix. (Codex, PR #1064.)"""
+    day = live["read_at"][:10]
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    for note in (f"> Live state below was read on **{day}**",
+                 f"> Infrastructure state below was read on **{day}**",
+                 f"> The live state below was read on **{day}**"):
+        doc.write_text(f"# A\n\n{note}\n\n| Service | Role | Live {day} |\n\n"
+                       f"Generated {day} from the {day} live snapshot.\n")
+        assert gate.gate_stale_asof(tmp_path, live) == [], note
+
+
+def test_the_runtime_relation_ddl_provenance_matches_the_files(tmp_path):
+    """05-a said the dedicated DDL files are applied by the job that owns them.
+    They are not: each header says to apply it by hand, and the strat builder
+    applies only its own embedded 4h DDL. A wrong provenance replaced with a
+    different wrong provenance. (Codex, PR #1064.)"""
+    body = (REPO / gate.ARCH).read_text()
+    assert "applied by the job that owns them" not in body
+    for path in ("gcp/queries/p7_schema.sql", "gcp/queries/magnitude_engine_schema.sql"):
+        assert "Apply via" in (REPO / path).read_text(), f"{path} no longer says how it is applied"
+    assert not (REPO / ".github/workflows/db-query.yml").exists(), \
+        "db-query.yml is back; 05-a says it was deleted"
+    assert "strat_data_builder.py" in body, "the one just-in-time exception should be named"
