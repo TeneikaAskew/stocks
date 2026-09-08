@@ -597,3 +597,26 @@ def test_endpoint_degrades_nan_levels_to_unavailable(monkeypatch):
     assert levels["status"] == "UNAVAILABLE"
     assert "current_price" not in levels  # no fabricated/NaN number survives
     assert levels["reason"]
+
+
+def test_level_map_propagates_a_backend_outage(monkeypatch):
+    """REAL _build_movement_level_map: a refused connection is re-raised for the
+    route guard; a data gap is still a None (Codex P1 on #999)."""
+    import psycopg2
+    from lib.data_loader import DataLoader
+
+    refused = 'connection to server at "127.0.0.1", port 5432 failed: Connection refused'
+
+    def down(self, *_a, **_k):
+        raise psycopg2.OperationalError(refused)
+
+    monkeypatch.setattr(DataLoader, "load_daily", down)
+    with pytest.raises(psycopg2.OperationalError):
+        dashboard_router._build_movement_level_map("SPY")
+
+    def gap(self, *_a, **_k):
+        raise ValueError("no frame")
+
+    monkeypatch.setattr(DataLoader, "load_daily", gap)
+    assert dashboard_router._build_movement_level_map("SPY") is None
+

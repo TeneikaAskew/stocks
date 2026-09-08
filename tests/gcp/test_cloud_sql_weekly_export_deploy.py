@@ -54,3 +54,26 @@ def test_cloud_sql_weekly_export_timeout_has_headroom_over_observed_runtime():
         f"task-timeout={timeout}s gives less than 4x headroom over the "
         f"observed ~{observed_worst_case_seconds}s worst-case runtime"
     )
+
+
+def _deploy_magnitude_engine_body() -> str:
+    m = re.search(r"^deploy_magnitude_engine\(\) \{\n(.*?)^\}", DEPLOY_SH, re.S | re.M)
+    assert m is not None, "deploy_magnitude_engine function not found in deploy.sh"
+    return m.group(1)
+
+
+def test_magnitude_engine_deploy_carries_the_persist_and_class_weight_env():
+    """Both `--set-env-vars` lines (create and update) must carry the two
+    variables an execution depends on. On 2026-09-08 they lived only on the
+    live job, added by hand; a redeploy from this function replaced the env
+    set and the next execution (magnitude-engine-2wv9z) trained every cell
+    and persisted nothing: no promotion gate, LATEST untouched."""
+    body = _deploy_magnitude_engine_body()
+    env_lines = [ln for ln in body.splitlines()
+                 if "--set-env-vars" in ln and not ln.lstrip().startswith("#")]
+    assert len(env_lines) == 2, env_lines
+    for ln in env_lines:
+        assert "${mag_env}" in ln, ln
+    assert re.search(r'mag_env=".*MAG_PERSIST_PRODUCTION_MODEL=true', body)
+    assert re.search(r'mag_env=".*MAG_CLASS_WEIGHT_POWER=0\.75', body)
+    assert re.search(r'mag_env=".*MAG_PLAN=\$\{plan_default\}', body)

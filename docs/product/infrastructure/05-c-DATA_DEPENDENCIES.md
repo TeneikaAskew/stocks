@@ -201,7 +201,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 <!-- inventory:writes:start -->
 ### `admin_refresh_leases`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1275](../../../platform/api/routers/admin.py#L1275), [1278](../../../platform/api/routers/admin.py#L1278), [1301](../../../platform/api/routers/admin.py#L1301)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1452](../../../platform/api/routers/admin.py#L1452), [1455](../../../platform/api/routers/admin.py#L1455), [1478](../../../platform/api/routers/admin.py#L1478)
 
 ### `archive_yahoo_earnings_options_snapshots`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -294,7 +294,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `insight_reports`
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [285](../../../gcp/insight_pipeline_job.py#L285), [302](../../../gcp/insight_pipeline_job.py#L302), [333](../../../gcp/insight_pipeline_job.py#L333)
-- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [349](../../../platform/api/routers/insights.py#L349)
+- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [395](../../../platform/api/routers/insights.py#L395)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [142](../../../scripts/backfill_history_tables.py#L142)
 - [`scripts/generate_historical_report.py`](../../../scripts/generate_historical_report.py) — line [8](../../../scripts/generate_historical_report.py#L8), [67](../../../scripts/generate_historical_report.py#L67)
 
@@ -306,7 +306,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [98](../../../gcp/auto_refresh_top_n.py#L98)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [377](../../../gcp/discord_interactions/main.py#L377)
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [177](../../../gcp/insight_pipeline_job.py#L177), [200](../../../gcp/insight_pipeline_job.py#L200), [206](../../../gcp/insight_pipeline_job.py#L206), [215](../../../gcp/insight_pipeline_job.py#L215)
-- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [262](../../../platform/api/routers/insights.py#L262), [315](../../../platform/api/routers/insights.py#L315), [321](../../../platform/api/routers/insights.py#L321), [330](../../../platform/api/routers/insights.py#L330)
+- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [308](../../../platform/api/routers/insights.py#L308), [361](../../../platform/api/routers/insights.py#L361), [367](../../../platform/api/routers/insights.py#L367), [376](../../../platform/api/routers/insights.py#L376)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [144](../../../scripts/backfill_history_tables.py#L144)
 
 ### `intraday_flow_15m`
@@ -437,7 +437,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/profile.py`](../../../platform/api/routers/profile.py) — line [187](../../../platform/api/routers/profile.py#L187)
 
 ### `user_roles`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [932](../../../platform/api/routers/admin.py#L932), [945](../../../platform/api/routers/admin.py#L945)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1109](../../../platform/api/routers/admin.py#L1109), [1122](../../../platform/api/routers/admin.py#L1122)
 
 ### `user_style_results`
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [845](../../../platform/api/routers/backtest.py#L845)
@@ -592,14 +592,14 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/strat_dir_walk_forward_extended.py`](../../../gcp/research/strat_engine/strat_dir_walk_forward_extended.py) — line [10](../../../gcp/research/strat_engine/strat_dir_walk_forward_extended.py#L10)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [113](../../../lib/agents/ranker/signals.py#L113), [117](../../../lib/agents/ranker/signals.py#L117)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [522](../../../lib/agents/summarizers.py#L522), [527](../../../lib/agents/summarizers.py#L527), [601](../../../lib/agents/summarizers.py#L601), [649](../../../lib/agents/summarizers.py#L649), [655](../../../lib/agents/summarizers.py#L655), [676](../../../lib/agents/summarizers.py#L676), [682](../../../lib/agents/summarizers.py#L682)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [554](../../../lib/data_loader.py#L554), [597](../../../lib/data_loader.py#L597), [602](../../../lib/data_loader.py#L602)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [568](../../../lib/data_loader.py#L568), [611](../../../lib/data_loader.py#L611), [616](../../../lib/data_loader.py#L616)
 - [`lib/features/experimental/options_derived.py`](../../../lib/features/experimental/options_derived.py) — line [3](../../../lib/features/experimental/options_derived.py#L3), [67](../../../lib/features/experimental/options_derived.py#L67), [115](../../../lib/features/experimental/options_derived.py#L115)
 - [`lib/features/flow_direction.py`](../../../lib/features/flow_direction.py) — line [4](../../../lib/features/flow_direction.py#L4), [408](../../../lib/features/flow_direction.py#L408), [445](../../../lib/features/flow_direction.py#L445)
 - [`lib/options_exec_backtest/__init__.py`](../../../lib/options_exec_backtest/__init__.py) — line [12](../../../lib/options_exec_backtest/__init__.py#L12)
 - [`lib/options_exec_backtest/iv_lookup.py`](../../../lib/options_exec_backtest/iv_lookup.py) — line [11](../../../lib/options_exec_backtest/iv_lookup.py#L11), [127](../../../lib/options_exec_backtest/iv_lookup.py#L127)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [165](../../../lib/options_intraday.py#L165)
 - [`platform/api/routers/grid.py`](../../../platform/api/routers/grid.py) — line [14](../../../platform/api/routers/grid.py#L14), [241](../../../platform/api/routers/grid.py#L241), [247](../../../platform/api/routers/grid.py#L247), [271](../../../platform/api/routers/grid.py#L271), [277](../../../platform/api/routers/grid.py#L277), [318](../../../platform/api/routers/grid.py#L318), [324](../../../platform/api/routers/grid.py#L324), [750](../../../platform/api/routers/grid.py#L750) (+1 more)
-- [`platform/api/routers/options.py`](../../../platform/api/routers/options.py) — line [335](../../../platform/api/routers/options.py#L335), [411](../../../platform/api/routers/options.py#L411), [417](../../../platform/api/routers/options.py#L417), [514](../../../platform/api/routers/options.py#L514), [520](../../../platform/api/routers/options.py#L520), [533](../../../platform/api/routers/options.py#L533), [765](../../../platform/api/routers/options.py#L765)
+- [`platform/api/routers/options.py`](../../../platform/api/routers/options.py) — line [349](../../../platform/api/routers/options.py#L349), [451](../../../platform/api/routers/options.py#L451), [457](../../../platform/api/routers/options.py#L457), [567](../../../platform/api/routers/options.py#L567), [573](../../../platform/api/routers/options.py#L573), [586](../../../platform/api/routers/options.py#L586), [818](../../../platform/api/routers/options.py#L818)
 - [`scripts/analysis/calibrate_intraday_theta.py`](../../../scripts/analysis/calibrate_intraday_theta.py) — line [13](../../../scripts/analysis/calibrate_intraday_theta.py#L13), [52](../../../scripts/analysis/calibrate_intraday_theta.py#L52)
 - [`scripts/analysis/options_pnl_translation.py`](../../../scripts/analysis/options_pnl_translation.py) — line [258](../../../scripts/analysis/options_pnl_translation.py#L258), [359](../../../scripts/analysis/options_pnl_translation.py#L359)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [981](../../../scripts/audit_data_freshness.py#L981)
@@ -635,7 +635,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/insight_discord_push.py`](../../../gcp/insight_discord_push.py) — line [86](../../../gcp/insight_discord_push.py#L86), [97](../../../gcp/insight_discord_push.py#L97), [241](../../../gcp/insight_discord_push.py#L241), [415](../../../gcp/insight_discord_push.py#L415), [663](../../../gcp/insight_discord_push.py#L663)
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [357](../../../gcp/insight_pipeline_job.py#L357)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [284](../../../lib/strategies/insight_cache.py#L284)
-- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [163](../../../platform/api/routers/insights.py#L163), [175](../../../platform/api/routers/insights.py#L175), [196](../../../platform/api/routers/insights.py#L196), [232](../../../platform/api/routers/insights.py#L232)
+- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [209](../../../platform/api/routers/insights.py#L209), [221](../../../platform/api/routers/insights.py#L221), [242](../../../platform/api/routers/insights.py#L242), [278](../../../platform/api/routers/insights.py#L278)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [247](../../../scripts/backfill_and_replay.py#L247)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [3](../../../scripts/backfill_history_tables.py#L3), [154](../../../scripts/backfill_history_tables.py#L154), [156](../../../scripts/backfill_history_tables.py#L156), [188](../../../scripts/backfill_history_tables.py#L188), [189](../../../scripts/backfill_history_tables.py#L189)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [365](../../../scripts/validation/validate_brief_accuracy.py#L365)
@@ -646,7 +646,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `insight_runs`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [400](../../../gcp/discord_interactions/main.py#L400)
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [156](../../../gcp/insight_pipeline_job.py#L156)
-- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [281](../../../platform/api/routers/insights.py#L281)
+- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [327](../../../platform/api/routers/insights.py#L327)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [174](../../../scripts/backfill_history_tables.py#L174)
 
 ### `intraday_flow_15m`
@@ -659,7 +659,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/intraday_gex.py`](../../../lib/features/intraday_gex.py) — line [226](../../../lib/features/intraday_gex.py#L226), [227](../../../lib/features/intraday_gex.py#L227), [231](../../../lib/features/intraday_gex.py#L231), [226](../../../lib/features/intraday_gex.py#L226)
 
 ### `job_runs`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1113](../../../platform/api/routers/admin.py#L1113), [1114](../../../platform/api/routers/admin.py#L1114)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1290](../../../platform/api/routers/admin.py#L1290), [1291](../../../platform/api/routers/admin.py#L1291)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1174](../../../scripts/audit_data_freshness.py#L1174), [1175](../../../scripts/audit_data_freshness.py#L1175), [1186](../../../scripts/audit_data_freshness.py#L1186)
 
 ### `journal_entries`
@@ -690,14 +690,14 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [56](../../../lib/agents/ranker/signals.py#L56), [134](../../../lib/agents/ranker/signals.py#L134), [310](../../../lib/agents/ranker/signals.py#L310), [357](../../../lib/agents/ranker/signals.py#L357), [360](../../../lib/agents/ranker/signals.py#L360)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [184](../../../lib/agents/summarizers.py#L184), [204](../../../lib/agents/summarizers.py#L204), [332](../../../lib/agents/summarizers.py#L332), [940](../../../lib/agents/summarizers.py#L940), [1165](../../../lib/agents/summarizers.py#L1165)
 - [`lib/agents/trade_planner.py`](../../../lib/agents/trade_planner.py) — line [88](../../../lib/agents/trade_planner.py#L88), [96](../../../lib/agents/trade_planner.py#L96)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [172](../../../lib/data_loader.py#L172), [376](../../../lib/data_loader.py#L376), [402](../../../lib/data_loader.py#L402), [564](../../../lib/data_loader.py#L564), [579](../../../lib/data_loader.py#L579)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [186](../../../lib/data_loader.py#L186), [390](../../../lib/data_loader.py#L390), [416](../../../lib/data_loader.py#L416), [578](../../../lib/data_loader.py#L578), [593](../../../lib/data_loader.py#L593)
 - [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [594](../../../lib/earnings_reactions.py#L594)
 - [`lib/features/experimental/cross_asset.py`](../../../lib/features/experimental/cross_asset.py) — line [45](../../../lib/features/experimental/cross_asset.py#L45)
 - [`lib/features/experimental/vol_regime.py`](../../../lib/features/experimental/vol_regime.py) — line [52](../../../lib/features/experimental/vol_regime.py#L52)
 - [`lib/strategies/gamma_proximity.py`](../../../lib/strategies/gamma_proximity.py) — line [42](../../../lib/strategies/gamma_proximity.py#L42)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [1040](../../../platform/api/main.py#L1040), [1115](../../../platform/api/main.py#L1115), [1259](../../../platform/api/main.py#L1259), [1416](../../../platform/api/main.py#L1416), [1429](../../../platform/api/main.py#L1429), [1431](../../../platform/api/main.py#L1431)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [633](../../../platform/api/routers/catalysts.py#L633), [743](../../../platform/api/routers/catalysts.py#L743)
-- [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [88](../../../platform/api/routers/dashboard.py#L88), [149](../../../platform/api/routers/dashboard.py#L149), [278](../../../platform/api/routers/dashboard.py#L278)
+- [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [89](../../../platform/api/routers/dashboard.py#L89), [150](../../../platform/api/routers/dashboard.py#L150), [279](../../../platform/api/routers/dashboard.py#L279)
 - [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [407](../../../platform/api/routers/live.py#L407)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [966](../../../scripts/audit_data_freshness.py#L966), [973](../../../scripts/audit_data_freshness.py#L973), [1097](../../../scripts/audit_data_freshness.py#L1097), [1105](../../../scripts/audit_data_freshness.py#L1105)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [240](../../../scripts/backfill_and_replay.py#L240)
@@ -718,7 +718,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [339](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L339)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [383](../../../gcp/signal_monitor.py#L383), [413](../../../gcp/signal_monitor.py#L413), [1950](../../../gcp/signal_monitor.py#L1950)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [18](../../../gcp/signal_monitor_eod_resolver.py#L18)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [172](../../../lib/data_loader.py#L172), [288](../../../lib/data_loader.py#L288), [301](../../../lib/data_loader.py#L301)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [186](../../../lib/data_loader.py#L186), [302](../../../lib/data_loader.py#L302), [315](../../../lib/data_loader.py#L315)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [124](../../../lib/features/intraday_flow.py#L124)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [253](../../../lib/options_intraday.py#L253), [580](../../../lib/options_intraday.py#L580), [591](../../../lib/options_intraday.py#L591)
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [622](../../../lib/strat_levels.py#L622)
@@ -777,9 +777,9 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [342](../../../gcp/discord_interactions/main.py#L342), [345](../../../gcp/discord_interactions/main.py#L345)
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [7](../../../gcp/premarket_brief.py#L7), [3303](../../../gcp/premarket_brief.py#L3303), [3348](../../../gcp/premarket_brief.py#L3348)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [320](../../../gcp/premarket_playbook_resolver.py#L320), [326](../../../gcp/premarket_playbook_resolver.py#L326), [503](../../../gcp/premarket_playbook_resolver.py#L503), [586](../../../gcp/premarket_playbook_resolver.py#L586)
-- [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [22](../../../lib/movement_statement.py#L22), [321](../../../lib/movement_statement.py#L321), [327](../../../lib/movement_statement.py#L327), [391](../../../lib/movement_statement.py#L391)
+- [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [22](../../../lib/movement_statement.py#L22), [336](../../../lib/movement_statement.py#L336), [342](../../../lib/movement_statement.py#L342), [408](../../../lib/movement_statement.py#L408)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83), [156](../../../lib/strategies/brief_bias.py#L156)
-- [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [88](../../../platform/api/routers/dashboard.py#L88), [108](../../../platform/api/routers/dashboard.py#L108), [116](../../../platform/api/routers/dashboard.py#L116)
+- [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [89](../../../platform/api/routers/dashboard.py#L89), [109](../../../platform/api/routers/dashboard.py#L109), [117](../../../platform/api/routers/dashboard.py#L117)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [3](../../../scripts/backfill_history_tables.py#L3), [104](../../../scripts/backfill_history_tables.py#L104), [106](../../../scripts/backfill_history_tables.py#L106), [127](../../../scripts/backfill_history_tables.py#L127), [128](../../../scripts/backfill_history_tables.py#L128)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [336](../../../scripts/validation/validate_brief_accuracy.py#L336)
 
@@ -857,7 +857,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [142](../../../gcp/trade_logger.py#L142), [163](../../../gcp/trade_logger.py#L163), [172](../../../gcp/trade_logger.py#L172), [204](../../../gcp/trade_logger.py#L204)
 - [`gcp/weekend_review.py`](../../../gcp/weekend_review.py) — line [26](../../../gcp/weekend_review.py#L26)
 - [`lib/backtest.py`](../../../lib/backtest.py) — line [11](../../../lib/backtest.py#L11), [326](../../../lib/backtest.py#L326), [357](../../../lib/backtest.py#L357), [358](../../../lib/backtest.py#L358)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [174](../../../lib/data_loader.py#L174), [597](../../../lib/data_loader.py#L597), [600](../../../lib/data_loader.py#L600), [627](../../../lib/data_loader.py#L627)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [188](../../../lib/data_loader.py#L188), [611](../../../lib/data_loader.py#L611), [614](../../../lib/data_loader.py#L614), [641](../../../lib/data_loader.py#L641)
 - [`lib/insights.py`](../../../lib/insights.py) — line [39](../../../lib/insights.py#L39), [854](../../../lib/insights.py#L854)
 - [`lib/style_miner.py`](../../../lib/style_miner.py) — line [80](../../../lib/style_miner.py#L80)
 - [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) — line [131](../../../platform/api/routers/analytics.py#L131), [146](../../../platform/api/routers/analytics.py#L146), [154](../../../platform/api/routers/analytics.py#L154)
@@ -876,7 +876,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `user_roles`
 - [`platform/api/auth.py`](../../../platform/api/auth.py) — line [230](../../../platform/api/auth.py#L230), [275](../../../platform/api/auth.py#L275)
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [783](../../../platform/api/routers/admin.py#L783), [808](../../../platform/api/routers/admin.py#L808), [809](../../../platform/api/routers/admin.py#L809)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [960](../../../platform/api/routers/admin.py#L960), [985](../../../platform/api/routers/admin.py#L985), [986](../../../platform/api/routers/admin.py#L986)
 
 ### `user_style_results`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
@@ -896,7 +896,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [739](../../../gcp/fetchers/fetch_market_data.py#L739)
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [478](../../../gcp/insight_pipeline_job.py#L478)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [236](../../../lib/agents/ranker/candidates.py#L236)
-- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [594](../../../platform/api/routers/insights.py#L594)
+- [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [640](../../../platform/api/routers/insights.py#L640)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [223](../../../scripts/analysis/per_ticker_calibration.py#L223), [227](../../../scripts/analysis/per_ticker_calibration.py#L227), [890](../../../scripts/analysis/per_ticker_calibration.py#L890)
 - [`scripts/run_historical_signals.py`](../../../scripts/run_historical_signals.py) — line [94](../../../scripts/run_historical_signals.py#L94), [130](../../../scripts/run_historical_signals.py#L130)
 <!-- inventory:reads:end -->

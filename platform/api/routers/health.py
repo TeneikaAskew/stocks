@@ -136,6 +136,18 @@ def _run_audit_and_cache(now: float) -> dict:
         raise HTTPException(status_code=500, detail="Freshness audit module not available")
     except Exception as exc:
         log.error("Freshness audit failed: %s", exc)
+        # Which failure it was decides the status. An unreachable Cloud SQL is
+        # EXTERNAL (CLAUDE.md 3.7): explicit, renderable, retryable — a 503.
+        # Anything else is a defect in the audit and must stay a loud 500,
+        # because a 503 tells an operator to retry code that will never
+        # succeed. table_exists() answering False for every error used to hide
+        # the outage as a fabricated "table missing" (audit P2-#6, closed on
+        # #1022); with it raising, this is where the two must be told apart.
+        from lib.infra_errors import is_infrastructure_error  # noqa: PLC0415
+        if is_infrastructure_error(exc):
+            raise HTTPException(
+                status_code=503,
+                detail=f"Freshness audit unavailable: {exc}") from exc
         raise HTTPException(status_code=500, detail=f"Freshness audit failed: {exc}")
 
     response = report.to_dict()

@@ -1245,6 +1245,39 @@ class TestHealthFreshnessAPI:
         assert r.status_code == 500
         assert "DB down" in r.json()["detail"]
 
+    def test_freshness_503_when_the_database_is_unreachable(self, client, monkeypatch):
+        """An unreachable Cloud SQL is EXTERNAL (CLAUDE.md 3.7): the caller
+        gets an explicit, retryable 503, not a 500.
+
+        `table_exists()` used to answer False for any error, so a connection
+        failure read as "the table is missing" and the audit reported a
+        fabricated status (audit P2-#6, closed on #1022). With it raising,
+        every failure reached this handler as a 500 — including the outage,
+        where a 500 tells an operator to look for a bug in code that is fine.
+        `lib/infra_errors.is_infrastructure_error` (#999) is what tells the
+        two apart, so the outage answers 503 and a real defect still 500s."""
+        import psycopg2
+        import sqlalchemy.exc
+
+        from api.routers import health as health_module
+        self._reset_cache()
+
+        import audit_data_freshness as audit_mod
+        outage = sqlalchemy.exc.OperationalError(
+            "SELECT 1", {},
+            psycopg2.OperationalError(
+                'connection to server at "127.0.0.1", port 5432 failed: '
+                "Connection refused"),
+        )
+        monkeypatch.setattr(
+            audit_mod, "audit_all",
+            lambda: (_ for _ in ()).throw(outage),
+        )
+
+        r = client.get("/api/health/freshness")
+        assert r.status_code == 503, r.text
+        assert "unavailable" in r.json()["detail"].lower()
+
     def test_freshness_cache_does_not_persist_500(self, client, monkeypatch):
         """An exception from `audit_all` must NOT poison the cache —
         the next request after recovery should re-run the audit."""
