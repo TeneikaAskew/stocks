@@ -323,12 +323,19 @@ body:
           $ files=$(git -C "$root" ls-files --cached --others --exclude-standard \
                       -- . ':!*.disabled' ':!archive/' ':!gcp/research/_archive/') \
               || echo "listing FAILED — assert nothing"
+          # -/_ NORMALISED, because a resource name and its file need not
+          # use the same separator: the job is premarket-brief and the module
+          # is gcp/premarket_brief.py, which carries no hyphenated spelling
+          # for the content searches either. absent_everywhere does this;
+          # the raw <name> here would report a clean miss with the module
+          # still present.
+          $ pat=$(printf '%s' "<name>" | sed 's/[-_]/[-_]/g')
           $ printf '%s\n' "$files" |
               while IFS= read -r p; do
                 test -n "$p" || continue
                 test -e "$root/$p" || test -L "$root/$p" || continue
                 printf '%s\n' "$p"; done |
-              grep -E "<name>"
+              grep -E "$pat"
           (no output, and only after both commands above succeeded)
 
         `/resolve-issue`'s `absent_everywhere` runs exactly that, alongside the

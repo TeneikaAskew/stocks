@@ -1263,9 +1263,22 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # in a way worth propagating — the listing above is the fallible step and it
   # is checked — but an empty $files would otherwise feed one empty line
   # through, and `test -e "$root/"` is TRUE for the root directory.
+  # AND THE APPROVAL APPLIES HERE, for the same reason it was widened in the
+  # content scopes: an ordinary word appears in unrelated PATHS too. Measured
+  # on `react` after the content hits were cleared — nine tracked paths still
+  # matched (lib/earnings_reactions.py, gcp/earnings_reactions_brief.py, their
+  # tests, a .sql), so the check still had no passing state. Naming a file is
+  # the same act on either side: you looked, and it is not the surface. Every
+  # one of those nine also mentions the symbol in its contents, so they satisfy
+  # the must-mention validation and are approvable — checked, all nine rc=0.
+  local ap
   files=$(printf '%s\n' "$files" | while IFS= read -r p; do
             test -n "$p" || continue
             test -e "$root/$p" || test -L "$root/$p" || continue
+            for ap in "${REVIEWED[@]}"; do
+              test "$p" != "$ap" || { p=; break; }
+            done
+            test -n "$p" || continue
             printf '%s\n' "$p"; done)
   # NOT `git ls-files | grep`: grep would supply the pipeline's status, so a
   # failed listing feeds it empty input, it returns 1, and "no leftovers" is
@@ -1328,6 +1341,14 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     # PRESERVE_STOCKS above for why that is measured rather than an oversight.
     sfiles=$(git ls-tree -r --name-only "$REV") \
       || { echo "solyra: could not list files at ${REV:0:12}"; exit 2; }
+    # The solyra approval filters the solyra path list, same as the stocks half.
+    sfiles=$(printf '%s\n' "$sfiles" | while IFS= read -r p; do
+               test -n "$p" || continue
+               for ap in "${REVIEWED_SOLYRA[@]}"; do
+                 test "$p" != "$ap" || { p=; break; }
+               done
+               test -n "$p" || continue
+               printf '%s\n' "$p"; done)
     # -E here too. The index-versus-working-tree correction the stocks half
     # needs does NOT apply over here: ls-tree reads a committed revision, where
     # there is no unstaged deletion and no untracked file to miss.
@@ -1340,12 +1361,21 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     if [ -n "$sleft" ]; then
       echo "solyra paths still containing '$sym' at ${REV:0:12}:"
       printf '  %s\n' $sleft
-      exit 1
+      # 4, NOT 1. `consumed()` uses rc=1 for "nothing found", and the outer
+      # check below ACCEPTS 1 as the passing answer — so exiting 1 here printed
+      # the warning above and then made the whole helper SUCCEED. Measured on a
+      # symbol whose solyra path survives and which stocks does not consume:
+      # the paths were listed and absent_everywhere still returned 0. A false
+      # certification, from the round-28 definition check, in the one place
+      # where the subshell's status is read as consumed()'s.
+      exit 4
     fi
     EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
     if consumed "$sym" "${REVIEWED_SOLYRA[@]}"; then exit 0; else exit $?; fi )
   then rc=0; else rc=$?; fi
-  test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
+  test $rc -eq 1 \
+    || { echo "solyra: rc=$rc (0=consumed 2=error 3=see above 4=a path survives)"
+         return 1; }
 }
 
 # TWO names, not one. A Cloud Scheduler trigger and the Cloud Run Job it fires
@@ -2383,7 +2413,14 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      Two things to do about it, neither of which is a fix:
 
      1. **Do not run this concurrently with another deploy.** Check before
-        starting — `gcloud builds list --ongoing --project="$PROJECT_ID"` — and
+        starting — `gcloud builds list --ongoing --project="${PROJECT_ID:-adept-mountain-474619-d4}"` — and
+        # RESOLVE THE PROJECT IN *THIS* SHELL. Passing --project="$PROJECT_ID"
+        # was the round-28 fix for the probe taking the ambient project, and it
+        # named a variable that gcp/deploy.sh sets at :25 — inside the child
+        # script, which has not run yet and cannot populate the caller anyway.
+        # Measured: PROJECT_ID is unset in a fresh shell, so the flag expanded
+        # to `--project=` (or aborted under set -u). Same literal default the
+        # deploy uses, overridable by exporting PROJECT_ID first.
         say in the status comment that you did. **`--project` is not optional
         here**: `gcp/deploy.sh:25` takes `PROJECT_ID` from the environment or
         the active gcloud config, so a probe without it can list a different
@@ -2403,7 +2440,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
         build finishing and your capture, you capture *their* digest, the job
         update resolves the same tag to the same wrong digest, and the equality
         check passes. It is a self-consistency check wearing the clothes of a
-        provenance check. `gcloud builds list --ongoing --project="$PROJECT_ID"`
+        provenance check. `gcloud builds list --ongoing --project="${PROJECT_ID:-adept-mountain-474619-d4}"`
         beforehand is a snapshot, not a lock, and narrows the window without
         closing it.
 
