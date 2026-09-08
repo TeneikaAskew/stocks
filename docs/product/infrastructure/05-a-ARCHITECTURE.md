@@ -106,7 +106,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 | Service | Role | Live 2026-09-07 |
 |---|---|---|
-| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and appear in no schema file; `gcp/schema.sql` declares 70 (67 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
+| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and are not declared in `gcp/schema.sql`; that file declares 70 (67 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
 | Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 68 declared in [`gcp/deploy.sh`](../../../gcp/deploy.sh) |
 | Cloud Run Services | 4 long-lived HTTP services | `solyra-api-prod`, `solyra-api-staging`, `discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4), `failure-notifier` |
 | Cloud Scheduler | cron triggers, all `America/New_York` | 65 entries, none paused (`signal-quality-report-hourly` deleted 2026-09-07) |
@@ -138,7 +138,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 ## 5. Schema catalog
 
-`gcp/schema.sql` declares **70 relations** (67 tables, 2 materialized views, 1 view); the live database holds **95**, of which **26 runtime relations** are created by research and analytics jobs for themselves and appear in no schema file (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). The two sets can differ the other way as well — a relation declared here but not yet applied to the database — and §5.2's rendered table names any such relation rather than this sentence restating it. The declared set, with definition lines:
+`gcp/schema.sql` declares **70 relations** (67 tables, 2 materialized views, 1 view); the live database holds **95**, of which **26 runtime relations** are created by research and analytics jobs for themselves and are not declared in this file (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). Absent from `gcp/schema.sql` does not mean absent from the repository: several carry dedicated DDL under `gcp/queries/` — `magnitude_engine_schema.sql` for `market_data_indicators*` and `market_data_cross_asset`, `p7_schema.sql` for `strat_features_*`, `p7_vex_cache.sql` for `daily_vex` — applied by the job that owns them rather than by `apply-schema-migrations`. The two sets can differ the other way as well — a relation declared here but not yet applied to the database — and §5.2's rendered table names any such relation rather than this sentence restating it. The declared set, with definition lines:
 
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |

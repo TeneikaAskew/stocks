@@ -1027,10 +1027,12 @@ def test_both_copies_of_the_relation_breakdown_are_checked(live, repo, tmp_path)
     a = root / gate.ARCH
     total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
     tables = len(repo["tables"])
-    before = f"`gcp/schema.sql` declares {total} ({tables} tables,"
+    before = f"that file declares {total} ({tables} tables,"
     assert before in a.read_text(), "the §3 row no longer has the shape this test breaks"
+    assert "`gcp/schema.sql`" in [l for l in a.read_text().split("\n") if before in l][0], \
+        "the §3 row no longer names gcp/schema.sql, so RELATION_ANCHOR would skip it"
     a.write_text(a.read_text().replace(
-        before, f"`gcp/schema.sql` declares {total - 1} ({tables - 1} tables,"))
+        before, f"that file declares {total - 1} ({tables - 1} tables,"))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any(f"claims {total - 1} declared relations" in f for f in findings), findings
     assert any(f"claims {tables - 1} tables" in f for f in findings), findings
@@ -1470,3 +1472,77 @@ def test_each_asof_label_is_required_in_its_own_location(tmp_path):
                  + f"\n\nA new note: Live {day} state was read for the diagram.\n")
     findings = gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"})
     assert any("§3's table header carries no as-of label" in f for f in findings), findings
+
+
+def test_a_rule_inside_a_fence_is_code_not_a_rule(tmp_path):
+    """Three dashes at the start of a fenced line is a YAML document marker, a
+    unified-diff header or an ASCII border — all rendered as code, none of them
+    a thematic break. `_prose_lines` deliberately KEEPS fences so an elided
+    Mermaid diagram is still visible to the elision gate, so this gate has to
+    track fence state itself. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Prose.\n\n```yaml\n--- # production\n```\n\n```diff\n--- a/gcp/deploy.sh\n```\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+    # the fence has to CLOSE the exemption, not open one for the rest of the file
+    doc.write_text("```yaml\n--- # production\n```\n\n--- welded onto prose\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1, out
+    assert "welded onto prose" in out[0]
+
+
+def test_a_subsystem_schema_count_is_not_measured_against_the_whole_repo(tmp_path, repo):
+    """`relations?` is optional in the total pattern, so a sentence about a
+    SUBSYSTEM's DDL — `p7_schema.sql declares 3 (2 tables, 1 view)` — matched
+    and was compared against the repository-wide totals, failing a refresh
+    whose numbers were right. The claim only counts on a line naming the
+    canonical file. (Codex, PR #1064.)"""
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    total = len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"])
+    breakdown = (f"{len(repo['tables'])} tables, "
+                 f"{len(repo['materialized_views'])} materialized views, "
+                 f"{len(repo['views'])} view")
+    (tmp_path / gate.DEPS).write_text("no relation claim here\n")
+    (tmp_path / gate.ARCH).write_text(
+        "`gcp/queries/p7_schema.sql` declares 3 (2 tables, 1 view) for the strat engine.\n\n"
+        f"`gcp/schema.sql` declares **{total} relations** ({breakdown}).\n")
+    assert gate.gate_derived_numbers(tmp_path, repo, None) == []
+    # and the anchored sentence is still measured
+    (tmp_path / gate.ARCH).write_text(
+        f"`gcp/schema.sql` declares **{total + 1} relations** ({breakdown}).\n")
+    out = gate.gate_derived_numbers(tmp_path, repo, None)
+    assert len(out) == 1, out
+    assert f"claims {total + 1} declared relations" in out[0]
+
+
+def test_dropping_the_schema_filename_fails_loudly_rather_than_open(tmp_path, repo):
+    """Narrowing the scan to lines naming `gcp/schema.sql` gives a reword a way
+    to fail OPEN. 05-a has stated this total in every version it has had, so
+    its absence is itself the finding. (Codex, PR #1064.)"""
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / gate.DEPS).write_text("no relation claim here\n")
+    (tmp_path / gate.ARCH).write_text(
+        "The schema declares **70 relations** (67 tables, 2 materialized views, 1 view).\n")
+    out = gate.gate_derived_numbers(tmp_path, repo, None)
+    assert len(out) == 1, out
+    assert "no sentence states how many relations" in out[0]
+    # 05-c states it in no version, so it is not required there
+    assert gate.DEPS not in "".join(out)
+
+
+def test_the_runtime_relations_are_not_claimed_to_have_no_schema_file(tmp_path):
+    """Several of the relations 05-a lists as runtime-created DO carry DDL, in
+    dedicated files under `gcp/queries/`; they are absent from `gcp/schema.sql`,
+    which is a narrower claim. Saying they appear in no schema file gave the
+    reader wrong provenance. (Codex, PR #1064.)"""
+    body = (REPO / gate.ARCH).read_text()
+    assert "in no schema file" not in body, \
+        "05-a claims a runtime relation has no schema file; several have one under gcp/queries/"
+    for name, path in (("market_data_cross_asset", "gcp/queries/magnitude_engine_schema.sql"),
+                       ("strat_features", "gcp/queries/p7_schema.sql"),
+                       ("daily_vex", "gcp/queries/p7_vex_cache.sql")):
+        assert f"CREATE TABLE" in (REPO / path).read_text(), path
+        assert name in (REPO / path).read_text(), f"{name} is not declared in {path}"
+    assert "gcp/queries/" in body, "05-a should say where the runtime relations' DDL does live"

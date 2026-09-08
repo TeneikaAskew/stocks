@@ -528,7 +528,21 @@ def gate_inline_rule(root: pathlib.Path) -> list[str]:
         f = root / doc
         if not f.exists():
             continue
+        fenced = False
         for i, line in enumerate(_prose_lines(f.read_text()), 1):
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                continue
+            if fenced:
+                # Inside a fence `---` is not a thematic rule and never was:
+                # a YAML document marker (`--- # production`), a unified diff
+                # header (`--- a/gcp/deploy.sh`) and an ASCII table border all
+                # begin a line with three dashes and all render as code. The
+                # other two gates deliberately KEEP fences -- an elided Mermaid
+                # diagram is damage -- but this one is asking a question about
+                # markdown rendering, which does not apply in there.
+                # (Codex, PR #1064.)
+                continue
             if INLINE_RULE.match(line):
                 out.append(f"{doc}: a horizontal rule has text on the same line "
                            f"(prose line {i}): {line.strip()[:80]!r} — a `replace` swallowed "
@@ -950,6 +964,14 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
 #   §3  `gcp/schema.sql` declares 70 (67 tables, ...)
 RELATION_TOTAL = re.compile(r"declares \*{0,2}(\d+)(?: relations?)?\*{0,2}\s*(?=\()|"
                             r"\b(\d+) declared in `gcp/schema\.sql`")
+# ... but only on a line that is talking about that file. `relations?` is
+# optional in the first alternative, so a sentence describing a SUBSYSTEM's
+# schema -- "`p7_schema.sql` declares 3 (2 tables, 1 view)" -- matched and was
+# then compared against the repository-wide totals, failing a refresh whose
+# numbers were right. Both sentences 05-a writes name the canonical file on
+# their own line, so requiring it costs nothing and removes the whole class.
+# (Codex, PR #1064.)
+RELATION_ANCHOR = re.compile(r"`gcp/schema\.sql`")
 RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
 # What may sit between a declared total and the first of its parts: an opening
 # bracket, a dash, a colon.
@@ -1044,8 +1066,12 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
     total = sum(kinds.values())
     breakdown = ", ".join(f"{v} {k}" + ("s" if v != 1 else "") for k, v in kinds.items())
     for doc in (ARCH, DEPS):
+        matched = 0
         for i, line in enumerate(_prose_lines((root / doc).read_text()), 1):
+            if not RELATION_ANCHOR.search(line):
+                continue
             for m in RELATION_TOTAL.finditer(line):
+                matched += 1
                 claimed = m.group(1) or m.group(2)
                 if int(claimed) != total:
                     out.append(f"{doc}: claims {claimed} declared relations (prose line {i}); "
@@ -1078,6 +1104,16 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                         out.append(f"{doc}: the breakdown beside {claimed} relations sums to "
                                    f"{sum(n for n, _ in parts)} (prose line {i}); "
                                    f"gcp/schema.sql declares {total} ({breakdown})")
+        # Narrowing the scan to lines naming `gcp/schema.sql` gives a reword a
+        # way to fail OPEN: drop the filename from the sentence and 05-a's
+        # declared count stops being checked at all, silently. 05-a has stated
+        # this total in every version it has ever had, so its absence is
+        # itself the finding. Not required of 05-c, which states it in none.
+        if doc == ARCH and not matched:
+            out.append(f"{doc}: no sentence states how many relations "
+                       "`gcp/schema.sql` declares — the document has carried that "
+                       "claim in every version, so a rewrite that drops it has "
+                       "removed it from the gate rather than satisfied it")
 
     if live and live.get("db_tables"):
         declared, runtime = relation_counts(repo, live)
