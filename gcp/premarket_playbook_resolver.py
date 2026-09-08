@@ -49,20 +49,20 @@ Usage:
 """
 from __future__ import annotations
 
+from lib.eastern_time import ET
 import logging
 import os
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
-_ET = ZoneInfo('America/New_York')
+_ET = ET
 
 # Resolver version stamped on every row — bump when the math changes so
 # callers can detect "this row was resolved by an older version, re-run."

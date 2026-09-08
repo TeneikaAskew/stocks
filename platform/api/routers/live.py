@@ -18,7 +18,6 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from zoneinfo import ZoneInfo
 
 # Project root so we can import gcp.database alongside the other routers.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -31,6 +30,8 @@ try:
 except Exception:
     _CLOUD_SQL = False
     query_to_dataframe = None  # type: ignore[assignment]
+
+from lib.eastern_time import ET
 
 # Canonical indicator implementations — single source of truth.
 from lib.indicators import (
@@ -98,7 +99,7 @@ def _normalize_bar_time(t: str) -> str:
 AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
 AV_BASE = "https://www.alphavantage.co/query"
 
-ET_TZ = ZoneInfo("America/New_York")
+ET_TZ = ET
 
 # Regular market hours in Eastern Time
 MARKET_OPEN = time(9, 30, 0)

@@ -42,6 +42,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from lib.eastern_time import ET_NAME
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def compute_intragex_frame(engine, ticker: str, since: str,
         eod_dates = np.array(sorted(chains["snapshot_date"].unique()))
 
         spots = spots.copy()
-        spots["et_date"] = (spots["ts"].dt.tz_convert("America/New_York").dt.date)
+        spots["et_date"] = (spots["ts"].dt.tz_convert(ET_NAME).dt.date)
 
         n_days = 0
         for d, day_spots in spots.groupby("et_date"):

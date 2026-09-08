@@ -19,11 +19,6 @@ from datetime import datetime, time, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-# Cloud Run runs in UTC. All market-hours comparisons must be in ET so the
-# monitor doesn't think the market closes at noon ET (= 16:00 UTC, which
-# matches the configured market_close='16:00' under naive comparison).
-_ET = ZoneInfo("America/New_York")
-
 # RTH bounds for the session-extremes tracker (level-aware brief
 # alignment). Premarket/afterhours bars must not count as "the session
 # traded through the brief's stop" — the brief's plan is an RTH plan.
@@ -38,6 +33,12 @@ _RTH_CLOSE = time(16, 0)
 _FULL_POSITION_FRACTION = 1.0
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from lib.eastern_time import ET, ET_NAME
+
+# Cloud Run runs in UTC. All market-hours comparisons must be in ET so the
+# monitor doesn't think the market closes at noon ET (= 16:00 UTC, which
+# matches the configured market_close='16:00' under naive comparison).
+_ET = ET
 
 import pandas as pd
 import numpy as np
@@ -401,7 +402,7 @@ class SignalMonitor:
         replay parity is free.
 
         Bar `Time` tz convention differs by mode, mirroring `_now`:
-        live AV bars carry naive US/Eastern stamps (fetch_latest_bar),
+        live AV bars carry naive America/New_York stamps (fetch_latest_bar),
         replay bars from market_data_intraday carry naive UTC
         (replay_clock_ts is set per-bar before update_window). tz-aware
         stamps are converted outright.
@@ -1739,8 +1740,8 @@ class SignalMonitor:
             from sqlalchemy import text
             from gcp.database import get_engine
             sql = text(
-                "SELECT EXTRACT(hour FROM ts AT TIME ZONE 'America/New_York') * 60 "
-                "       + EXTRACT(minute FROM ts AT TIME ZONE 'America/New_York') AS mod, "
+                "SELECT EXTRACT(hour FROM ts AT TIME ZONE :tz) * 60 "
+                "       + EXTRACT(minute FROM ts AT TIME ZONE :tz) AS mod, "
                 "       percentile_cont(0.5) WITHIN GROUP (ORDER BY volume) AS med_vol "
                 "  FROM market_data_intraday "
                 " WHERE ticker = :t "
@@ -1751,6 +1752,7 @@ class SignalMonitor:
             with get_engine().connect() as conn:
                 rows = conn.execute(sql, {
                     't': ticker,
+                    'tz': ET_NAME,
                     'start': str(today - timedelta(days=self.monitor_cfg.rvol_baseline_lookback_days)),
                     'end': str(today),
                 }).fetchall()

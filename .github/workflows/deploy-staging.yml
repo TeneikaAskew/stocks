@@ -129,8 +129,23 @@ name: Deploy staging
 #                                    re-apply after a rebuild of the SA:
 #                                      for r in "gcr.io us" "trading us-east1"; do set -- $r
 #                                        gcloud artifacts repositories add-iam-policy-binding $1 --location=$2 \
+#                                          --project=adept-mountain-474619-d4 \
 #                                          --member=serviceAccount:arch-refresh-bot@adept-mountain-474619-d4.iam.gserviceaccount.com \
 #                                          --role=roles/artifactregistry.writer; done
+#   projects/adept-mountain-474619-d4/roles/artifactRegistryTagMover
+#                                    (custom role, artifactregistry.tags.delete
+#                                    only) on BOTH image repos — writer can
+#                                    create and update tags but not move
+#                                    one: re-pointing an existing inuse-*
+#                                    tag is a delete plus a create, and
+#                                    every re-pin of a job whose image moved
+#                                    is a move (stocks #1033, where the
+#                                    Cloud Build trigger's identity failed
+#                                    six of them with PERMISSION_DENIED on
+#                                    tags.delete). Same loop as above with
+#                                    --role=projects/adept-mountain-474619-d4/roles/artifactRegistryTagMover;
+#                                    the role itself and the operator roles
+#                                    needed are in gcp/cloudbuild/README.md.
 #   roles/artifactregistry.reader    on the gcr.io repo (location us) —
 #                                    `gcloud run deploy` resolves the freshly
 #                                    built image via

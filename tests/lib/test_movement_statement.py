@@ -1150,3 +1150,43 @@ def test_degeneracy_check_counts_only_inference_rows():
     assert "source = 'inference'" in seen["sql"], (
         "walk-forward fold rows share the promoted run_id and would "
         "contaminate the degeneracy sample")
+
+
+def test_the_reads_propagate_a_backend_outage_but_keep_a_source_envelope():
+    """Cloud SQL being unreachable is not one source's failure.
+
+    Every DB-reading helper folded it into a per-source UNAVAILABLE envelope,
+    so the statement assembled with every field saying "query failed" and the
+    API's 503 guard never saw it (Codex P1 on #999). Each now re-raises a
+    backend OUTAGE and keeps the envelope for a failure of ONE source. Called
+    directly, per helper, so the check needs no ML stack -- `_build_continuation`
+    (predict_one) shares the identical `is_backend_outage(e): raise` guard and
+    is exercised through `_assemble` in the research job.
+    """
+    import psycopg2
+    refused = ('connection to server at "127.0.0.1", port 5432 failed: '
+               "Connection refused")
+
+    def outage(*_a, **_k):
+        raise psycopg2.OperationalError(refused)
+
+    def bug(*_a, **_k):
+        raise RuntimeError("corrupt artifact")
+
+    query_reads = (
+        lambda qf: ms._fetch_reach_rates("SPY", "calls", qf),
+        lambda qf: ms._fetch_tracked_levels("SPY", qf, SESSION),
+        lambda qf: ms._model_degeneracy("SPY", "15m", "mag-v1",
+                                        pd.Timestamp("2026-06-20T15:45:00Z"), qf),
+        lambda qf: ms._build_expected_move("SPY", "15m", qf),
+    )
+    for call in query_reads:
+        with pytest.raises(psycopg2.OperationalError):
+            call(outage)
+        assert call(bug)["status"] == "UNAVAILABLE"
+
+    # The gamma read is the same, through gamma_fn rather than query_fn.
+    with pytest.raises(psycopg2.OperationalError):
+        ms._build_regime("SPY", None, outage)
+    assert ms._build_regime("SPY", None, bug)["status"] == "UNAVAILABLE"
+
