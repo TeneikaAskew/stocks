@@ -694,12 +694,32 @@ git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
 # at all. A stale ambient SOLYRA or a mistyped path then makes every symbol
 # absent over there, which is the answer this half exists to distrust, arriving
 # with the confidence of a successful search.
-_origin=$(git -C "$SOLYRA" remote get-url origin 2>/dev/null); _origin=${_origin%/}
-case "${_origin%.git}" in
-  *[/:]TeneikaAskew/solyra) ;;
-  *) echo "'$SOLYRA' is a git checkout, but origin is '${_origin:-<none>}',"
-     echo "not TeneikaAskew/solyra. NOT asserting — searching the wrong repo"
-     echo "reports 'no consumers' for every symbol you ask about."
+# FOUR LITERAL FORMS, no globs. A suffix pattern like `*[/:]TeneikaAskew/solyra`
+# checks the path and says nothing about the HOST — measured, it accepts
+# https://example.com/TeneikaAskew/solyra.git and
+# https://github.com.evil.invalid/TeneikaAskew/solyra.git alongside the real
+# thing, and any repo at those addresses answers "no consumers" for whatever
+# you ask. Normalising by stripping userinfo does not fix it either: `${o#*@}`
+# stops at the FIRST `@`, so https://evil.invalid/x@github.com/… normalises to
+# the canonical string. So enumerate instead of pattern-matching. A checkout
+# using some other remote shape is REFUSED rather than guessed at, which is the
+# safe direction: refusing prints what is expected, guessing certifies a
+# deletion from the wrong repository.
+_origin=$(git -C "$SOLYRA" remote get-url origin 2>/dev/null)
+_origin=${_origin%/}; _origin=${_origin%.git}
+case "$_origin" in
+  https://github.com/TeneikaAskew/solyra)   ;;
+  ssh://git@github.com/TeneikaAskew/solyra) ;;
+  git://github.com/TeneikaAskew/solyra)     ;;
+  git@github.com:TeneikaAskew/solyra)       ;;
+  *) echo "'$SOLYRA' is a git checkout, but origin is '${_origin:-<none>}'."
+     echo "Expected one of:"
+     echo "  https://github.com/TeneikaAskew/solyra"
+     echo "  ssh://git@github.com/TeneikaAskew/solyra"
+     echo "  git://github.com/TeneikaAskew/solyra"
+     echo "  git@github.com:TeneikaAskew/solyra"
+     echo "NOT asserting — searching the wrong repo reports 'no consumers'"
+     echo "for every symbol you ask about."
      return 1 2>/dev/null || exit 1;;
 esac
 
@@ -956,7 +976,7 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
   # THIRD ARGUMENT, and the project queried is echoed, because a check whose
   # target you cannot see in its output is a check you cannot audit.
   local proj=${3:-adept-mountain-474619-d4}
-  local job=$1 sched=$2 list
+  local job=$1 sched=$2 list raw
   test -n "$job" && test -n "$sched" || {
     echo "usage: retired_everywhere <job|none> <scheduler|none> [project]"
     echo "pass 'none' EXPLICITLY for a resource this retirement does not touch;"
@@ -966,20 +986,41 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
     || { echo "both 'none' — nothing to assert"; return 1; }
   echo "retirement check against project: $proj"   # after the guards, so this
   # never announces a query the function then refuses to run.
+  # VALIDATE THE PROJECTION, NOT THE INVENTORY. The first version refused any
+  # empty listing, on the grounds that ~35 jobs exist so empty means a broken
+  # query. That conflates two different states and makes the check unsatisfiable
+  # in cases this function itself advertises: a project passed as $3 that holds
+  # only the resource being retired, or a namespace legitimately emptied by the
+  # retirement, both return an empty list that is the CORRECT answer.
+  #
+  # What the guard was actually for is a projection that silently empties a
+  # non-empty listing — `name.basename()` against Cloud Run, which prints
+  # nothing. So ask the same question twice, once with a field that always
+  # exists: non-empty raw plus empty projected is a broken projection; both
+  # empty is an empty namespace and a legitimate pass.
+  _inventory() {   # $1 = raw listing, $2 = projected listing, $3 = label
+    test -n "$1" && test -z "$2" || return 0
+    echo "$3: the listing returned rows but the projection printed nothing —"
+    echo "the --format is wrong for this resource type. Asserting nothing."
+    return 1; }
   if [ "$job" != none ]; then
+    raw=$(gcloud run jobs list --project="$proj" --region=us-east1 \
+            --format='value(name)') \
+      || { echo "job listing FAILED — asserting nothing"; return 1; }
     list=$(gcloud run jobs list --project="$proj" --region=us-east1 \
              --format='value(metadata.name)') \
       || { echo "job listing FAILED — asserting nothing"; return 1; }
-    test -n "$list" \
-      || { echo "job inventory EMPTY — wrong projection? asserting nothing"; return 1; }
+    _inventory "$raw" "$list" "Cloud Run jobs" || return 1
     ! grep -qx "$job" <<<"$list" || { echo "$job still exists"; return 1; }
   fi
   if [ "$sched" != none ]; then
+    raw=$(gcloud scheduler jobs list --project="$proj" --location=us-east1 \
+            --format='value(name)') \
+      || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
     list=$(gcloud scheduler jobs list --project="$proj" --location=us-east1 \
              --format='value(name.basename())') \
       || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
-    test -n "$list" \
-      || { echo "scheduler inventory EMPTY — wrong projection? asserting nothing"; return 1; }
+    _inventory "$raw" "$list" "Cloud Scheduler jobs" || return 1
     ! grep -qx "$sched" <<<"$list" || { echo "$sched trigger still exists"; return 1; }
   fi
 }
