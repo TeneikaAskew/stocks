@@ -28,7 +28,7 @@ def add_research_arg(p) -> None:
     p.add_argument(
         "--research", default=None, metavar="SLUG",
         help="Read from the research namespace with this slug (e.g. "
-             "'excursion', 't0.35-0.75-1.25', 'put__t0.35-0.75-1.25') "
+             "'excursion', 't0.35_0.75_1.25', 'put__t0.35_0.75_1.25') "
              "instead of the canonical body-label prefix. The slug is the "
              "path segment mag_config.research_namespace() produced for the "
              "run, and it is recorded in the run's walk_forward JSON as "
@@ -55,8 +55,19 @@ def apply_research_contract(research: str | None,
         DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS, parse_research_namespace)
 
     if not research:
-        resolved, thresholds = (label_mode or DEFAULT_LABEL_MODE,
-                                MAGNITUDE_THRESHOLDS)
+        # The canonical prefix IS the serving contract: body labels at the
+        # default cut points. Accepting --label-mode=put here would score a
+        # canonical body run against put realizations and put IV — the same
+        # invalid verdict the mismatch check below refuses, arrived at from
+        # the other side (Codex on #1055).
+        if label_mode is not None and label_mode != DEFAULT_LABEL_MODE:
+            raise SystemExit(
+                f"--label-mode={label_mode} needs the matching --research "
+                f"namespace: without it the canonical prefix is read, and that "
+                f"holds {DEFAULT_LABEL_MODE} labels at "
+                f"{tuple(MAGNITUDE_THRESHOLDS)}. Pass --research=... for the "
+                f"run you mean.")
+        resolved, thresholds = DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS
     else:
         resolved, thresholds = parse_research_namespace(research)
         if label_mode is not None and label_mode != resolved:

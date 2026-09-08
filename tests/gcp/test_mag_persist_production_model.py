@@ -1205,3 +1205,46 @@ def test_gate7_resolves_the_contract_before_reading_label_mode():
     assert resolve_at < iv_leg_at, (
         "the label contract must be resolved before anything reads "
         "args.label_mode")
+
+
+# ─────────────── round 5: the contract check has two directions ───────────────
+
+def test_noncanonical_label_without_a_namespace_is_refused(isolated_mag_thresholds):
+    """The canonical prefix IS the serving contract. `--label-mode=put` with
+    no `--research` reads a canonical body run and scores it against put
+    realizations and put IV — the same invalid verdict the other direction
+    already refused."""
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import apply_research_contract
+    from gcp.research.magnitude_engine.mag_config import DEFAULT_LABEL_MODE
+
+    for mode in ("put", "call", "excursion"):
+        with pytest.raises(SystemExit, match="needs the matching --research"):
+            apply_research_contract(None, mode)
+    # the canonical contract itself is still fine, named or defaulted
+    assert apply_research_contract(None, DEFAULT_LABEL_MODE)[0] == DEFAULT_LABEL_MODE
+    assert apply_research_contract(None, None)[0] == DEFAULT_LABEL_MODE
+
+
+def test_research_help_shows_slugs_the_generator_actually_makes():
+    """The help text told operators to pass 't0.35-0.75-1.25' while the
+    generator emits underscores, so copying it either fails to parse or
+    searches a prefix that does not exist."""
+    import argparse, re
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import add_research_arg
+    from gcp.research.magnitude_engine.mag_config import (
+        research_namespace, parse_research_namespace)
+
+    p = argparse.ArgumentParser()
+    add_research_arg(p)
+    help_text = p.format_help()
+    slugs = re.findall(r"'([a-z_]*t?[0-9._]*[0-9]|[a-z]+(?:__t[0-9._]+)?)'", help_text)
+    quoted = re.findall(r"'([^']+)'", help_text)
+    examples = [q for q in quoted if q.startswith("t") or "__" in q or q in
+                ("excursion", "call", "put")]
+    assert examples, f"no example slugs found in help: {help_text}"
+    for ex in examples:
+        # every advertised slug must parse, and round-trip to itself
+        label_mode, thresholds = parse_research_namespace(ex)
+        assert research_namespace(label_mode, thresholds) == ex
