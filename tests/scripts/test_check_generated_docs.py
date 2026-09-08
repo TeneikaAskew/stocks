@@ -687,6 +687,13 @@ def test_every_prose_line_shape_in_the_real_documents_can_be_caught():
         for line in gate._prose_lines((root / doc).read_text()):
             if not line.strip():
                 continue
+            if line.strip().startswith("|"):
+                # a table row elides by cell, not at end of line; flattening it
+                # to a bare "..." is what hid that gap from this test before
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                row = "| " + " | ".join(["..."] + cells[1:]) + " |"
+                assert gate._is_elided(row), f"an elided table row is not caught: {row!r}"
+                continue
             m = re.match(r"^(\s*(?:>\s*)*)((?:[-*+]|\d+[.)])\s+)?(.*)$", line)
             bq, lst, body = bool(m.group(1).strip()), bool(m.group(2)), m.group(3)
             # The label FORM matters, not just its presence. An earlier version
@@ -708,7 +715,9 @@ def test_every_prose_line_shape_in_the_real_documents_can_be_caught():
         for sep in ("", " — "):
             line = (("> " if bq else "") + ("- " if lst else "")
                     + (label + sep if label else "") + "...")
-            assert gate._ELIDED.match(line), \
+            if not (bq or lst) and label not in ("**x**", ""):
+                continue   # a free-form label is only read as one behind a marker
+            assert gate._is_elided(line), \
                 f"a shape the documents already use is not caught: {line!r}"
 
 
@@ -741,3 +750,38 @@ def test_a_sentence_ending_in_an_ellipsis_is_not_a_finding(tmp_path):
                    "- **`watchlists`** — `backfill_ticker` manages it; soft-delete via `removed_at`.\n"
                    "27 runtime-created relations (`strat_features_*`, `gamma_levels_eod`, …) are outside.\n")
     assert gate.gate_elided_prose(tmp_path) == []
+
+
+def test_bare_prose_ending_in_an_ellipsis_is_not_an_elision(tmp_path):
+    """The free-form label is only a label behind a blockquote or list marker.
+    Allowing it on a bare line made any short sentence without terminal
+    punctuation match, so `Loading...` and `This section continues…` would have
+    failed a legitimate refresh. My earlier "must not match" test did not
+    exercise this: none of its lines actually ended in an ellipsis, so it
+    proved nothing about the case that mattered. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Loading...\n"
+                   "This section continues…\n"
+                   "See the runbook for the rest ...\n")
+    assert gate.gate_elided_prose(tmp_path) == []
+    # behind a marker the same text IS a label, and the line is an elision
+    doc.write_text("- Loading: ...\n")
+    assert len(gate.gate_elided_prose(tmp_path)) == 1
+
+
+def test_an_elided_table_row_is_a_finding(tmp_path):
+    """A row keeps its label cell and loses its explanation:
+    `| Cloud SQL | ... |`. The end-of-line matcher cannot see it because the
+    row ends in a pipe. Measured, the corpus carries 171 prose table rows over
+    503 cells and not one cell is an ellipsis today, so an ellipsis-only cell
+    is an elision rather than a truncation mark. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("| Component | Notes |\n|---|---|\n"
+                   "| Cloud SQL | ... |\n"
+                   "| Cloud Run | … |\n"
+                   "| Scheduler | 65 jobs, all reconciled against `deploy.sh`. |\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 2, out
+    assert not any("Scheduler" in f for f in out), out
