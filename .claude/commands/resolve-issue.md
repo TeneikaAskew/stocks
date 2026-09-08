@@ -226,7 +226,36 @@ whether to stash or commit it. Never `checkout -f`, which discards it.
 # untracked newfile.ts gives an empty `--porcelain` under that setting and
 # `?? newfile.ts` with the flag. The invariant is this file's; the config is
 # the caller's, and a check that a config can switch off is not a check.
-git status --porcelain --untracked-files=all   # must be empty before continuing
+# A FUNCTION, so the check can STOP. This was two bare commands with "must be
+# empty before continuing" in a comment beside them — and `git status
+# --porcelain` PRINTS a dirty tree and exits 0, so nothing enforced it.
+# Measured under `set -e` with one modified and one untracked file: both
+# printed, rc=0, and execution carried straight on to branch selection. A
+# stated stop condition that nothing enforces is prose.
+# CAPTURED FIRST, for the reason round 51 gives at the deploy gate: a FAILED
+# `git status` produces no stdout, so testing its output for emptiness reads a
+# broken git as a clean tree.
+clean_worktree() {
+  local st
+  st=$(git status --porcelain --untracked-files=all) \
+    || { echo "git status failed — NOT asserting the tree is clean"; return 1; }
+  test -z "$st" || {
+    printf '%s\n' "$st"
+    echo "^ uncommitted work. Stash or commit it before branching: an ordinary"
+    echo "checkout carries it onto the issue branch, Phase 5 then tests a mixed"
+    echo "candidate, and Phase 7's file-scoped git add can commit hunks that"
+    echo "have nothing to do with this issue. Never checkout -f — it discards."
+    return 1; }
+}
+# BARE, NOT `clean_worktree && git rev-parse`. The `&&` form was written first
+# and does NOT stop: bash exempts every command before the final `&&` from
+# errexit, so measured under `set -e`, a failing gate printed its message and
+# the branch name still followed with rc=0. A bare call is a simple command and
+# does fire — measured, the same stub exits 1 with nothing after it running.
+# This is the third time on this PR that a reporting form was mistaken for a
+# propagating one, so the two lines stay separate and the real enforcement is
+# inside both checkout functions below, where the finding asked for it.
+clean_worktree      # BARE — a dirty tree stops the paste here
 git rev-parse --abbrev-ref HEAD
 
 # Same shape as the survey above: one function per case, `return` for every
@@ -244,6 +273,9 @@ git rev-parse --abbrev-ref HEAD
 # Never `checkout -B` here: -B RESETS an existing local branch to the start
 # point, silently discarding unpushed commits from an earlier run.
 use_existing_pr_head() {
+  # THE GATE, NOT ONLY THE DISPLAY. The pre-flight above prints and stops, but
+  # a fence is pasted in pieces and the stop belongs where the checkout is.
+  clean_worktree || return 1
   sync_refs || return 1
   if git show-ref --verify --quiet "refs/heads/<headRefName>"; then
     # CHAINED, not two statements. An unchecked `checkout` that fails leaves
@@ -269,6 +301,7 @@ use_existing_pr_head() {
 # checked out, so an unrelated feature branch's commits ride into the PR, or
 # the branch starts behind main. `git fetch` above does not move HEAD.
 start_new_branch() {
+  clean_worktree || return 1     # same gate as CASE A; both checkouts, not one
   sync_refs || return 1
   git checkout -b fix/<short-description> origin/main \
     || { echo "CANNOT CREATE the branch — stop, do not edit"; return 1; }
@@ -568,12 +601,15 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   # An `if` CONDITION is exempt from errexit, which is what makes the failure
   # reachable rather than fatal.
   phase2_consumers() {
-    if ! type -t consumed >/dev/null 2>&1; then
+    # `= function`, for the reason the Phase 4 loader states: an executable
+    # named `consumed` on PATH makes `type -t` print `file`, the helper file is
+    # never loaded, and the blast-radius measurement runs an unrelated program.
+    if [ "$(type -t consumed 2>/dev/null)" != function ]; then
       # NO DEFAULT PATH — see the note at the loader in Phase 4.
       if [ -n "${HELPERS:-}" ] && . "$HELPERS"; then :; fi
     fi
-    type -t consumed >/dev/null 2>&1 || {
-      echo "consumed() is not defined in this shell, and"
+    test "$(type -t consumed 2>/dev/null)" = function || {
+      echo "consumed() is not a shell function here, and"
       echo "\$HELPERS ${HELPERS:+(=$HELPERS) }did not provide it."
       echo "Load Phase 4's DEFINITIONS fence — it prints the HELPERS=… line to"
       echo "carry here — or paste it here. NOT reporting a result: 127 is not"
@@ -1633,7 +1669,7 @@ _ere_literal() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/[]^$*+?(){}|.[]/\
 # finds the pipes supplies the spans, so this costs one accumulator, not a
 # second parser.
 _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say why
-  local _q=$1 _mode=${2:-} _span _bare= _out= _c
+  local _q=$1 _mode=${2:-} _span _bare= _out= _c _d
   while case $_q in *'['*']'*) true;; *) false;; esac; do
     _bare=$_bare${_q%%[*}
     _q=${_q#*[}
@@ -1671,7 +1707,6 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
     esac
     _q=${_q#*]}
   done
-  test "$_mode" = path || return 0
   _bare=$_bare$_q
   # Drop backslash-escaped pairs first: `\^` and `\$` are literals, not anchors,
   # and a `case` over the raw text cannot tell them apart. Character at a time
@@ -1699,6 +1734,37 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
     fi
     _out=$_out$_c
   done
+  # A `|` NESTED IN A GROUP IS NOT A TOP-LEVEL ALTERNATION, and this check is
+  # shared rather than path-only: `consumed` splits on `|` too, for the
+  # self-exclusions. Measured on the valid ERE `code-(reviewer|auditor)`: the
+  # split built `:(exclude,literal).claude/agents/code-(reviewer.md` and
+  # `…/auditor).md`, neither of which is a definition file, so BOTH real
+  # definitions reported as hits — and the same split builds `_defs`, so
+  # following the displayed-hit approval workflow removes them from the path
+  # inventory and the scan can certify with both agent files still there.
+  # Parsing only top-level alternatives means a paren-depth parser on top of
+  # the bracket walk; refusing costs a counter over text this walk has already
+  # stripped of escapes, and the grouped form says nothing the flat one does
+  # not — `code-(reviewer|auditor)` is `code-reviewer|code-auditor`, which is
+  # the spelling this file documents and the one the self-exclusions can name.
+  _d=0
+  _q=$_out
+  while [ -n "$_q" ]; do
+    _c=${_q%"${_q#?}"}; _q=${_q#?}
+    case $_c in
+      '(') _d=$((_d+1));;
+      ')') test "$_d" -eq 0 || _d=$((_d-1));;
+      '|') test "$_d" -eq 0 || {
+             echo "'$1' has a '|' inside a '( )' group. Every split on '|' in"
+             echo "  this file is a top-level split, so it would cut there and"
+             echo "  build self-exclusions and definition paths for names that"
+             echo "  do not exist — measured. Write the alternation flat, e.g."
+             echo "  code-reviewer|code-auditor, which is the coupled form this"
+             echo "  file documents."
+             return 1; };;
+    esac
+  done
+  test "$_mode" = path || return 0
   test -z "$_esc_sep" || {
     echo "'$1' escapes a '$_esc_sep' outside a bracket expression. That escape"
     echo "  is a no-op as an ERE, so it says nothing the plain spelling does"
@@ -2704,14 +2770,22 @@ free and the acceptance call stays bare where it belongs.
 # An `if` CONDITION is exempt from errexit, which is what makes the failure
 # reachable rather than fatal.
 run_gate() {
-  if ! type -t fully_retired >/dev/null 2>&1; then
+  # `= function`, NOT "type -t said something". An executable named
+  # `fully_retired` anywhere on the caller's PATH makes `type -t` print `file`,
+  # so BOTH checks passed, the helper file was never loaded, and `run_gate` ran
+  # that program — measured with a stub on PATH that echoes and exits 0: the
+  # retirement was ACCEPTED with no repository or GCP assertion having run.
+  # A gate that any PATH entry can shadow is not a gate, and this is the same
+  # shape as the shared /tmp helper path below: the loader trusting a name it
+  # did not itself define.
+  if [ "$(type -t fully_retired 2>/dev/null)" != function ]; then
     # NO DEFAULT PATH. An unset $HELPERS means "nobody told me where they are",
     # and guessing a shared /tmp name is what let a file this run did not write
     # be sourced with production credentials in hand.
     if [ -n "${HELPERS:-}" ] && . "$HELPERS"; then :; fi
   fi
-  type -t fully_retired >/dev/null 2>&1 || {
-    echo "fully_retired is not defined in this shell, and"
+  test "$(type -t fully_retired 2>/dev/null)" = function || {
+    echo "fully_retired is not a shell function here, and"
     echo "\$HELPERS ${HELPERS:+(=$HELPERS) }did not provide it."
     echo "Run the Phase 4 DEFINITIONS fence — it prints the HELPERS=… line to"
     echo "carry here — or paste it into this shell. NOT reporting a result."
