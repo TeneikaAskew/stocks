@@ -1728,7 +1728,9 @@ def test_infrastructure_errors_are_classified_by_type():
     # response it gave up on after its own 5xx retries is
     # `ClientResponseError` -- neither the builtin ConnectionError nor any
     # google.api_core class (Codex P1 on #999). Status decides the second:
-    # 429 and 5xx are the service; a 4xx is our credentials or configuration.
+    # 429 and 5xx are the service, and so is 408 -- a cold-connection or
+    # certificate-refresh control-plane timeout, the one 4xx that is transient
+    # (Codex P2 on #999); every other 4xx is our credentials or configuration.
     import aiohttp
     from types import SimpleNamespace
     assert is_infrastructure_error(
@@ -1742,7 +1744,7 @@ def test_infrastructure_errors_are_classified_by_type():
     assert not issubclass(aiohttp.ClientConnectorSSLError,
                           aiohttp.ClientConnectorCertificateError)
     req = SimpleNamespace(real_url="https://sqladmin.googleapis.com/sql/v1beta4/x")
-    for status in (429, 500, 502, 503, 504):
+    for status in (408, 429, 500, 502, 503, 504):
         assert is_infrastructure_error(
             aiohttp.ClientResponseError(req, (), status=status)), status
     for status in (400, 401, 403, 404):

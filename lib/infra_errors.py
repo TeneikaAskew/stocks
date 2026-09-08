@@ -520,10 +520,17 @@ def _pg8000_server_gone(exc: BaseException) -> bool:
 
 
 def _retryable_http_response(exc: BaseException) -> bool:
-    """The SQL Admin API answered the connector 429 or 5xx after its retries."""
+    """The SQL Admin API answered the connector 408, 429 or 5xx after its retries.
+
+    408 is a transient control-plane timeout: a cold connection or a
+    certificate refresh can have the Cloud SQL Admin API answer 408 Request
+    Timeout, which the connector surfaces as `aiohttp.ClientResponseError(
+    status=408)`. It was rejected here and re-raised as a bare 500, so a guarded
+    database route answered 500 instead of the intended 503 (Codex P2 on #999).
+    """
     if _aiohttp is None or not isinstance(exc, _aiohttp.ClientResponseError):
         return False
-    return exc.status == 429 or exc.status >= 500
+    return exc.status in (408, 429) or exc.status >= 500
 
 
 #: What cannot be decided by class alone. Each reads the one exception it is
