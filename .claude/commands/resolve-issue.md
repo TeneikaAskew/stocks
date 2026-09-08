@@ -361,15 +361,28 @@ baselines() {
   # back restores it — same measurement, the caller's cleanup runs. `$PREV_RT`
   # is a local of this function and the trap body fires while it is still on the
   # stack, so it is in scope; the `:-` covers "there was no previous trap".
-  local REPO PREV_RT
+  local REPO PREV_RT     # BASELINE_LEAK is deliberately NOT local: the trap
+                         # writes it and the CALLER has to be able to read it
   REPO=$(git rev-parse --show-toplevel) || return 1
   PREV_RT=$(trap -p RETURN)
+  # A WARNING IS NOT A RESULT. The trap printed "could not remove worktree" and
+  # `baselines` still returned its body's 0 — measured, two failed removals and
+  # rc=0 — so the caller proceeded with a registered worktree, which the note
+  # below says breaks the next run twice over. deploy_candidate was given this
+  # exact treatment in round 41 and this, its older twin, was not.
+  # THE TRAP CANNOT CARRY THE STATUS: `trap false RETURN` around `return 0`
+  # still returns 0, measured, and recorded thirty lines up. So the failure is
+  # recorded in a variable the caller checks — BASELINE_LEAK, cleared here so a
+  # previous run's leak cannot be reported as this one's.
+  BASELINE_LEAK=
   trap 'if [ "${FUNCNAME[0]}" = baselines ]; then
-          cd "$REPO" || echo "cannot return to $REPO — worktrees may leak" >&2
+          cd "$REPO" || { echo "cannot return to $REPO — worktrees may leak" >&2
+                          BASELINE_LEAK="${BASELINE_LEAK:+$BASELINE_LEAK }$REPO"; }
           for t in "$BASE_TREE" "$MAIN_TREE"; do
             [ -n "$t" ] || continue
             git worktree remove --force "$t" \
-              || echo "could not remove worktree $t" >&2
+              || { echo "could not remove worktree $t" >&2
+                   BASELINE_LEAK="${BASELINE_LEAK:+$BASELINE_LEAK }$t"; }
           done; eval "${PREV_RT:-trap - RETURN}"
         fi' RETURN
 
@@ -380,6 +393,16 @@ baselines() {
   # failing-before test in Phase 4 runs in the merge-base one.
 }
 baselines                # BARE, and now nothing follows it to overwrite $?
+# THEN the leak check, on its own line so it cannot overwrite the status above.
+# `$?` is captured first for the same reason every other caller in this file
+# captures it: the test below is a command and would replace it.
+brc=$?
+test -z "${BASELINE_LEAK:-}" \
+  || { echo "baselines left worktrees registered: $BASELINE_LEAK"
+       echo "the next run's git worktree add will fail on them, and they hold"
+       echo "the branch refs. Clean up before continuing:"
+       echo "  git worktree remove --force <path> && git worktree prune"; }
+test "$brc" -eq 0 || { echo "baselines FAILED rc=$brc — no baseline to compare"; }
 ```
 
 **Remove it when you are done, and use a fresh path.** A registered worktree
@@ -1702,27 +1725,39 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # pathspec turns on history simplification, which prunes exactly these
     # commits, and `--no-renames` so a rename cannot hide the change. Same flag
     # set as the form, minus `--all`: this searches the pinned $REV by design.
-    # THE APPROVALS APPLY HERE TOO. `consumed()` above can be cleared by
-    # REVIEWED_SOLYRA — an ordinary word, or a mention in a comment — and this
-    # query ignored them, so the same file's historical prose counted as proof
-    # that a browser consumer once shipped. The gate then demanded a
-    # SOLYRA_ROLLED_OUT acknowledgement for a rollout that never happened,
-    # blocking a retirement that is actually complete. A false BLOCK rather
-    # than a false pass, but the generated-artifact exclusions do not reach it
-    # and nothing else would.
-    # SAFE TO BUILD INLINE: `consumed` ran a few lines up with these same
-    # entries and an invalid one returns 2, which the `test "$scode" -eq 1`
-    # above turns into an exit — so by here every entry has already passed the
-    # no-glob, no-directory, must-exist and must-mention validation. This is
-    # reusing that verdict, not re-implementing it.
+    # AN APPROVAL IS ABOUT TODAY'S CONTENT, NOT THE FILE'S PAST — and round 46
+    # applied it to the past, which turned a false BLOCK into a false PASS.
+    # A `:!path` pathspec excludes that file from EVERY commit, not just from
+    # its current prose, so a file that now carries only an approved comment
+    # but once carried a real call vanished from the search entirely: measured
+    # on a checkout where Panel.tsx called the symbol and was then rewritten to
+    # a `// Historical note:` comment, `shist` went 2 -> 0 with the approval
+    # applied, and the gate took the "never used" path for a symbol that had
+    # shipped in a bundle.
+    # THE TWO FAILURES ARE NOT SYMMETRIC. The false block costs an unnecessary
+    # acknowledgement; the false pass deletes a backend surface that live tabs
+    # still call, which is the entire thing this gate exists to prevent. So the
+    # exclusion is REVERTED and the search is unrestricted again.
+    # WHAT THE APPROVAL BUYS INSTEAD IS THE DIAGNOSTIC, not a bypass. The same
+    # query restricted to NON-approved paths says whether any historical match
+    # lies outside the files you called prose. Empty there and non-empty above
+    # means every match is in an approved file — which is a reason to go and
+    # READ those commits, not evidence that they are prose, because the file
+    # you approved today is not the file that was committed then.
     local _sapp=() _sp
     for _sp in ${REVIEWED_SOLYRA[@]+"${REVIEWED_SOLYRA[@]}"}; do
       _sapp+=( ":!$_sp" )
     done
     shist=$(git log --oneline --full-history --diff-merges=separate --no-patch \
-              --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}" \
-              ${_sapp[@]+"${_sapp[@]}"}) \
+              --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
       || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
+    local _shist_src=
+    if [ ${#_sapp[@]} -gt 0 ]; then
+      _shist_src=$(git log --oneline --full-history --diff-merges=separate \
+                     --no-patch --no-renames -G"$sym" "$REV" -- . \
+                     "${EXCLUDE[@]}" "${_sapp[@]}") \
+        || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
+    fi
     if [ -n "$shist" ]; then
       # BIND THE APPROVAL TO THE REMOVAL IT WAS MADE FOR, not to the symbol.
       # A surface can be removed, rolled out, reintroduced and removed again,
@@ -1742,8 +1777,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       # pushing. Trimmed with parameter expansion rather than `| head -1`,
       # which would put git's status behind head's.
       _srm=$(git log -1 --format=%h --full-history --diff-merges=separate \
-               --no-patch --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}" \
-               ${_sapp[@]+"${_sapp[@]}"}) \
+               --no-patch --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
         || { echo "solyra: could not identify the removal commit"; exit 2; }
       _srm=${_srm%%$'\n'*}
       test -n "$_srm" || { echo "solyra: history is non-empty but no commit"
@@ -1753,8 +1787,14 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
         printf '%s\n' "$shist" | head -5
         echo "last touched: $(git log -1 --format='%h %cI %s' --full-history \
                                 --diff-merges=separate --no-patch --no-renames \
-                                -G"$sym" "$REV" -- . "${EXCLUDE[@]}" \
-                                ${_sapp[@]+"${_sapp[@]}"})"
+                                -G"$sym" "$REV" -- . "${EXCLUDE[@]}")"
+        test -n "$_shist_src" || test ${#_sapp[@]} -eq 0 || {
+          echo "NOTE: every one of those commits touches only files you"
+          echo "approved as prose. That is a reason to READ them, not proof:"
+          echo "the approval describes the file as it is TODAY, and the commit"
+          echo "that matched is the file as it was THEN. If they really are"
+          echo "prose, the rollout question is moot and the acknowledgement is"
+          echo "still the honest way to record that you checked."; }
         echo "That removal has to be DEPLOYED and its old bundles aged out"
         echo "before this repo drops the surface — see the rollout section:"
         echo "solyra registers no service worker and no update prompt, so a tab"
