@@ -47,6 +47,58 @@ ATOMIC_BEGIN = "-- ATOMIC-BEGIN"
 ATOMIC_END = "-- ATOMIC-END"
 
 
+def _code_of(line: str, in_dollar: bool) -> tuple[str, bool]:
+    """Return the executable part of ``line`` and the dollar-quote state
+    after it.
+
+    The statement boundary is a ``;`` that ends the CODE, not the text: a
+    line reading ``... DOUBLE PRECISION;    -- worst drawdown`` terminates
+    a statement even though it ends with a comment. Testing the raw line
+    missed those and glued the next statement onto the same unit, so two
+    commands travelled as one and the applier's per-statement count, log
+    and ordering all described something that never ran that way (Codex
+    on #1022; gcp/schema.sql:898 is the live instance).
+
+    Recognising ``--`` alone is not enough — it appears inside values and
+    inside PL/pgSQL bodies — so the scan tracks single-quoted literals
+    (with ``''`` escaping) and ``$$`` bodies and only treats ``--`` as a
+    comment outside both. Everything before the comment is returned
+    verbatim, so the caller still stores the original line.
+    """
+    out: list[str] = []
+    i, n = 0, len(line)
+    in_quote = False
+    while i < n:
+        pair = line[i:i + 2]
+        ch = line[i]
+        if in_dollar:
+            if pair == "$$":
+                in_dollar = False
+                out.append(pair)
+                i += 2
+                continue
+        elif in_quote:
+            if ch == "'":
+                if line[i + 1:i + 2] == "'":   # '' is an escaped quote
+                    out.append("''")
+                    i += 2
+                    continue
+                in_quote = False
+        else:
+            if pair == "$$":
+                in_dollar = True
+                out.append(pair)
+                i += 2
+                continue
+            if pair == "--":
+                break                          # rest of the line is a comment
+            if ch == "'":
+                in_quote = True
+        out.append(ch)
+        i += 1
+    return "".join(out), in_dollar
+
+
 def split_statement_groups(sql_text: str) -> list[list[str]]:
     """Split a schema file into execution units.
 
@@ -105,13 +157,12 @@ def split_statement_groups(sql_text: str) -> list[list[str]]:
             continue
         buf.append(line)
 
-        # Toggle dollar-quoted state on each $$ occurrence.
-        # (Same line can have an even number of toggles which net to 0.)
-        toggles = line.count("$$")
-        if toggles % 2 == 1:
-            in_dollar = not in_dollar
+        # Advance the dollar-quote state across the line and take the part
+        # that is code — a `$$` inside a literal does not open a body, and
+        # a `;` before an inline comment still ends the statement.
+        code, in_dollar = _code_of(line, in_dollar)
 
-        if not in_dollar and stripped.endswith(";"):
+        if not in_dollar and code.rstrip().endswith(";"):
             stmt = "\n".join(buf).strip()
             if stmt:
                 if group is not None:
@@ -454,10 +505,6 @@ def main() -> int:
         ap.error("--revision and --revision-time must be given together")
     ancestors = frozenset(args.revision_ancestors.split())
 
-    if not is_cloud_sql_configured():
-        log.error("Cloud SQL not configured")
-        return 2
-
     schema_path = Path(args.file)
     if not schema_path.exists():
         log.error("Schema file not found: %s", schema_path)
@@ -478,6 +525,14 @@ def main() -> int:
                 prefix = "[ATOMIC] " if len(unit) > 1 else ""
                 log.info("  [%d] %s%s", i, prefix, head)
         return 0
+
+    # Credentials are checked here, not before the parse: --dry-run exists
+    # to validate a schema edit locally, where no Cloud SQL is configured,
+    # and checking first made the flag unusable for its only purpose
+    # (Codex on #1022).
+    if not is_cloud_sql_configured():
+        log.error("Cloud SQL not configured")
+        return 2
 
     from gcp.database import get_engine  # noqa: PLC0415
     engine = get_engine()

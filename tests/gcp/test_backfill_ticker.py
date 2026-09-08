@@ -249,3 +249,28 @@ def test_watchlist_add_can_be_opted_out(stubbed_run, monkeypatch):
     monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "false")
     assert mod.run() == 0
     watch.assert_not_called()
+
+
+def test_a_non_string_vendor_timestamp_is_dropped_not_raised(caplog):
+    """`time_published` is vendor JSON, so its TYPE is not ours to assume.
+    A number or a list made `pub_raw[:15]` raise TypeError, which this path
+    did not catch: the exception left av_news_to_rows(), failed the whole
+    backfill-ticker run, and took the indicator and options steps down with
+    it (Codex on #1022). A malformed article is EXTERNAL data: drop it,
+    count it, keep going."""
+    import logging
+
+    from gcp.backfill_ticker import av_news_to_rows
+
+    feed = [
+        {"time_published": 20260908, "ticker_sentiment": [{"ticker": "AMD"}]},
+        {"time_published": ["20260908T120000"], "ticker_sentiment": [{"ticker": "AMD"}]},
+        {"time_published": {"t": 1}, "ticker_sentiment": [{"ticker": "AMD"}]},
+        {"time_published": "20260908T120000", "title": "kept",
+         "ticker_sentiment": [{"ticker": "AMD"}]},
+    ]
+    with caplog.at_level(logging.WARNING, logger="gcp.backfill_ticker"):
+        rows = av_news_to_rows(feed)
+    assert [r["ticker"] for r in rows] == ["AMD"], "the well-formed article must survive"
+    assert "3" in caplog.text and "skipped" in caplog.text.lower()
+    assert "20260908" in caplog.text, "the skip log must name what was dropped"

@@ -50,6 +50,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -184,31 +185,59 @@ def _safe_float(x) -> Optional[float]:
         return None
 
 
+def _av_text(art: dict, key: str, limit: int, malformed: list[str]):
+    """One text field of a vendor article, or None.
+
+    The vendor's JSON is EXTERNAL: its VALUES are not ours to trust and
+    neither are their TYPES. `(art.get(key) or "")[:limit]` assumed a
+    string and raised TypeError on a number or a list, which escaped
+    av_news_to_rows and failed the whole run (Codex on #1022). A field of
+    the wrong type is recorded as malformed and stored NULL — the article
+    itself still carries its ticker, timestamp and scores.
+    """
+    value = art.get(key)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        malformed.append(key)
+        return None
+    return value[:limit] or None
+
+
 def av_news_to_rows(feed: list[dict]) -> list[dict]:
     """Explode AV news feed into one row per (article, ticker)."""
     rows = []
     skipped: list[str] = []
+    malformed: list[str] = []
     for art in feed:
         pub_raw = art.get("time_published") or ""
         try:
             pub_ts = datetime.strptime(pub_raw[:15], "%Y%m%dT%H%M%S").replace(
                 tzinfo=timezone.utc,
             )
-        except ValueError:
+        except (ValueError, TypeError):
             # Vendor data we do not control (EXTERNAL): the article is
-            # dropped, and the drop is visible (CLAUDE.md 3.7).
-            skipped.append(pub_raw)
+            # dropped, and the drop is visible (CLAUDE.md 3.7). TypeError
+            # covers a non-string time_published, which is malformed in
+            # the same way a garbage string is and must not take the run
+            # down with it (Codex on #1022).
+            skipped.append(pub_raw if isinstance(pub_raw, str) else repr(pub_raw))
             continue
-        title = (art.get("title") or "")[:500] or None
-        url = (art.get("url") or "")[:1000] or None
-        summary = (art.get("summary") or "")[:2000] or None
-        source = (art.get("source") or "")[:100] or None
+        title = _av_text(art, "title", 500, malformed)
+        url = _av_text(art, "url", 1000, malformed)
+        summary = _av_text(art, "summary", 2000, malformed)
+        source = _av_text(art, "source", 100, malformed)
         overall_score = _safe_float(art.get("overall_sentiment_score"))
-        overall_label = (art.get("overall_sentiment_label") or "")[:20] or None
+        overall_label = _av_text(art, "overall_sentiment_label", 20, malformed)
         topics = [t["topic"] for t in (art.get("topics") or [])
-                  if isinstance(t, dict) and t.get("topic")]
+                  if isinstance(t, dict) and isinstance(t.get("topic"), str)
+                  and t.get("topic")]
         for tk in (art.get("ticker_sentiment") or []):
-            tkv = (tk.get("ticker") or "").upper().strip()
+            raw_tk = tk.get("ticker") if isinstance(tk, dict) else None
+            if raw_tk is not None and not isinstance(raw_tk, str):
+                malformed.append("ticker_sentiment.ticker")
+                continue
+            tkv = (raw_tk or "").upper().strip()
             if not tkv:
                 continue
             rows.append({
@@ -227,6 +256,11 @@ def av_news_to_rows(feed: list[dict]) -> list[dict]:
     if skipped:
         log.warning("av_news_to_rows: skipped %d article(s) with an unparseable "
                     "time_published: %s", len(skipped), skipped[:5])
+    if malformed:
+        counts = Counter(malformed)
+        log.warning("av_news_to_rows: %d vendor field(s) of the wrong type, "
+                    "stored NULL or skipped: %s", len(malformed),
+                    ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return rows
 
 

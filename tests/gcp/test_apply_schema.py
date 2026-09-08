@@ -15,6 +15,8 @@ truncated. Tests cover:
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from gcp.apply_schema import split_statements
@@ -849,3 +851,113 @@ def test_same_revision_reapply_keeps_the_forced_flag():
     record_revision(eng, "abc", 123, frozenset({"abc"}), schema_digest="d1", forced=True)
     update = next(e for e in eng.executed if e.startswith("UPDATE schema_apply_history"))
     assert "forced = (forced OR :forced)" in update and "'forced': True" in update, update
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Terminator recognition — a `;` followed by an inline comment
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_terminator_followed_by_an_inline_comment_ends_the_statement():
+    """The boundary test was `stripped.endswith(";")`, so a statement
+    ending `... DOUBLE PRECISION;    -- worst drawdown` did not read as
+    terminated and the NEXT statement was appended to it (Codex on
+    #1022). Two commands then travel as one unit, which loses the
+    per-statement boundary the applier logs, counts and orders by."""
+    sql = "CREATE TABLE a (id INT);  -- first\nCREATE TABLE b (id INT);\n"
+    out = split_statements(sql)
+    assert len(out) == 2, out
+    assert out[0].startswith("CREATE TABLE a")
+    assert out[1].startswith("CREATE TABLE b")
+
+
+def test_no_unit_of_the_real_schema_carries_more_than_one_command():
+    """The invariant that would have caught the above on the real file:
+    every execution unit is exactly one SQL command. gcp/schema.sql line
+    898 ends `min_low_10d_pct DOUBLE PRECISION;    -- worst drawdown ...`
+    and merged that ALTER TABLE with the one at line 905."""
+    from pathlib import Path as _P
+
+    from gcp.apply_schema import split_statement_groups
+
+    sql = _P(__file__).resolve().parents[2] / "gcp" / "schema.sql"
+    for unit in split_statement_groups(sql.read_text()):
+        for stmt in unit:
+            assert _commands_in(stmt) == 1, (
+                "unit carries %d commands, so it would be sent as one "
+                "statement:\n%s" % (_commands_in(stmt), stmt[:400]))
+
+
+def _commands_in(text: str) -> int:
+    """Count command terminators outside dollar-quoted bodies, ignoring
+    an inline trailing comment. Deliberately independent of the parser
+    under test."""
+    n, in_dollar = 0, False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("--"):
+            continue
+        if line.count("$$") % 2 == 1:
+            in_dollar = not in_dollar
+        if in_dollar:
+            continue
+        code = stripped.split("--")[0].rstrip()
+        if code.endswith(";"):
+            n += 1
+    return n
+
+
+def test_a_double_dash_inside_a_string_literal_is_not_a_comment():
+    """Stripping the trailing comment must not fire on a `--` that is
+    part of a value, or the terminator after it would be lost and the
+    next statement swallowed."""
+    sql = "INSERT INTO t VALUES (\'a -- b\');\nCREATE TABLE c (id INT);\n"
+    out = split_statements(sql)
+    assert len(out) == 2, out
+    assert "a -- b" in out[0]
+
+
+def test_an_escaped_quote_does_not_end_the_string_literal():
+    sql = "INSERT INTO t VALUES (\'it\'\'s -- fine\');\nCREATE TABLE c (id INT);\n"
+    out = split_statements(sql)
+    assert len(out) == 2, out
+
+
+def test_a_comment_after_the_terminator_of_a_dollar_quoted_body_splits():
+    sql = (
+        "CREATE FUNCTION f() RETURNS TRIGGER AS $$\n"
+        "BEGIN\n"
+        "    RETURN NEW;   -- not a terminator: inside the body\n"
+        "END;\n"
+        "$$ LANGUAGE plpgsql;   -- this one is\n"
+        "CREATE TABLE z (id INT);\n"
+    )
+    out = split_statements(sql)
+    assert len(out) == 2, out
+    assert "RETURN NEW;" in out[0] and "LANGUAGE plpgsql" in out[0]
+    assert out[1].startswith("CREATE TABLE z")
+
+
+def test_dry_run_parses_without_database_credentials(monkeypatch, caplog, tmp_path):
+    """`--dry-run` prints the parsed statements and executes nothing, so
+    requiring a configured Cloud SQL to reach it defeated its only use
+    (Codex on #1022): a developer validating a schema edit locally got
+    exit 2 and no output."""
+    import logging
+
+    from gcp import apply_schema as mod
+
+    schema = tmp_path / "schema.sql"
+    schema.write_text("CREATE TABLE a (id INT);  -- note\nCREATE TABLE b (id INT);\n")
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: False)
+    monkeypatch.setattr(mod, "get_engine", _never_called, raising=False)
+    monkeypatch.setattr(sys, "argv",
+                        ["apply_schema", "--dry-run", "--file", str(schema)])
+    with caplog.at_level(logging.INFO, logger="gcp.apply_schema"):
+        rc = mod.main()
+    assert rc == 0, "a dry run needs no database"
+    assert "CREATE TABLE a" in caplog.text and "CREATE TABLE b" in caplog.text
+
+
+def _never_called(*a, **k):  # pragma: no cover - guard
+    raise AssertionError("a dry run must not open a database connection")

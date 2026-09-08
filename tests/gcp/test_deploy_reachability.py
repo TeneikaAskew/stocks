@@ -159,7 +159,7 @@ def _gamma_levels_body() -> str:
     r'--service-account\s+"\$\{SA_EMAIL\}"',
     r'--command\s+"python"',
     r'--args="-m,gcp\.research\.p2_build_gamma_levels"',
-    r"\$\{DB_SECRET_FLAG\}",
+    r"--set-secrets=DB_PASS=db-trading-pass:latest",
     r'--set-env-vars\s+"\$\(_env_string\)"',
 ])
 def test_p2_build_gamma_levels_reproduces_the_live_spec(flag):
@@ -228,3 +228,75 @@ def test_backfill_ticker_declares_max_retries_zero_on_both_branches():
     assert "--max-retries 0" in create, create
     assert "--max-retries 1" not in body
     assert "--max-retries 0" in update, "the update branch must converge max-retries too"
+
+
+# ── the DB_SECRET_FLAG exemption list (#1022) ─────────────────────────────
+
+
+def _flag_exempt_targets() -> set[str]:
+    """The dispatcher labels that skip resolving DB_SECRET_FLAG."""
+    m = re.search(r"\ncase \"\$\{1:-\}\" in\n\s*([^)]+)\)\s*DB_SECRET_FLAG=\"\"", CODE)
+    assert m, "the DB_SECRET_FLAG case statement moved or changed shape"
+    # The pattern list wraps over several lines with `\` continuations.
+    flat = m.group(1).replace("\\", " ").replace("\n", " ")
+    return {lbl.strip().strip('"') for lbl in flat.split("|") if lbl.strip()}
+
+
+def test_no_flag_exempt_target_consumes_the_secret_flag():
+    """Skipping the probe for a target that DOES use ${DB_SECRET_FLAG}
+    would deploy that job with an empty --set-secrets, i.e. silently strip
+    its credentials. The exemption is therefore only valid for targets that
+    never reach the flag, and this is the check that keeps the list honest
+    as targets are added."""
+    exempt = _flag_exempt_targets()
+    arms = _dispatch_arms()
+    for label in sorted(exempt):
+        if label in ("help", ""):
+            continue
+        assert label in arms, f"exempt label {label!r} is not a dispatcher target"
+        assert not _reaches_token(arms[label], "DB_SECRET_FLAG"), (
+            f"./gcp/deploy.sh {label} skips resolving DB_SECRET_FLAG but uses it")
+
+
+def test_setup_and_the_secret_bootstraps_are_exempt():
+    """setup enables the Secret Manager API and setup-notifier-secrets
+    creates secrets; neither can require them to be readable first."""
+    exempt = _flag_exempt_targets()
+    for label in ("setup", "setup-notifier-secrets"):
+        assert label in exempt, f"{label} must not gate on a Secret Manager read"
+
+
+def _dispatch_arms() -> dict[str, str]:
+    body = DISPATCH[:DISPATCH.index("\nesac")]
+    arms: dict[str, str] = {}
+    for m in re.finditer(r"^\s{4}([a-z0-9|_\-\"]+)\)(.*?);;", body, re.S | re.M):
+        for lbl in m.group(1).split("|"):
+            arms[lbl.strip().strip('"')] = m.group(2)
+    return arms
+
+
+def _reaches_token(body: str, token: str, seen: set[str] | None = None) -> bool:
+    seen = set() if seen is None else seen
+    if token in body:
+        return True
+    for fn in FNS:
+        if fn in seen or not re.search(r"\b" + fn + r"\b", body):
+            continue
+        seen.add(fn)
+        if _reaches_token(FNS[fn], token, seen):
+            return True
+    return False
+
+
+def test_p2_build_gamma_levels_takes_only_the_database_password():
+    """The live job holds exactly one secret (`gcloud run jobs describe
+    p2-build-gamma-levels`, 2026-09-08: DB_PASS <- db-trading-pass, plus
+    four plain env vars), and the module reads no API key or webhook.
+    Deploying it through the shared ${DB_SECRET_FLAG} would hand it the
+    AlphaVantage key and three Discord webhooks on the next run of this
+    target — a capture that widens what it captured."""
+    body = _gamma_levels_body()
+    assert "DB_SECRET_FLAG" not in body, (
+        "the shared secret set grants more than this job uses")
+    assert body.count("--set-secrets=DB_PASS=db-trading-pass:latest") == 2, (
+        "both the create and the update branch must name the one secret")

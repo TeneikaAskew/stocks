@@ -932,13 +932,24 @@ _build_secret_flag() {
     pairs="${pairs}${extra}"
     echo "--set-secrets=${pairs}"
 }
-# Subcommands that deploy nothing need no job declaration: pin-images (the
-# one subcommand the Cloud Build triggers run, as trading-runner@),
-# cloudbuild-triggers (imports build configs) and help. Every other
-# subcommand deploys something and resolves the secret set up front so a
-# read failure aborts before any mutation.
+# Subcommands that mutate no Cloud Run job need no secret set, and two of
+# them must not even READ Secret Manager: `setup` is the command that
+# ENABLES the API (gcp/setup_cloud_sql.sh:34) and `setup-notifier-secrets`
+# is what creates secrets, so probing first made the bootstrap unreachable
+# on a fresh project — the probe cannot tell an API-disabled error from a
+# real one, returns nonzero, and `set -e` exits before the dispatcher runs
+# (Codex on #1022). The rest here build images, pin tags, import build
+# configs, execute jobs or grant IAM.
+#
+# Every other subcommand deploys something that consumes the flag and
+# resolves it up front, so a read failure aborts before any mutation. The
+# split is pinned by tests/gcp/test_deploy_reachability.py: an exempt
+# target that reached ${DB_SECRET_FLAG} would deploy with an empty
+# --set-secrets and silently strip that job's credentials.
 case "${1:-}" in
-    pin-images|cloudbuild-triggers|help|"") DB_SECRET_FLAG="" ;;
+    setup|setup-notifier-secrets|setup-pg-dump-iam|migrate|build|build-research|\
+    backfill|registry-cleanup|retire-legacy-images|pin-images|\
+    cloudbuild-triggers|p7b-classifier|help|"") DB_SECRET_FLAG="" ;;
     *) DB_SECRET_FLAG="$(_build_secret_flag)" ;;
 esac
 
@@ -1442,7 +1453,13 @@ deploy_phase6_playbook() {
 # ~1 min/ticker), cpu 2, memory 2Gi, maxRetries 0, timeoutSeconds 5400,
 # SA trading-runner, DB env + DB_PASS secret. Sizing review is a separate
 # question from the capture; see the #834 follow-up note on PR #1022.
-# tests/gcp/test_deploy_reachability.py pins the spec.
+#
+# DB_PASS is named explicitly rather than taken from ${DB_SECRET_FLAG}:
+# `gcloud run jobs describe` shows the live job holding that one secret,
+# and gcp/research/p2_build_gamma_levels.py reads no API key or webhook,
+# so the shared flag would have granted this job the AlphaVantage key and
+# three Discord webhooks it never uses — a capture that widens what it
+# captured. tests/gcp/test_deploy_reachability.py pins the spec.
 deploy_p2_build_gamma_levels() {
     echo "Deploying p2-build-gamma-levels job..."
     local research_image="${IMAGE}:research"
@@ -1453,7 +1470,7 @@ deploy_p2_build_gamma_levels() {
         --service-account "${SA_EMAIL}" \
         --command "python" \
         --args="-m,gcp.research.p2_build_gamma_levels" \
-        ${DB_SECRET_FLAG} \
+        --set-secrets=DB_PASS=db-trading-pass:latest \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update p2-build-gamma-levels \
@@ -1462,7 +1479,7 @@ deploy_p2_build_gamma_levels() {
         --task-timeout 5400 \
         --command "python" \
         --args="-m,gcp.research.p2_build_gamma_levels" \
-        ${DB_SECRET_FLAG} \
+        --set-secrets=DB_PASS=db-trading-pass:latest \
         --set-env-vars "$(_env_string)" \
         --quiet
 }

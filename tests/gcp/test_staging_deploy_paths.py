@@ -471,3 +471,69 @@ def test_pin_tag_surfaces_gclouds_own_error():
             f"stderr of the tag add is discarded again:\n{ln}")
     assert re.search(r'could not tag .*\$\{err', body), (
         "the failure line does not carry gcloud's error text")
+
+
+# ── bootstrap: the secret probe must not gate `setup` (#1022) ─────────────
+
+def _run_deploy_target(tmp_path, target, secret_probe_stderr):
+    """Run `./gcp/deploy.sh TARGET` with a stub gcloud that answers the
+    Secret Manager probe with ``secret_probe_stderr`` and refuses everything
+    else, recording every invocation."""
+    import os
+    import subprocess
+
+    calls = tmp_path / "gcloud-calls.log"
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "gcloud").write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> '{calls}'\n"
+        'if [ "$1" = "secrets" ]; then\n'
+        f"  echo {secret_probe_stderr!r} >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        "echo 'stub gcloud: refusing' >&2\n"
+        "exit 1\n"
+    )
+    (stub / "gcloud").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}",
+           "PROJECT_ID": "test-project"}
+    proc = subprocess.run(
+        ["bash", str(REPO / "gcp/deploy.sh"), target],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=120,
+    )
+    recorded = calls.read_text().splitlines() if calls.exists() else []
+    return proc, recorded
+
+
+# The message gcloud prints when the API itself is off, which is the state
+# `setup` exists to fix. It carries no NOT_FOUND, so the probe cannot read
+# it as "secret absent" and correctly refuses to guess.
+_API_DISABLED = ("ERROR: (gcloud.secrets.versions.access) FAILED_PRECONDITION: "
+                 "Secret Manager API has not been used in project test-project "
+                 "before or it is disabled.")
+
+
+def test_setup_reaches_the_api_enabling_step_on_a_fresh_project(tmp_path):
+    """`./gcp/deploy.sh setup` is the command that ENABLES Secret Manager
+    (gcp/setup_cloud_sql.sh:34), so it cannot require Secret Manager to be
+    readable first. Resolving the Cloud Run secret flag for every target
+    made the bootstrap unreachable on a fresh project: the probe's failure
+    exits under `set -e` before the dispatcher runs (Codex on #1022)."""
+    proc, recorded = _run_deploy_target(tmp_path, "setup", _API_DISABLED)
+    assert not any("secrets versions access" in c for c in recorded), (
+        "setup probed Secret Manager before enabling it: %s" % recorded[:4])
+    assert any("config set project" in c or "services enable" in c
+               for c in recorded), (
+        "setup never reached its own first step; stderr=%s" % proc.stderr[-400:])
+
+
+def test_a_deploying_target_still_aborts_when_the_probe_is_unreadable(tmp_path):
+    """The other half of the guard stays: a target that deploys a job which
+    consumes the flag resolves it up front, so an unreadable secret aborts
+    before any `gcloud run jobs` mutation."""
+    proc, recorded = _run_deploy_target(tmp_path, "monitor", _API_DISABLED)
+    assert proc.returncode != 0
+    assert any("secrets versions access" in c for c in recorded), recorded
+    assert not any("run jobs" in c for c in recorded), (
+        "a job was mutated after the secret set could not be read: %s" % recorded)

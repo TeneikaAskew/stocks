@@ -503,11 +503,22 @@ def test_secret_helpers_fail_loud_instead_of_defaulting(tmp_path):
 
 def test_pin_images_does_not_resolve_the_secret_set():
     """pin-images runs inside the trigger builds as trading-runner@ and needs
-    no job declaration; every other subcommand resolves the secret set at
-    start-up so a read failure aborts before any mutation."""
+    no job declaration; every subcommand that deploys something resolves the
+    secret set at start-up so a read failure aborts before any mutation.
+
+    The exemption is matched by label rather than by the literal case line:
+    `setup` and the other bootstraps joined it on #1022, and the complete
+    list is checked against what each target actually uses in
+    tests/gcp/test_deploy_reachability.py."""
+    import re
+
     src = (REPO / "gcp/deploy.sh").read_text()
     top = src[:src.index("_env_string() {")]
-    assert 'pin-images|cloudbuild-triggers|help|"") DB_SECRET_FLAG="" ;;' in top
+    m = re.search(r'\n\s*([^)\n]+(?:\\\n[^)\n]+)*)\)\s*DB_SECRET_FLAG="" ;;', top)
+    assert m, "the DB_SECRET_FLAG exemption arm is gone"
+    exempt = {lbl.strip().strip('"')
+              for lbl in m.group(1).replace("\\", " ").replace("\n", " ").split("|")}
+    assert "pin-images" in exempt
     assert '*) DB_SECRET_FLAG="$(_build_secret_flag)" ;;' in top
 
 
