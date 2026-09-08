@@ -641,7 +641,7 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | `absent_everywhere` — the function defined below in this phase, **not** a hand-written pathspec. It runs `consumed()` here and in a solyra checkout, each under **its own** exclusion array, and requires rc=1 from both. "Run the same command over there" cannot pass: measured on this tree, **8 of the 95 routes** in solyra's `tests/fixtures/stocks-openapi.json` match ONLY that vendored file, so under stocks' exclusions they report rc=0 "still consumed" while nothing in solyra calls them — and solyra re-vendors that file from stocks `main` AFTER merge, which is after the gate. Measured both ways on `api/earnings/upcoming` and `api/glossary/gamma`: stocks' set rc=0, `EXCLUDE_SOLYRA` rc=1. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
+| A module or job is deleted | `absent_everywhere "<symbol>"` — the function defined below in this phase, **not** a hand-written pathspec. It runs `consumed()` here and in a solyra checkout, each under **its own** exclusion array, and requires rc=1 from both. "Run the same command over there" cannot pass: measured on this tree, **8 of the 95 routes** in solyra's `tests/fixtures/stocks-openapi.json` match ONLY that vendored file, so under stocks' exclusions they report rc=0 "still consumed" while nothing in solyra calls them — and solyra re-vendors that file from stocks `main` AFTER merge, which is after the gate. Measured both ways on `api/earnings/upcoming` and `api/glossary/gamma`: stocks' set rc=0, `EXCLUDE_SOLYRA` rc=1. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
 | A scheduler or job is retired | `retired_everywhere "<job>" "<scheduler>"`, defined below — same reason: it returns on the first failure, and `none` is how you say a namespace is out of scope. What it encodes: assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself. **`basename()` is not optional**: `name` is a fully qualified resource name (`projects/…/locations/…/jobs/<job>`), so `grep -qx "<job>"` against the raw value never matches and the check reports "retired" while both resources are live. It is a no-op on an already-bare value, so it is right without resolving which shape this gcloud prints — which I cannot check here, the session's gcloud being unauthenticated (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
@@ -689,6 +689,19 @@ git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
   echo "  git clone https://github.com/TeneikaAskew/solyra ../solyra"
   echo "NOT asserting — a surface can be dead here and live in the frontend."
   return 1 2>/dev/null || exit 1; }
+# AND CHECK IT IS THE RIGHT REPO. `rev-parse --git-dir` only says "a git
+# checkout" — measured, it exits 0 for an unrelated scratch repo with no remote
+# at all. A stale ambient SOLYRA or a mistyped path then makes every symbol
+# absent over there, which is the answer this half exists to distrust, arriving
+# with the confidence of a successful search.
+_origin=$(git -C "$SOLYRA" remote get-url origin 2>/dev/null); _origin=${_origin%/}
+case "${_origin%.git}" in
+  *[/:]TeneikaAskew/solyra) ;;
+  *) echo "'$SOLYRA' is a git checkout, but origin is '${_origin:-<none>}',"
+     echo "not TeneikaAskew/solyra. NOT asserting — searching the wrong repo"
+     echo "reports 'no consumers' for every symbol you ask about."
+     return 1 2>/dev/null || exit 1;;
+esac
 
 # Defined HERE, in the same fence as the assertion. Shell functions do not
 # survive between tool invocations — measured, calling `consumed` in a fresh
@@ -727,6 +740,15 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # absent_everywhere. A bad rev exits 128, which the numeric check below
   # already refuses.
   local rev=(); test -z "${REV:-}" || rev=( "$REV" )
+  # --untracked, but ONLY when searching the working tree. git grep skips
+  # untracked files by default, so a Phase 5 file that is written but not yet
+  # staged is invisible: measured, a symbol living only in an unstaged caller
+  # returns rc=1 "absent" and rc=0 the moment `git add` runs. Phase 4's gate
+  # runs BEFORE Phase 7 commits, so that window is the normal case, not an edge
+  # one. It honours the exclusion pathspecs and .gitignore — measured, an
+  # untracked node_modules/ file is not searched — and returns a clean 1 on a
+  # real miss. It is invalid with a rev (measured, rc=128), hence the guard.
+  local untr=(); test ${#rev[@]} -gt 0 || untr=( --untracked )
   test ${#EXCLUDE[@]} -gt 0 \
     || { echo "EXCLUDE unset — set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA first;"
          echo "an empty exclusion set searches prose and generated files too."
@@ -739,15 +761,16 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # rc=1 "absent" for that pattern while -E returns 0 and names gcp/deploy.sh,
   # gcp/schema.sql, platform/api/openapi.json and the backtest router. A
   # coupled retirement would certify BOTH surfaces gone while both were live.
-  git grep -qE "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}"; a=$?
+  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}"; a=$?
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
   # file as the only hit. Excluding a path that does not exist (the surface is
   # not an agent) is safe — measured rc=1, not 128.
-  git grep -qE "$sym" "${rev[@]}" -- .claude/agents ":!.claude/agents/$sym.md"; b=$?
-  git grep -qE "$sym" "${rev[@]}" -- .claude/commands ":!.claude/commands/$sym.md" \
-    "${reviewed[@]}"; c=$?
+  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/agents \
+    ":!.claude/agents/$sym.md"; b=$?
+  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
+    ":!.claude/commands/$sym.md" "${reviewed[@]}"; c=$?
   # FOURTH executable-markdown scope. .github/prompts/*.md reach Gemini through
   # .github/workflows/refresh-architecture-docs.yml: scripts/maintenance/
   # render_doc_prompts.py renders them into $RUNNER_TEMP/prompts/ (`:425`) and
@@ -766,7 +789,8 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # file's own worked example. Self-exclusion for symmetry with the agent scope,
   # and the whole scope is a safe no-op where the directory does not exist —
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
-  git grep -qE "$sym" "${rev[@]}" -- .github/prompts ":!.github/prompts/$sym.md"; e=$?
+  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .github/prompts \
+    ":!.github/prompts/$sym.md"; e=$?
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
   # `scripts` block is EXECUTABLE: `npm run contract:sync` invokes
@@ -820,15 +844,33 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # and a NEW command that starts routing to the surface is not on your list, so
   # it drops back to 3 instead of riding an old approval.
   echo "only .claude/commands/ mentions it — a route, or this file's own example?"
-  git grep -nE "$sym" "${rev[@]}" -- .claude/commands ":!.claude/commands/$sym.md" \
-    "${reviewed[@]}"
+  git grep -nE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
+    ":!.claude/commands/$sym.md" "${reviewed[@]}"
   return 3; }
 
-absent_everywhere() {   # uses consumed() above — both scopes, both repos
+absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # `local REV=` so an ambient REV in the caller's shell cannot pin the STOCKS
   # half to some other revision — the same ambient-state hazard as the project
   # id in retired_everywhere. The solyra subshell sets this local deliberately.
-  local rc REV=
+  local sym=$1 rc REV=
+  test -n "$sym" || { echo "usage: absent_everywhere <symbol>"; return 1; }
+  # AN APPROVAL IS SYMBOL-BOUND. REVIEWED clears the rc=3 ambiguity by naming
+  # command files you read and judged to be prose — for ONE symbol. Left set
+  # while you check the next one, it excludes that file for a symbol you never
+  # inspected. Measured, and it is not hypothetical: resolve-issue.md really is
+  # prose for TradingAlertSystem AND the only live route for debug-workflow
+  # (`:68`, `:98`), so
+  #     REVIEWED=.claude/commands/resolve-issue.md
+  #     consumed TradingAlertSystem  -> 1   correct
+  #     consumed debug-workflow      -> 1   FALSELY CERTIFIED, was 3
+  # deletes a live command. So the approval carries the symbol it was made for
+  # and this refuses when they disagree, rather than silently dropping it —
+  # a silent drop turns into a confusing rc=3 with no reason attached.
+  test -z "${REVIEWED:-}${REVIEWED_SOLYRA:-}" || test "${REVIEWED_FOR:-}" = "$sym" || {
+    echo "REVIEWED was approved for '${REVIEWED_FOR:-<unset>}', not '$sym'."
+    echo "Re-read THIS symbol's command hits, then set REVIEWED_FOR=$sym —"
+    echo "or clear REVIEWED. An approval does not travel between symbols."
+    return 1; }
   # Only rc=1 is "absent". 0 is consumed, 2 is "grep broke", 3 is "commands
   # mention it — go read those lines". All three fail, which is the right
   # default: this assertion may only pass when it actually looked and found
@@ -837,7 +879,7 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
   # REVIEWED empty until consumed() has actually printed lines and you have read
   # them; pre-filling it is how a route gets waved through as an example.
   EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )
-  consumed "<symbol>" $REVIEWED; rc=$?
+  consumed "$sym" $REVIEWED; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
   # PIN THE REVISION, and fetch it first. An existing checkout is not a current
   # one: it can be parked on an old branch, or on a feature branch that already
@@ -856,7 +898,7 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
     REV=$(git rev-parse FETCH_HEAD) || exit 2
     echo "solyra: searching origin/main @ ${REV:0:12} (not the working tree)"
     EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
-    consumed "<symbol>" $REVIEWED_SOLYRA ); rc=$?
+    consumed "$sym" $REVIEWED_SOLYRA ); rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
 }
 
@@ -946,7 +988,8 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
 # resources are gone, `absent_everywhere` returns 1, `retired_everywhere` then
 # returns 0, and the block reports success. Measured — first-fails plus
 # second-passes exits 0.
-fully_retired() { absent_everywhere && retired_everywhere "<job>" "<scheduler>"; }
+fully_retired() {
+  absent_everywhere "<symbol>" && retired_everywhere "<job>" "<scheduler>"; }
 fully_retired            # BARE
 ```
 
