@@ -263,6 +263,19 @@ CHECKS: list[dict] = [
     # grows at the true rate regardless of the anchor shift. Reproduced:
     # with entry_time frozen at Monday's close, PR #1065's failure
     # scenario now measures ~72h (stale) instead of 63h (warn).
+    #
+    # ISSUE-1067 (Codex, same PR): this is still not a complete fix. A
+    # genuinely quiet multi-session stretch (the watchlist's 5-condition
+    # voter fires zero qualifying signals) freezes entry_time exactly
+    # like a real writer crash does -- no data column on this table can
+    # tell the two apart, because zero rows written means MAX() doesn't
+    # move either way. The real fix is a job_runs heartbeat
+    # (gcp/database.py:record_job_run, already wired for the duration-
+    # regression check below) written unconditionally by the writer on
+    # every completion; historical-signals-watchlist doesn't call it
+    # yet (verified live: 0 of 16 job_runs rows are from this job).
+    # Tracked separately -- it needs writer-side instrumentation, not
+    # just this audit script.
     {
         "name": "historical_signals",
         "ts_column": "entry_time",
