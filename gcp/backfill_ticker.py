@@ -187,13 +187,17 @@ def _safe_float(x) -> Optional[float]:
 def av_news_to_rows(feed: list[dict]) -> list[dict]:
     """Explode AV news feed into one row per (article, ticker)."""
     rows = []
+    skipped: list[str] = []
     for art in feed:
         pub_raw = art.get("time_published") or ""
         try:
             pub_ts = datetime.strptime(pub_raw[:15], "%Y%m%dT%H%M%S").replace(
                 tzinfo=timezone.utc,
             )
-        except Exception:
+        except ValueError:
+            # Vendor data we do not control (EXTERNAL): the article is
+            # dropped, and the drop is visible (CLAUDE.md 3.7).
+            skipped.append(pub_raw)
             continue
         title = (art.get("title") or "")[:500] or None
         url = (art.get("url") or "")[:1000] or None
@@ -220,6 +224,9 @@ def av_news_to_rows(feed: list[dict]) -> list[dict]:
                 "data_source": "alphavantage",
                 "match_method": "av_ticker_sentiment",
             })
+    if skipped:
+        log.warning("av_news_to_rows: skipped %d article(s) with an unparseable "
+                    "time_published: %s", len(skipped), skipped[:5])
     return rows
 
 
@@ -400,9 +407,13 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
                 row["strat_candle"] = str(last_candle)
             if last_combo:
                 row["strat_combo"] = str(last_combo)[:30]
-            row["ftfc_score"] = float(ftfc_score) if ftfc_score is not None else 0.0
-            row["ftfc_direction"] = str(ftfc_dir or "mixed")[:10]
-            row["strat_setup"] = bool(last_combo and abs(ftfc_score or 0.0) >= 0.3)
+            # None stays None: a neutral 0.0 / 'mixed' written where there
+            # was no reading is a fabricated value (CLAUDE.md 3.7).
+            row["ftfc_score"] = float(ftfc_score) if ftfc_score is not None else None
+            row["ftfc_direction"] = str(ftfc_dir)[:10] if ftfc_dir else None
+            row["strat_setup"] = bool(
+                last_combo and ftfc_score is not None and abs(ftfc_score) >= 0.3
+            )
         except Exception as exc:
             log.warning("strat compute failed for %s @ %s: %s", ticker, fd, exc)
 

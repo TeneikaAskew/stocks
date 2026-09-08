@@ -26,12 +26,17 @@ REPO = Path(__file__).resolve().parents[2]
 SCAN_ROOTS = ("gcp", "lib", "scripts", "platform")
 
 # upsert_dataframe(df, 'signal_alerts', ...) / upsert_rows(conn, "trades", ...)
-# / INSERT INTO signal_alerts (...). UPDATE-only writers (the EOD resolver,
-# the exit watcher) create no rows and are not in scope.
+# / df.to_sql("trades", ...) / INSERT INTO signal_alerts (...) / COPY trades.
+# UPDATE-only writers (the EOD resolver, the exit watcher) create no rows
+# and are not in scope. The table name may sit a few arguments after the
+# call (a `pd.DataFrame(rows)` argument carries its own parentheses), the
+# match is case-insensitive and a `public.` prefix is allowed (internal
+# review of #1022: the first version missed all four).
 _ROW_WRITE = re.compile(
-    r"""(?:upsert_dataframe|upsert_rows|bulk_insert_dataframe|bulk_copy_upsert)\s*\([^)]*?['"](signal_alerts|trades)['"]"""
-    r"""|INSERT\s+INTO\s+(signal_alerts|trades)\b""",
-    re.S,
+    r"""(?:upsert_dataframe|upsert_rows|bulk_insert_dataframe|bulk_copy_upsert|to_sql)\s*\(.{0,300}?['"](?:public\.)?(signal_alerts|trades)['"]"""
+    r"""|INSERT\s+INTO\s+(?:public\.)?(signal_alerts|trades)\b"""
+    r"""|\bCOPY\s+(?:public\.)?(signal_alerts|trades)\b""",
+    re.S | re.I,
 )
 
 SANCTIONED_ROW_WRITERS = {
@@ -112,3 +117,84 @@ def test_compare_tier_fires_script_is_gone():
         "scripts/compare_tier_fires.py was a throwaway fire-decision harness "
         "whose numbers gated PR #248 (#821)"
     )
+
+
+# ── the writer regex must catch the obvious rewrites (internal review of
+#    #1022, trade-reader round) ──────────────────────────────────────────
+
+_BYPASSES = [
+    'upsert_dataframe(pd.DataFrame(rows), "trades", ["ticker", "entry_time"])',
+    'insert into signal_alerts (ticker) values (1)',
+    'INSERT INTO public.trades (ticker) VALUES (1)',
+    'df.to_sql("trades", engine, if_exists="append")',
+    'cur.execute("COPY trades FROM STDIN", stream=buf)',
+]
+
+
+def test_the_writer_regex_catches_the_obvious_rewrites():
+    """`[^)]*?` could not cross a `)` (so a `pd.DataFrame(rows)` argument
+    hid the table name), there was no re.I, and to_sql / COPY were not
+    matched at all. A guard that the guarded script's most obvious rewrite
+    bypasses is not a guard. A table name held in a variable is beyond a
+    regex; that gap is stated here rather than pretended away."""
+    missed = [src for src in _BYPASSES if not _ROW_WRITE.search(src)]
+    assert missed == [], missed
+
+
+def test_the_writer_regex_ignores_reads():
+    reads = [
+        'query_to_dataframe("SELECT * FROM trades WHERE ticker = :t")',
+        'upsert_dataframe(df, "market_data_daily", ["ticker", "date"])',
+        'pd.read_sql("SELECT count(*) FROM signal_alerts", engine)',
+    ]
+    caught = [src for src in reads if _ROW_WRITE.search(src)]
+    assert caught == [], caught
+
+
+# ── every reader of signal_alerts says which run_kind it reads ──────────
+# (internal review of #1022, trade-reader round: 23 replay-tagged rows sit
+# in production and not one reader filtered them; the EOD resolver would
+# resolve a replay alert and write its exit onto the live trades row)
+
+_READ_SQL = re.compile(r"\b(?:FROM|JOIN|UPDATE)\s+signal_alerts\b", re.I)
+
+
+def _sql_strings(path: Path):
+    """Every string literal in the module: implicit concatenation is one
+    Constant, and an f-string is yielded as the join of its constant parts
+    (its parts are not yielded again on their own, or a predicate that
+    sits in a later part would look missing)."""
+    import ast
+    tree = ast.parse(path.read_text(errors="ignore"))
+    in_fstring: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            in_fstring.update(id(v) for v in node.values)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            yield "".join(v.value for v in node.values
+                          if isinstance(v, ast.Constant) and isinstance(v.value, str))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in in_fstring:
+            yield node.value
+
+
+def test_every_signal_alerts_reader_filters_on_run_kind():
+    offenders = {}
+    for p in _py_files(SCAN_ROOTS):
+        for text in _sql_strings(p):
+            if _READ_SQL.search(text) and "run_kind" not in text:
+                offenders.setdefault(_rel(p), []).append(" ".join(text.split())[:90])
+    assert not offenders, (
+        "signal_alerts read or updated without a run_kind predicate "
+        f"(replay and backfill rows would be counted as live): {offenders}"
+    )
+
+
+def test_the_freshness_watchdog_measures_live_alerts():
+    """scripts/audit_data_freshness.py builds its SQL from a config dict,
+    so the AST scan above cannot see it; a replay of today would otherwise
+    make signal_alerts look fresh."""
+    src = (REPO / "scripts/audit_data_freshness.py").read_text()
+    block = src[src.index('"name": "signal_alerts"'):]
+    block = block[:block.index("},")]
+    assert "\"where\": \"run_kind = 'live'\"" in block, block

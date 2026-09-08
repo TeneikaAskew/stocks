@@ -213,18 +213,39 @@ def test_no_ticker_means_no_overrides(monkeypatch):
     assert "above_vwap" in sig["conditions_met"]  # not stripped
 
 
-def test_resolver_failure_degrades_gracefully(monkeypatch):
-    """If the resolver raises (network blip, table missing), the live
-    path must not crash — silently degrade to legacy behaviour."""
+def test_resolver_failure_fails_closed(monkeypatch, caplog):
+    """Audit C-04 (docs/audits/FALLBACK_AUDIT_2026-05-13.md 12.1) was
+    marked OPEN: a resolver failure evaluated "with NO disabled conditions
+    or directions applied", so a side an operator switched OFF for risk
+    fired anyway. The decision is now taken the safe way round: when the
+    kill switch cannot be read, no mean-reversion signal fires for that
+    bar, and the failure is logged at ERROR with its traceback."""
+    import logging
+
     from lib.strategies import exit_config_overrides as eco
     eco._latest_overrides.cache_clear()
 
     def _boom(t):
-        raise RuntimeError("simulated DB failure")
+        raise RuntimeError("connection lost")
 
     monkeypatch.setattr(eco, "_latest_overrides", _boom)
+    row = _put_row()
+    row["Broke_Prev_Day_Low"] = 1
+    with caplog.at_level(logging.ERROR, logger="lib.signals"):
+        sig = evaluate_signal(row, min_conditions=3, ticker="QQQ")
+    assert sig is None, "an unreadable kill switch must not read as open"
+    assert "connection lost" in caplog.text and "Traceback" in caplog.text
 
-    sig = evaluate_signal(_put_row(), min_conditions=3, ticker="QQQ")
-    # Should still fire — fallback to legacy path despite resolver failure.
-    assert sig is not None
-    assert sig["direction"] == "PUT"
+
+def test_malformed_disabled_conditions_fails_closed(monkeypatch, caplog):
+    import logging
+
+    from lib.strategies import exit_config_overrides as eco
+    eco._latest_overrides.cache_clear()
+    monkeypatch.setattr(eco, "_latest_overrides", lambda t: {
+        "disabled_conditions": "not json", "disabled_directions": None})
+    row = _put_row()
+    row["Broke_Prev_Day_Low"] = 1
+    with caplog.at_level(logging.ERROR, logger="lib.signals"):
+        assert evaluate_signal(row, min_conditions=3, ticker="QQQ") is None
+    assert "disabled_conditions" in caplog.text

@@ -311,9 +311,13 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
         )
         ON CONFLICT DO NOTHING
     """)
-    try:
-        with engine.begin() as conn:
-            conn.execute(insert_sql, {
+    # signal_alerts is unique on (ticker, alert_ts) and this INSERT is ON
+    # CONFLICT DO NOTHING, so replaying a session that ran live drops every
+    # fire on a live fire's minute. Legitimate, never silent: the rowcount
+    # is returned and a dropped row is logged. A failed write raises; an
+    # operator --persist run must not report success over one.
+    with engine.begin() as conn:
+        res = conn.execute(insert_sql, {
                 'ticker': fire.ticker,
                 'alert_ts': fire.timestamp.to_pydatetime(),
                 'alert_date': fire.timestamp.date(),
@@ -330,9 +334,13 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
                 'rvol_mod': fire.rvol_mod,
                 'replay_id': replay_id,
             })
-    except Exception as e:
-        logger.warning("persist failed for fire %s %s: %s",
-                       fire.ticker, fire.timestamp, e)
+    n = int(res.rowcount)
+    if n == 0:
+        logger.warning("replay fire %s %s not persisted: a signal_alerts row with the same "
+                       "(ticker, alert_ts) exists (unique key uq_signal_alerts), i.e. a live "
+                       "fire at that minute; the replay row is dropped, not merged",
+                       fire.ticker, fire.timestamp)
+    return n
 
 
 def make_capturing_fire_alert(captured: list[FireRecord], monitor):

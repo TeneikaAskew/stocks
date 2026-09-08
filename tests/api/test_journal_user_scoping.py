@@ -74,7 +74,7 @@ def scoped(monkeypatch):
         return "generated-id"
 
     monkeypatch.setattr(journal, "_HAS_CLOUD_SQL", True, raising=False)
-    monkeypatch.setattr(journal, "query_to_dataframe", fake_q, raising=False)
+    monkeypatch.setattr(journal, "query_to_dataframe_strict", fake_q, raising=False)
     monkeypatch.setattr(journal, "execute_sql", fake_x, raising=False)
     monkeypatch.setattr(journal, "execute_returning_scalar", fake_returning,
                         raising=False)
@@ -169,7 +169,7 @@ def test_auth_mode_db_failure_fails_closed(scoped, monkeypatch):
         raise RuntimeError("cloud sql down")
 
     _as(monkeypatch, "alice@x.com")
-    monkeypatch.setattr(j, "query_to_dataframe", boom, raising=False)
+    monkeypatch.setattr(j, "query_to_dataframe_strict", boom, raising=False)
     with pytest.raises(HTTPException) as ei:
         _run(j.get_trades("spy", object()))
     assert ei.value.status_code == 503

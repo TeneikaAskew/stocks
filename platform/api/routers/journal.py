@@ -71,12 +71,12 @@ _IMPORT_READ_CHUNK_SIZE = 1024 * 1024  # 1 MiB
 _ALLOWED_BROKERS = {"robinhood", "webull", "generic"}
 
 # ── Cloud SQL availability check ─────────────────────────────────────────────
-try:
-    from gcp.database import (is_cloud_sql_configured, query_to_dataframe,
-                              execute_sql, execute_returning_scalar)
-    _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
-except Exception:
-    _HAS_CLOUD_SQL = False
+# gcp.database is first-party: an import failure is a bug and fails the
+# app at import rather than silently running the journal in local mode.
+from gcp.database import (is_cloud_sql_configured, query_to_dataframe_strict,
+                          execute_sql, execute_returning_scalar)
+
+_HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 
 # Task 2 broker-import core (lib/broker_import.py) — pure parse/pairing, no
 # I/O. This router owns duplicate detection and DB writes (see module
@@ -112,7 +112,12 @@ _ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").strip().lowe
 # take effect, which keeps the older test suites (that patch the plain names)
 # working alongside new tests that patch the indirection directly.
 def _journal_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
-    return query_to_dataframe(sql, params)
+    """Forwards to the STRICT query: every `try: _journal_query(...)
+    except: 503` in this router was inert while this forwarded to the
+    swallowing query_to_dataframe, so /api/journal/examples answered 200
+    with `source: cloud_sql` and no rows when its query failed (internal
+    review of #1022; CLAUDE.md 3.7)."""
+    return query_to_dataframe_strict(sql, params)
 
 
 def _journal_exec(sql: str, params: Optional[dict] = None) -> int:
@@ -1026,6 +1031,7 @@ def get_examples(ticker: str):
                 SELECT sa2.target_price, sa2.time_stop_minutes, sa2.level_broken, sa2.total_score
                 FROM signal_alerts sa2
                 WHERE sa2.ticker = t.ticker AND sa2.direction = t.direction
+                  AND sa2.run_kind = 'live'
                   AND sa2.alert_ts BETWEEN t.entry_time - INTERVAL '5 seconds'
                                         AND t.entry_time + INTERVAL '5 seconds'
                 ORDER BY ABS(EXTRACT(EPOCH FROM (t.entry_time - sa2.alert_ts))), sa2.id
@@ -1477,9 +1483,9 @@ async def import_preview(
     try:
         existing_keys = _existing_entry_keys(owner, tickers)
     except Exception:
-        if owner != "local":
-            raise HTTPException(status_code=503, detail="journal temporarily unavailable")
-        existing_keys = set()
+        # For every owner: an empty key set on a failed lookup re-imported
+        # every trade already in the journal (audit 12.3).
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     trades_out = []
     for t in preview.trades:
@@ -1543,9 +1549,9 @@ def import_commit(body: ImportCommitRequest, request: Request):
     try:
         existing_keys = _existing_entry_keys(owner, tickers)
     except Exception:
-        if owner != "local":
-            raise HTTPException(status_code=503, detail="journal temporarily unavailable")
-        existing_keys = set()
+        # For every owner: an empty key set on a failed lookup re-imported
+        # every trade already in the journal (audit 12.3).
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     imported = 0
     skipped_duplicates = 0

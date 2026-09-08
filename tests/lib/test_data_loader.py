@@ -139,6 +139,15 @@ class TestBuildMultiTimeframe:
         assert '15m' in result
         assert '1h' not in result
 
+    def test_unknown_timeframe_raises_through_build(self, loader, minute_data):
+        """lib/strat.py relies on "an unknown key raises ValueError from
+        build_multi_timeframe so mistakes surface loudly instead of
+        producing empty FTFC"; the loop's `except Exception: continue`
+        made that claim false and silently dropped the timeframe
+        (internal review of #1022; CLAUDE.md 3.7)."""
+        with pytest.raises(ValueError):
+            loader.build_multi_timeframe(minute_data, timeframes=['5m', '3m'])
+
 
 class TestLoadIntraday:
     def test_returns_empty_when_no_data(self, loader):

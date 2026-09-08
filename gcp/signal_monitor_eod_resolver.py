@@ -140,6 +140,7 @@ class EODResolver:
                    price_at_signal, target_price, time_stop_minutes
               FROM signal_alerts
              WHERE (is_open IS TRUE OR exit_ts IS NULL)
+               AND run_kind = 'live'
                AND alert_date <= CURRENT_DATE
         """
         params: dict = {}
@@ -405,6 +406,7 @@ class EODResolver:
                    is_open          = FALSE
              WHERE ticker   = :ticker
                AND alert_ts = :alert_ts
+               AND run_kind = 'live'
         """)
         # return_pct units: direction-aware underlying-move percent
         # (_exit_return_pct above) — same units as the pre-existing
@@ -417,6 +419,7 @@ class EODResolver:
                    return_pct  = :ret
              WHERE ticker     = :ticker
                AND entry_time = :entry_time
+               AND run_kind   = 'live'
                AND exit_time IS NULL
         """)
         with get_engine().begin() as conn:

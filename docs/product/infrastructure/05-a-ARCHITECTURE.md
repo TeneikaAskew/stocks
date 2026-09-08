@@ -143,38 +143,38 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
 |---|---|---|
-| `admin_refresh_leases` | table | [`gcp/schema.sql:4104`](../../../gcp/schema.sql#L4104) |
+| `admin_refresh_leases` | table | [`gcp/schema.sql:4131`](../../../gcp/schema.sql#L4131) |
 | `archive_yahoo_earnings_options_snapshots` | table | [`gcp/schema.sql:541`](../../../gcp/schema.sql#L541) |
 | `archive_yahoo_etf_options_snapshots` | table | [`gcp/schema.sql:538`](../../../gcp/schema.sql#L538) |
 | `archive_yahoo_market_data_daily` | table | [`gcp/schema.sql:532`](../../../gcp/schema.sql#L532) |
 | `archive_yahoo_market_data_intraday` | table | [`gcp/schema.sql:535`](../../../gcp/schema.sql#L535) |
-| `backtest_reports` | table | [`gcp/schema.sql:3051`](../../../gcp/schema.sql#L3051) |
-| `backtest_sweeps` | table | [`gcp/schema.sql:3022`](../../../gcp/schema.sql#L3022) |
-| `backtest_trades` | table | [`gcp/schema.sql:2980`](../../../gcp/schema.sql#L2980) |
-| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3077`](../../../gcp/schema.sql#L3077) |
+| `backtest_reports` | table | [`gcp/schema.sql:3078`](../../../gcp/schema.sql#L3078) |
+| `backtest_sweeps` | table | [`gcp/schema.sql:3049`](../../../gcp/schema.sql#L3049) |
+| `backtest_trades` | table | [`gcp/schema.sql:3007`](../../../gcp/schema.sql#L3007) |
+| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3104`](../../../gcp/schema.sql#L3104) |
 | `daily_rates` | table | [`gcp/schema.sql:511`](../../../gcp/schema.sql#L511) |
 | `earnings_calendar` | table | [`gcp/schema.sql:551`](../../../gcp/schema.sql#L551) |
-| `earnings_calibration` | table | [`gcp/schema.sql:3170`](../../../gcp/schema.sql#L3170) |
+| `earnings_calibration` | table | [`gcp/schema.sql:3197`](../../../gcp/schema.sql#L3197) |
 | `earnings_history` | table | [`gcp/schema.sql:712`](../../../gcp/schema.sql#L712) |
 | `earnings_options_snapshots` | table | [`gcp/schema.sql:450`](../../../gcp/schema.sql#L450) |
-| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:3398`](../../../gcp/schema.sql#L3398) |
-| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:3426`](../../../gcp/schema.sql#L3426) |
+| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:3425`](../../../gcp/schema.sql#L3425) |
+| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:3453`](../../../gcp/schema.sql#L3453) |
 | `earnings_reactions` | table | [`gcp/schema.sql:758`](../../../gcp/schema.sql#L758) |
-| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:3816`](../../../gcp/schema.sql#L3816) |
-| `economic_events` | table | [`gcp/schema.sql:1418`](../../../gcp/schema.sql#L1418) |
+| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:3843`](../../../gcp/schema.sql#L3843) |
+| `economic_events` | table | [`gcp/schema.sql:1427`](../../../gcp/schema.sql#L1427) |
 | `etf_options_daily_greeks` | table | [`gcp/schema.sql:357`](../../../gcp/schema.sql#L357) |
 | `etf_options_snapshots` | table | [`gcp/schema.sql:150`](../../../gcp/schema.sql#L150) |
-| `exit_config_overrides` | table | [`gcp/schema.sql:2417`](../../../gcp/schema.sql#L2417) |
-| `historical_signals` | table | [`gcp/schema.sql:2103`](../../../gcp/schema.sql#L2103) |
-| `indicator_correlation` | table | [`gcp/schema.sql:3239`](../../../gcp/schema.sql#L3239) |
+| `exit_config_overrides` | table | [`gcp/schema.sql:2426`](../../../gcp/schema.sql#L2426) |
+| `historical_signals` | table | [`gcp/schema.sql:2112`](../../../gcp/schema.sql#L2112) |
+| `indicator_correlation` | table | [`gcp/schema.sql:3266`](../../../gcp/schema.sql#L3266) |
 | `insider_transactions` | table | [`gcp/schema.sql:964`](../../../gcp/schema.sql#L964) |
-| `insight_reports` | table | [`gcp/schema.sql:1517`](../../../gcp/schema.sql#L1517) |
-| `insight_reports_history` | table | [`gcp/schema.sql:2034`](../../../gcp/schema.sql#L2034) |
-| `insight_runs` | table | [`gcp/schema.sql:1553`](../../../gcp/schema.sql#L1553) |
+| `insight_reports` | table | [`gcp/schema.sql:1526`](../../../gcp/schema.sql#L1526) |
+| `insight_reports_history` | table | [`gcp/schema.sql:2043`](../../../gcp/schema.sql#L2043) |
+| `insight_runs` | table | [`gcp/schema.sql:1562`](../../../gcp/schema.sql#L1562) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:397`](../../../gcp/schema.sql#L397) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:418`](../../../gcp/schema.sql#L418) |
-| `job_runs` | table | [`gcp/schema.sql:3953`](../../../gcp/schema.sql#L3953) |
-| `journal_entries` | table | [`gcp/schema.sql:1176`](../../../gcp/schema.sql#L1176) |
+| `job_runs` | table | [`gcp/schema.sql:3980`](../../../gcp/schema.sql#L3980) |
+| `journal_entries` | table | [`gcp/schema.sql:1185`](../../../gcp/schema.sql#L1185) |
 | `market_data_daily` | table | [`gcp/schema.sql:12`](../../../gcp/schema.sql#L12) |
 | `market_data_intraday` | table | [`gcp/schema.sql:115`](../../../gcp/schema.sql#L115) |
 | `market_data_intraday_iwm` | partition of `market_data_intraday` | [`gcp/schema.sql:133`](../../../gcp/schema.sql#L133) |
@@ -182,36 +182,36 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | `market_data_intraday_qqq` | partition of `market_data_intraday` | [`gcp/schema.sql:135`](../../../gcp/schema.sql#L135) |
 | `market_data_intraday_spx` | partition of `market_data_intraday` | [`gcp/schema.sql:137`](../../../gcp/schema.sql#L137) |
 | `market_data_intraday_spy` | partition of `market_data_intraday` | [`gcp/schema.sql:131`](../../../gcp/schema.sql#L131) |
-| `model_routing` | table | [`gcp/schema.sql:1485`](../../../gcp/schema.sql#L1485) |
-| `news_sentiment` | table | [`gcp/schema.sql:1595`](../../../gcp/schema.sql#L1595) |
+| `model_routing` | table | [`gcp/schema.sql:1494`](../../../gcp/schema.sql#L1494) |
+| `news_sentiment` | table | [`gcp/schema.sql:1604`](../../../gcp/schema.sql#L1604) |
 | `options_daily_features` | table | [`gcp/schema.sql:260`](../../../gcp/schema.sql#L260) |
-| `playbook_cards` | table | [`gcp/schema.sql:1344`](../../../gcp/schema.sql#L1344) |
-| `playbook_cards_staging` | table | [`gcp/schema.sql:3927`](../../../gcp/schema.sql#L3927) |
-| `premarket_analysis` | table | [`gcp/schema.sql:1290`](../../../gcp/schema.sql#L1290) |
-| `premarket_analysis_history` | table | [`gcp/schema.sql:1919`](../../../gcp/schema.sql#L1919) |
+| `playbook_cards` | table | [`gcp/schema.sql:1353`](../../../gcp/schema.sql#L1353) |
+| `playbook_cards_staging` | table | [`gcp/schema.sql:3954`](../../../gcp/schema.sql#L3954) |
+| `premarket_analysis` | table | [`gcp/schema.sql:1299`](../../../gcp/schema.sql#L1299) |
+| `premarket_analysis_history` | table | [`gcp/schema.sql:1928`](../../../gcp/schema.sql#L1928) |
 | `ranker_runs` | table | [`gcp/schema.sql:1039`](../../../gcp/schema.sql#L1039) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:437`](../../../gcp/schema.sql#L437) |
-| `regime_combo_results` | table | [`gcp/schema.sql:3316`](../../../gcp/schema.sql#L3316) |
-| `schema_apply_history` | table | [`gcp/schema.sql:4118`](../../../gcp/schema.sql#L4118) |
+| `regime_combo_results` | table | [`gcp/schema.sql:3343`](../../../gcp/schema.sql#L3343) |
+| `schema_apply_history` | table | [`gcp/schema.sql:4145`](../../../gcp/schema.sql#L4145) |
 | `sec_filings` | table | [`gcp/schema.sql:931`](../../../gcp/schema.sql#L931) |
 | `signal_alerts` | table | [`gcp/schema.sql:1057`](../../../gcp/schema.sql#L1057) |
-| `signal_metrics` | table | [`gcp/schema.sql:2647`](../../../gcp/schema.sql#L2647) |
-| `strat_combo_results` | table | [`gcp/schema.sql:3348`](../../../gcp/schema.sql#L3348) |
-| `strat_levels` | table | [`gcp/schema.sql:1635`](../../../gcp/schema.sql#L1635) |
-| `ticker_calibration` | table | [`gcp/schema.sql:2330`](../../../gcp/schema.sql#L2330) |
-| `ticker_info` | table | [`gcp/schema.sql:2156`](../../../gcp/schema.sql#L2156) |
+| `signal_metrics` | table | [`gcp/schema.sql:2656`](../../../gcp/schema.sql#L2656) |
+| `strat_combo_results` | table | [`gcp/schema.sql:3375`](../../../gcp/schema.sql#L3375) |
+| `strat_levels` | table | [`gcp/schema.sql:1644`](../../../gcp/schema.sql#L1644) |
+| `ticker_calibration` | table | [`gcp/schema.sql:2339`](../../../gcp/schema.sql#L2339) |
+| `ticker_info` | table | [`gcp/schema.sql:2165`](../../../gcp/schema.sql#L2165) |
 | `top_movers_daily` | table | [`gcp/schema.sql:990`](../../../gcp/schema.sql#L990) |
 | `top_movers_intraday` | table | [`gcp/schema.sql:1014`](../../../gcp/schema.sql#L1014) |
-| `trades` | table | [`gcp/schema.sql:1133`](../../../gcp/schema.sql#L1133) |
-| `user_preferences` | table | [`gcp/schema.sql:4041`](../../../gcp/schema.sql#L4041) |
-| `user_profile` | table | [`gcp/schema.sql:4072`](../../../gcp/schema.sql#L4072) |
-| `user_roles` | table | [`gcp/schema.sql:3990`](../../../gcp/schema.sql#L3990) |
-| `user_style_results` | table | [`gcp/schema.sql:3909`](../../../gcp/schema.sql#L3909) |
-| `waitlist_signups` | table | [`gcp/schema.sql:3896`](../../../gcp/schema.sql#L3896) |
-| `walk_forward_results` | table | [`gcp/schema.sql:3123`](../../../gcp/schema.sql#L3123) |
-| `watchlists` | table | [`gcp/schema.sql:2212`](../../../gcp/schema.sql#L2212) |
-| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:3564`](../../../gcp/schema.sql#L3564) |
-| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:3755`](../../../gcp/schema.sql#L3755) |
+| `trades` | table | [`gcp/schema.sql:1142`](../../../gcp/schema.sql#L1142) |
+| `user_preferences` | table | [`gcp/schema.sql:4068`](../../../gcp/schema.sql#L4068) |
+| `user_profile` | table | [`gcp/schema.sql:4099`](../../../gcp/schema.sql#L4099) |
+| `user_roles` | table | [`gcp/schema.sql:4017`](../../../gcp/schema.sql#L4017) |
+| `user_style_results` | table | [`gcp/schema.sql:3936`](../../../gcp/schema.sql#L3936) |
+| `waitlist_signups` | table | [`gcp/schema.sql:3923`](../../../gcp/schema.sql#L3923) |
+| `walk_forward_results` | table | [`gcp/schema.sql:3150`](../../../gcp/schema.sql#L3150) |
+| `watchlists` | table | [`gcp/schema.sql:2221`](../../../gcp/schema.sql#L2221) |
+| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:3591`](../../../gcp/schema.sql#L3591) |
+| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:3782`](../../../gcp/schema.sql#L3782) |
 | `v_etf_options_node` | view | [`gcp/schema.sql:294`](../../../gcp/schema.sql#L294) |
 <!-- inventory:tables:end -->
 
@@ -477,8 +477,8 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/admin/users` | [`platform/api/routers/admin.py:842`](../../../platform/api/routers/admin.py#L842) | Every Firebase account + its stored role(s). |
 | `PUT` | `/api/admin/users/{uid}/roles` | [`platform/api/routers/admin.py:886`](../../../platform/api/routers/admin.py#L886) | Replace an account's stored role. |
 | `PUT` | `/api/admin/users/{uid}/status` | [`platform/api/routers/admin.py:958`](../../../platform/api/routers/admin.py#L958) | Enable or disable a Firebase account. |
-| `GET` | `/api/analytics/summary/{ticker}` | [`platform/api/routers/analytics.py:126`](../../../platform/api/routers/analytics.py#L126) | Summarize rows from the ``trades`` table for a ticker. |
-| `POST` | `/api/analytics/trade-stats` | [`platform/api/routers/analytics.py:118`](../../../platform/api/routers/analytics.py#L118) |  |
+| `GET` | `/api/analytics/summary/{ticker}` | [`platform/api/routers/analytics.py:129`](../../../platform/api/routers/analytics.py#L129) | Summarize rows from the ``trades`` table for a ticker. |
+| `POST` | `/api/analytics/trade-stats` | [`platform/api/routers/analytics.py:121`](../../../platform/api/routers/analytics.py#L121) |  |
 | `GET` | `/api/backtest/all/{ticker}` | [`platform/api/routers/backtest.py:355`](../../../platform/api/routers/backtest.py#L355) | List all backtest runs for a ticker, sorted by timestamp descending. |
 | `GET` | `/api/backtest/equity/{ticker}` | [`platform/api/routers/backtest.py:257`](../../../platform/api/routers/backtest.py#L257) | Return equity curve from the most recent equity CSV for the given ticker, |
 | `POST` | `/api/backtest/replay-trades` | [`platform/api/routers/backtest.py:512`](../../../platform/api/routers/backtest.py#L512) | Score the signed-in user's labeled journal trades against actual bars |
@@ -517,15 +517,15 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:623`](../../../platform/api/routers/insights.py#L623) | Return today's ranked candidate tickers with score breakdowns. |
 | `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:513`](../../../platform/api/routers/insights.py#L513) | Add a ticker to the watchlist and return its info + quote. |
 | `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:590`](../../../platform/api/routers/insights.py#L590) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
-| `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:905`](../../../platform/api/routers/journal.py#L905) | Read-only teaching "Examples" — the UNION of the admin's own journal |
-| `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1350`](../../../platform/api/routers/journal.py#L1350) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
-| `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1494`](../../../platform/api/routers/journal.py#L1494) | Insert the caller-selected `PairedTrade`s from a preview. |
-| `POST` | `/api/journal/import/preview` | [`platform/api/routers/journal.py:1404`](../../../platform/api/routers/journal.py#L1404) | Parse an uploaded broker CSV export and FIFO-pair round trips. |
-| `GET` | `/api/journal/seed/{ticker}` | [`platform/api/routers/journal.py:1283`](../../../platform/api/routers/journal.py#L1283) | Read-only admin seed pull from the automated pipeline `trades` table. |
-| `POST` | `/api/journal/trades` | [`platform/api/routers/journal.py:1065`](../../../platform/api/routers/journal.py#L1065) | Insert a journal entry for the signed-in user. Returns it with its id. |
-| `GET` | `/api/journal/trades/{ticker}` | [`platform/api/routers/journal.py:865`](../../../platform/api/routers/journal.py#L865) | Return the signed-in user's journal entries for the ticker, newest first. |
-| `DELETE` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1228`](../../../platform/api/routers/journal.py#L1228) | Delete one of the signed-in user's journal entries by UUID. |
-| `PATCH` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1142`](../../../platform/api/routers/journal.py#L1142) | Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct |
+| `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:910`](../../../platform/api/routers/journal.py#L910) | Read-only teaching "Examples" — the UNION of the admin's own journal |
+| `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1356`](../../../platform/api/routers/journal.py#L1356) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
+| `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1500`](../../../platform/api/routers/journal.py#L1500) | Insert the caller-selected `PairedTrade`s from a preview. |
+| `POST` | `/api/journal/import/preview` | [`platform/api/routers/journal.py:1410`](../../../platform/api/routers/journal.py#L1410) | Parse an uploaded broker CSV export and FIFO-pair round trips. |
+| `GET` | `/api/journal/seed/{ticker}` | [`platform/api/routers/journal.py:1289`](../../../platform/api/routers/journal.py#L1289) | Read-only admin seed pull from the automated pipeline `trades` table. |
+| `POST` | `/api/journal/trades` | [`platform/api/routers/journal.py:1071`](../../../platform/api/routers/journal.py#L1071) | Insert a journal entry for the signed-in user. Returns it with its id. |
+| `GET` | `/api/journal/trades/{ticker}` | [`platform/api/routers/journal.py:870`](../../../platform/api/routers/journal.py#L870) | Return the signed-in user's journal entries for the ticker, newest first. |
+| `DELETE` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1234`](../../../platform/api/routers/journal.py#L1234) | Delete one of the signed-in user's journal entries by UUID. |
+| `PATCH` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1148`](../../../platform/api/routers/journal.py#L1148) | Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct |
 | `GET` | `/api/live/avg-volume/{ticker}` | [`platform/api/routers/live.py:384`](../../../platform/api/routers/live.py#L384) | Return the 20-day average daily volume for RVOL calculation. |
 | `GET` | `/api/live/history/{ticker}` | [`platform/api/routers/live.py:314`](../../../platform/api/routers/live.py#L314) | Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY. |
 | `POST` | `/api/live/indicators` | [`platform/api/routers/live.py:526`](../../../platform/api/routers/live.py#L526) | Compute indicators and CALL/PUT signals from a bar series. |
@@ -560,8 +560,8 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:306`](../../../platform/api/routers/playbook.py#L306) | Return structured setup cards for a ticker from ``playbook_cards``. |
 | `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:367`](../../../platform/api/routers/playbook.py#L367) | List available phase report files for a given ticker (from GCS). |
 | `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:440`](../../../platform/api/routers/playbook.py#L440) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
-| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:182`](../../../platform/api/routers/signals.py#L182) | Return historical signals for a ticker. |
-| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:284`](../../../platform/api/routers/signals.py#L284) | Return historical signals similar to the supplied bar's conditions. |
+| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:196`](../../../platform/api/routers/signals.py#L196) | Return historical signals for a ticker. |
+| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:296`](../../../platform/api/routers/signals.py#L296) | Return historical signals similar to the supplied bar's conditions. |
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:690`](../../../platform/api/routers/backtest.py#L690) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:84`](../../../platform/api/routers/waitlist.py#L84) |  |
 | `GET` | `/dev` | [`platform/api/main.py:433`](../../../platform/api/main.py#L433) |  |

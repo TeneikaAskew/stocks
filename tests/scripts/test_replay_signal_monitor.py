@@ -368,3 +368,30 @@ def test_summary_median_averages_the_middle_on_even_samples():
     assert statistics.median([0.8, 1.2]) == 1.0
     assert sorted([0.8, 1.2])[len([0.8, 1.2]) // 2] == 1.2, \
         "the old expression really did report the upper middle"
+
+
+def test_persist_fire_reports_a_row_dropped_by_the_unique_key(caplog):
+    """signal_alerts is unique on (ticker, alert_ts) and the replay INSERT
+    is ON CONFLICT DO NOTHING, so replaying a session that ran live drops
+    every fire that lands on a live fire's minute. That is a legitimate
+    outcome but it must not be silent (CLAUDE.md 3.7)."""
+    import logging
+    from scripts.replay_signal_monitor import FireRecord, persist_fire_to_signal_alerts
+
+    fire = FireRecord(
+        timestamp=pd.Timestamp("2026-08-28 14:31:00"), ticker="SPY", direction="CALL",
+        base_score=4, total_score=4.0, timeframe_tag=None, expected_hold_min=None,
+        strategy_agreement=None, conditions_met=["x"], embed_title="t",
+        brief_alignment=None, level_state=None, opp_level_state=None, rvol_mod=None,
+    )
+    conn = MagicMock()
+    conn.execute.return_value = MagicMock(rowcount=0)
+    engine = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    engine.begin.return_value.__exit__.return_value = False
+    monitor = MagicMock()
+    with caplog.at_level(logging.WARNING, logger="scripts.replay_signal_monitor"):
+        n = persist_fire_to_signal_alerts(fire, monitor, engine, "replay-1")
+    assert n == 0
+    assert "SPY" in caplog.text and "2026-08-28 14:31" in caplog.text
+    assert "unique" in caplog.text.lower() or "collid" in caplog.text.lower()

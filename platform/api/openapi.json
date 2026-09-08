@@ -14261,7 +14261,7 @@
     },
     "/api/signals/{ticker}": {
       "get": {
-        "description": "Return historical signals for a ticker.\n\nReads from Cloud SQL ``historical_signals`` when configured, falls back\nto the legacy GCS parquet otherwise. Supports point-in-time review via\n``end_date`` (+ optional ``end_time``).",
+        "description": "Return historical signals for a ticker.\n\nReads from Cloud SQL ``historical_signals`` when configured; a failed\nquery is a 503, never the legacy parquet (Cloud SQL is the system of\nrecord, and a fallback nothing can tell apart is a silent one: audit\nP1-#2, CLAUDE.md 3.7.1). The legacy GCS parquet path serves only when\nCloud SQL is NOT configured (local dev). Supports point-in-time review\nvia ``end_date`` (+ optional ``end_time``).",
         "operationId": "get_signals_api_signals__ticker__get",
         "parameters": [
           {

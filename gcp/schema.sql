@@ -1092,6 +1092,15 @@ CREATE TABLE IF NOT EXISTS signal_alerts (
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_ticker_date
     ON signal_alerts (ticker, alert_date DESC);
 
+-- gcp/signal_monitor.py and scripts/replay_signal_monitor.py upsert on
+-- (ticker, alert_ts) (ON CONFLICT). Production has carried this as
+-- `uq_signal_alerts` (pg_indexes, measured 2026-09-07) but schema.sql never
+-- declared it, so a fresh apply (the integration-tests Postgres) had no key
+-- for the ON CONFLICT to land on: the uq_trades shape (#722) a second time.
+-- IF NOT EXISTS makes this a no-op in production.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_signal_alerts
+    ON signal_alerts (ticker, alert_ts);
+
 -- v2 strat refactor: record which Strat level a signal broke (PDH, PDL, PWH, ...).
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS level_broken VARCHAR(20);
@@ -2857,17 +2866,35 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_replay_id
 -- 412 simulated trades (entry_time 2026-03-19 .. 2026-04-13, ftfc_score 0,
 -- exit_reason target_hit/time_stop, all inserted 2026-04-18 02:59 UTC)
 -- with no marker, so they were indistinguishable from resolver-written
--- trades. 'live' (default) | 'replay' | 'backfill'. After this lands via
--- apply-schema-migrations, mark those rows by the alert join:
---   UPDATE trades t SET run_kind='backfill'
---     FROM signal_alerts a
---    WHERE a.ticker=t.ticker AND a.alert_ts=t.entry_time
---      AND a.run_kind='backfill';
+-- trades. 'live' (default) | 'replay' | 'backfill'. The default stamps
+-- every existing row 'live', the 412 included, and the 432 alerts they
+-- join are 'live' for the same reason, so marking them is a separate,
+-- count-checked step: gcp/queries/mark_backfill_rows_2026-04-18.sql
+-- (attributes measured in production 2026-09-07; raises and commits
+-- nothing unless exactly 432 alerts and 412 trades match).
 ALTER TABLE trades
     ADD COLUMN IF NOT EXISTS run_kind VARCHAR(16) NOT NULL DEFAULT 'live';
 
 CREATE INDEX IF NOT EXISTS idx_trades_run_kind
     ON trades(run_kind) WHERE run_kind != 'live';
+
+-- The three kinds are the whole taxonomy; a typo ('Live', 'backfil') would
+-- be excluded from every reader forever with no error anywhere.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'trades_run_kind_check') THEN
+        ALTER TABLE trades DROP CONSTRAINT trades_run_kind_check;
+    END IF;
+    ALTER TABLE trades
+        ADD CONSTRAINT trades_run_kind_check
+        CHECK (run_kind IN ('live', 'replay', 'backfill'));
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'signal_alerts_run_kind_check') THEN
+        ALTER TABLE signal_alerts DROP CONSTRAINT signal_alerts_run_kind_check;
+    END IF;
+    ALTER TABLE signal_alerts
+        ADD CONSTRAINT signal_alerts_run_kind_check
+        CHECK (run_kind IN ('live', 'replay', 'backfill'));
+END $$;
 
 -- Phase 1 direction gate (per docs/audits/2026-05-10-risk-reviewer-validation.md):
 -- the live signal_monitor reads insight_reports and decides whether

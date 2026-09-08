@@ -506,13 +506,11 @@ class DataLoader:
         if timeframes is None:
             timeframes = ['5m', '15m', '1h', '4h', '12h', '1d', '1w']
 
-        result = {}
-        for tf in timeframes:
-            try:
-                result[tf] = self.aggregate_to_timeframe(df, tf)
-            except Exception:
-                continue
-        return result
+        # No swallow: lib/strat.py relies on an unknown key raising here
+        # so a mistake surfaces instead of producing empty FTFC, and the
+        # `except Exception: continue` this replaced made that false
+        # (internal review of #1022; CLAUDE.md 3.7).
+        return {tf: self.aggregate_to_timeframe(df, tf) for tf in timeframes}
 
     def load_options(
         self,

@@ -253,6 +253,7 @@ def _pull_alerts(start: date, end: date) -> pd.DataFrame:
             a.exit_return_pct  AS outcome_return_pct
         FROM signal_alerts a
         WHERE a.alert_ts::date BETWEEN :start AND :end
+          AND a.run_kind = 'live'
         ORDER BY a.alert_ts ASC
     """)
     df = pd.read_sql(

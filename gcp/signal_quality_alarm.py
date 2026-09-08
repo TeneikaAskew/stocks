@@ -203,6 +203,7 @@ def fetch_score_quality_rows(engine, start: datetime, end: datetime,
            AND sm.status = 'final'
            AND sm.{tf_col} IS NOT NULL
            AND sm.{tf_col} <> 'INSUFFICIENT_DATA'
+           AND sa.run_kind = 'live'
     """)
     with engine.connect() as conn:
         rows = conn.execute(sql, {"start": start, "end": end}).fetchall()

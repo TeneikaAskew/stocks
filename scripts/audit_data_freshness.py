@@ -198,6 +198,8 @@ CHECKS: list[dict] = [
         "ts_is_date": True,
         "expected_lag_hours": 30,
         "per_ticker": False,
+        # A replay persisted today would otherwise make the table look fresh.
+        "where": "run_kind = 'live'",
     },
     {
         "name": "daily_rates",

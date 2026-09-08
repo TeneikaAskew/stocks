@@ -161,12 +161,31 @@ def test_av_news_to_rows_explodes_per_ticker_sentiment():
     assert by_ticker["AMD"]["topics"] == ["Mergers & Acquisitions"]
 
 
-def test_av_news_to_rows_skips_unparseable_timestamp():
+def test_av_news_to_rows_skips_unparseable_timestamp_and_says_so(caplog):
+    """An article the vendor stamps unparseably is dropped (EXTERNAL data),
+    never silently: the skip is logged with the raw value and the count."""
+    import logging
     from gcp.backfill_ticker import av_news_to_rows
     feed = [{"time_published": "garbage", "ticker_sentiment": [
         {"ticker": "AMD"}
     ]}]
-    assert av_news_to_rows(feed) == []
+    with caplog.at_level(logging.WARNING, logger="gcp.backfill_ticker"):
+        assert av_news_to_rows(feed) == []
+    assert "garbage" in caplog.text and "1 " in caplog.text and "skipped" in caplog.text.lower()
+
+
+def test_ftfc_is_never_fabricated_by_the_daily_writers():
+    """`float(ftfc_score) if ftfc_score is not None else 0.0` and
+    `ftfc_dir or 'mixed'` wrote a neutral reading where there was none
+    (CLAUDE.md 3.7 pattern 4), in both daily writers."""
+    import re
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    for rel in ("gcp/backfill_ticker.py", "gcp/fetchers/fetch_market_data.py"):
+        src = (repo / rel).read_text()
+        assert not re.search(r"ftfc_score\) if ftfc_score is not None else 0\.0", src), rel
+        assert not re.search(r"ftfc_dir or ['\"]mixed['\"]", src), rel
+        assert not re.search(r"abs\(ftfc_score or 0\.0\)", src), rel
 
 
 def test_av_news_to_rows_tagged_data_source():

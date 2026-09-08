@@ -107,7 +107,7 @@ class TestSignalsAPI:
             calls["n"] += 1
             return count_df.copy() if calls["n"] == 1 else rows_df.copy()
 
-        monkeypatch.setattr(database, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(database, "query_to_dataframe_strict", fake_query)
         return calls
 
     def test_signals_live(self, client, monkeypatch):
@@ -247,7 +247,7 @@ class TestSimilarSignalsAPI:
             # Stats query is always called first; matches second
             return stats_df.copy() if calls["n"] == 1 else matches_df.copy()
 
-        monkeypatch.setattr(database, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(database, "query_to_dataframe_strict", fake_query)
         return calls
 
     def test_similar_invalid_direction_returns_400(self, client, monkeypatch):
@@ -364,7 +364,7 @@ class TestJournalCRUD:
     """`/api/journal/trades` — Cloud SQL CRUD with local fallback.
 
     The router has two code paths (`_HAS_CLOUD_SQL` ON/OFF). We test
-    both: Cloud SQL with monkeypatched `execute_sql`/`query_to_dataframe`
+    both: Cloud SQL with monkeypatched `execute_sql`/`query_to_dataframe_strict`
     capturing the SQL+params, and local fallback with `tmp_path`.
     """
 
@@ -401,7 +401,7 @@ class TestJournalCRUD:
         monkeypatch.setattr(journal_module, "execute_sql", fake_execute)
         monkeypatch.setattr(journal_module, "execute_returning_scalar",
                             fake_returning)
-        monkeypatch.setattr(journal_module, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(journal_module, "query_to_dataframe_strict", fake_query)
         return captured
 
     def test_post_call_trade_round_trip_cloud_sql(self, client, monkeypatch):
@@ -1886,6 +1886,10 @@ class TestReviewModeIntegration:
             return signal_count.copy() if sig_calls["n"] % 2 == 1 else signal_rows.copy()
 
         monkeypatch.setattr(database, "query_to_dataframe", fake_signal_query)
+        # the signals router reads through its own strict wrapper (a later
+        # patch of database.query_to_dataframe_strict in this method serves
+        # other routers)
+        monkeypatch.setattr(signals_module, "_query_or_503", fake_signal_query)
 
         # ── Dashboard brief (Cloud SQL) ──────────────────────────────────
         daily = pd.DataFrame([{
@@ -2008,3 +2012,49 @@ class TestReviewModeIntegration:
         data = r.json()
         # Should return the day BEFORE the review date
         assert data["date"] < self.REVIEW_DATE_COMPACT
+
+
+class TestSignalsAPIFailsLoud:
+    """Audit P1-#2 (docs/audits/FALLBACK_AUDIT_2026-05-13.md 12.4): with
+    Cloud SQL configured, a failed query fell back to the legacy GCS
+    parquet at log.warning, and the response's `source` field was the
+    only tell, which no consumer reads (CLAUDE.md 3.7.1). And the query
+    itself went through the swallowing query_to_dataframe, so the failure
+    never even reached that branch: it served zero rows from Cloud SQL."""
+
+    def test_signals_is_503_when_the_cloud_sql_query_fails(self, client, monkeypatch):
+        from gcp import database
+        from api.routers import signals as signals_module
+
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
+
+        def _boom(sql, params=None):
+            raise RuntimeError("connection lost")
+
+        monkeypatch.setattr(database, "query_to_dataframe_strict", _boom)
+        monkeypatch.setattr(signals_module, "_load_ticker_df_parquet",
+                            lambda t: pytest.fail("must not fall back to parquet on a Cloud SQL failure"))
+        r = client.get("/api/signals/IWM?limit=5")
+        assert r.status_code == 503, r.text
+        assert "unavailable" in r.json()["detail"].lower()
+
+    def test_similar_is_503_when_the_cloud_sql_query_fails(self, client, monkeypatch):
+        from gcp import database
+        from api.routers import signals as signals_module
+
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
+
+        def _boom(sql, params=None):
+            raise RuntimeError("connection lost")
+
+        monkeypatch.setattr(database, "query_to_dataframe_strict", _boom)
+        r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=50&ema9_diff=0&ema20_diff=0&score=3")
+        assert r.status_code == 503, r.text
+
+    def test_router_reads_through_the_strict_query_only(self):
+        from api.routers import signals as signals_module
+        import inspect
+        src = inspect.getsource(signals_module)
+        assert "query_to_dataframe_strict" in src
+        assert "from gcp.database import query_to_dataframe  # lazy import" not in src
+        assert "falling back to parquet" not in src

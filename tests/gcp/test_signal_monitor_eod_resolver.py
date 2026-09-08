@@ -662,3 +662,32 @@ def test_run_mixed_skips_only_counts_stale_as_stale(make_resolver):
 
     assert summary['skipped'] == 2
     assert summary['skipped_stale'] == 1
+
+
+# ── only live alerts are resolved, only live rows are written ───────────
+
+def test_find_open_alerts_reads_live_alerts_only():
+    """Internal review of #1022 (trade-reader round): production carries
+    23 replay-tagged alerts (run_kind='replay', persisted by
+    scripts/replay_signal_monitor.py --persist). They have exit_ts NULL,
+    so the sweep resolved them, wrote their exits onto signal_alerts AND
+    onto the live trades row with the same (ticker, entry_time), and put
+    them in the Discord digest as real exits."""
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    from unittest.mock import patch
+    resolver = EODResolver()
+    with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
+         patch('gcp.database.query_to_dataframe', return_value=pd.DataFrame()) as mock_q:
+        resolver.find_open_alerts()
+    assert "run_kind = 'live'" in mock_q.call_args[0][0]
+
+
+def test_persist_updates_live_rows_only(make_resolver):
+    resolver = make_resolver()
+    engine, conn = _mock_persist_engine([1, 1])
+    with patch('gcp.database.get_engine', return_value=engine):
+        resolver.persist(_resolution())
+    alert_stmt = " ".join(str(conn.execute.call_args_list[0].args[0]).split())
+    trade_stmt = " ".join(str(conn.execute.call_args_list[1].args[0]).split())
+    assert "AND run_kind = 'live'" in alert_stmt, alert_stmt
+    assert "AND run_kind = 'live'" in trade_stmt, trade_stmt

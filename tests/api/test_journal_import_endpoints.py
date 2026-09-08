@@ -532,3 +532,24 @@ def test_commit_local_fallback_stores_entry_ts_with_seconds(client_local_owner):
     # Must carry seconds now -- isoNaiveToEpoch's regex requires HH:MM:SS.
     assert trades[0]["entry_ts"] == "2026-06-01 10:15:00"
     assert trades[0]["exit_ts"] == "2026-06-03 11:30:00"
+
+
+# ── a failed dedupe lookup is a 503 for every owner ─────────────────────
+
+def test_commit_is_503_when_the_dedupe_lookup_fails_even_for_the_local_owner(client_local_owner, monkeypatch):
+    """Internal review of #1022 (trade-reader round; audit 12.3): with
+    Cloud SQL configured, a failed `_existing_entry_keys` for the local
+    owner became an empty key set, so every trade already in the journal
+    was re-imported. Now that `_journal_query` is strict the failure
+    actually reaches this handler, and it is a 503 whoever the owner is."""
+    preview = _upload_robinhood(client_local_owner).json()
+    body = _commit_body_from_preview(preview)
+
+    def _boom(sql, params=None):
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(journal_module, "_journal_query", _boom)
+    r = client_local_owner.post("/api/journal/import/commit", json=body)
+    assert r.status_code == 503, r.text
+    assert r.json()["detail"] == "journal temporarily unavailable"

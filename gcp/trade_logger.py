@@ -46,6 +46,12 @@ class TradeLogger:
             exit_price, exit_reason, signal_strength, position_size,
             return_pct, conditions_met, strat_combo, ftfc_score
         """
+        # Provenance is part of the write contract, not only of the one
+        # caller: the readers filter on trades.run_kind, and the Parquet
+        # fallback reads a null as 'live' only because the rows without it
+        # predate the stamp (internal review of #1022).
+        if not trade_data.get('run_kind'):
+            raise ValueError("trade_data needs run_kind ('live' | 'replay' | 'backfill')")
         # `conditions_met` lands as a Python list — SQLAlchemy + pg8000
         # adapt it to native JSONB array (the column is JSONB). PyArrow
         # also handles list columns in Parquet natively. Calling
@@ -138,8 +144,10 @@ class TradeLogger:
                     + " ORDER BY entry_time",
                     params,
                 )
-                if not df.empty:
-                    return df
+                # Cloud SQL is the system of record: its answer, empty or
+                # not, is the answer. Only a FAILED query reaches the files
+                # (CLAUDE.md 3.7.1; internal review of #1022).
+                return df
             except Exception as e:
                 # AUDIT-2026-05-13: silent fallback — a failed query falls
                 # through to the Parquet files below
@@ -166,8 +174,7 @@ class TradeLogger:
                     + " ORDER BY entry_time",
                     params,
                 )
-                if not df.empty:
-                    return df
+                return df
             except Exception as e:
                 # AUDIT-2026-05-13: silent fallback — a failed query falls
                 # through to the Parquet files below
@@ -199,8 +206,7 @@ class TradeLogger:
                     + " ORDER BY entry_time",
                     params or None,
                 )
-                if not df.empty:
-                    return df
+                return df
             except Exception as e:
                 # AUDIT-2026-05-13: silent fallback — a failed query falls
                 # through to the Parquet files below
@@ -212,8 +218,9 @@ class TradeLogger:
             return pd.DataFrame()
         frames = [self._filter_run_kind(pd.read_parquet(f), run_kind) for f in files]
         kept = [f for f in frames if not f.empty]
-        # Nothing left: an empty frame that still carries the columns.
-        return pd.concat(kept, ignore_index=True) if kept else frames[0].iloc[0:0]
+        # Nothing left: an empty frame that still carries the union of the
+        # files' columns, not the first file's.
+        return pd.concat(kept, ignore_index=True) if kept else pd.concat(frames).iloc[0:0]
 
     def _load_parquet_for_date(self, date) -> pd.DataFrame:
         path = self._daily_file(date)

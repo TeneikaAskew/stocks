@@ -787,3 +787,53 @@ def test_schema_declares_forced_and_status_columns():
     assert "forced" in block and "status" in block
     assert "ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS forced" in schema
     assert "ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS status" in schema
+
+
+# ──────────────────────────────────────────────────────────────────────
+# schema.sql declarations that make trade provenance enforceable
+# (internal review of #1022, trade-reader round)
+# ──────────────────────────────────────────────────────────────────────
+
+def _schema_text():
+    from pathlib import Path
+    return (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+
+
+def test_schema_declares_the_signal_alerts_upsert_key():
+    """gcp/signal_monitor.py and the replay upsert ON CONFLICT (ticker,
+    alert_ts). Production carries uq_signal_alerts (pg_indexes, measured
+    2026-09-07) but schema.sql never declared it, so a fresh apply (the
+    integration-tests Postgres) gave the monitor 42P10: the uq_trades
+    shape (#722) a second time."""
+    schema = " ".join(_schema_text().split())
+    assert ("CREATE UNIQUE INDEX IF NOT EXISTS uq_signal_alerts ON signal_alerts (ticker, alert_ts);"
+            in schema)
+
+
+def test_schema_constrains_run_kind_to_the_three_kinds():
+    """'Live', 'backfil' or 'live ' would be excluded from every reader
+    forever with no error anywhere."""
+    schema = _schema_text()
+    for table in ("trades", "signal_alerts"):
+        assert f"ADD CONSTRAINT {table}_run_kind_check" in schema, table
+        block = schema[schema.index(f"ADD CONSTRAINT {table}_run_kind_check"):]
+        block = block[:block.index(";")]
+        assert "CHECK (run_kind IN ('live', 'replay', 'backfill'))" in block, block
+
+
+def test_schema_points_at_the_self_checking_marking_query():
+    """The comment on trades.run_kind gave an UPDATE that joins on
+    a.run_kind='backfill' while the 432 alerts are 'live' (the column
+    default backfilled them), so run alone it marked zero rows and read as
+    success. The marking is a committed, atomic, count-checked query."""
+    from pathlib import Path
+    schema = _schema_text()
+    assert "gcp/queries/mark_backfill_rows_2026-04-18.sql" in schema
+    assert "AND a.run_kind='backfill';" not in schema
+    q = (Path(__file__).resolve().parents[2] / "gcp/queries/mark_backfill_rows_2026-04-18.sql").read_text()
+    assert q.count("DO $$") == 1 and "RAISE EXCEPTION" in q
+    assert "n_alerts <> 432" in q and "n_trades <> 412" in q
+    assert "UPDATE signal_alerts SET run_kind = 'backfill'" in q
+    assert "UPDATE trades t SET run_kind = 'backfill'" in q
+    from gcp.apply_schema import split_statement_groups
+    assert len(split_statement_groups(q)) == 1, "db_query_cr.sh -f sends the file as one statement"

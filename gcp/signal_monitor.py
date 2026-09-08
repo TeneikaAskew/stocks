@@ -182,6 +182,9 @@ class SignalMonitor:
         # failures looked like a quiet day (the 4/14-4/30 gap shape).
         self.persist_alert_failure_count: dict = {t: 0 for t in self.tickers}
         self.persist_trade_failure_count: dict = {t: 0 for t in self.tickers}
+        # Times the disabled_directions kill switch could not be read and a
+        # stand-alone momentum fire was suppressed for it (fail closed).
+        self.kill_switch_failure_count: dict = {t: 0 for t in self.tickers}
         # Open positions awaiting exit. Each tick the exit-watcher walks
         # this list and fires TARGET HIT / TIME STOP / RSI EXIT alerts +
         # writes the exit details back to signal_alerts. Lifetime is the
@@ -763,6 +766,7 @@ class SignalMonitor:
         'level_refresh_success_count', 'level_refresh_empty_df_count',
         'level_refresh_exception_count',
         'persist_alert_failure_count', 'persist_trade_failure_count',
+        'kill_switch_failure_count',
     })
 
     def reset_session_state(self, ticker: str) -> None:
@@ -1136,27 +1140,34 @@ class SignalMonitor:
             # too — pre-Codex-P2 (PR #371) the kill switch lived only
             # inside `lib.signals.evaluate_signal`, so a momentum-only
             # PUT on a `["PUT"]`-disabled ticker (e.g. QQQ) would have
-            # bypassed the same protection mr respects. Resolver
-            # exception is non-fatal: log and degrade to "no kill
-            # switch known" rather than blocking a fire on a transient
-            # DB error (mirrors the resolver-failure handling inside
-            # evaluate_signal at lib/signals.py:207-210).
+            # bypassed the same protection mr respects. A kill switch
+            # that cannot be read is unknown, and the safe reading of an
+            # unknown risk control is CLOSED: the fire is suppressed for
+            # this bar, counted and logged (it used to "degrade open",
+            # the C-04 shape; CLAUDE.md 3.7). evaluate_signal fails
+            # closed the same way.
             try:
                 from lib.strategies.exit_config_overrides import (
                     get_disabled_directions,
                 )
-                if mom_signal.direction.upper() in get_disabled_directions(ticker):
-                    logger.info(
-                        "%s standalone momentum %s suppressed: direction in disabled_directions",
-                        ticker, mom_signal.direction,
-                    )
-                    return None, None
+                disabled = get_disabled_directions(ticker)
             except Exception:
-                logger.exception(
-                    "get_disabled_directions(%s) raised; allowing momentum fire "
-                    "(degrade-open mirrors evaluate_signal's resolver-failure handling)",
-                    ticker,
+                self.kill_switch_failure_count[ticker] = (
+                    self.kill_switch_failure_count.get(ticker, 0) + 1
                 )
+                logger.exception(
+                    "get_disabled_directions(%s) raised; suppressing the stand-alone "
+                    "momentum %s fire for this bar (failure #%d this run)",
+                    ticker, mom_signal.direction,
+                    self.kill_switch_failure_count[ticker],
+                )
+                return None, None
+            if mom_signal.direction.upper() in disabled:
+                logger.info(
+                    "%s standalone momentum %s suppressed: direction in disabled_directions",
+                    ticker, mom_signal.direction,
+                )
+                return None, None
 
             logger.info(
                 "%s standalone momentum fire: %s base_score=%.1f core=%d call_range=%s tier=%s put_range=%s tier=%s",
@@ -2405,6 +2416,7 @@ class SignalMonitor:
                    is_open          = FALSE
              WHERE ticker   = :ticker
                AND alert_ts = :alert_ts
+               AND run_kind = 'live'
         """)
         # return_pct is the direction-aware underlying-move percent
         # ((exit-entry)/entry*100 for CALL, negated for PUT) — the same
@@ -2418,6 +2430,7 @@ class SignalMonitor:
                    return_pct  = :ret
              WHERE ticker     = :ticker
                AND entry_time = :entry_time
+               AND run_kind   = 'live'
                AND exit_time IS NULL
         """)
         try:

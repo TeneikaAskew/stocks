@@ -924,3 +924,25 @@ def test_examples_pipeline_alert_join_tiebreaker_lower_id_wins(monkeypatch, clou
 
     pipeline_calls = [sql for sql, _params in calls if _is_pipeline_sql(sql)]
     assert len(pipeline_calls) == 1
+
+
+def test_journal_query_forwards_to_the_strict_variant():
+    """Internal review of #1022 (trade-reader round): every `try:
+    _journal_query(...) except: 503` in this router was inert because
+    `_journal_query` forwarded to the swallowing query_to_dataframe, so
+    /api/journal/examples answered 200 with `source: cloud_sql` and no
+    rows when the pipeline query failed, the exact "silently degrades to
+    admin-only" its docstring promises never happens."""
+    import inspect
+    src = inspect.getsource(journal_module._journal_query)
+    assert "query_to_dataframe_strict(" in src and "query_to_dataframe(" not in src.replace("query_to_dataframe_strict(", "")
+
+
+def test_examples_pipeline_join_matches_live_alerts_only(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query(calls))
+    monkeypatch.setattr(journal_module, "current_user_email", lambda req: ADMIN_EMAIL)
+    TestClient(main.app).get("/api/journal/examples/SPY")
+    pipeline_sql = next(sql for sql, _ in calls if "LEFT JOIN LATERAL" in sql)
+    assert "sa2.run_kind = 'live'" in pipeline_sql

@@ -10,7 +10,7 @@ kind), matching DataLoader.load_trades.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pandas as pd
@@ -64,8 +64,12 @@ def test_weekend_review_reads_live_trades_only():
 
     from gcp import weekend_review
 
+    import re
+
     src = inspect.getsource(weekend_review.generate_weekly_review)
-    assert "get_weekly_trades()" in src, "the review must take the live default"
+    calls = re.findall(r"get_weekly_trades\(([^)]*)\)", src)
+    assert calls, "the review must read through get_weekly_trades"
+    assert all("run_kind" not in c for c in calls), calls
 
 
 def _write_parquet(path, rows):
@@ -97,14 +101,58 @@ def test_parquet_fallback_applies_the_same_run_kind_filter(tmp_path):
         assert sorted(tl.get_all_trades(run_kind=None)["trade_id"]) == [1, 2, 3, 4]
 
 
-def test_empty_live_query_falls_through_to_filtered_parquet(tmp_path):
+def test_an_empty_cloud_sql_answer_is_the_answer_not_a_parquet_fallthrough(tmp_path):
+    """Internal review of #1022 (trade-reader round): a successful Cloud SQL
+    query that returned no rows fell through to the local Parquet files,
+    and the run_kind filter made that branch newly reachable ("there were
+    trades, all backfill or replay"). Cloud SQL is the system of record
+    (CLAUDE.md 3.7.1); only a FAILED query reaches the Parquet fallback,
+    and that path is marked AUDIT-2026-05-13."""
     tl = TradeLogger(output_dir=str(tmp_path))
     d1 = date(2026, 4, 1)
     _write_parquet(tl._daily_file(d1), [
         {"trade_id": 1, "run_kind": "live"}, {"trade_id": 2, "run_kind": "replay"}])
+    for f in (tl._daily_file(date(2026, 4, 2)),):
+        _write_parquet(f, [{"trade_id": 3, "run_kind": "live"}])
+    empty = pd.DataFrame(columns=["trade_id", "run_kind"])
     with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
-         patch("gcp.database.query_to_dataframe", lambda sql, params=None: pd.DataFrame()):
+         patch("gcp.database.query_to_dataframe", lambda sql, params=None: empty):
+        assert tl.get_daily_trades(d1).empty
+        assert tl.get_weekly_trades(date(2026, 4, 7)).empty
+        assert tl.get_all_trades().empty
+
+
+def test_a_failed_cloud_sql_query_still_reaches_parquet(tmp_path):
+    tl = TradeLogger(output_dir=str(tmp_path))
+    d1 = date(2026, 4, 1)
+    _write_parquet(tl._daily_file(d1), [
+        {"trade_id": 1, "run_kind": "live"}, {"trade_id": 2, "run_kind": "replay"}])
+
+    def _boom(sql, params=None):
+        raise RuntimeError("connection lost")
+
+    with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
+         patch("gcp.database.query_to_dataframe", _boom):
         assert sorted(tl.get_daily_trades(d1)["trade_id"]) == [1]
+
+
+def test_log_trade_requires_provenance():
+    """The stamp lives in the writer's contract, not only in the one
+    caller: a trade without run_kind is refused, so the Parquet null-as-
+    live rule can only ever apply to rows written before the stamp."""
+    import pytest
+    tl = TradeLogger(output_dir="/nonexistent-never-written")
+    with pytest.raises(ValueError, match="run_kind"):
+        tl.log_trade({"ticker": "SPY", "direction": "CALL", "entry_time": "2026-09-07T14:31:00"})
+
+
+def test_empty_all_trades_keeps_the_union_of_the_files_columns(tmp_path):
+    tl = TradeLogger(output_dir=str(tmp_path))
+    _write_parquet(tl._daily_file(date(2026, 4, 1)), [{"trade_id": 1, "run_kind": "replay"}])
+    _write_parquet(tl._daily_file(date(2026, 4, 2)), [{"trade_id": 2, "run_kind": "replay", "notes": "x"}])
+    with patch("gcp.trade_logger._cloud_sql_active", return_value=False):
+        out = tl.get_all_trades()
+    assert out.empty and set(out.columns) == {"trade_id", "run_kind", "notes"}
 
 
 _REAL_COLUMNS = ['ticker', 'direction', 'entry_time', 'entry_price', 'signal_strength',
@@ -127,11 +175,14 @@ def test_fallback_handles_the_real_nine_column_file_and_a_mixed_file_row_by_row(
     a null run_kind reads as live, so a mixed file (pre-stamp rows appended
     to by stamped rows) keeps its earlier rows instead of dropping them."""
     tl = TradeLogger(output_dir=str(tmp_path))
-    d1, d2 = date(2026, 9, 6), date(2026, 9, 7)
+    # log_trade appends to TODAY's file (the live monitor logs today's
+    # trades), so the mixed file is today's; the test must not pin a date.
+    d2 = date.today()
+    d1 = d2 - timedelta(days=1)
     _write_parquet(tl._daily_file(d1), [_real_row('SPY'), _real_row('IWM')])
     pd.DataFrame([_real_row('QQQ')]).to_parquet(tl._daily_file(d2), index=False)
-    tl.log_trade(_real_row('DIA', run_kind='live', trade_date='2026-09-07'))
-    tl.log_trade(_real_row('XLF', run_kind='replay', trade_date='2026-09-07'))
+    tl.log_trade(_real_row('DIA', run_kind='live', trade_date=str(d2)))
+    tl.log_trade(_real_row('XLF', run_kind='replay', trade_date=str(d2)))
     mixed = pd.read_parquet(tl._daily_file(d2))
     assert list(mixed['run_kind'].isna()) == [True, False, False], "the pre-stamp row is null, not dropped"
     with patch("gcp.trade_logger._cloud_sql_active", return_value=False):

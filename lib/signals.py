@@ -255,22 +255,19 @@ def evaluate_signal(
                     import json as _json
                     try:
                         dc = _json.loads(dc)
-                    except Exception:
-                        # AUDIT-2026-09-07: silent fallback (audit C-04) --
-                        # malformed disabled_conditions JSON becomes "nothing
-                        # is disabled", so a condition an operator switched
-                        # OFF for risk reasons is silently switched back on.
-                        # Now logged, so the failure is visible; still
-                        # degrades, because what a resolver failure should do
-                        # to a live signal is a product decision, not a
-                        # refactor. Tracked as OPEN in
-                        # docs/audits/FALLBACK_AUDIT_2026-05-13.md §12.1.
-                        log.warning(
-                            "%s: disabled_conditions is not valid JSON (%r) — "
-                            "treating as EMPTY, so any condition disabled for "
-                            "this ticker is re-enabled for this evaluation",
+                    except ValueError:
+                        # Audit C-04, closed the safe way round: a malformed
+                        # disabled_conditions used to become "nothing is
+                        # disabled", so a condition an operator switched OFF
+                        # for risk was switched back on. Operator config we
+                        # own is an INTERNAL failure; no signal fires for
+                        # this bar until it is fixed (CLAUDE.md 3.7).
+                        log.exception(
+                            "%s: exit_config_overrides.disabled_conditions is not "
+                            "valid JSON (%r); no mean-reversion signal fires for this "
+                            "bar until the override row is fixed",
                             ticker, dc)
-                        dc = []
+                        return None
                 if dc:
                     disabled_set = set(dc)
                     pre_call = len(call_conds)
@@ -280,19 +277,20 @@ def evaluate_signal(
                     call_score -= (pre_call - len(call_conds))
                     put_score -= (pre_put - len(put_conds))
             disabled_directions = get_disabled_directions(ticker.upper())
-        except Exception as exc:
-            # AUDIT-2026-09-07: silent fallback (audit C-04) -- degrades to
-            # Tier-B (legacy behaviour) on any resolver failure.
-            #
-            # The old comment said "the resolver itself logs the cause". That
-            # is only true when the resolver ran: a failure in the import, in
-            # `_json.loads`, or in the list comprehensions above never reaches
-            # it, so those degraded in total silence. Logged here instead of
-            # relying on a layer that may not have been entered.
-            log.warning(
-                "%s: exit-override resolver failed (%s: %s) — evaluating "
-                "with NO disabled conditions or directions applied",
-                ticker, type(exc).__name__, exc)
+        except Exception:
+            # Audit C-04, closed the safe way round: the resolver failing
+            # used to evaluate "with NO disabled conditions or directions
+            # applied", so a side switched OFF for risk fired. A kill
+            # switch that cannot be read is unknown, and the safe reading
+            # of an unknown risk control is CLOSED: no mean-reversion
+            # signal fires for this bar. The failure (import, DB, parse) is
+            # logged here with its traceback, whichever layer raised it;
+            # the bar recurs every 60 s, so a transient blip costs one
+            # evaluation, not a fire on a disabled side (CLAUDE.md 3.7).
+            log.exception(
+                "%s: exit-override resolver failed; no mean-reversion signal "
+                "fires for this bar", ticker)
+            return None
 
     signal = None
 

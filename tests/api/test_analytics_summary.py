@@ -39,10 +39,34 @@ def test_summary_restricts_to_live_trades(monkeypatch):
         return pd.DataFrame(columns=["direction", "return_pct", "exit_time", "entry_time"])
 
     monkeypatch.setattr(analytics_module, "_HAS_CLOUD_SQL", True)
-    monkeypatch.setattr(analytics_module, "query_to_dataframe", _capture)
+    monkeypatch.setattr(analytics_module, "query_to_dataframe_strict", _capture)
     r = TestClient(main.app).get("/api/analytics/summary/SPY", params={"days": 30})
     assert r.status_code == 200, r.text
     assert len(seen) == 1
     sql = seen[0][0].lower()
     assert "from trades" in sql and "run_kind = 'live'" in sql, sql
     assert seen[0][1] == {"ticker": "SPY", "days": 30}
+
+
+def test_summary_is_503_not_a_flat_zero_when_the_query_fails(monkeypatch):
+    """Internal review of #1022 (trade-reader round): the endpoint read
+    through the swallowing query_to_dataframe, so a failed query (for
+    instance the run_kind column missing until the schema is applied)
+    rendered as HTTP 200 with every stat at 0, a legitimate-looking flat
+    summary. CLAUDE.md 3.7: an INTERNAL failure fails loud."""
+
+    def _boom(sql, params=None):
+        raise RuntimeError('column "run_kind" does not exist')
+
+    monkeypatch.setattr(analytics_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(analytics_module, "query_to_dataframe_strict", _boom)
+    r = TestClient(main.app).get("/api/analytics/summary/SPY", params={"days": 30})
+    assert r.status_code == 503, r.text
+    assert "unavailable" in r.json()["detail"].lower()
+
+
+def test_summary_reads_through_the_strict_query():
+    import inspect
+    src = inspect.getsource(analytics_module)
+    assert "query_to_dataframe_strict" in src
+    assert "from gcp.database import is_cloud_sql_configured, query_to_dataframe\n" not in src
