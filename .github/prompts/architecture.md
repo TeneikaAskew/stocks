@@ -68,6 +68,8 @@ survive (carried forward from PR #990):
 
 ## Rules
 
+- **Never write `...` or `…` as a stand-in for text you are not changing.** A `replace` call rewrites exactly the span you give it, so an elision marker does not mean "the rest is unchanged" — it deletes the paragraph and leaves three dots in the document. Run 27 did this to five section introductions and four bullets in this file at once, destroying 4,035 characters while every other gate stayed green. If a paragraph needs no change, do not call `replace` on it at all. A gate now fails the run on any line that is only an ellipsis.
+
 - Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - **Update in place; never regenerate from scratch.** The previous version is the baseline, not a style reference.
 - **Never edit inside a marker block.**
