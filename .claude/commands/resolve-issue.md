@@ -1287,7 +1287,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # `printf | grep -q` recreates the same early-exit SIGPIPE one stage over,
     # and under `set -o pipefail` (which this repo sets) that becomes the
     # pipeline's status and would read as a grep error rather than a match.
-    local _scripts
+    local _scripts _dscript
     _scripts=$(printf '%s' "$pkg" \
                  | jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"') \
       || { echo "jq failed on package.json (rc=$?) — asserting nothing"; return 2; }
@@ -1298,6 +1298,13 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     test "$d" -le 1 \
       || { echo "the package.json script scan errored (grep rc=$d)"
            echo "— asserting nothing"; return 2; }
+    # KEEP THIS ANSWER. `d` is about to be written by the dependency scan below,
+    # and the diagnostic four hundred lines down needs to know WHICH of the two
+    # said 0 — a dependency-only match re-grepping the scripts text prints a
+    # heading with nothing under it, and under `set -e` the no-match grep (rc=1)
+    # kills the caller's shell. Measured both, on a manifest declaring d3 with
+    # scripts that never name it.
+    _dscript=$d
     # A DECLARED DEPENDENCY IS A CONSUMER TOO. `npm install` fetches it whether
     # or not a line of code imports it, and nothing above can see the
     # declaration: EXCLUDE_SOLYRA drops package.json and both lockfiles (they
@@ -1319,6 +1326,13 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # then the version suffix, keeping a leading `@scope/`. Measured on four
     # shapes: npm:d3@^7.0.0 -> d3, npm:@heroui/react@^3.1.0 -> @heroui/react,
     # npm:lodash@latest -> lodash, npm:zod -> zod.
+    # IT EMITS THE MANIFEST LINE, not the name that matched. Under an alias the
+    # matched name is the TARGET (`d3`), and printing that alone tells the
+    # operator nothing about which key pulls it — `charts npm:d3@^7.0.0` does,
+    # and it is what the "read the line" warning below promises. Membership is
+    # tested over both candidates and the emitted text is the entry, so exact-key
+    # semantics are unchanged: measured, `react` still matches `react` and not
+    # `react-dom`, and all four alias shapes above still match.
     local dep
     dep=$(printf '%s' "$pkg" | jq -r --arg s "$sym" '
             def alias_target:
@@ -1330,9 +1344,11 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
             | [.dependencies, .devDependencies, .peerDependencies,
                .optionalDependencies]
             | map(select(. != null)) | add // {} | to_entries[]
-            | (.key, (select(.value | type == "string" and startswith("npm:"))
-                      | .value | alias_target))
-            | select(. as $k | $alts | index($k))') \
+            | . as $e
+            | [ $e.key, ($e.value | select(type == "string" and
+                                           startswith("npm:")) | alias_target) ]
+            | select(any(.[]; . as $k | $alts | index($k)))
+            | "\($e.key) \($e.value)"') \
       || { echo "could not read package.json's dependency sections"; return 2; }
     test -z "$dep" || d=0
     # The LOCKFILES are generated from these sections and are deliberately not
@@ -1391,14 +1407,32 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
       git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- CLAUDE.md \
         ${reviewed[@]+"${reviewed[@]}"}
     fi
-    # `-n "$_scripts"` rather than `|| :` on the grep. The scope only reports 0
-    # because the same grep matched a moment ago, so it matches again here —
-    # what the guard removes is the unset case, not a failure, and `|| :` would
-    # be the swallow this file spends its length arguing against.
-    if [ "$d" -eq 0 ] && [ -n "${_scripts:-}" ]; then
-      echo "package.json declares '$sym' (an npm ALIAS hides the installed"
-      echo "package inside the value, so read the line, do not count it):"
+    # TWO SOURCES, TWO DIAGNOSTICS. `d` is 0 if the scripts block matched OR a
+    # dependency did, and round 54 printed the scripts text for both — so a
+    # dependency-only match produced a heading naming a consumer with no
+    # consumer under it, and under `set -e` the no-match grep (rc=1) ended the
+    # caller's shell. Measured on a manifest declaring d3 whose scripts never
+    # name it: heading, nothing, and `consumed` bare under `set -e` never
+    # reached the next line. The diagnostic meant to show the operator the
+    # consumer was worse than the silence it replaced.
+    # `-n "$_scripts"` rather than `|| :` on the grep, and now guarded by
+    # `_dscript` rather than `d`, which is what makes the reasoning true: the
+    # scripts grep reports 0 only because the same pattern matched the same text
+    # a moment ago, so it matches again here. That was the right argument
+    # applied to the wrong variable. `|| :` would be the swallow this file
+    # spends its length arguing against, and is still not the answer.
+    if [ "${_dscript:-1}" -eq 0 ] && [ -n "${_scripts:-}" ]; then
+      echo "package.json scripts run '$sym':"
       printf '%s\n' "$_scripts" | grep -E -e "$sym"
+    fi
+    # PRINTED, NOT RE-DERIVED. `dep` already holds the matching manifest lines
+    # from the jq above; grepping for them again would be a second measurement
+    # that can disagree with the one that set `d`.
+    if [ -n "${dep:-}" ]; then
+      echo "package.json declares '$sym' as a dependency (an npm ALIAS hides"
+      echo "the installed package inside the value, so read the line, do not"
+      echo "count it):"
+      printf '%s\n' "$dep"
     fi
     if [ "$a" -eq 0 ]; then
       echo "code/config mentions '$sym':"
@@ -1513,10 +1547,25 @@ _ere_literal() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/[]^$*+?(){}|.[]/\
 # the refusal is cheap: walk the `[…]` spans and look for a pipe inside one.
 # A symbol needing a literal pipe can still be retired — name it in an
 # implementation argument, or run the two halves as separate retirements.
-_sym_ok() {   # 0 = safe to split on `|`, 1 = refuse and say why
-  local _q=$1 _span
+# AND AN ANCHOR IS NOT PORTABLE BETWEEN THE TWO SEARCHES. `$2 = path` adds a
+# second refusal for the caller that scans PATHS. consumed() matches file
+# CONTENTS, where `^foo$` is a meaningful ERE, so it is allowed there; the
+# retirement scan matches whole repo-relative paths, where the same expression
+# can match nothing that exists. Measured on a checkout holding a tracked
+# `foo.py` whose contents never say `foo`: `absent_everywhere '^foo$'` returned
+# 0 — retirement certified — because the content probes missed the file and
+# `grep -E '^foo$'` over the path list cannot match `foo.py`. Deriving an
+# unanchored twin means stripping anchors from an arbitrary ERE, which is the
+# bracket parser rounds 53 and 54 both declined; refusing is exact, because a
+# `^` or `$` is either inside a `[…]` span, backslash-escaped, or an anchor.
+# `[^0-9]` and `[$]` are NOT anchors and stay accepted — the same walk that
+# finds the pipes supplies the spans, so this costs one accumulator, not a
+# second parser.
+_sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say why
+  local _q=$1 _mode=${2:-} _span _bare= _out= _c
   while case $_q in *'['*']'*) true;; *) false;; esac; do
-    _span=${_q#*[}; _span=${_span%%]*}
+    _bare=$_bare${_q%%[*}
+    _q=${_q#*[}; _span=${_q%%]*}
     case $_span in
       *'|'*) echo "'$1' has a '|' inside a bracket expression. The three splits"
              echo "  on '|' in this file would cut there and rebuild a pattern"
@@ -1524,8 +1573,30 @@ _sym_ok() {   # 0 = safe to split on `|`, 1 = refuse and say why
              echo "  separately, or name the file in an implementation argument."
              return 1;;
     esac
-    _q=${_q#*[}; _q=${_q#*]}
+    _q=${_q#*]}
   done
+  test "$_mode" = path || return 0
+  _bare=$_bare$_q
+  # Drop backslash-escaped pairs first: `\^` and `\$` are literals, not anchors,
+  # and a `case` over the raw text cannot tell them apart. Character at a time
+  # rather than a sed pass, so the guard needs nothing the helper file does not
+  # already carry.
+  while [ -n "$_bare" ]; do
+    _c=${_bare%"${_bare#?}"}; _bare=${_bare#?}
+    if [ "$_c" = '\' ]; then _bare=${_bare#?}; continue; fi
+    _out=$_out$_c
+  done
+  case $_out in
+    *'^'*|*'$'*)
+      echo "'$1' anchors with '^' or '\$' outside a bracket expression."
+      echo "  consumed() matches file CONTENTS, where that is meaningful, but"
+      echo "  the retirement scan matches whole repo-relative PATHS — measured,"
+      echo "  '^foo\$' left a tracked foo.py unmatched and certified the"
+      echo "  retirement with the module still on disk. Drop the anchors, or"
+      echo "  name the file in an implementation argument so the path is"
+      echo "  matched literally."
+      return 1;;
+  esac
   return 0; }
 
 absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
@@ -1539,7 +1610,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   test -n "$sym" || {
     echo "usage: absent_everywhere <symbol> [implementation path or stem…]"
     return 1; }
-  _sym_ok "$sym" || return 1
+  _sym_ok "$sym" path || return 1
   # A JOB NAME IS NOT ITS IMPLEMENTATION, and separator normalisation cannot
   # bridge the gap — it only handles the case where the two spellings differ by
   # `-` versus `_`. Measured: `historical-signals-watchlist` runs
