@@ -16,6 +16,8 @@ This test suite locks both:
 from __future__ import annotations
 
 import pandas as pd
+from datetime import date
+
 import pytest
 
 from lib.signals import evaluate_signal
@@ -249,3 +251,102 @@ def test_malformed_disabled_conditions_fails_closed(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR, logger="lib.signals"):
         assert evaluate_signal(row, min_conditions=3, ticker="QQQ") is None
     assert "disabled_conditions" in caplog.text
+
+
+def test_a_failed_override_query_fails_closed_not_open(monkeypatch, caplog):
+    """The fail-closed handler above was UNREACHABLE for the failure it was
+    written for (Codex on #1022).
+
+    `_latest_overrides` caught every exception from the Cloud SQL read and
+    returned None, so `get_disabled_directions` saw "no row", answered
+    `set()` = nothing disabled, and evaluation carried on. The swallow one
+    level down defeated the strict caller one level up, which is the exact
+    shape CLAUDE.md 3.7.1 warns about. This test drives the real failure —
+    the query itself raising — rather than a malformed value."""
+    import logging
+
+    from lib.strategies import exit_config_overrides as eco
+    eco._latest_overrides.cache_clear()
+
+    from gcp import database as gcp_db
+    monkeypatch.setattr(gcp_db, "is_cloud_sql_configured", lambda: True)
+
+    def _boom(*a, **k):
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr("pandas.read_sql", _boom)
+    monkeypatch.setattr(gcp_db, "get_engine", lambda: object())
+
+    row = _put_row()
+    row["Broke_Prev_Day_Low"] = 1
+    with caplog.at_level(logging.ERROR, logger="lib.signals"):
+        sig = evaluate_signal(row, min_conditions=3, ticker="QQQ")
+    assert sig is None, "an unreadable kill switch must not read as open"
+    assert "connection lost" in caplog.text
+    eco._latest_overrides.cache_clear()
+
+
+def test_one_failed_read_does_not_disable_the_kill_switch_for_the_process(monkeypatch):
+    """`_latest_overrides` is lru_cached, so the swallowed None was CACHED:
+    a single transient failure turned the kill switch off for the rest of
+    the process, and the next 390 bars of the session fired as though
+    nothing were disabled. A raise is not cached, so the read is retried."""
+    import pandas as pd
+
+    from lib.strategies import exit_config_overrides as eco
+    eco._latest_overrides.cache_clear()
+    from gcp import database as gcp_db
+    monkeypatch.setattr(gcp_db, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(gcp_db, "get_engine", lambda: object())
+
+    calls = {"n": 0}
+    good = pd.DataFrame([{
+        "calibration_date": date.today(), "call_target": None, "put_target": None,
+        "call_stop": None, "put_stop": None, "call_time_stop": None,
+        "put_time_stop": None, "consecutive_periods": None,
+        "disabled_conditions": None, "disabled_directions": ["PUT"],
+        "blue_sky_atr_offset": None, "notes": None,
+    }])
+
+    def _flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("connection lost")
+        return good
+
+    monkeypatch.setattr("pandas.read_sql", _flaky)
+
+    import pytest
+    with pytest.raises(Exception):
+        eco.get_disabled_directions("QQQ")
+    # Second call must reach the database again, not replay a cached failure.
+    assert eco.get_disabled_directions("QQQ") == {"PUT"}
+    assert calls["n"] == 2
+    eco._latest_overrides.cache_clear()
+
+
+def test_the_tier_b_getters_still_degrade_on_a_failed_read(monkeypatch):
+    """The exit-target getters are deliberately lenient: Tier-B defaults are
+    the documented answer when no usable override exists, and a read failure
+    must not take fire_alert down. Their leniency is now explicit at each
+    call site instead of a blanket swallow, so this pins it."""
+    from lib.strategies import exit_config_overrides as eco
+    from lib.config import ExitConfig, SignalConfig
+    eco._latest_overrides.cache_clear()
+    from gcp import database as gcp_db
+    monkeypatch.setattr(gcp_db, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(gcp_db, "get_engine", lambda: object())
+
+    def _boom(*a, **k):
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr("pandas.read_sql", _boom)
+
+    defaults = ExitConfig()
+    assert eco.get_call_target("QQQ") == defaults.call_target
+    assert eco.get_put_stop("QQQ") == defaults.put_stop
+    # This knob's Tier-B default lives in SignalConfig, not ExitConfig.
+    assert eco.get_consecutive_periods("QQQ") == SignalConfig().consecutive_periods
+    assert eco.get_blue_sky_atr_offset("QQQ") is None
+    assert eco.get_resolution_tier("QQQ", "call_target") == "B"
+    eco._latest_overrides.cache_clear()

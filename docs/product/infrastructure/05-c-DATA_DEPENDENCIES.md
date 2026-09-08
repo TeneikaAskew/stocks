@@ -391,7 +391,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [189](../../../gcp/regime_combo_job.py#L189), [190](../../../gcp/regime_combo_job.py#L190)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [263](../../../gcp/apply_schema.py#L263), [443](../../../gcp/apply_schema.py#L443)
+- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [266](../../../gcp/apply_schema.py#L266), [446](../../../gcp/apply_schema.py#L446)
 
 ### `sec_filings`
 - [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) — line [581](../../../gcp/fetchers/fetch_sec_filings.py#L581), [582](../../../gcp/fetchers/fetch_sec_filings.py#L582), [583](../../../gcp/fetchers/fetch_sec_filings.py#L583)
@@ -608,7 +608,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/maintenance/compute_spx_greeks.py`](../../../scripts/maintenance/compute_spx_greeks.py) — line [91](../../../scripts/maintenance/compute_spx_greeks.py#L91), [101](../../../scripts/maintenance/compute_spx_greeks.py#L101), [113](../../../scripts/maintenance/compute_spx_greeks.py#L113), [121](../../../scripts/maintenance/compute_spx_greeks.py#L121)
 
 ### `exit_config_overrides`
-- [`lib/strategies/exit_config_overrides.py`](../../../lib/strategies/exit_config_overrides.py) — line [4](../../../lib/strategies/exit_config_overrides.py#L4), [104](../../../lib/strategies/exit_config_overrides.py#L104), [232](../../../lib/strategies/exit_config_overrides.py#L232)
+- [`lib/strategies/exit_config_overrides.py`](../../../lib/strategies/exit_config_overrides.py) — line [4](../../../lib/strategies/exit_config_overrides.py#L4), [124](../../../lib/strategies/exit_config_overrides.py#L124), [141](../../../lib/strategies/exit_config_overrides.py#L141), [267](../../../lib/strategies/exit_config_overrides.py#L267)
 - [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [13](../../../scripts/run_param_sweep.py#L13), [143](../../../scripts/run_param_sweep.py#L143)
 
 ### `historical_signals`
@@ -797,7 +797,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [7](../../../gcp/regime_combo_job.py#L7), [51](../../../gcp/regime_combo_job.py#L51)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [369](../../../gcp/apply_schema.py#L369), [421](../../../gcp/apply_schema.py#L421)
+- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [372](../../../gcp/apply_schema.py#L372), [424](../../../gcp/apply_schema.py#L424)
 
 ### `sec_filings`
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [116](../../../lib/agents/ranker/candidates.py#L116)

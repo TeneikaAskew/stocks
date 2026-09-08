@@ -537,3 +537,77 @@ def test_a_deploying_target_still_aborts_when_the_probe_is_unreadable(tmp_path):
     assert any("secrets versions access" in c for c in recorded), recorded
     assert not any("run jobs" in c for c in recorded), (
         "a job was mutated after the secret set could not be read: %s" % recorded)
+
+
+def test_a_failed_env_secret_aborts_before_any_job_is_mutated(tmp_path):
+    """`_secret` fails loud, but `_env_string` did not carry that failure to
+    its caller (Codex on #1022).
+
+    `_env_string` is only ever invoked as `$(_env_string)` inside a gcloud
+    argument, and a command substitution in that position does not abort the
+    script. Reproduced with a stub gcloud: both reads failed, and gcloud was
+    still called with
+
+        --set-env-vars CLOUD_SQL_CONNECTION_NAME=,DB_USER=,DB_NAME=trading
+
+    `--set-env-vars` REPLACES the job's set, so that writes an empty
+    connection name onto a live job and every later run of it exits 2 as
+    "not configured" — the exact outcome the fail-loud change was made to
+    prevent."""
+    import os
+    import subprocess
+
+    calls = tmp_path / "gcloud-calls.log"
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    # Succeeds for the four optional probes, fails for the connection name.
+    (stub / "gcloud").write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> '{calls}'\n"
+        'if [ "$1" = "secrets" ]; then\n'
+        '  case "$*" in\n'
+        '    *cloud-sql-connection-name*|*db-trading-user*)\n'
+        '      echo "ERROR: (gcloud.secrets.versions.access) PERMISSION_DENIED" >&2\n'
+        '      exit 1 ;;\n'
+        '    *) echo "stub-secret-value" ; exit 0 ;;\n'
+        "  esac\n"
+        "fi\n"
+        "echo 'stub gcloud: refusing' >&2\n"
+        "exit 1\n"
+    )
+    (stub / "gcloud").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}",
+           "PROJECT_ID": "test-project"}
+    proc = subprocess.run(
+        # gamma-levels deploys straight from the research image, so it
+        # reaches _env_string without an image build in front of it.
+        ["bash", str(REPO / "gcp/deploy.sh"), "gamma-levels"],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=120,
+    )
+    recorded = calls.read_text().splitlines() if calls.exists() else []
+    assert proc.returncode != 0, "an unreadable required secret must abort the deploy"
+    mutations = [c for c in recorded
+                 if "run jobs create" in c or "run jobs update" in c
+                 or "run deploy" in c or "run services update" in c]
+    assert mutations == [], (
+        "a job was mutated after a required secret could not be read: %s" % mutations)
+    assert not any("CLOUD_SQL_CONNECTION_NAME=," in c for c in recorded), (
+        "an empty connection name reached a gcloud argument")
+
+
+def test_the_env_string_is_resolved_once_up_front():
+    """Resolving it per call site put 104 Secret Manager reads in every
+    `all)` run and put the failure inside a substitution that could not
+    abort. It is resolved once, next to the secret flag, so both fail
+    before the first mutation."""
+    import re
+
+    src = (REPO / "gcp/deploy.sh").read_text()
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    assert re.search(r'^\s*ENV_STRING="\$\(_env_string\)"', code, re.M), \
+        "the env string must be resolved once at startup"
+    inline = [l for l in code.splitlines() if "$(_env_string)" in l
+              and not l.strip().startswith("ENV_STRING=")]
+    assert inline == [], (
+        "these call sites still resolve the env string inline, where a "
+        "failed secret read cannot abort the deploy: %s" % inline[:5])

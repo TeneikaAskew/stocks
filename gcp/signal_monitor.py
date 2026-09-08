@@ -2586,10 +2586,19 @@ def main():
     parser.add_argument('--date', default=os.environ.get('REPLAY_DATE'),
                         help='[replay] Single date YYYY-MM-DD '
                              '(alias for --start = --end)')
+    # Eastern, not UTC: these are forwarded verbatim to
+    # scripts.replay_signal_monitor.resolve_window, which frames the window
+    # in ET because a session is an Eastern day (CLAUDE.md 3.9). The help
+    # here said UTC after the harness moved, so a documented
+    # 2026-09-01..2026-09-02 window read as 04:00Z-04:00Z under EDT and
+    # quietly changed which extended-hours bars the replay saw (Codex on
+    # #1022). The words are what was wrong; converting a UTC date here
+    # would put back the off-by-one the harness change removed.
     parser.add_argument('--start', default=os.environ.get('REPLAY_START'),
-                        help='[replay] UTC start date YYYY-MM-DD')
+                        help='[replay] Eastern start date YYYY-MM-DD '
+                             '(a session is an ET day)')
     parser.add_argument('--end', default=os.environ.get('REPLAY_END'),
-                        help='[replay] UTC end date YYYY-MM-DD (exclusive)')
+                        help='[replay] Eastern end date YYYY-MM-DD (exclusive)')
     parser.add_argument('--limit', type=int, default=None,
                         help='[replay] Max bars per ticker (debug/dev)')
     parser.add_argument('--json', action='store_true',

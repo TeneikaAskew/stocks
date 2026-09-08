@@ -294,7 +294,9 @@ def _run_fn(tmp_path, env, call: str) -> subprocess.CompletedProcess:
     script = f"""set -uo pipefail
 PROJECT_ID=proj; REGION=us-east1; SA_EMAIL=sa@proj.iam.gserviceaccount.com
 IMAGE=us-east1-docker.pkg.dev/proj/trading/trading-system; DB_SECRET_FLAG='--set-secrets DB_PASSWORD=db-pw:latest'
-_env_string() {{ echo 'CLOUD_SQL_CONNECTION_NAME=proj:us-east1:db,DB_USER=trading,DB_NAME=trading'; }}
+# Resolved once at startup in deploy.sh (#1022), so the harness supplies the
+# VALUE rather than the function it used to call at each site.
+ENV_STRING='CLOUD_SQL_CONNECTION_NAME=proj:us-east1:db,DB_USER=trading,DB_NAME=trading'
 pin_image_tags() {{ echo PINNED >> "$OUT/calls"; }}
 {defs}
 cd {REPO}
@@ -514,12 +516,13 @@ def test_pin_images_does_not_resolve_the_secret_set():
 
     src = (REPO / "gcp/deploy.sh").read_text()
     top = src[:src.index("_env_string() {")]
-    m = re.search(r'\n\s*([^)\n]+(?:\\\n[^)\n]+)*)\)\s*DB_SECRET_FLAG="" ;;', top)
-    assert m, "the DB_SECRET_FLAG exemption arm is gone"
+    m = re.search(r'\n\s*([^)\n]+(?:\\\n[^)\n]+)*)\)\s*_NEEDS_DEPLOY_CREDS=0 ;;', top)
+    assert m, "the deploy-credentials exemption arm is gone"
     exempt = {lbl.strip().strip('"')
               for lbl in m.group(1).replace("\\", " ").replace("\n", " ").split("|")}
     assert "pin-images" in exempt
-    assert '*) DB_SECRET_FLAG="$(_build_secret_flag)" ;;' in top
+    assert 'DB_SECRET_FLAG="$(_build_secret_flag)"' in top
+    assert 'ENV_STRING="$(_env_string)"' in top or 'ENV_STRING="$(_env_string)"' in src
 
 
 def test_the_staging_trigger_waits_for_earlier_deploys_instead_of_refusing():

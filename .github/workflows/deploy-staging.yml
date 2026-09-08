@@ -267,6 +267,17 @@ jobs:
           # ran outside both, so the guard's "last row is the schema in
           # force" contract was false right after it (internal review of
           # #1022, schema-apply round).
+          #
+          # The tag scan below is ordering, not exclusion: it cannot see a
+          # build that STARTS while this runner is applying, and that build
+          # cannot see this runner at all. Both would pass the revision
+          # guard before either recorded, and the one finishing last would
+          # roll the other's CREATE OR REPLACE objects back (Codex on
+          # #1022). What actually serialises them is a Postgres advisory
+          # lock that gcp/apply_schema.py holds across guard -> apply ->
+          # record: every applier reaches the same database, whatever
+          # started it. The wait below still helps by not queueing behind
+          # the lock when a build is already known to be running.
           WAIT_BUDGET_SECONDS=1200 bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh --external
           python -m gcp.apply_schema \
             --revision="$(git rev-parse HEAD)" \

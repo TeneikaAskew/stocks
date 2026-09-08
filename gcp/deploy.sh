@@ -539,7 +539,7 @@ deploy_insight_pipeline() {
     echo "Deploying insight-pipeline job..."
     local admin_token admin_env
     admin_token="$(_secret admin-token 2>/dev/null || true)"
-    admin_env="$(_env_string)${admin_token:+,ADMIN_TOKEN=${admin_token}}"
+    admin_env="${ENV_STRING}${admin_token:+,ADMIN_TOKEN=${admin_token}}"
 
     gcloud run jobs create insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
@@ -573,7 +573,7 @@ deploy_insight_discord_push() {
         --command "python,-m,gcp.insight_discord_push" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-discord-push \
         --image "${IMAGE}" --region "${REGION}" \
@@ -581,7 +581,7 @@ deploy_insight_discord_push() {
         --command "python,-m,gcp.insight_discord_push" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -608,7 +608,7 @@ deploy_historical_signals_watchlist() {
         --command "python,-m,scripts.run_historical_signals" \
         --args="--from-watchlist" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update historical-signals-watchlist \
         --image "${IMAGE}" --region "${REGION}" \
@@ -616,7 +616,7 @@ deploy_historical_signals_watchlist() {
         --command "python,-m,scripts.run_historical_signals" \
         --args="--from-watchlist" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -661,7 +661,7 @@ deploy_signal_quality_report() {
         --command "python,-m,scripts.signal_quality_report" \
         --args="--mode=rolling" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-quality-report \
         --image "${IMAGE}" --region "${REGION}" \
@@ -670,7 +670,7 @@ deploy_signal_quality_report() {
         --command "python,-m,scripts.signal_quality_report" \
         --args="--mode=rolling" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -701,14 +701,14 @@ deploy_signal_quality_alarm() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.signal_quality_alarm" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-quality-alarm \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 120 \
         --command "python,-m,gcp.signal_quality_alarm" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -741,14 +741,14 @@ deploy_indicator_correlation() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.indicator_correlation_job" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update indicator-correlation \
         --image "${research_image}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.indicator_correlation_job" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -778,7 +778,7 @@ deploy_regime_combo() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.regime_combo_job" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update regime-combo \
         --image "${research_image}" --region "${REGION}" \
@@ -786,7 +786,7 @@ deploy_regime_combo() {
         --task-timeout 3600 \
         --command "python,-m,gcp.regime_combo_job" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -807,14 +807,14 @@ deploy_signal_replay() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.signal_replay" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-replay \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 900 \
         --command "python,-m,gcp.signal_replay" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -827,7 +827,7 @@ deploy_signal_replay() {
 deploy_auto_refresh_top_n() {
     echo "Deploying auto-refresh-top-n job..."
     local env
-    env="$(_env_string),INSIGHT_AUTO_REFRESH_TOP_N=3"
+    env="${ENV_STRING},INSIGHT_AUTO_REFRESH_TOP_N=3"
 
     gcloud run jobs create auto-refresh-top-n \
         --image "${IMAGE}" --region "${REGION}" \
@@ -949,9 +949,15 @@ _build_secret_flag() {
 case "${1:-}" in
     setup|setup-notifier-secrets|setup-pg-dump-iam|migrate|build|build-research|\
     backfill|registry-cleanup|retire-legacy-images|pin-images|\
-    cloudbuild-triggers|p7b-classifier|help|"") DB_SECRET_FLAG="" ;;
-    *) DB_SECRET_FLAG="$(_build_secret_flag)" ;;
+    cloudbuild-triggers|p7b-classifier|help|"") _NEEDS_DEPLOY_CREDS=0 ;;
+    *) _NEEDS_DEPLOY_CREDS=1 ;;
 esac
+
+if [ "${_NEEDS_DEPLOY_CREDS}" = 1 ]; then
+    DB_SECRET_FLAG="$(_build_secret_flag)"
+else
+    DB_SECRET_FLAG=""
+fi
 
 # ── Shared env vars injected into every Cloud Run job ─────────────────────────
 # Only non-secret values land here. The 4 API keys + DB_PASS go through
@@ -961,9 +967,21 @@ esac
 # label "trading-app"); leaving them in env-vars keeps deploy-script
 # simplicity without leaking real credentials.
 _env_string() {
-    local env
-    env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
-    env="${env},DB_USER=$(_secret db-trading-user)"
+    local env conn user
+    # Each lookup is checked and its status propagated. `_secret` fails
+    # loud, but this function is only ever invoked as `${ENV_STRING}`
+    # inside a gcloud argument, and a command substitution in that
+    # position does not abort the script: measured on this code, both
+    # reads failed and gcloud was still called with
+    # `--set-env-vars CLOUD_SQL_CONNECTION_NAME=,DB_USER=,DB_NAME=trading`
+    # on BOTH the create and the update branch. `--set-env-vars` REPLACES
+    # the job's set, so that writes an empty connection name onto a live
+    # job and every later run of it exits 2 as "not configured" — the
+    # outcome the fail-loud change exists to prevent (Codex on #1022).
+    conn=$(_secret cloud-sql-connection-name) || return 1
+    user=$(_secret db-trading-user) || return 1
+    env="CLOUD_SQL_CONNECTION_NAME=${conn}"
+    env="${env},DB_USER=${user}"
     env="${env},DB_NAME=trading"
     env="${env},GCS_BUCKET=${PROJECT_ID}-trading-data"
     # User-preference flag — set to true so the morning brief
@@ -974,6 +992,16 @@ _env_string() {
     env="${env},RECOMMEND_LONG_ONLY=true"
     echo "$env"
 }
+
+# Resolved ONCE, here, so a failed read aborts before the first mutation —
+# the same contract as DB_SECRET_FLAG above, and the only place the failure
+# CAN abort. It also removes 104 duplicate Secret Manager reads from an
+# `all)` run, since every job takes the same string.
+if [ "${_NEEDS_DEPLOY_CREDS}" = 1 ]; then
+    ENV_STRING="$(_env_string)"
+else
+    ENV_STRING=""
+fi
 
 # ── Discord interactions endpoint (Cloud Run SERVICE, not a Job) ────────────
 # HTTP service that receives slash-command webhooks from Discord, verifies
@@ -1060,7 +1088,7 @@ deploy_discord_interactions() {
     fi
 
     local env
-    env="$(_env_string)"
+    env="${ENV_STRING}"
     env="${env},DISCORD_APP_ID=${discord_app_id}"
     env="${env},DISCORD_PUBLIC_KEY=${discord_public_key}"
     env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
@@ -1131,7 +1159,7 @@ deploy_backfill_ticker() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.backfill_ticker" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backfill-ticker \
         --image "${IMAGE}" --region "${REGION}" \
@@ -1139,7 +1167,7 @@ deploy_backfill_ticker() {
         --task-timeout 600 \
         --command "python,-m,gcp.backfill_ticker" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1158,14 +1186,14 @@ deploy_validate_brief() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.validate_brief_job" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update validate-brief \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 300 \
         --command "python,-m,gcp.validate_brief_job" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1184,14 +1212,14 @@ deploy_backtest() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.backtest_job" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backtest \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 900 \
         --command "python,-m,gcp.backtest_job" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1217,14 +1245,14 @@ deploy_premarket() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
         --max-retries 0 --task-timeout 1800 \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1247,14 +1275,14 @@ deploy_earnings_reactions_brief() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.earnings_reactions_brief" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update earnings-reactions-brief \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 600 \
         --command "python,-m,gcp.earnings_reactions_brief" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1280,7 +1308,7 @@ deploy_earnings_long_watchlist() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.earnings_long_watchlist" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update earnings-long-watchlist \
         --image "${IMAGE}" --region "${REGION}" \
@@ -1288,7 +1316,7 @@ deploy_earnings_long_watchlist() {
         --task-timeout 600 \
         --command "python,-m,gcp.earnings_long_watchlist" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1302,13 +1330,13 @@ deploy_monitor() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.signal_monitor" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-monitor \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.signal_monitor" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1336,13 +1364,13 @@ deploy_signal_monitor_eod_resolver() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.signal_monitor_eod_resolver" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-monitor-eod-resolver \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.signal_monitor_eod_resolver" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1369,13 +1397,13 @@ deploy_premarket_playbook_resolver() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.premarket_playbook_resolver" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-playbook-resolver \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.premarket_playbook_resolver" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1423,7 +1451,7 @@ deploy_phase6_playbook() {
         --command "python,-m,scripts.analysis.phase6_playbook" \
         --args="--write-db" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
@@ -1433,7 +1461,7 @@ deploy_phase6_playbook() {
         --command "python,-m,scripts.analysis.phase6_playbook" \
         --args="--write-db" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1471,7 +1499,7 @@ deploy_p2_build_gamma_levels() {
         --command "python" \
         --args="-m,gcp.research.p2_build_gamma_levels" \
         --set-secrets=DB_PASS=db-trading-pass:latest \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update p2-build-gamma-levels \
         --image "${research_image}" --region "${REGION}" \
@@ -1480,7 +1508,7 @@ deploy_p2_build_gamma_levels() {
         --command "python" \
         --args="-m,gcp.research.p2_build_gamma_levels" \
         --set-secrets=DB_PASS=db-trading-pass:latest \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1566,7 +1594,7 @@ deploy_strat_engine() {
         --command "python" \
         --args="${default_args}" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update strat-engine \
         --image "${research_image}" --region "${REGION}" \
@@ -1575,7 +1603,7 @@ deploy_strat_engine() {
         --args="${default_args}" \
         --task-timeout 5400 \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1606,7 +1634,7 @@ deploy_direction_probe() {
         --command "python" \
         --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update direction-probe \
         --image "${research_image}" --region "${REGION}" \
@@ -1614,7 +1642,7 @@ deploy_direction_probe() {
         --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
         --task-timeout 5400 \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1645,7 +1673,7 @@ deploy_build_options_greeks() {
         --command "python" \
         --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update build-options-greeks \
         --image "${research_image}" --region "${REGION}" \
@@ -1653,7 +1681,7 @@ deploy_build_options_greeks() {
         --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
         --task-timeout 7200 \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1682,7 +1710,7 @@ deploy_build_options_daily_features() {
         --command "python" \
         --args="-m,gcp.fetchers.build_options_daily_features,--incremental,--days=7" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update build-options-daily-features \
         --image "${research_image}" --region "${REGION}" \
@@ -1690,7 +1718,7 @@ deploy_build_options_daily_features() {
         --args="-m,gcp.fetchers.build_options_daily_features,--incremental,--days=7" \
         --task-timeout 3600 \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1712,7 +1740,7 @@ deploy_build_realtime_gex() {
         --command "python" \
         --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update build-realtime-gex \
         --image "${research_image}" --region "${REGION}" \
@@ -1720,7 +1748,7 @@ deploy_build_realtime_gex() {
         --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
         --task-timeout 1800 \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1765,7 +1793,7 @@ deploy_magnitude_engine() {
         --command "python" \
         --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string),${mag_env}" \
+        --set-env-vars "${ENV_STRING},${mag_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update magnitude-engine \
         --image "${research_image}" --region "${REGION}" \
@@ -1775,7 +1803,7 @@ deploy_magnitude_engine() {
         --command "python" \
         --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string),${mag_env}" \
+        --set-env-vars "${ENV_STRING},${mag_env}" \
         --quiet
 }
 
@@ -1805,7 +1833,7 @@ deploy_direction_baseline() {
         --command "python" \
         --args="-m,gcp.research.direction_program.baseline_runner,--tf=5m" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update direction-baseline \
         --image "${research_image}" --region "${REGION}" \
@@ -1814,7 +1842,7 @@ deploy_direction_baseline() {
         --command "python" \
         --args="-m,gcp.research.direction_program.baseline_runner,--tf=5m" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1840,7 +1868,7 @@ deploy_direction_importance() {
         --command "python" \
         --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update direction-importance \
         --image "${research_image}" --region "${REGION}" \
@@ -1849,7 +1877,7 @@ deploy_direction_importance() {
         --command "python" \
         --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1873,7 +1901,7 @@ deploy_direction_importance() {
 deploy_magnitude_recal() {
     echo "Deploying magnitude-recal job (isotonic calibration experiment)..."
     local research_image="${IMAGE}:research"
-    gcloud run jobs create magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --service-account "${SA_EMAIL}"         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet 2>/dev/null ||     gcloud run jobs update magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet
+    gcloud run jobs create magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --service-account "${SA_EMAIL}"         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet 2>/dev/null ||     gcloud run jobs update magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet
 }
 
 deploy_direction_phase2() {
@@ -1887,14 +1915,14 @@ deploy_direction_phase2() {
         --service-account "${SA_EMAIL}" \
         --command "python" \
         --args="-m,gcp.research.direction_program.phase2_ablation" \
-        ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet 2>/dev/null || \
+        ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet 2>/dev/null || \
     gcloud run jobs update direction-phase2 \
         --image "${research_image}" --region "${REGION}" \
         --tasks ${n} --parallelism ${n} \
         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800 \
         --command "python" \
         --args="-m,gcp.research.direction_program.phase2_ablation" \
-        ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet
+        ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet
 }
 
 # ── Magnitude live-inference job ──────────────────────────────────────────────
@@ -1925,14 +1953,14 @@ deploy_magnitude_inference() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.research.magnitude_engine.mag_inference" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update magnitude-inference \
         --image "${research_image}" --region "${REGION}" \
         --task-timeout 300 \
         --command "python,-m,gcp.research.magnitude_engine.mag_inference" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1956,13 +1984,13 @@ deploy_weekend() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.weekend_review" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update weekend-review \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.weekend_review" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -1976,7 +2004,7 @@ deploy_fetch_market_data() {
     # 1.0s AV pacing default that's ~30 min, plus per-ticker upsert.
     # Headroom = ~3x; Cloud Run charges runtime, not the cap.
     local env
-    env="$(_env_string),EARNINGS_WINDOW_DAYS=7"
+    env="${ENV_STRING},EARNINGS_WINDOW_DAYS=7"
 
     gcloud run jobs create fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
@@ -2019,7 +2047,7 @@ deploy_backfill_daily_indicators() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backfill-daily-indicators \
         --image "${IMAGE}" --region "${REGION}" \
@@ -2028,7 +2056,7 @@ deploy_backfill_daily_indicators() {
         --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2043,13 +2071,13 @@ deploy_fetch_alphavantage() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-alphavantage-intraday \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2549,13 +2577,13 @@ deploy_fetch_fred_rates() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-fred-rates \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2574,14 +2602,14 @@ deploy_fetch_economic_events() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-economic-events \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         --args="" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2590,7 +2618,7 @@ deploy_fetch_earnings_calendar() {
     local ew_user ew_pass ew_env
     ew_user="$(_secret ew-user 2>/dev/null || true)"
     ew_pass="$(_secret ew-pass 2>/dev/null || true)"
-    ew_env="$(_env_string)${ew_user:+,EW_USER=${ew_user}}${ew_pass:+,EW_PASS=${ew_pass}}"
+    ew_env="${ENV_STRING}${ew_user:+,EW_USER=${ew_user}}${ew_pass:+,EW_PASS=${ew_pass}}"
 
     # task-timeout 1800s (30 min): the AV HISTORICAL_OPTIONS enrichment
     # adds 1 API call per unique earnings ticker in the today-1..today+7
@@ -2631,13 +2659,13 @@ deploy_fetch_premarket_refresh() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-premarket-refresh \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2658,13 +2686,13 @@ deploy_evaluate_ew_strikes() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update evaluate-ew-strikes \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2688,14 +2716,14 @@ deploy_fetch_insider_transactions() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-insider-transactions \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2726,7 +2754,7 @@ deploy_fetch_top_movers() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
@@ -2734,7 +2762,7 @@ deploy_fetch_top_movers() {
         --task-timeout 300 \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2745,7 +2773,7 @@ deploy_fetch_sec_filings() {
     # operators can set their own without touching the deploy script.
     local sec_ua env
     sec_ua="$(_secret sec-user-agent 2>/dev/null || true)"
-    env="$(_env_string)${sec_ua:+,SEC_USER_AGENT=${sec_ua}}"
+    env="${ENV_STRING}${sec_ua:+,SEC_USER_AGENT=${sec_ua}}"
 
     gcloud run jobs create fetch-sec-filings \
         --image "${IMAGE}" --region "${REGION}" \
@@ -2797,7 +2825,7 @@ deploy_fetch_earnings_history() {
     # 08-25 run finished within seconds of the old 7200s cap. Rule 0:
     # timeout >= 4x wall-clock; Cloud Run bills runtime, not the cap.
     local env_string
-    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
+    env_string="${ENV_STRING},BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
@@ -2830,14 +2858,14 @@ deploy_compute_earnings_reactions() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.compute_earnings_reactions" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update compute-earnings-reactions \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.compute_earnings_reactions" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2865,7 +2893,7 @@ deploy_refresh_earnings_views() {
         --command "python,-m,gcp.refresh_earnings_views" \
         --args="--mode=weekly" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update refresh-earnings-views \
         --image "${IMAGE}" --region "${REGION}" \
@@ -2874,7 +2902,7 @@ deploy_refresh_earnings_views() {
         --command "python,-m,gcp.refresh_earnings_views" \
         --args="--mode=weekly" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2921,7 +2949,7 @@ deploy_backtest_pipeline() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_pipeline" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backtest-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
@@ -2930,7 +2958,7 @@ deploy_backtest_pipeline() {
         --command "python,-m,scripts.run_pipeline" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -2948,14 +2976,14 @@ deploy_fetch_news_sentiment() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --remove-env-vars "NEWS_TICKERS" \
         --quiet
 }
@@ -2975,14 +3003,14 @@ deploy_fetch_news_sentiment_earnings() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-earnings \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 
     # EARNINGS_WINDOW_DAYS=7 → fetcher's main() unions earnings_calendar
@@ -3006,14 +3034,14 @@ deploy_fetch_news_sentiment_topics() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-topics \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 
     # 5 catalyst-rich topics — AV's hard cap per call.
@@ -3217,7 +3245,7 @@ EOF
 # the live job through ./gcp/deploy.sh apply-schema (or all) before the
 # job exists), never through a trigger run.
 _apply_schema_job_flags() {
-    printf '%s' "--memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 --service-account ${SA_EMAIL} --command python,-m,gcp.apply_schema ${DB_SECRET_FLAG} --set-env-vars $(_env_string)"
+    printf '%s' "--memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 --service-account ${SA_EMAIL} --command python,-m,gcp.apply_schema ${DB_SECRET_FLAG} --set-env-vars ${ENV_STRING}"
 }
 
 deploy_apply_schema_migrations() {
@@ -3364,14 +3392,14 @@ deploy_compute_spx_greeks_backfill() {
         --command "python,-m,scripts.maintenance.compute_spx_greeks" \
         --args "--ticker,SPX" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update compute-spx-greeks-backfill \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,scripts.maintenance.compute_spx_greeks" \
         --args "--ticker,SPX" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -3416,13 +3444,13 @@ deploy_calibrate_thresholds() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.calibrate_thresholds" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update calibrate-thresholds \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,scripts.calibrate_thresholds" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -3450,7 +3478,7 @@ deploy_param_sweep() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_param_sweep" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update param-sweep \
         --image "${IMAGE}" --region "${REGION}" \
@@ -3458,7 +3486,7 @@ deploy_param_sweep() {
         --tasks 3 --parallelism 3 \
         --command "python,-m,scripts.run_param_sweep" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -3482,14 +3510,14 @@ deploy_earnings_sweep() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.calibrate_earnings" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update earnings-sweep \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
         --command "python,-m,scripts.calibrate_earnings" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -3708,7 +3736,7 @@ deploy_notifier() {
     done
 
     local env_string
-    env_string="$(_env_string)"
+    env_string="${ENV_STRING}"
     env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
 
     # The failure-notifier posts to a DEDICATED Discord channel for GCP job

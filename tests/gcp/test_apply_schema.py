@@ -407,10 +407,44 @@ from gcp.apply_schema import (  # noqa: E402
 class _FakeEngine:
     """Records every statement; answers SELECTs from a scripted queue."""
 
-    def __init__(self, results):
+    def __init__(self, results, event_log=None, lock_granted=True):
         self.results = list(results)
         self.executed: list[str] = []
         self.begin_calls = 0
+        # main() takes a Postgres advisory lock across guard -> apply ->
+        # record (#1022), on a connection of its own. `event_log` receives
+        # "lock"/"lock-denied"/"unlock" so a test can assert the ORDER
+        # against the apply's own events; `lock_granted=False` models
+        # another applier already holding it.
+        self.events = event_log if event_log is not None else []
+        self.lock_granted = lock_granted
+        self.lock_conns: list = []
+
+    def connect(self):
+        engine = self
+
+        class _LockConn:
+            closed = False
+
+            def execute(self, stmt, params=None):
+                sql = str(stmt)
+                res = MagicMock()
+                if "pg_try_advisory_lock" in sql:
+                    engine.events.append("lock" if engine.lock_granted else "lock-denied")
+                    res.scalar.return_value = engine.lock_granted
+                    return res
+                if "pg_advisory_unlock" in sql:
+                    engine.events.append("unlock")
+                    res.scalar.return_value = True
+                    return res
+                raise AssertionError(f"unexpected statement on the lock connection: {sql}")
+
+            def close(self):
+                self.closed = True
+
+        c = _LockConn()
+        engine.lock_conns.append(c)
+        return c
 
     @contextmanager
     def begin(self):
@@ -587,7 +621,7 @@ def test_main_sweeps_unpopulated_matviews_even_when_a_unit_failed(tmp_path, monk
     monkeypatch.setattr(mod, "run_unit", _run)
     monkeypatch.setattr(mod, "refresh_unpopulated_matviews",
                         lambda engine: calls.append("sweep") or ["v"])
-    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr("gcp.database.get_engine", lambda: _FakeEngine([]))
     monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema)])
     assert mod.main() == 1
     assert calls == ["unit", "unit", "sweep"]
@@ -653,20 +687,38 @@ def test_schema_declares_the_schema_sha256_column():
     assert "ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS schema_sha256" in schema
 
 
-def _drive_main(tmp_path, monkeypatch, *, newest_digest, extra_args=()):
+_LOCK_EVENTS = ("lock", "lock-denied", "unlock")
+
+
+def _applied(calls):
+    """The apply's own events, without the advisory-lock bracket.
+
+    main() takes the lock before the guard and releases it after the record
+    (#1022), so the raw log opens with "lock" and closes with "unlock".
+    Tests about WHAT ran read this; tests about the lock ORDER read the raw
+    log.
+    """
+    return [c for c in calls if c not in _LOCK_EVENTS]
+
+
+def _drive_main(tmp_path, monkeypatch, *, newest_digest, extra_args=(),
+                lock_granted=True, run_unit=None):
     import gcp.apply_schema as mod
     schema = tmp_path / "s.sql"
     schema.write_text("CREATE TABLE a (id INT);\n")
     calls: list = []
     monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
-    monkeypatch.setattr(mod, "run_unit", lambda unit: calls.append("unit"))
+    monkeypatch.setattr(mod, "run_unit",
+                        run_unit or (lambda unit: calls.append("unit")))
     monkeypatch.setattr(mod, "refresh_unpopulated_matviews", lambda engine: calls.append("sweep") or [])
     monkeypatch.setattr(mod, "guard_revision",
                         lambda engine, sha, t, anc, force=False: (True, "prev", newest_digest))
     monkeypatch.setattr(mod, "record_revision",
                         lambda engine, sha, t, anc, schema_digest, forced=False, status="ok":
                         calls.append(("record", sha, schema_digest)))
-    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    engine = _FakeEngine([], event_log=calls, lock_granted=lock_granted)
+    monkeypatch.setattr("gcp.database.get_engine", lambda: engine)
+    monkeypatch.setattr(mod, "_LOCK_POLL_SECONDS", 0)
     monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
                                      "--revision", "abc", "--revision-time", "5", *extra_args])
     return mod.main(), calls, mod.schema_digest(schema.read_text())
@@ -680,28 +732,28 @@ def test_main_skips_the_apply_when_the_schema_content_is_unchanged(tmp_path, mon
     assert rc == 0 and d == digest
     # No unit ran; the mat-view sweep still did; the revision is recorded
     # as in force with the same digest so the guard's ancestry advances.
-    assert calls == ["sweep", ("record", "abc", digest)]
+    assert _applied(calls) == ["sweep", ("record", "abc", digest)]
     assert "unchanged" in caplog.text and "prev" in caplog.text
 
 
 def test_main_applies_when_the_schema_content_differs_and_records_the_digest(tmp_path, monkeypatch):
     rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest="something-else")
     assert rc == 0
-    assert calls == ["unit", "sweep", ("record", "abc", d)]
+    assert _applied(calls) == ["unit", "sweep", ("record", "abc", d)]
 
 
 def test_main_applies_when_no_digest_was_recorded_yet(tmp_path, monkeypatch):
     """Rows written before the column existed carry '' (the column default);
     an empty digest never matches, so the first apply after this change runs."""
     rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest="")
-    assert rc == 0 and calls[0] == "unit"
+    assert rc == 0 and _applied(calls)[0] == "unit"
 
 
 def test_reapply_unchanged_flag_forces_the_apply(tmp_path, monkeypatch):
     digest = __import__("hashlib").sha256(b"CREATE TABLE a (id INT);\n").hexdigest()
     rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest=digest,
                                extra_args=("--reapply-unchanged",))
-    assert rc == 0 and calls == ["unit", "sweep", ("record", "abc", digest)]
+    assert rc == 0 and _applied(calls) == ["unit", "sweep", ("record", "abc", digest)]
 
 
 def test_skipped_apply_still_fails_loud_when_the_sweep_fails(tmp_path, monkeypatch):
@@ -716,7 +768,7 @@ def test_skipped_apply_still_fails_loud_when_the_sweep_fails(tmp_path, monkeypat
     monkeypatch.setattr(mod, "guard_revision", lambda engine, sha, t, anc, force=False: (True, "prev", digest))
     monkeypatch.setattr(mod, "record_revision",
                         lambda *a, **k: pytest.fail("must not record a revision whose sweep failed"))
-    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr("gcp.database.get_engine", lambda: _FakeEngine([]))
     monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
                                      "--revision", "abc", "--revision-time", "5"])
     assert mod.main() == 1
@@ -771,7 +823,7 @@ def test_partial_apply_is_recorded_as_partial_and_never_matches_the_digest(tmp_p
     monkeypatch.setattr(mod, "record_revision",
                         lambda engine, sha, t, anc, schema_digest, forced=False, status="ok":
                         calls.append((sha, schema_digest, forced, status)))
-    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr("gcp.database.get_engine", lambda: _FakeEngine([]))
     monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
                                      "--revision", "abc", "--revision-time", "5"])
     assert mod.main() == 1
@@ -997,3 +1049,65 @@ def test_a_positional_parameter_does_not_open_a_dollar_quote():
     assert len(out) == 2, out
     assert "$1 + 1" in out[0]
     assert out[1].startswith("CREATE TABLE y")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cross-applier mutual exclusion (#1022)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_guard_apply_and_record_run_inside_one_advisory_lock(tmp_path, monkeypatch):
+    """Ordering appliers by build start time cannot see an applier that is
+    not a Cloud Build: the deploy-staging workflow applies from a GitHub
+    runner, so a build starting mid-apply does not wait for it, both pass
+    the revision guard before either records, and whichever finishes last
+    rolls the other's CREATE OR REPLACE objects back (Codex on #1022).
+
+    The lock is taken before the guard and released after the record, so a
+    second applier reads a RECORDED revision instead of a stale one."""
+    rc, calls, _ = _drive_main(tmp_path, monkeypatch, newest_digest="other")
+    assert rc == 0, calls
+    assert calls[0] == "lock", f"the lock must be taken first: {calls}"
+    assert calls[-1] == "unlock", f"the lock must be released last: {calls}"
+    assert "unit" in calls
+    records = [i for i, c in enumerate(calls) if isinstance(c, tuple) and c[0] == "record"]
+    assert records, calls
+    assert calls.index("unlock") > max(records), "the record must happen under the lock"
+
+
+def test_the_skipped_apply_also_records_under_the_lock(tmp_path, monkeypatch):
+    """The unchanged-digest path records too, so it needs the same
+    exclusion: another applier could otherwise record between this one's
+    guard and its record."""
+    _, _, digest = _drive_main(tmp_path, monkeypatch, newest_digest=None)
+    rc, calls, _ = _drive_main(tmp_path, monkeypatch, newest_digest=digest)
+    assert rc == 0
+    assert calls[0] == "lock" and calls[-1] == "unlock", calls
+    assert "unit" not in calls, "an unchanged digest must still skip the units"
+
+
+def test_an_applier_that_cannot_take_the_lock_refuses_rather_than_racing(tmp_path, monkeypatch):
+    """A wait that never succeeds is a loud failure, not a concurrent
+    apply. Exit 4 separates it from a guard refusal (3) and a failed unit
+    (1)."""
+    import gcp.apply_schema as mod
+    monkeypatch.setattr(mod, "_LOCK_WAIT_SECONDS", 0)
+    rc, calls, _ = _drive_main(tmp_path, monkeypatch, newest_digest="other",
+                               lock_granted=False)
+    assert rc == 4, calls
+    assert "unit" not in calls, "nothing may be applied without the lock"
+    assert not any(isinstance(c, tuple) and c[0] == "record" for c in calls)
+
+
+def test_the_lock_is_released_when_a_unit_fails(tmp_path, monkeypatch):
+    """A partial apply still records, and must still release: otherwise the
+    next applier waits out its whole budget on a session that has ended."""
+    import gcp.apply_schema as mod
+
+    def _boom(unit):
+        raise RuntimeError("relation does not exist")
+
+    rc, calls, _ = _drive_main(tmp_path, monkeypatch, newest_digest="other",
+                               run_unit=_boom)
+    assert rc == 1
+    assert calls[-1] == "unlock", calls

@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 import sys
+import time
+from contextlib import contextmanager
 from typing import Optional
 from pathlib import Path
 
@@ -487,6 +490,78 @@ def refresh_unpopulated_matviews(engine) -> list[str]:
         return _refresh_unpopulated_matviews_on(conn)
 
 
+# ── Cross-applier mutual exclusion ─────────────────────────────────────────
+# Ordering appliers by build start time is best-effort, and it cannot see an
+# applier that is not a Cloud Build at all: the deploy-staging workflow runs
+# `python -m gcp.apply_schema` on a GitHub runner, so a build started while
+# that runner is mid-apply does not wait for it. Both then pass the revision
+# guard before either records, and whichever finishes LAST wins — rolling
+# back every CREATE OR REPLACE the other had just applied, and leaving a
+# history row describing a schema nobody is running (Codex on #1022).
+#
+# A Postgres advisory lock is authoritative where the tag scan is advisory:
+# every applier reaches the same database, whatever started it. Held across
+# guard -> apply -> record, so the second applier reads a RECORDED revision
+# instead of a stale one and its guard then decides correctly (skip an
+# unchanged digest, refuse an older revision).
+#
+# Session-scoped, on a connection of its own: the apply runs each unit on
+# its own pooled connection, so the lock cannot live on any of those.
+_APPLY_LOCK_KEY = 0x5C4E3A01          # arbitrary but fixed
+_LOCK_WAIT_SECONDS = int(os.environ.get("SCHEMA_APPLY_LOCK_WAIT", "900"))
+_LOCK_POLL_SECONDS = 5
+
+
+@contextmanager
+def schema_apply_lock(engine, wait_seconds: Optional[int] = None):
+    """Hold the schema-apply lock for the block, or raise TimeoutError.
+
+    Bounded rather than indefinite: the job's task-timeout is 1800 s and a
+    full apply measures 75 s, so 900 s covers a queue of appliers many times
+    over while still failing loudly, and visibly in the build log, well
+    before the task is killed with no explanation.
+    """
+    import sqlalchemy  # noqa: PLC0415
+
+    # Read at call time rather than bound as a default: the budget comes
+    # from an env var, and a default argument would freeze whatever the
+    # value was at import.
+    if wait_seconds is None:
+        wait_seconds = _LOCK_WAIT_SECONDS
+    conn = engine.connect()
+    held = False
+    try:
+        deadline = time.monotonic() + wait_seconds
+        announced = False
+        while True:
+            if conn.execute(sqlalchemy.text("SELECT pg_try_advisory_lock(:k)"),
+                            {"k": _APPLY_LOCK_KEY}).scalar():
+                held = True
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"another schema apply has held the lock for more than "
+                    f"{wait_seconds}s; refusing to apply concurrently")
+            if not announced:
+                log.info("another schema apply holds the lock; waiting up to %ds",
+                         wait_seconds)
+                announced = True
+            time.sleep(_LOCK_POLL_SECONDS)
+        if announced:
+            log.info("schema-apply lock acquired after waiting")
+        yield
+    finally:
+        if held:
+            try:
+                conn.execute(sqlalchemy.text("SELECT pg_advisory_unlock(:k)"),
+                             {"k": _APPLY_LOCK_KEY})
+            except Exception:
+                # cleanup — the original error has already propagated, and
+                # closing the session releases the lock regardless.
+                log.warning("could not release the schema-apply lock explicitly")
+        conn.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Apply schema.sql to Cloud SQL.")
     ap.add_argument("--file", default=str(DEFAULT_SCHEMA),
@@ -550,77 +625,91 @@ def main() -> int:
     from gcp.database import get_engine  # noqa: PLC0415
     engine = get_engine()
 
-    digest = schema_digest(sql_text)
-    if args.revision is not None:
-        ok, newest, newest_digest = guard_revision(engine, args.revision,
-                                                   args.revision_time, ancestors,
-                                                   force=args.force_revision)
-        if not ok:
-            return 3          # reason already logged by guard_revision
-        if newest_digest == digest and not args.reapply_unchanged:
-            # Nothing to apply: the text in force is this text. Still sweep
-            # the materialized views (one probe) so a view left unpopulated
-            # by anything else is repopulated, then record the revision so
-            # the guard's ancestry advances with main.
-            log.info("schema.sql at revision %s is unchanged from the newest applied "
-                     "revision %s (sha256 %s); skipping the %d units. Pass "
-                     "--reapply-unchanged to run them anyway.",
-                     args.revision, newest, digest, len(units))
-            try:
-                refreshed = refresh_unpopulated_matviews(engine)
-            except Exception as exc:
-                log.error("  materialized-view sweep FAILED — %s", exc)
-                return 1
-            if refreshed:
-                log.info("Refreshed %d materialized view(s) found unpopulated: %s",
-                         len(refreshed), ", ".join(refreshed))
-            record_revision(engine, args.revision, args.revision_time, ancestors, digest,
-                            forced=args.force_revision)
-            log.info("Recorded revision %s (commit time %d) as in force",
-                     args.revision, args.revision_time)
-            return 0
+    # Guard, apply and record are ONE critical section: two appliers that
+    # each read "nothing newer" before either records will both apply, and
+    # whichever finishes last overwrites the other. See schema_apply_lock.
+    try:
+        _lock = schema_apply_lock(engine)
+        _lock.__enter__()
+    except TimeoutError as exc:
+        log.error("%s", exc)
+        return 4
+    try:
 
-    failed = 0
-    for i, unit in enumerate(units, 1):
-        head = re.sub(r"\s+", " ", unit[0])[:80]
-        label = head if len(unit) == 1 else f"ATOMIC group of {len(unit)} ({head} ...)"
+        digest = schema_digest(sql_text)
+        if args.revision is not None:
+            ok, newest, newest_digest = guard_revision(engine, args.revision,
+                                                       args.revision_time, ancestors,
+                                                       force=args.force_revision)
+            if not ok:
+                return 3          # reason already logged by guard_revision
+            if newest_digest == digest and not args.reapply_unchanged:
+                # Nothing to apply: the text in force is this text. Still sweep
+                # the materialized views (one probe) so a view left unpopulated
+                # by anything else is repopulated, then record the revision so
+                # the guard's ancestry advances with main.
+                log.info("schema.sql at revision %s is unchanged from the newest applied "
+                         "revision %s (sha256 %s); skipping the %d units. Pass "
+                         "--reapply-unchanged to run them anyway.",
+                         args.revision, newest, digest, len(units))
+                try:
+                    refreshed = refresh_unpopulated_matviews(engine)
+                except Exception as exc:
+                    log.error("  materialized-view sweep FAILED — %s", exc)
+                    return 1
+                if refreshed:
+                    log.info("Refreshed %d materialized view(s) found unpopulated: %s",
+                             len(refreshed), ", ".join(refreshed))
+                record_revision(engine, args.revision, args.revision_time, ancestors, digest,
+                                forced=args.force_revision)
+                log.info("Recorded revision %s (commit time %d) as in force",
+                         args.revision, args.revision_time)
+                return 0
+
+        failed = 0
+        for i, unit in enumerate(units, 1):
+            head = re.sub(r"\s+", " ", unit[0])[:80]
+            label = head if len(unit) == 1 else f"ATOMIC group of {len(unit)} ({head} ...)"
+            try:
+                run_unit(unit)
+                log.info("  [%d/%d] OK  %s", i, len(units), label)
+            except Exception as exc:
+                failed += 1
+                log.error("  [%d/%d] FAILED %s — %s", i, len(units), label, exc)
+
+        # The sweep runs whether or not every unit succeeded: a failed unit
+        # after the views must not leave them empty until the weekly job.
         try:
-            run_unit(unit)
-            log.info("  [%d/%d] OK  %s", i, len(units), label)
+            refreshed = refresh_unpopulated_matviews(engine)
         except Exception as exc:
             failed += 1
-            log.error("  [%d/%d] FAILED %s — %s", i, len(units), label, exc)
+            log.error("  materialized-view sweep FAILED — %s", exc)
+        else:
+            if refreshed:
+                log.info("Refreshed %d materialized view(s) still unpopulated after the apply: %s",
+                         len(refreshed), ", ".join(refreshed))
 
-    # The sweep runs whether or not every unit succeeded: a failed unit
-    # after the views must not leave them empty until the weekly job.
-    try:
-        refreshed = refresh_unpopulated_matviews(engine)
-    except Exception as exc:
-        failed += 1
-        log.error("  materialized-view sweep FAILED — %s", exc)
-    else:
-        if refreshed:
-            log.info("Refreshed %d materialized view(s) still unpopulated after the apply: %s",
-                     len(refreshed), ", ".join(refreshed))
+        if failed:
+            log.error("Schema apply finished with %d failed units", failed)
+            if args.revision is not None:
+                # The units that succeeded are committed, so the schema is
+                # partly this revision's. Record that so a delayed build for an
+                # OLDER revision is still refused; the 'partial' status keeps
+                # the digest from ever matching a later apply's.
+                record_revision(engine, args.revision, args.revision_time, ancestors, digest,
+                                forced=args.force_revision, status="partial")
+                log.error("Recorded revision %s as PARTIAL (%d failed units); the next apply "
+                          "runs every unit again", args.revision, failed)
+            return 1
 
-    if failed:
-        log.error("Schema apply finished with %d failed units", failed)
         if args.revision is not None:
-            # The units that succeeded are committed, so the schema is
-            # partly this revision's. Record that so a delayed build for an
-            # OLDER revision is still refused; the 'partial' status keeps
-            # the digest from ever matching a later apply's.
             record_revision(engine, args.revision, args.revision_time, ancestors, digest,
-                            forced=args.force_revision, status="partial")
-            log.error("Recorded revision %s as PARTIAL (%d failed units); the next apply "
-                      "runs every unit again", args.revision, failed)
-        return 1
+                            forced=args.force_revision)
+            log.info("Recorded applied revision %s (commit time %d, schema sha256 %s)",
+                     args.revision, args.revision_time, digest)
 
-    if args.revision is not None:
-        record_revision(engine, args.revision, args.revision_time, ancestors, digest,
-                        forced=args.force_revision)
-        log.info("Recorded applied revision %s (commit time %d, schema sha256 %s)",
-                 args.revision, args.revision_time, digest)
+    finally:
+        _lock.__exit__(None, None, None)
 
     log.info("Schema apply complete (%d statements in %d units).", n_statements, len(units))
     return 0
