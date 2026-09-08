@@ -391,7 +391,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [189](../../../gcp/regime_combo_job.py#L189), [190](../../../gcp/regime_combo_job.py#L190)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [199](../../../gcp/apply_schema.py#L199), [375](../../../gcp/apply_schema.py#L375)
+- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [199](../../../gcp/apply_schema.py#L199), [379](../../../gcp/apply_schema.py#L379)
 
 ### `sec_filings`
 - [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) — line [581](../../../gcp/fetchers/fetch_sec_filings.py#L581), [582](../../../gcp/fetchers/fetch_sec_filings.py#L582), [583](../../../gcp/fetchers/fetch_sec_filings.py#L583)
