@@ -559,3 +559,58 @@ def test_the_prose_floor_ignores_growth_inside_a_rendered_block(tmp_path):
                                "<!-- inventory:blast:end -->\n")
     out = gate.gate_prose_floor(cur, prev)
     assert len(out) == 1, out
+
+
+def test_prose_that_mentions_a_marker_is_not_a_marker(tmp_path):
+    """Both documents describe their own markers in prose -- 05-a line 5 says
+    "the tables between `<!-- inventory:*:start/end -->` markers". A substring
+    test read that sentence as opening a block and skipped everything to the
+    next real end marker, keeping 76 of 05-c's 1,403 lines, so an elision in
+    the hidden region was invisible to both gates. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The tables between `<!-- inventory:*:start/end -->` markers are rendered.\n"
+        "...\n"
+        "<!-- inventory:blast:start -->\n"
+        "| a | b |\n"
+        "<!-- inventory:blast:end -->\n"
+        "A closing paragraph.\n")
+    kept = gate._prose_lines(doc.read_text())
+    assert "| a | b |" not in kept, "the real block must still be skipped"
+    assert any(l.startswith("The tables between") for l in kept)
+    assert "A closing paragraph." in kept
+    # and the elision beside the descriptive sentence is now visible
+    assert len(gate.gate_elided_prose(tmp_path)) == 1, gate.gate_elided_prose(tmp_path)
+
+
+def test_an_ordered_list_elision_is_a_finding(tmp_path):
+    """`1. ...` is the same destruction as `- ...`; 05-a carries numbered prose
+    lists and one replaced item can be too small to move the prose floor.
+    (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("1. ...\n2) …\n3. A real numbered point that says something.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 2, out
+
+
+def test_a_gutted_fenced_diagram_is_a_finding(tmp_path):
+    """05-a's Mermaid topology and flow diagrams are hand-authored inside
+    fences. Skipping fenced content hid a diagram replaced by a bare `...` from
+    both gates, and each diagram is far too small to move the whole-document
+    floor by itself. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("## 2. Topology\n\n```mermaid\n...\n```\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 1, out
+
+
+def test_the_prose_floor_matches_the_size_floor(tmp_path):
+    """An earlier revision set 0.90 and called it "lower than SIZE_FLOOR". A
+    HIGHER floor permits LESS shrinkage, so it was stricter than the gate it
+    claimed to be looser than, and would have failed a refresh that
+    legitimately retires a prose-heavy section -- including on the two
+    documents SIZE_FLOOR exempts. (Codex, PR #1061.)"""
+    assert gate.PROSE_FLOOR == gate.SIZE_FLOOR == 0.80

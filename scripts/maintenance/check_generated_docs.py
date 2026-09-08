@@ -91,11 +91,13 @@ SIZE_FLOOR_EXEMPT = ("README.md",)
 REGENERATED = (COST,)
 BYTE_FLOOR = 0.80
 
-# Prose outside the rendered marker blocks. Lower than SIZE_FLOOR because a
-# month that genuinely retires a section trims real prose (05-d moved from
-# partial-August to 90-day totals in run 27 and lost 3.7%), while the damage
-# this guards against was -22.6% in one document.
-PROSE_FLOOR = 0.90
+# Prose outside the rendered marker blocks. The same 80% as SIZE_FLOOR, and
+# deliberately not tighter: an earlier revision set 0.90 and described it as
+# "lower than SIZE_FLOOR", which it is not -- a higher floor permits LESS
+# shrinkage, so it would have failed a refresh that legitimately retires a
+# prose-heavy section, including on the two documents SIZE_FLOOR exempts.
+# Run 27's damage is caught at 80% regardless. (Codex, PR #1061.)
+PROSE_FLOOR = 0.80
 
 # An update that rewrites most of a document is a regeneration wearing an
 # update's clothes: the 2026-09-02 run replaced 394 lines with 158 and every
@@ -293,30 +295,40 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
 # that had taken the place of real sentences. A mid-sentence ellipsis is
 # ordinary prose ("`gamma_levels_eod`, …") and is NOT matched: the whole line
 # has to be the elision. (Run 27.)
-_ELIDED = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*[^*]+\*\*\s*)?(?:\.\.\.|…)\s*$")
+_ELIDED = re.compile(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?(?:\*\*[^*]+\*\*\s*)?(?:\.\.\.|…)\s*$")
+
+
+# A COMPLETE marker comment line, not any line that mentions one. Both
+# documents describe their own markers in prose -- 05-a line 5 says "the tables
+# between `<!-- inventory:*:start/end -->` markers", 05-c says the same in its
+# header -- and a substring test treated those sentences as opening a block,
+# swallowing everything to the next real end marker. Measured: it kept 76 of
+# 05-c's 1,403 lines and 258 of 05-a's 1,129, so an elision in the hidden
+# regions was invisible to both gates. (Codex, PR #1061.)
+_MARKER_LINE = re.compile(r"^\s*<!--\s*inventory:[A-Za-z0-9_]+:(start|end)\s*-->\s*$")
 
 
 def _prose_lines(text: str) -> list[str]:
     """The document's own sentences: everything outside the rendered marker
-    blocks and outside fenced code. Whole-document size is the wrong unit for
-    these files -- 05-c is 137 KB of which ~120 KB is rendered blocks, so
-    deleting every explanatory paragraph in it moved the line count by less
-    than 1% and the existing size floor did not notice. (Run 27.)
+    blocks. Whole-document size is the wrong unit for these files -- 05-c is
+    137 KB of which most is rendered blocks, so deleting every explanatory
+    paragraph in it moved the line count by less than 1% and the existing size
+    floor did not notice. (Run 27.)
+
+    Fenced blocks are KEPT. 05-a carries hand-authored Mermaid diagrams and a
+    runbook block inside fences; a diagram replaced by a bare `...` is exactly
+    the damage this gate exists to catch, and skipping fences hid it from both
+    gates while each diagram is far too small to move the whole-document floor
+    on its own. (Codex, PR #1061.)
     """
-    out, in_block, in_fence = [], False, False
+    out, in_block = [], False
     for line in text.split("\n"):
-        if "inventory:" in line and ":start" in line:
-            in_block = True
+        m = _MARKER_LINE.match(line)
+        if m:
+            in_block = m.group(1) == "start"
             continue
-        if "inventory:" in line and ":end" in line:
-            in_block = False
-            continue
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-            continue
-        if in_block or in_fence:
-            continue
-        out.append(line)
+        if not in_block:
+            out.append(line)
     return out
 
 
