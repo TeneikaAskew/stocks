@@ -733,6 +733,30 @@ EXCLUDE_STOCKS=( "${EXCLUDE_SHARED[@]}" ':!archive/' ':!gcp/research/_archive/'
                  ':!.github/workflows/logs.txt' )
 EXCLUDE_SOLYRA=( "${EXCLUDE_SHARED[@]}" ':!package-lock.json' ':!bun.lock'
                  ':!package.json' ':!tests/fixtures/stocks-openapi.json' )
+# A SEPARATE, SMALLER SET for absent_everywhere's PATH scan, and it is not the
+# content set. ':!*.md' and ':!.claude/commands/' must NOT apply there: a
+# retired agent's or command's own definition IS a .md file under one of those,
+# and catching it is the only reason that scan exists. What belongs here is the
+# opposite question — which paths does a CORRECT retirement deliberately KEEP,
+# so that matching one means the check can never pass.
+# Both entries are measured, not assumed. `*.disabled` is this repo's documented
+# "fully retired" convention (`CLAUDE.md`, the workflow-retirement table: rename
+# the file, GH Actions then ignores it), and the one live instance,
+# .github/workflows/fetch-market-data.yml.disabled, is the ONLY path matching
+# that symbol — so the path scan held that finished retirement open forever.
+# archive/ and gcp/research/_archive/ hold 196 tracked paths whose basenames
+# exist nowhere else, so retiring any of those surfaces was blocked the same way.
+# docs/ is deliberately NOT here: measured across five retirable symbols, no
+# docs/ path names any of them, so there is no evidence it blocks anything —
+# and excluding it would hide a leftover if an implementation ever lived there.
+PRESERVE_STOCKS=( ':!*.disabled' ':!archive/' ':!gcp/research/_archive/' )
+# solyra has no counterpart, measured rather than assumed symmetric: zero
+# .disabled / archive/ / _archive/ paths on main, and neither its CLAUDE.md nor
+# its AGENTS.md documents a keep-the-file retirement convention. Its half of the
+# scan therefore takes no exclusions — which is as well, because it reads a
+# committed tree and `git ls-tree` REFUSES exclude magic (measured: rc=128,
+# "pathspec magic not supported by this command: 'exclude'"). If solyra ever
+# grows such a convention, that filter has to be built a different way.
 
 consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/commands
   # $1 = symbol. $2.. = command files you have READ and confirmed are prose,
@@ -1117,7 +1141,12 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # contents do not name it passes falsely and is committed afterwards.
   # `--cached --others --exclude-standard` lists both (measured), which leaves
   # the removed one to filter out by asking whether it is still there.
-  files=$(git -C "$root" ls-files --cached --others --exclude-standard) \
+  # PRESERVED PATHS ARE NOT LEFTOVERS. See PRESERVE_STOCKS above: a fully
+  # retired workflow KEEPS its *.yml.disabled file by this repo's own
+  # convention, and the path scan matching it made the assertion unpassable for
+  # a retirement that was already correct and complete.
+  files=$(git -C "$root" ls-files --cached --others --exclude-standard \
+            -- . "${PRESERVE_STOCKS[@]}") \
     || { echo "could not list files — asserting nothing"; return 1; }
   # `-e` is false for a broken symlink, which is still a path that exists, so
   # ask `-L` as well rather than silently dropping one. Nothing here can fail
@@ -1162,6 +1191,8 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     # Same self-exclusion-versus-retirement split, on the other side.
     # Same generalisation as the stocks half, against the pinned rev: any
     # tracked PATH naming the symbol, not only the three Claude ones.
+    # No preserved-path exclusions over here, and no pathspec at all — see
+    # PRESERVE_STOCKS above for why that is measured rather than an oversight.
     sfiles=$(git ls-tree -r --name-only "$REV") \
       || { echo "solyra: could not list files at ${REV:0:12}"; exit 2; }
     # -E here too. The index-versus-working-tree correction the stocks half

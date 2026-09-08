@@ -286,12 +286,29 @@ body:
         surface's own file so an agent does not match itself, and a module's
         contents need not contain its basename, so both come back "no consumers"
         with the implementation still on disk — measured on two dormant agents
-        in this repo. Assert it on PATHS instead, over the working tree rather
-        than the index, since Phase 4 runs before anything is staged:
-        `git ls-files --cached --others --exclude-standard | grep -E "<name>"`
-        names nothing that still exists. `/resolve-issue`'s `absent_everywhere`
-        runs exactly this pair, in both repos; the schedule is deleted; the
-        retention/export decision is recorded; the cost delta is measured.
+        in this repo. Assert it on PATHS instead — and the assertion needs
+        all three of these, each of which a shorter form gets wrong: anchored
+        at the repo ROOT (from gcp/ a bare ls-files sees 171 paths, not 1330,
+        and misses every root-level definition), over the WORKING TREE rather
+        than the index (Phase 4 runs before anything is staged, so a deleted
+        entry is still listed and holds the bar closed), and skipping paths a
+        retirement deliberately KEEPS (a fully retired workflow keeps its
+        *.yml.disabled file by this repo's own convention, and archive/ holds
+        code that is meant to stay):
+
+          $ root=$(git rev-parse --show-toplevel)
+          $ git -C "$root" ls-files --cached --others --exclude-standard \
+                -- . ':!*.disabled' ':!archive/' ':!gcp/research/_archive/' |
+              while IFS= read -r p; do
+                test -e "$root/$p" || test -L "$root/$p" || continue
+                printf '%s\n' "$p"; done |
+              grep -E "<name>"
+          (no output)
+
+        `/resolve-issue`'s `absent_everywhere` runs exactly that, alongside the
+        consumer searches, in both repos — prefer it to re-typing this; the
+        schedule is deleted; the retention/export decision is recorded; the cost
+        delta is measured.
 
         Restore: writer scheduled and in gcp/deploy.sh `all)`; an entry in
         scripts/audit_data_freshness.py with writer_job and min_rows_per_day; a max-age guard at
