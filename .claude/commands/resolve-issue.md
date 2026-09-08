@@ -124,7 +124,20 @@ survey_existing_work() {
   sync_refs || return 1
   # `grep` exits 1 when nothing matches, and "no existing branch" is the
   # NORMAL outcome here — it must not become this function's status.
-  git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
+  # THE `return 0` BELOW IS NOT ENOUGH UNDER `set -e`. A bare pipeline whose
+  # last stage exits 1 is a failed simple command, so the shell exits AT that
+  # line and never reaches the return — measured, the normal no-branch case
+  # produced no output and rc=1, and `survey_existing_work` is called bare, so
+  # nothing suppresses it. A new issue could not reach branch creation in the
+  # strict shell this file assumes everywhere else. Capture it, and keep the
+  # distinction the rest of the file makes: 1 is the clean miss, anything
+  # above it is a broken measurement and must not read as "no branches".
+  local _b _g
+  _b=$(git branch -r) || { echo "could not list remote branches"; return 1; }
+  if grep -iE "fix/workflow-|<issue-keyword>" <<<"$_b"; then _g=0; else _g=$?; fi
+  test "$_g" -le 1 \
+    || { echo "branch survey errored (grep rc=$_g) — not treating this as"
+         echo "'no existing work'; re-run before creating a branch"; return 1; }
   return 0
 }
 survey_existing_work        # BARE
@@ -847,6 +860,16 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # functions it calls did not.
   test $# -ge 1 || { echo "usage: consumed <symbol> [reviewed files…]"; return 2; }
   local sym=$1; shift
+  # `${arr[@]+"${arr[@]}"}` AT EVERY EXPANSION OF THESE THREE. `reviewed`,
+  # `rev` and `untr` are all legitimately EMPTY in the ordinary call — no
+  # approvals, no pinned revision, so `--untracked` instead — and bash 3.2,
+  # still /bin/bash on macOS, raises "unbound variable" for `"${arr[@]}"` on an
+  # empty array under `set -u`. Declaring the array does not help; only the
+  # `+` form does. Round 41 hit this for `impl` and guarded that one with
+  # `${#impl[@]}`; these three were the siblings, at ten expansions across five
+  # scopes. NOT measurable here — this container has bash 5.2.21 only, where
+  # the bare form is already safe — so the fix is the portable idiom rather
+  # than a reproduction, and it is behaviour-identical on 5.2 either way.
   local a b c e f rc reviewed=()
   # REV pins the search to a COMMITTED revision instead of the working tree.
   # Empty for this repo, where the deletion under test IS the working tree and a
@@ -957,7 +980,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # does not mention the symbol is a no-op for an honest reviewer and is
     # precisely what a glob does — measured, `debug-workflow` matches exactly
     # one command file, so a six-entry glob drags in five that match nothing.
-    git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- "$rc" \
+    git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- "$rc" \
       || { echo "REVIEWED entry '$rc' does not mention '$sym'."
            echo "Name only files the rc=0 or rc=3 report printed. An entry that"
            echo "matches nothing is either a typo or a glob that expanded."
@@ -979,25 +1002,25 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # runs `set -e` in its own scripts (gcp/deploy.sh), so a session that sources
   # this block into one gets a silent death instead of an answer. A condition
   # context suppresses errexit and preserves the exact status.
-  # "${reviewed[@]}" applies HERE too now, for the ordinary-word case above.
-  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}" \
-       "${reviewed[@]}"
+  # The approvals apply HERE too now, for the ordinary-word case above.
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- . "${EXCLUDE[@]}" \
+       ${reviewed[@]+"${reviewed[@]}"}
   then a=0; else a=$?; fi
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
   # file as the only hit. Excluding a path that does not exist (the surface is
   # not an agent) is safe — measured rc=1, not 128.
-  # "${reviewed[@]}" here too. The ordinary-word ambiguity is not confined to
+  # The approvals here too. The ordinary-word ambiguity is not confined to
   # code: measured, `react` matches .claude/agents/fallback-guard.md through
   # the word `earnings_reactions` in a path list, so clearing the code scope
   # alone still left the check unpassable. Applying the approval to one scope
   # and not its siblings is the miss this file keeps making.
-  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/agents \
-       ":!.claude/agents/$sym.md" "${reviewed[@]}"
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/agents \
+       ":!.claude/agents/$sym.md" ${reviewed[@]+"${reviewed[@]}"}
   then b=0; else b=$?; fi
-  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
-       ":!.claude/commands/$sym.md" "${reviewed[@]}"
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/commands \
+       ":!.claude/commands/$sym.md" ${reviewed[@]+"${reviewed[@]}"}
   then c=0; else c=$?; fi
   # FOURTH executable-markdown scope. .github/prompts/*.md reach Gemini through
   # .github/workflows/refresh-architecture-docs.yml: scripts/maintenance/
@@ -1017,8 +1040,8 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # file's own worked example. Self-exclusion for symmetry with the agent scope,
   # and the whole scope is a safe no-op where the directory does not exist —
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
-  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .github/prompts \
-       ":!.github/prompts/$sym.md" "${reviewed[@]}"
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .github/prompts \
+       ":!.github/prompts/$sym.md" ${reviewed[@]+"${reviewed[@]}"}
   then e=0; else e=$?; fi
   # SIXTH executable-markdown scope, and the one that is easiest to read as
   # prose because it is called "documentation". CLAUDE.md is the project
@@ -1029,8 +1052,8 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # away: code 1, agents 1, prompts 1 — "absent, safe to delete" — while
   # CLAUDE.md still routes sessions to it. A hit here is a CONSUMER, like an
   # agent or a prompt. Only the root file: docs/*.md and the rest stay prose.
-  if git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- CLAUDE.md \
-       "${reviewed[@]}"
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- CLAUDE.md \
+       ${reviewed[@]+"${reviewed[@]}"}
   then f=0; else f=$?; fi
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
@@ -1077,18 +1100,29 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # "not found", i.e. absent. THREE stages, so jq is [1] and grep is [2];
     # getting these indices wrong is silent, since st[1] would read jq's status
     # as the match result.
-    # The `if` is the errexit fix, same as the scopes above — a clean no-match
-    # is rc=1 and would kill the shell. PIPESTATUS survives into the branch as
-    # long as nothing runs first: measured, a failing middle stage still reads
-    # `0 1 0` when captured on the branch's opening line.
-    if printf '%s' "$pkg" \
-         | jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"' \
-         | grep -qE -- "$sym"   # -E, not -F: same alternation, same false clear
-    then st=( "${PIPESTATUS[@]}" ); else st=( "${PIPESTATUS[@]}" ); fi
-    d=${st[2]}
-    test "${st[1]}" -eq 0 \
-      || { echo "jq failed on package.json (rc=${st[1]}) — asserting nothing"
-           return 2; }
+    # DO NOT PIPE jq INTO `grep -q`. `-q` exits on the first match, so once the
+    # remaining output exceeds the pipe buffer jq dies of SIGPIPE and reports
+    # 141 — and the guard below then calls a SUCCESSFUL match a jq failure and
+    # refuses. Measured on a manifest with an early matching script and ~4000
+    # padding entries: `PIPESTATUS: jq=141 grep=0`, reported as "jq failed",
+    # return 2. The gate becomes unusable for exactly the large manifests it
+    # most needs to read, and it looks like a broken jq rather than a bug here.
+    # So the stages are separated: jq's status is checked on its own, then the
+    # match runs over the captured text. A HERE-STRING, not another pipe —
+    # `printf | grep -q` recreates the same early-exit SIGPIPE one stage over,
+    # and under `set -o pipefail` (which this repo sets) that becomes the
+    # pipeline's status and would read as a grep error rather than a match.
+    local _scripts
+    _scripts=$(printf '%s' "$pkg" \
+                 | jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"') \
+      || { echo "jq failed on package.json (rc=$?) — asserting nothing"; return 2; }
+    # -E, not -F: same alternation, same false clear. The `if` is the errexit
+    # fix, same as the scopes above — a clean no-match is rc=1 and an untested
+    # nonzero kills the shell.
+    if grep -qE -- "$sym" <<<"$_scripts"; then d=0; else d=$?; fi
+    test "$d" -le 1 \
+      || { echo "the package.json script scan errored (grep rc=$d)"
+           echo "— asserting nothing"; return 2; }
     # A DECLARED DEPENDENCY IS A CONSUMER TOO. `npm install` fetches it whether
     # or not a line of code imports it, and nothing above can see the
     # declaration: EXCLUDE_SOLYRA drops package.json and both lockfiles (they
@@ -1161,8 +1195,8 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # same arguments a moment ago.
     if [ "$a" -eq 0 ]; then
       echo "code/config mentions '$sym':"
-      git -C "$root" grep -nE "${untr[@]}" "$sym" "${rev[@]}" -- . \
-        "${EXCLUDE[@]}" "${reviewed[@]}"
+      git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- . \
+        "${EXCLUDE[@]}" ${reviewed[@]+"${reviewed[@]}"}
       echo "If every line above is prose rather than a caller — an ordinary"
       echo "word inside a comment, say — read them, then re-run naming those"
       # %q, for the reason the rollout diagnostic takes it: consumed() reads an
@@ -1184,8 +1218,8 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # and a NEW command that starts routing to the surface is not on your list, so
   # it drops back to 3 instead of riding an old approval.
   echo "only .claude/commands/ mentions it — a route, or this file's own example?"
-  git -C "$root" grep -nE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
-    ":!.claude/commands/$sym.md" "${reviewed[@]}"
+  git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/commands \
+    ":!.claude/commands/$sym.md" ${reviewed[@]+"${reviewed[@]}"}
   return 3; }
 
 # RESOLVED AND VALIDATED HERE, not at the top of the fence. Running this at the
@@ -1603,7 +1637,22 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # carrying the symbol is that fixture — and 0 commits with "${EXCLUDE[@]}"
     # applied. The gate then demanded SOLYRA_ROLLED_OUT and aged-out browser
     # bundles for a surface no browser ever loaded.
-    shist=$(git log --oneline -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
+    # MERGE DIFFS ARE NOT SEARCHED BY DEFAULT, and the dormant-surface form has
+    # said so since solyra#63 while this gate did not — the fourth place the
+    # form knew something the gate did not. A consumer introduced and later
+    # removed only by manual conflict resolutions lives entirely inside merge
+    # commits, so the default search returns nothing and the gate takes the
+    # "never used" path for a symbol that shipped in a bundle. Measured on a
+    # synthetic repo whose only two touches of the symbol are merge
+    # resolutions: default 0 distinct commits, `--diff-merges=separate
+    # --no-patch` 2 — the merge that added it and the merge that removed it.
+    # `--no-patch` because `--diff-merges=separate` implies `-p`, and the patch
+    # text would otherwise be parsed as history. `--full-history` because a
+    # pathspec turns on history simplification, which prunes exactly these
+    # commits, and `--no-renames` so a rename cannot hide the change. Same flag
+    # set as the form, minus `--all`: this searches the pinned $REV by design.
+    shist=$(git log --oneline --full-history --diff-merges=separate --no-patch \
+              --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
       || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
     if [ -n "$shist" ]; then
       # BIND THE APPROVAL TO THE REMOVAL IT WAS MADE FOR, not to the symbol.
@@ -1616,15 +1665,25 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       # makes, one dimension short: WHICH removal you checked is exactly what
       # the acknowledgement is about, since the thing being confirmed is that a
       # particular removal reached browsers.
-      _srm=$(git log -1 --format=%h -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
+      # `-1` DOES NOT MEAN ONE LINE under --diff-merges=separate: a merge is
+      # printed once PER PARENT, so this returned two identical hashes on the
+      # merge-only case the flag was added for — measured, 2 lines — and
+      # `<sym>@<two lines>` is a value nobody can type, which would have made
+      # the gate permanently unclearable for exactly that case. Caught before
+      # pushing. Trimmed with parameter expansion rather than `| head -1`,
+      # which would put git's status behind head's.
+      _srm=$(git log -1 --format=%h --full-history --diff-merges=separate \
+               --no-patch --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
         || { echo "solyra: could not identify the removal commit"; exit 2; }
+      _srm=${_srm%%$'\n'*}
       test -n "$_srm" || { echo "solyra: history is non-empty but no commit"
                            echo "could be identified — asserting nothing"; exit 2; }
       test "${SOLYRA_ROLLED_OUT:-}" = "$sym@$_srm" || {
         echo "solyra: main no longer uses '$sym', but it once did:"
         printf '%s\n' "$shist" | head -5
-        echo "last touched: $(git log -1 --format='%h %cI %s' -G"$sym" \
-                                "$REV" -- . "${EXCLUDE[@]}")"
+        echo "last touched: $(git log -1 --format='%h %cI %s' --full-history \
+                                --diff-merges=separate --no-patch --no-renames \
+                                -G"$sym" "$REV" -- . "${EXCLUDE[@]}")"
         echo "That removal has to be DEPLOYED and its old bundles aged out"
         echo "before this repo drops the surface — see the rollout section:"
         echo "solyra registers no service worker and no update prompt, so a tab"
