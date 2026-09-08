@@ -392,17 +392,29 @@ baselines() {
   # ...measure in each, and say WHICH tree produced which number. The
   # failing-before test in Phase 4 runs in the merge-base one.
 }
-baselines                # BARE, and now nothing follows it to overwrite $?
-# THEN the leak check, on its own line so it cannot overwrite the status above.
-# `$?` is captured first for the same reason every other caller in this file
-# captures it: the test below is a command and would replace it.
-brc=$?
-test -z "${BASELINE_LEAK:-}" \
-  || { echo "baselines left worktrees registered: $BASELINE_LEAK"
-       echo "the next run's git worktree add will fail on them, and they hold"
-       echo "the branch refs. Clean up before continuing:"
-       echo "  git worktree remove --force <path> && git worktree prune"; }
-test "$brc" -eq 0 || { echo "baselines FAILED rc=$brc — no baseline to compare"; }
+# A FUNCTION, so the checks can STOP. Reporting is not propagating: a
+# `|| { echo …; }` group ends with a successful echo, so the fence exited 0 and
+# resolution continued without a baseline, or with a registered worktree —
+# measured, both problems printed and rc=0. That is the bare-`false` bug this
+# file documents at length, rebuilt in the check added one round earlier to fix
+# the same shape one level down. `return`, and the caller is bare with nothing
+# after it, exactly as every other acceptance call here is.
+run_baselines() {
+  local brc
+  baselines              # BARE, and nothing follows it to overwrite $?
+  brc=$?
+  # `$?` captured on its own line first: the tests below are commands and would
+  # replace it.
+  test "$brc" -eq 0 || {
+    echo "baselines FAILED rc=$brc — no baseline to compare against"; return 1; }
+  test -z "${BASELINE_LEAK:-}" || {
+    echo "baselines left worktrees registered: $BASELINE_LEAK"
+    echo "the next run's git worktree add will fail on them, and they hold"
+    echo "the branch refs. Clean up before continuing:"
+    echo "  git worktree remove --force <path> && git worktree prune"
+    return 1; }
+}
+run_baselines            # BARE, nothing after it
 ```
 
 **Remove it when you are done, and use a fresh path.** A registered worktree
@@ -1609,9 +1621,18 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # -> it is retained and the scan BLOCKS. Third consecutive round in which
     # the stocks half was fixed and its solyra twin was not, so both filters
     # now read the same variable rather than agreeing by inspection.
-    sfiles=$(IMPL_RE=$_impl_re; printf '%s\n' "$sfiles" | while IFS= read -r p; do
+    # DEFS_RE HERE TOO. The stocks filter got the definition-path protection in
+    # round 46 and this one did not, so an approval could still waive deletion
+    # of the surface itself over here: consumed() self-excludes the definition
+    # (that is what the per-alternative exclusions do), this filter removes it
+    # for being approved, and both halves then report absence while
+    # .claude/agents/<surface>.md sits committed on solyra main. Fourth round
+    # running that a stocks-half fix left its solyra twin behind, which is why
+    # both now read the SAME two variables rather than agreeing by inspection.
+    sfiles=$(IMPL_RE=$_impl_re DEFS_RE=$_defs_re; printf '%s\n' "$sfiles" | while IFS= read -r p; do
                test -n "$p" || continue
-               if [ -z "$IMPL_RE" ] || ! printf '%s' "$p" | grep -qE -- "$IMPL_RE"
+               if { [ -z "$IMPL_RE" ] || ! printf '%s' "$p" | grep -qE -- "$IMPL_RE"; } \
+                  && { [ -z "$DEFS_RE" ] || ! printf '%s' "$p" | grep -qxE -- "$DEFS_RE"; }
                then
                  for ap in ${REVIEWED_SOLYRA[@]+"${REVIEWED_SOLYRA[@]}"}; do
                    test "$p" != "$ap" || { p=; break; }
@@ -2859,13 +2880,27 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      ```bash
      deploy_candidate() {                  # <target> and MERGE_SHA are yours to fill
        local MERGE_SHA="<the merge commit the PR reports>" SRC rc wt wrc
+       # FETCH_HEAD, NOT origin/main. `git fetch origin main` is guaranteed to
+       # write FETCH_HEAD; whether it also updates the remote-tracking ref
+       # depends on `remote.origin.fetch`, and a narrowed refspec leaves
+       # origin/main behind. Measured on a clone whose refspec was narrowed:
+       # after the fetch, FETCH_HEAD=2b38d71 (the new tip) while origin/main
+       # stayed at d678373 — so every read below would have picked the OLD
+       # commit, and `SRC` would deploy a historical tree, reverting whatever
+       # landed on main since. `git fetch -h` distinguishes the two itself:
+       # FETCH_HEAD is written unconditionally, refs are updated via --refmap.
+       # The solyra half has resolved FETCH_HEAD since round 33 with a comment
+       # saying exactly this; deploy_candidate is where it never got applied.
        git fetch origin main || return 1
-       git merge-base --is-ancestor "$MERGE_SHA" origin/main \
+       local MAIN
+       MAIN=$(git rev-parse FETCH_HEAD) \
+         || { echo "could not resolve the fetched main tip"; return 1; }
+       git merge-base --is-ancestor "$MERGE_SHA" "$MAIN" \
          || { echo "$MERGE_SHA is not on main — not deploying"; return 1; }
-       if [ "$(git rev-parse origin/main)" = "$MERGE_SHA" ]; then
+       if [ "$MAIN" = "$MERGE_SHA" ]; then
          SRC="$MERGE_SHA"                  # nothing merged since; exact SHA
        else
-         SRC=$(git rev-parse origin/main)  # main advanced: MERGE_SHA would revert it
+         SRC=$MAIN                         # main advanced: MERGE_SHA would revert it
          echo "main advanced past $MERGE_SHA — $SRC REACHES it; check it still HAS it"
          # Ancestry is reachability, not presence: a revert of your merge is
          # also a descendant of it, and --is-ancestor still says yes. Before
