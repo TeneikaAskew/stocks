@@ -1006,6 +1006,24 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- . "${EXCLUDE[@]}" \
        ${reviewed[@]+"${reviewed[@]}"}
   then a=0; else a=$?; fi
+  # ONE SELF-EXCLUSION PER ALTERNATIVE. `$sym` is an ERE and the documented
+  # coupled-retirement form is an alternation, so `":!.claude/agents/$sym.md"`
+  # built ONE literal path named `code-reviewer|pine-script-reviewer.md` —
+  # which excludes neither definition. Measured on exactly that symbol: both
+  # .claude/agents/code-reviewer.md and .claude/agents/pine-script-reviewer.md
+  # came back as hits. The rest of the chain then certifies the retirement:
+  # each file mentions one alternative so the must-mention validation accepts
+  # approving it, and the path scan's approval filter removes it. Split on `|`
+  # and emit a pathspec per alternative, so the exclusion means what the
+  # comment below has always said it means.
+  local _alt _selfx=()
+  local _oldifs=$IFS; IFS='|'
+  for _alt in $sym; do
+    test -n "$_alt" || continue
+    _selfx+=( ":!.claude/agents/$_alt.md" ":!.claude/commands/$_alt.md"
+              ":!.github/prompts/$_alt.md" )
+  done
+  IFS=$_oldifs
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
@@ -1017,10 +1035,10 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # alone still left the check unpassable. Applying the approval to one scope
   # and not its siblings is the miss this file keeps making.
   if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/agents \
-       ":!.claude/agents/$sym.md" ${reviewed[@]+"${reviewed[@]}"}
+       ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
   then b=0; else b=$?; fi
   if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/commands \
-       ":!.claude/commands/$sym.md" ${reviewed[@]+"${reviewed[@]}"}
+       ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
   then c=0; else c=$?; fi
   # FOURTH executable-markdown scope. .github/prompts/*.md reach Gemini through
   # .github/workflows/refresh-architecture-docs.yml: scripts/maintenance/
@@ -1041,7 +1059,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # and the whole scope is a safe no-op where the directory does not exist —
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
   if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .github/prompts \
-       ":!.github/prompts/$sym.md" ${reviewed[@]+"${reviewed[@]}"}
+       ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
   then e=0; else e=$?; fi
   # SIXTH executable-markdown scope, and the one that is easiest to read as
   # prose because it is called "documentation". CLAUDE.md is the project
@@ -1219,7 +1237,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # it drops back to 3 instead of riding an old approval.
   echo "only .claude/commands/ mentions it — a route, or this file's own example?"
   git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/commands \
-    ":!.claude/commands/$sym.md" ${reviewed[@]+"${reviewed[@]}"}
+    ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
   return 3; }
 
 # RESOLVED AND VALIDATED HERE, not at the top of the fence. Running this at the
@@ -1443,6 +1461,26 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # the same act on either side: you looked, and it is not the surface. Every
   # one of those nine also mentions the symbol in its contents, so they satisfy
   # the must-mention validation and are approvable — checked, all nine rc=0.
+  # NOR A SURFACE'S OWN DEFINITION FILE. `.claude/agents/<sym>.md` and its two
+  # siblings are what the retirement is supposed to DELETE, and each one
+  # necessarily mentions the symbol, so the must-mention validation accepts an
+  # approval for it — measured, both halves of `code-reviewer|pine-script-reviewer`
+  # are approvable and the filter then removed both, certifying with both files
+  # on disk. Built from the same per-alternative split the self-exclusions use.
+  # NARROWER THAN "retain every path matching $pathsym", which is what the
+  # finding suggested and would undo round 35: `react` matches eight unrelated
+  # tracked paths (lib/earnings_reactions.py and friends), all legitimately
+  # approvable, and without approving them the check has no passing state at
+  # all. A definition path is `<scope>/<alternative>.md` exactly; a substring
+  # collision is not. There is no .claude/agents/react.md — checked.
+  local _defs=() _a
+  local _oi=$IFS; IFS='|'
+  for _a in $sym; do
+    test -n "$_a" || continue
+    _defs+=( ".claude/agents/$_a.md" ".claude/commands/$_a.md"
+             ".github/prompts/$_a.md" )
+  done
+  IFS=$_oi
   # AN APPROVAL CANNOT REMOVE AN IMPLEMENTATION YOU JUST NAMED. This filter runs
   # BEFORE the path scan, so a file listed in REVIEWED left the inventory before
   # the scan could see it — measured, with scripts/run_historical_signals.py
@@ -1454,10 +1492,14 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # path is not the surface" versus "this path IS the implementation" — and the
   # second is already on the record, made by the caller one argument earlier.
   local ap
-  files=$(IMPL_RE=$_impl_re; printf '%s\n' "$files" | while IFS= read -r p; do
+  local _defs_re=; for _a in ${_defs[@]+"${_defs[@]}"}; do
+    _defs_re="${_defs_re:+$_defs_re|}$(printf '%s' "$_a" | sed 's/[.[\*^$]/\\&/g')"
+  done
+  files=$(IMPL_RE=$_impl_re DEFS_RE=$_defs_re; printf '%s\n' "$files" | while IFS= read -r p; do
             test -n "$p" || continue
             test -e "$root/$p" || test -L "$root/$p" || continue
-            if [ -z "$IMPL_RE" ] || ! printf '%s' "$p" | grep -qE -- "$IMPL_RE"
+            if { [ -z "$IMPL_RE" ] || ! printf '%s' "$p" | grep -qE -- "$IMPL_RE"; } \
+               && { [ -z "$DEFS_RE" ] || ! printf '%s' "$p" | grep -qxE -- "$DEFS_RE"; }
             then
               for ap in ${REVIEWED[@]+"${REVIEWED[@]}"}; do
                 test "$p" != "$ap" || { p=; break; }
@@ -1660,8 +1702,26 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # pathspec turns on history simplification, which prunes exactly these
     # commits, and `--no-renames` so a rename cannot hide the change. Same flag
     # set as the form, minus `--all`: this searches the pinned $REV by design.
+    # THE APPROVALS APPLY HERE TOO. `consumed()` above can be cleared by
+    # REVIEWED_SOLYRA — an ordinary word, or a mention in a comment — and this
+    # query ignored them, so the same file's historical prose counted as proof
+    # that a browser consumer once shipped. The gate then demanded a
+    # SOLYRA_ROLLED_OUT acknowledgement for a rollout that never happened,
+    # blocking a retirement that is actually complete. A false BLOCK rather
+    # than a false pass, but the generated-artifact exclusions do not reach it
+    # and nothing else would.
+    # SAFE TO BUILD INLINE: `consumed` ran a few lines up with these same
+    # entries and an invalid one returns 2, which the `test "$scode" -eq 1`
+    # above turns into an exit — so by here every entry has already passed the
+    # no-glob, no-directory, must-exist and must-mention validation. This is
+    # reusing that verdict, not re-implementing it.
+    local _sapp=() _sp
+    for _sp in ${REVIEWED_SOLYRA[@]+"${REVIEWED_SOLYRA[@]}"}; do
+      _sapp+=( ":!$_sp" )
+    done
     shist=$(git log --oneline --full-history --diff-merges=separate --no-patch \
-              --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
+              --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}" \
+              ${_sapp[@]+"${_sapp[@]}"}) \
       || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
     if [ -n "$shist" ]; then
       # BIND THE APPROVAL TO THE REMOVAL IT WAS MADE FOR, not to the symbol.
@@ -1682,7 +1742,8 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       # pushing. Trimmed with parameter expansion rather than `| head -1`,
       # which would put git's status behind head's.
       _srm=$(git log -1 --format=%h --full-history --diff-merges=separate \
-               --no-patch --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
+               --no-patch --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}" \
+               ${_sapp[@]+"${_sapp[@]}"}) \
         || { echo "solyra: could not identify the removal commit"; exit 2; }
       _srm=${_srm%%$'\n'*}
       test -n "$_srm" || { echo "solyra: history is non-empty but no commit"
@@ -1692,7 +1753,8 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
         printf '%s\n' "$shist" | head -5
         echo "last touched: $(git log -1 --format='%h %cI %s' --full-history \
                                 --diff-merges=separate --no-patch --no-renames \
-                                -G"$sym" "$REV" -- . "${EXCLUDE[@]}")"
+                                -G"$sym" "$REV" -- . "${EXCLUDE[@]}" \
+                                ${_sapp[@]+"${_sapp[@]}"})"
         echo "That removal has to be DEPLOYED and its old bundles aged out"
         echo "before this repo drops the surface — see the rollout section:"
         echo "solyra registers no service worker and no update prompt, so a tab"
