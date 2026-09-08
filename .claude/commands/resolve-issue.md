@@ -1064,7 +1064,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # scopes. NOT measurable here — this container has bash 5.2.21 only, where
   # the bare form is already safe — so the fix is the portable idiom rather
   # than a reproduction, and it is behaviour-identical on 5.2 either way.
-  local a b c e f rc reviewed=() _rt
+  local a b c e f rc reviewed=() _rt _base
   # REV pins the search to a COMMITTED revision instead of the working tree.
   # Empty for this repo, where the deletion under test IS the working tree and a
   # committed-only search would not see it. Set for solyra, where the question
@@ -1212,6 +1212,32 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
            echo "Name only files the rc=0 or rc=3 report printed. An entry that"
            echo "matches nothing is either a typo or a glob that expanded."
            return 2; }
+    # AN APPROVAL MUST NOT HIDE A DEFINITION. The self-exclusions name
+    # `<scope>/<alternative>.md` literally, so when the symbol is an ERE they
+    # miss the definition that actually exists — `foo[0-9]bar` excludes
+    # `foo[0-9]bar.md` and not `foo3bar.md`. Round 58 recorded that as a
+    # refusal to certify, and that was WRONG: the definition then prints as a
+    # hit, and the workflow this file documents for a hit is to read it and
+    # name it in REVIEWED. Measured end to end — `consumed` printed
+    # `.claude/agents/foo3bar.md`, the operator approved exactly that file, and
+    # `absent_everywhere` returned 0 with the agent still on disk. Approving a
+    # definition is never the answer: it is the file the retirement has to
+    # delete, so it belongs in an IMPLEMENTATION argument, where the path scan
+    # reports it until it is gone.
+    # The basename, not the path, because that is what the self-exclusion would
+    # have named. `if`, because a clean grep miss is rc=1 and the common case.
+    case "$rc" in
+      .claude/agents/*.md|.claude/commands/*.md|.github/prompts/*.md)
+        _base=${rc##*/}; _base=${_base%.md}
+        if printf '%s' "$_base" | grep -qE -- "^($sym)$"; then
+          echo "REVIEWED entry '$rc' IS a definition of '$sym', not prose about"
+          echo "it. Excluding it hides the file the retirement must delete, and"
+          echo "the scan would then certify with the surface still installed."
+          echo "Name it as an implementation instead:"
+          printf '  absent_everywhere %q %q\n' "$sym" "$rc"
+          return 2
+        fi;;
+    esac
     reviewed+=(":!$rc")
   done
   # -E on EVERY scope. The forms demonstrate coupled retirements with
@@ -4012,7 +4038,26 @@ inside that window.** An empty review list at 60 seconds means "wait", not
                --format=json | python gcp/cloudbuild/serving_revision.py) \
          || { echo "could not read the staging serving revision"; return 1; }
        test -n "$REV" || { echo "staging is serving nothing, or is split"; return 1; }
-       # ...verify against staging while it is serving $REV, THEN promote...
+       # THE VERIFICATION IS A STEP, NOT A COMMENT. This line used to read
+       # "...verify against staging while it is serving $REV, THEN promote..."
+       # and nothing enforced it: measured with a stubbed gcloud, the function
+       # as supplied read the revision and ran the production trigger, rc=0,
+       # with no verification of any kind. Reading which revision staging
+       # serves proves that staging serves it, and nothing about whether the
+       # fix works there.
+       # BOUND TO $REV, the same shape round 50 gave the advanced-tip gate:
+       # an acknowledgement of the revision you checked yesterday cannot clear
+       # today's promotion, and staging moves whenever anything else deploys.
+       test "${STAGING_VERIFIED:-}" = "$REV" || {
+         echo "staging is serving $REV and nothing here has verified it."
+         echo "Run THIS ISSUE's reproduction against staging now, while it is"
+         echo "still serving that revision — the failing-before test from"
+         echo "Phase 4, against the staging URL — then re-run bound to it:"
+         printf '  STAGING_VERIFIED=%q promote_to_prod\n' "$REV"
+         echo "If staging has moved on by then, this refuses again with the new"
+         echo "revision, which is the point: the acknowledgement names what you"
+         echo "actually tested."
+         return 1; }
        gcloud builds triggers run deploy-solyra-api-prod \
          --project="$PROJECT_ID" --branch=main \
          --substitutions=_EXPECT_STAGING_REVISION="$REV"
