@@ -468,16 +468,39 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 
 - **Establish who consumes the surface** before deciding what to fix. If nothing
   reads it, disabling the render is one line and ships today.
+  **Use `consumed()`, not a fourth copy of its code search.** The command that
+  stood here searched the code scopes only, and those exclude `*.md` and
+  `.claude/commands/` as prose — but `.claude/agents/*.md`,
+  `.claude/commands/*.md`, `.github/prompts/*.md` and the root `CLAUDE.md` all
+  **run**. Measured: `gcp-config-reviewer` returns **rc=1** from that search
+  while `.claude/agents/pre-deploy-check.md`, `gcp-job-doctor.md` and
+  `gcp-capacity-cost-reviewer.md` each delegate to it by name. Both issue forms
+  already run those four probes beside the code one; Phase 2 did not — and
+  Phase 2 is where the fix gets chosen, so its blind spot is the expensive one.
+
+  Pasting the four probes here would make a **fourth** copy of a search that has
+  drifted from its original in five consecutive rounds of this PR. Load Phase
+  4's helper fence now — it defines `EXCLUDE_STOCKS`/`EXCLUDE_SOLYRA` as well —
+  and call it:
+
   ```bash
-  # ANCHORED, like Phase 4's helper and both forms. `.` is relative to your CWD,
-  # and a pathspec that does not exist there is a clean miss rather than an
-  # error — measured elsewhere in this file, from gcp/ a bare search returns
-  # rc=1 for a surface whose only caller is at the root. This is the search that
-  # decides what to fix, so a false "nothing reads it" here is worse than one in
-  # the gate: it picks the wrong fix before the gate ever runs.
-  root=$(git rev-parse --show-toplevel) || echo "not in a checkout"
-  git -C "$root" grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
+  EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )       # required; consumed() returns 2 without it
+  consumed "<table|endpoint|function>"
+  #   0  consumed — it PRINTS the hits, so read them before believing the code
+  #   1  nothing, in any of the six executable scopes
+  #   2  refuses to assert (bad regex, unreadable tree, jq missing, EXCLUDE unset)
+  #   3  only .claude/commands/ matched — routing or prose, read the lines
   ```
+
+  `consumed()` is anchored at the repo root (`git -C "$root"`), which matters
+  here for the same reason it matters there: `.` is relative to your CWD and a
+  pathspec that does not exist under it is a **clean miss**, so from `gcp/` a
+  bare search returns rc=1 for a surface whose only caller is at the root —
+  measured, `CLAUDE_CODE_WEB_GCP_SA_KEY` gives rc=1 from `gcp/` and 2 hits
+  anchored.
+
+  What that helper searches, and why each exclusion is there, is the rest of
+  this section:
   **Repo-wide over tracked files, not the five source directories** — the same
   scope Phase 4's deletion check uses, and for the same reason. Excluding `archive/`
   as well as `docs/`, because repo-wide over-corrects in the other direction:
@@ -572,7 +595,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
            market_data_intraday etf_options_snapshots exit_config_overrides; do
     git grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
       ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
-      ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \\
+      ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
       ':!.github/workflows/logs.txt'
   done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
   ```
@@ -1443,13 +1466,27 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
         echo "evidence. Run: git -C $SOLYRA fetch --unshallow origin main"
         exit 2; }
     fi
-    shist=$(git log --oneline -G"$sym" "$REV" -- .) \
+    # SAME SCOPE AS consumed(), for the same reason the date-listing and
+    # date-fetching queries in CLAUDE.md §3.9 must frame time identically:
+    # neither framing is wrong alone, they are wrong RELATIVE to each other.
+    # `consumed()` one line up excluded `tests/fixtures/stocks-openapi.json`
+    # (solyra vendors the backend's OpenAPI document there) while this search
+    # did not, so a backend surface no solyra source has ever called still had
+    # the commit that vendored the fixture in its history and was classified as
+    # previously shipped. Measured on solyra @ cb383ba,
+    # `/api/admin/strat-engine/structure-continuation`: consumed() rc=1 (no
+    # consumer), unrestricted history 1 commit — `2464c9e`, whose only file
+    # carrying the symbol is that fixture — and 0 commits with "${EXCLUDE[@]}"
+    # applied. The gate then demanded SOLYRA_ROLLED_OUT and aged-out browser
+    # bundles for a surface no browser ever loaded.
+    shist=$(git log --oneline -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
       || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
     if [ -n "$shist" ]; then
       test "${SOLYRA_ROLLED_OUT:-}" = "$sym" || {
         echo "solyra: main no longer uses '$sym', but it once did:"
         printf '%s\n' "$shist" | head -5
-        echo "last touched: $(git log -1 --format='%h %cI %s' -G"$sym" "$REV" -- .)"
+        echo "last touched: $(git log -1 --format='%h %cI %s' -G"$sym" \
+                                "$REV" -- . "${EXCLUDE[@]}")"
         echo "That removal has to be DEPLOYED and its old bundles aged out"
         echo "before this repo drops the surface — see the rollout section:"
         echo "solyra registers no service worker and no update prompt, so a tab"
@@ -2651,8 +2688,15 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
      ```bash
      stage_and_wait() {
-       local PROJECT_ID BUILD_ID
-       PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
+       # INITIALISE IN THE DECLARATION. `local PROJECT_ID` creates the local
+       # EMPTY first, so a following `PROJECT_ID="${PROJECT_ID:-…}"` expands the
+       # local it just blanked, never the caller's — measured, with
+       # PROJECT_ID=caller-override exported, the two-line form resolved
+       # `ambient-project` and the one-line form kept `caller-override`. The
+       # round-39 fix that added `--project` to stop the ambient project from
+       # deciding therefore pinned every command to exactly that project, which
+       # is the same defect one layer down.
+       local PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}" BUILD_ID
        test -n "$PROJECT_ID" || { echo "no project resolved"; return 1; }
        BUILD_ID=$(gcloud builds triggers run deploy-solyra-api-staging \
                     --project="$PROJECT_ID" --branch=main --format=json \
@@ -2734,8 +2778,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
      ```bash
      promote_to_prod() {
-       local PROJECT_ID REV
-       PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
+       local PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}" REV
        test -n "$PROJECT_ID" || { echo "no project resolved"; return 1; }
        REV=$(gcloud run services describe solyra-api-staging \
                --project="$PROJECT_ID" --region=us-east1 \
