@@ -687,10 +687,57 @@ def test_every_prose_line_shape_in_the_real_documents_can_be_caught():
         for line in gate._prose_lines((root / doc).read_text()):
             if not line.strip():
                 continue
-            m = re.match(r"^(\s*(?:>\s*)*)((?:[-*+]|\d+[.)])\s+)?(\*\*[^*]+\*\*\s*[—–:-]?\s*)?", line)
-            shapes.add((bool(m.group(1).strip()), bool(m.group(2)), bool(m.group(3))))
+            m = re.match(r"^(\s*(?:>\s*)*)((?:[-*+]|\d+[.)])\s+)?(.*)$", line)
+            bq, lst, body = bool(m.group(1).strip()), bool(m.group(2)), m.group(3)
+            # The label FORM matters, not just its presence. An earlier version
+            # of this test recognised only `**bold**` as a label, so it could
+            # not discover the inline-code (15 lines) and plain-text (4) list
+            # labels the corpus also uses -- the same blind spot as the matcher
+            # it was written to police. (Codex, PR #1061.)
+            if body.startswith("**"):
+                label = "**x**"
+            elif body.startswith("`"):
+                label = "`x`"
+            elif re.match(r"^[A-Za-z][^.!?]{0,60}?[—–:-]\s", body):
+                label = "Open paths:"
+            else:
+                label = ""
+            shapes.add((bq, lst, label))
     assert shapes, "no prose found — the marker matching is broken"
     for bq, lst, label in sorted(shapes):
-        line = ("> " if bq else "") + ("- " if lst else "") + ("**x** — " if label else "") + "..."
-        assert gate._ELIDED.match(line), \
-            f"a shape the documents already use is not caught: {line!r}"
+        for sep in ("", " — "):
+            line = (("> " if bq else "") + ("- " if lst else "")
+                    + (label + sep if label else "") + "...")
+            assert gate._ELIDED.match(line), \
+                f"a shape the documents already use is not caught: {line!r}"
+
+
+def test_an_elision_after_a_non_bold_label_is_a_finding(tmp_path):
+    """The corpus labels list items four ways, and only one is bold: measured
+    on the four documents, 30 bullets open with `**bold**`, 30 with plain text,
+    15 with `inline code` and 4 with a plain label and a separator. Successive
+    revisions of the matcher each covered the form the last incident used, so
+    `- `AUTH_MODE` — ...` and `- Open paths: ...` still went through.
+    (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("- `AUTH_MODE` — ...\n"
+                   "- Open paths: ...\n"
+                   "1. `strat_combo_results` ...\n"
+                   "- `AUTH_MODE` is one of `iap`, `firebase` or `open` (auth.py:34).\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("firebase" in f for f in out), out
+
+
+def test_a_sentence_ending_in_an_ellipsis_is_not_a_finding(tmp_path):
+    """The broad label form is only safe because it cannot swallow a real
+    sentence. Measured: no line in the four documents ends in an ellipsis
+    today, and a label may not carry sentence-ending punctuation, so prose
+    that happens to trail off is still prose. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("The fetchers run at 08:20, 08:30, ... and 23:00.\n"
+                   "- **`watchlists`** — `backfill_ticker` manages it; soft-delete via `removed_at`.\n"
+                   "27 runtime-created relations (`strat_features_*`, `gamma_levels_eod`, …) are outside.\n")
+    assert gate.gate_elided_prose(tmp_path) == []

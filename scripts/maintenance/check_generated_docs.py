@@ -295,9 +295,19 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
 # that had taken the place of real sentences. A mid-sentence ellipsis is
 # ordinary prose ("`gamma_levels_eod`, …") and is NOT matched: the whole line
 # has to be the elision. (Run 27.)
+# A line whose body is only an ellipsis, behind any combination of blockquote
+# markers, a list marker, and a label. The label form is deliberately broad:
+# the corpus labels list items in four ways -- bold (30), inline code (15),
+# plain text with a separator (4) and plain text (30) -- and successive
+# revisions of this pattern each covered only the form the last incident
+# happened to use. A label may not contain sentence-ending punctuation outside
+# a bold run, which is what keeps it a label rather than a sentence, and no
+# line in the four documents ends in an ellipsis today, so the broad form has
+# no false positive to trade against. (Codex, PR #1061.)
+_LABEL = r"(?:\*\*[^*]+\*\*|[^.!?\n]{0,80}?)\s*(?:[—–:-]\s*)?"
 _ELIDED = re.compile(
     r"^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?"
-    r"(?:\*\*[^*]+\*\*\s*(?:[—–:-]\s*)?)?(?:\.\.\.|…)\s*$")
+    r"(?:" + _LABEL + r")?(?:\.\.\.|…)\s*$")
 
 
 # A COMPLETE marker comment line, not any line that mentions one. Both
