@@ -126,8 +126,8 @@ body:
         # deploy. So run these two as well, and exclude the surface's OWN
         # definition file — an agent always matches itself, which would make
         # every agent look consumed:
-        $ git grep -n "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ git grep -n "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ git grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ git grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
         A hit in .claude/commands/ is AMBIGUOUS, not proof: it may be a real
         route (`/debug-workflow`) or one of these forms quoting an example.
         Read the two or three lines and say which. The resolver's Phase 4
@@ -238,7 +238,7 @@ body:
       label: Acceptance criteria
       description: Retiring and restoring have different bars. Restoring needs a writer, a schedule, a freshness SLO and a consumer guard, not just a re-run.
       placeholder: |
-        Retire: `git grep -q "<name>" -- . ':!docs/' ':!archive/'
+        Retire: `git grep -qE "<name>" -- . ':!docs/' ':!archive/'
         ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
         ':!.claude/commands/' ':!*.md' ':!*.drawio'
         ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — and separately

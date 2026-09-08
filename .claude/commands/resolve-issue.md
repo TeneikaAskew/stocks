@@ -527,7 +527,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   ```bash
   for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
            market_data_intraday etf_options_snapshots exit_config_overrides; do
-    git grep -l "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+    git grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
       ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
       ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
   done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
@@ -632,7 +632,7 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
+| A module or job is deleted | `git grep -qE "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
 | A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself. **`basename()` is not optional**: `name` is a fully qualified resource name (`projects/…/locations/…/jobs/<job>`), so `grep -qx "<job>"` against the raw value never matches and the check reports "retired" while both resources are live. It is a no-op on an already-bare value, so it is right without resolving which shape this gcloud prints — which I cannot check here, the session's gcloud being unauthenticated (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
@@ -715,14 +715,21 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
          echo "an empty exclusion set searches prose and generated files too."
          return 2; }
   for rc in "$@"; do reviewed+=(":!$rc"); done
-  git grep -q "$sym" -- . "${EXCLUDE[@]}"; a=$?
+  # -E on EVERY scope. The forms demonstrate coupled retirements with
+  # alternation — `playbook_cards|/api/playbook` is the dormant form's own
+  # example — and git grep defaults to BASIC regex, where `|` is a literal
+  # pipe character. Measured with the prose excluded: the basic form returns
+  # rc=1 "absent" for that pattern while -E returns 0 and names gcp/deploy.sh,
+  # gcp/schema.sql, platform/api/openapi.json and the backtest router. A
+  # coupled retirement would certify BOTH surfaces gone while both were live.
+  git grep -qE "$sym" -- . "${EXCLUDE[@]}"; a=$?
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
   # file as the only hit. Excluding a path that does not exist (the surface is
   # not an agent) is safe — measured rc=1, not 128.
-  git grep -q "$sym" -- .claude/agents ":!.claude/agents/$sym.md"; b=$?
-  git grep -q "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
+  git grep -qE "$sym" -- .claude/agents ":!.claude/agents/$sym.md"; b=$?
+  git grep -qE "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
     "${reviewed[@]}"; c=$?
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
@@ -735,7 +742,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     command -v jq >/dev/null \
       || { echo "jq not found — cannot inspect package.json scripts"; return 2; }
     jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"' package.json \
-      | grep -qF -- "$sym"
+      | grep -qE -- "$sym"    # -E, not -F: same alternation, same false clear
     # CAPTURE THE WHOLE ARRAY FIRST. Measured: `d=$?` resets PIPESTATUS to (0),
     # the assignment's own status, and jq's real exit is gone. A jq failure is
     # otherwise invisible here — measured, malformed JSON gives jq rc=5 and grep
@@ -767,7 +774,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # and a NEW command that starts routing to the surface is not on your list, so
   # it drops back to 3 instead of riding an old approval.
   echo "only .claude/commands/ mentions it — a route, or this file's own example?"
-  git grep -n "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
+  git grep -nE "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
     "${reviewed[@]}"
   return 3; }
 
