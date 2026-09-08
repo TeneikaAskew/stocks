@@ -91,6 +91,12 @@ SIZE_FLOOR_EXEMPT = ("README.md",)
 REGENERATED = (COST,)
 BYTE_FLOOR = 0.80
 
+# Prose outside the rendered marker blocks. Lower than SIZE_FLOOR because a
+# month that genuinely retires a section trims real prose (05-d moved from
+# partial-August to 90-day totals in run 27 and lost 3.7%), while the damage
+# this guards against was -22.6% in one document.
+PROSE_FLOOR = 0.90
+
 # An update that rewrites most of a document is a regeneration wearing an
 # update's clothes: the 2026-09-02 run replaced 394 lines with 158 and every
 # gate passed on the result because each gate looked at the OUTPUT, not at the
@@ -278,6 +284,83 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
         o, n = len(old.splitlines()), len(new.splitlines())
         if doc not in SIZE_FLOOR_EXEMPT and n < o * SIZE_FLOOR:
             out.append(f"{doc}: shrank from {o} to {n} lines (< {int(SIZE_FLOOR*100)}%) — content was dropped, not updated")
+    return out
+
+
+# A line whose ENTIRE content is an ellipsis, optionally behind a list marker
+# and a bold label. Run 27 wrote exactly these, five as bare section intros and
+# four as `- **`market_data_daily`** ...`, eliding 4,035 characters of prose
+# that had taken the place of real sentences. A mid-sentence ellipsis is
+# ordinary prose ("`gamma_levels_eod`, …") and is NOT matched: the whole line
+# has to be the elision. (Run 27.)
+_ELIDED = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*[^*]+\*\*\s*)?(?:\.\.\.|…)\s*$")
+
+
+def _prose_lines(text: str) -> list[str]:
+    """The document's own sentences: everything outside the rendered marker
+    blocks and outside fenced code. Whole-document size is the wrong unit for
+    these files -- 05-c is 137 KB of which ~120 KB is rendered blocks, so
+    deleting every explanatory paragraph in it moved the line count by less
+    than 1% and the existing size floor did not notice. (Run 27.)
+    """
+    out, in_block, in_fence = [], False, False
+    for line in text.split("\n"):
+        if "inventory:" in line and ":start" in line:
+            in_block = True
+            continue
+        if "inventory:" in line and ":end" in line:
+            in_block = False
+            continue
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_block or in_fence:
+            continue
+        out.append(line)
+    return out
+
+
+def gate_elided_prose(root: pathlib.Path) -> list[str]:
+    """Prose replaced by an ellipsis instead of rewritten.
+
+    The model is asked to update prose in place with targeted `replace` calls.
+    A `...` written where a paragraph was is the summarising habit leaking into
+    a file edit, and it destroys content while leaving every other gate green:
+    run 27 passed the churn budget, the heading check, the marker restore and
+    the live verifier with five sections gutted this way.
+    """
+    out = []
+    for doc in DOCS:
+        f = root / doc
+        if not f.exists():
+            continue
+        for i, line in enumerate(_prose_lines(f.read_text()), 1):
+            if _ELIDED.match(line):
+                out.append(f"{doc}: prose replaced by an ellipsis: {line.strip()!r} "
+                           f"(prose line {i}) — the paragraph that belongs here was deleted")
+    return out
+
+
+def gate_prose_floor(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[str]:
+    """Prose outside the rendered blocks must not collapse.
+
+    The companion to the elision gate: it catches a paragraph that was deleted
+    outright rather than replaced with a marker. Measured on the run-27 damage,
+    05-c fell 8,876 -> 6,867 characters (-22.6%) while its line count moved by
+    less than 1%, so the floor is on prose characters, not on the file.
+    """
+    out = []
+    if previous_dir is None:
+        return out
+    for doc in DOCS:
+        prev, cur = previous_dir / doc, root / doc
+        if not prev.exists() or not cur.exists():
+            continue
+        o = sum(len(l) for l in _prose_lines(prev.read_text()))
+        n = sum(len(l) for l in _prose_lines(cur.read_text()))
+        if o and n < o * PROSE_FLOOR:
+            out.append(f"{doc}: prose outside the rendered blocks shrank from {o} to {n} "
+                       f"characters (< {int(PROSE_FLOOR*100)}%) — paragraphs were dropped, not updated")
     return out
 
 
@@ -580,6 +663,8 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_markers(root, repo, live)
     findings += gate_diff_budget(diff_stats(root, previous_dir), allow_rewrite)
     findings += gate_headings_and_size(root, previous_dir)
+    findings += gate_elided_prose(root)
+    findings += gate_prose_floor(root, previous_dir)
     findings += gate_regenerated_structure(root)
     findings += gate_derived_numbers(root, repo, live)
     findings += gate_new_suppressions(root, previous_dir)

@@ -42,6 +42,8 @@ scheduler count under half the live figure and went red on that single line.
 
 - Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - Update in place with `replace` only; never regenerate from scratch and never `write_file` the document (the output-discipline paragraph above says the same: there is no whole-body path).
+- **Never write `...` or `…` as a stand-in for text you are not changing.** A `replace` call rewrites exactly the span you give it, so an elision marker does not mean "the rest is unchanged" — it deletes the paragraph and leaves three dots in the document. Run 27 did this to five section introductions and four bullets in this file at once, destroying 4,035 characters while every other gate stayed green. If a paragraph needs no change, do not call `replace` on it at all. A gate now fails the run on any line that is only an ellipsis.
+
 - Cite `file:line` for every claim about code.
 - No code, no SQL examples: just the dependency graph and its reading.
 - Distinguish live writers (a Cloud Run Job's entrypoint or a module it imports) from one-shot `scripts/` writers.

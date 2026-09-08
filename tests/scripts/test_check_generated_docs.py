@@ -487,3 +487,75 @@ def test_the_other_documents_keep_heading_persistence(tmp_path):
     a.write_text(a.read_text().replace(f"## {heads[3]}", "## Something Else Entirely", 1))
     findings = gate.gate_headings_and_size(root, prev)
     assert any(f.startswith(f"{gate.ARCH}: heading lost") for f in findings), findings
+
+def test_prose_replaced_by_an_ellipsis_is_a_finding(tmp_path):
+    """Run 27 passed every gate — churn budget, heading persistence, marker
+    restore, live verifier — with five section introductions and four bullets
+    in 05-c replaced by a bare `...`, destroying 4,035 characters. Whole-file
+    size did not notice: the document is 137 KB of which ~120 KB is rendered
+    blocks, so the loss moved its line count by under 1%. (Run 27.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("## 2. Write graph\n...\n\n"
+                   "## 4. Multi-writer\n"
+                   "- **`market_data_daily`** ...\n"
+                   "- **`etf_options_snapshots`** — `fetch_av_historical_options` upserts nightly.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 2, out
+    assert all(gate.DEPS in f for f in out)
+    assert any("'...'" in f for f in out)
+    assert any("market_data_daily" in f for f in out)
+    # the bullet that says something real is not flagged
+    assert not any("etf_options_snapshots" in f for f in out), out
+
+
+def test_a_mid_sentence_ellipsis_is_ordinary_prose(tmp_path):
+    """`gamma_levels_eod`, … inside a sentence is how these documents already
+    elide a list, and flagging it would fail every run. Only a line that is
+    ENTIRELY an ellipsis is an elided paragraph."""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("27 runtime-created relations (`strat_features_*`, `gamma_levels_eod`, …) "
+                   "are outside `gcp/schema.sql`.\n"
+                   "The fetchers run at 08:20, 08:30, ... and 23:00.\n")
+    assert gate.gate_elided_prose(tmp_path) == []
+
+
+def test_an_ellipsis_inside_a_rendered_block_is_not_the_models_doing(tmp_path):
+    """The blocks are rendered by the workflow and restored after the model, so
+    an ellipsis inside one came from the renderer, not from an elided edit."""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("<!-- inventory:blast:start -->\n...\n<!-- inventory:blast:end -->\n")
+    assert gate.gate_elided_prose(tmp_path) == []
+
+
+def test_collapsing_prose_outside_the_blocks_is_a_finding(tmp_path):
+    """The companion to the elision gate: a paragraph deleted outright rather
+    than replaced by a marker. Measured on run 27, 05-c fell 8,876 -> 6,867
+    prose characters while its line count barely moved."""
+    prev, cur = tmp_path / "prev", tmp_path / "cur"
+    for d in (prev, cur):
+        (d / gate.DEPS).parent.mkdir(parents=True, exist_ok=True)
+    body = "Notes on the ones that matter operationally: " + ("x" * 4000) + "\n"
+    (prev / gate.DEPS).write_text(body)
+    (cur / gate.DEPS).write_text("Notes on the ones that matter operationally:\n")
+    out = gate.gate_prose_floor(cur, prev)
+    assert len(out) == 1 and "shrank" in out[0], out
+    # unchanged prose passes
+    (cur / gate.DEPS).write_text(body)
+    assert gate.gate_prose_floor(cur, prev) == []
+
+
+def test_the_prose_floor_ignores_growth_inside_a_rendered_block(tmp_path):
+    """A month that adds twenty jobs grows the blocks enormously and must not
+    thereby mask prose that was deleted beside them."""
+    prev, cur = tmp_path / "prev", tmp_path / "cur"
+    for d in (prev, cur):
+        (d / gate.DEPS).parent.mkdir(parents=True, exist_ok=True)
+    (prev / gate.DEPS).write_text("A real paragraph explaining the graph. " * 40 +
+                                "\n<!-- inventory:blast:start -->\nsmall\n<!-- inventory:blast:end -->\n")
+    (cur / gate.DEPS).write_text("\n<!-- inventory:blast:start -->\n" + ("| row |\n" * 500) +
+                               "<!-- inventory:blast:end -->\n")
+    out = gate.gate_prose_floor(cur, prev)
+    assert len(out) == 1, out
