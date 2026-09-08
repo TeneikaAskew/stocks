@@ -426,7 +426,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [706](../../../gcp/migrate_to_gcp.py#L706), [708](../../../gcp/migrate_to_gcp.py#L708), [717](../../../gcp/migrate_to_gcp.py#L717), [748](../../../gcp/migrate_to_gcp.py#L748)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2388](../../../gcp/signal_monitor.py#L2388), [2390](../../../gcp/signal_monitor.py#L2390), [2393](../../../gcp/signal_monitor.py#L2393), [2396](../../../gcp/signal_monitor.py#L2396), [2428](../../../gcp/signal_monitor.py#L2428)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [381](../../../gcp/signal_monitor_eod_resolver.py#L381), [385](../../../gcp/signal_monitor_eod_resolver.py#L385), [389](../../../gcp/signal_monitor_eod_resolver.py#L389), [392](../../../gcp/signal_monitor_eod_resolver.py#L392), [395](../../../gcp/signal_monitor_eod_resolver.py#L395), [416](../../../gcp/signal_monitor_eod_resolver.py#L416)
-- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [74](../../../gcp/trade_logger.py#L74), [77](../../../gcp/trade_logger.py#L77)
+- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [97](../../../gcp/trade_logger.py#L97), [100](../../../gcp/trade_logger.py#L100)
 - [`scripts/analysis/phase7_feedback_loop.py`](../../../scripts/analysis/phase7_feedback_loop.py) — line [276](../../../scripts/analysis/phase7_feedback_loop.py#L276)
 - [`scripts/strat_struct_backtest.py`](../../../scripts/strat_struct_backtest.py) — line [154](../../../scripts/strat_struct_backtest.py#L154)
 
@@ -854,7 +854,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [5](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L5)
 - [`gcp/research/strat_engine/strat_walk_forward.py`](../../../gcp/research/strat_engine/strat_walk_forward.py) — line [513](../../../gcp/research/strat_engine/strat_walk_forward.py#L513)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2392](../../../gcp/signal_monitor.py#L2392)
-- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [142](../../../gcp/trade_logger.py#L142), [170](../../../gcp/trade_logger.py#L170), [179](../../../gcp/trade_logger.py#L179), [211](../../../gcp/trade_logger.py#L211)
+- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [176](../../../gcp/trade_logger.py#L176), [203](../../../gcp/trade_logger.py#L203), [212](../../../gcp/trade_logger.py#L212), [243](../../../gcp/trade_logger.py#L243)
 - [`gcp/weekend_review.py`](../../../gcp/weekend_review.py) — line [26](../../../gcp/weekend_review.py#L26)
 - [`lib/backtest.py`](../../../lib/backtest.py) — line [11](../../../lib/backtest.py#L11), [326](../../../lib/backtest.py#L326), [357](../../../lib/backtest.py#L357), [358](../../../lib/backtest.py#L358)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [188](../../../lib/data_loader.py#L188), [611](../../../lib/data_loader.py#L611), [614](../../../lib/data_loader.py#L614), [641](../../../lib/data_loader.py#L641)

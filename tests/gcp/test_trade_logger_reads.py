@@ -122,18 +122,57 @@ def test_an_empty_cloud_sql_answer_is_the_answer_not_a_parquet_fallthrough(tmp_p
         assert tl.get_all_trades().empty
 
 
-def test_a_failed_cloud_sql_query_still_reaches_parquet(tmp_path):
+def test_an_outage_still_reaches_parquet(tmp_path, cloud_sql_outage):
+    """A real outage is what the Parquet backup is for. It staged a bare
+    RuntimeError, which is a defect, and a defect must not reach the backup
+    at all — see the test below (Codex on #1022, round 24)."""
     tl = TradeLogger(output_dir=str(tmp_path))
     d1 = date(2026, 4, 1)
     _write_parquet(tl._daily_file(d1), [
         {"trade_id": 1, "run_kind": "live"}, {"trade_id": 2, "run_kind": "replay"}])
 
     def _boom(sql, params=None):
-        raise RuntimeError("connection lost")
+        raise cloud_sql_outage()
 
     with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
          patch("gcp.database.query_to_dataframe_strict", _boom):
         assert sorted(tl.get_daily_trades(d1)["trade_id"]) == [1]
+
+
+def test_a_query_defect_does_not_quietly_become_a_parquet_answer(tmp_path,
+                                                                 application_defect):
+    """The Parquet files are a backup for an OUTAGE, not a second opinion.
+
+    A permanent defect — an undefined `run_kind` column after schema drift,
+    a malformed SELECT — reached the same blanket handler and was answered
+    from local Parquet, so `gcp/weekend_review.py` could publish a plausible
+    Discord summary from stale local files while the regression stayed
+    invisible. CLAUDE.md 3.7.1: a cross-source fallback is a silent fallback
+    unless the caller can and does distinguish it, and a defect must never
+    trigger one (Codex on #1022, round 24).
+
+    All three readers, because they are the same handler three times and
+    fixing only the one that was named is how this shape keeps coming back."""
+    import pytest
+
+    tl = TradeLogger(output_dir=str(tmp_path))
+    d1 = date(2026, 4, 1)
+    # Populate the backup so a fallback would look like a real answer.
+    _write_parquet(tl._daily_file(d1), [{"trade_id": 1, "run_kind": "live"}])
+    for i in range(1, 7):
+        _write_parquet(tl._daily_file(d1 - timedelta(days=i)),
+                       [{"trade_id": 100 + i, "run_kind": "live"}])
+
+    def _defect(sql, params=None):
+        raise application_defect('column "run_kind" does not exist')
+
+    with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
+         patch("gcp.database.query_to_dataframe_strict", _defect):
+        for call in (lambda: tl.get_daily_trades(d1),
+                     lambda: tl.get_weekly_trades(d1),
+                     lambda: tl.get_all_trades()):
+            with pytest.raises(RuntimeError, match="run_kind"):
+                call()
 
 
 def test_log_trade_requires_provenance(tmp_path):
@@ -241,7 +280,7 @@ def test_the_trade_parquet_files_have_exactly_one_writer():
     assert callers == ["gcp/signal_monitor.py"], callers
 
 
-def test_a_failed_cloud_sql_read_reaches_the_parquet_backup(tmp_path, monkeypatch):
+def test_a_failed_cloud_sql_read_reaches_the_parquet_backup(tmp_path, monkeypatch, cloud_sql_outage):
     """The three readers' `except` clause and their Parquet fallback were
     both UNREACHABLE for a failed query (Codex on #1022).
 
@@ -272,7 +311,11 @@ def test_a_failed_cloud_sql_read_reaches_the_parquet_backup(tmp_path, monkeypatc
     from gcp import database
 
     def _refused():
-        raise RuntimeError("connection to server ... failed: Connection refused")
+        # A real driver error, not a RuntimeError that merely reads like one:
+        # only an infrastructure failure reaches the Parquet backup now, and
+        # lib.infra_errors classifies by exception type and SQLSTATE rather
+        # than by the words in a message (Codex on #1022, round 24).
+        raise cloud_sql_outage()
 
     monkeypatch.setattr(database, "get_engine", _refused)
 
@@ -294,3 +337,45 @@ def test_the_readers_do_not_read_through_the_swallowing_helper():
     assert bad == [], (
         "these lines read through the swallowing helper, so their except "
         "clause and Parquet fallback are unreachable: %s" % bad)
+
+
+def test_a_cloud_sql_write_defect_is_not_logged_and_forgotten(tmp_path,
+                                                              cloud_sql_outage,
+                                                              application_defect):
+    """The write half of the same rule.
+
+    A failed Cloud SQL write was a `log.warning` and nothing else, so a broken
+    INSERT — a dropped column, a bad type — dropped every trade from the
+    system of record silently, with the row surviving only in Parquet where
+    the readers now (correctly) no longer look unless the database is
+    unreachable.
+
+    Raising is safe and is what makes the failure visible: the one caller,
+    `gcp/signal_monitor.py:1790`, already wraps this in a try/except that
+    increments `persist_trade_failure_count`, which is Rule 3.7's "increment
+    a structured counter at the call site instead of swallowing" — and which
+    currently never sees a write failure at all, because nothing raises.
+
+    An OUTAGE still warns and keeps the Parquet backup, which is what the
+    backup is for (Codex on #1022, round 24)."""
+    import pytest
+
+    from gcp import trade_logger as tl
+
+    row = {"ticker": "SPY", "direction": "CALL",
+           "entry_time": "2026-09-07T14:31:00", "run_kind": "live"}
+
+    logger = tl.TradeLogger(output_dir=str(tmp_path))
+    with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
+         patch("gcp.database.upsert_dataframe",
+               side_effect=application_defect('column "run_kind" does not exist')):
+        with pytest.raises(RuntimeError, match="run_kind"):
+            logger.log_trade(dict(row))
+
+    # An outage: warned, not raised, and the backup is written.
+    out2 = tmp_path / "outage"
+    logger2 = tl.TradeLogger(output_dir=str(out2))
+    with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
+         patch("gcp.database.upsert_dataframe", side_effect=cloud_sql_outage()):
+        logger2.log_trade(dict(row))
+    assert list(out2.glob("*.parquet")), "an outage must still leave the Parquet backup"

@@ -26,6 +26,29 @@ def _cloud_sql_active() -> bool:
     return bool(os.environ.get('CLOUD_SQL_CONNECTION_NAME'))
 
 
+def _outage_or_raise(exc: BaseException, what: str) -> None:
+    """Let an OUTAGE fall through to the Parquet backup; re-raise a defect.
+
+    The Parquet files are a backup for a database we cannot reach, not a
+    second opinion on a query we got wrong. A permanent defect — an undefined
+    column after schema drift, a malformed SELECT — reaching the same handler
+    is answered from local files, so `gcp/weekend_review.py` publishes a
+    plausible Discord summary from stale data while the regression stays
+    invisible. CLAUDE.md 3.7.1: a cross-source fallback is a silent fallback
+    unless the caller can and does distinguish it, and a defect must never
+    trigger one (Codex on #1022, round 24).
+
+    These handlers only became reachable on 0dc6154c, which pointed the three
+    readers at the strict query; before that the swallowing helper returned an
+    empty frame and the `except` never ran.
+    """
+    from lib.infra_errors import is_infrastructure_error  # noqa: PLC0415
+
+    if not is_infrastructure_error(exc):
+        raise exc
+    log.warning("Cloud SQL %s failed, falling back to Parquet: %s", what, exc)
+
+
 class TradeLogger:
     """Log trades to Cloud SQL (primary) and local Parquet (fallback/redundancy)."""
 
@@ -76,11 +99,22 @@ class TradeLogger:
                     from gcp.database import bulk_insert_dataframe
                     bulk_insert_dataframe(row_df, 'trades')
             except Exception as e:
-                # AUDIT-2026-05-13: silent fallback — a failed Cloud SQL write
-                # is only a warning and the row survives in Parquet alone,
-                # where the readers' Parquet fallback below finds it only
-                # when the Cloud SQL query itself fails or returns nothing.
-                log.warning("Cloud SQL trade write failed: %s", e)
+                # The write half of the reader rule above. A broken INSERT --
+                # a dropped column, a bad type -- was a warning and nothing
+                # else, so every trade fell out of the system of record
+                # silently, surviving only in Parquet where the readers now
+                # (correctly) do not look unless the database is unreachable.
+                #
+                # Raising is safe and is what makes it visible: the one
+                # caller, gcp/signal_monitor.py:1790, already wraps this in a
+                # try/except that increments persist_trade_failure_count --
+                # Rule 3.7's "increment a structured counter at the call site
+                # instead of swallowing" -- and that counter never saw a write
+                # failure, because nothing raised (Codex on #1022, round 24).
+                #
+                # The Parquet write below still runs for an outage, which is
+                # what the backup is for.
+                _outage_or_raise(e, "trade write")
 
         # ── Local Parquet write (always, as redundant backup) ────────────────
         row = pd.DataFrame([trade_data])
@@ -156,9 +190,8 @@ class TradeLogger:
                 # sentence true.
                 return df
             except Exception as e:
-                # AUDIT-2026-05-13: silent fallback — a failed query falls
-                # through to the Parquet files below
-                log.warning("Cloud SQL daily trades query failed: %s", e)
+                # Only an outage reaches the Parquet files; a defect raises.
+                _outage_or_raise(e, "daily trades query")
 
         # Parquet fallback
         path = self._daily_file(date)
@@ -183,9 +216,8 @@ class TradeLogger:
                 )
                 return df
             except Exception as e:
-                # AUDIT-2026-05-13: silent fallback — a failed query falls
-                # through to the Parquet files below
-                log.warning("Cloud SQL weekly trades query failed: %s", e)
+                # Only an outage reaches the Parquet files; a defect raises.
+                _outage_or_raise(e, "weekly trades query")
 
         # Parquet fallback
         if week_end_date is None:
@@ -215,9 +247,8 @@ class TradeLogger:
                 )
                 return df
             except Exception as e:
-                # AUDIT-2026-05-13: silent fallback — a failed query falls
-                # through to the Parquet files below
-                log.warning("Cloud SQL all-trades query failed: %s", e)
+                # Only an outage reaches the Parquet files; a defect raises.
+                _outage_or_raise(e, "all trades query")
 
         # Parquet fallback
         files = sorted(self.output_dir.glob('*.parquet'))
