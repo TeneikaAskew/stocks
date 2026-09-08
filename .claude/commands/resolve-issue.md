@@ -407,9 +407,17 @@ baselines() {
 # after it, exactly as every other acceptance call here is.
 run_baselines() {
   local brc
-  baselines              # BARE, and nothing follows it to overwrite $?
-  brc=$?
-  # `$?` captured on its own line first: the tests below are commands and would
+  # AN `if`, NOT A BARE CALL. Under the `set -e` this file documents, a bare
+  # `baselines` returning nonzero kills the shell BEFORE `brc=$?`, so neither
+  # the rc diagnostic nor the BASELINE_LEAK check below ever runs — measured
+  # with a stub returning 1 after setting BASELINE_LEAK: no output at all, and
+  # the leak guidance is the half that matters, since a registered worktree
+  # breaks the next run. An `if` condition is exempt from errexit, which is the
+  # same fix `consumed`, `absent_everywhere` and the solyra subshell all
+  # carry; this call was written for `$?` preservation and never revisited for
+  # errexit.
+  if baselines; then brc=0; else brc=$?; fi
+  # `$?` captured in the else branch: the tests below are commands and would
   # replace it.
   test "$brc" -eq 0 || {
     echo "baselines FAILED rc=$brc — no baseline to compare against"; return 1; }
@@ -1791,7 +1799,17 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
         /*)      echo "'$_i' is absolute; implementation paths are repo-relative,"
                  echo "  as the inventories emit them. Did you mean ${_i#/} ?"
                  return 1;;
-        ../*|*/../*)
+        ../*|*/../*|..|*/..)
+                 # `..` and `*/..` need naming separately: BOTH of the patterns
+                 # beside them require a slash AFTER the parent segment, so a
+                 # trailing one matched neither. Measured, `..` and `pkg/..`
+                 # were accepted and became an ERE containing `\.\.`, which the
+                 # root-relative inventories never emit — `absent_everywhere
+                 # <sym> pkg/..` returned 0, certifying with pkg/main.py on
+                 # disk, while `pkg/../x.py` was correctly refused. This is the
+                 # trailing-segment shape round 59 fixed for `.` one line up,
+                 # and its "another instance in the same file" question did not
+                 # look at `..` — the same miss, one round apart.
                  echo "'$_i' leaves the repo root — give the path as the"
                  echo "  inventories emit it, e.g. scripts/run_historical_signals.py"
                  return 1;;
