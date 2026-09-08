@@ -667,19 +667,60 @@ For each candidate cause, state the evidence and what would falsify it. Then:
     # added in round 40 without it.
     local c
     if consumed "<table|endpoint|function>"; then c=0; else c=$?; fi
-    echo "consumed rc=$c"
+    echo "stocks: consumed rc=$c"
     # AND PROPAGATE rc=2. `echo` succeeds, so ending on it returned 0 for every
     # outcome including "I could not measure" — and this function is called
     # bare, so even an errexit shell walked on past the blast-radius
     # measurement having asserted nothing. 1 and 3 are answers to READ and stay
     # 0; only 2 is a refusal, and it leaves as one.
     test "$c" -ne 2 || return 2
+    # AND SOLYRA, MEASURED RATHER THAN REMEMBERED. This phase used to end here
+    # and the cross-repo instruction was one sentence of prose further down —
+    # "the frontend lives in solyra, check there too" — which is a reminder and
+    # not a measurement, the same shape this file rejects for `false` guards
+    # and for `|| echo`. A backend surface with no stocks-side caller reported
+    # rc=1, "nothing, in any of the six executable scopes", and the operator
+    # chose a remediation from that. The deletion row in Phase 4 does run
+    # absent_everywhere, which searches both repos — but only DELETION goes
+    # through it. Disabling a writer, dropping its scheduler or stopping a
+    # render never reaches that gate, so for those the frontend was never
+    # searched at all.
+    # ITS OWN EXCLUSION ARRAY, for the reason the deletion row states: measured
+    # on this tree, 8 of the 95 routes in solyra's vendored
+    # tests/fixtures/stocks-openapi.json match ONLY that file, so under stocks'
+    # exclusions they read as consumed while nothing in solyra calls them.
+    # AGAINST origin/main, not the checkout's branch: "does the frontend call
+    # this" must not depend on which branch that clone happens to be parked on.
+    # _solyra_ok is the shared validation — it resolves the path, refuses a
+    # checkout whose origin is not solyra, and re-anchors at the repo root.
+    # A SECOND COPY of the cd/fetch/REV/EXCLUDE shape, and that is worth saying
+    # out loud: absent_everywhere's subshell interleaves REV with its path scan
+    # and rollout history, so the two cannot share one without a refactor of
+    # that function. Five rounds of review on this PR were "the stocks half was
+    # fixed and its solyra twin was not"; if this pair drifts it will be the
+    # sixth.
+    local sc
+    _solyra_ok || return 2
+    if ( cd "$SOLYRA" || exit 2
+         git fetch -q origin main \
+           || { echo "solyra: fetch failed — no current revision to search"
+                exit 2; }
+         REV=$(git rev-parse FETCH_HEAD) || exit 2
+         echo "solyra: searching origin/main @ ${REV:0:12} (not the working tree)"
+         EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
+         consumed "<table|endpoint|function>" ); then sc=0; else sc=$?; fi
+    echo "solyra: consumed rc=$sc"
+    test "$sc" -ne 2 || return 2
   }
   phase2_consumers      # BARE
+  #  Two lines now, one per repo, and BOTH have to be read: a surface with no
+  #  stocks caller and a live solyra one prints `stocks: 1` above
+  #  `solyra: 0`, and only the second says whether the frontend still calls it.
   #   0  consumed — it PRINTS the hits, so read them before believing the code
   #   1  nothing, in any of the six executable scopes
   #   2  refuses to assert (bad regex, unreadable tree, jq missing, EXCLUDE
-  #      unset, or the helpers not loaded — it says which)
+  #      unset, no usable solyra checkout, or the helpers not loaded — it says
+  #      which). The function returns 2 if EITHER repo refuses.
   #   3  only .claude/commands/ matched — routing or prose, read the lines
   ```
 
@@ -2451,6 +2492,31 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # identically, and ls-tree quotes exactly as ls-files does.
     sfiles=$(git -c core.quotepath=false ls-tree -r --name-only "$REV") \
       || { echo "solyra: could not list files at ${REV:0:12}"; exit 2; }
+    # AND THE SAME QUOTED-RECORD REFUSAL AS THE STOCKS INVENTORY. Round 65 put
+    # that guard on `files` only and I argued on the review thread that this
+    # half was "not the same defect", because a quoted record survives here —
+    # there is no existence filter to drop it — and still matches the ASCII
+    # part of the symbol. That reasoning covered the SYMBOL vector and missed
+    # the IMPLEMENTATION one: the caller types the argument with the real
+    # character in it, and it cannot match the quoted spelling. Measured, a
+    # tracked `Legacy<TAB>Panel.tsx`:
+    #     ls-tree  -c core.quotepath=false   ->  "Legacy\tPanel.tsx"
+    #     ls-files -c core.quotepath=false   ->  "Legacy\tPanel.tsx"
+    #     grep -E on the real name against that listing  ->  0 records
+    # so the named implementation is invisible to this scan, and if its
+    # contents omit the symbol the content scan misses it too. Fifth round
+    # running in which a stocks-half fix left its solyra twin behind, and this
+    # time the gap was one I asserted was not there — which is why it is the
+    # SAME test and the same message rather than a second argument.
+    case $sfiles in
+      '"'*|*"$_nl"'"'*)
+        echo "solyra: the path inventory at ${REV:0:12} contains a QUOTED"
+        echo "record — a pathname with a tab, a newline or another character"
+        echo "git quotes. This scan is newline-delimited and cannot represent"
+        echo "it, so it is NOT asserting anything. Rename the file over there,"
+        echo "or retire the surface by hand."
+        exit 2;;
+    esac
     # The solyra approval filters the solyra path list, same as the stocks half
     # — INCLUDING the implementation protection that half gained last round. The
     # stocks filter learned not to let an approval remove a path the caller had
@@ -2622,13 +2688,67 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # used" branch ran, and SOLYRA_ROLLED_OUT was skipped — old bundles keep
     # calling a backend surface that is then removed. A path query, not another
     # `-G`: the point is that the diff does not name the symbol.
+    # A STEM IS NOT A PATHSPEC. This argument is documented as an
+    # "implementation path or STEM", and the path scans honour that because
+    # they match `$_impl_re` as an ERE — a substring — while `git log --
+    # <stem>` is an exact root-relative pathspec and matches nothing.
+    # Measured on solyra's real history: `git log -- pw.sandbox` gives 0
+    # entries and `-- pw.sandbox.config.ts` gives 5, so
+    # `absent_everywhere <sym> pw.sandbox` returned rc=0 — CERTIFIED, "never
+    # used" — where the full path returned 1. The stem form is the documented
+    # one, so it is resolved rather than refused.
+    # RESOLVED WITH THE SAME `$_impl_re` THE PATH SCANS USE, not with a glob
+    # pathspec. `:(glob)*pw.sandbox*` finds the same 5 commits here, and that
+    # is the trap: it is a DIFFERENT matcher, so the history query and the path
+    # scan would disagree about what a stem means for some other argument, and
+    # this file has spent most of its length on halves that frame the same
+    # question differently. One matcher, applied to the set of paths the
+    # history actually contains.
+    # BOUNDED BY THE HISTORY THIS BLOCK ALREADY WALKS, and measured rather than
+    # assumed: 792 distinct paths over solyra's whole history, 0.154 s.
+    # `--diff-merges=separate` for consistency with the queries beside it — a
+    # path touched only in a merge resolution would otherwise be invisible;
+    # measured identical (792 either way) on solyra today, so it is consistency
+    # and not a gain.
     if [ ${#impl[@]} -gt 0 ]; then
-      local _ihist
-      _ihist=$(git log --oneline --full-history --diff-merges=separate \
-                 --no-patch --no-renames "$REV" -- "${impl[@]}") \
-        || { echo "solyra: could not read the implementation history at ${REV:0:12}"
+      local _ihist _ihp _ipaths _ipc _ipa=() _ipl
+      _ihp=$(git -c core.quotepath=false log --format= --name-only \
+               --full-history --diff-merges=separate --no-renames "$REV") \
+        || { echo "solyra: could not list the paths in the history at ${REV:0:12}"
              exit 2; }
-      shist="${shist}${shist:+${_ihist:+$_nl}}$_ihist"
+      # THE QUOTED-RECORD REFUSAL APPLIES HERE TOO, for the reason the stocks
+      # inventory carries it: a C-quoted spelling is not a path, so it becomes
+      # a pathspec matching nothing and the query goes quiet rather than wrong-
+      # loudly. Same test, same message.
+      case $_ihp in
+        '"'*|*"$_nl"'"'*)
+          echo "solyra: the history contains a QUOTED pathname — a tab, a"
+          echo "newline or another character git quotes. This resolution is"
+          echo "newline-delimited and cannot represent it, so it is NOT"
+          echo "asserting anything about the implementation you named."
+          exit 2;;
+      esac
+      if _ipaths=$(printf '%s\n' "$_ihp" | sort -u | grep -E -- "$_impl_re")
+      then _ipc=0; else _ipc=$?; fi
+      test "$_ipc" -le 1 \
+        || { echo "solyra: resolving the implementation stem errored (rc=$_ipc)"
+             echo "— asserting nothing"; exit 2; }
+      while IFS= read -r _ipl; do
+        test -z "$_ipl" || _ipa+=( "$_ipl" )
+      done <<SOLYRA_IMPL_PATHS
+$_ipaths
+SOLYRA_IMPL_PATHS
+      # NO MATCH IS NOT AN ERROR. An implementation living only in stocks has
+      # no solyra path, which is the ordinary case for a backend surface, and
+      # the union simply stays as `-G$sym` gave it — the behaviour before the
+      # implementation history was added at all.
+      if [ ${#_ipa[@]} -gt 0 ]; then
+        _ihist=$(git log --oneline --full-history --diff-merges=separate \
+                   --no-patch --no-renames "$REV" -- "${_ipa[@]}") \
+          || { echo "solyra: could not read the implementation history at ${REV:0:12}"
+               exit 2; }
+        shist="${shist}${shist:+${_ihist:+$_nl}}$_ihist"
+      fi
     fi
     local _shist_src=
     if [ ${#_sapp[@]} -gt 0 ]; then
@@ -2677,10 +2797,18 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       # than tested inline, for the reason every other status here is: 0 and 1
       # are answers, and 128 (a bad rev) is not one to read as "not an
       # ancestor".
-      if [ ${#impl[@]} -gt 0 ]; then
+      # THE RESOLVED PATHS HERE TOO, not `${impl[@]}`. This query and the union
+      # above have to name the same commits or the gate binds to one and
+      # reports the other — the same "two halves, one question" failure the
+      # resolution comment cites. `${_ipa[@]+…}` because bash 3.2 treats an
+      # empty array expansion under `set -u` as unbound; `_ipa` is declared by
+      # the block above under the identical `${#impl[@]}` guard, so it exists
+      # whenever this runs, and the guard is belt-and-braces rather than a
+      # reachable case.
+      if [ ${#impl[@]} -gt 0 ] && [ ${#_ipa[@]} -gt 0 ]; then
         local _isrm _anc _ianc
         _isrm=$(git log -1 --format=%h --full-history --diff-merges=separate \
-                  --no-patch --no-renames "$REV" -- "${impl[@]}") \
+                  --no-patch --no-renames "$REV" -- ${_ipa[@]+"${_ipa[@]}"}) \
           || { echo "solyra: could not identify the implementation's last commit"
                exit 2; }
         _isrm=${_isrm%%$'\n'*}
@@ -3777,13 +3905,22 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      carried from an earlier step — anyone who can comment can post a
      comment that says Completed and names the head, and the author check
      above is about review objects, so without this clause the cheaper of the
-     two conditions is the forgeable one. And, **again only where step 0
-     undrafted**, started after that transition,
-     for the same reason and with the same exemption. The previous run's
-     summary keeps reading Completed for an unchanged SHA until the newly
-     triggered run replaces it, so on that path a SHA-only summary check merges
-     straight through the window. The summary carries its own timestamp;
-     compare it when the transition exists.
+     two conditions is the forgeable one. And it takes **the same cutoff as
+     the review-object alternative above — the LATEST review-triggering
+     event, whichever it was**: the summary's own timestamp for the current
+     run must follow it. Round 65 widened the cutoff on the alternative above
+     from "the undraft" to "the latest triggering event" and left this one
+     saying "again only where step 0 undrafted", which is the exact interval
+     that matters: comment `@codex review` on an unchanged head and the
+     PREVIOUS run's summary keeps reading Completed against that same SHA
+     until the new run edits it to Running, so a resolver reading it in that
+     window satisfies this step with the run it was trying to supersede. Two
+     alternatives to one step have to be equally hard to satisfy or the gate
+     is only as strong as its weaker half — which is the same argument the
+     forgeability clause above makes, applied to timing instead of authorship.
+     **On a PR that was never drafted and never re-triggered there is still no
+     event and no cutoff**, exactly as above; the head SHA and the author check
+     carry it.
 
    **Check the author, not just the SHA.** Every reply you post on a thread is
    itself recorded as a review on the current head. Measured on this PR:
