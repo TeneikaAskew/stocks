@@ -399,7 +399,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 ### `signal_alerts`
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1764](../../../gcp/signal_monitor.py#L1764), [1765](../../../gcp/signal_monitor.py#L1765), [2388](../../../gcp/signal_monitor.py#L2388), [2391](../../../gcp/signal_monitor.py#L2391), [2413](../../../gcp/signal_monitor.py#L2413)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [381](../../../gcp/signal_monitor_eod_resolver.py#L381), [382](../../../gcp/signal_monitor_eod_resolver.py#L382), [384](../../../gcp/signal_monitor_eod_resolver.py#L384), [402](../../../gcp/signal_monitor_eod_resolver.py#L402)
-- [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [10](../../../scripts/replay_signal_monitor.py#L10), [436](../../../scripts/replay_signal_monitor.py#L436)
+- [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [10](../../../scripts/replay_signal_monitor.py#L10), [540](../../../scripts/replay_signal_monitor.py#L540)
 
 ### `signal_metrics`
 - [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [426](../../../scripts/signal_quality_report.py#L426), [461](../../../scripts/signal_quality_report.py#L461), [656](../../../scripts/signal_quality_report.py#L656)
@@ -727,7 +727,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../scripts/analysis/per_ticker_calibration.py#L208)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [117](../../../scripts/backfill_watchlist_data.py#L117)
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [24](../../../scripts/calibrate_thresholds.py#L24), [217](../../../scripts/calibrate_thresholds.py#L217), [232](../../../scripts/calibrate_thresholds.py#L232)
-- [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [104](../../../scripts/replay_signal_monitor.py#L104), [119](../../../scripts/replay_signal_monitor.py#L119), [378](../../../scripts/replay_signal_monitor.py#L378)
+- [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [104](../../../scripts/replay_signal_monitor.py#L104), [119](../../../scripts/replay_signal_monitor.py#L119), [482](../../../scripts/replay_signal_monitor.py#L482)
 - [`scripts/run_historical_signals.py`](../../../scripts/run_historical_signals.py) — line [143](../../../scripts/run_historical_signals.py#L143)
 - [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [407](../../../scripts/signal_quality_report.py#L407), [410](../../../scripts/signal_quality_report.py#L410)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [247](../../../scripts/validation/validate_brief_accuracy.py#L247), [311](../../../scripts/validation/validate_brief_accuracy.py#L311), [538](../../../scripts/validation/validate_brief_accuracy.py#L538)
@@ -818,7 +818,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analysis/per_factor_walkforward.py`](../../../scripts/analysis/per_factor_walkforward.py) — line [13](../../../scripts/analysis/per_factor_walkforward.py#L13), [254](../../../scripts/analysis/per_factor_walkforward.py#L254)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [6](../../../scripts/analysis/per_ticker_calibration.py#L6), [93](../../../scripts/analysis/per_ticker_calibration.py#L93), [196](../../../scripts/analysis/per_ticker_calibration.py#L196), [893](../../../scripts/analysis/per_ticker_calibration.py#L893)
 - [`scripts/analysis/verify_brief_bias.py`](../../../scripts/analysis/verify_brief_bias.py) — line [53](../../../scripts/analysis/verify_brief_bias.py#L53), [153](../../../scripts/analysis/verify_brief_bias.py#L153)
-- [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [365](../../../scripts/replay_signal_monitor.py#L365)
+- [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [469](../../../scripts/replay_signal_monitor.py#L469)
 
 ### `signal_metrics`
 - [`gcp/signal_quality_alarm.py`](../../../gcp/signal_quality_alarm.py) — line [174](../../../gcp/signal_quality_alarm.py#L174), [198](../../../gcp/signal_quality_alarm.py#L198)

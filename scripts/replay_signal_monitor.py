@@ -258,14 +258,108 @@ _LIVE_WARMUP_BARS = 99
 # essentially all of them and on the ET-as-UTC OPEN window on ZERO. The RTH
 # block is true UTC and converting it is correct.
 #
-# The ET-framed population is only the raw 04:00-07:59 band, and it is a
-# byte-identical DUPLICATE of the true-UTC premarket four hours later: on the
-# same day raw 04:00 and raw 08:00 both close 760.999 on 25,669 shares, as do
-# 04:30/08:30, 05:00/09:00, 06:00/10:00, 07:00/11:00, 07:59/11:59. So the
-# floor drops a duplicate, never a bar the session needs. Pinned by
-# tests/scripts/test_replay_persist_mode.py::
-# test_the_true_utc_session_is_kept_and_the_duplicate_block_dropped.
+# The ET-framed rows are byte-identical DUPLICATES of the true-UTC bar one
+# Eastern offset later: on the same day raw 04:00 and raw 08:00 both close
+# 760.999 on 25,669 shares, as do 04:30/08:30, 05:00/09:00, 06:00/10:00,
+# 07:00/11:00, 07:59/11:59. So the floor drops a duplicate, never a bar the
+# session needs.
+#
+# The floor is NOT the whole of that population, though, and saying so here
+# was wrong: a smaller set of the same copies lands ABOVE it, inside the
+# warm-up. `_et_as_utc_restamps` carries that measurement and removes them.
+# Both halves are pinned by tests/scripts/test_replay_persist_mode.py::
+# test_the_true_utc_session_is_kept_and_the_duplicate_block_dropped and
+# ::test_an_rth_bar_restamped_as_premarket_is_not_used_as_warm_up.
 _PREMARKET_FLOOR = time(4, 0)
+
+
+def _require_time(bars: pd.DataFrame, who: str) -> bool:
+    """True when there is work to do; raise when the frame is unusable.
+
+    An EMPTY frame is a legitimate answer — the window held no bars — and
+    returns False so the caller no-ops. A NON-empty frame with no ``Time``
+    column is a defect, and passing it through was a silent fallback: the run
+    logged "loaded N bars" and reported zero fires with no error, which is
+    exactly the 5/6 shape this file exists to prevent (CLAUDE.md 3.7,
+    internal replay-integrity review of #1022).
+    """
+    if bars.empty:
+        return False
+    if 'Time' not in bars.columns:
+        raise ValueError(
+            f"{who}: frame has {len(bars)} rows but no 'Time' column, so the "
+            "Eastern session cannot be determined. Loading bars without it "
+            "also disables VWAP silently (lib/indicators.py adds it only "
+            "`if 'Time' in out.columns`), so this fails rather than replaying "
+            "a session that would report zero fires and no error."
+        )
+    return True
+
+
+_OHLCV = ("Open", "High", "Low", "Close", "Volume")
+
+
+def _et_as_utc_restamps(bars: pd.DataFrame, ts_utc: pd.Series,
+                        et: pd.Series, candidates: pd.Series) -> pd.Series:
+    """Which candidate rows are ET-as-UTC copies of a later bar.
+
+    `market_data_intraday` holds two write conventions (CLAUDE.md 3.9). The
+    ET-as-UTC writer stores Eastern wall-clock naively as UTC, so its row for
+    a given real minute carries a raw stamp exactly one Eastern UTC offset
+    EARLIER than the true-UTC row for that same minute: 4 hours under EDT, 5
+    under EST. Both rows carry identical OHLCV, because they are the same bar
+    written twice.
+
+    `_PREMARKET_FLOOR` catches the contiguous block of those, the one that
+    lands at 00:00-03:59 ET where no US equity bar exists. It does NOT catch
+    all of them, and an earlier version of this file said it did. Measured on
+    production over 2026-08-01..09-05, inside the ET 07:45-09:29 zone the
+    99-bar warm-up actually reaches:
+
+        ticker   bars in zone   identical +4h twin   sessions
+        IWM            2,625                   80    21 of 25
+        QQQ            2,625                    0     0 of 25
+        SPY            2,625                    0     0 of 25
+
+    Those 80 are RTH bars wearing a premarket stamp, not thin premarket
+    ticks. Same window and ticker, duplicated against genuine bars in that
+    zone: median volume 19,400 against 812, and a median one-minute move of
+    $1.045 against $0.040 — on a ~$290 instrument that is 0.36% in a minute,
+    twenty-six times the genuine median. `_add_vwap` cumsums within the raw
+    date and the kept band is a single raw date in both DST regimes, so such
+    a bar enters the same VWAP group as the session it precedes and displaces
+    `Price_vs_VWAP` at the open, which `above_vwap`/`below_vwap` read as a
+    strict sign test.
+
+    The offset is taken per row from the Eastern zone rather than hardcoded,
+    so it is 4 hours in September and 5 in January without a second rule. The
+    check runs on the premarket band ONLY: dropping a genuine RTH bar would be
+    worse than keeping a duplicate. Two DIFFERENT minutes matching on all five
+    fields is the false positive to worry about, and it takes a flat quote
+    with nothing trading — so a bar with no volume is never flagged. Such a
+    bar carries no VWAP weight either, which is the thing the copies are being
+    kept out of, so exempting it loses nothing. On the three liquid ETFs
+    measured above the rule fires 80 times in 7,875 premarket bars, and zero
+    times on SPY or QQQ, so it is not firing loosely.
+
+    Fixing the data itself is CLAUDE.md 3.9's open item and belongs in the
+    writer plus a migration; this drops the copies at the replay boundary so
+    they cannot warm a window live never held.
+    """
+    cols = [c for c in _OHLCV if c in bars.columns]
+    if not cols or not candidates.any():
+        return pd.Series(False, index=bars.index)
+    # One Eastern UTC offset, per row: raw stamp minus Eastern wall clock.
+    offset = ts_utc.dt.tz_convert('UTC').dt.tz_localize(None) \
+        - et.dt.tz_localize(None)
+    values = list(zip(*(bars[c] for c in cols)))
+    present = set(zip(ts_utc, values))
+    twin = ts_utc + offset
+    return pd.Series(
+        [bool(c) and (t, v) in present
+         for c, t, v in zip(candidates, twin, values)],
+        index=bars.index,
+    )
 
 
 def trim_to_live_window_scope(bars: pd.DataFrame,
@@ -301,13 +395,17 @@ def trim_to_live_window_scope(bars: pd.DataFrame,
     changing the bound moves what "RTH" means for every historical fire
     count this file produces, which is its own change.
     """
-    if bars.empty or 'Time' not in bars.columns:
+    if not _require_time(bars, 'trim_to_live_window_scope'):
         return bars
     ts = bars['Time']
     et = ts.dt.tz_convert(_ET) if ts.dt.tz is not None \
         else ts.dt.tz_localize('UTC').dt.tz_convert(_ET)
+    ts_utc = ts if ts.dt.tz is not None else ts.dt.tz_localize('UTC')
     is_pre = (et.dt.time >= _PREMARKET_FLOOR) & (et.dt.time < time(9, 30))
     is_rth = (et.dt.time >= time(9, 30)) & (et.dt.time < time(16, 0))
+    # The floor catches the contiguous mis-framed block; this catches the
+    # ET-as-UTC copies that land above it. See _et_as_utc_restamps.
+    is_pre = is_pre & ~_et_as_utc_restamps(bars, ts_utc, et, is_pre)
 
     keep = is_rth.copy()
     for _day, idx in et.dt.date.groupby(et.dt.date).groups.items():
@@ -327,7 +425,13 @@ def limit_to_evaluated_bars(bars: pd.DataFrame,
     #1022). Truncating at the Nth RTH bar keeps the warm-up in front of it
     and counts what the operator asked to see.
     """
-    if not limit or bars.empty or 'Time' not in bars.columns:
+    if limit is not None and limit <= 0:
+        raise ValueError(
+            f"limit must be a positive number of evaluated bars, got {limit!r}. "
+            "`if not limit` read 0 as 'no limit' and replayed the whole window, "
+            "the opposite of what was asked."
+        )
+    if limit is None or not _require_time(bars, 'limit_to_evaluated_bars'):
         return bars
     rth = filter_to_rth(bars)
     if len(rth) <= limit:
@@ -348,7 +452,7 @@ def filter_to_rth(bars: pd.DataFrame) -> pd.DataFrame:
     UTC during EST (November-March). We use ET-aware filtering rather
     than fixed UTC offsets to handle DST transitions correctly.
     """
-    if bars.empty or 'Time' not in bars.columns:
+    if not _require_time(bars, 'filter_to_rth'):
         return bars
     et = bars['Time'].dt.tz_convert(ET_NAME) if bars['Time'].dt.tz \
         else bars['Time'].dt.tz_localize('UTC').dt.tz_convert(ET_NAME)

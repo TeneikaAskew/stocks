@@ -551,15 +551,21 @@ def test_the_true_utc_session_is_kept_and_the_duplicate_block_dropped():
 
     from scripts.replay_signal_monitor import trim_to_live_window_scope
 
-    def raw(t, vol):
-        return {"Time": pd.Timestamp(f"2026-09-02 {t}", tz="UTC"), "Open": 1.0,
-                "High": 1.0, "Low": 1.0, "Close": 1.0, "Volume": vol}
+    def raw(t, close, vol):
+        return {"Time": pd.Timestamp(f"2026-09-02 {t}", tz="UTC"), "Open": close,
+                "High": close, "Low": close, "Close": close, "Volume": vol}
 
+    # Prices move minute to minute, as they do in the table. A frame where
+    # every bar carries identical OHLCV is not a market, and it would make
+    # each bar a byte-identical twin of the one an offset later, which is the
+    # signature `_et_as_utc_restamps` reads.
     rows = []
     # The ET-as-UTC duplicate block, raw 04:00-07:59.
-    rows += [raw(f"{h:02d}:{m:02d}", 25669) for h in range(4, 8) for m in range(60)]
+    rows += [raw(f"{h:02d}:{m:02d}", 100.0 + (h * 60 + m) * 0.01, 25669)
+             for h in range(4, 8) for m in range(60)]
     # The true-UTC extended session, raw 08:00-23:59 = 04:00-19:59 ET.
-    rows += [raw(f"{h:02d}:{m:02d}", 1000) for h in range(8, 24) for m in range(60)]
+    rows += [raw(f"{h:02d}:{m:02d}", 200.0 + (h * 60 + m) * 0.01, 1000)
+             for h in range(8, 24) for m in range(60)]
     bars = pd.DataFrame(rows)
 
     out = trim_to_live_window_scope(bars, warmup_bars=99)
@@ -577,3 +583,147 @@ def test_the_true_utc_session_is_kept_and_the_duplicate_block_dropped():
     assert len(out) == 390 + 99, len(out)
     assert kept[0] == "11:51", (
         "the warm-up must be the 99 bars immediately before the bell: %s" % kept[0])
+
+
+def _floor():
+    from scripts.replay_signal_monitor import _PREMARKET_FLOOR
+    return _PREMARKET_FLOOR
+
+
+def _et_as_utc_copy(row_time):
+    """Where an ET-as-UTC write of ``row_time`` lands as a raw stamp.
+
+    The writer stores Eastern wall-clock naively as UTC, so the copy's raw
+    stamp is the true instant minus one Eastern UTC offset: 4h under EDT,
+    5h under EST.
+    """
+    et = row_time.tz_convert("America/New_York")
+    return row_time + et.utcoffset()
+
+
+def test_an_rth_bar_restamped_as_premarket_is_not_used_as_warm_up():
+    """The 04:00 ET floor drops the CONTIGUOUS mis-framed band and no more.
+
+    A second, smaller ET-as-UTC population sits ABOVE the floor, inside the
+    warm-up the trim keeps. Measured on production over 2026-08-01..09-05,
+    in the ET 07:45-09:29 zone the 99-bar warm-up actually reaches:
+
+        ticker  bars in zone  identical +4h twin  sessions
+        IWM           2625            80          21 of 25
+        QQQ           2625             0           0 of 25
+        SPY           2625             0           0 of 25
+
+    They are RTH bars wearing a premarket stamp, not thin premarket ticks.
+    Same window, IWM, duplicated vs genuine bars in that zone:
+
+        is_dup      n   median volume   median 1-min move
+        False    2545             812               $0.040
+        True       80          19,400               $1.045
+
+    $1.045 in one minute on a ~$290 instrument is 0.36%, twenty-six times
+    the genuine median. `_add_vwap` cumsums within the raw date and the kept
+    band is one raw date, so those bars enter the same VWAP group as the
+    session they precede and displace `Price_vs_VWAP` at the open, which
+    `above_vwap`/`below_vwap` read as a strict sign test.
+
+    An earlier version of this file asserted the ET-framed population was
+    only the raw 04:00-07:59 band. That was wrong, and the floor alone is
+    not sufficient (internal replay-integrity review of #1022).
+    """
+    import pandas as pd
+
+    from scripts.replay_signal_monitor import trim_to_live_window_scope
+
+    def bar(t, close, vol):
+        return {"Time": t, "Open": close, "High": close, "Low": close,
+                "Close": close, "Volume": vol}
+
+    rows = []
+    # A genuine premarket ramp, ET 06:00-09:29: thin, smooth.
+    pre = pd.date_range("2026-09-02 06:00", "2026-09-02 09:29", freq="1min",
+                        tz="America/New_York")
+    for i, t in enumerate(pre):
+        rows.append(bar(t.tz_convert("UTC"), 290.0 + i * 0.001, 800))
+    # RTH, ET 09:30-15:59.
+    rth = pd.date_range("2026-09-02 09:30", "2026-09-02 15:59", freq="1min",
+                        tz="America/New_York")
+    for i, t in enumerate(rth):
+        rows.append(bar(t.tz_convert("UTC"), 295.0 + i * 0.01, 19400))
+    # Three of those RTH bars written a second time under the ET-as-UTC
+    # convention, which lands them inside the last-99 warm-up zone.
+    # Offsets chosen so the copy lands inside the LAST 99 premarket bars
+    # (ET 07:51-09:29), which is the zone the warm-up actually keeps; a copy
+    # further back would be dropped by the cap and prove nothing. Source ET
+    # 11:55 / 12:15 / 12:35 -> copy ET 07:55 / 08:15 / 08:35.
+    copies = []
+    for offset in (145, 165, 185):
+        src = rth[offset].tz_convert("UTC")
+        copy_at = _et_as_utc_copy(src)
+        copies.append(copy_at)
+        rows.append(bar(copy_at, 295.0 + offset * 0.01, 19400))
+
+    bars = pd.DataFrame(rows).sort_values("Time").reset_index(drop=True)
+    out = trim_to_live_window_scope(bars, warmup_bars=99)
+
+    et_out = out["Time"].dt.tz_convert("America/New_York")
+    for c in copies:
+        assert c.tz_convert("America/New_York").time() >= _floor(), (
+            "the copy must land above the floor, or this test proves nothing")
+    # A copy shares its stamp with the genuine premarket bar of that minute,
+    # so identify it by its values: only an RTH-volume row in the premarket
+    # band is a re-stamp.
+    premarket_out = out[et_out.dt.time < time(9, 30)]
+    assert (premarket_out["Volume"] == 800).all(), (
+        "an RTH bar re-stamped into the premarket band must not warm the "
+        "window: %s" % premarket_out[premarket_out["Volume"] != 800].to_dict("records"))
+    # The genuine warm-up and the whole session survive intact.
+    assert len(premarket_out) == 99, len(premarket_out)
+    assert len(out) == 99 + len(rth), len(out)
+
+
+def test_a_frame_with_no_time_column_raises_rather_than_replaying_nothing():
+    """A `Time`-less frame used to pass straight through both filters, so the
+    run logged "loaded N bars" and reported zero fires with no error.
+
+    That is the shape of the 5/6 incident this file exists to prevent: a
+    harness that silently disabled VWAP and reported "0 above_vwap fires"
+    while production was firing 46. `_is_rth` already fails closed per bar;
+    the two frame-level filters returned the frame untouched, which is a
+    distinguishable-only-by-inspection zero (CLAUDE.md 3.7). An EMPTY frame
+    is different and stays a no-op: no bars for the window is an answer, not
+    a defect (internal replay-integrity review of #1022)."""
+    import pandas as pd
+    import pytest as _pytest
+
+    from scripts.replay_signal_monitor import (
+        filter_to_rth, limit_to_evaluated_bars, trim_to_live_window_scope,
+    )
+
+    timeless = pd.DataFrame([{"Open": 1.0, "High": 1.0, "Low": 1.0,
+                              "Close": 1.0, "Volume": 10}])
+    for fn in (filter_to_rth, trim_to_live_window_scope):
+        with _pytest.raises(ValueError, match="Time"):
+            fn(timeless)
+    with _pytest.raises(ValueError, match="Time"):
+        limit_to_evaluated_bars(timeless, 5)
+
+    # An empty frame is still a no-op, in both the with- and without-columns
+    # shapes a caller can produce.
+    assert filter_to_rth(pd.DataFrame()).empty
+    assert trim_to_live_window_scope(pd.DataFrame()).empty
+    assert limit_to_evaluated_bars(pd.DataFrame(), 5).empty
+
+
+def test_a_non_positive_limit_is_rejected_rather_than_ignored():
+    """`if not limit` treated 0 as "no limit" and replayed the whole window,
+    which is the opposite of what `--limit 0` asks for."""
+    import pandas as pd
+    import pytest as _pytest
+
+    from scripts.replay_signal_monitor import limit_to_evaluated_bars
+
+    bars = _session_bars("2026-09-02", pre_n=5, rth_n=20)
+    assert len(limit_to_evaluated_bars(bars, None)) == len(bars)
+    for bad in (0, -1):
+        with _pytest.raises(ValueError, match="limit"):
+            limit_to_evaluated_bars(bars, bad)
