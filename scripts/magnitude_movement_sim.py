@@ -41,7 +41,11 @@ Usage
         --position straddle --direction none
     python -m scripts.magnitude_movement_sim \
         --ticker QQQ --tf 5m --phase phase0 --run-id <call-run> \
-        --position call --direction label
+        --position call --direction label --research call
+
+A directional or re-thresholded run writes under _research/<slug>/, so
+--research is what locates it; it also supplies the label contract, and
+omitting it now fails loud rather than reading the canonical body run.
 """
 from __future__ import annotations
 import argparse

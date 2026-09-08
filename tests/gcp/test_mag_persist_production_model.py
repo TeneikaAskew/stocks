@@ -1248,3 +1248,58 @@ def test_research_help_shows_slugs_the_generator_actually_makes():
         # every advertised slug must parse, and round-trip to itself
         label_mode, thresholds = parse_research_namespace(ex)
         assert research_namespace(label_mode, thresholds) == ex
+
+
+# ─── round 6: the supported dispatch path must be able to run the experiment ───
+
+def _dispatch(*args, tmp_path):
+    """Run the dispatcher against a stub gcloud and return what it would call."""
+    import subprocess, os, stat
+    stub = tmp_path / "gcloud"
+    stub.write_text("#!/usr/bin/env bash\necho \"GCLOUD_CALL: $*\"\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}")
+    out = subprocess.run(["bash", "scripts/dispatch_magnitude_phase.sh", *args],
+                         capture_output=True, text=True, env=env)
+    return out.stdout + out.stderr
+
+
+def test_dispatcher_can_launch_a_label_definition_experiment(tmp_path):
+    """The Cloud Run task-parallel path is the production one, and the
+    dispatcher passed only MAG_PLAN — so neither label-definition experiment
+    had a supported entrypoint, only a hand-written gcloud override."""
+    canonical = _dispatch("phase0", tmp_path=tmp_path)
+    assert "--update-env-vars=MAG_PLAN=phase0" in canonical
+    assert "--label-mode" not in canonical      # unchanged for a body run
+
+    excursion = _dispatch("phase0", "--label-mode=excursion", tmp_path=tmp_path)
+    assert "--label-mode=excursion" in excursion
+
+    thresholds = _dispatch("phase0", "--thresholds=0.35,0.75,1.25",
+                           tmp_path=tmp_path)
+    # gcloud splits --update-env-vars on commas, so a comma-bearing value needs
+    # the ^|^ custom delimiter or MAG_THRESHOLDS would be set to just "0.35"
+    assert "^|^MAG_PLAN=phase0|MAG_THRESHOLDS=0.35,0.75,1.25" in thresholds
+
+    both = _dispatch("phase0", "--label-mode=put", "--thresholds=0.35,0.75,1.25",
+                     tmp_path=tmp_path)
+    assert "--label-mode=put" in both
+    assert "MAG_THRESHOLDS=0.35,0.75,1.25" in both
+
+
+def test_dispatcher_refuses_an_unknown_option(tmp_path):
+    out = _dispatch("phase0", "--nonsense", tmp_path=tmp_path)
+    assert "Unknown option" in out
+    assert "GCLOUD_CALL" not in out, "a bad option must not dispatch anything"
+
+
+def test_directional_usage_examples_carry_their_namespace():
+    """A call/put/excursion example without --research reads the canonical
+    body prefix, where that run no longer lives."""
+    src = pathlib.Path("scripts/magnitude_movement_sim.py").read_text()
+    usage = src.split('"""')[1]
+    for line in usage.splitlines():
+        if "--position call" in line or "--position put" in line:
+            assert "--research" in line or "--research" in usage, (
+                "a directional example must show the namespace that locates "
+                "the run")
