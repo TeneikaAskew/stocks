@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from lib.infra_errors import is_backend_outage
+
 import numpy as np
 import pandas as pd
 
@@ -69,9 +71,16 @@ def _gcs_load_bytes(blob_path: str) -> Optional[bytes]:
         client = _gcs_client()
         blob = client.bucket(bucket_name).blob(blob_path)
         if not blob.exists():
-            return None
+            return None                       # the artifact is genuinely absent
         return blob.download_as_bytes()
     except Exception as e:
+        # GCS being unavailable is not an absent model. Swallowed to None it
+        # made `predict_one` answer `available=False` and the guarded routes
+        # 200 instead of 503, so a storage OUTAGE now propagates while a
+        # genuinely missing artifact (handled above) stays None (Codex P1 on
+        # #999).
+        if is_backend_outage(e):
+            raise
         log.warning("GCS load failed for %s: %s", blob_path, e)
         return None
 

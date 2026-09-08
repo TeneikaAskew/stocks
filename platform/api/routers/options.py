@@ -56,6 +56,7 @@ import httpx
 import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import ThreadSafeCache
+from lib.infra_errors import is_infrastructure_error
 from lib.single_flight import SingleFlight
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
@@ -121,6 +122,18 @@ _AV_BASE = "https://www.alphavantage.co/query"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+def _dates_query(sql: str, params: "dict | None" = None) -> "pd.DataFrame":
+    """Run a dates query, RAISING on failure.
+
+    Named rather than inlined so both call sites in `get_options_dates` use
+    the same helper: the probe and the walk answer one request, and a reader
+    that is strict in one and swallowing in the other would report a database
+    outage as "no data" from whichever ran first. `platform/api/main.py` has
+    the same helper for `/api/market/dates`, for the same reason.
+    """
+    return query_to_dataframe_strict(sql, params)
+
 
 def _require_cloud_sql() -> None:
     if not _HAS_CLOUD_SQL:
@@ -329,16 +342,43 @@ def get_options_dates(
     # The probe is the same single index descent as the limit=1 query
     # (idx_etf_options_ticker_source_date, measured 2.5 ms on prod).
     latest_date = None
-    probe = query_to_dataframe_strict(
-        """
-        SELECT snapshot_date
-        FROM   etf_options_snapshots
-        WHERE  ticker = :ticker AND data_source = 'alphavantage'
-        ORDER  BY snapshot_date DESC
-        LIMIT  1
-        """,
-        {"ticker": ticker_upper},
-    )
+    try:
+        probe = _dates_query(
+            """
+            SELECT snapshot_date
+            FROM   etf_options_snapshots
+            WHERE  ticker = :ticker AND data_source = 'alphavantage'
+            ORDER  BY snapshot_date DESC
+            LIMIT  1
+            """,
+            {"ticker": ticker_upper},
+        )
+    except Exception as e:
+        # STRICT was the right call -- the swallowing helper made a database
+        # outage indistinguishable from "no data ingested" and this handler
+        # reported it as a 404 telling the operator to run the fetcher. But
+        # strict without a handler just moved the wrong answer: the raised
+        # error escaped as a bare 500 with a driver traceback, which is not
+        # the "explicit unavailable state" Rule 3.7 asks for either. 503, the
+        # same answer /api/market/dates gives for the same condition.
+        #
+        # Only an INFRASTRUCTURE failure converts. A `ProgrammingError` after
+        # a schema change is our SQL being wrong, and answering it with a
+        # retryable 503 sends an operator to diagnose an outage that is not
+        # happening (Codex P1 on #999).
+        if not is_infrastructure_error(e):
+            log.exception("Cloud SQL dates probe failed for %s with an "
+                          "INTERNAL error", ticker_upper)
+            raise
+        log.error("Cloud SQL dates probe failed for %s: %s", ticker_upper, e)
+        # The exception text stays in the log. It is NOT interpolated into the
+        # response: a driver error renders the SQL, its bound parameters and
+        # connection metadata, and this endpoint is reachable unauthenticated.
+        raise HTTPException(
+            status_code=503,
+            detail=(f"Could not read option snapshot dates for {ticker_upper}: "
+                    f"the database is unavailable."),
+        )
     if not probe.empty:
         latest_date = probe["snapshot_date"].iloc[0]
 
@@ -443,8 +483,21 @@ def get_options_dates(
             # exactly the requests the cache exists to make cheap.
             df = probe
         else:
-            df = query_to_dataframe_strict(sql, {"ticker": ticker_upper,
-                                                 "limit": limit})
+            try:
+                df = _dates_query(sql, {"ticker": ticker_upper,
+                                        "limit": limit})
+            except Exception as e:
+                if not is_infrastructure_error(e):       # same split as above
+                    log.exception("Cloud SQL dates query failed for %s with "
+                                  "an INTERNAL error", ticker_upper)
+                    raise
+                log.error("Cloud SQL dates query failed for %s: %s",
+                          ticker_upper, e)
+                raise HTTPException(
+                    status_code=503,
+                    detail=(f"Could not read option snapshot dates for "
+                            f"{ticker_upper}: the database is unavailable."),
+                )
 
         dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
                  for d in df["snapshot_date"].tolist()] if not df.empty else []

@@ -14,6 +14,7 @@ Parquet files if the query returns no rows.  All call-site code is unchanged.
 import logging
 import os
 import pandas as pd
+
 import numpy as np
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -62,7 +63,7 @@ def _cloud_sql_active() -> bool:
 
 
 def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
-    """Run a SELECT against Cloud SQL; returns empty DataFrame on any error.
+    """Run a SELECT against Cloud SQL; log then return an empty DataFrame on error.
 
     Track D / G.P1.1: log the full traceback before swallowing the
     exception so production silent failures (e.g. Cloud SQL Connector
@@ -76,8 +77,21 @@ def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     fresh strat_levels data being available.
     """
     try:
-        from gcp.database import query_to_dataframe
-        return query_to_dataframe(sql, params)
+        # The STRICT helper, so a real failure raises HERE and the log below
+        # sees the traceback, rather than `query_to_dataframe` swallowing it to
+        # an empty frame one layer down. The result is still logged-then-empty
+        # on EVERY error, an outage included: this wrapper backs
+        # `load_intraday`, `load_daily`, `get_close_price`, `load_trades` and
+        # the options-chain read, each of which answers empty / None / a local
+        # Parquet fallback for an unreachable Cloud SQL, and re-raising an
+        # outage here broke every one of those contracts for the jobs and API
+        # consumers that never needed to distinguish it (Codex P2 on #999). A
+        # caller that DOES need to tell an outage from a gap -- the
+        # movement/prediction path -- reads `query_to_dataframe_strict`
+        # directly (see `lib/movement_statement._strict_query`), so nothing
+        # depends on this shared wrapper raising.
+        from gcp.database import query_to_dataframe_strict
+        return query_to_dataframe_strict(sql, params)
     except Exception:
         log.exception(
             "_query_cloud_sql: query failed; returning empty DataFrame "

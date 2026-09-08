@@ -1552,9 +1552,18 @@ def test_the_options_dates_query_runs_inside_the_claim():
     body = src[src.index("with _DATES_FLIGHT.claim("):]
     body = body[:body.index("\n@router")]
     claim_indent = 4
-    for marker in ("df = query_to_dataframe_strict(sql,",
+    # `_dates_query`, not `query_to_dataframe_strict`: #999 routes both reads
+    # in this handler through one named helper so the probe and the walk
+    # cannot disagree about whether a database failure is an outage or an
+    # empty table. The marker is the line this test is about, so it has to
+    # track that rename -- and a marker that no longer matches must say so,
+    # rather than ending the test with a bare StopIteration.
+    for marker in ("df = _dates_query(sql,",
                    "_DATES_CACHE[cache_key] = (latest_date, dates)"):
-        line = next(l for l in body.splitlines() if marker in l)
+        line = next((l for l in body.splitlines() if marker in l), None)
+        assert line is not None, (
+            f"`{marker}` is no longer in `get_options_dates`; this test "
+            f"pins where that line sits, so update the marker with the code")
         assert len(line) - len(line.lstrip()) > claim_indent, (
             f"`{marker}` sits outside the claim, so the flight coalesces "
             f"nothing:\n{line}")

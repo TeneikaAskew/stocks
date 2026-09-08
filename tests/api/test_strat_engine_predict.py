@@ -276,3 +276,37 @@ def test_scope_statement_contains_no_disallowed_language():
     lower = SCOPE_STATEMENT.lower()
     for word in banned:
         assert word not in lower, f"banned language in scope statement: {word!r}"
+
+
+def test_gcs_load_bytes_propagates_a_storage_outage_but_returns_none_when_absent():
+    """A GCS OUTAGE is not an absent model (Codex P1 on #999).
+
+    `_gcs_load_bytes` swallowed every storage error to `None`, which
+    `predict_one` reported as `available=False` and the guarded routes as a
+    200 instead of a 503. A classified storage outage now propagates; a
+    genuinely missing blob (`exists()` False) still returns `None`.
+    """
+    from unittest.mock import MagicMock
+    from google.api_core import exceptions as gapi
+    from gcp.research.strat_engine import strat_pred_serve as serve
+
+    # exists() raises a service outage -> propagate.
+    def outage_client():
+        client = MagicMock()
+        client.bucket.return_value.blob.return_value.exists.side_effect = \
+            gapi.ServiceUnavailable("backend unavailable")
+        return client
+
+    with patch.object(serve, "_gcs_client", outage_client):
+        with pytest.raises(gapi.ServiceUnavailable):
+            serve._gcs_load_bytes("research/strat_engine/spy_15m/model.pkl")
+
+    # exists() is False -> the artifact is absent, so None (not an error).
+    def absent_client():
+        client = MagicMock()
+        client.bucket.return_value.blob.return_value.exists.return_value = False
+        return client
+
+    with patch.object(serve, "_gcs_client", absent_client):
+        assert serve._gcs_load_bytes("research/strat_engine/spy_15m/model.pkl") is None
+
