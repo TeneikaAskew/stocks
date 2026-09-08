@@ -348,8 +348,41 @@ GCS_BUCKET_DEFAULT = "adept-mountain-474619-d4-trading-data"
 GCS_PREFIX = "research/magnitude_engine"
 
 
-def gcs_run_prefix(phase: str, ticker: str, tf: str) -> str:
-    return f"{GCS_PREFIX}/{phase}/{ticker.lower()}_{tf}"
+def research_namespace(label_mode: str | None,
+                       thresholds: Sequence[float] | None) -> str | None:
+    """Slug for a run whose labels are not the serving contract, else None.
+
+    A run under `excursion`/`call`/`put`, or non-default cut points, answers a
+    different question from the canonical `body` phase result, and its
+    walk_forward JSON is not comparable with one. Sharing a GCS prefix let the
+    newer file win: scripts/assemble_magnitude_results.latest_result takes
+    `sorted(files)[-1]` and per_phase_verdict never looks at the labels, so a
+    research experiment would quietly become the reported phase verdict
+    (Codex on #1055).
+    """
+    parts = []
+    if label_mode is not None and label_mode != DEFAULT_LABEL_MODE:
+        parts.append(label_mode)
+    if thresholds is not None and tuple(thresholds) != MAGNITUDE_THRESHOLDS:
+        parts.append("t" + "-".join(f"{v:g}" for v in thresholds))
+    return "__".join(parts) if parts else None
+
+
+def gcs_run_prefix(phase: str, ticker: str, tf: str,
+                   label_mode: str | None = None,
+                   thresholds: Sequence[float] | None = None) -> str:
+    """Where a cell-run's artifacts live.
+
+    Canonical serving semantics keep the historical path unchanged. Anything
+    else goes under a sibling `_research/<slug>/` root — a separate root
+    rather than a subdirectory, so no listing of the canonical prefix can
+    reach it however it is written.
+    """
+    cell = f"{phase}/{ticker.lower()}_{tf}"
+    slug = research_namespace(label_mode, thresholds)
+    if slug is None:
+        return f"{GCS_PREFIX}/{cell}"
+    return f"{GCS_PREFIX}/_research/{slug}/{cell}"
 
 
 # Tables for Phase 2 + 4 (NOT created by default — only when those phases

@@ -889,3 +889,91 @@ def test_malformed_threshold_override_raises_rather_than_defaulting(
     monkeypatch.setenv("MAG_THRESHOLDS", bad)
     with pytest.raises(ValueError):
         resolve_magnitude_thresholds()
+
+
+# ───────────── Codex on #1055: the review caught what tests could not ─────────
+
+def test_walk_forward_reaches_the_dataset_load(monkeypatch):
+    """walk_forward() logged `thresholds` before assigning it, so EVERY
+    dispatch path raised UnboundLocalError before loading a single row.
+
+    Nothing in the suite executes walk_forward (it needs a DB), so 4944 tests
+    and a green CI passed over a total outage. This test drives the real
+    function far enough to prove the preamble runs, by making the dataset load
+    the first thing that stops it.
+    """
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    class ReachedTheLoad(Exception):
+        pass
+
+    def _boom(*a, **kw):
+        raise ReachedTheLoad
+
+    monkeypatch.setattr(mwf, "load_magnitude_dataset", _boom)
+    with pytest.raises(ReachedTheLoad):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m")
+
+
+def test_malformed_threshold_override_fails_the_run_not_each_cell(monkeypatch):
+    """run_all_cells catches every per-cell exception and main() does not act
+    on its FAIL verdict, so a bad MAG_THRESHOLDS on the --all-cells path would
+    error all nine cells and still exit 0. main() resolves it up front."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    class ReachedTheEngine(Exception):
+        pass
+
+    monkeypatch.setenv("MAG_THRESHOLDS", "0.5,0.5,1.0")   # not ascending
+    monkeypatch.setattr(sys, "argv",
+                        ["mag_walk_forward", "--phase=phase0", "--all-cells"])
+    monkeypatch.setattr(mwf, "get_engine",
+                        lambda *a, **kw: (_ for _ in ()).throw(ReachedTheEngine))
+
+    # ValueError, not ReachedTheEngine: the config is rejected before the run
+    # touches a database, let alone fans out.
+    with pytest.raises(ValueError, match="ascending"):
+        mwf.main()
+
+
+def test_research_labels_get_their_own_gcs_namespace():
+    """assemble_magnitude_results.latest_result takes sorted(files)[-1] from
+    the cell prefix and per_phase_verdict never reads the labels, so a
+    research run sharing that prefix would become the reported phase verdict
+    simply by being newer."""
+    from gcp.research.magnitude_engine.mag_config import (
+        gcs_run_prefix, research_namespace, DEFAULT_LABEL_MODE,
+        MAGNITUDE_THRESHOLDS)
+
+    canonical = gcs_run_prefix("phase0", "SPY", "15m")
+    # the serving contract keeps the historical path, explicitly or by default
+    assert gcs_run_prefix("phase0", "SPY", "15m",
+                          label_mode=DEFAULT_LABEL_MODE,
+                          thresholds=MAGNITUDE_THRESHOLDS) == canonical
+    assert research_namespace(DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS) is None
+
+    for kwargs in (
+        {"label_mode": "excursion", "thresholds": MAGNITUDE_THRESHOLDS},
+        {"label_mode": DEFAULT_LABEL_MODE, "thresholds": (0.35, 0.75, 1.25)},
+        {"label_mode": "put", "thresholds": (0.35, 0.75, 1.25)},
+    ):
+        other = gcs_run_prefix("phase0", "SPY", "15m", **kwargs)
+        assert other != canonical
+        # a sibling root, not a subdirectory: no listing of the canonical
+        # prefix can reach it, recursive or not
+        assert not other.startswith(canonical)
+        assert "/_research/" in other
+
+
+def test_walk_forward_writes_under_the_namespace_it_resolved():
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    # both artifact paths — the predictions CSV and the summary JSON — or one
+    # of them leaks a research run into the canonical prefix
+    assert src.count("gcs_run_prefix(phase, ticker, tf,") == 2
+    assert src.count(
+        "label_mode=label_mode, thresholds=thresholds)") == 2
+    # and the persist path is told the same semantics it wrote under
+    assert "gates=gates, label_mode=label_mode, thresholds=thresholds," in src

@@ -45,7 +45,7 @@ from gcp.research.magnitude_engine.mag_config import (
     SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
     SUCCESS_BAR_MIN_FOLDS_LIFT,
-    GCS_BUCKET_DEFAULT, gcs_run_prefix,
+    GCS_BUCKET_DEFAULT, gcs_run_prefix, research_namespace,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.mag_pred_train import (
@@ -749,13 +749,13 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   persist_production_model: bool = False,
                   features: str = "") -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
+    thresholds = resolve_magnitude_thresholds()
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
              "label_mode=%s  thresholds=%s",
              phase, ticker, tf, len(cutoffs), label_mode, thresholds)
     log.info("=" * 70)
 
-    thresholds = resolve_magnitude_thresholds()
     df = load_magnitude_dataset(engine, ticker, tf, phase, label_mode=label_mode)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     log.info("loaded: %d rows  (%s..%s)",
@@ -900,7 +900,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         w = csv.writer(buf)
         w.writerow(pred_columns)
         w.writerows(pred_rows)
-        prefix = gcs_run_prefix(phase, ticker, tf)
+        prefix = gcs_run_prefix(phase, ticker, tf,
+                label_mode=label_mode, thresholds=thresholds)
         pred_blob = f"{prefix}/predictions_{run_id}.csv"
         _gcs_upload(buf.getvalue().encode(), pred_blob, "text/csv")
         log.info("predictions: wrote %d rows to gs://%s/%s",
@@ -955,7 +956,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                       type(e).__name__, e)
 
     # Always persist to GCS.
-    prefix = gcs_run_prefix(phase, ticker, tf)
+    prefix = gcs_run_prefix(phase, ticker, tf,
+            label_mode=label_mode, thresholds=thresholds)
     blob = f"{prefix}/walk_forward_{run_id}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved gs://%s/%s",
@@ -1137,6 +1139,12 @@ def main():
                         "options_iv, positioning, cross_asset, calendar). "
                         "Default empty = baseline (no phase2 change).")
     args = p.parse_args()
+    # Validate the threshold override BEFORE any fan-out. run_all_cells
+    # catches every per-cell exception and main() does not act on its FAIL
+    # verdict, so a malformed MAG_THRESHOLDS reaching that path would error
+    # all nine cells and still exit 0 (Codex on #1055). Resolving here turns
+    # a config mistake into an immediate non-zero exit on every path.
+    resolve_magnitude_thresholds()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
 
