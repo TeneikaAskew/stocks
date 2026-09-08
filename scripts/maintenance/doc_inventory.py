@@ -766,6 +766,34 @@ def _local_imports(root: pathlib.Path, rel: str) -> set[str]:
     return out
 
 
+def _import_scope(root: pathlib.Path, mod_file: str) -> set[str]:
+    """The entry module plus every repo module reachable from it through
+    `gcp.*` / `lib.*` / `scripts.*` imports, transitively.
+
+    One level was not enough: `gcp/backtest_job.py` imports
+    `scripts/run_backtest.py`, which imports `lib/data_loader.py`, which
+    reads `market_data_daily`; with a one-level scope the backtest job had
+    no read edge at all. (Codex, PR #1044.) Transitive closure over the
+    committed tree takes the total edge count from 269 to 386, not an
+    explosion, and the extra edges are real code paths that run in-process.
+
+    gcp/database.py writes job_runs for every job; attributing it to each
+    entrypoint would drown the real blast radius in one row per job.
+    """
+    if not mod_file:
+        return set()
+    seen: set[str] = set()
+    stack = [mod_file]
+    while stack:
+        m = stack.pop()
+        if m in seen:
+            continue
+        seen.add(m)
+        stack.extend(n for n in _local_imports(root, m) if n not in seen)
+    seen.discard("gcp/database.py")
+    return seen
+
+
 def _module_of(path: str) -> str:
     return path[:-3].replace("/", ".") if path.endswith(".py") else path
 
@@ -778,11 +806,7 @@ def blast_radius(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, 
     root = _repo_root(repo)
     for j in repo["jobs"]:
         mod_file = entry_module(j)
-        # entry module plus the repo modules it imports directly (one level)
-        scope = {mod_file} | (_local_imports(root, mod_file) if mod_file else set())
-        # gcp/database.py writes job_runs for every job; attributing it to each
-        # entrypoint would drown the real blast radius in one row per job.
-        scope.discard("gcp/database.py")
+        scope = _import_scope(root, mod_file)
         written = sorted(t for t, ws in writers.items() if ws & scope)
         downstream = sorted({f for t in written for f in readers.get(t, set()) if f not in scope})
         out.append({"job": j["name"], "module": mod_file, "writes": written, "readers": downstream})
@@ -791,9 +815,9 @@ def blast_radius(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, 
 
 def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]],
                     jobs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """Per job: the tables its entry module (plus direct repo imports) writes
-    and reads. The same attribution blast_radius uses, so the graph and the
-    blast table cannot disagree about who writes what.
+    """Per job: the tables its entry module (plus the repo modules it imports,
+    transitively) writes and reads. The same attribution blast_radius uses,
+    so the graph and the blast table cannot disagree about who writes what.
 
     Reads and writes are recorded independently: `backfill-daily-indicators`
     reads `market_data_daily` (`SELECT DISTINCT ticker FROM market_data_daily`)
@@ -809,8 +833,7 @@ def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[st
     out = []
     for j in (repo["jobs"] if jobs is None else jobs):
         mod_file = entry_module(j)
-        scope = {mod_file} | (_local_imports(root, mod_file) if mod_file else set())
-        scope.discard("gcp/database.py")
+        scope = _import_scope(root, mod_file)
         w = sorted(t for t, fs in writers.items() if fs & scope)
         r = sorted(t for t, fs in readers.items() if fs & scope)
         out.append({"job": j["name"], "module": mod_file, "writes": w, "reads": r})
@@ -887,7 +910,7 @@ def _render_refs_digest(repo: dict[str, Any], refs: dict[str, dict[str, list[dic
     root = _repo_root(repo)
     out = ["## Multi-writer tables", "", _render_multiwriter(refs, with_lines=True), "",
            "## Orphan tables", "", _render_orphans(refs, root, _partition_map(repo)), "",
-           "## Tables per job (entry module plus its direct repo imports)", ""]
+           "## Tables per job (entry module plus the repo modules it imports, transitively)", ""]
     rows = [[f"`{e['job']}`", ", ".join(f"`{t}`" for t in e["writes"]) or "—",
              ", ".join(f"`{t}`" for t in e["reads"]) or "—"]
             for e in job_table_edges(repo, refs) if e["writes"] or e["reads"]]
@@ -1021,7 +1044,7 @@ def _render_blast(repo, refs) -> str:
         rows.append([f"`{b['job']}`", f"`{b['module']}`" if b["module"] else "—",
                      ", ".join(f"`{t}`" for t in b["writes"]) or "— (Discord / GCS / no Cloud SQL write found)",
                      ", ".join(f"`{f}`" for f in b["readers"][:12]) + (f" (+{len(b['readers'])-12})" if len(b["readers"]) > 12 else "") or "—"])
-    return _md_table(["Job", "Entry module", "Tables written (entry module + its direct repo imports)", "Readers of those tables"], rows)
+    return _md_table(["Job", "Entry module", "Tables written (entry module + the repo modules it imports, transitively)", "Readers of those tables"], rows)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

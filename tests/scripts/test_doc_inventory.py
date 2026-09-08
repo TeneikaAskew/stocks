@@ -579,6 +579,32 @@ def test_job_table_edges_walks_the_selected_root_not_the_checkout(mini_repo):
     assert "| `alpha` | `trades` | `trades` |" in inv.render_markdown("refs_digest", repo, None)
 
 
+def test_job_edges_follow_imports_transitively(mini_repo):
+    """gcp/backtest_job.py imports scripts/run_backtest.py, which imports
+    lib/data_loader.py, which reads market_data_daily. A one-level scope
+    stopped at run_backtest and the backtest job had no read edge at all."""
+    (mini_repo / "gcp/research").mkdir()
+    (mini_repo / "gcp/research/alpha.py").write_text("from gcp import helpers\n")
+    (mini_repo / "gcp/helpers.py").write_text("from gcp import deep\n")
+    (mini_repo / "gcp/deep.py").write_text("def load(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n")
+    # a cycle must terminate, and gcp/database.py stays excluded at any depth
+    (mini_repo / "gcp/database.py").write_text("from gcp import deep\ndef log(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n")
+    (mini_repo / "gcp/deep.py").write_text((mini_repo / "gcp/deep.py").read_text() + "from gcp import helpers\nfrom gcp import database\n")
+    repo = inv.repo_inventory(mini_repo)
+    scope = inv._import_scope(mini_repo, "gcp/research/alpha.py")
+    assert scope == {"gcp/research/alpha.py", "gcp/helpers.py", "gcp/deep.py"}, scope
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["trades"] and e["alpha"]["writes"] == [], e["alpha"]
+    blast = {b["job"]: b for b in inv.blast_radius(repo, repo["table_refs"])}
+    assert blast["alpha"]["writes"] == []
+
+
+def test_the_backtest_job_reads_through_run_backtest():
+    repo, refs = _repo_and_refs()
+    e = next(x for x in inv.job_table_edges(repo, refs) if x["job"] == "backtest")
+    assert "market_data_daily" in e["reads"], e
+
+
 def test_the_digest_carries_the_live_only_name_sets(mini_repo):
     """The 05-c prose names the runtime-created relations and the
     hand-created jobs, and `live.json` and the §1b block are off-limits to
