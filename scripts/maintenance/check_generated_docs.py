@@ -69,7 +69,7 @@ WORD_NUMBERS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
 
 EXPECTED_MARKERS = {
     ARCH: ("jobs", "schedulers", "tables", "dbtables", "routes", "services", "reconcile", "modules"),
-    DEPS: ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"),
+    DEPS: ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast", "graph"),
     API: ("routers", "routes"),
 }
 SIZE_FLOOR = 0.80

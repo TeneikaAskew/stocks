@@ -22,26 +22,25 @@ scheduler count under half the live figure and went red on that single line.
 
 ## Inputs (under `refresh-inputs/`)
 
-- `repo_inventory.json` — includes `table_refs` (every table's writers, readers and mentions with `file:line`), `tables`, `materialized_views`, `views`, `jobs`, `modules`.
-- `live.json` — includes `db_tables` (live relations with row estimates and sizes).
-- `previous/docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md` — the committed version before this run, under the same relative path.
-- The fresh `docs/product/infrastructure/05-a-ARCHITECTURE.md` (updated earlier in this run).
+- `table_refs_digest.md` — the multi-writer tables with their writers, the orphan tables with their status, and each job's written and read tables. This is the same data the rendered blocks come from, already digested. **Do not open `repo_inventory.json`**: it is 400 KB, and the 220 KB reference graph inside it is what this digest and the §2/§3/§4/§5/§6/§7 blocks were rendered from.
+- The current `docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md`. Read only the prose you may edit (named below) with `read_file` `offset`/`limit`; the rendered blocks between markers are ~120 KB of the file and are not yours to read or change. The previous version under `previous/` differs from the current one only inside those blocks, so there is nothing to compare.
+- The fresh `docs/product/infrastructure/05-a-ARCHITECTURE.md` §5 only, if you need the domain grouping of tables.
 
 ## What docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md is
 
-§1 table inventory (declared) and §1b live relations; §2 write graph; §3 read graph; §4 multi-writer tables; §5 orphan tables; §6 blast radius per Cloud Run Job; §7 Mermaid graph; §8 notes for follow-up work; §9 removed since last refresh. Sections 1, 1b, 2, 3, 4, 5 and 6 are **rendered by the workflow inside `<!-- inventory:<name>:start/end -->` markers** (tables, dbtables, writes, reads, multiwriter, orphans, blast) and are already correct. **Do not edit inside a marker block.**
+§1 table inventory (declared) and §1b live relations; §2 write graph; §3 read graph; §4 multi-writer tables; §5 orphan tables; §6 blast radius per Cloud Run Job; §7 Mermaid graph; §8 notes for follow-up work; §9 removed since last refresh. Sections 1, 1b, 2, 3, 4, 5, 6 **and the §7 graph** are **rendered by the workflow inside `<!-- inventory:<name>:start/end -->` markers** (tables, dbtables, writes, reads, multiwriter, orphans, blast, graph) and are already correct. **Do not edit inside a marker block.** A block you edit is restored from the render and the run reports it by name.
 
 ## What to do
 
-1. Read the previous and current files.
-2. Update the prose: the header (date, counts of declared vs live relations, the runtime-created table list), the notes after §4 (which multi-writer tables matter operationally and why; derive from `table_refs`), the reading of §5 (why each orphan is what it is), the hand-created-jobs paragraph after §6, the Mermaid graph in §7 (add nodes/edges for new jobs or tables that write or are read; remove nodes for tables or jobs that no longer exist), and §8 follow-up notes (retire notes that are resolved, add new ones the data shows).
+1. Read `table_refs_digest.md`, then the prose sections below in the current file.
+2. Update only these prose regions, each with the **`replace`** tool on the exact current text: the header lines (date, the counts from the **Live fleet counts** block above, the runtime-created table list), the notes after the §4 block (which multi-writer tables matter operationally and why, from the digest), the reading after the §5 block (why each orphan is what it is, from the digest), the hand-created-jobs paragraph after the §6 block, the one-paragraph reading under §7 (the graph itself is rendered; you do not draw it), and §8 follow-up notes (retire notes that are resolved, add new ones the digest shows). Nothing else.
 3. Every table in `gcp/schema.sql` must appear verbatim, one row each, in §1 (the marker block guarantees this; never collapse names into wildcard shorthand in prose either).
 4. If a section no longer applies, keep the heading and say so in one sentence; record it under §9 with the date.
 5. Update the `Generated YYYY-MM-DD …` last line to today.
 
 ## Rules
 
-- Update in place; never regenerate from scratch.
+- Update in place with `replace`; never regenerate from scratch and never `write_file` the whole document.
 - Cite `file:line` for every claim about code.
 - No code, no SQL examples: just the dependency graph and its reading.
 - Distinguish live writers (a Cloud Run Job's entrypoint or a module it imports) from one-shot `scripts/` writers.

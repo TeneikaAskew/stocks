@@ -1052,171 +1052,371 @@ Hand-created live jobs (no `deploy_*` function, so not in the table above): `p2-
 
 ## 7. Mermaid graph
 
-Job → table writes (thick) and the heaviest reads (thin), by domain. Full lists are in §2/§3.
+Job → table writes (thick) and reads (thin). Full lists with `file:line` are in §2/§3.
 
+<!-- inventory:graph:start -->
 ```mermaid
 flowchart LR
     subgraph JOBS [Cloud Run Jobs]
         direction TB
-        FMD[fetch-market-data]
-        FAI[fetch-alphavantage-intraday]
-        FPR[fetch-premarket-refresh]
-        BDI[backfill-daily-indicators]
-        FFR[fetch-fred-rates]
-        FEE[fetch-economic-events]
-        FEC[fetch-earnings-calendar]
-        FEH[fetch-earnings-history]
-        CER[compute-earnings-reactions]
-        REV[refresh-earnings-views]
-        EES[evaluate-ew-strikes]
-        FSF[fetch-sec-filings]
-        FIT[fetch-insider-transactions]
-        FTM[fetch-top-movers]
-        FNS[fetch-news-sentiment]
-        FAO[fetch-av-options-backfill / -realtime]
-        BOF[build-options-daily-features]
-        BOG[build-options-greeks]
-        BRG[build-realtime-gex]
-        PB[premarket-brief]
-        PPR[premarket-playbook-resolver]
-        SM[signal-monitor]
-        EOD[signal-monitor-eod-resolver]
-        HSW[historical-signals-watchlist]
-        SQR[signal-quality-report]
-        ARN[auto-refresh-top-n]
-        IP[insight-pipeline]
-        P6[phase6-playbook]
-        PS[param-sweep]
-        ES[earnings-sweep]
-        CT[calibrate-thresholds]
-        RC[regime-combo]
+        J_auto_refresh_top_n[auto-refresh-top-n]
+        J_backfill_daily_indicators[backfill-daily-indicators]
+        J_backfill_ticker[backfill-ticker]
+        J_backtest[backtest]
+        J_backtest_pipeline[backtest-pipeline]
+        J_build_options_daily_features[build-options-daily-features]
+        J_build_options_greeks[build-options-greeks]
+        J_build_realtime_gex[build-realtime-gex]
+        J_calibrate_thresholds[calibrate-thresholds]
+        J_compute_earnings_reactions[compute-earnings-reactions]
+        J_compute_spx_greeks_backfill[compute-spx-greeks-backfill]
+        J_db_query[db-query]
+        J_direction_baseline[direction-baseline]
+        J_direction_importance[direction-importance]
+        J_direction_phase2[direction-phase2]
+        J_direction_probe[direction-probe]
+        J_earnings_long_watchlist[earnings-long-watchlist]
+        J_earnings_options_backfill[earnings-options-backfill]
+        J_earnings_reactions_brief[earnings-reactions-brief]
+        J_earnings_sweep[earnings-sweep]
+        J_etf_options_retention[etf-options-retention]
+        J_evaluate_ew_strikes[evaluate-ew-strikes]
+        J_fetch_alphavantage_intraday[fetch-alphavantage-intraday]
+        J_fetch_av_options_backfill[fetch-av-options-backfill]
+        J_fetch_av_options_realtime[fetch-av-options-realtime]
+        J_fetch_earnings_calendar[fetch-earnings-calendar]
+        J_fetch_earnings_history[fetch-earnings-history]
+        J_fetch_economic_events[fetch-economic-events]
+        J_fetch_fred_rates[fetch-fred-rates]
+        J_fetch_insider_transactions[fetch-insider-transactions]
+        J_fetch_market_data[fetch-market-data]
+        J_fetch_news_sentiment[fetch-news-sentiment]
+        J_fetch_news_sentiment_earnings[fetch-news-sentiment-earnings]
+        J_fetch_news_sentiment_topics[fetch-news-sentiment-topics]
+        J_fetch_premarket_refresh[fetch-premarket-refresh]
+        J_fetch_sec_filings[fetch-sec-filings]
+        J_fetch_top_movers[fetch-top-movers]
+        J_freshness_watchdog[freshness-watchdog]
+        J_historical_signals_watchlist[historical-signals-watchlist]
+        J_indicator_correlation[indicator-correlation]
+        J_insight_discord_push[insight-discord-push]
+        J_insight_pipeline[insight-pipeline]
+        J_intraday_bulk_backfill[intraday-bulk-backfill]
+        J_magnitude_engine[magnitude-engine]
+        J_magnitude_recal[magnitude-recal]
+        J_options_exec_backtest[options-exec-backtest]
+        J_param_sweep[param-sweep]
+        J_phase6_playbook[phase6-playbook]
+        J_premarket_brief[premarket-brief]
+        J_premarket_playbook_resolver[premarket-playbook-resolver]
+        J_refresh_earnings_views[refresh-earnings-views]
+        J_regime_combo[regime-combo]
+        J_signal_monitor[signal-monitor]
+        J_signal_monitor_eod_resolver[signal-monitor-eod-resolver]
+        J_signal_quality_alarm[signal-quality-alarm]
+        J_signal_quality_report[signal-quality-report]
+        J_signal_replay[signal-replay]
+        J_strat_engine[strat-engine]
+        J_validate_brief[validate-brief]
+        J_weekend_review[weekend-review]
     end
-    subgraph MKT [Market data]
-        MDD[(market_data_daily)]
-        MDI[(market_data_intraday)]
-        DR[(daily_rates)]
-    end
-    subgraph OPT [Options]
-        EOS[(etf_options_snapshots)]
-        ODF[(options_daily_features)]
-        EDG[(etf_options_daily_greeks)]
-        RGX[(realtime_gex_15m)]
-    end
-    subgraph EARN [Earnings and catalysts]
-        EC[(earnings_calendar)]
-        EH[(earnings_history)]
-        ER[(earnings_reactions)]
-        EUH[(earnings_upcoming_with_history)]
-        EE[(economic_events)]
-        SF[(sec_filings)]
-        IT[(insider_transactions)]
-        TM[(top_movers_daily / _intraday)]
-        NS[(news_sentiment)]
-        WL[(watchlists)]
-    end
-    subgraph SIG [Strat and signals]
-        PA[(premarket_analysis)]
-        PAH[(premarket_analysis_history)]
-        SL[(strat_levels)]
-        SA[(signal_alerts)]
-        TR[(trades)]
-        HS[(historical_signals)]
-        SMET[(signal_metrics)]
-        PC[(playbook_cards)]
-        ECO[(exit_config_overrides)]
-        TC[(ticker_calibration)]
-        ECAL[(earnings_calibration)]
-    end
-    subgraph INS [Insights]
-        IR[(insight_reports)]
-        IRUN[(insight_runs)]
-        RR[(ranker_runs)]
-    end
-    subgraph RES [Research results]
-        RCR[(regime_combo_results)]
-        IC[(indicator_correlation)]
-        WFR[(walk_forward_results)]
+    subgraph TABLES [Cloud SQL tables]
+        direction TB
+        T_backtest_trades[(backtest_trades)]
+        T_daily_rates[(daily_rates)]
+        T_earnings_calendar[(earnings_calendar)]
+        T_earnings_calibration[(earnings_calibration)]
+        T_earnings_event_outcomes[(earnings_event_outcomes)]
+        T_earnings_history[(earnings_history)]
+        T_earnings_options_snapshots[(earnings_options_snapshots)]
+        T_earnings_options_strategy_insights[(earnings_options_strategy_insights)]
+        T_earnings_options_strategy_winners[(earnings_options_strategy_winners)]
+        T_earnings_reactions[(earnings_reactions)]
+        T_earnings_ticker_lean[(earnings_ticker_lean)]
+        T_earnings_upcoming_with_history[(earnings_upcoming_with_history)]
+        T_economic_events[(economic_events)]
+        T_etf_options_daily_greeks[(etf_options_daily_greeks)]
+        T_etf_options_snapshots[(etf_options_snapshots)]
+        T_exit_config_overrides[(exit_config_overrides)]
+        T_historical_signals[(historical_signals)]
+        T_indicator_correlation[(indicator_correlation)]
+        T_insider_transactions[(insider_transactions)]
+        T_insight_reports[(insight_reports)]
+        T_insight_reports_history[(insight_reports_history)]
+        T_insight_runs[(insight_runs)]
+        T_intraday_flow_15m[(intraday_flow_15m)]
+        T_intraday_gex_15m[(intraday_gex_15m)]
+        T_job_runs[(job_runs)]
+        T_journal_entries[(journal_entries)]
+        T_market_data_daily[(market_data_daily)]
+        T_market_data_intraday[(market_data_intraday)]
+        T_model_routing[(model_routing)]
+        T_news_sentiment[(news_sentiment)]
+        T_options_daily_features[(options_daily_features)]
+        T_playbook_cards[(playbook_cards)]
+        T_premarket_analysis[(premarket_analysis)]
+        T_premarket_analysis_history[(premarket_analysis_history)]
+        T_realtime_gex_15m[(realtime_gex_15m)]
+        T_regime_combo_results[(regime_combo_results)]
+        T_sec_filings[(sec_filings)]
+        T_signal_alerts[(signal_alerts)]
+        T_signal_metrics[(signal_metrics)]
+        T_strat_levels[(strat_levels)]
+        T_ticker_calibration[(ticker_calibration)]
+        T_top_movers_daily[(top_movers_daily)]
+        T_top_movers_intraday[(top_movers_intraday)]
+        T_trades[(trades)]
+        T_walk_forward_results[(walk_forward_results)]
+        T_watchlists[(watchlists)]
     end
 
-    FMD ==> MDD
-    FMD ==> MDI
-    FAI ==> MDI
-    FPR -. UPDATE pre_* .-> MDD
-    BDI -. recompute NULLs .-> MDD
-    FFR ==> DR
-    FEE ==> EE
-    FEC ==> EC
-    FEH ==> EH
-    CER ==> ER
-    REV ==> EUH
-    EES -. UPDATE ew_* .-> EC
-    FSF ==> SF
-    FIT ==> IT
-    FTM ==> TM
-    FNS ==> NS
-    FAO ==> EOS
-    BOF ==> ODF
-    BOG ==> EDG
-    BRG ==> RGX
-    PB ==> PA
-    PB ==> PAH
-    PB ==> SL
-    PPR -. outcomes .-> PA
-    SM ==> SA
-    SM ==> TR
-    EOD -. outcomes .-> SA
-    HSW ==> HS
-    SQR ==> SMET
-    ARN ==> IRUN
-    ARN ==> RR
-    IP ==> IR
-    IP ==> IRUN
-    P6 ==> PC
-    PS ==> ECO
-    PS ==> WFR
-    ES ==> ECAL
-    CT ==> TC
-    RC ==> RCR
-    RC ==> IC
+    J_auto_refresh_top_n ==> T_insight_runs
+    J_backfill_daily_indicators ==> T_market_data_daily
+    J_backfill_ticker ==> T_market_data_daily
+    J_backfill_ticker ==> T_market_data_intraday
+    J_backfill_ticker ==> T_news_sentiment
+    J_backfill_ticker ==> T_watchlists
+    J_backtest ==> T_backtest_trades
+    J_build_options_daily_features ==> T_options_daily_features
+    J_build_options_greeks ==> T_etf_options_daily_greeks
+    J_build_realtime_gex ==> T_realtime_gex_15m
+    J_calibrate_thresholds ==> T_ticker_calibration
+    J_compute_earnings_reactions ==> T_earnings_reactions
+    J_compute_spx_greeks_backfill ==> T_etf_options_snapshots
+    J_earnings_options_backfill ==> T_earnings_options_snapshots
+    J_earnings_reactions_brief ==> T_market_data_daily
+    J_earnings_reactions_brief ==> T_premarket_analysis
+    J_earnings_reactions_brief ==> T_premarket_analysis_history
+    J_earnings_sweep ==> T_earnings_calibration
+    J_earnings_sweep ==> T_earnings_options_strategy_insights
+    J_earnings_sweep ==> T_earnings_options_strategy_winners
+    J_etf_options_retention ==> T_etf_options_snapshots
+    J_evaluate_ew_strikes ==> T_earnings_calendar
+    J_evaluate_ew_strikes ==> T_market_data_daily
+    J_evaluate_ew_strikes ==> T_market_data_intraday
+    J_fetch_alphavantage_intraday ==> T_market_data_intraday
+    J_fetch_av_options_backfill ==> T_etf_options_snapshots
+    J_fetch_av_options_backfill ==> T_watchlists
+    J_fetch_av_options_realtime ==> T_etf_options_snapshots
+    J_fetch_earnings_calendar ==> T_earnings_calendar
+    J_fetch_earnings_history ==> T_earnings_history
+    J_fetch_earnings_history ==> T_market_data_daily
+    J_fetch_earnings_history ==> T_market_data_intraday
+    J_fetch_earnings_history ==> T_watchlists
+    J_fetch_economic_events ==> T_economic_events
+    J_fetch_fred_rates ==> T_daily_rates
+    J_fetch_insider_transactions ==> T_insider_transactions
+    J_fetch_insider_transactions ==> T_watchlists
+    J_fetch_market_data ==> T_market_data_daily
+    J_fetch_market_data ==> T_market_data_intraday
+    J_fetch_market_data ==> T_watchlists
+    J_fetch_news_sentiment ==> T_news_sentiment
+    J_fetch_news_sentiment ==> T_watchlists
+    J_fetch_news_sentiment_earnings ==> T_news_sentiment
+    J_fetch_news_sentiment_earnings ==> T_watchlists
+    J_fetch_news_sentiment_topics ==> T_news_sentiment
+    J_fetch_news_sentiment_topics ==> T_watchlists
+    J_fetch_premarket_refresh ==> T_market_data_daily
+    J_fetch_premarket_refresh ==> T_market_data_intraday
+    J_fetch_premarket_refresh ==> T_watchlists
+    J_fetch_sec_filings ==> T_sec_filings
+    J_fetch_sec_filings ==> T_watchlists
+    J_fetch_top_movers ==> T_top_movers_daily
+    J_fetch_top_movers ==> T_top_movers_intraday
+    J_historical_signals_watchlist ==> T_historical_signals
+    J_historical_signals_watchlist ==> T_watchlists
+    J_indicator_correlation ==> T_indicator_correlation
+    J_insight_discord_push ==> T_market_data_daily
+    J_insight_discord_push ==> T_model_routing
+    J_insight_discord_push ==> T_premarket_analysis
+    J_insight_discord_push ==> T_premarket_analysis_history
+    J_insight_pipeline ==> T_insight_reports
+    J_insight_pipeline ==> T_insight_reports_history
+    J_insight_pipeline ==> T_insight_runs
+    J_insight_pipeline ==> T_model_routing
+    J_insight_pipeline ==> T_watchlists
+    J_intraday_bulk_backfill ==> T_market_data_intraday
+    J_param_sweep ==> T_exit_config_overrides
+    J_param_sweep ==> T_walk_forward_results
+    J_phase6_playbook ==> T_playbook_cards
+    J_premarket_brief ==> T_market_data_daily
+    J_premarket_brief ==> T_premarket_analysis
+    J_premarket_brief ==> T_premarket_analysis_history
+    J_premarket_brief ==> T_strat_levels
+    J_premarket_brief ==> T_watchlists
+    J_premarket_playbook_resolver ==> T_premarket_analysis
+    J_premarket_playbook_resolver ==> T_strat_levels
+    J_refresh_earnings_views ==> T_earnings_upcoming_with_history
+    J_regime_combo ==> T_indicator_correlation
+    J_regime_combo ==> T_regime_combo_results
+    J_signal_monitor ==> T_premarket_analysis
+    J_signal_monitor ==> T_signal_alerts
+    J_signal_monitor ==> T_strat_levels
+    J_signal_monitor ==> T_trades
+    J_signal_monitor ==> T_watchlists
+    J_signal_monitor_eod_resolver ==> T_signal_alerts
+    J_signal_monitor_eod_resolver ==> T_trades
+    J_signal_quality_report ==> T_historical_signals
+    J_signal_quality_report ==> T_signal_metrics
+    J_weekend_review ==> T_trades
 
-    MDD --> PB
-    MDD --> SM
-    MDD --> CER
-    MDD --> IP
-    MDI --> SM
-    MDI --> HSW
-    MDI --> PPR
-    EOS --> BOF
-    EOS --> BOG
-    EOS --> BRG
-    DR --> BOG
-    EC --> PB
-    EC --> CER
-    EH --> CER
-    ER --> PB
-    EE --> PB
-    NS --> IP
-    SF --> IP
-    WL --> FMD
-    WL --> SM
-    WL --> IP
-    SL --> SM
-    PA --> SM
-    SA --> EOD
-    SA --> SQR
-    SMET --> SQR
-    ECO --> SM
-    TC --> SM
-    IR --> IP
-    PC --> P6
+    T_insight_reports --> J_auto_refresh_top_n
+    T_strat_levels --> J_backfill_daily_indicators
+    T_strat_levels --> J_backfill_ticker
+    T_backtest_trades --> J_backtest_pipeline
+    T_trades --> J_backtest_pipeline
+    T_etf_options_snapshots --> J_build_options_daily_features
+    T_etf_options_snapshots --> J_build_options_greeks
+    T_etf_options_snapshots --> J_build_realtime_gex
+    T_intraday_gex_15m --> J_build_realtime_gex
+    T_market_data_intraday --> J_build_realtime_gex
+    T_market_data_intraday --> J_calibrate_thresholds
+    T_earnings_calendar --> J_compute_earnings_reactions
+    T_earnings_history --> J_compute_earnings_reactions
+    T_market_data_daily --> J_compute_earnings_reactions
+    T_daily_rates --> J_compute_spx_greeks_backfill
+    T_trades --> J_db_query
+    T_trades --> J_direction_baseline
+    T_economic_events --> J_direction_importance
+    T_trades --> J_direction_importance
+    T_trades --> J_direction_phase2
+    T_economic_events --> J_direction_probe
+    T_etf_options_daily_greeks --> J_direction_probe
+    T_etf_options_snapshots --> J_direction_probe
+    T_intraday_flow_15m --> J_direction_probe
+    T_intraday_gex_15m --> J_direction_probe
+    T_market_data_intraday --> J_direction_probe
+    T_realtime_gex_15m --> J_direction_probe
+    T_trades --> J_direction_probe
+    T_earnings_calendar --> J_earnings_long_watchlist
+    T_earnings_options_strategy_winners --> J_earnings_long_watchlist
+    T_earnings_reactions --> J_earnings_options_backfill
+    T_ticker_calibration --> J_earnings_options_backfill
+    T_earnings_calendar --> J_earnings_reactions_brief
+    T_earnings_reactions --> J_earnings_reactions_brief
+    T_economic_events --> J_earnings_reactions_brief
+    T_etf_options_snapshots --> J_earnings_reactions_brief
+    T_insider_transactions --> J_earnings_reactions_brief
+    T_earnings_calendar --> J_earnings_sweep
+    T_earnings_options_snapshots --> J_earnings_sweep
+    T_earnings_reactions --> J_earnings_sweep
+    T_market_data_daily --> J_earnings_sweep
+    T_earnings_history --> J_evaluate_ew_strikes
+    T_watchlists --> J_evaluate_ew_strikes
+    T_ticker_calibration --> J_fetch_alphavantage_intraday
+    T_ticker_calibration --> J_fetch_av_options_backfill
+    T_ticker_calibration --> J_fetch_av_options_realtime
+    T_earnings_calendar --> J_fetch_earnings_history
+    T_ticker_calibration --> J_fetch_earnings_history
+    T_market_data_daily --> J_fetch_fred_rates
+    T_earnings_calendar --> J_fetch_insider_transactions
+    T_ticker_calibration --> J_fetch_insider_transactions
+    T_earnings_calendar --> J_fetch_market_data
+    T_earnings_history --> J_fetch_market_data
+    T_strat_levels --> J_fetch_market_data
+    T_earnings_calendar --> J_fetch_news_sentiment
+    T_earnings_calendar --> J_fetch_news_sentiment_earnings
+    T_earnings_calendar --> J_fetch_news_sentiment_topics
+    T_earnings_calendar --> J_fetch_premarket_refresh
+    T_earnings_history --> J_fetch_premarket_refresh
+    T_strat_levels --> J_fetch_premarket_refresh
+    T_earnings_calendar --> J_fetch_sec_filings
+    T_etf_options_snapshots --> J_freshness_watchdog
+    T_job_runs --> J_freshness_watchdog
+    T_market_data_daily --> J_freshness_watchdog
+    T_playbook_cards --> J_freshness_watchdog
+    T_earnings_calendar --> J_historical_signals_watchlist
+    T_economic_events --> J_historical_signals_watchlist
+    T_market_data_intraday --> J_historical_signals_watchlist
+    T_sec_filings --> J_historical_signals_watchlist
+    T_ticker_calibration --> J_historical_signals_watchlist
+    T_etf_options_snapshots --> J_indicator_correlation
+    T_market_data_daily --> J_indicator_correlation
+    T_market_data_intraday --> J_indicator_correlation
+    T_signal_alerts --> J_indicator_correlation
+    T_strat_levels --> J_indicator_correlation
+    T_ticker_calibration --> J_indicator_correlation
+    T_trades --> J_indicator_correlation
+    T_earnings_calendar --> J_insight_discord_push
+    T_economic_events --> J_insight_discord_push
+    T_etf_options_snapshots --> J_insight_discord_push
+    T_insight_reports --> J_insight_discord_push
+    T_news_sentiment --> J_insight_discord_push
+    T_ticker_calibration --> J_intraday_bulk_backfill
+    T_economic_events --> J_magnitude_engine
+    T_economic_events --> J_magnitude_recal
+    T_daily_rates --> J_options_exec_backtest
+    T_etf_options_snapshots --> J_param_sweep
+    T_market_data_daily --> J_param_sweep
+    T_market_data_intraday --> J_param_sweep
+    T_strat_levels --> J_param_sweep
+    T_ticker_calibration --> J_param_sweep
+    T_trades --> J_param_sweep
+    T_earnings_calendar --> J_premarket_brief
+    T_earnings_calibration --> J_premarket_brief
+    T_earnings_reactions --> J_premarket_brief
+    T_economic_events --> J_premarket_brief
+    T_etf_options_snapshots --> J_premarket_brief
+    T_journal_entries --> J_premarket_brief
+    T_market_data_intraday --> J_premarket_brief
+    T_news_sentiment --> J_premarket_brief
+    T_sec_filings --> J_premarket_brief
+    T_signal_alerts --> J_premarket_brief
+    T_ticker_calibration --> J_premarket_brief
+    T_trades --> J_premarket_brief
+    T_market_data_daily --> J_premarket_playbook_resolver
+    T_market_data_intraday --> J_premarket_playbook_resolver
+    T_earnings_calendar --> J_refresh_earnings_views
+    T_earnings_calibration --> J_refresh_earnings_views
+    T_earnings_event_outcomes --> J_refresh_earnings_views
+    T_earnings_reactions --> J_refresh_earnings_views
+    T_earnings_ticker_lean --> J_refresh_earnings_views
+    T_market_data_daily --> J_refresh_earnings_views
+    T_etf_options_snapshots --> J_regime_combo
+    T_market_data_daily --> J_regime_combo
+    T_market_data_intraday --> J_regime_combo
+    T_signal_alerts --> J_regime_combo
+    T_ticker_calibration --> J_regime_combo
+    T_trades --> J_regime_combo
+    T_earnings_calendar --> J_signal_monitor
+    T_economic_events --> J_signal_monitor
+    T_etf_options_snapshots --> J_signal_monitor
+    T_exit_config_overrides --> J_signal_monitor
+    T_historical_signals --> J_signal_monitor
+    T_insight_reports --> J_signal_monitor
+    T_market_data_daily --> J_signal_monitor
+    T_market_data_intraday --> J_signal_monitor
+    T_sec_filings --> J_signal_monitor
+    T_ticker_calibration --> J_signal_monitor
+    T_etf_options_snapshots --> J_signal_monitor_eod_resolver
+    T_market_data_daily --> J_signal_monitor_eod_resolver
+    T_market_data_intraday --> J_signal_monitor_eod_resolver
+    T_strat_levels --> J_signal_monitor_eod_resolver
+    T_ticker_calibration --> J_signal_monitor_eod_resolver
+    T_signal_alerts --> J_signal_quality_alarm
+    T_signal_metrics --> J_signal_quality_alarm
+    T_market_data_intraday --> J_signal_quality_report
+    T_strat_levels --> J_signal_quality_report
+    T_signal_alerts --> J_signal_replay
+    T_etf_options_snapshots --> J_strat_engine
+    T_market_data_daily --> J_strat_engine
+    T_market_data_intraday --> J_strat_engine
+    T_strat_levels --> J_strat_engine
+    T_ticker_calibration --> J_strat_engine
+    T_trades --> J_strat_engine
+    T_insight_reports --> J_validate_brief
+    T_market_data_intraday --> J_validate_brief
+    T_premarket_analysis --> J_validate_brief
+    T_ticker_calibration --> J_weekend_review
 
     classDef job fill:#3B82F6,stroke:#1E40AF,color:#fff
     classDef tbl fill:#10B981,stroke:#065F46,color:#fff
-    class FMD,FAI,FPR,BDI,FFR,FEE,FEC,FEH,CER,REV,EES,FSF,FIT,FTM,FNS,FAO,BOF,BOG,BRG,PB,PPR,SM,EOD,HSW,SQR,ARN,IP,P6,PS,ES,CT,RC job
-    class MDD,MDI,DR,EOS,ODF,EDG,RGX,EC,EH,ER,EUH,EE,SF,IT,TM,NS,WL,PA,PAH,SL,SA,TR,HS,SMET,PC,ECO,TC,ECAL,IR,IRUN,RR,RCR,IC,WFR tbl
+    class J_auto_refresh_top_n,J_backfill_daily_indicators,J_backfill_ticker,J_backtest,J_backtest_pipeline,J_build_options_daily_features,J_build_options_greeks,J_build_realtime_gex,J_calibrate_thresholds,J_compute_earnings_reactions,J_compute_spx_greeks_backfill,J_db_query,J_direction_baseline,J_direction_importance,J_direction_phase2,J_direction_probe,J_earnings_long_watchlist,J_earnings_options_backfill,J_earnings_reactions_brief,J_earnings_sweep,J_etf_options_retention,J_evaluate_ew_strikes,J_fetch_alphavantage_intraday,J_fetch_av_options_backfill,J_fetch_av_options_realtime,J_fetch_earnings_calendar,J_fetch_earnings_history,J_fetch_economic_events,J_fetch_fred_rates,J_fetch_insider_transactions,J_fetch_market_data,J_fetch_news_sentiment,J_fetch_news_sentiment_earnings,J_fetch_news_sentiment_topics,J_fetch_premarket_refresh,J_fetch_sec_filings,J_fetch_top_movers,J_freshness_watchdog,J_historical_signals_watchlist,J_indicator_correlation,J_insight_discord_push,J_insight_pipeline,J_intraday_bulk_backfill,J_magnitude_engine,J_magnitude_recal,J_options_exec_backtest,J_param_sweep,J_phase6_playbook,J_premarket_brief,J_premarket_playbook_resolver,J_refresh_earnings_views,J_regime_combo,J_signal_monitor,J_signal_monitor_eod_resolver,J_signal_quality_alarm,J_signal_quality_report,J_signal_replay,J_strat_engine,J_validate_brief,J_weekend_review job
+    class T_backtest_trades,T_daily_rates,T_earnings_calendar,T_earnings_calibration,T_earnings_event_outcomes,T_earnings_history,T_earnings_options_snapshots,T_earnings_options_strategy_insights,T_earnings_options_strategy_winners,T_earnings_reactions,T_earnings_ticker_lean,T_earnings_upcoming_with_history,T_economic_events,T_etf_options_daily_greeks,T_etf_options_snapshots,T_exit_config_overrides,T_historical_signals,T_indicator_correlation,T_insider_transactions,T_insight_reports,T_insight_reports_history,T_insight_runs,T_intraday_flow_15m,T_intraday_gex_15m,T_job_runs,T_journal_entries,T_market_data_daily,T_market_data_intraday,T_model_routing,T_news_sentiment,T_options_daily_features,T_playbook_cards,T_premarket_analysis,T_premarket_analysis_history,T_realtime_gex_15m,T_regime_combo_results,T_sec_filings,T_signal_alerts,T_signal_metrics,T_strat_levels,T_ticker_calibration,T_top_movers_daily,T_top_movers_intraday,T_trades,T_walk_forward_results,T_watchlists tbl
 ```
+<!-- inventory:graph:end -->
 
-Thick `==>` is a primary INSERT/UPSERT; dashed `-.->` is an UPDATE-only path.
+Rendered from `table_refs` by `scripts/maintenance/doc_inventory.py`: thick `==>` is a write by the job's entry module or a module it imports directly, thin `-->` is a read by the same scope. Every job with at least one edge and every table with at least one edge appears; `gcp/database.py`'s `job_runs` bookkeeping is excluded, as in §6.
 
 ---
 

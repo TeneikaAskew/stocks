@@ -441,3 +441,48 @@ def test_a_route_registered_only_behind_a_dist_guard_is_not_inventoried():
     registers in production. (Codex, PR #1009.)"""
     routes = {r["path"] for r in inv.repo_inventory(REPO)["routes"]}
     assert "/{full_path:path}" not in routes, "an inactive route is published as live"
+
+
+
+# ── the §7 graph and the 05-c digest are rendered, not drawn ─────────────────
+
+def _repo_and_refs():
+    repo = inv.repo_inventory(REPO)
+    return repo, repo["table_refs"]
+
+
+def test_the_graph_is_rendered_from_table_refs_and_agrees_with_blast_radius():
+    """05-c was the one step that kept dying inside the CLI's idle timeout
+    while redrawing this graph from the raw 220 KB reference data (runs 20,
+    21, 25 x2). Rendered, it is exact and costs the model nothing."""
+    repo, refs = _repo_and_refs()
+    out = inv.render_markdown("graph", repo, None)
+    assert out.startswith("```mermaid\nflowchart LR") and out.endswith("```")
+    assert out == inv.render_markdown("graph", repo, None), "render is not deterministic"
+    # A write the blast table already attributes must be a thick edge here.
+    blast = {b["job"]: b for b in inv.blast_radius(repo, refs)}
+    job, table = next((j, b["writes"][0]) for j, b in sorted(blast.items()) if b["writes"])
+    assert f"{inv._mermaid_id('J', job)} ==> {inv._mermaid_id('T', table)}" in out
+    # Only nodes with an edge, and every id is Mermaid-safe.
+    import re
+    ids = set(re.findall(r"^\s+([JT]_[A-Za-z0-9_]+)[\[(]", out, re.M))
+    used = set(re.findall(r"([JT]_[A-Za-z0-9_]+)\s+(?:==>|-->)\s+([JT]_[A-Za-z0-9_]+)", out))
+    used = {a for pair in used for a in pair}
+    assert ids == used, ids ^ used
+
+
+def test_a_job_with_no_table_edge_is_not_drawn():
+    repo, refs = _repo_and_refs()
+    silent = next(e["job"] for e in inv.job_table_edges(repo, refs) if not e["writes"] and not e["reads"])
+    assert inv._mermaid_id("J", silent) not in inv.render_markdown("graph", repo, None)
+
+
+def test_the_refs_digest_is_small_and_carries_what_the_prose_needs():
+    """What the 05-c prompt reads instead of repo_inventory.json (400 KB, of
+    which table_refs is 220 KB). Same data as the rendered blocks, digested."""
+    repo, refs = _repo_and_refs()
+    out = inv.render_markdown("refs_digest", repo, None)
+    assert len(out) < 40_000, len(out)
+    assert "## Multi-writer tables" in out and "## Orphan tables" in out and "## Tables per job" in out
+    # It IS the multiwriter block's content, so the prose cannot disagree with it.
+    assert inv._render_multiwriter(refs) in out

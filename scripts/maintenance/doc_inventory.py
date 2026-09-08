@@ -754,6 +754,76 @@ def blast_radius(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, 
     return out
 
 
+def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]]
+                    ) -> list[dict[str, Any]]:
+    """Per job: the tables its entry module (plus direct repo imports) writes
+    and reads. The same attribution blast_radius uses, so the graph and the
+    blast table cannot disagree about who writes what."""
+    readers = {t: {r["file"] for r in v["reads"]} for t, v in refs.items()}
+    writers = {t: {w["file"] for w in v["writes"]} for t, v in refs.items()}
+    out = []
+    for j in repo["jobs"]:
+        mod_file = entry_module(j)
+        scope = {mod_file} | (_local_imports(REPO, mod_file) if mod_file else set())
+        scope.discard("gcp/database.py")
+        w = sorted(t for t, fs in writers.items() if fs & scope)
+        r = sorted(t for t, fs in readers.items() if fs & scope and t not in w)
+        out.append({"job": j["name"], "writes": w, "reads": r})
+    return out
+
+
+def _mermaid_id(prefix: str, name: str) -> str:
+    return prefix + "_" + re.sub(r"[^A-Za-z0-9_]", "_", name)
+
+
+def _render_graph(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]]) -> str:
+    """The job/table write-and-read graph as Mermaid, rendered from table_refs.
+
+    This was prose the model redrew every month from the raw 220 KB reference
+    graph, and 05-c was the one step that kept dying inside the CLI's idle
+    timeout while writing ~10 KB of text. Rendered here it is exact, costs the
+    model nothing, and the marker gate keeps it that way.
+
+    Only jobs with at least one edge and only tables with at least one edge
+    appear; thick edges are writes, thin edges are reads.
+    """
+    edges = [e for e in job_table_edges(repo, refs) if e["writes"] or e["reads"]]
+    tables = sorted({t for e in edges for t in e["writes"] + e["reads"]})
+    lines = ["```mermaid", "flowchart LR", "    subgraph JOBS [Cloud Run Jobs]", "        direction TB"]
+    lines += [f"        {_mermaid_id('J', e['job'])}[{e['job']}]" for e in edges]
+    lines += ["    end", "    subgraph TABLES [Cloud SQL tables]", "        direction TB"]
+    lines += [f"        {_mermaid_id('T', t)}[({t})]" for t in tables]
+    lines += ["    end", ""]
+    for e in edges:
+        lines += [f"    {_mermaid_id('J', e['job'])} ==> {_mermaid_id('T', t)}" for t in e["writes"]]
+    lines.append("")
+    for e in edges:
+        lines += [f"    {_mermaid_id('T', t)} --> {_mermaid_id('J', e['job'])}" for t in e["reads"]]
+    lines += ["", "    classDef job fill:#3B82F6,stroke:#1E40AF,color:#fff",
+              "    classDef tbl fill:#10B981,stroke:#065F46,color:#fff"]
+    if edges:
+        lines.append("    class " + ",".join(_mermaid_id("J", e["job"]) for e in edges) + " job")
+    if tables:
+        lines.append("    class " + ",".join(_mermaid_id("T", t) for t in tables) + " tbl")
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def _render_refs_digest(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]]) -> str:
+    """What the 05-c prompt is handed instead of the raw table_refs graph: the
+    multi-writer tables with their writers, the orphans with their status, and
+    each job's written and read tables. A few KB, from the same data the
+    rendered blocks come from, so the prose agrees with the blocks."""
+    out = ["## Multi-writer tables", "", _render_multiwriter(refs), "",
+           "## Orphan tables", "", _render_orphans(refs), "",
+           "## Tables per job (entry module plus its direct repo imports)", ""]
+    rows = [[f"`{e['job']}`", ", ".join(f"`{t}`" for t in e["writes"]) or "—",
+             ", ".join(f"`{t}`" for t in e["reads"]) or "—"]
+            for e in job_table_edges(repo, refs) if e["writes"] or e["reads"]]
+    out.append(_md_table(["Job", "Writes", "Reads"], rows) if rows else "_none_")
+    return "\n".join(out)
+
+
 def _render_modules(mods: list[dict[str, Any]]) -> str:
     rows = [[f"[`{m['path']}`]({m['path']})", m["summary"] or "—", ", ".join(f"`{j}`" for j in m["jobs"]) or "—"] for m in mods]
     return _md_table(["Module", "Purpose (first docstring line)", "Cloud Run Job(s)"], rows)
@@ -1384,13 +1454,18 @@ def render_markdown(section: str, repo: dict[str, Any], live: dict[str, Any] | N
         return _render_orphans(repo["table_refs"], REPO, {t["name"]: t["partition_of"] for t in repo["tables"] if t["partition_of"]})
     if section == "blast":
         return _render_blast(repo, repo["table_refs"])
+    if section == "graph":
+        return _render_graph(repo, repo["table_refs"])
+    if section == "refs_digest":
+        return _render_refs_digest(repo, repo["table_refs"])
     if section == "dbtables":
         return _render_dbtables(repo, live)
     raise ValueError(f"unknown section {section!r}")
 
 
 SECTIONS = ("jobs", "schedulers", "tables", "routes", "routers", "services", "reconcile",
-            "modules", "writes", "reads", "multiwriter", "orphans", "blast", "dbtables")
+            "modules", "writes", "reads", "multiwriter", "orphans", "blast", "dbtables",
+            "graph", "refs_digest")
 
 
 def _rebase_links(body: str, depth: int) -> str:

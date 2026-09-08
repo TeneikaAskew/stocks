@@ -257,3 +257,24 @@ def test_the_runtime_relation_count_is_the_gates_own_arithmetic():
     assert rp.counts(nothing_extra, REPO_INVENTORY, VERIFY_LIVE)["RUNTIME_RELATIONS"] == "0"
     for name in PROMPTS:
         assert "{{RUNTIME_RELATIONS}}" in (PROMPT_DIR / f"{name}.md").read_text(), name
+
+
+
+def test_the_05c_prompt_reads_the_digest_not_the_raw_graph():
+    """Runs 20, 21 and 25 (twice) died at the 05-c step and nowhere else. The
+    prompt sent the model to repo_inventory.json (400 KB, table_refs 220 KB)
+    to derive prose the workflow already renders, and to redraw the §7 graph.
+    It now reads an 11 KB digest and names the prose it may edit; the graph is
+    a rendered block."""
+    src = (PROMPT_DIR / "data-dependencies.md").read_text()
+    inputs = src.split("## Inputs", 1)[1].split("## What ", 1)[0]
+    assert "`table_refs_digest.md`" in inputs
+    assert "- `repo_inventory.json`" not in inputs and "- `live.json`" not in inputs
+    assert "graph" in src and "you do not draw it" in src
+    # And the workflow produces the digest before the prompts are rendered.
+    import yaml
+    steps = yaml.safe_load((REPO / ".github/workflows/refresh-architecture-docs.yml").read_text())["jobs"]["refresh"]["steps"]
+    names = [s.get("name") for s in steps]
+    digest_i = next(i for i, s in enumerate(steps) if "table_refs_digest.md" in (s.get("run") or ""))
+    assert digest_i < names.index("Render prompts with the live counts substituted in")
+    assert "--markdown refs_digest" in steps[digest_i]["run"]
