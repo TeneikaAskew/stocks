@@ -320,8 +320,24 @@ baselines() {
   # `git worktree add` fail at that path. `[ -n "$t" ]` is what keeps it honest:
   # new_tree assigns only after a successful add, so an unset variable means
   # nothing was created and there is nothing to remove.
-  trap 'for t in "$BASE_TREE" "$MAIN_TREE"; do
-          [ -n "$t" ] && git worktree remove --force "$t" 2>/dev/null
+  #
+  # `cd "$REPO"` FIRST. The measurements run inside the trees, and the natural
+  # ordering leaves you in BASE_TREE because the failing-before run is last.
+  # The trap then removes the directory it is standing in, and every later
+  # `git worktree remove` dies with "Unable to read current working directory" —
+  # discarded, along with its status, by the `2>/dev/null`. Measured on a
+  # scratch repo: `baselines` returned **0** with one worktree still registered
+  # and still on disk, which is exactly the leak this trap exists to prevent,
+  # rebuilt inside the trap. The removals now report on stderr instead of
+  # discarding everything: a RETURN trap cannot change the function's return
+  # value — measured, `trap false RETURN` around `return 0` still returns 0 —
+  # so being loud is the only way a failed cleanup can reach anyone.
+  local REPO; REPO=$(git rev-parse --show-toplevel) || return 1
+  trap 'cd "$REPO" || echo "cannot return to $REPO — worktrees may leak" >&2
+        for t in "$BASE_TREE" "$MAIN_TREE"; do
+          [ -n "$t" ] || continue
+          git worktree remove --force "$t" \
+            || echo "could not remove worktree $t" >&2
         done; trap - RETURN' RETURN
 
   new_tree MAIN_TREE origin/main || return 1      # validity: is it still real?
@@ -751,7 +767,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # blanket override, because a flag you can set without looking is not a review.
   # EXCLUDE must be set by the caller to the array for the repo you are in.
   local sym=$1; shift
-  local a b c e rc reviewed=()
+  local a b c e f rc reviewed=()
   # REV pins the search to a COMMITTED revision instead of the working tree.
   # Empty for this repo, where the deletion under test IS the working tree and a
   # committed-only search would not see it. Set for solyra, where the question
@@ -839,6 +855,16 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
   git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .github/prompts \
     ":!.github/prompts/$sym.md"; e=$?
+  # SIXTH executable-markdown scope, and the one that is easiest to read as
+  # prose because it is called "documentation". CLAUDE.md is the project
+  # instruction file every session loads automatically, and it routes by name:
+  # `:502` and `:507` tell Claude to use fallback-guard and pre-deploy-check.
+  # ':!*.md' hides it and none of the scopes above restores it. Measured on
+  # fallback-guard with its two code callers and its agent caller simulated
+  # away: code 1, agents 1, prompts 1 — "absent, safe to delete" — while
+  # CLAUDE.md still routes sessions to it. A hit here is a CONSUMER, like an
+  # agent or a prompt. Only the root file: docs/*.md and the rest stay prose.
+  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- CLAUDE.md; f=$?
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
   # `scripts` block is EXECUTABLE: `npm run contract:sync` invokes
@@ -849,9 +875,23 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # Read package.json from the SAME place as everything else. Reading the
   # working-tree file while the greps read a pinned rev is how the two halves
   # disagree without saying so.
-  if [ ${#rev[@]} -gt 0 ]; then pkg=$(git show "$REV:package.json" 2>/dev/null) || pkg=
-  elif [ -f package.json ];  then pkg=$(cat package.json)
-  else                            pkg=; fi
+  # ABSENT AND UNREADABLE ARE DIFFERENT. `git show … || pkg=` turned any read
+  # failure — a partial clone whose lazy fetch did not land, a corrupt object —
+  # into "this repo has no manifest", which leaves d=1 while the main grep
+  # deliberately excludes package.json, so an npm-script-only consumer vanishes
+  # and the deletion is certified. Ask whether the path exists first, then
+  # require the read to succeed.
+  if [ ${#rev[@]} -gt 0 ]; then
+    if git cat-file -e "$REV:package.json" 2>/dev/null; then
+      pkg=$(git show "$REV:package.json") \
+        || { echo "package.json exists at $REV but could not be read —"
+             echo "asserting nothing rather than reading it as absent"; return 2; }
+    else pkg=; fi
+  elif [ -f package.json ]; then
+    pkg=$(cat package.json) \
+      || { echo "package.json exists but could not be read — asserting nothing"
+           return 2; }
+  else pkg=; fi
   if [ -n "$pkg" ]; then
     command -v jq >/dev/null \
       || { echo "jq not found — cannot inspect package.json scripts"; return 2; }
@@ -874,14 +914,14 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # 141 (SIGPIPE), and measured, `1${b}1` for each of those contains no `2` at
   # all — the error fell through to the hit/miss logic and, with the other two
   # scopes at 1, certified the surface ABSENT. Anything above 1 is an error.
-  for rc in "$a" "$b" "$c" "$d" "$e"; do
+  for rc in "$a" "$b" "$c" "$d" "$e" "$f"; do
     test "$rc" -le 1 \
-      || { echo "git grep error: code=$a agents=$b commands=$c scripts=$d prompts=$e — asserting nothing"
+      || { echo "git grep error: code=$a agents=$b commands=$c scripts=$d prompts=$e claude-md=$f — asserting nothing"
            return 2; }
   done
-  # code, an agent, an npm script, or a workflow prompt uses it
-  if [ "$a" -eq 0 ] || [ "$b" -eq 0 ] || [ "$d" -eq 0 ] || [ "$e" -eq 0 ]; then
-    return 0; fi
+  # code, an agent, an npm script, a workflow prompt, or CLAUDE.md uses it
+  if [ "$a" -eq 0 ] || [ "$b" -eq 0 ] || [ "$d" -eq 0 ] || [ "$e" -eq 0 ] \
+     || [ "$f" -eq 0 ]; then return 0; fi
   test "$c" -eq 0 || return 1                  # nothing, anywhere
   # rc=3 is "a grep cannot tell" — and it has to be ESCAPABLE, or a symbol this
   # file names as an example can never be retired. TradingAlertSystem is exactly
@@ -908,13 +948,23 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # inspected. Measured, and it is not hypothetical: resolve-issue.md really is
   # prose for TradingAlertSystem AND the only live route for debug-workflow
   # (`:68`, `:98`), so
-  #     REVIEWED=.claude/commands/resolve-issue.md
+  #     REVIEWED=( .claude/commands/resolve-issue.md )   # an ARRAY
   #     consumed TradingAlertSystem  -> 1   correct
   #     consumed debug-workflow      -> 1   FALSELY CERTIFIED, was 3
   # deletes a live command. So the approval carries the symbol it was made for
   # and this refuses when they disagree, rather than silently dropping it —
   # a silent drop turns into a confusing rc=3 with no reason attached.
-  test -z "${REVIEWED:-}${REVIEWED_SOLYRA:-}" || test "${REVIEWED_FOR:-}" = "$sym" || {
+  #
+  # AN ARRAY, AND QUOTED at both call sites below. An unquoted `$REVIEWED` is
+  # expanded by THIS shell before consumed() ever runs, so the per-entry
+  # validator inside the function never sees what it was asked to validate:
+  # measured, REVIEWED='.claude/commands/*.md' arrives as six already-concrete
+  # files, each passing every shape check, and the whole command scope is
+  # excluded — debug-workflow certified absent again, one layer below the check
+  # that stopped it. Word splitting and pathname expansion both go away with
+  # "${arr[@]}", and an unset name is a zero-length array rather than a glob.
+  test $(( ${#REVIEWED[@]} + ${#REVIEWED_SOLYRA[@]} )) -eq 0 \
+    || test "${REVIEWED_FOR:-}" = "$sym" || {
     echo "REVIEWED was approved for '${REVIEWED_FOR:-<unset>}', not '$sym'."
     echo "Re-read THIS symbol's command hits, then set REVIEWED_FOR=$sym —"
     echo "or clear REVIEWED. An approval does not travel between symbols."
@@ -923,11 +973,12 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # mention it — go read those lines". All three fail, which is the right
   # default: this assertion may only pass when it actually looked and found
   # nothing.
-  # Pass through any command files you inspected and confirmed are prose. Leave
-  # REVIEWED empty until consumed() has actually printed lines and you have read
-  # them; pre-filling it is how a route gets waved through as an example.
+  # Pass through any command files you inspected and confirmed are prose, as
+  #     REVIEWED=( <file> ); REVIEWED_FOR=<symbol>
+  # Leave REVIEWED=() until consumed() has actually printed lines and you have
+  # read them; pre-filling it is how a route gets waved through as an example.
   EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )
-  consumed "$sym" $REVIEWED; rc=$?
+  consumed "$sym" "${REVIEWED[@]}"; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
   # PIN THE REVISION, and fetch it first. An existing checkout is not a current
   # one: it can be parked on an old branch, or on a feature branch that already
@@ -946,7 +997,7 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     REV=$(git rev-parse FETCH_HEAD) || exit 2
     echo "solyra: searching origin/main @ ${REV:0:12} (not the working tree)"
     EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
-    consumed "$sym" $REVIEWED_SOLYRA ); rc=$?
+    consumed "$sym" "${REVIEWED_SOLYRA[@]}" ); rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
 }
 
@@ -1099,7 +1150,25 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
 # second-passes exits 0.
 fully_retired() {
   absent_everywhere "<symbol>" && retired_everywhere "<job>" "<scheduler>"; }
-fully_retired            # BARE
+
+# CALL THE ONE YOUR RESOLUTION EARNS, not always this composition. It asserts
+# that the code is gone AND a cloud resource is gone, and half the resolutions
+# this file supports cannot satisfy both:
+#
+#   deleted a module, no cloud resource   -> absent_everywhere "<symbol>"
+#                                            (retired_everywhere none none is
+#                                             refused, by design)
+#   retired a scheduler, job stays        -> retired_everywhere none "<sched>"
+#                                            (the implementation is KEPT, so
+#                                             absent_everywhere must fail)
+#   deleted the code and its resources    -> fully_retired
+#
+# Running the composition on the first two has no passing state, which is the
+# unreachable-assertion defect this file keeps finding — here in the line that
+# invokes the checks rather than in the checks themselves. Uncomment one:
+# absent_everywhere "<symbol>"     # code only
+# retired_everywhere none "<sched>"  # resource only
+fully_retired                      # both — BARE, nothing follows it
 ```
 
 Skipping the before half is what is never acceptable. "It passes now" says
