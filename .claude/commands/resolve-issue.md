@@ -1952,6 +1952,35 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
     fi
     _out=$_out$_c
   done
+  # AN INTERVAL WITH NO LOWER BOUND IS GNU-ONLY. Round 64 restricted the
+  # accepted syntax to what `grep -E` and jq's engine agree on, and settled on
+  # escapes; `{,m}` is the same divergence in a different construct. GNU reads
+  # the omitted lower bound as 0, Oniguruma does not read it as a quantifier at
+  # all. Measured against `d3` and `dd3`:
+  #     grep -E 'dd{,2}3'   matches both      jq test('dd{,2}3')   matches none
+  #     grep -E 'd{,}3'     matches all three jq test('d{,}3')     matches none
+  #     grep -E 'dd{0,2}3'  matches both      jq test('dd{0,2}3')  matches both
+  # and end to end at f41d254, on a manifest declaring d3 with package.json
+  # excluded from the grep scopes as EXCLUDE_SOLYRA has it: `consumed 'd3'`
+  # returned 0 while `consumed 'dd{,2}3'` returned 1, so the dependency reads
+  # as absent while npm still installs it.
+  # ONLY THE OMITTED LOWER BOUND. Every other interval form agrees and stays
+  # accepted — checked, `{2}`, `{1,2}` and `{2,}` give identical counts under
+  # both engines — so the passing state is the explicit spelling the message
+  # names. `_out` is the right text to test: bracket spans are already stripped
+  # (a `{` inside a class is a literal member) and escaped pairs are consumed
+  # by the walk above, so a deliberate `\{` never reaches here.
+  case $_out in
+    *'{,'*)
+      echo "'$1' uses '{,m}', an interval with no lower bound. GNU grep reads"
+      echo "  that as '{0,m}' and jq's engine does not read it as a quantifier"
+      echo "  at all, and this file uses both — the package.json dependency"
+      echo "  scan is jq, every other scope is grep -E. Measured: 'dd{,2}3'"
+      echo "  matches d3 under grep and nothing under jq, so a dependency can"
+      echo "  read as absent while npm still installs it. Write the lower"
+      echo "  bound, e.g. {0,2}."
+      return 1;;
+  esac
   # A `|` NESTED IN A GROUP IS NOT A TOP-LEVEL ALTERNATION, and this check is
   # shared rather than path-only: `consumed` splits on `|` too, for the
   # self-exclusions. Measured on the valid ERE `code-(reviewer|auditor)`: the
