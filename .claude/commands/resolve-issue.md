@@ -485,7 +485,13 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 
   ```bash
   EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )       # required; consumed() returns 2 without it
-  consumed "<table|endpoint|function>"
+  # CAPTURE THE STATUS. A bare call is a failed simple command under `set -e`
+  # for the answer this phase is looking for — rc=1, nothing consumes it — so
+  # the shell exits before the table below can be read. Every other caller in
+  # this file takes the `if`/`else` form for exactly this reason; this one was
+  # added in round 40 without it.
+  if consumed "<table|endpoint|function>"; then c=0; else c=$?; fi
+  echo "consumed rc=$c"
   #   0  consumed — it PRINTS the hits, so read them before believing the code
   #   1  nothing, in any of the six executable scopes
   #   2  refuses to assert (bad regex, unreadable tree, jq missing, EXCLUDE unset)
@@ -858,9 +864,28 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # instead of reaching the diagnostic below. Unlike REVIEWED it is not defaulted
   # to empty: an unset EXCLUDE must REFUSE, since an empty exclusion set searches
   # prose and generated files too.
-  declare -p EXCLUDE >/dev/null 2>&1 && test ${#EXCLUDE[@]} -gt 0 \
-    || { echo "EXCLUDE unset — set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA first;"
-         echo "an empty exclusion set searches prose and generated files too."
+  # AN INDEXED ARRAY, and `declare -p` plus a length cannot tell you that. On a
+  # SCALAR `EXCLUDE=':!Makefile'`, `declare -p` succeeds and `${#EXCLUDE[@]}` is
+  # 1, so both halves of the old guard passed and the scalar was accepted as the
+  # entire exclusion set — measured, `install-unpinned` (whose only consumer is
+  # the Makefile) reports rc=0 CONSUMED under EXCLUDE_STOCKS and rc=1 ABSENT
+  # under that scalar. A false certification from a value that looks right.
+  # `declare -p` on an indexed array prints `declare -a` (or `-ax` when
+  # exported); an associative array prints `-A` and a scalar `--`, so the prefix
+  # match is the type check the length was standing in for.
+  case $(declare -p EXCLUDE 2>/dev/null) in
+    "declare -a"*) ;;
+    "") echo "EXCLUDE unset — set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA first;"
+        echo "an empty exclusion set searches prose and generated files too."
+        return 2;;
+    *)  echo "EXCLUDE is not an indexed array: $(declare -p EXCLUDE 2>&1)"
+        echo "A scalar is accepted by \${#EXCLUDE[@]} and silently becomes the"
+        echo "WHOLE exclusion set. Use EXCLUDE=( \"\${EXCLUDE_STOCKS[@]}\" )."
+        return 2;;
+  esac
+  test ${#EXCLUDE[@]} -gt 0 \
+    || { echo "EXCLUDE is empty — an empty exclusion set searches prose and"
+         echo "generated files too. Set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA."
          return 2; }
   # EACH REVIEWED ENTRY MUST NAME ONE COMMAND FILE. Binding the approval to its
   # symbol (below) says WHICH symbol it is for and nothing about WHAT it hides.
@@ -1121,7 +1146,12 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
         "${EXCLUDE[@]}" "${reviewed[@]}"
       echo "If every line above is prose rather than a caller — an ordinary"
       echo "word inside a comment, say — read them, then re-run naming those"
-      echo "files:  REVIEWED=( <file> … ); REVIEWED_FOR=$sym"
+      # %q, for the reason the rollout diagnostic takes it: consumed() reads an
+      # ERE, the forms' worked example is `playbook_cards|/api/playbook`, and
+      # printed raw this line cannot be pasted — bash reads `|` as a pipeline
+      # and tries to execute /api/playbook. Measured. Its sibling below had the
+      # same defect and is fixed with it rather than left for the next round.
+      printf 'files:  REVIEWED=( <file> … ); REVIEWED_FOR=%q\n' "$sym"
     fi
     return 0
   fi
@@ -1218,12 +1248,16 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # `${#impl[@]}` guards rather than a bare `"${impl[@]}"`: bash 3.2, still
   # /bin/bash on macOS, treats expanding an EMPTY array under `set -u` as an
   # unbound variable, and no implementation argument is the ordinary case.
-  local impl=( "$@" ) _i
+  local impl=( "$@" ) _i _p _impl_re=
   if [ ${#impl[@]} -gt 0 ]; then
     for _i in "${impl[@]}"; do
       test -n "$_i" || {
         echo "an empty implementation argument matches every path — refusing"
         return 1; }
+      # Normalised the same way the symbol is, and built HERE rather than beside
+      # the path scan because the REVIEWED filter below has to consult it first.
+      _p=${_i//_/$'\x01'}; _p=${_p//-/$'\x01'}; _p=${_p//$'\x01'/[-_]}
+      _impl_re="${_impl_re:+$_impl_re|}$_p"
     done
   fi
   # AN APPROVAL IS SYMBOL-BOUND. REVIEWED clears the rc=3 ambiguity by naming
@@ -1259,7 +1293,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   test $(( ${#REVIEWED[@]} + ${#REVIEWED_SOLYRA[@]} )) -eq 0 \
     || test "${REVIEWED_FOR:-}" = "$sym" || {
     echo "REVIEWED was approved for '${REVIEWED_FOR:-<unset>}', not '$sym'."
-    echo "Re-read THIS symbol's command hits, then set REVIEWED_FOR=$sym —"
+    printf "Re-read THIS symbol's command hits, then set REVIEWED_FOR=%q —\n" "$sym"
     echo "or clear REVIEWED. An approval does not travel between symbols."
     return 1; }
   # Only rc=1 is "absent". 0 is consumed, 2 is "grep broke", 3 is "commands
@@ -1347,13 +1381,26 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # the same act on either side: you looked, and it is not the surface. Every
   # one of those nine also mentions the symbol in its contents, so they satisfy
   # the must-mention validation and are approvable — checked, all nine rc=0.
+  # AN APPROVAL CANNOT REMOVE AN IMPLEMENTATION YOU JUST NAMED. This filter runs
+  # BEFORE the path scan, so a file listed in REVIEWED left the inventory before
+  # the scan could see it — measured, with scripts/run_historical_signals.py
+  # approved as prose the scan certified the retirement while the module sat on
+  # disk. Approving a path that merely SHARES the symbol stays allowed and must:
+  # that is the `react` case above, nine unrelated paths, and without it the
+  # check has no passing state. What is refused is approving away the very file
+  # the caller asserted the surface runs. Those are different claims — "this
+  # path is not the surface" versus "this path IS the implementation" — and the
+  # second is already on the record, made by the caller one argument earlier.
   local ap
-  files=$(printf '%s\n' "$files" | while IFS= read -r p; do
+  files=$(IMPL_RE=$_impl_re; printf '%s\n' "$files" | while IFS= read -r p; do
             test -n "$p" || continue
             test -e "$root/$p" || test -L "$root/$p" || continue
-            for ap in "${REVIEWED[@]}"; do
-              test "$p" != "$ap" || { p=; break; }
-            done
+            if [ -z "$IMPL_RE" ] || ! printf '%s' "$p" | grep -qE -- "$IMPL_RE"
+            then
+              for ap in "${REVIEWED[@]}"; do
+                test "$p" != "$ap" || { p=; break; }
+              done
+            fi
             test -n "$p" || continue
             printf '%s\n' "$p"; done)
   # NOT `git ls-files | grep`: grep would supply the pipeline's status, so a
@@ -1383,15 +1430,10 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   pathsym=${pathsym//$'\x01'/[-_]}
   # `if` for errexit, as in consumed(): a clean miss is rc=1 and an untested
   # nonzero assignment kills the shell under `set -e` — measured.
-  # Every implementation the caller named is normalised and scanned the same
-  # way, joined into one ERE so a single pass answers for all of them.
-  local _p _alts=$pathsym
-  if [ ${#impl[@]} -gt 0 ]; then
-    for _i in "${impl[@]}"; do
-      _p=${_i//_/$'\x01'}; _p=${_p//-/$'\x01'}; _p=${_p//$'\x01'/[-_]}
-      _alts="$_alts|$_p"
-    done
-  fi
+  # Every implementation the caller named is scanned the same way as the symbol,
+  # joined into one ERE so a single pass answers for all of them. Normalised
+  # above, beside its validation, because the REVIEWED filter needs it first.
+  local _alts="$pathsym${_impl_re:+|$_impl_re}"
   if leftover=$(printf '%s\n' "$files" | grep -E -- "$_alts"); then st=0
   else st=$?; fi
   test "$st" -le 1 \
@@ -1443,12 +1485,23 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # there is no unstaged deletion and no untracked file to miss.
     # Same separator normalisation as the stocks half; $pathsym is the caller's
     # local, visible in here because a subshell inherits it.
-    if sleft=$(printf '%s\n' "$sfiles" | grep -E -- "$pathsym"); then sst=0
+    # THE SAME ALTERNATION AS THE STOCKS SCAN. The caller supplies an
+    # implementation precisely because its name differs from the symbol, and
+    # nothing about that is stocks-specific: a differently named solyra file
+    # whose contents no longer mention the public symbol passes consumed() AND
+    # a $pathsym-only path scan, so the paired deletion certifies with it still
+    # there. Round 41 gave the stocks scan $_alts and left this one on $pathsym
+    # — the asymmetry is the bug, not a missing feature.
+    if sleft=$(printf '%s\n' "$sfiles" | grep -E -- "$_alts"); then sst=0
     else sst=$?; fi
     test "$sst" -le 1 \
       || { echo "solyra: path scan errored (rc=$sst)"; exit 2; }
     if [ -n "$sleft" ]; then
-      echo "solyra paths still containing '$sym' at ${REV:0:12}:"
+      if [ -n "$_impl_re" ]; then
+        echo "solyra paths matching '$sym' or an implementation you named, at ${REV:0:12}:"
+      else
+        echo "solyra paths still containing '$sym' at ${REV:0:12}:"
+      fi
       printf '  %s\n' $sleft
       # 4, NOT 1. `consumed()` uses rc=1 for "nothing found", and the outer
       # check below ACCEPTS 1 as the passing answer — so exiting 1 here printed
