@@ -37,6 +37,7 @@ from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, PHASES, LABEL_MODES, DEFAULT_LABEL_MODE,
     LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
     DEFAULT_CUTOFFS, MIN_TEST_BARS,
+    MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds,
     DEFAULT_CALIBRATION, DEFAULT_CV,
     PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MAX_MODAL_EXCESS,
     PROMOTION_MIN_DISTINCT_CLASSES,
@@ -473,6 +474,37 @@ _WALK_FORWARD_GATE_LABELS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def serving_contract_reason(label_mode: str,
+                            thresholds: tuple[float, ...]) -> str | None:
+    """Reason to refuse promotion because the labels are not the ones served.
+
+    `LATEST` feeds mag_inference, which feeds the Expected-Move card, and both
+    read one contract: `body` magnitude bucketed at MAGNITUDE_THRESHOLDS. A
+    model trained on `excursion`, `call` or `put`, or at different cut points,
+    predicts buckets that mean something else entirely, and nothing downstream
+    would notice — the values are still 0-3 and the distribution still looks
+    plausible. Neither promotion_verdict nor the walk-forward gates can see it,
+    because both judge numbers rather than semantics.
+
+    Research runs under a non-default label are legitimate and their
+    walk-forward output is kept; they just cannot become the serving model.
+    Returns None when the labels match the serving contract.
+    """
+    mismatches = []
+    if label_mode != DEFAULT_LABEL_MODE:
+        mismatches.append(
+            f"label_mode={label_mode!r} (serving contract is "
+            f"{DEFAULT_LABEL_MODE!r})")
+    if tuple(thresholds) != tuple(MAGNITUDE_THRESHOLDS):
+        mismatches.append(
+            f"thresholds={tuple(thresholds)} (serving contract is "
+            f"{tuple(MAGNITUDE_THRESHOLDS)})")
+    if not mismatches:
+        return None
+    return ("trained on labels the serving path does not read: "
+            + "; ".join(mismatches))
+
+
 def walk_forward_gate_reason(gates: dict) -> str | None:
     """Reason to refuse promotion on the cell's own walk-forward verdict.
 
@@ -517,6 +549,8 @@ def _persist_production_model_artifact(
     X_full: np.ndarray, y_full: np.ndarray,
     feature_cols: list[str],
     gates: dict,
+    label_mode: str,
+    thresholds: tuple[float, ...],
     calibration: str = DEFAULT_CALIBRATION,
     cv: int = DEFAULT_CV,
 ) -> str | None:
@@ -583,6 +617,12 @@ def _persist_production_model_artifact(
     # verdict. Distribution sanity alone let three slv7m cells promote
     # without ever beating the class-prior baseline.
     gate_reason = walk_forward_gate_reason(gates)
+    contract_reason = serving_contract_reason(label_mode, thresholds)
+    if contract_reason:
+        gate_reason = (f"{gate_reason}; {contract_reason}" if gate_reason
+                       else contract_reason)
+    verdict["label_mode"] = label_mode
+    verdict["thresholds"] = list(thresholds)
     verdict["walk_forward_gates"] = {
         k: gates.get(k) for k in (
             "n_ok_folds", "cell_pass_gates_1_to_4",
@@ -705,15 +745,17 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cutoffs: list[str] | None = None,
                   calibration: str = DEFAULT_CALIBRATION,
                   cv: int = DEFAULT_CV,
-                  label_mode: str = "body",
+                  label_mode: str = DEFAULT_LABEL_MODE,
                   persist_production_model: bool = False,
                   features: str = "") -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
     log.info("=" * 70)
-    log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  label_mode=%s",
-             phase, ticker, tf, len(cutoffs), label_mode)
+    log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
+             "label_mode=%s  thresholds=%s",
+             phase, ticker, tf, len(cutoffs), label_mode, thresholds)
     log.info("=" * 70)
 
+    thresholds = resolve_magnitude_thresholds()
     df = load_magnitude_dataset(engine, ticker, tf, phase, label_mode=label_mode)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     log.info("loaded: %d rows  (%s..%s)",
@@ -834,6 +876,11 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration, "cv": cv,
+        # Recorded so a run's own output says which labels it trained on.
+        # Before #1048's follow-up the summary named neither, and three of the
+        # four dispatch paths silently ignored --label-mode.
+        "label_mode": label_mode,
+        "thresholds": list(thresholds),
         "random_seed": int(os.environ.get("MAG_SEED", "42")),
         "n_features": int(X_full.shape[1]),
         "feature_cols": feature_cols,
@@ -898,7 +945,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         try:
             uri = _persist_production_model_artifact(
                 ticker, tf, run_id, X_full, y_full, feature_cols,
-                gates=gates, calibration=calibration, cv=cv,
+                gates=gates, label_mode=label_mode, thresholds=thresholds,
+                calibration=calibration, cv=cv,
             )
             if uri:
                 summary["production_model_uri"] = uri
@@ -918,6 +966,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 def run_all_cells(engine, phase: str,
                    cutoffs: list[str] | None = None,
                    calibration: str = DEFAULT_CALIBRATION,
+                   label_mode: str = DEFAULT_LABEL_MODE,
                    persist_production_model: bool = False,
                    features: str = "") -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
@@ -927,6 +976,7 @@ def run_all_cells(engine, phase: str,
             try:
                 s = walk_forward(engine, phase, ticker, tf,
                                  cutoffs=cutoffs, calibration=calibration,
+                                 label_mode=label_mode,
                                  persist_production_model=persist_production_model,
                                  features=features)
                 all_summaries.append(s)
@@ -1105,6 +1155,7 @@ def main():
                  phase, ticker, tf)
         walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration,
+                      label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
                       features=args.features)
         return
@@ -1117,6 +1168,7 @@ def main():
         phase, ticker, tf = plan[args.task_index]
         walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration,
+                      label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
                       features=args.features)
         return
@@ -1126,6 +1178,7 @@ def main():
             raise SystemExit("--all-cells needs --phase")
         run_all_cells(engine, args.phase, cutoffs=cutoffs,
                        calibration=args.calibration,
+                       label_mode=args.label_mode,
                        persist_production_model=args.persist_production_model,
                        features=args.features)
         return

@@ -565,7 +565,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `economic_events`
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [832](../../../gcp/premarket_brief.py#L832), [847](../../../gcp/premarket_brief.py#L847)
-- [`gcp/research/magnitude_engine/mag_dataset.py`](../../../gcp/research/magnitude_engine/mag_dataset.py) — line [132](../../../gcp/research/magnitude_engine/mag_dataset.py#L132)
+- [`gcp/research/magnitude_engine/mag_dataset.py`](../../../gcp/research/magnitude_engine/mag_dataset.py) — line [133](../../../gcp/research/magnitude_engine/mag_dataset.py#L133)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [195](../../../lib/agents/ranker/candidates.py#L195)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1253](../../../lib/agents/summarizers.py#L1253)
 - [`lib/gamma_glossary.py`](../../../lib/gamma_glossary.py) — line [260](../../../lib/gamma_glossary.py#L260)

@@ -10,6 +10,8 @@ and MUST NOT be tuned after running. Per the project spec:
      a failed phase."
 """
 from __future__ import annotations
+import math
+import os
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -48,6 +50,49 @@ LABEL_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(LABEL_CLASSES)}
 # 1.0 <= move<1.5 → EXPANDED (2)
 # move >= 1.5    → EXPLOSIVE (3)
 MAGNITUDE_THRESHOLDS: tuple[float, ...] = (0.5, 1.0, 1.5)
+
+
+def resolve_magnitude_thresholds() -> tuple[float, ...]:
+    """The ATR-multiple cut points, or the MAG_THRESHOLDS research override.
+
+    The default puts 63-72% of bars in TIGHT depending on the cell (measured
+    on the slv7m prediction CSVs, #1025), which is why gate 1 asks the model
+    to beat so strong a class prior. Whether a different split makes the
+    target learnable is an open research question, and it could not be asked
+    at all while these were a hardcoded constant.
+
+    Override with MAG_THRESHOLDS="0.35,0.75,1.25". A malformed value RAISES
+    rather than falling back to the default: a run that silently trained on
+    labels other than the ones asked for is exactly the failure this override
+    exists to make visible (see the label_mode plumbing bug fixed alongside).
+
+    A non-default value changes what the four buckets MEAN, so the persist
+    path refuses to promote a model trained under one — mag_inference and the
+    Expected-Move card both read the default contract.
+    """
+    raw = os.environ.get("MAG_THRESHOLDS", "").strip()
+    if not raw:
+        return MAGNITUDE_THRESHOLDS
+    want = len(LABEL_CLASSES) - 1
+    try:
+        vals = tuple(float(p) for p in raw.split(","))
+    except ValueError as e:
+        raise ValueError(
+            f"MAG_THRESHOLDS={raw!r} is not a comma-separated list of "
+            f"numbers: {e}") from e
+    if len(vals) != want:
+        raise ValueError(
+            f"MAG_THRESHOLDS={raw!r} has {len(vals)} cut point(s); {want} "
+            f"are needed for the {len(LABEL_CLASSES)} classes {LABEL_CLASSES}")
+    if not all(math.isfinite(v) and v > 0 for v in vals):
+        raise ValueError(
+            f"MAG_THRESHOLDS={raw!r}: every cut point must be finite and "
+            "positive (they are ATR multiples)")
+    if any(a >= b for a, b in zip(vals, vals[1:])):
+        raise ValueError(
+            f"MAG_THRESHOLDS={raw!r} must be strictly ascending; the buckets "
+            "are read as [0,t0) [t0,t1) [t1,t2) [t2,inf)")
+    return vals
 
 # Label modes (reviewer 2026-06-01). The default "body" target,
 # |next_close - next_open| / atr_20, matches the IV expected-move comparison at

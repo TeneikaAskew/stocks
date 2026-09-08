@@ -33,6 +33,7 @@ from sqlalchemy.exc import ProgrammingError, OperationalError
 
 from gcp.research.magnitude_engine.mag_config import (
     LABEL_COL, LABEL_CLASSES, MAGNITUDE_THRESHOLDS, PHASE_FEATURES,
+    resolve_magnitude_thresholds,
     LABEL_MODES, DEFAULT_LABEL_MODE,
     NEW_INDICATORS_TABLE, NEW_CROSS_ASSET_TABLE,
 )
@@ -90,7 +91,7 @@ def _bucket_magnitude(move: pd.Series, atr20: pd.Series) -> pd.Series:
     ratio.loc[valid] = (move.loc[valid] / atr20.loc[valid]).astype(float)
 
     # bisect-style bucketing
-    t0, t1, t2 = MAGNITUDE_THRESHOLDS
+    t0, t1, t2 = resolve_magnitude_thresholds()
     bucket = pd.Series(pd.NA, index=move.index, dtype="object")
     bucket.loc[valid & (ratio < t0)] = LABEL_CLASSES[0]
     bucket.loc[valid & (ratio >= t0) & (ratio < t1)] = LABEL_CLASSES[1]

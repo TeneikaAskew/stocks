@@ -153,7 +153,7 @@ def test_persists_three_blobs_with_correct_names(monkeypatch, joblib_dump_stub):
             "IWM", "5m", run_id="testrun-001",
             X_full=X, y_full=y,
             feature_cols=["rsi_14", "atr_14", "ema_9", "vwap"],
-            gates=_passing_gates(), calibration="none",
+            gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     # Atomic-publish: blobs land under a run-scoped path and a LATEST
@@ -182,7 +182,7 @@ def test_version_blob_is_the_run_id(monkeypatch, joblib_dump_stub):
         mwf._persist_production_model_artifact(
             "SPY", "5m", run_id="walk-forward-2026-06-13-SPY-5m-v3",
             X_full=X, y_full=y,
-            feature_cols=["x"], gates=_passing_gates(), calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     run_id = "walk-forward-2026-06-13-SPY-5m-v3"
@@ -203,7 +203,7 @@ def test_feature_cols_blob_is_newline_delimited(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "QQQ", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=cols, gates=_passing_gates(), calibration="none",
+            feature_cols=cols, gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     blob = captured["magnitude-models/production/QQQ/5m/r/feature_cols.txt"]
@@ -225,7 +225,7 @@ def test_returns_none_on_upload_failure_no_raise(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         got = mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=["x"], gates=_passing_gates(), calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
     assert got is None
 
@@ -257,7 +257,7 @@ def test_latest_pointer_updated_last(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="rX", X_full=X, y_full=y,
-            feature_cols=["x"], gates=_passing_gates(), calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     # LATEST must be the last write in the upload sequence.
@@ -290,7 +290,7 @@ def test_uses_calibrated_wrapper_when_calibration_not_none(monkeypatch, joblib_d
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=["x"], gates=_passing_gates(), calibration="sigmoid", cv=3,
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="sigmoid", cv=3,
         )
 
     assert len(ccv_seen) == 1
@@ -582,7 +582,7 @@ def test_blocked_promotion_leaves_latest_untouched(monkeypatch, joblib_dump_stub
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         uri = mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="collapsed-001",
-            X_full=X, y_full=y, feature_cols=["x"], gates=_passing_gates(), calibration="none",
+            X_full=X, y_full=y, feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     assert uri is None, "a blocked promotion must not report success"
@@ -613,7 +613,7 @@ def test_isotonic_calibration_does_not_bypass_the_gate(monkeypatch, joblib_dump_
         uri = mwf._persist_production_model_artifact(
             "IWM", "15m", run_id="iso-001",
             X_full=X, y_full=y, feature_cols=["x"],
-            gates=_passing_gates(), calibration="isotonic",
+            gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="isotonic",
         )
 
     assert uri is None
@@ -668,7 +668,7 @@ def test_failed_walk_forward_gates_block_promotion(monkeypatch, joblib_dump_stub
         uri = mwf._persist_production_model_artifact(
             "SPY", "15m", run_id="slv7m-shape",
             X_full=X, y_full=y, feature_cols=["x"],
-            gates=_slv7m_gates(), calibration="none",
+            gates=_slv7m_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     assert uri is None, "a cell that failed gates 1-4 must not be promoted"
@@ -703,7 +703,7 @@ def test_both_criteria_are_reported_when_both_fail(monkeypatch, joblib_dump_stub
         uri = mwf._persist_production_model_artifact(
             "IWM", "15m", run_id="both-001",
             X_full=X, y_full=y, feature_cols=["x"],
-            gates=_slv7m_gates(), calibration="none",
+            gates=_slv7m_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     assert uri is None
@@ -727,7 +727,7 @@ def test_passing_cell_still_promotes_and_records_its_gates(monkeypatch, joblib_d
         uri = mwf._persist_production_model_artifact(
             "QQQ", "15m", run_id="good-001",
             X_full=X, y_full=y, feature_cols=["x"],
-            gates=_passing_gates(), calibration="none",
+            gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     assert uri == "gs://test-bucket/magnitude-models/production/QQQ/15m/"
@@ -747,3 +747,145 @@ def test_persist_call_site_hands_over_the_cells_own_gates():
     # And the parameter is required, so a caller cannot silently omit it.
     sig = inspect.signature(mwf._persist_production_model_artifact)
     assert sig.parameters["gates"].default is inspect.Parameter.empty
+
+# ─────── label semantics: the serving contract (#1025 follow-up) ───────
+
+def test_serving_contract_reason_passes_the_default_labels():
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    from gcp.research.magnitude_engine.mag_config import (
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS)
+    assert mwf.serving_contract_reason(
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS) is None
+
+
+def test_serving_contract_reason_names_each_mismatch():
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    assert "label_mode='excursion'" in mwf.serving_contract_reason(
+        "excursion", (0.5, 1.0, 1.5))
+    assert "thresholds=(0.35, 0.75, 1.25)" in mwf.serving_contract_reason(
+        "body", (0.35, 0.75, 1.25))
+    both = mwf.serving_contract_reason("put", (0.35, 0.75, 1.25))
+    assert "label_mode='put'" in both and "thresholds=" in both
+
+
+def test_research_labels_cannot_become_the_serving_model(monkeypatch, joblib_dump_stub):
+    """A model trained on `excursion` predicts buckets that mean something
+    else; mag_inference and the card read `body`. Neither the distribution
+    criteria nor gates 1-4 can see the difference — the values are still 0-3
+    and the spread still looks healthy — so the contract is checked directly.
+    """
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "IWM", "15m", run_id="excursion-001",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_passing_gates(),          # gates 1-4 all PASS
+            label_mode="excursion", thresholds=(0.5, 1.0, 1.5),
+            calibration="none",
+        )
+
+    assert uri is None
+    assert "magnitude-models/production/IWM/15m/LATEST" not in captured
+    payload = json.loads(
+        captured["magnitude-models/production/IWM/15m/excursion-001/PROMOTION_BLOCKED"].decode())
+    assert "label_mode='excursion'" in payload["reason"]
+    assert payload["label_mode"] == "excursion"
+
+
+def test_non_default_thresholds_cannot_become_the_serving_model(monkeypatch, joblib_dump_stub):
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "SPY", "15m", run_id="thresh-001",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_passing_gates(),
+            label_mode="body", thresholds=(0.35, 0.75, 1.25),
+            calibration="none",
+        )
+
+    assert uri is None
+    payload = json.loads(
+        captured["magnitude-models/production/SPY/15m/thresh-001/PROMOTION_BLOCKED"].decode())
+    assert payload["thresholds"] == [0.35, 0.75, 1.25]
+    assert "serving contract is (0.5, 1.0, 1.5)" in payload["reason"]
+
+
+# ─────────── --label-mode reached only ONE of four dispatch paths ───────────
+
+def test_every_dispatch_path_forwards_label_mode():
+    """The Cloud Run task-parallel path — the ONLY way this job runs in
+    production — called walk_forward() without label_mode, so
+    `--label-mode=excursion` silently trained `body` and reported success.
+    Same for --plan/--task-index and --all-cells. Three of four paths.
+    """
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.main)
+    # one per dispatch path: task-parallel, --plan, --all-cells, single cell
+    assert src.count("label_mode=args.label_mode") == 4, (
+        "every dispatch path must forward the requested label mode; a path "
+        "that drops it trains the default and reports success")
+
+    # and the in-process fan-out must forward what it was given
+    assert "label_mode=label_mode" in inspect.getsource(mwf.run_all_cells)
+
+
+def test_walk_forward_records_the_labels_it_trained_on():
+    """The run summary has to name the labels, or a finished run cannot be
+    audited for which experiment it actually was."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    assert '"label_mode": label_mode' in src
+    assert '"thresholds": list(thresholds)' in src
+    # thresholds are resolved once per cell, from the same helper the dataset
+    # buckets with, so summary and labels cannot disagree
+    assert "thresholds = resolve_magnitude_thresholds()" in src
+
+
+# ──────────────────── MAG_THRESHOLDS override ────────────────────
+
+def test_threshold_override_defaults_and_parses(monkeypatch):
+    from gcp.research.magnitude_engine.mag_config import (
+        MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds)
+
+    monkeypatch.delenv("MAG_THRESHOLDS", raising=False)
+    assert resolve_magnitude_thresholds() == MAGNITUDE_THRESHOLDS
+    monkeypatch.setenv("MAG_THRESHOLDS", " 0.35,0.75,1.25 ")
+    assert resolve_magnitude_thresholds() == (0.35, 0.75, 1.25)
+
+
+@pytest.mark.parametrize("bad,why", [
+    ("1,2", "wrong count"),
+    ("0.5,1.0,1.5,2.0", "wrong count"),
+    ("a,b,c", "not numbers"),
+    ("0.5,0.5,1.0", "not ascending"),
+    ("1.5,1.0,0.5", "descending"),
+    ("-1,2,3", "non-positive"),
+    ("0.5,nan,1.5", "not finite"),
+])
+def test_malformed_threshold_override_raises_rather_than_defaulting(
+        monkeypatch, bad, why):
+    """CLAUDE.md §3.7: falling back to the default here would train one label
+    set while the operator believed another — the same silent substitution the
+    dispatch-path bug caused."""
+    from gcp.research.magnitude_engine.mag_config import resolve_magnitude_thresholds
+
+    monkeypatch.setenv("MAG_THRESHOLDS", bad)
+    with pytest.raises(ValueError):
+        resolve_magnitude_thresholds()
