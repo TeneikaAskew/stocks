@@ -489,6 +489,10 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
                # (the last run that regenerated it), so gating the first would
                # fail an honest tree outside the workflow. (Codex, PR #1062.)
                re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
+# 05-a must carry all three: they are the header note, §3's table column and
+# the closing line, and the architecture prompt names each one. The other
+# documents state no live as-of label, so nothing is required of them.
+REQUIRED_ASOF = {ARCH: ASOF_LABELS}
 
 
 def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
@@ -514,12 +518,23 @@ def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
         f = root / doc
         if not f.exists():
             continue
+        matched = {pat: 0 for pat in ASOF_LABELS}
         for i, line in enumerate(_prose_lines(f.read_text()), 1):
             for pat in ASOF_LABELS:
                 for m in pat.finditer(line):
+                    matched[pat] += 1
                     if m.group(1) != day:
                         out.append(f"{doc}: as-of label says {m.group(1)} but this run read "
                                    f"live state on {day} (prose line {i}): {m.group(0)!r}")
+        # A date gate that only compares dates fails OPEN on a reword: change
+        # §3's column header to `| Service | Role | Current |` and no pattern
+        # matches, so the document loses its freshness provenance and the gate
+        # reports clean. 05-a is required to carry all three. (Codex, #1062.)
+        for pat in REQUIRED_ASOF.get(doc, ()):  # noqa: SIM118 -- keys are patterns
+            if not matched[pat]:
+                out.append(f"{doc}: no as-of label matching {pat.pattern!r}. That location "
+                           "states when the live state below it was read; rewording it away "
+                           "leaves the reader no way to tell how fresh the table is")
     return out
 
 
@@ -825,11 +840,24 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                 if int(claimed) != total:
                     out.append(f"{doc}: claims {claimed} declared relations (prose line {i}); "
                                f"gcp/schema.sql declares {total} ({breakdown})")
-                for n, kind_word in declared_parts(line[m.end():]):
+                parts = declared_parts(line[m.end():])
+                for n, kind_word in parts:
                     kind = kind_word.rstrip("s")
                     if n != kinds[kind]:
                         out.append(f"{doc}: claims {n} {kind_word} in gcp/schema.sql "
                                    f"(prose line {i}); it declares {kinds[kind]} ({breakdown})")
+                # Every part being individually right does not make the list
+                # complete: "70 relations (67 tables, 2 materialized views)"
+                # passes each comparison while the parts shown sum to 69 -- the
+                # same self-contradiction this gate was added for, recreated by
+                # dropping a category instead of mistyping one. (Codex, #1062.)
+                seen = {k.rstrip("s") for _, k in parts}
+                want = {k for k, v in kinds.items() if v}
+                if parts and seen != want:
+                    missing = ", ".join(sorted(want - seen)) or "-"
+                    out.append(f"{doc}: the breakdown beside {claimed} relations omits "
+                               f"{missing} (prose line {i}); gcp/schema.sql declares "
+                               f"{total} ({breakdown}) and every kind belongs in the list")
 
     if live and live.get("db_tables"):
         declared, runtime = relation_counts(repo, live)

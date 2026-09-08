@@ -66,7 +66,10 @@ Three, ranked by $/month, each with the resource, the exact change (gcloud comma
 - **Every command you write must survive being pasted into a shell.** A
   `gcloud logging read` filter contains spaces and its own quotes, so it needs
   ONE pair of outer quotes and a different quote character inside:
-  `gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="X"' --project=... --limit=100`.
+  `gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="X"' --project=adept-mountain-474619-d4 --limit=100`.
+  The project id is written out in full there on purpose: a `...` placeholder
+  in an example is a thing a model copies verbatim, and the result is both
+  unpastable and in breach of the rule below.
   Run 28 wrote the filter with double quotes inside double quotes, which the
   shell splits into four arguments and `gcloud` rejects. A command that errors
   on the first paste costs the reader more than no command at all.

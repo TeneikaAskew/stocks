@@ -882,16 +882,30 @@ def test_a_short_repeated_ending_is_not_a_duplicated_tail(tmp_path):
     assert gate.gate_duplicated_tail(tmp_path) == []
 
 
+def _asof_stub(root, header="2026-09-08", column="2026-09-08", snapshot="2026-09-08",
+               extra=""):
+    """A minimal 05-a carrying all three as-of labels, one date each.
+
+    All three, because the gate also requires each label to be PRESENT: a stub
+    that states one of them would fail for the reason under test plus two it
+    was not written to exercise.
+    """
+    doc = root / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(f"> Live state below was read on **{header}** with `gcloud`.\n"
+                   f"\n| Service | Role | Live {column} |\n"
+                   f"\nGenerated 2026-09-08 by the refresh; blocks rendered "
+                   f"from the {snapshot} live snapshot.\n{extra}")
+    return doc
+
+
 def test_an_asof_label_naming_an_older_snapshot_is_a_finding(tmp_path):
     """Run 28 updated 05-a's header to `read on **2026-09-08**` and left §3's
     table header at `Live 2026-09-07`, so a table of the current fleet
     announced itself as a day old. On the monthly cadence the label is a month
     out. The dates inside the marker blocks are rendered and were right; these
-    two are prose."""
-    doc = tmp_path / gate.ARCH
-    doc.parent.mkdir(parents=True, exist_ok=True)
-    doc.write_text("> Live state below was read on **2026-09-08** with `gcloud`.\n"
-                   "\n| Service | Role | Live 2026-09-07 |\n")
+    three are prose."""
+    _asof_stub(tmp_path, column="2026-09-07")
     out = gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"})
     assert len(out) == 1, out
     assert "Live 2026-09-07" in out[0]
@@ -902,23 +916,30 @@ def test_a_historical_date_is_not_an_asof_label(tmp_path):
     something was corrected, deleted or audited. A gate that moved those would
     rewrite the document's history, so only the two literal label shapes are
     matched."""
-    doc = tmp_path / gate.ARCH
-    doc.parent.mkdir(parents=True, exist_ok=True)
-    doc.write_text("Storage corrected 2026-09-07 in this doc, which had said 55 GB.\n"
-                   "`signal-quality-report-hourly` deleted 2026-09-07.\n"
-                   "See [the audit](../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md).\n")
+    _asof_stub(tmp_path, extra=(
+        "\nStorage corrected 2026-09-07 in this doc, which had said 55 GB.\n"
+        "`signal-quality-report-hourly` deleted 2026-09-07.\n"
+        "See [the audit](../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md).\n"))
     assert gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"}) == []
 
 
 def test_the_committed_asof_labels_match_their_own_snapshot():
     """Calibration against the real corpus, in both directions: the committed
-    documents are clean as of the date they were written, and both labels are
+    document is clean as of the date it carries, and all three labels are
     caught the moment the snapshot moves. A gate that fired on neither, or on
-    everything, would pass the constructed cases above just as well."""
-    assert gate.gate_stale_asof(gate.REPO, {"read_at": "2026-09-07T04:35:16Z"}) == []
+    everything, would pass the constructed cases above just as well.
+
+    The baseline date is READ from the document, never pinned. The monthly
+    refresh rewrites these labels to the new snapshot date and does not touch
+    this file, so a hard-coded date would make the refresh's own pull request
+    fail CI -- the gate breaking the loop it exists to protect.
+    (Codex, PR #1062.)"""
+    text = (gate.REPO / gate.ARCH).read_text()
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", text).group(1)
+    assert gate.gate_stale_asof(gate.REPO, {"read_at": f"{day}T04:35:16Z"}) == []
     # Three labels: the header note, §3's table column, and the snapshot date
     # in the closing line.
-    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "2026-09-08T17:48:56Z"})) == 3
+    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "1999-01-01T00:00:00Z"})) == 3
 
 
 def test_no_snapshot_means_no_asof_finding(tmp_path):
@@ -943,10 +964,10 @@ def test_the_relation_breakdown_must_sum_to_the_total(live, repo, tmp_path):
         _copy(REPO / d, root / d)
     assert gate.gate_derived_numbers(root, repo, live) == []
     a = root / gate.ARCH
-    a.write_text(a.read_text().replace(
-        "declares **70 relations** (67 tables,", "declares **70 relations** (66 tables,"))
+    tables = len(repo["tables"])
+    a.write_text(a.read_text().replace(f"({tables} tables,", f"({tables - 1} tables,"))
     findings = gate.gate_derived_numbers(root, repo, live)
-    assert any("claims 66 tables" in f for f in findings), findings
+    assert any(f"claims {tables - 1} tables" in f for f in findings), findings
 
 
 def test_a_wrong_relation_total_is_a_finding(live, repo, tmp_path):
@@ -956,9 +977,11 @@ def test_a_wrong_relation_total_is_a_finding(live, repo, tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
     a = root / gate.ARCH
-    a.write_text(a.read_text().replace("declares **70 relations**", "declares **69 relations**"))
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    a.write_text(a.read_text().replace(f"declares **{total} relations**",
+                                       f"declares **{total - 1} relations**"))
     findings = gate.gate_derived_numbers(root, repo, live)
-    assert any("claims 69 declared relations" in f for f in findings), findings
+    assert any(f"claims {total - 1} declared relations" in f for f in findings), findings
 
 
 def test_the_breakdown_is_matched_as_parts_not_a_fixed_triple(live, repo, tmp_path):
@@ -970,9 +993,13 @@ def test_the_breakdown_is_matched_as_parts_not_a_fixed_triple(live, repo, tmp_pa
     for d in DOCS:
         _copy(REPO / d, root / d)
     a = root / gate.ARCH
-    a.write_text(a.read_text().replace(
-        "declares **70 relations** (67 tables, 2 materialized views, 1 view)",
-        "declares **70 relations** (1 view, 2 materialized views and 99 tables)"))
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    a.write_text(re.sub(
+        rf"declares \*\*{total} relations\*\* \([^)]*\)",
+        f"declares **{total} relations** "
+        f"({len(repo['views'])} view, {len(repo['materialized_views'])} materialized views "
+        "and 99 tables)",
+        a.read_text()))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any("claims 99 tables" in f for f in findings), findings
 
@@ -991,12 +1018,15 @@ def test_both_copies_of_the_relation_breakdown_are_checked(live, repo, tmp_path)
         _copy(REPO / d, root / d)
     assert gate.gate_derived_numbers(root, repo, live) == []
     a = root / gate.ARCH
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    tables = len(repo["tables"])
+    before = f"{total} declared in `gcp/schema.sql` — {tables} tables,"
+    assert before in a.read_text(), "the §3 row no longer has the shape this test breaks"
     a.write_text(a.read_text().replace(
-        "95 relations (70 declared in `gcp/schema.sql` — 67 tables,",
-        "95 relations (69 declared in `gcp/schema.sql` — 66 tables,"))
+        before, f"{total - 1} declared in `gcp/schema.sql` — {tables - 1} tables,"))
     findings = gate.gate_derived_numbers(root, repo, live)
-    assert any("claims 69 declared relations" in f for f in findings), findings
-    assert any("claims 66 tables" in f for f in findings), findings
+    assert any(f"claims {total - 1} declared relations" in f for f in findings), findings
+    assert any(f"claims {tables - 1} tables" in f for f in findings), findings
 
 
 def test_the_parts_run_ends_where_the_list_ends(live, repo, tmp_path):
@@ -1049,12 +1079,57 @@ def test_the_snapshot_date_in_the_closing_line_is_an_asof_label(tmp_path):
     `Generated ${TODAY}` before this script runs, and gating it here would
     fail an honest tree: the committed 05-d carries `Generated 2026-09-02`,
     the last run that regenerated it. (Codex, PR #1062.)"""
-    doc = tmp_path / gate.ARCH
-    doc.parent.mkdir(parents=True, exist_ok=True)
-    doc.write_text("Generated 2026-09-08 by the refresh; blocks rendered "
-                   "from the 2026-09-07 live snapshot.\n")
+    _asof_stub(tmp_path, snapshot="2026-09-07")
     out = gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"})
     assert len(out) == 1, out
     assert "2026-09-07 live snapshot" in out[0]
-    doc.write_text(doc.read_text().replace("the 2026-09-07 live", "the 2026-09-08 live"))
+    _asof_stub(tmp_path)
     assert gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"}) == []
+
+
+def test_a_breakdown_that_drops_a_kind_is_a_finding(live, repo, tmp_path):
+    """Every part being individually right does not make the list complete.
+    `70 relations (67 tables, 2 materialized views)` passes each comparison
+    while the parts shown sum to 69 -- the same self-contradiction this gate
+    was added for, recreated by dropping a category rather than mistyping one.
+    (Codex, PR #1062.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    views, mviews = len(repo["views"]), len(repo["materialized_views"])
+    a.write_text(a.read_text().replace(
+        f", {mviews} materialized views, {views} view)", f", {mviews} materialized views)", 1))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("omits view" in f for f in findings), findings
+
+
+def test_an_asof_label_reworded_away_is_a_finding(live, repo, tmp_path):
+    """A date gate that only compares dates fails OPEN on a reword: change
+    §3's column header to `| Service | Role | Current |` and no pattern
+    matches, so the document loses its freshness provenance and the gate
+    reports clean. 05-a is required to carry all three labels.
+    (Codex, PR #1062.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", a.read_text()).group(1)
+    assert gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"}) == []
+    a.write_text(re.sub(r"\| Service \| Role \| Live \d{4}-\d{2}-\d{2} \|",
+                        "| Service | Role | Current |", a.read_text()))
+    findings = gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"})
+    assert any("no as-of label" in f for f in findings), findings
+
+
+def test_the_other_documents_are_not_required_to_carry_asof_labels(live, repo, tmp_path):
+    """Only 05-a states when the live state below it was read. Requiring the
+    labels everywhere would fail README and the cost report for not making a
+    claim they never make."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*",
+                    (root / gate.ARCH).read_text()).group(1)
+    assert gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"}) == []
+    assert set(gate.REQUIRED_ASOF) == {gate.ARCH}
