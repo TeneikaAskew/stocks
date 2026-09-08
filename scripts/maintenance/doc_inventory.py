@@ -799,22 +799,55 @@ def _literal_assigns(tree: ast.Module) -> list[tuple[str, str | None, set[str], 
     # template to names the other call paths never produce. Same rule the
     # argument observer already applies: one non-literal reopens everything.
     opaque: set[tuple[str, str]] = set()
+
+    def _str_defaults(fn: ast.AST) -> dict[str, str | None]:
+        """Each parameter's literal string default, or None when it has no
+        default or a non-literal one. An OMITTED optional parameter takes its
+        default rather than becoming unknown: `load()` beside
+        `load("market_data_intraday")` must keep both, and suppressing the
+        explicit literal dropped the second relation entirely.
+        (Codex, PR #1044.)"""
+        a = fn.args
+        pos = list(a.posonlyargs) + list(a.args)
+        pairs = list(zip(pos[len(pos) - len(a.defaults):], a.defaults)) \
+            + list(zip(a.kwonlyargs, a.kw_defaults))
+        out_: dict[str, str | None] = {p.arg: None for p in pos + list(a.kwonlyargs)}
+        for prm, dflt in pairs:
+            if isinstance(dflt, ast.Constant) and isinstance(dflt.value, str):
+                out_[prm.arg] = dflt.value
+        return out_
+
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
             continue
         fn = defs.get(node.func.id)
-        if fn is None or any(isinstance(a, ast.Starred) for a in node.args) \
-                or any(k.arg is None for k in node.keywords):
+        if fn is None:
             continue
         params = [a.arg for a in list(fn.args.posonlyargs) + list(fn.args.args)]
+        every = params + [a.arg for a in fn.args.kwonlyargs]
         bounds = (fn.lineno, getattr(fn, "end_lineno", None) or fn.lineno)
+        # `f(*args)` / `f(**kw)` can supply anything, so the call is an
+        # observation that reopens every parameter rather than one to skip;
+        # skipping it let a sibling call's literal stand for every invocation.
+        # (Codex, PR #1044.)
+        if any(isinstance(a, ast.Starred) for a in node.args) \
+                or any(k.arg is None for k in node.keywords):
+            opaque.update((fn.name, p) for p in every)
+            continue
         supplied: list[tuple[str, ast.AST]] = [
             (params[i], a) for i, a in enumerate(node.args) if i < len(params)]
         supplied += [(k.arg, k.value) for k in node.keywords]
         named = {p for p, _v in supplied}
-        for pname in params:
-            if pname not in named:
-                opaque.add((fn.name, pname))     # left to its default, if any
+        defaults = _str_defaults(fn)
+        for pname in every:
+            if pname in named:
+                continue
+            key = (fn.name, pname)
+            if defaults.get(pname) is None:
+                opaque.add(key)
+            else:
+                vals, _ln, _b = seeded.get(key, (set(), bounds[0], bounds))
+                seeded[key] = (vals | {defaults[pname]}, bounds[0], bounds)
         for pname, val in supplied:
             key = (fn.name, pname)
             if not (isinstance(val, ast.Constant) and isinstance(val.value, str)):
@@ -2273,8 +2306,12 @@ def _import_scope(root: pathlib.Path, mod_file: str,
         managed = reads_managed_env(f)
         if not cons and not argv_here and not bools_here and not managed:
             return out
+        # `is_phase3 = phase == "phase3"` then `if is_phase3:` is the same
+        # branch as `if phase == "phase3":`, and the second was pruned while
+        # the first was not, because locals were folded only when a boolean
+        # switch or a managed env read existed. (Codex, PR #1044.)
         locals_here = _fold_locals(fn, cons, argv_here, bools_here, env_here, f) \
-            if (bools_here or managed) else {}
+            if (cons or argv_here or bools_here or managed) else {}
 
         def scan(stmts: list[ast.stmt]) -> None:
             dead = False

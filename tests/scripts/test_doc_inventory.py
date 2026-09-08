@@ -1881,3 +1881,65 @@ def test_a_parameter_one_caller_leaves_open_is_not_seeded_from_the_others(mini_r
     dyn = inv.table_refs_dynamic(mini_repo, ["trades", "market_data_intraday"])
     assert dyn["trades"]["reads"] == [], \
         "one opaque call site makes the parameter unknown at every use"
+
+
+def test_an_omitted_optional_parameter_takes_its_default_beside_an_explicit_literal(mini_repo):
+    """`def load(table="trades")` called as both `load()` and
+    `load("market_data_intraday")`: marking the parameter opaque because one
+    call omits it discarded the explicit literal, and the default-parameter
+    walk then bound only `trades`, so the real second read vanished.
+    (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           'def load(conn, table="trades"):\n'
+           '    return conn.execute(f"SELECT ts FROM {table}")\n'
+           "\n"
+           "def a(conn):\n"
+           "    return load(conn)\n"
+           "\n"
+           "def b(conn):\n"
+           '    return load(conn, "market_data_intraday")\n')
+    dyn = inv.table_refs_dynamic(mini_repo, ["trades", "market_data_intraday"])
+    for n in ("trades", "market_data_intraday"):
+        assert any(x["file"].endswith("beta.py") for x in dyn[n]["reads"]), (n, dyn[n])
+
+
+def test_a_star_args_call_reopens_every_parameter(mini_repo):
+    """One call passing `*args` can supply anything, so skipping it left a
+    sibling call's literal standing for every invocation. It is an
+    observation that reopens the parameters, as the argument observer already
+    treats it. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           "def load(conn, table):\n"
+           '    return conn.execute(f"SELECT ts FROM {table}")\n'
+           "\n"
+           "def fixed(conn):\n"
+           '    return load(conn, "trades")\n'
+           "\n"
+           "def spread(conn, rest):\n"
+           "    return load(conn, *rest)\n")
+    dyn = inv.table_refs_dynamic(mini_repo, ["trades", "market_data_intraday"])
+    assert dyn["trades"]["reads"] == [], \
+        "the expanded call can supply any table, so the literal decides nothing"
+
+
+def test_a_predicate_alias_prunes_the_branch_its_literal_rules_out(mini_repo):
+    """`is_phase3 = phase == "phase3"` then `if is_phase3:` is the same branch
+    as `if phase == "phase3":`, but locals were folded only when a boolean
+    switch or a managed environment read existed, so the aliased form kept an
+    impossible table access in scope. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "from gcp.helpers import load\n"
+           "\n"
+           "def main(engine):\n"
+           '    return load(engine, "phase0")\n'
+           "\n"
+           "main(None)\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def load(engine, phase):\n"
+           '    is_phase3 = phase == "phase3"\n'
+           "    if is_phase3:\n"
+           '        return engine.execute("SELECT * FROM trades")\n'
+           '    return engine.execute("SELECT * FROM market_data_intraday")\n')
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["market_data_intraday"], e["alpha"]
