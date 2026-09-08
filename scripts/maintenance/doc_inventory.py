@@ -175,6 +175,27 @@ def deploy_jobs(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
     return sorted(rows.values(), key=lambda r: r["name"])
 
 
+def _expand_shell_locals(body: str) -> str:
+    """Substitute `${NAME}` from a `NAME=<bare word>` assignment in the same
+    body.
+
+    `magnitude-engine` declares `MAG_PLAN=${plan_default}` two lines under
+    `local plan_default=no_backfill`, so without this its plan reads as
+    undeclared -- and the whole point of a declared environment is telling
+    the job that HAS a plan from the job that does not. Only a bare word is
+    substituted: a value carrying a space, a quote or another expansion is
+    left alone rather than guessed at.
+    """
+    vals: dict[str, str] = {}
+    for m in re.finditer(r"^\s*(?:local\s+)?([a-z_][a-z0-9_]*)=([A-Za-z0-9_.:/-]+)\s*$",
+                         body, re.M):
+        vals.setdefault(m.group(1), m.group(2))
+    if not vals:
+        return body
+    return re.sub(r"\$\{([a-z_][a-z0-9_]*)\}",
+                  lambda m: vals.get(m.group(1), m.group(0)), body)
+
+
 def _env_vars(body: str) -> dict[str, str]:
     """`KEY=value` pairs a deploy function passes with --set-env-vars, whether
     inline or built up in a `non_secret_env="${non_secret_env},KEY=value"`
@@ -182,6 +203,7 @@ def _env_vars(body: str) -> dict[str, str]:
     `AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward`, run by
     gcp/audit_job_runner.py in a subprocess. (Codex, PR #1044.)"""
     out: dict[str, str] = {}
+    body = _expand_shell_locals(body)
     for m in re.finditer(r'(?:_env="\$\{[a-z_]+\},|_env="|--(?:set|update)-env-vars[ =]"?)([^"\n]*)', body):
         for pair in m.group(1).split(","):
             k, eq, v = pair.partition("=")
@@ -1707,8 +1729,10 @@ def _dotted(node: ast.AST) -> str | None:
 
 def _import_scope(root: pathlib.Path, mod_file: str,
                   argv: dict[str, set[str]] | None = None,
-                  flags: set[str] | None = None,
-                  out_args: dict[str, set[str] | None] | None = None) -> dict[str, set[int] | None]:
+                  flag_sets: list[set[str]] | None = None,
+                  out_args: dict[str, set[str] | None] | None = None,
+                  env: tuple[dict[str, set[str]], set[str]] | None = None
+                  ) -> dict[str, set[int] | None]:
     """The code a job can run, as {repo file: line numbers} (None = whole file).
 
     Symbol-level reachability rather than file membership: from the entry
@@ -1729,6 +1753,13 @@ def _import_scope(root: pathlib.Path, mod_file: str,
     writes, through one imported helper -- Codex, PR #1044); every binding a
     name can have is followed. gcp/database.py writes job_runs for every job
     and is excluded at any depth.
+
+    `flag_sets` is one set of flag names per way the job is invoked (its own
+    args, then each scheduler override that replaces them) and `env` is the
+    pair `declared_env` returns. Both scope the entry module: a value decides
+    a branch only when EVERY invocation carries it, and a decided branch
+    prunes the arm not taken plus, when the arm taken ends in a `return` or
+    `raise`, everything after it.
     """
     scope: dict[str, set[int] | None] = {}
     seen_syms: set[tuple[str, str]] = set()
@@ -1755,29 +1786,104 @@ def _import_scope(root: pathlib.Path, mod_file: str,
     # direction-importance. (Codex, PR #1044.)
     arg_lits: dict[tuple[str, str], dict[str, set[str] | None]] = {}
     walked_with: dict[tuple[str, str], str] = {}
+    none_walking: set[tuple[str, str]] = set()
+    managed_env_seen: dict[str, bool] = {}
     # The values the deployed job's CLI fixes, applied only inside the entry
     # module and only to names that hold a parsed argparse namespace. `main()`
     # is the whole file's root, so without this every mode of a multi-mode
     # entrypoint counted as reachable for every job configuration.
     # (Codex, PR #1044.)
     _entry_tree = _parsed(root / mod_file) if mod_file and (root / mod_file).exists() else None
-    _ns_names, _dests, _bool_dests = _argparse_dests(_entry_tree) if _entry_tree is not None \
-        else (set(), set(), {})
+    _ns_names, _dests, _bool_dests, _none_dests = _argparse_dests(_entry_tree) \
+        if _entry_tree is not None else (set(), set(), {}, set())
+    _sets = flag_sets if flag_sets is not None else [set()]
     argv_cons = {k: v for k, v in (argv or {}).items() if k in _dests} if _ns_names else {}
+    # Values for OBSERVATION are the union over every way the job is invoked;
+    # values that DECIDE a branch must additionally be passed by every one of
+    # them. `orb-15m` schedules `alpha` with `--window=15m` and the bare
+    # deployment passes no `--window`, so `args.window == "15m"` is not a fact
+    # about the job -- and once a decided branch also prunes what follows it,
+    # reading it as one would delete the bare invocation's whole tail.
+    argv_sure = {k: v for k, v in argv_cons.items()
+                 if all(k in fs for fs in _sets)} if _ns_names else {}
     # A boolean switch the deployment does not pass takes its declared default.
     # `backtest-pipeline` is deployed with no args, so `--walk-forward` is
     # false and the walk-forward subprocess under `if run_wf:` cannot run;
     # excluding boolean dests entirely left that branch, and its
     # backtest_walk_forward_folds write, attributed to the base deployment.
     # (Codex, PR #1044.)
-    bool_cons = {d: (on if d in (flags or set()) else off)
-                 for d, (on, off) in _bool_dests.items()} if _ns_names else {}
+    bool_cons: dict[str, bool] = {}
+    if _ns_names:
+        for d, (on, off) in _bool_dests.items():
+            seen = {on if d in fs else off for fs in _sets}
+            if len(seen) == 1:
+                bool_cons[d] = seen.pop()
+        for d in _none_dests:
+            if all(d not in fs for fs in _sets) and d not in (argv or {}):
+                bool_cons.setdefault(d, False)
+
+    # The environment the deployment fixes, read in the entry module only --
+    # the same scoping as the declared command line, and for the same reason:
+    # a value is a constraint on the code that was configured with it.
+    env_cons, env_partial = (env or ({}, set()))
+    env_managed = deployment_env_names(root)
 
     def argv_of(f: str) -> dict[str, set[str]]:
         return argv_cons if f == mod_file else {}
 
+    def sure_of(f: str) -> dict[str, set[str]]:
+        return argv_sure if f == mod_file else {}
+
     def bools_of(f: str) -> dict[str, bool]:
         return bool_cons if f == mod_file else {}
+
+    def env_of(f: str) -> dict[str, set[str]]:
+        return env_cons if f == mod_file else {}
+
+    def reads_managed_env(f: str) -> bool:
+        """Whether this module reads an environment variable the deploy script
+        controls. A job that declares no environment of its own is still
+        constrained by what it does NOT declare: `fetch-top-movers` reads
+        `AV_API_KEY`, and the branch a job without `MAG_PLAN` cannot take is
+        decided by the same absence."""
+        if f in managed_env_seen:
+            return managed_env_seen[f]
+        tree = _parsed(root / f)
+        here = env_of(f)
+        managed_env_seen[f] = tree is not None and any(
+            env_get(n, here) is not None for n in ast.walk(tree))
+        return managed_env_seen[f]
+
+    def env_get(node: ast.AST, env_here: dict[str, set[str]]) -> set[str] | None:
+        """`os.environ.get(NAME, "<literal>")` / `os.getenv(...)` under the
+        job's declared environment, or None when the value is not knowable.
+
+        Only the two-argument form: `os.environ.get(NAME)` yields None rather
+        than a string and `os.environ[NAME]` raises, and neither is worth
+        guessing at.
+        """
+        if not isinstance(node, ast.Call) or len(node.args) != 2 or node.keywords:
+            return None
+        fn = node.func
+        if not isinstance(fn, ast.Attribute):
+            return None
+        if not (fn.attr == "getenv"
+                or (fn.attr == "get" and isinstance(fn.value, ast.Attribute)
+                    and fn.value.attr == "environ")):
+            return None
+        name, dflt = node.args
+        if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+            return None
+        default = {dflt.value} if isinstance(dflt, ast.Constant) \
+            and isinstance(dflt.value, str) else None
+        if name.value in env_here:
+            if name.value not in env_partial:
+                return set(env_here[name.value])
+            # set by some invocations only: the absent case is possible too
+            return None if default is None else set(env_here[name.value]) | default
+        if name.value in env_managed:
+            return default
+        return None
 
     def observe_call(target: tuple[str, str], call: ast.Call | None,
                      caller: dict[str, set[str] | None] | None = None,
@@ -1833,23 +1939,45 @@ def _import_scope(root: pathlib.Path, mod_file: str,
 
     def verdict(test: ast.AST, cons: dict[str, set[str] | None],
                 argv_here: dict[str, set[str]] | None = None,
-                bools_here: dict[str, bool] | None = None) -> bool | None:
-        """True / False when `cons`, the job's declared CLI values, or a
-        boolean switch it does not pass decides the test, else None."""
+                bools_here: dict[str, bool] | None = None,
+                env_here: dict[str, set[str]] | None = None,
+                locals_here: dict[str, bool] | None = None) -> bool | None:
+        """True / False when `cons`, the job's declared CLI values, its
+        declared environment, or a boolean switch it does not pass decides the
+        test, else None.
+
+        `bools_here` is keyed by argparse dest and answers `args.<dest>` only;
+        `locals_here` is keyed by local NAME. They are separate because a
+        module may bind a local of the same name as a dest -- `plan =
+        TASK_PLANS[args.plan]` -- and letting that unknown local erase the
+        dest kept `if args.plan and ...` alive for a job that passes no
+        `--plan`. (Codex, PR #1044.)
+        """
         argv_here = argv_here or {}
         bools_here = bools_here or {}
+        locals_here = locals_here or {}
+        env_here = env_here if env_here is not None else {}
+        ev = env_get(test, env_here)
+        if ev is not None:
+            truths = {bool(v) for v in ev}
+            return truths.pop() if len(truths) == 1 else None
         if isinstance(test, ast.Attribute) and isinstance(test.value, ast.Name) \
                 and test.value.id in _ns_names and test.attr in bools_here:
             return bools_here[test.attr]
-        if isinstance(test, ast.Name) and test.id in bools_here:
-            return bools_here[test.id]
+        if isinstance(test, ast.Attribute) and isinstance(test.value, ast.Name) \
+                and test.value.id in _ns_names and test.attr in argv_here:
+            truths = {bool(v) for v in argv_here[test.attr]}
+            return truths.pop() if len(truths) == 1 else None
+        if isinstance(test, ast.Name) and test.id in locals_here:
+            return locals_here[test.id]
         if isinstance(test, ast.Constant) and isinstance(test.value, bool):
             return test.value
         if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-            v = verdict(test.operand, cons, argv_here, bools_here)
+            v = verdict(test.operand, cons, argv_here, bools_here, env_here, locals_here)
             return None if v is None else not v
         if isinstance(test, ast.BoolOp):
-            vs = [verdict(x, cons, argv_here, bools_here) for x in test.values]
+            vs = [verdict(x, cons, argv_here, bools_here, env_here, locals_here)
+                  for x in test.values]
             if isinstance(test.op, ast.And):
                 return False if False in vs else (True if all(v is True for v in vs) else None)
             return True if True in vs else (False if all(v is False for v in vs) else None)
@@ -1862,6 +1990,8 @@ def _import_scope(root: pathlib.Path, mod_file: str,
                 values: set[str] | None = argv_here[left.attr]
             elif isinstance(left, ast.Name) and left.id in cons and cons[left.id] is not None:
                 values = cons[left.id]
+            elif env_get(left, env_here) is not None:
+                values = env_get(left, env_here)
             else:
                 return None
             if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(right, ast.Constant):  # noqa: E501
@@ -1878,44 +2008,145 @@ def _import_scope(root: pathlib.Path, mod_file: str,
                 return hits.pop() if isinstance(op, ast.In) else not hits.pop()
         return None
 
-    def _fold_bools(fn: ast.AST, cons: dict[str, set[str] | None],
-                    argv_here: dict[str, set[str]], base: dict[str, bool]) -> dict[str, bool]:
+    def _fold_locals(fn: ast.AST, cons: dict[str, set[str] | None],
+                     argv_here: dict[str, set[str]], bools_here: dict[str, bool],
+                     env_here: dict[str, set[str]] | None = None,
+                     f: str = "") -> dict[str, bool]:
         """Locals assigned a boolean expression over the switches, in source
         order: `do_walk_forward = args.walk_forward or args.walk_forward_only`
         then `run_wf = do_walk_forward and not args.report_only` then
-        `if run_wf:`."""
-        known = dict(base)
+        `if run_wf:`.
+
+        A local assigned the result of a same-module call whose every
+        reachable `return` yields None is known-falsy too: `cell =
+        _resolve_task()` then `if cell:`, where the resolver returns None
+        because the job declares no plan.
+        """
+        known: dict[str, bool] = {}
         for node in ast.walk(fn):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
                 continue
             tgt = node.targets[0]
             if not isinstance(tgt, ast.Name):
                 continue
-            v = verdict(node.value, cons, argv_here, known)
+            v = verdict(node.value, cons, argv_here, bools_here, env_here, known)
+            if v is None and isinstance(node.value, ast.Call) \
+                    and isinstance(node.value.func, ast.Name) \
+                    and returns_none(f, node.value.func.id):
+                v = False
             if v is None:
                 known.pop(tgt.id, None)
             else:
                 known[tgt.id] = v
         return known
 
-    def dormant(fn: ast.AST, cons: dict[str, set[str] | None], f: str = "") -> set[int]:
-        """ids of the statements behind branches `cons`, or the job's declared
-        CLI values in the entry module, rule out."""
+    def _terminates(stmts: list[ast.stmt]) -> bool:
+        """Every path through `stmts` leaves the block: a `return`, `raise`,
+        `continue` or `break`, or an if/else whose both arms do."""
+        for st in stmts:
+            if isinstance(st, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
+                return True
+            if isinstance(st, ast.If) and st.body and st.orelse \
+                    and _terminates(st.body) and _terminates(st.orelse):
+                return True
+        return False
+
+    def dormant(fn: ast.AST, cons: dict[str, set[str] | None], f: str = "",
+                block: list[ast.stmt] | None = None) -> set[int]:
+        """ids of the statements behind branches `cons`, the job's declared
+        CLI values, or its declared environment rule out -- and of the
+        statements that follow a taken branch which cannot fall through.
+
+        The second half is what makes an early return readable:
+        `_resolve_task()` opens with `if not plan_name or ...: return None`,
+        and with the test decided True everything after it is dead, so the
+        function has exactly one reachable return. Without that, its two
+        later returns keep the caller's `if cell:` alive and a dispatch the
+        job cannot perform contributes an unknown phase to `walk_forward`,
+        which erased the literal `--phase=phase0`. (Codex, PR #1044.)
+        """
         out: set[int] = set()
-        argv_here = argv_of(f)
+        argv_here = sure_of(f)
         bools_here = bools_of(f)
-        if not cons and not argv_here and not bools_here:
+        env_here = env_of(f)
+        # `reads_managed_env` already folds `env_here` against what the module
+        # reads, so a declared environment no module consults decides nothing
+        # and must not change how the module is walked.
+        managed = reads_managed_env(f)
+        if not cons and not argv_here and not bools_here and not managed:
             return out
-        if bools_here:
-            bools_here = _fold_bools(fn, cons, argv_here, bools_here)
-        for node in ast.walk(fn):
-            if isinstance(node, ast.If):
-                v = verdict(node.test, cons, argv_here, bools_here)
-                if v is True:
-                    out.update(id(x) for x in node.orelse)
-                elif v is False:
-                    out.update(id(x) for x in node.body)
+        locals_here = _fold_locals(fn, cons, argv_here, bools_here, env_here, f) \
+            if (bools_here or managed) else {}
+
+        def scan(stmts: list[ast.stmt]) -> None:
+            dead = False
+            for st in stmts:
+                if dead:
+                    out.add(id(st))
+                    continue
+                taken: list[ast.stmt] | None = None
+                if isinstance(st, ast.If):
+                    v = verdict(st.test, cons, argv_here, bools_here, env_here, locals_here)
+                    if v is True:
+                        out.update(id(x) for x in st.orelse)
+                        taken = st.body
+                    elif v is False:
+                        out.update(id(x) for x in st.body)
+                        taken = st.orelse
+                if taken is not None:
+                    scan(taken)
+                    if taken and _terminates(taken):
+                        dead = True
+                    continue
+                for _name, val in ast.iter_fields(st):
+                    if not isinstance(val, list) or not val:
+                        continue
+                    if isinstance(val[0], ast.stmt):
+                        scan(val)
+                    elif isinstance(val[0], ast.ExceptHandler):
+                        for h in val:
+                            scan(h.body)
+
+        scan(block if block is not None
+             else (fn.body if isinstance(getattr(fn, "body", None), list) else [fn]))
         return out
+
+    def returns_none(f: str, sym: str) -> bool:
+        """True when every reachable `return` of `f`'s top-level `sym` yields
+        None, so `x = sym()` is known falsy.
+
+        Generators are excluded (a generator object is truthy however the
+        body returns) and so are decorated functions (the decorator decides
+        what the call yields).
+        """
+        if not f:
+            return False
+        key = (f, sym)
+        if key in none_walking:
+            return False
+        tree = _parsed(root / f)
+        fn = _top_defs(tree).get(sym) if tree is not None else None
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.decorator_list:
+            return False
+        none_walking.add(key)
+        try:
+            skip = dormant(fn, arg_lits.get(key, {}), f)
+            stack: list[ast.AST] = list(fn.body)
+            while stack:
+                n = stack.pop()
+                if id(n) in skip:
+                    continue
+                if isinstance(n, (ast.Yield, ast.YieldFrom)):
+                    return False
+                if isinstance(n, ast.Return) and n.value is not None \
+                        and not (isinstance(n.value, ast.Constant) and n.value.value is None):
+                    return False
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                    continue        # a nested definition's returns are its own
+                stack.extend(ast.iter_child_nodes(n))
+            return True
+        finally:
+            none_walking.discard(key)
 
     def live_nodes(nodes: list[ast.AST], skip: set[int]):
         """ast.walk over `nodes`, not descending into skipped statements."""
@@ -2121,10 +2352,9 @@ def _import_scope(root: pathlib.Path, mod_file: str,
             # `elif args.mode == 'daily'` body is not reachable through it.
             # (Codex, PR #1044.)
             skip: set[int] = set()
-            constrained = bool(argv_of(f) or bools_of(f))
+            constrained = bool(argv_of(f) or bools_of(f) or reads_managed_env(f))
             if constrained:
-                for node in tree.body:
-                    skip |= dormant(node, {}, f)
+                skip |= dormant(tree, {}, f, block=tree.body)
             if not constrained:
                 add_lines(f, None)
                 uses(f, list(tree.body))
@@ -2280,7 +2510,7 @@ def _scheduler_modules(root: pathlib.Path, job_name: str, schedulers: list[dict[
 
 
 def _scheduler_roots(root: pathlib.Path, job_name: str, schedulers: list[dict[str, Any]]
-                     ) -> list[tuple[str, dict[str, set[str]], set[str]]]:
+                     ) -> list[tuple[str, dict[str, set[str]], list[set[str]]]]:
     """Each module a scheduler override selects for this job, paired with the
     CLI values THAT scheduler passes.
 
@@ -2289,12 +2519,12 @@ def _scheduler_roots(root: pathlib.Path, job_name: str, schedulers: list[dict[st
     (the job's own entry module, which the scheduler does not run) would prune
     branches of a module the flag was never given to. (Codex, PR #1044.)
     """
-    out: list[tuple[str, dict[str, set[str]], set[str]]] = []
+    out: list[tuple[str, dict[str, set[str]], list[set[str]]]] = []
     for sch in schedulers:
         if sch.get("target_job") != job_name or not sch.get("args"):
             continue
         as_job = {"name": job_name, "command": "", "args": sch["args"]}
-        argv, flags = declared_argv(as_job, None), declared_flags(as_job, None)
+        argv, flags = declared_argv(as_job, None), [declared_flags(as_job, None)]
         for m in re.finditer(r"\b((?:gcp|lib|scripts)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b", sch["args"]):
             f = _module_file(root, m.group(1).split("."))
             if f and f != "gcp/database.py" and not any(f == g for g, _a, _fl in out):
@@ -2354,13 +2584,106 @@ def declared_flags(job: dict[str, Any], schedulers: list[dict[str, Any]] | None 
         if sch.get("target_job") == job["name"] and sch.get("args"):
             sources.append(sch["args"])
     for src in sources:
-        for m in _ARGV_ANY_FLAG.finditer(src):
-            out.add(m.group(1).replace("-", "_"))
+        out |= _flag_names(src)
     return out
 
 
-def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str], dict[str, tuple[bool, bool]]]:
-    """(names bound from `parse_args()`, the SCALAR dests the module declares).
+def declared_env(job: dict[str, Any], schedulers: list[dict[str, Any]] | None = None
+                 ) -> tuple[dict[str, set[str]], set[str]]:
+    """The environment the deployed job runs with, and the names that only
+    SOME of its invocations set.
+
+    Values come from its own `--set-env-vars` unioned with every scheduler
+    override that targets it, the same union rule as `declared_argv`. The
+    second element is the names a scheduler adds that the job itself does
+    not declare: `backfill-indicators-weekly` is scheduled twice, once plain
+    and once with `BACKFILL_MODE=full`, so an absent `BACKFILL_MODE` is a
+    real possibility too and the reader must fold in the call site's own
+    default rather than assuming the value.
+    """
+    own = {k: {str(v)} for k, v in (job.get("env") or {}).items()}
+    out: dict[str, set[str]] = {k: set(v) for k, v in own.items()}
+    for sch in schedulers or []:
+        if sch.get("target_job") != job.get("name"):
+            continue
+        for pair in (sch.get("args") or "").split():
+            k, eq, v = pair.partition("=")
+            if eq and re.fullmatch(r"[A-Z][A-Z0-9_]*", k):
+                out.setdefault(k, set()).add(v)
+    return out, {k for k in out if k not in own}
+
+
+_ENVNAME_CACHE: dict[tuple[pathlib.Path, int, int] | None, frozenset[str]] = {}
+
+
+def deployment_env_names(root: pathlib.Path = REPO) -> frozenset[str]:
+    """Every environment variable `gcp/deploy.sh` sets, on any job or in any
+    scheduler override.
+
+    This is the set the deploy script CONTROLS, and it is what makes an
+    absent variable readable as absent: `MAG_PLAN` is set on
+    `magnitude-engine` and deliberately not on `magnitude-recal`, so the
+    latter takes the `os.environ.get("MAG_PLAN", "")` default. A name the
+    deploy script never mentions -- `CLOUD_RUN_TASK_INDEX`, which Cloud Run
+    injects -- is NOT in this set and stays unknown.
+
+    Limitation, stated rather than implied: an execute-time
+    `--update-env-vars` is not modelled, exactly as an execute-time
+    `--args` override is not. The attribution is of the DECLARED
+    configuration.
+    """
+    key = _sig(root / "gcp/deploy.sh")
+    if key in _ENVNAME_CACHE:
+        return _ENVNAME_CACHE[key]
+    names: set[str] = set()
+    for j in deploy_jobs(root):
+        names |= set((j.get("env") or {}).keys())
+    for sch in deploy_schedulers(root):
+        for pair in (sch.get("args") or "").split():
+            k, eq, _v = pair.partition("=")
+            if eq and re.fullmatch(r"[A-Z][A-Z0-9_]*", k):
+                names.add(k)
+    _ENVNAME_CACHE[key] = frozenset(names)
+    return _ENVNAME_CACHE[key]
+
+
+def declared_flag_sets(job: dict[str, Any], schedulers: list[dict[str, Any]] | None = None) -> list[set[str]]:
+    """The flag names of EACH way the job is invoked, one set per
+    configuration: its own deployed args, then every scheduler override.
+
+    `declared_flags` unions them, which answers "is this flag ever passed"
+    but not "is it always passed", and only the second question decides a
+    branch. A scheduler override REPLACES the container args, so
+    `fetch-top-movers` runs both with `--intraday-snapshot` (hourly) and
+    without it (daily): the switch is unknown, not true, and reading it as
+    true made the daily `top_movers_daily` write unreachable. (Codex,
+    PR #1044.)
+    """
+    out = [_flag_names(f"{job.get('command') or ''} {job.get('args') or ''}")]
+    for sch in schedulers or []:
+        if sch.get("target_job") == job.get("name") and _overrides_argv(sch.get("args") or ""):
+            out.append(_flag_names(sch["args"]))
+    return out
+
+
+def _overrides_argv(args: str) -> bool:
+    """Whether a scheduler's override replaces the container's command line.
+
+    `containerOverrides` carries `args` and `env` independently and the parser
+    flattens both into one string, so a scheduler that only sets an env var
+    (`alpha-weekly`'s `MODE=full`) leaves the deployed args in force and is
+    not a second command-line configuration.
+    """
+    return any(tok.startswith("-") for tok in args.split())
+
+
+def _flag_names(src: str) -> set[str]:
+    return {m.group(1).replace("-", "_") for m in _ARGV_ANY_FLAG.finditer(src)}
+
+
+def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str], dict[str, tuple[bool, bool]], set[str]]:
+    """(names bound from `parse_args()`, the SCALAR dests the module declares,
+    the boolean switches, the dests that default to None).
 
     Only a module that declares `--mode` may have its `args.mode` constrained
     by a deployed `--mode=weekly`, and only through a name that actually holds
@@ -2376,6 +2699,21 @@ def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str], dict[str, tup
     ns: set[str] = set()
     dests: set[str] = set()
     bools: dict[str, tuple[bool, bool]] = {}
+    # A dest whose default is None is FALSY when the deployment does not pass
+    # the flag, exactly as a store_true switch is False. `mag_walk_forward`
+    # guards its local-debug dispatch with `if args.plan and ...`, and
+    # `magnitude-recal` passes no `--plan`. Excluded: a `required=True` dest
+    # (the job could not run without it) and any dest the module assigns back
+    # onto the namespace (`args.tickers = DEFAULT` after an `is None` test),
+    # where the None is a placeholder rather than the value the branch sees.
+    nones: set[str] = set()
+    reassigned: set[str] = {
+        t.attr for n in ast.walk(tree) if isinstance(n, ast.Assign)
+        for t in n.targets if isinstance(t, ast.Attribute)
+    } | {
+        n.target.attr for n in ast.walk(tree)
+        if isinstance(n, (ast.AugAssign, ast.AnnAssign)) and isinstance(n.target, ast.Attribute)
+    }
 
     def _dest_of(node: ast.Call, kw: dict[str, ast.AST]) -> str | None:
         explicit = kw.get("dest")
@@ -2421,7 +2759,24 @@ def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str], dict[str, tup
             d = _dest_of(node, kw)
             if d:
                 dests.add(d)
-    return ns, dests, bools
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"):
+            continue
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+        act = kw.get("action")
+        if isinstance(act, ast.Constant) and act.value in ("store_true", "store_false"):
+            continue
+        req = kw.get("required")
+        if isinstance(req, ast.Constant) and req.value is True:
+            continue
+        if "default" in kw and not (isinstance(kw["default"], ast.Constant)
+                                    and kw["default"].value is None):
+            continue
+        d = _dest_of(node, kw)
+        if d and d not in reassigned:
+            nones.add(d)
+    return ns, dests, bools, nones
 
 
 def _job_scope(root: pathlib.Path, job: dict[str, Any],
@@ -2439,17 +2794,19 @@ def _job_scope(root: pathlib.Path, job: dict[str, Any],
              and not any(_module_file(root, m.group(1).split(".")) in overridden
                          for m in re.finditer(r"\b((?:gcp|lib|scripts)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b", s["args"]))]
     entry_argv = declared_argv(job, plain)
-    entry_flags = declared_flags(job, plain)
-    roots: list[tuple[str, dict[str, set[str]], set[str]]] = [
+    entry_flags = declared_flag_sets(job, plain)
+    entry_env = declared_env(job, plain)
+    roots: list[tuple[str, dict[str, set[str]], list[set[str]]]] = [
         (entry_module(job), entry_argv, entry_flags)]
     for m in _configured_modules(root, job):
         env_job = {"name": job["name"], "command": "",
                    "args": " ".join(str(v) for v in (job.get("env") or {}).values())}
-        roots.append((m, declared_argv(env_job, None), declared_flags(env_job, None)))
+        roots.append((m, declared_argv(env_job, None), [declared_flags(env_job, None)]))
     roots += sched_roots
-    scope = _import_scope(root, roots[0][0], roots[0][1], roots[0][2], out_args)
+    scope = _import_scope(root, roots[0][0], roots[0][1], roots[0][2], out_args, entry_env)
     for extra, extra_argv, extra_flags in roots[1:]:
-        for f, lines in _import_scope(root, extra, extra_argv, extra_flags, out_args).items():
+        for f, lines in _import_scope(root, extra, extra_argv, extra_flags,
+                                      out_args, entry_env).items():
             if lines is None or scope.get(f, set()) is None:
                 scope[f] = None
             else:

@@ -970,7 +970,7 @@ def test_only_an_unambiguous_scalar_string_flag_is_read_as_a_constraint(mini_rep
            "p.add_argument('--out-dir', dest='outdir')\n"
            "p.add_argument('--mode', default='full')\n"
            "args = p.parse_args()\n")
-    ns, dests, bools = inv._argparse_dests(ast.parse(src))
+    ns, dests, bools, _nones = inv._argparse_dests(ast.parse(src))
     assert ns == {"args"}
     assert dests == {"outdir", "mode"}, dests
     # a store_true is not a scalar constraint; it is a boolean whose value is
@@ -1052,8 +1052,8 @@ def test_a_boolean_flag_the_deployment_omits_prunes_its_branch(mini_repo):
     assert "market_data_intraday" not in e["alpha"]["writes"], \
         "--deep is a store_true this deployment never passes"
     # the same module WITH the flag passed reaches the child
-    assert "gcp/research/child.py" not in inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, set())
-    assert "gcp/research/child.py" in inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, {"deep"})
+    assert "gcp/research/child.py" not in inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, [set()])
+    assert "gcp/research/child.py" in inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, [{"deep"}])
     assert inv.declared_flags({"name": "j", "command": "python -m m",
                                "args": "--deep --mode=full"}, None) == {"deep", "mode"}
 
@@ -1162,12 +1162,12 @@ def test_a_declared_value_reaches_the_whole_call_chain(mini_repo):
            "\n"
            "main()\n")
     obs: dict = {}
-    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, set(), obs)
+    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, [set()], obs)
     got = {fn: cons.get("tf") for (f, fn), cons in obs.items() if "tf" in cons}
     assert got == {"run_baseline": {"15m"}, "run_axis": {"15m"}, "leaf": {"15m"}}, got
     # and with nothing declared, the chain carries no constraint
     loose: dict = {}
-    inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, set(), loose)
+    inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, [set()], loose)
     assert loose[("gcp/research/alpha.py", "leaf")]["tf"] is None
 
 
@@ -1202,7 +1202,7 @@ def test_a_branch_local_import_binds_only_its_own_branch(mini_repo):
            "\n"
            "main()\n")
     obs: dict = {}
-    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, set(), obs)
+    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, [set()], obs)
     assert obs[("gcp/mag.py", "go")]["tf"] == {"15m"}, obs.get(("gcp/mag.py", "go"))
     assert obs[("gcp/strat.py", "go")]["tf"] == {"15m"}, \
         "the 4-argument magnitude call must not reach the strat binding at all"
@@ -1564,3 +1564,178 @@ def test_the_fixture_digest_names_every_runtime_relation_and_hand_created_job():
     p2 = next(l for l in out.splitlines() if l.startswith("| `p2-build-gamma-levels` |"))
     assert "`gamma_levels_eod` (runtime-created)" in p2, p2
     assert len(out) < 60_000, len(out)
+
+
+def test_an_environment_variable_the_deployment_omits_takes_its_read_default(mini_repo):
+    """`magnitude-recal` is deployed with `--phase=phase0 --all-cells` and no
+    `MAG_PLAN`, so `_resolve_task()` returns None and its task-parallel
+    dispatch cannot run; the unknown `phase` that dispatch passed to
+    `walk_forward` erased the literal `phase0` and put the phase-3-only
+    `economic_events` read on the job. `MAG_PLAN` is set on
+    `magnitude-engine`, which is what makes its absence here readable.
+    (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           "import os\n"
+           "from gcp.helpers import wide\n"
+           "\n"
+           "def resolve():\n"
+           "    plan = os.environ.get('MODE', '')\n"
+           "    if not plan:\n"
+           "        return None\n"
+           "    return (plan, 'x')\n"
+           "\n"
+           "def main():\n"
+           "    cell = resolve()\n"
+           "    if cell:\n"
+           "        phase, _t = cell\n"
+           "        wide(None, phase)\n"
+           "        return\n"
+           "    wide(None, 'shallow')\n"
+           "\n"
+           "main()\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def wide(conn, phase):\n"
+           "    if phase == 'deep':\n"
+           '        conn.execute("SELECT * FROM market_data_intraday")\n'
+           "    return conn.execute(\"SELECT * FROM trades\")\n")
+    # MODE is a name deploy.sh controls (alpha-weekly overrides it), and `beta`
+    # declares none, so its read default -- the empty string -- is the value.
+    assert "MODE" in inv.deployment_env_names(mini_repo)
+    assert inv.declared_env({"name": "beta", "env": {}},
+                            inv.deploy_schedulers(mini_repo)) == ({}, set())
+    jobs = {j["name"]: j for j in inv.deploy_jobs(mini_repo)}
+    scope = inv._job_scope(mini_repo, jobs["beta"], inv.deploy_schedulers(mini_repo))
+    src = (mini_repo / "gcp/fetchers/beta.py").read_text().splitlines()
+    dispatch = next(i + 1 for i, l in enumerate(src) if "wide(None, phase)" in l)
+    assert dispatch not in scope["gcp/fetchers/beta.py"], \
+        "the dispatch cannot run without MODE, so its unknown phase is not observed"
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["beta"]["reads"] == ["trades"], e["beta"]
+
+
+def test_an_environment_variable_only_one_schedule_sets_stays_unknown(mini_repo):
+    """The same job runs both ways: `alpha-weekly` overrides MODE=full, a bare
+    execution does not. Reading the override as if it always applied would
+    prune the path the plain invocation takes."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import os\n"
+           "from gcp.helpers import wide\n"
+           "\n"
+           "def main():\n"
+           "    if os.environ.get('MODE', ''):\n"
+           "        return\n"
+           "    wide(None, 'deep')\n"
+           "\n"
+           "main()\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def wide(conn, phase):\n"
+           "    if phase == 'deep':\n"
+           '        conn.execute("SELECT * FROM market_data_intraday")\n')
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert "market_data_intraday" in e["alpha"]["reads"], \
+        "MODE is set by one schedule and absent from the others"
+    vals, partial = inv.declared_env(
+        {"name": "alpha", "env": {}}, inv.deploy_schedulers(mini_repo))
+    assert vals["MODE"] == {"full"} and partial == {"MODE"}
+
+
+def test_a_flag_only_one_schedule_passes_leaves_both_paths_live(mini_repo):
+    """`fetch-top-movers` is deployed bare (the daily `top_movers_daily`
+    write) and scheduled hourly with `--intraday-snapshot`, whose branch ends
+    in `return`. Unioning every invocation's flags into one set read the
+    switch as always passed, and with the taken branch terminating, the daily
+    write became unreachable. Here `orb-15m` passes `--window=15m` and the
+    bare deployment does not. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse\n"
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--mode', default='full')\n"
+           "    p.add_argument('--window', default=None)\n"
+           "    args = p.parse_args()\n"
+           "    if args.window:\n"
+           '        conn.execute("INSERT INTO market_data_intraday VALUES (1)")\n'
+           "        return\n"
+           '    conn.execute("INSERT INTO trades VALUES (1)")\n'
+           "\n"
+           "main()\n")
+    job = {"name": "alpha", "command": "", "args": "-m gcp.research.alpha --mode=full"}
+    orb = {"name": "orb-15m", "target_job": "alpha",
+           "args": "--mode=orb-snapshot --window=15m"}
+    assert inv.declared_flag_sets(job, [orb]) == [{"mode"}, {"mode", "window"}]
+    assert inv.declared_flags(job, [orb]) == {"mode", "window"}
+    # `containerOverrides` carries args and env independently: a schedule that
+    # only sets an env var leaves the deployed command line in force and is not
+    # a second configuration.
+    envonly = {"name": "alpha-weekly", "target_job": "alpha", "args": "MODE=full"}
+    assert inv.declared_flag_sets(job, [orb, envonly]) == [{"mode"}, {"mode", "window"}]
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["writes"] == ["market_data_intraday", "trades"], e["alpha"]
+    # a job that passes --window on EVERY invocation does prune the tail
+    only = inv._import_scope(mini_repo, "gcp/research/alpha.py",
+                             {"window": {"15m"}}, [{"window"}])
+    src = (mini_repo / "gcp/research/alpha.py").read_text().splitlines()
+    tail = next(i + 1 for i, l in enumerate(src) if "INSERT INTO trades" in l)
+    assert tail not in only["gcp/research/alpha.py"]
+
+
+def test_a_local_named_after_a_flag_does_not_erase_the_flag(mini_repo):
+    """`mag_walk_forward` binds `plan = TASK_PLANS[args.plan]` inside the very
+    branch `args.plan` guards. Folding locals and argparse dests into one map
+    let that unknown local delete the dest, reopening the branch."""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           "import argparse\n"
+           "\n"
+           "PLANS = {'a': 1}\n"
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--plan', default=None)\n"
+           "    args = p.parse_args()\n"
+           "    if args.plan:\n"
+           "        plan = PLANS[args.plan]\n"
+           '        conn.execute("INSERT INTO market_data_intraday VALUES (%s)", plan)\n'
+           "        return\n"
+           '    conn.execute("INSERT INTO trades VALUES (1)")\n'
+           "\n"
+           "main()\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["beta"]["writes"] == ["trades"], \
+        "--plan defaults to None and no invocation passes it"
+
+
+def test_statements_after_a_taken_branch_that_returns_are_not_reachable(mini_repo):
+    """A decided branch prunes the arm not taken; it must also prune what
+    follows when the arm taken cannot fall through. `gamma` declares
+    AUDIT_SCRIPT_MODULE, so the test above the return is decided true."""
+    _write(mini_repo, "gcp/runner.py",
+           "import os\n"
+           "\n"
+           "def main():\n"
+           "    if os.environ.get('AUDIT_SCRIPT_MODULE', ''):\n"
+           '        conn.execute("INSERT INTO trades VALUES (1)")\n'
+           "        return\n"
+           '    conn.execute("INSERT INTO market_data_intraday VALUES (1)")\n'
+           "\n"
+           "main()\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["gamma"]["writes"] == ["trades"], \
+        "the declared module makes the test true, and its branch returns"
+
+
+def test_a_bash_local_is_resolved_before_reading_the_declared_environment():
+    """`magnitude-engine` declares `MAG_PLAN=${plan_default}` two lines under
+    `local plan_default=no_backfill`. Left unresolved, the job that HAS a plan
+    is indistinguishable from the job that does not."""
+    jobs = {j["name"]: j for j in inv.deploy_jobs()}
+    assert jobs["magnitude-engine"]["env"]["MAG_PLAN"] == "no_backfill"
+    assert "MAG_PLAN" not in jobs["magnitude-recal"]["env"]
+    assert "MAG_PLAN" in inv.deployment_env_names()
+    assert "CLOUD_RUN_TASK_INDEX" not in inv.deployment_env_names(), \
+        "a name Cloud Run injects is not declared, so it must stay unknown"
