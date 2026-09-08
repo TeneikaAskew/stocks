@@ -1020,7 +1020,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # scopes. NOT measurable here — this container has bash 5.2.21 only, where
   # the bare form is already safe — so the fix is the portable idiom rather
   # than a reproduction, and it is behaviour-identical on 5.2 either way.
-  local a b c e f rc reviewed=()
+  local a b c e f rc reviewed=() _rt
   # REV pins the search to a COMMITTED revision instead of the working tree.
   # Empty for this repo, where the deletion under test IS the working tree and a
   # committed-only search would not see it. Set for solyra, where the question
@@ -1113,11 +1113,44 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # symbol — so an entry is still a record of an inspection rather than a
     # switch. The path restriction was one belt on top of those braces; the
     # braces are what stop a blanket exclusion, and they are unchanged.
-    # Only when reading the working tree. Under a pinned REV the checkout need
-    # not carry the file, and refusing on that would be the unreachable-state
-    # defect again.
-    test ${#rev[@]} -gt 0 || test -f "$root/$rc" \
-      || { echo "REVIEWED entry '$rc' does not exist"; return 2; }
+    # `test -f` only when reading the working tree. Under a pinned REV the
+    # checkout need not carry the file, and refusing on that would be the
+    # unreachable-state defect again.
+    # BUT SKIPPING A CHECK IS NOT THE SAME AS NOT NEEDING ONE. The shape test
+    # above refuses `dir/`, a glob and a traversal; a directory WITHOUT the
+    # trailing slash — `.claude/commands` — passes it, and under a pinned REV
+    # nothing else then asked what the path IS. `git grep -- <dir>` below
+    # succeeds if ANY descendant mentions the symbol, and `:!<dir>` excludes the
+    # whole scope, which is the blanket exclusion the symbol binding and the
+    # shape test were both added to stop. Measured on a checkout whose
+    # .claude/commands holds one prose file and one live route: the same entry
+    # gave rc=1 ABSENT at a pinned REV and rc=2 "does not exist" against the
+    # working tree. The certifying half is the one the solyra block ALWAYS
+    # takes — it sets REV from FETCH_HEAD, so `rev` is never empty over there.
+    # `git ls-tree`, for the reason the package.json read states forty lines up:
+    # `git cat-file -e` cannot tell absence from a failed lookup, and ls-tree
+    # separates them — rc=0 with empty output means the entry is not in that
+    # tree, a nonzero rc means the lookup itself failed. Absence is deliberately
+    # NOT refused here: the mention check immediately below already refuses an
+    # entry that matches nothing and tells the operator what to do about it, and
+    # a second refusal for one condition is a second thing to keep in step. Only
+    # a path that IS in the tree and is not a file is refused here.
+    if [ ${#rev[@]} -gt 0 ]; then
+      _rt=$(git -C "$root" ls-tree "$REV" -- "$rc") \
+        || { echo "could not read the tree at $REV — asserting nothing"
+             return 2; }
+      _rt=${_rt%%$'\n'*}; _rt=${_rt#* }; _rt=${_rt%% *}
+      case $_rt in
+        ''|blob) ;;
+        *) echo "REVIEWED entry '$rc' is a $_rt at ${REV:0:12}, not a file."
+           echo "Name one file per entry — a directory excludes every path"
+           echo "under it, including the live consumers you are checking for."
+           return 2;;
+      esac
+    else
+      test -f "$root/$rc" \
+        || { echo "REVIEWED entry '$rc' does not exist"; return 2; }
+    fi
     # AND IT MUST ACTUALLY MENTION THE SYMBOL. Shape checks cannot stop a glob:
     # `REVIEWED=( .claude/commands/*.md )` is expanded by bash AT ASSIGNMENT, so
     # six concrete, existing, correctly-named files arrive and nothing about
