@@ -409,3 +409,35 @@ def test_the_limit_is_a_no_op_when_there_are_fewer_rth_bars():
     bars = _session_bars("2026-09-02", pre_n=10, rth_n=5)
     assert len(limit_to_evaluated_bars(bars, 50)) == len(bars)
     assert len(limit_to_evaluated_bars(bars, None)) == len(bars)
+
+
+def test_the_trim_and_the_limit_compose_across_sessions():
+    """The two run in sequence in persist mode, so their interaction is a
+    third thing to get right: the limit's cutoff can land inside a session
+    whose warm-up the trim has already reduced.
+
+    What must hold: the trim never removes a bar the limit then needs, and
+    the limit never leaves an evaluated bar without its warm-up."""
+    import pandas as pd
+
+    from scripts.replay_signal_monitor import (
+        filter_to_rth, limit_to_evaluated_bars, trim_to_live_window_scope,
+    )
+
+    bars = pd.concat([
+        _session_bars("2026-09-02", pre_n=250, rth_n=30),
+        _session_bars("2026-09-03", pre_n=250, rth_n=30),
+    ], ignore_index=True)
+
+    # 45 evaluated bars: all 30 of day 1 and the first 15 of day 2.
+    out = limit_to_evaluated_bars(trim_to_live_window_scope(bars, warmup_bars=100), 45)
+    et = out["Time"].dt.tz_convert("America/New_York")
+    rth = filter_to_rth(out)
+    assert len(rth) == 45, len(rth)
+
+    day2 = et[et.dt.date.astype(str) == "2026-09-03"]
+    day2_pre = day2[day2.dt.time < __import__("datetime").time(9, 30)]
+    assert len(day2_pre) == 100, (
+        "day 2's evaluated bars must keep their full warm-up; got %d" % len(day2_pre))
+    day1 = et[et.dt.date.astype(str) == "2026-09-02"]
+    assert len(day1[day1.dt.time < __import__("datetime").time(9, 30)]) == 100
