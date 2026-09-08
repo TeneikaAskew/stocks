@@ -47,9 +47,12 @@ ATOMIC_BEGIN = "-- ATOMIC-BEGIN"
 ATOMIC_END = "-- ATOMIC-END"
 
 
-def _code_of(line: str, in_dollar: bool) -> tuple[str, bool]:
+_DOLLAR_OPEN = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
+def _code_of(line: str, tag: Optional[str]) -> tuple[str, Optional[str]]:
     """Return the executable part of ``line`` and the dollar-quote state
-    after it.
+    after it — the open delimiter (``$$``, ``$func$``), or None.
 
     The statement boundary is a ``;`` that ends the CODE, not the text: a
     line reading ``... DOUBLE PRECISION;    -- worst drawdown`` terminates
@@ -61,21 +64,29 @@ def _code_of(line: str, in_dollar: bool) -> tuple[str, bool]:
 
     Recognising ``--`` alone is not enough — it appears inside values and
     inside PL/pgSQL bodies — so the scan tracks single-quoted literals
-    (with ``''`` escaping) and ``$$`` bodies and only treats ``--`` as a
-    comment outside both. Everything before the comment is returned
+    (with ``''`` escaping) and dollar-quoted bodies, and only treats ``--``
+    as a comment outside both. Everything before the comment is returned
     verbatim, so the caller still stores the original line.
+
+    The body delimiter is matched by TAG, not assumed to be ``$$``.
+    ``$func$ ... $func$`` is as valid, and an author reaches for a tag
+    exactly when the body itself contains ``$$``; counting ``$$`` alone
+    left such a body unquoted, so a ``RETURN NEW;  -- done`` inside it read
+    as a statement boundary and split the function into fragments. The
+    one-command-per-unit invariant cannot see that — each fragment carries
+    one terminator — so it has its own test. A tag may not start with a
+    digit, which is what keeps ``$1`` a parameter placeholder.
     """
     out: list[str] = []
     i, n = 0, len(line)
     in_quote = False
     while i < n:
-        pair = line[i:i + 2]
         ch = line[i]
-        if in_dollar:
-            if pair == "$$":
-                in_dollar = False
-                out.append(pair)
-                i += 2
+        if tag is not None:
+            if line.startswith(tag, i):        # only the matching tag closes
+                out.append(tag)
+                i += len(tag)
+                tag = None
                 continue
         elif in_quote:
             if ch == "'":
@@ -85,18 +96,20 @@ def _code_of(line: str, in_dollar: bool) -> tuple[str, bool]:
                     continue
                 in_quote = False
         else:
-            if pair == "$$":
-                in_dollar = True
-                out.append(pair)
-                i += 2
-                continue
-            if pair == "--":
+            if ch == "$":
+                m = _DOLLAR_OPEN.match(line, i)
+                if m:
+                    tag = m.group(0)
+                    out.append(tag)
+                    i = m.end()
+                    continue
+            if line[i:i + 2] == "--":
                 break                          # rest of the line is a comment
             if ch == "'":
                 in_quote = True
         out.append(ch)
         i += 1
-    return "".join(out), in_dollar
+    return "".join(out), tag
 
 
 def split_statement_groups(sql_text: str) -> list[list[str]]:
@@ -118,7 +131,7 @@ def split_statement_groups(sql_text: str) -> list[list[str]]:
     groups: list[list[str]] = []
     group: Optional[list[str]] = None  # open ATOMIC group, else None
     buf: list[str] = []
-    in_dollar = False
+    dollar_tag: Optional[str] = None   # open body delimiter, else None
 
     for lineno, line in enumerate(sql_text.splitlines(), 1):
         stripped = line.strip()
@@ -160,9 +173,9 @@ def split_statement_groups(sql_text: str) -> list[list[str]]:
         # Advance the dollar-quote state across the line and take the part
         # that is code — a `$$` inside a literal does not open a body, and
         # a `;` before an inline comment still ends the statement.
-        code, in_dollar = _code_of(line, in_dollar)
+        code, dollar_tag = _code_of(line, dollar_tag)
 
-        if not in_dollar and code.rstrip().endswith(";"):
+        if dollar_tag is None and code.rstrip().endswith(";"):
             stmt = "\n".join(buf).strip()
             if stmt:
                 if group is not None:

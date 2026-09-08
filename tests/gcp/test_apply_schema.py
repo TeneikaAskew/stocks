@@ -961,3 +961,39 @@ def test_dry_run_parses_without_database_credentials(monkeypatch, caplog, tmp_pa
 
 def _never_called(*a, **k):  # pragma: no cover - guard
     raise AssertionError("a dry run must not open a database connection")
+
+
+def test_a_tagged_dollar_quoted_body_is_kept_whole():
+    """`$func$ ... $func$` is as valid as `$$ ... $$`, and schema authors
+    reach for a tag exactly when the body itself contains `$$`. Tracking
+    only `$$` left a tagged body unquoted, so a `RETURN NEW;  -- done`
+    inside it read as a statement boundary and the function was split into
+    two broken fragments.
+
+    The one-command-per-unit invariant does NOT catch this: each fragment
+    carries one terminator. So this is its own test."""
+    sql = (
+        "CREATE FUNCTION f() RETURNS TRIGGER AS $func$\n"
+        "BEGIN\n"
+        "    RETURN NEW;   -- inside the body, not a boundary\n"
+        "    RAISE NOTICE '$$ not a quote here $$';\n"
+        "END;\n"
+        "$func$ LANGUAGE plpgsql;   -- this one is\n"
+        "CREATE TABLE z (id INT);\n"
+    )
+    out = split_statements(sql)
+    assert len(out) == 2, out
+    assert "RETURN NEW;" in out[0] and "RAISE NOTICE" in out[0]
+    assert out[1].startswith("CREATE TABLE z")
+
+
+def test_a_positional_parameter_does_not_open_a_dollar_quote():
+    """`$1` is a parameter placeholder, not a dollar-quote opener: a tag
+    cannot start with a digit. Reading it as one would swallow the rest of
+    the file into a never-closed body."""
+    sql = ("CREATE FUNCTION g(int) RETURNS int AS $$ SELECT $1 + 1; $$ "
+           "LANGUAGE sql;\nCREATE TABLE y (id INT);\n")
+    out = split_statements(sql)
+    assert len(out) == 2, out
+    assert "$1 + 1" in out[0]
+    assert out[1].startswith("CREATE TABLE y")

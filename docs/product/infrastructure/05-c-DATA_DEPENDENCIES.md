@@ -391,7 +391,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [189](../../../gcp/regime_combo_job.py#L189), [190](../../../gcp/regime_combo_job.py#L190)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [250](../../../gcp/apply_schema.py#L250), [430](../../../gcp/apply_schema.py#L430)
+- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [263](../../../gcp/apply_schema.py#L263), [443](../../../gcp/apply_schema.py#L443)
 
 ### `sec_filings`
 - [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) — line [581](../../../gcp/fetchers/fetch_sec_filings.py#L581), [582](../../../gcp/fetchers/fetch_sec_filings.py#L582), [583](../../../gcp/fetchers/fetch_sec_filings.py#L583)
@@ -797,7 +797,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [7](../../../gcp/regime_combo_job.py#L7), [51](../../../gcp/regime_combo_job.py#L51)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [356](../../../gcp/apply_schema.py#L356), [408](../../../gcp/apply_schema.py#L408)
+- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [369](../../../gcp/apply_schema.py#L369), [421](../../../gcp/apply_schema.py#L421)
 
 ### `sec_filings`
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [116](../../../lib/agents/ranker/candidates.py#L116)
