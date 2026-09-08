@@ -362,10 +362,14 @@ def record_revision(engine, commit_sha: str, commit_time: int,
             conn.execute(
                 sqlalchemy.text(
                     f"UPDATE {REVISION_TABLE} SET ancestors = :anc, schema_sha256 = :dg, "
-                    "status = 'ok' WHERE commit_sha = :sha AND applied_at = :at"
+                    "status = 'ok', forced = (forced OR :forced) "
+                    "WHERE commit_sha = :sha AND applied_at = :at"
                 ),
+                # forced is OR'd: once an operator bypassed the guard for this
+                # row, a later plain re-apply of the same SHA must not erase
+                # that evidence (Codex on #1022).
                 {"anc": " ".join(sorted(merged)), "dg": schema_digest,
-                 "sha": commit_sha, "at": last[1]},
+                 "forced": bool(forced), "sha": commit_sha, "at": last[1]},
             )
             log.info("Revision %s was already the last applied row; merged its ancestry "
                      "(%d SHAs)", commit_sha, len(merged))

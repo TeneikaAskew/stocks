@@ -837,3 +837,15 @@ def test_schema_points_at_the_self_checking_marking_query():
     assert "UPDATE trades t SET run_kind = 'backfill'" in q
     from gcp.apply_schema import split_statement_groups
     assert len(split_statement_groups(q)) == 1, "db_query_cr.sh -f sends the file as one statement"
+
+
+def test_same_revision_reapply_keeps_the_forced_flag():
+    """Codex on #1022 (7e9dbd3): a same-SHA re-apply merges into the last
+    row, and the merge UPDATE set ancestors, digest and status but not
+    forced, so a forced apply of a SHA already recorded (or a plain
+    re-apply after a forced one) lost the evidence that --force-revision
+    was used. The flag is OR'd: once forced, the row stays forced."""
+    eng = _FakeEngine([[("abc", "2026-09-07T10:00:00+00:00", "abc a")]])
+    record_revision(eng, "abc", 123, frozenset({"abc"}), schema_digest="d1", forced=True)
+    update = next(e for e in eng.executed if e.startswith("UPDATE schema_apply_history"))
+    assert "forced = (forced OR :forced)" in update and "'forced': True" in update, update
