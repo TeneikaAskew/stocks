@@ -628,6 +628,11 @@ _ENV_UPDATE_CALLS = {"update"}
 # `os.getenv(...)` and `os.environ.get(...)` present, and both take the value
 # that runs when the variable is absent as their second argument.
 _ENV_GETTER_CALLS = {"getenv", "get"}
+# pydantic's `Field` and dataclasses' `field` carry a setting's real
+# value in `default=` (or, for `Field`, the first positional), so a
+# `timezone: str = Field(default="EST")` reaches `follow` as the OUTER
+# constructor and its zone hides in the default (Codex, PR #993).
+_FIELD_DEFAULT_CALLS = {"Field", "field"}
 # DB-API statement executors. Their FIRST argument is the query and the rest
 # are bound parameters, which is how a timezone value reaches Postgres without
 # ever appearing in a string this guard would otherwise read.
@@ -2216,6 +2221,22 @@ def _python_hits(path: pathlib.Path, text: str):
                                   where(f"{n}(..., {shown})"),
                               ambiguous_ok, depth + 1, seen,
                               utc_prefixed_ok)
+        # A field/model constructor wrapping the setting: the value is its
+        # `default=` (or, for `Field`, a leading positional). `follow` only
+        # reaches here in a timezone context -- a tz-named settings export or a
+        # timezone call -- so a `default_factory` (dynamic) and a `None` default
+        # are correctly passed through and match nothing (Codex, PR #993).
+        if isinstance(arg, ast.Call) and _call_name(arg) in _FIELD_DEFAULT_CALLS:
+            default = next((k.value for k in arg.keywords
+                            if k.arg == "default"), None)
+            if default is None and _call_name(arg) == "Field" and arg.args:
+                default = arg.args[0]
+            if default is not None:
+                return follow(bucket_legacy, bucket_offsets, node, default, env,
+                              lambda shown, n=_call_name(arg):
+                                  where(f"{n}(default={shown})"),
+                              ambiguous_ok, depth + 1, seen,
+                              utc_prefixed_ok)
         # An indirection -- `Settings.tz`, `settings.tz`, or a plain name --
         # is resolved to the NODE it was bound to and re-dispatched through
         # this same function, so every spelling above is reachable through a
@@ -3702,14 +3723,20 @@ def _scan() -> tuple[list[str], list[str]]:
         rel = str(p.relative_to(REPO)).replace("\\", "/")
         if rel == SELF:
             continue
-        if not _CANDIDATE_RX.search(text):
-            # None of the tokens any matcher below can fire on is present, so
-            # neither the AST pass, the notebook pass, nor the regex pass could
-            # report this file -- skip the parse and the walk. The read above
-            # still happened: an unreadable tracked file errors, it is only the
-            # ANALYSIS of a plainly-unrelated module that is avoided (Codex,
-            # PR #993). `_CANDIDATE_RX` is a proven superset of every finding
-            # shape; see `test_the_candidate_prefilter_keeps_every_finding_shape`.
+        if p.suffix == ".py" and not _CANDIDATE_RX.search(text):
+            # A Python module with none of the tokens `_python_hits` can fire
+            # on: skip the costly parse and scope walk. The prefilter is scoped
+            # to `.py` ON PURPOSE. Python reaches every forbidden zone through a
+            # call, a `tz=`/keyword assignment or embedded SQL, so a context
+            # token is always present -- but Pine's `time(tf, session, "EST")`
+            # names the zone POSITIONALLY with no context keyword, so its file
+            # can carry a finding `_pine_call_hits` reports and no candidate
+            # token at all (Codex, PR #993). Only the AST pass, which runs on
+            # `.py` alone, is expensive enough to gate; every other language
+            # keeps being read by its own (cheap) analyser. The read above still
+            # happened, so an unreadable tracked file errors either way.
+            # `_CANDIDATE_RX` is a proven superset of every PYTHON finding shape;
+            # see `test_the_candidate_prefilter_keeps_every_finding_shape`.
             continue
         if p.suffix == ".py":
             parsed = _python_hits(p, text)
@@ -3865,8 +3892,50 @@ def test_the_candidate_prefilter_keeps_every_finding_shape():
         assert not keep(plain), plain
 
 
+def test_the_prefilter_never_gates_a_non_python_analyzer():
+    """A Pine positional zone carries no candidate token, so the prefilter must
+    not apply to it. `time(timeframe.period, session, "EST")` names the zone in
+    the third argument with no `tz=`/keyword context, so `_CANDIDATE_RX` does
+    not match the file -- yet `_pine_call_hits` reports it. The prefilter is
+    scoped to `.py` precisely so `_scan` still reads every `.pine` source; this
+    plants one and proves the scan reports it (Codex P2 on #993).
+    """
+    import tempfile
+    pine_dir = REPO / EXTENSIONLESS_SOURCE_DIRS[0]
+    created_dir = not pine_dir.exists()
+    pine_dir.mkdir(parents=True, exist_ok=True)
+    tmp = pine_dir / "_neg_control_positional.pine"
+    tmp.write_text('//@version=5\n'
+                   't = time(timeframe.period, session, "EST")\n'
+                   'o = time(timeframe.period, session, "UTC-5")\n')
+    try:
+        # The file genuinely carries no token the prefilter keys on: if the
+        # prefilter applied to it, `_scan` would skip it and miss both zones.
+        assert not _CANDIDATE_RX.search(tmp.read_text())
+        assert _reads_as_pine(tmp)
+        # Only the planted file, and through `_scan.__wrapped__` -- the
+        # UNCACHED scan -- so it is a few milliseconds and never touches the
+        # memoised full-tree result the other scan tests share. Clearing the
+        # cache instead forced a whole extra re-read and handed back the time
+        # the prefilter saves.
+        orig = _source_files
+        try:
+            globals()["_source_files"] = lambda: [tmp]
+            legacy, offsets = _scan.__wrapped__()
+        finally:
+            globals()["_source_files"] = orig
+    finally:
+        tmp.unlink()
+        if created_dir:
+            pine_dir.rmdir()
+    hits = [h for h in legacy + offsets if "_neg_control_positional" in h]
+    assert len(hits) == 2, (
+        "the .pine positional zones must both surface despite carrying no "
+        f"candidate token; got: {hits}")
+
+
 def test_every_scheduler_declaration_uses_the_named_zone():
-    """`gcp/deploy.sh` creates every Cloud Scheduler entry; all must be ET.
+    """Every tracked shell source's Cloud Scheduler entries must be ET.
 
     Read live 2026-09-07, all 66 entries are `America/New_York` (66 in
     us-east1, 0 in every other Cloud Scheduler location). This keeps a
@@ -3894,40 +3963,73 @@ def test_every_scheduler_declaration_uses_the_named_zone():
     Live truth is checked separately by `scripts/verify_docs_against_live.py`;
     this test is the hermetic half.
     """
-    src = (REPO / "gcp" / "deploy.sh").read_text()
-    # Inline comments too, not just full lines -- see `_strip_shell_comments`.
-    body = _strip_shell_comments(src)
-
-    # Every timezone literal in the file must be Eastern, wherever it sits.
-    # BOTH gcloud spellings. Requiring whitespace missed `--time-zone=UTC`,
-    # while the per-declaration check below accepts a command merely for
-    # containing `--time-zone` -- so an equals-form non-Eastern declaration
-    # satisfied the second check and was invisible to the first.
-    # The value is captured up to the next quote or space, NOT restricted to
-    # the characters a zone name uses. The narrow class could not match
-    # `${SCHEDULER_TZ}`, so a dynamic value contributed nothing to this set,
-    # left it as {America/New_York}, and satisfied the per-declaration check
-    # below merely by containing the flag (Codex, PR #993). A value this guard
-    # cannot read is a value it cannot vouch for, so it has to fail here.
-    # Continuations joined FIRST. `--time-zone \` with the value on the next
-    # line is ordinary wrapping, and reading the raw text captured the
-    # backslash itself as the zone -- `zones == {'\\'}` -- so a correctly
-    # zoned command failed this assertion (Codex, PR #993).
-    # `_scheduler_commands` already joins them for the offender check; this
-    # half of the test did not.
-    joined = re.sub(r"\\\n\s*", " ", body)
-    zones = set(re.findall(
-        r"--time-zone[=\s]+[\"']?([^\s\"']+)[\"']?", joined))
-    assert zones, "no --time-zone flags found -- has deploy.sh moved?"
-    assert zones == {EASTERN}, f"non-Eastern scheduler timezones in deploy.sh: {sorted(zones - {EASTERN})}"
-
-    offenders = []
-    for name, func in _shell_functions(body):
-        offenders.extend(_scheduler_offenders(name, func))
+    # Every tracked shell source, not only gcp/deploy.sh: a `gcloud scheduler
+    # jobs create/update` added to platform/deploy.sh or a cloud_shell script
+    # defaults to UTC just as silently, and nothing pins the declarations to
+    # one file (Codex, PR #993). archive/ is already outside `_source_files`,
+    # so retired scripts do not count.
+    decl = re.compile(r"gcloud\s+scheduler\s+jobs\s+(?:create|update)")
+    zones: set = set()
+    offenders: list = []
+    scheduler_sources: list = []
+    for p in _source_files():
+        if not _reads_as_shell(p):
+            continue
+        # Inline comments too, not just full lines -- see `_strip_shell_comments`.
+        body = _strip_shell_comments(p.read_text(), make=_reads_as_make(p))
+        if not decl.search(body):
+            continue
+        rel = str(p.relative_to(REPO)).replace("\\", "/")
+        scheduler_sources.append(rel)
+        # Every timezone literal in the file must be Eastern, wherever it sits.
+        # BOTH gcloud spellings; continuations joined FIRST so `--time-zone \`
+        # with the value on the next line is read as the value, not the
+        # backslash. The value is captured up to the next quote or space and
+        # NOT restricted to zone-name characters, so a dynamic `${SCHEDULER_TZ}`
+        # this guard cannot read fails here rather than passing silently
+        # (Codex, PR #993).
+        joined = re.sub(r"\\\n\s*", " ", body)
+        zones |= set(re.findall(
+            r"--time-zone[=\s]+[\"\']?([^\s\"\']+)[\"\']?", joined))
+        # Each `create/update` command checked on its own, resolving shared
+        # flag arrays defined in the same function.
+        for name, func in _shell_functions(body):
+            offenders.extend(
+                f"{rel} {o}" for o in _scheduler_offenders(name, func))
+    assert scheduler_sources, (
+        "no `gcloud scheduler jobs` declaration in any tracked shell source -- "
+        "has deploy.sh moved out of the scanned set?")
+    assert zones, "scheduler declarations found but no --time-zone flags"
+    assert zones == {EASTERN}, (
+        f"non-Eastern scheduler timezones: {sorted(zones - {EASTERN})}")
     assert not offenders, (
         "Cloud Scheduler defaults to UTC when --time-zone is omitted; these "
         "declarations set no timezone and expand no array that does:\n  "
         + "\n  ".join(offenders))
+
+
+def test_a_field_wrapped_default_is_inspected():
+    """A tz setting declared through pydantic's `Field` or dataclasses' `field`
+    hides its zone in `default=` (or, for `Field`, a leading positional), so
+    `follow` unwraps it. `default=None`, a correct zone, a non-tz target, and a
+    dynamic `default_factory` all stay clean (Codex P2 on #993).
+    """
+    xp = REPO / "x.py"
+
+    def hits(src):
+        legacy, offsets = _python_hits(xp, src)
+        return (legacy or []) + (offsets or [])
+
+    for src in ('timezone: str = Field(default="EST")',
+                'TIME_ZONE = field(default="-05:00")',
+                'timezone = Field("US/Eastern")',
+                'class C:\n    tz: str = Field(default="EDT")\n'):
+        assert hits(src), src
+    for src in ('timezone: str = Field(default=None, max_length=120)',
+                'timezone: str = Field(default="America/New_York")',
+                'name: str = Field(default="EST")',
+                'tz: str = Field(default_factory=get_tz)'):
+        assert not hits(src), src
 
 
 def _strip_shell_comments(text: str, make: bool = False) -> str:
