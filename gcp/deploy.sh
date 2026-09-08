@@ -1638,8 +1638,17 @@ deploy_magnitude_engine() {
     #   --max-retries 0               — Rule 0: a stuck cell fails loud
     # Run-time plan is chosen at EXECUTE time via --update-env-vars=MAG_PLAN=...
     # (default plan stamped here is no_backfill so a bare execute works).
+    #
+    # MAG_PERSIST_PRODUCTION_MODEL / MAG_CLASS_WEIGHT_POWER live HERE, not
+    # on the job by hand: --set-env-vars replaces the whole set, and on
+    # 2026-09-08 a redeploy from this function silently dropped both (they
+    # had only ever been added to the live job out of band), so the next
+    # execution (magnitude-engine-2wv9z, ~$8) trained 27 cells and persisted
+    # nothing, with no gate run and LATEST untouched. Anything an execution
+    # depends on belongs in this list.
     local plan_default=no_backfill
     local plan_size=27
+    local mag_env="MAG_PLAN=${plan_default},MAG_PERSIST_PRODUCTION_MODEL=true,MAG_CLASS_WEIGHT_POWER=0.75"
     gcloud run jobs create magnitude-engine \
         --image "${research_image}" --region "${REGION}" \
         --tasks ${plan_size} --parallelism ${plan_size} \
@@ -1649,7 +1658,7 @@ deploy_magnitude_engine() {
         --command "python" \
         --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
+        --set-env-vars "$(_env_string),${mag_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update magnitude-engine \
         --image "${research_image}" --region "${REGION}" \
@@ -1659,7 +1668,7 @@ deploy_magnitude_engine() {
         --command "python" \
         --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
+        --set-env-vars "$(_env_string),${mag_env}" \
         --quiet
 }
 
