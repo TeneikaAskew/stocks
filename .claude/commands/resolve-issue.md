@@ -1023,6 +1023,26 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # FETCH_HEAD unconditionally and both resolved to the same commit here. A
   # fetch failure REFUSES; falling back to the working tree would answer the
   # question the fetch was there to stop us answering.
+  # THE DEFINITION MUST BE GONE TOO. Each executable-markdown scope excludes the
+  # surface's own file so an agent does not match itself — without that, every
+  # agent reads as consumed and none is ever findable as dormant. But the same
+  # exclusion means the RETIREMENT assertion passes while the file is still on
+  # disk: measured on two dormant agents in this repo, both returned rc=1
+  # "absent, safe to delete" with their own .claude/agents/<name>.md sitting
+  # right there. (Naming them here would make them permanent rc=3 examples —
+  # the self-reference trap this file has already fallen into twice.) Phase 4
+  # demands a check that FAILS before and PASSES after, and this one could not
+  # fail. Self-exclusion is right for finding a dormant consumer and wrong for
+  # asserting the retirement, so the two are now separate questions.
+  local d
+  for d in ".claude/agents/$sym.md" ".claude/commands/$sym.md" \
+           ".github/prompts/$sym.md"; do
+    test -e "$d" || continue
+    echo "$d still exists — the surface's own definition has not been deleted."
+    echo "consumed() excludes it so the surface does not match itself; that"
+    echo "exclusion is not a licence to leave it behind."
+    return 1
+  done
   _solyra_ok || return 1
   ( cd "$SOLYRA" || exit 2
     git fetch -q origin main \
@@ -1151,8 +1171,24 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
       scheduler) json=$(gcloud scheduler jobs list --project="$proj" \
                           --location=us-east1 --format=json);;
     esac || { echo "$1 listing FAILED — asserting nothing" >&2; return 1; }
-    n=$(jq 'length' <<<"$json" 2>/dev/null) \
+    # TYPE-CHECK IT. `jq 'length'` succeeds on an object too — measured, `{}`
+    # gives length 0 and the `.[]` extraction gives no names, so a listing whose
+    # output SHAPE changed reads as an empty namespace and a live resource
+    # certifies as retired. The comment here used to claim this rejected
+    # non-array JSON; it only rejected INVALID json.
+    jq -e 'type=="array"' <<<"$json" >/dev/null 2>&1 \
       || { echo "$1 listing is not a JSON array — asserting nothing" >&2
+           return 1; }
+    n=$(jq 'length' <<<"$json") \
+      || { echo "$1 listing could not be counted — asserting nothing" >&2
+           return 1; }
+    # AND every row must carry a name. `.[] | … // empty` skips a row silently,
+    # so a partially-reshaped response would return the rows it still
+    # understands and quietly drop the rest — including, possibly, the one you
+    # are asking about.
+    jq -e 'all(has("metadata") and (.metadata|has("name")) or has("name"))' \
+      <<<"$json" >/dev/null 2>&1 \
+      || { echo "$1: some rows carry no name field — asserting nothing" >&2
            return 1; }
     # `// empty` rather than letting `sub` hit a null: without it jq ABORTS on a
     # row carrying neither field, and jq's own error text replaces the
