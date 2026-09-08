@@ -472,18 +472,49 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   check, and this is the second time that shape has shipped here — solyra's
   dependency row cited `@tailwindcss/vite` and matched itself the same way.
   Discounting the hits while reading is not enough, because Phase 4 asserts on
-  `rc`, not on your reading of the list. Note `':!*.md'` does not subsume
-  `':!docs/'` or `':!archive/'` here — measured, they hold 114 and 145 tracked
-  non-markdown files.
+  `rc`, not on your reading of the list.
 
-  **`.claude/` as a DIRECTORY does not come out, and that distinction is the
-  point.** `':!*.md'` already excludes every prose file under it — measured, the
-  only tracked non-markdown file there is `.claude/settings.json`, and that one
-  is EXECUTABLE: it registers a `UserPromptSubmit` command hook that runs `jq`
-  and names `gh-stocks-repo-pat` and `.github/workflows/gh-api.yml`. Excluding
-  the directory would report a surface consumed only by that hook as having no
-  consumer. Exclude prose by what it IS, not by where it lives; a blanket
-  directory exclusion is how an executable file gets swept up with it.
+  **Neither extension nor directory tells you whether a file RUNS, and this
+  repo proves it both ways.** Two rounds of review found the same mistake in
+  opposite directions:
+
+  - `':!.claude/'` swept up `.claude/settings.json`, which is EXECUTABLE — a
+    `UserPromptSubmit` command hook running `jq` that names
+    `gh-stocks-repo-pat` and `.github/workflows/gh-api.yml`.
+  - `':!*.md'` swept up `.claude/agents/*.md`, which are also executable.
+    Measured: `gcp-config-reviewer` returned **rc=1, "no consumers"**, while
+    `.claude/agents/pre-deploy-check.md:75` *delegates to it* whenever
+    `gcp/deploy.sh` changes. Eight agents are referenced by name from other
+    agents or commands this way; `pre-deploy-check` by eight of them.
+
+  **But dropping `':!*.md'` is not the fix either, and the first attempt at
+  this got it wrong.** Markdown here is BOTH: `.claude/agents/*.md` run, and
+  every other `.md` is documentation. Measured over the seven probe surfaces
+  below, dropping the glob admits `CLAUDE.md`, `RUNBOOK.md`, `DASHBOARD_SPEC.md`,
+  `platform/GCP_DATA_DICTIONARY.md`, `platform/PLATFORM_PLAN.md`, two `insights/`
+  plan documents and three `README.md`s — ten prose files, not the one an
+  earlier five-symbol probe suggested. (That number was wrong because the probe
+  was narrower than the recipe it was standing in for; validate the proxy.)
+
+  No single pathspec separates them, so the search is TWO scopes, not one
+  cleverer glob — and it must distinguish "neither scope has a hit" from "git
+  errored", because `git grep` exits 128 on a bad pathspec and `||` would read
+  that as a miss:
+
+  ```bash
+  consumed() {   # 0 = something consumes it, 1 = nothing does, 2 = could not tell
+    local a b
+    git grep -q "$1" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+      ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
+      ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; a=$?
+    git grep -q "$1" -- .claude/agents; b=$?
+    case "$a$b" in
+      00|01|10) return 0 ;;
+      11)       return 1 ;;
+      *) echo "git grep error: stocks=$a agents=$b — asserting nothing"; return 2 ;;
+    esac
+  }
+  ```
 
   **Generated artifacts come out for the same reason, and this is where the list
   stops being reactive.** Do not extend it one reported file at a time. Derive
@@ -494,8 +525,8 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
            market_data_intraday etf_options_snapshots exit_config_overrides; do
     git grep -l "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
-      ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' \
-      ':!tests/fixtures/live_gcp_snapshot_*.json'
+      ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
+      ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
   done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
   ```
 
@@ -632,11 +663,26 @@ assertion through one function that returns on the first failure:
 
 ```bash
 # `&&`-chained, so the first failure short-circuits and IS the status.
-absent_everywhere() {
+# The solyra checkout is NOT guaranteed to be a sibling. `docs/CLAUDE_CODE_ON_WEB.md`
+# says plainly: "If you need the frontend, clone solyra". In a session with only
+# this repo, `git -C ../solyra` exits **128**, `test $rc -eq 1` fails, and
+# `absent_everywhere` returns 1 for EVERY correctly deleted surface — the check
+# can then never pass, which is the unreachable-state defect again, just wearing
+# an error message. So resolve the path first and say what to do if it is not
+# there; do NOT skip the solyra half, because "I could not look" and "nothing
+# uses it" are the two answers this whole phase exists to keep apart.
+SOLYRA=${SOLYRA:-../solyra}
+git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
+  echo "no solyra checkout at '$SOLYRA'. Set SOLYRA=<path>, or:"
+  echo "  git clone https://github.com/TeneikaAskew/solyra ../solyra"
+  echo "NOT asserting — a surface can be dead here and live in the frontend."
+  return 1 2>/dev/null || exit 1; }
+
+absent_everywhere() {   # uses consumed() above — both scopes, both repos
   local rc
-  git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
+  consumed "<symbol>"; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc — still referenced here"; return 1; }
-  git -C ../solyra grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
+  ( cd "$SOLYRA" && consumed "<symbol>" ); rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc — still referenced there"; return 1; }
 }
 
@@ -652,15 +698,32 @@ absent_everywhere() {
 # one of them matches. Read the real trigger name out of `_schedule`; do not
 # assume it is `<job>`, and do not assume it is `<job>-daily` either — the
 # suffixes in use include -daily, -weekly, -nightly, -sunday and more.
+# The two inventories take DIFFERENT projections, and this repo already knows
+# which. `gcp/deploy.sh:299` lists Run jobs with `value(metadata.name)`;
+# `scripts/cloud_shell/phase2_deploy.sh:156` lists Scheduler jobs with
+# `name.basename()`. Using `name.basename()` for BOTH is how the Run half
+# silently empties: a wrong projection still exits 0, `grep` then finds nothing
+# in an empty list, `!` makes that a pass, and the job reads as retired while it
+# is live. (Read from source — this session's gcloud is unauthenticated, so
+# that is the repo's working code, not an invocation I ran.)
+#
+# Which is why the empty-list guard below is the real fix and the projection is
+# only half of it: ANY future projection change fails loudly instead of passing.
+# An inventory that comes back empty when ~35 jobs exist is a broken query, not
+# an empty account, and it must never be read as "absent".
 retired_everywhere() {   # $1 = Cloud Run Job name, $2 = Cloud Scheduler name
   local job=$1 sched=$2 list
   test -n "$job" && test -n "$sched" \
     || { echo "need BOTH names: retired_everywhere <job> <scheduler>"; return 1; }
-  list=$(gcloud run jobs list --region=us-east1 --format='value(name.basename())') \
+  list=$(gcloud run jobs list --region=us-east1 --format='value(metadata.name)') \
     || { echo "job listing FAILED — asserting nothing"; return 1; }
+  test -n "$list" \
+    || { echo "job inventory EMPTY — wrong projection? asserting nothing"; return 1; }
   ! grep -qx "$job" <<<"$list" || { echo "$job still exists"; return 1; }
   list=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') \
     || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
+  test -n "$list" \
+    || { echo "scheduler inventory EMPTY — wrong projection? asserting nothing"; return 1; }
   ! grep -qx "$sched" <<<"$list" || { echo "$sched trigger still exists"; return 1; }
 }
 # ONE call, `&&`-chained. Two bare calls have the same defect the functions

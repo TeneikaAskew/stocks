@@ -94,14 +94,16 @@ body:
         # here runs in production", so a hit there is not a consumer. Measured —
         # TradingAlertSystem matches archive/standalone-scripts/trading_alerts.py
         # and nothing live, which would block a correct retirement.
-        # ':!.github/ISSUE_TEMPLATE/' and ':!*.md' exclude PROSE, THIS FILE
-        # INCLUDED. The line above names TradingAlertSystem, so without them the
-        # search for it matches this comment and .claude/commands/resolve-issue.md
-        # and returns rc=0 forever — measured, exactly those two hits and nothing
-        # else. A retirement check whose passing state is unreachable is not a
-        # check. Note ':!*.md' is what covers .claude/, NOT a ':!.claude/'
-        # directory exclusion: .claude/settings.json is an executable hook, and
-        # excluding the directory would hide a surface that hook consumes.
+        # ':!.github/ISSUE_TEMPLATE/' and ':!.claude/commands/' exclude the files
+        # that cite example symbols in their own prose, THIS ONE INCLUDED. The
+        # line above names TradingAlertSystem, so without them the search for it
+        # matches this comment and .claude/commands/resolve-issue.md and returns
+        # rc=0 forever — measured, exactly those two hits and nothing else. A
+        # retirement check whose passing state is unreachable is not a check.
+        # NOT by directory and NOT by extension: .claude/settings.json is an
+        # executable hook and .claude/agents/*.md are executable too — measured,
+        # gcp-config-reviewer read as dead under ':!*.md' while
+        # .claude/agents/pre-deploy-check.md:75 delegates to it.
         # ':!*.drawio' and the live_gcp_snapshot fixture likewise: measured, the
         # three root .drawio diagrams and the GCP state capture they are drawn
         # from match six of seven probe surfaces and invoke none of them. Derive
@@ -202,7 +204,8 @@ body:
       placeholder: |
         Retire: `git grep -q "<name>" -- . ':!docs/' ':!archive/'
         ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
-        ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — the same exclusions as the
+        ':!.claude/commands/' ':!*.md' ':!*.drawio'
+        ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — the same exclusions as the
         consumer field above, and repo-wide because
         .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs
         cannot see; the schedule is deleted; the retention/export decision is recorded;
