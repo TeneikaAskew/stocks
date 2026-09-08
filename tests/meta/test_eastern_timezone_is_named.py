@@ -421,10 +421,20 @@ _POSIX_EASTERN_FIXED = r"EST\+?0?5(?::00(?::00)?)?|EDT\+?0?4(?::00(?::00)?)?"
 # is UTC plus five -- while `EST5` has no second meaning anywhere. This one
 # applies only where the value is known to be a process or session `TZ`
 # (Codex, PR #993 final review).
-_POSIX_UTC_FIXED = (r"(?:UTC|GMT)\+?0?5(?::00(?::00)?)?"
-                    r"|(?:UTC|GMT)\+?0?4(?::00(?::00)?)?")
+# The ABBREVIATION is case-insensitive: glibc reads `TZ=utc+5` and `gMt+4`
+# as the same frozen UTC-5 / UTC-4 as the uppercase forms (verified live).
+# Written as inline classes rather than `re.I`, because `NONPY_POSIX_ENV_OFFSET`
+# must keep its KEY (`TZ`/`PGTZ`) case-sensitive and so cannot carry the flag
+# (Codex, PR #993 final review).
+_UTC = r"(?:[Uu][Tt][Cc]|[Gg][Mm][Tt])"
+_POSIX_UTC_FIXED = (_UTC + r"\+?0?5(?::00(?::00)?)?"
+                    r"|" + _UTC + r"\+?0?4(?::00(?::00)?)?")
 _POSIX_UTC_FIXED_VALUE = re.compile(r"(?:" + _POSIX_UTC_FIXED + r")")
-#: The environment variables a process or libpq reads as a POSIX `TZ`.
+#: The environment variables a process or libpq reads as a POSIX `TZ`. Env
+#: names are case-sensitive on the Linux hosts these scripts target, so `tz`
+#: is a different variable and does NOT configure the timezone -- the key is
+#: matched exactly, only the abbreviation is case-folded (Codex, PR #993 final
+#: review).
 _POSIX_TZ_KEYS = {"TZ", "PGTZ"}
 _FIXED_OFFSET_TEXT = r"(?:-\s*0?[45]:?00(?::00)?|" + _POSIX_EASTERN_FIXED + r")"
 # Quotes optional, like the legacy-name pattern above and for the same reason:
@@ -605,7 +615,7 @@ def _posix_tz_offset(key_text, value, env):
     `UTC+5` is UTC plus five, so the assignment passed (Codex, PR #993 final
     review). Decided by the KEY, which is what settles the sign.
     """
-    if key_text is None or key_text.upper() not in _POSIX_TZ_KEYS or value is None:
+    if key_text is None or key_text not in _POSIX_TZ_KEYS or value is None:
         return None
     text = _const_string(value, env)
     if text is not None and _POSIX_UTC_FIXED_VALUE.fullmatch(text.strip()):
@@ -1795,12 +1805,17 @@ def _collect_bindings(nodes, out: dict[str, ast.AST], aliases=None):
         # evaluate it is the same division of labour the string bindings
         # already use; a `timedelta(hours=3)` kept this way still resolves to
         # nothing there.
+        # Plus a bare `None`. `DST = None; tzrange("XX", -18000, DST)` freezes
+        # the range -- a null daylight abbreviation disables DST -- and the
+        # binding has to be followable for `_tzrange_is_frozen` to see it
+        # (Codex, PR #993 final review). `None` is never a finding on its own.
         if (_binding_text(v) is None
                 and _const_string(v) is None
                 and not _is_eastern_fixed_timedelta(v)
                 and not _is_offset_constructor_call(v)
                 and not _is_partial_call(v, aliases=aliases)
                 and _const_number(v) is None
+                and not (isinstance(v, ast.Constant) and v.value is None)
                 and not isinstance(v, (ast.Name, ast.Attribute, ast.Dict,
                                        ast.Tuple, ast.List, ast.Set))):
             continue
@@ -1926,6 +1941,12 @@ def _tzrange_is_frozen(flat_args, flat_kwargs, env) -> bool:
     """
     kw = dict(flat_kwargs)
     dstabbr = flat_args[2] if len(flat_args) > 2 else kw.get("dstabbr")
+    # `DST = None; tzrange("X", -18000, DST)` freezes the zone: a null daylight
+    # abbreviation disables DST. The bound name resolves to the same `None` as
+    # the inline constant, and reading only the inline form treated the range
+    # as daylight-enabled (Codex, PR #993 final review).
+    if dstabbr is not None:
+        dstabbr = _resolve_binding(dstabbr, env)
     if dstabbr is None or (isinstance(dstabbr, ast.Constant)
                            and dstabbr.value is None):
         return True
@@ -2473,6 +2494,12 @@ def _python_hits(path: pathlib.Path, text: str):
                 if key_text is not None and key_text.lower() in _TZ_KEYWORDS:
                     follow(legacy, offsets, node, v, env,
                            lambda shown, k=key_text: f"{k!r}: {shown}")
+                # `subprocess.run(env={"TZ": "UTC+5"})`: the child reads the
+                # POSIX sign, so a `TZ`/`PGTZ` key (exact case) with a POSIX
+                # offset is the frozen zone (Codex, PR #993 final review).
+                posix = _posix_tz_offset(key_text, v, env)
+                if posix is not None:
+                    note(offsets, node, f"{{{key_text!r}: {posix!r}}}")
 
         # A legacy zone name as the value of a timezone-ish keyword, anywhere.
         # `.lower()`, matching the dict-key and subscript branches. Building
@@ -2547,6 +2574,27 @@ def _python_hits(path: pathlib.Path, text: str):
         # (Codex, PR #993). Keyword form (`update(TZ="EST")`) is already
         # covered by the keyword branch further down.
         if name in _ENV_UPDATE_CALLS:
+            # `os.environ.update(TZ="UTC+5")` and `update(**{"TZ": "UTC+5"})`:
+            # a keyword pair is a mapping entry too. The generic keyword branch
+            # below reads `TZ=` the pandas way (`UTC+5` benign), so the POSIX
+            # reading is applied here, scoped to this env-update call and an
+            # exact `TZ`/`PGTZ` key (Codex, PR #993 final review).
+            _kw_pairs = [(ast.Constant(kw.arg), kw.value)
+                         for kw in node.keywords if kw.arg is not None]
+            for kw in node.keywords:
+                if kw.arg is None:
+                    spread = _resolve_binding(kw.value, env)
+                    if isinstance(spread, ast.Dict):
+                        _kw_pairs.extend(zip(spread.keys, spread.values))
+            for k, v in _kw_pairs:
+                key_text = _const_string(k, env)
+                if key_text is not None and key_text.lower() in _TZ_KEYWORDS:
+                    follow(legacy, offsets, node, v, env,
+                           lambda shown, kk=key_text, nn=name:
+                               f"{nn}({kk}={shown})")
+                    posix = _posix_tz_offset(key_text, v, env)
+                    if posix is not None:
+                        note(offsets, node, f"{name}({key_text}={posix!r})")
             for arg in node.args:
                 mapping = _resolve_binding(arg, env)
                 pairs = []
@@ -3264,7 +3312,7 @@ def _yaml_env_pair_hits(text: str) -> list:
                 if val is not None:
                     is_offset = _bad_zone_value(val)
                     # A container's `TZ` is a process `TZ`: POSIX's sign.
-                    if (is_offset is None and name.upper() in _POSIX_TZ_KEYS
+                    if (is_offset is None and name in _POSIX_TZ_KEYS
                             and _POSIX_UTC_FIXED_VALUE.fullmatch(val.strip())):
                         is_offset = True
                     if is_offset is not None:
@@ -4070,8 +4118,13 @@ def _command_end(line: str, start: int) -> int:
 # SELECTIVE BY FILE. `$(...)` in a shell script is command substitution, a
 # different thing entirely, and this expansion runs only for the files
 # `_reads_as_make` names.
+# `override` and `export`/`unexport` may precede the name, in either order
+# (`override A = EST`, `export override A = EST`). GNU Make still binds the
+# variable, and omitting the modifier left the reference unresolved (Codex,
+# PR #993 final review).
 _MAKE_SCALAR = re.compile(
-    r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.]*)[ \t]*"
+    r"^[ \t]*(?:(?:override|export|unexport)[ \t]+)*"
+    r"([A-Za-z_][A-Za-z0-9_.]*)[ \t]*"
     r"(::=|:=|\?=|\+=|=)[ \t]*([^#\n]*?)[ \t]*$", re.M)
 
 
@@ -4220,6 +4273,56 @@ def _normalize_ansi_c_quotes(text: str) -> str:
     return _ANSI_C_QUOTE.sub(one, text)
 
 
+def _blank_dead_shell_branches(text: str) -> str:
+    """Blank assignments the shell never runs, width-preserving.
+
+    `LEGACY=EST; if false; then LEGACY=America/New_York; fi; export TZ="$LEGACY"`
+    exports `EST` -- the `then` body never runs -- but collecting the dead
+    `LEGACY=America/New_York` resolved the export to the canonical value and
+    hid the violation; reversed, it failed CI on a correct script (Codex,
+    PR #993 final review). A constant guard (`if true`/`if false`) makes one
+    arm dead, and `false && CMD` / `true || CMD` short-circuits away `CMD`.
+    Only these statically-decidable forms are blanked; anything whose truth is
+    not known at read time is left untouched. Innermost first, iterated, so a
+    nested constant `if` inside a live arm is handled without parsing the
+    whole block.
+    """
+    def blank(seg: str) -> str:
+        return re.sub(r"[^\n]", " ", seg)
+
+    # `false && X`, `true || X`: X up to the next command separator is dead.
+    text = re.sub(
+        r"(?<![A-Za-z0-9_])(?:false[ \t]*&&|true[ \t]*\|\|)[ \t]*"
+        r"([^\n;&|]*)",
+        lambda m: m.group(0)[:m.start(1) - m.start()] + blank(m.group(1)),
+        text)
+
+    # `if <const>; then A [else B] fi`, innermost (no nested if/fi in the arms).
+    arm = r"((?:(?!\bif\b|\bfi\b).)*?)"
+    pat = re.compile(
+        r"\bif[ \t]+(true|false)[ \t]*;?[ \t]*then\b" + arm
+        + r"(?:\belse\b" + arm + r")?\bfi\b",
+        re.S)
+
+    def one(m):
+        cond, a, b = m.group(1), m.group(2), m.group(3)
+        dead_a = cond == "false"
+        whole = m.group(0)
+        out = list(whole)
+        for grp, dead in ((2, dead_a), (3, not dead_a if b is not None else False)):
+            if not dead or m.group(grp) is None:
+                continue
+            lo, hi = m.start(grp) - m.start(), m.end(grp) - m.start()
+            out[lo:hi] = blank(m.group(grp))
+        return "".join(out)
+
+    prev = None
+    while prev != text:
+        prev = text
+        text = pat.sub(one, text)
+    return text
+
+
 def _expand_shell_defaults(text: str, make: bool = False) -> str:
     """Expose a TIMEZONE parameter default; blank every other one.
 
@@ -4236,6 +4339,7 @@ def _expand_shell_defaults(text: str, make: bool = False) -> str:
     # Output arguments go first, so a usage message quoting `${TZ:-EST}` is
     # emptied before the expansion pass can promote its default.
     text = _blank_shell_output(text)
+    text = _blank_dead_shell_branches(text)
     text = _join_shell_fragments(text)
     text = _SHELL_DEFAULT.sub(
         lambda m: (m.group(0) if _single_quoted(m.group(1))
@@ -4262,7 +4366,12 @@ def _opens_escape_string(text: str, i: int) -> bool:
 
 # `$$` or `$tag$`: a PostgreSQL dollar-quote delimiter, matched at an opening
 # `$` outside any other literal.
-_DOLLAR_QUOTE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+# A dollar sign continuing an identifier (`foo$tag$`) is not a dollar-quote
+# opener -- PostgreSQL allows `$` inside an identifier -- so the following
+# `--` is a real comment, not string data. Requiring a non-identifier char
+# (or start of text) before the opener stops the stripper preserving that
+# comment and reporting a false violation (Codex, PR #993 final review).
+_DOLLAR_QUOTE = re.compile(r"(?<![A-Za-z0-9_])\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
 def _strip_pine_comments(text: str) -> str:
@@ -4498,11 +4607,14 @@ def _shell_word(word: str) -> list:
     out = []
     for m in _SHELL_FRAGMENT.finditer(word):
         if m.group(1) is not None:
-            out.append((m.group(1), False))
+            out.append((m.group(1), False))       # double-quoted
         elif m.group(2) is not None:
-            out.append((m.group(2), True))
+            out.append((m.group(2), True))        # single-quoted: literal
         else:
-            out.append((m.group(3), False))
+            # Bare: the shell removes an unquoted backslash and keeps the
+            # next character, so `E\ST` is the word `EST` (Codex, PR #993
+            # final review). A single quote is literal and never reaches here.
+            out.append((re.sub(r"\\(.)", r"\1", m.group(3)), False))
     return out
 
 
@@ -4521,7 +4633,12 @@ def _join_shell_fragments(text: str) -> str:
 
     def consider(name: str, name_at: int, start: int, end: int, word: str) -> None:
         fragments = _shell_word(word)
-        if len(fragments) < 2:
+        # One fragment is already the plain word -- UNLESS it carried a
+        # backslash the shell removes mid-word (`E\\ST` -> `EST`), which the
+        # text matchers must see decoded. A trailing continuation backslash
+        # (`TZ=\\` before a newline) is not an escape and is left alone
+        # (Codex, PR #993 final review).
+        if len(fragments) < 2 and not re.search(r"\\[^\s]", word):
             return
         if any("$" in fragment for fragment, _literal in fragments):
             resolved = next((value for at, value, _local in scalars.get(name, ())
@@ -5028,10 +5145,27 @@ def _arrays_carrying_timezone(func: str) -> dict[str, list]:
         start = m.end()
         depth = 1
         i = start
+        quote = ""
         while i < len(func) and depth:
-            if func[i] == "(":
+            c = func[i]
+            # A `)` inside quotes is array DATA, not the closing paren:
+            # `flags=(--message-body ")" --time-zone ...)` is one valid array
+            # and closing at the quoted `)` recorded it as zoneless, failing a
+            # compliant scheduler (Codex, PR #993 final review). Escapes are
+            # honoured outside single quotes, where the shell takes them
+            # literally.
+            if quote:
+                if c == quote:
+                    quote = ""
+                elif c == "\\" and quote == '"':
+                    i += 1
+            elif c in ("'", '"'):
+                quote = c
+            elif c == "\\":
+                i += 1
+            elif c == "(":
                 depth += 1
-            elif func[i] == ")":
+            elif c == ")":
                 depth -= 1
             i += 1
         # The LITERAL zone, not merely the flag. An array holding
@@ -10300,3 +10434,96 @@ def test_adjacent_shell_fragments_form_one_word():
     out = _expand_shell_defaults('export TZ="E""ST"\necho\n')
     assert out.splitlines()[0] == 'export TZ="EST"  ', out      # width kept
 
+
+
+
+def test_a_posix_tz_abbreviation_is_case_insensitive_but_the_key_is_not():
+    """glibc reads `TZ=utc+5` as UTC-5 (verified live), but `os.environ["tz"]`
+    is a different, non-timezone variable (Codex, PR #993 final review)."""
+    for line in ("export TZ=utc+5", "export TZ=gMt+4", "PGTZ=Utc+05:00",
+                 'TZ="uTc+5"'):
+        assert _scanned_shell(line), line
+    assert not _scanned_shell("export tz=utc+5")   # key case-sensitive
+    assert not _scanned_shell("export Tz=UTC+5")
+    hits = _yaml_env_pair_hits("- name: TZ\n  value: gmt+4\n")
+    assert hits and hits[0][2] is True, hits
+    assert not _yaml_env_pair_hits("- name: tz\n  value: utc+5\n")
+
+
+def test_posix_offsets_in_python_env_mappings(tmp_path):
+    """`subprocess.run(env={"TZ": "UTC+5"})`, `os.environ.update(TZ="UTC+5")`
+    and `update(**{"TZ": "UTC+5"})` install the frozen zone; a lowercase key
+    or the pandas `tz=` kwarg do not (Codex, PR #993 final review)."""
+    assert _python_finds(tmp_path, 'import subprocess\nsubprocess.run(["x"], env={"TZ": "UTC+5"})\n')
+    assert _python_finds(tmp_path, 'import os\nos.environ.update(TZ="UTC+5")\n')
+    assert _python_finds(tmp_path, 'import os\nos.environ.update(**{"PGTZ": "GMT+4"})\n')
+    assert not _python_finds(tmp_path, 'import subprocess\nsubprocess.run(["x"], env={"tz": "UTC+5"})\n')
+    assert not _python_finds(tmp_path, 'import pandas as pd\npd.Timestamp.now(tz="UTC+5")\n')
+    assert not _python_finds(tmp_path, 'import os\nos.environ.update(TZ="UTC-5")\n')
+
+
+def test_make_override_modifier_is_collected():
+    """`override A = EST` binds `A`, as does `export override A = EST`
+    (Codex, PR #993 final review)."""
+    assert _scanned_shell("override A = EST\nexport TZ = $(A)\n", make=True)
+    assert _scanned_shell("export override A = EST\nexport TZ = $(A)\n", make=True)
+    assert _scanned_shell("override TZ = EST\n", make=True)
+    assert not _scanned_shell("# override A = EST\nexport TZ = $(A)\n", make=True)
+
+
+def test_a_dollar_in_an_identifier_is_not_a_dollar_quote():
+    """`SELECT foo$tag$ -- SET TIME ZONE 'EST'`: `$tag$` continues the
+    identifier `foo`, so the `--` is a real comment (Codex, PR #993 final
+    review)."""
+    out = _strip_sql_comments("SELECT foo$tag$ -- SET TIME ZONE 'EST'\n")
+    assert "SET TIME ZONE 'EST'" not in out, out
+    # A real dollar-quote at a token boundary still opens.
+    assert "SET TIME ZONE 'EST'" in _strip_sql_comments("SELECT $$ -- x $$; SET TIME ZONE 'EST';")
+
+
+def test_a_bound_null_daylight_abbreviation_freezes_tzrange(tmp_path):
+    """`DST = None; tzrange("XX", -18000, DST)` is frozen UTC-5, as the inline
+    `None` form is (Codex, PR #993 final review). Non-legacy abbreviations are
+    used so only the frozen-offset logic decides, not the legacy-name scan."""
+    assert _python_finds(tmp_path, 'from dateutil.tz import tzrange\nDST = None\ntzrange("XX", -18000, DST)\n')
+    assert _python_finds(tmp_path, 'from dateutil.tz import tzrange\ntzrange("XX", -18000, None)\n')
+    # A real daylight abbreviation, statically known, is not frozen.
+    assert not _python_finds(tmp_path, 'from dateutil.tz import tzrange\ntzrange("XX", -18000, "YY", -14400)\n')
+    assert not _python_finds(tmp_path, 'from dateutil.tz import tzrange\nDST = "YY"\ntzrange("XX", -18000, DST, -14400)\n')
+
+
+def test_an_unquoted_backslash_is_removed_from_a_shell_word():
+    """`export TZ=E\\ST` installs `EST`: bash drops the unquoted backslash
+    (verified live; Codex, PR #993 final review)."""
+    assert _scanned_shell("export TZ=E\\ST")
+    assert _scanned_shell("export TZ=\\E\\S\\T")
+    assert _shell_scalars("export TZ=E\\ST\n")["TZ"][0][1] == "EST"
+    assert not _scanned_shell("export TZ=A\\m\\erica/New_York")
+
+
+def test_a_statically_dead_shell_branch_is_not_collected():
+    """A `then` body under `if false` never runs, and a `false && X` / `true ||
+    X` is short-circuited away (verified live; Codex, PR #993 final review)."""
+    # The dead assignment must not shadow the real one.
+    assert _scanned_shell('LEGACY=EST; if false; then LEGACY=America/New_York; fi; export TZ="$LEGACY"')
+    assert _scanned_shell('LEGACY=EST; false && LEGACY=America/New_York; export TZ="$LEGACY"')
+    assert _scanned_shell('LEGACY=EST; true || LEGACY=America/New_York; export TZ="$LEGACY"')
+    # The live arm still counts.
+    assert _scanned_shell('if true; then LEGACY=EST; fi; export TZ="$LEGACY"')
+    assert _scanned_shell('if false; then :; else LEGACY=EST; fi; export TZ="$LEGACY"')
+    # And a correct script is not turned into a false finding by the dead arm.
+    assert not _scanned_shell('LEGACY=America/New_York; if false; then LEGACY=EST; fi; export TZ="$LEGACY"')
+
+
+def test_a_quoted_paren_does_not_close_a_scheduler_array():
+    """`flags=(--message-body ")" --time-zone America/New_York)` is one valid
+    array; the quoted `)` is data (Codex, PR #993 final review)."""
+    body = ('deploy() {\n'
+            '  local flags=(--message-body ")" --time-zone America/New_York)\n'
+            '  gcloud scheduler jobs create http j "${flags[@]}"\n}\n')
+    assert not _offenders(body), _offenders(body)
+    # A genuinely zoneless array is still caught.
+    bad = ('deploy() {\n'
+           '  local flags=(--message-body ")" --uri https://x)\n'
+           '  gcloud scheduler jobs create http j "${flags[@]}"\n}\n')
+    assert _offenders(bad)
