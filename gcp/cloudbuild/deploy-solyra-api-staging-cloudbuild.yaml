@@ -223,10 +223,10 @@ steps:
   # versions older than 30 days -- which is only safe if the digests actually
   # in use carry an `inuse-*` tag, and this is the step that gives them one.
   #
-  # --no-sweep because this build runs as trading-runner@:
-  # roles/artifactregistry.writer creates and moves tags but cannot delete
-  # them, so releasing stale pins stays with the interactive gcp/deploy.sh
-  # path. Pinning is the safety step and still fails closed.
+  # --no-sweep is a policy choice: trading-runner@ can move tags (the
+  # artifactRegistryTagMover role, README.md, #1043), but releasing stale
+  # pins stays with the interactive gcp/deploy.sh path. Pinning is the
+  # safety step and still fails closed.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: pin
     waitFor: [deploy]

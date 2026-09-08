@@ -140,8 +140,10 @@ steps:
           --wait
         echo 0 > /workspace/apply.rc
   # Pin the digest the job now runs so the registry cleanup policy cannot
-  # delete it (same reasoning as the staging trigger; --no-sweep because
-  # trading-runner@ cannot delete tags). Runs whatever the apply's outcome.
+  # delete it (same reasoning as the staging trigger). --no-sweep is a
+  # policy choice: trading-runner@ can move tags (the artifactRegistryTagMover
+  # role, README.md), but releasing stale pins stays with the interactive
+  # gcp/deploy.sh path. Runs whatever the apply's outcome.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: pin
     waitFor: [apply]
