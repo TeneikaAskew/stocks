@@ -1027,10 +1027,10 @@ def test_both_copies_of_the_relation_breakdown_are_checked(live, repo, tmp_path)
     a = root / gate.ARCH
     total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
     tables = len(repo["tables"])
-    before = f"{total} declared in `gcp/schema.sql` — {tables} tables,"
+    before = f"`gcp/schema.sql` declares {total} ({tables} tables,"
     assert before in a.read_text(), "the §3 row no longer has the shape this test breaks"
     a.write_text(a.read_text().replace(
-        before, f"{total - 1} declared in `gcp/schema.sql` — {tables - 1} tables,"))
+        before, f"`gcp/schema.sql` declares {total - 1} ({tables - 1} tables,"))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any(f"claims {total - 1} declared relations" in f for f in findings), findings
     assert any(f"claims {tables - 1} tables" in f for f in findings), findings
@@ -1105,8 +1105,9 @@ def test_a_breakdown_that_drops_a_kind_is_a_finding(live, repo, tmp_path):
         _copy(REPO / d, root / d)
     a = root / gate.ARCH
     views, mviews = len(repo["views"]), len(repo["materialized_views"])
-    a.write_text(a.read_text().replace(
-        f", {mviews} materialized views, {views} view)", f", {mviews} materialized views)", 1))
+    before = f", {mviews} materialized views, {views} view)"
+    assert before in a.read_text(), "the breakdown no longer has the shape this test breaks"
+    a.write_text(a.read_text().replace(before, f", {mviews} materialized views)", 1))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any("omits view" in f for f in findings), findings
 
@@ -1306,6 +1307,18 @@ def test_a_longer_rule_does_not_match_itself(tmp_path):
     assert gate.gate_inline_rule(tmp_path) == []
 
 
+def test_a_rule_welded_onto_a_dash_prefixed_line_is_a_finding(tmp_path):
+    """The no-backtrack guard has to sit inside the dash run, not after the
+    whitespace. Excluding dash-prefixed content after `\\s*` stopped
+    `--------` matching itself but also let through a rule welded onto a
+    bullet or a CLI flag, which is the same defect. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    for bad in ("--- - a bullet swallowed the rule", "--- --flag=value", "---Generated 2026-09-08"):
+        doc.write_text(f"Some prose.\n\n{bad}\n")
+        assert len(gate.gate_inline_rule(tmp_path)) == 1, (bad, gate.gate_inline_rule(tmp_path))
+
+
 def test_a_rule_on_its_own_line_is_not_a_finding(tmp_path):
     """Every document in the corpus separates its sections this way, so the
     gate has to leave a real rule alone -- including the setext-style `---`
@@ -1317,12 +1330,18 @@ def test_a_rule_on_its_own_line_is_not_a_finding(tmp_path):
     assert gate.gate_inline_rule(REPO) == [], "the committed documents must pass"
 
 
-def test_moving_the_date_inside_an_exemption_is_not_a_new_exemption(tmp_path):
+def test_moving_the_date_inside_an_exemption_is_a_finding(tmp_path):
     """05-a's Cloud Build exemption reads "... read live with gcloud builds
-    triggers list 2026-09-07", and the architecture prompt tells the model to
-    move as-of dates to the current snapshot. Run 30 did, and the gate
-    reported a new exemption because it diffed raw strings -- failing a run
-    for an exemption a human had already approved, one date earlier."""
+    triggers list 2026-09-07". Run 30 advanced it to `-08` and the gate caught
+    it; I read that as a false positive and normalised dates out of the
+    comparison, which was wrong in the dangerous direction.
+
+    The prompt enumerates three as-of labels and says to leave every other
+    date alone, so a marker's date is not the model's to move — and the date
+    records WHEN A HUMAN CHECKED the claim the marker silences. Advancing it
+    turns an old approval into current provenance for a check nobody
+    performed, while the verifier goes on skipping the line.
+    (Codex, PR #1064.)"""
     root, prev = tmp_path, tmp_path / "previous"
     prev.mkdir()
     for d in DOCS:
@@ -1331,7 +1350,8 @@ def test_moving_the_date_inside_an_exemption_is_not_a_new_exemption(tmp_path):
     a = root / gate.ARCH
     a.write_text(a.read_text().replace("gcloud builds triggers list 2026-09-07",
                                        "gcloud builds triggers list 2026-09-08"))
-    assert gate.gate_new_suppressions(root, prev) == []
+    findings = gate.gate_new_suppressions(root, prev)
+    assert any("2026-09-08" in f for f in findings), findings
 
 
 def test_an_exemption_with_a_new_subject_is_still_a_finding(tmp_path):

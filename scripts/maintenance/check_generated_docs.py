@@ -499,19 +499,23 @@ def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
 #
 # The space is optional: a replacement that drops the newline without adding
 # one produces `---Generated 2026-09-08 ...`, the same malformed footer, and
-# requiring `\s+` let it through (Codex, PR #1064). What follows the run must
-# not itself be rule punctuation, or a longer break (`--------`) matches by
-# backtracking onto its own last dash.
+# requiring `\s+` let it through (Codex, PR #1064).
 #
 # Only `-` is treated as a rule character. All 16 thematic breaks in these four
 # documents are written `---`; at the start of a line `***text***` and
 # `___text___` are emphasis far more often than a break, so including them
 # would fail honest prose to catch a shape this corpus never uses.
-INLINE_RULE = re.compile(r"^\s{0,3}-{3,}\s*(?![-\s])\S")
+# The no-backtrack guard sits INSIDE the dash run, not after the whitespace:
+# `(?!-)` immediately after `-{3,}` forces the run to swallow every dash, so
+# `--------` cannot satisfy the pattern with its own last dash. Putting the
+# exclusion after `\s*` instead would have let `--- - item` and `--- --flag`
+# through -- a rule welded onto a bullet or a CLI flag, the same defect with
+# dash-prefixed content. (Codex, PR #1064.)
+INLINE_RULE = re.compile(r"^\s{0,3}-{3,}(?!-)\s*\S")
 
 
 def gate_inline_rule(root: pathlib.Path) -> list[str]:
-    """A horizontal rule with text welded onto it — another botched `replace`.
+    r"""A horizontal rule with text welded onto it — another botched `replace`.
 
     The companion to `gate_duplicated_tail`: same cause, different shape. A
     `replace` that spans the blank line between a rule and the paragraph after
@@ -851,15 +855,15 @@ def render_report(stats: list[dict]) -> str:
 
 
 SUPPRESS_RE = re.compile(r"<!--\s*verify-docs-ok:\s*(.+?)\s*-->")
-# An exemption's IDENTITY is its text with any date removed. One of the two in
-# 05-a reads "Cloud Build trigger names, read live with gcloud builds triggers
-# list 2026-09-07": that trailing date is an as-of note, and the architecture
-# prompt tells the model to move as-of dates to the current snapshot. Run 30
-# did exactly that and the gate reported a new exemption had appeared, because
-# it diffed raw strings. The model had granted itself nothing -- the exemption
-# was already on main, one date earlier. Comparing identity keeps the gate's
-# real job (a marker whose SUBJECT is new) while letting the date move.
-SUPPRESS_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+# Dates are NOT normalised out of an exemption's text, and the first version of
+# this change was wrong to do so. Run 30 moved the date in "Cloud Build trigger
+# names, read live with gcloud builds triggers list 2026-09-07" and I read the
+# resulting finding as a false positive. It was not: the architecture prompt
+# enumerates exactly three as-of labels and says to leave every other date
+# alone, so that date was never the model's to move. Erasing dates from the
+# identity would have let a model advance the provenance on a human-approved
+# marker -- turning an old approval into false current provenance while the
+# verifier still skips the line it silences. (Codex, PR #1064.)
 
 
 def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[str]:
@@ -872,10 +876,13 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
     human having approved the exemption. So a marker whose SUBJECT was not in
     the previous version of the file fails the run. (Codex, PR #1009.)
 
-    Subject, not raw text: one of 05-a's two exemptions ends in an as-of date
-    the prompt tells the model to move, and run 30 moved it. Diffing strings
-    read that as a new exemption and failed a run for an exemption a human had
-    already approved, one date earlier. (Run 30.)
+    That includes the dates inside a marker. Run 30 advanced "read live with
+    gcloud builds triggers list 2026-09-07" to `-08` and this gate caught it;
+    I mistook that for a false positive and normalised dates out of the
+    comparison, which would have let a model refresh the provenance on an
+    approval no one had re-made. The prompt names three as-of labels and says
+    to leave every other date alone, so a marker's date is not the model's to
+    move. (Codex, PR #1064.)
     """
     if previous_dir is None:
         return []
@@ -884,14 +891,14 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
         prev = previous_dir / doc
         if not prev.exists():
             continue
-        def _ids(text: str) -> dict[str, str]:
-            return {SUPPRESS_DATE.sub("<date>", m): m for m in SUPPRESS_RE.findall(text)}
-
-        was = _ids(prev.read_text())
-        now = _ids((root / doc).read_text())
-        for key in sorted(set(now) - set(was)):
+        was = set(SUPPRESS_RE.findall(prev.read_text()))
+        now = set(SUPPRESS_RE.findall((root / doc).read_text()))
+        for added in sorted(now - was):
             out.append(f"{doc}: a new verify-docs-ok exemption appeared in a generated doc "
-                       f"({now[key]!r}) — an exemption is a human decision, not a model's")
+                       f"({added!r}) — an exemption is a human decision, not a model's. "
+                       "A date inside a marker is part of it: it records when a human "
+                       "checked the claim, so moving it is not an update, it is a new "
+                       "assertion no one has approved")
     return out
 
 
@@ -907,7 +914,11 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
 # grows a second view or loses its only one is still checked instead of
 # silently unmatched -- a gate that stops matching on a reword fails open.
 # Longest kind first: "materialized views" ends in "views".
-RELATION_TOTAL = re.compile(r"declares \*\*(\d+) relations?\*\*|"
+# Both phrasings 05-a uses, and the "N declared in" form it used before, so a
+# reword of one copy cannot quietly drop it from the check:
+#   §5  `gcp/schema.sql` declares **70 relations** (67 tables, ...)
+#   §3  `gcp/schema.sql` declares 70 (67 tables, ...)
+RELATION_TOTAL = re.compile(r"declares \*{0,2}(\d+)(?: relations?)?\*{0,2}\s*(?=\()|"
                             r"\b(\d+) declared in `gcp/schema\.sql`")
 RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
 # What may sit between a declared total and the first of its parts: an opening

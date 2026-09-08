@@ -65,9 +65,7 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
    link to where the code now lives, as step 7 requires — just never by
    editing a date in place. Run 28 updated the header and left §3 a day
    behind, so a table of the current fleet announced itself as stale; a gate
-   now fails the run on any of the three snapshot labels. Leave every OTHER
-   date alone — the dates in §4, §15 and §18 record when something was
-   corrected, deleted or audited and are history, not as-of labels.
+   now fails the run on any of the three snapshot labels. Leave every OTHER date alone. The dates in §4, §15 and §18 record when something was corrected, deleted or audited and are history. So is the date inside a `<!-- verify-docs-ok: ... -->` marker: it records when a human checked that claim against live GCP, and moving it asserts a check nobody performed. A gate fails the run on any change to a marker, date included.
 6. When a sentence states a total and its parts — §5's `declares **N relations**
    (N tables, N materialized views, N view)` — update every number in it, not just
    the one the inputs contradict. Run 28 raised that total from 69 to 70 and left
