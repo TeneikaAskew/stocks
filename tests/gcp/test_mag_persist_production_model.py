@@ -16,6 +16,8 @@ file imports cleanly without google-cloud-* / sklearn installed.
 from __future__ import annotations
 
 import json
+import os
+import pathlib
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -153,7 +155,7 @@ def test_persists_three_blobs_with_correct_names(monkeypatch, joblib_dump_stub):
             "IWM", "5m", run_id="testrun-001",
             X_full=X, y_full=y,
             feature_cols=["rsi_14", "atr_14", "ema_9", "vwap"],
-            gates=_passing_gates(), calibration="none",
+            gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     # Atomic-publish: blobs land under a run-scoped path and a LATEST
@@ -182,7 +184,7 @@ def test_version_blob_is_the_run_id(monkeypatch, joblib_dump_stub):
         mwf._persist_production_model_artifact(
             "SPY", "5m", run_id="walk-forward-2026-06-13-SPY-5m-v3",
             X_full=X, y_full=y,
-            feature_cols=["x"], gates=_passing_gates(), calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     run_id = "walk-forward-2026-06-13-SPY-5m-v3"
@@ -203,7 +205,7 @@ def test_feature_cols_blob_is_newline_delimited(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "QQQ", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=cols, gates=_passing_gates(), calibration="none",
+            feature_cols=cols, gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     blob = captured["magnitude-models/production/QQQ/5m/r/feature_cols.txt"]
@@ -225,7 +227,7 @@ def test_returns_none_on_upload_failure_no_raise(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         got = mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=["x"], gates=_passing_gates(), calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
     assert got is None
 
@@ -257,7 +259,7 @@ def test_latest_pointer_updated_last(monkeypatch, joblib_dump_stub):
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="rX", X_full=X, y_full=y,
-            feature_cols=["x"], gates=_passing_gates(), calibration="none",
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     # LATEST must be the last write in the upload sequence.
@@ -290,7 +292,7 @@ def test_uses_calibrated_wrapper_when_calibration_not_none(monkeypatch, joblib_d
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="r", X_full=X, y_full=y,
-            feature_cols=["x"], gates=_passing_gates(), calibration="sigmoid", cv=3,
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="sigmoid", cv=3,
         )
 
     assert len(ccv_seen) == 1
@@ -582,7 +584,7 @@ def test_blocked_promotion_leaves_latest_untouched(monkeypatch, joblib_dump_stub
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         uri = mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="collapsed-001",
-            X_full=X, y_full=y, feature_cols=["x"], gates=_passing_gates(), calibration="none",
+            X_full=X, y_full=y, feature_cols=["x"], gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     assert uri is None, "a blocked promotion must not report success"
@@ -613,7 +615,7 @@ def test_isotonic_calibration_does_not_bypass_the_gate(monkeypatch, joblib_dump_
         uri = mwf._persist_production_model_artifact(
             "IWM", "15m", run_id="iso-001",
             X_full=X, y_full=y, feature_cols=["x"],
-            gates=_passing_gates(), calibration="isotonic",
+            gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="isotonic",
         )
 
     assert uri is None
@@ -668,7 +670,7 @@ def test_failed_walk_forward_gates_block_promotion(monkeypatch, joblib_dump_stub
         uri = mwf._persist_production_model_artifact(
             "SPY", "15m", run_id="slv7m-shape",
             X_full=X, y_full=y, feature_cols=["x"],
-            gates=_slv7m_gates(), calibration="none",
+            gates=_slv7m_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     assert uri is None, "a cell that failed gates 1-4 must not be promoted"
@@ -703,7 +705,7 @@ def test_both_criteria_are_reported_when_both_fail(monkeypatch, joblib_dump_stub
         uri = mwf._persist_production_model_artifact(
             "IWM", "15m", run_id="both-001",
             X_full=X, y_full=y, feature_cols=["x"],
-            gates=_slv7m_gates(), calibration="none",
+            gates=_slv7m_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     assert uri is None
@@ -727,7 +729,7 @@ def test_passing_cell_still_promotes_and_records_its_gates(monkeypatch, joblib_d
         uri = mwf._persist_production_model_artifact(
             "QQQ", "15m", run_id="good-001",
             X_full=X, y_full=y, feature_cols=["x"],
-            gates=_passing_gates(), calibration="none",
+            gates=_passing_gates(), label_mode="body", thresholds=(0.5, 1.0, 1.5), calibration="none",
         )
 
     assert uri == "gs://test-bucket/magnitude-models/production/QQQ/15m/"
@@ -747,3 +749,645 @@ def test_persist_call_site_hands_over_the_cells_own_gates():
     # And the parameter is required, so a caller cannot silently omit it.
     sig = inspect.signature(mwf._persist_production_model_artifact)
     assert sig.parameters["gates"].default is inspect.Parameter.empty
+
+# ─────── label semantics: the serving contract (#1025 follow-up) ───────
+
+def test_serving_contract_reason_passes_the_default_labels():
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    from gcp.research.magnitude_engine.mag_config import (
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS)
+    assert mwf.serving_contract_reason(
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS) is None
+
+
+def test_serving_contract_reason_names_each_mismatch():
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    assert "label_mode='excursion'" in mwf.serving_contract_reason(
+        "excursion", (0.5, 1.0, 1.5))
+    assert "thresholds=(0.35, 0.75, 1.25)" in mwf.serving_contract_reason(
+        "body", (0.35, 0.75, 1.25))
+    both = mwf.serving_contract_reason("put", (0.35, 0.75, 1.25))
+    assert "label_mode='put'" in both and "thresholds=" in both
+
+
+def test_research_labels_cannot_become_the_serving_model(monkeypatch, joblib_dump_stub):
+    """A model trained on `excursion` predicts buckets that mean something
+    else; mag_inference and the card read `body`. Neither the distribution
+    criteria nor gates 1-4 can see the difference — the values are still 0-3
+    and the spread still looks healthy — so the contract is checked directly.
+    """
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)) as lgbm, \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "IWM", "15m", run_id="excursion-001",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_passing_gates(),          # gates 1-4 all PASS
+            label_mode="excursion", thresholds=(0.5, 1.0, 1.5),
+            calibration="none",
+        )
+
+    assert uri is None
+    # refused BEFORE the fit: an ineligible contract can never be promoted, so
+    # training it is guaranteed-wasted work and writes production-namespace
+    # artifacts for a run that does not belong there
+    assert lgbm.call_count == 0, "no model should be trained for a contract "\
+        "that cannot be promoted"
+    assert captured == {}, f"nothing should be uploaded, got {list(captured)}"
+
+
+def test_non_default_thresholds_cannot_become_the_serving_model(monkeypatch, joblib_dump_stub):
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)) as lgbm, \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "SPY", "15m", run_id="thresh-001",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_passing_gates(),
+            label_mode="body", thresholds=(0.35, 0.75, 1.25),
+            calibration="none",
+        )
+
+    assert uri is None
+    assert lgbm.call_count == 0
+    assert captured == {}
+
+
+# ─────────── --label-mode reached only ONE of four dispatch paths ───────────
+
+def test_every_dispatch_path_forwards_label_mode():
+    """The Cloud Run task-parallel path — the ONLY way this job runs in
+    production — called walk_forward() without label_mode, so
+    `--label-mode=excursion` silently trained `body` and reported success.
+    Same for --plan/--task-index and --all-cells. Three of four paths.
+    """
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.main)
+    # one per dispatch path: task-parallel, --plan, --all-cells, single cell
+    assert src.count("label_mode=args.label_mode") == 4, (
+        "every dispatch path must forward the requested label mode; a path "
+        "that drops it trains the default and reports success")
+
+    # and the in-process fan-out must forward what it was given
+    assert "label_mode=label_mode" in inspect.getsource(mwf.run_all_cells)
+
+
+def test_walk_forward_records_the_labels_it_trained_on():
+    """The run summary has to name the labels, or a finished run cannot be
+    audited for which experiment it actually was."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    assert '"label_mode": label_mode' in src
+    assert '"thresholds": list(thresholds)' in src
+    # thresholds are resolved once per cell, from the same helper the dataset
+    # buckets with, so summary and labels cannot disagree
+    assert "thresholds = resolve_magnitude_thresholds()" in src
+
+
+# ──────────────────── MAG_THRESHOLDS override ────────────────────
+
+def test_threshold_override_defaults_and_parses(monkeypatch):
+    from gcp.research.magnitude_engine.mag_config import (
+        MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds)
+
+    monkeypatch.delenv("MAG_THRESHOLDS", raising=False)
+    assert resolve_magnitude_thresholds() == MAGNITUDE_THRESHOLDS
+    monkeypatch.setenv("MAG_THRESHOLDS", " 0.35,0.75,1.25 ")
+    assert resolve_magnitude_thresholds() == (0.35, 0.75, 1.25)
+
+
+@pytest.mark.parametrize("bad,why", [
+    ("1,2", "wrong count"),
+    ("0.5,1.0,1.5,2.0", "wrong count"),
+    ("a,b,c", "not numbers"),
+    ("0.5,0.5,1.0", "not ascending"),
+    ("1.5,1.0,0.5", "descending"),
+    ("-1,2,3", "non-positive"),
+    ("0.5,nan,1.5", "not finite"),
+])
+def test_malformed_threshold_override_raises_rather_than_defaulting(
+        monkeypatch, bad, why):
+    """CLAUDE.md §3.7: falling back to the default here would train one label
+    set while the operator believed another — the same silent substitution the
+    dispatch-path bug caused."""
+    from gcp.research.magnitude_engine.mag_config import resolve_magnitude_thresholds
+
+    monkeypatch.setenv("MAG_THRESHOLDS", bad)
+    with pytest.raises(ValueError):
+        resolve_magnitude_thresholds()
+
+
+# ───────────── Codex on #1055: the review caught what tests could not ─────────
+
+def test_walk_forward_reaches_the_dataset_load(monkeypatch):
+    """walk_forward() logged `thresholds` before assigning it, so EVERY
+    dispatch path raised UnboundLocalError before loading a single row.
+
+    Nothing in the suite executes walk_forward (it needs a DB), so 4944 tests
+    and a green CI passed over a total outage. This test drives the real
+    function far enough to prove the preamble runs, by making the dataset load
+    the first thing that stops it.
+    """
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    class ReachedTheLoad(Exception):
+        pass
+
+    def _boom(*a, **kw):
+        raise ReachedTheLoad
+
+    monkeypatch.setattr(mwf, "load_magnitude_dataset", _boom)
+    with pytest.raises(ReachedTheLoad):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m")
+
+
+def test_malformed_threshold_override_fails_the_run_not_each_cell(monkeypatch):
+    """run_all_cells catches every per-cell exception and main() does not act
+    on its FAIL verdict, so a bad MAG_THRESHOLDS on the --all-cells path would
+    error all nine cells and still exit 0. main() resolves it up front."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    class ReachedTheEngine(Exception):
+        pass
+
+    monkeypatch.setenv("MAG_THRESHOLDS", "0.5,0.5,1.0")   # not ascending
+    monkeypatch.setattr(sys, "argv",
+                        ["mag_walk_forward", "--phase=phase0", "--all-cells"])
+    monkeypatch.setattr(mwf, "get_engine",
+                        lambda *a, **kw: (_ for _ in ()).throw(ReachedTheEngine))
+
+    # ValueError, not ReachedTheEngine: the config is rejected before the run
+    # touches a database, let alone fans out.
+    with pytest.raises(ValueError, match="ascending"):
+        mwf.main()
+
+
+def test_research_labels_get_their_own_gcs_namespace():
+    """assemble_magnitude_results.latest_result takes sorted(files)[-1] from
+    the cell prefix and per_phase_verdict never reads the labels, so a
+    research run sharing that prefix would become the reported phase verdict
+    simply by being newer."""
+    from gcp.research.magnitude_engine.mag_config import (
+        gcs_run_prefix, research_namespace, DEFAULT_LABEL_MODE,
+        MAGNITUDE_THRESHOLDS)
+
+    canonical = gcs_run_prefix("phase0", "SPY", "15m")
+    # the serving contract keeps the historical path, explicitly or by default
+    assert gcs_run_prefix("phase0", "SPY", "15m",
+                          label_mode=DEFAULT_LABEL_MODE,
+                          thresholds=MAGNITUDE_THRESHOLDS) == canonical
+    assert research_namespace(DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS) is None
+
+    for kwargs in (
+        {"label_mode": "excursion", "thresholds": MAGNITUDE_THRESHOLDS},
+        {"label_mode": DEFAULT_LABEL_MODE, "thresholds": (0.35, 0.75, 1.25)},
+        {"label_mode": "put", "thresholds": (0.35, 0.75, 1.25)},
+    ):
+        other = gcs_run_prefix("phase0", "SPY", "15m", **kwargs)
+        assert other != canonical
+        # a sibling root, not a subdirectory: no listing of the canonical
+        # prefix can reach it, recursive or not
+        assert not other.startswith(canonical)
+        assert "/_research/" in other
+
+
+def test_walk_forward_writes_under_the_namespace_it_resolved():
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    # both artifact paths — the predictions CSV and the summary JSON — or one
+    # of them leaks a research run into the canonical prefix
+    assert src.count("gcs_run_prefix(phase, ticker, tf,") == 2
+    assert src.count(
+        "label_mode=label_mode, thresholds=thresholds)") == 2
+    # and the persist path is told the same semantics it wrote under
+    assert "gates=gates, label_mode=label_mode, thresholds=thresholds," in src
+
+
+# ─────── the namespace has to reach every consumer of the artifacts ───────
+
+def test_analysis_loader_reads_the_research_namespace():
+    """The post-hoc scripts search a prefix they build themselves. Moving the
+    predictions CSV without teaching them would make gate 7 and the other
+    required evidence exit claiming the run has no predictions — for exactly
+    the runs the namespace exists to hold (Codex on #1055)."""
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import research_prefix
+    from gcp.research.magnitude_engine.mag_config import gcs_run_prefix
+
+    assert research_prefix("phase0", "SPY", "15m") == \
+        gcs_run_prefix("phase0", "SPY", "15m") + "/"
+    assert research_prefix("phase0", "SPY", "15m", "excursion") == \
+        gcs_run_prefix("phase0", "SPY", "15m",
+                       label_mode="excursion",
+                       thresholds=(0.5, 1.0, 1.5)) + "/"
+    assert research_prefix("phase0", "SPY", "15m", "t0.35_0.75_1.25") == \
+        gcs_run_prefix("phase0", "SPY", "15m", label_mode="body",
+                       thresholds=(0.35, 0.75, 1.25)) + "/"
+
+
+@pytest.mark.parametrize("script", [
+    "implied_vs_realized_check",          # gate 7
+    "bootstrap_gate_fragility",           # gate 5
+    "check_event_window_concentration",
+    "model_vs_calendar_explosive_decomp",
+    "magnitude_movement_sim",
+])
+def test_every_analysis_script_accepts_and_forwards_research(script):
+    src = pathlib.Path(f"scripts/{script}.py").read_text()
+    assert "add_research_arg(p)" in src, f"{script} cannot name the namespace"
+    assert "research=args.research" in src, f"{script} does not forward it"
+
+
+def test_research_runs_stay_out_of_the_canonical_sql_tables():
+    """magnitude_walk_forward_results is keyed (phase, ticker, tf, fold,
+    run_id) and magnitude_per_bar_predictions by (ticker, tf, ts,
+    model_version) — the same cell keys a body run uses, and neither records
+    the label contract. Research folds in there would group incomparable
+    experiments under one cell, and put other-meaning buckets into the table
+    the inference and render path reads."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    assert "research = research_namespace(label_mode, thresholds)" in src
+    persist_at = src.index("_persist_results_table(engine")
+    guard_at = src.index("if research:")
+    assert guard_at < persist_at, (
+        "the canonical-table writes must sit under the else branch of the "
+        "research guard")
+
+
+# ── round 3: the namespace must DRIVE the analysis, not just locate it ──
+
+@pytest.mark.parametrize("label_mode,thresholds", [
+    ("excursion", (0.5, 1.0, 1.5)),
+    ("body", (0.35, 0.75, 1.25)),
+    ("put", (0.35, 0.75, 1.25)),
+    ("body", (0.1234564, 0.75, 1.25)),
+    ("call", (0.25, 0.6, 1.1)),
+])
+def test_research_slug_round_trips_exactly(label_mode, thresholds):
+    from gcp.research.magnitude_engine.mag_config import (
+        research_namespace, parse_research_namespace)
+
+    slug = research_namespace(label_mode, thresholds)
+    assert parse_research_namespace(slug) == (label_mode, thresholds)
+
+
+def test_near_identical_thresholds_do_not_share_a_namespace():
+    """%g keeps six significant digits, so 0.1234564 and 0.12345649 slugged
+    identically and two experiments with different bucket definitions shared a
+    prefix — the collision the partition exists to prevent."""
+    from gcp.research.magnitude_engine.mag_config import research_namespace
+
+    a = research_namespace("body", (0.1234564, 0.75, 1.25))
+    b = research_namespace("body", (0.12345649, 0.75, 1.25))
+    assert a != b
+
+
+def test_malformed_research_slug_is_refused():
+    from gcp.research.magnitude_engine.mag_config import parse_research_namespace
+
+    for bad in ("nonsense", "t0.5_1.0", "body__body", "t1_2_3__t4_5_6",
+                "excursion__banana"):
+        with pytest.raises(ValueError):
+            parse_research_namespace(bad)
+
+
+@pytest.fixture
+def isolated_mag_thresholds():
+    """Restore MAG_THRESHOLDS around a test.
+
+    apply_research_contract() writes os.environ directly — deliberately, so a
+    one-shot analysis script buckets the way its model was trained — and
+    monkeypatch does not undo writes it did not make. Without this the leak
+    reaches every later test in the session: it turned
+    test_magnitude_gates.py::test_expanded_bucket red by rebucketing at
+    0.35/0.75/1.25.
+    """
+    prev = os.environ.get("MAG_THRESHOLDS")
+    os.environ.pop("MAG_THRESHOLDS", None)
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("MAG_THRESHOLDS", None)
+        else:
+            os.environ["MAG_THRESHOLDS"] = prev
+
+
+def test_contract_comes_from_the_namespace(isolated_mag_thresholds):
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import apply_research_contract
+    from gcp.research.magnitude_engine.mag_config import (
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS)
+
+    assert apply_research_contract(None) == (DEFAULT_LABEL_MODE,
+                                             tuple(MAGNITUDE_THRESHOLDS))
+    assert "MAG_THRESHOLDS" not in os.environ
+
+    # a directional namespace supplies the label mode without being told
+    assert apply_research_contract("put")[0] == "put"
+
+    # and a threshold namespace exports the cut points, so the dataset builder
+    # buckets the way the model was trained rather than at the defaults
+    mode, thr = apply_research_contract("t0.35_0.75_1.25")
+    assert (mode, thr) == (DEFAULT_LABEL_MODE, (0.35, 0.75, 1.25))
+    from gcp.research.magnitude_engine.mag_config import resolve_magnitude_thresholds
+    assert resolve_magnitude_thresholds() == (0.35, 0.75, 1.25)
+
+
+def test_label_mode_contradicting_the_namespace_is_refused(isolated_mag_thresholds):
+    """`--research=put --label-mode=body` would evaluate a put model's
+    predictions against body realizations and emit a plausible, invalid
+    verdict. Refused rather than silently resolved either way."""
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import apply_research_contract
+
+    with pytest.raises(SystemExit, match="contradicts"):
+        apply_research_contract("put", "body")
+    # agreeing is fine, and so is leaving it unset
+    assert apply_research_contract("put", "put")[0] == "put"
+    assert apply_research_contract("put", None)[0] == "put"
+
+
+def test_every_label_building_script_takes_its_labels_from_the_contract():
+    """Enumerated from the code rather than from a list I maintain.
+
+    The previous version of this test named the scripts I had wired, which I
+    had found by auditing callers of load_predictions — the wrong axis. It
+    passed while naive_calendar_lookup_baseline.py, which builds labels but
+    loads no predictions, still computed a body/default baseline for every
+    research run, so its gate counts could not say whether the model beat the
+    calendar prior (Codex on #1055). Enumerating the real callers is what
+    makes the check survive the next script.
+    """
+    builders = sorted(
+        f for f in pathlib.Path("scripts").glob("*.py")
+        if "load_magnitude_dataset(engine" in f.read_text()
+    )
+    assert builders, "no label-building scripts found; the probe is broken"
+    for f in builders:
+        src = f.read_text()
+        assert "add_research_arg(p)" in src, f"{f.name} cannot name a namespace"
+        assert "apply_research_contract(" in src, f"{f.name} ignores the contract"
+        assert src.index("apply_research_contract(") < src.index(
+            "load_magnitude_dataset(engine"), (
+            f"{f.name}: the contract must be adopted before the dataset is built")
+
+
+def test_label_building_scripts_take_their_labels_from_the_contract():
+    """Loading the right predictions and then rebuilding labels at the
+    defaults scores a model against a target it never predicted."""
+    for script, call in [
+        ("implied_vs_realized_check", "label_mode=args.label_mode"),
+        ("model_vs_calendar_explosive_decomp", "label_mode=_label_mode"),
+        ("magnitude_movement_sim", "label_mode=args.label_mode"),
+    ]:
+        src = pathlib.Path(f"scripts/{script}.py").read_text()
+        assert "apply_research_contract(" in src, script
+        assert call in src, script
+        assert src.index("apply_research_contract(") < src.index(
+            "load_magnitude_dataset(engine"), (
+            f"{script}: the contract must be adopted before the dataset "
+            "is built")
+
+
+def test_movement_sim_writes_into_its_own_namespace():
+    """Reading from _research/<slug>/ and writing back to the canonical prefix
+    would file a research result among body-contract artifacts."""
+    src = pathlib.Path("scripts/magnitude_movement_sim.py").read_text()
+    assert "research_prefix(args.phase, args.ticker, args.tf, args.research)" in src
+    assert 'blob = (f"research/magnitude_engine/{args.phase}' not in src
+
+
+# ─────────────── round 4: contract resolution order and scope ───────────────
+
+@pytest.mark.parametrize("thresholds", [
+    (1e-7, 2e-7, 3e-7),          # repr() uses a negative exponent
+    (0.5, 1.0, 1.5e0),
+    (0.25, 0.6, 1.1),
+])
+def test_slug_survives_scientific_notation(thresholds):
+    """repr(1e-07) is '1e-07', so a '-' separator was also part of the value:
+    t1e-07-2e-07-3e-07 could not be split back, and a training run would write
+    under a slug every contract-aware reader rejected."""
+    from gcp.research.magnitude_engine.mag_config import (
+        research_namespace, parse_research_namespace)
+
+    slug = research_namespace("body", thresholds)
+    if slug is None:          # the default set has no namespace
+        return
+    assert parse_research_namespace(slug) == ("body", tuple(thresholds))
+
+
+def test_default_contract_clears_an_ambient_threshold_override(
+        isolated_mag_thresholds):
+    """A MAG_THRESHOLDS left in the environment would have the dataset bucket
+    at the ambient values while the contract reports the defaults, so the
+    analysis describes a different target than the predictions it loaded."""
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import apply_research_contract
+    from gcp.research.magnitude_engine.mag_config import (
+        MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds)
+
+    os.environ["MAG_THRESHOLDS"] = "0.35,0.75,1.25"
+    # a namespace with default cut points must REPLACE, not inherit
+    _, thresholds = apply_research_contract("put")
+    assert thresholds == tuple(MAGNITUDE_THRESHOLDS)
+    assert resolve_magnitude_thresholds() == tuple(MAGNITUDE_THRESHOLDS)
+
+    os.environ["MAG_THRESHOLDS"] = "0.35,0.75,1.25"
+    apply_research_contract(None)
+    assert resolve_magnitude_thresholds() == tuple(MAGNITUDE_THRESHOLDS)
+
+
+def test_gate7_resolves_the_contract_before_reading_label_mode():
+    """`iv_option_type` is chosen FROM label_mode, so resolving the contract
+    after that line picked call IV for a put run: realized move put-specific,
+    premium not."""
+    src = pathlib.Path("scripts/implied_vs_realized_check.py").read_text()
+    resolve_at = src.index("apply_research_contract(")
+    iv_leg_at = src.index('iv_option_type = "puts"')
+    assert resolve_at < iv_leg_at, (
+        "the label contract must be resolved before anything reads "
+        "args.label_mode")
+
+
+# ─────────────── round 5: the contract check has two directions ───────────────
+
+def test_noncanonical_label_without_a_namespace_is_refused(isolated_mag_thresholds):
+    """The canonical prefix IS the serving contract. `--label-mode=put` with
+    no `--research` reads a canonical body run and scores it against put
+    realizations and put IV — the same invalid verdict the other direction
+    already refused."""
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import apply_research_contract
+    from gcp.research.magnitude_engine.mag_config import DEFAULT_LABEL_MODE
+
+    for mode in ("put", "call", "excursion"):
+        with pytest.raises(SystemExit, match="needs the matching --research"):
+            apply_research_contract(None, mode)
+    # the canonical contract itself is still fine, named or defaulted
+    assert apply_research_contract(None, DEFAULT_LABEL_MODE)[0] == DEFAULT_LABEL_MODE
+    assert apply_research_contract(None, None)[0] == DEFAULT_LABEL_MODE
+
+
+def test_research_help_shows_slugs_the_generator_actually_makes():
+    """The help text told operators to pass 't0.35-0.75-1.25' while the
+    generator emits underscores, so copying it either fails to parse or
+    searches a prefix that does not exist."""
+    import argparse, re
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import add_research_arg
+    from gcp.research.magnitude_engine.mag_config import (
+        research_namespace, parse_research_namespace)
+
+    p = argparse.ArgumentParser()
+    add_research_arg(p)
+    help_text = p.format_help()
+    slugs = re.findall(r"'([a-z_]*t?[0-9._]*[0-9]|[a-z]+(?:__t[0-9._]+)?)'", help_text)
+    quoted = re.findall(r"'([^']+)'", help_text)
+    examples = [q for q in quoted if q.startswith("t") or "__" in q or q in
+                ("excursion", "call", "put")]
+    assert examples, f"no example slugs found in help: {help_text}"
+    for ex in examples:
+        # every advertised slug must parse, and round-trip to itself
+        label_mode, thresholds = parse_research_namespace(ex)
+        assert research_namespace(label_mode, thresholds) == ex
+
+
+# ─── round 6: the supported dispatch path must be able to run the experiment ───
+
+def _dispatch(*args, tmp_path):
+    """Run the dispatcher against a stub gcloud and return what it would call."""
+    import subprocess, os, stat
+    stub = tmp_path / "gcloud"
+    stub.write_text("#!/usr/bin/env bash\necho \"GCLOUD_CALL: $*\"\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}")
+    out = subprocess.run(["bash", "scripts/dispatch_magnitude_phase.sh", *args],
+                         capture_output=True, text=True, env=env)
+    return out.stdout + out.stderr
+
+
+def test_dispatcher_can_launch_a_label_definition_experiment(tmp_path):
+    """The Cloud Run task-parallel path is the production one, and the
+    dispatcher passed only MAG_PLAN — so neither label-definition experiment
+    had a supported entrypoint, only a hand-written gcloud override."""
+    canonical = _dispatch("phase0", tmp_path=tmp_path)
+    # always NAMED, empty for a canonical dispatch — see the clearing test
+    assert "^|^MAG_PLAN=phase0|MAG_THRESHOLDS=" in canonical
+    assert "--label-mode" not in canonical      # unchanged for a body run
+
+    excursion = _dispatch("phase0", "--label-mode=excursion", tmp_path=tmp_path)
+    assert "--label-mode=excursion" in excursion
+
+    thresholds = _dispatch("phase0", "--thresholds=0.35,0.75,1.25",
+                           tmp_path=tmp_path)
+    # gcloud splits --update-env-vars on commas, so a comma-bearing value needs
+    # the ^|^ custom delimiter or MAG_THRESHOLDS would be set to just "0.35"
+    assert "^|^MAG_PLAN=phase0|MAG_THRESHOLDS=0.35,0.75,1.25" in thresholds
+
+    both = _dispatch("phase0", "--label-mode=put", "--thresholds=0.35,0.75,1.25",
+                     tmp_path=tmp_path)
+    assert "--label-mode=put" in both
+    assert "MAG_THRESHOLDS=0.35,0.75,1.25" in both
+
+
+def test_dispatcher_refuses_an_unknown_option(tmp_path):
+    out = _dispatch("phase0", "--nonsense", tmp_path=tmp_path)
+    assert "Unknown option" in out
+    assert "GCLOUD_CALL" not in out, "a bad option must not dispatch anything"
+
+
+def test_directional_usage_examples_carry_their_namespace():
+    """A call/put/excursion example without --research reads the canonical
+    body prefix, where that run no longer lives."""
+    src = pathlib.Path("scripts/magnitude_movement_sim.py").read_text()
+    usage = src.split('"""')[1]
+    for line in usage.splitlines():
+        if "--position call" in line or "--position put" in line:
+            assert "--research" in line or "--research" in usage, (
+                "a directional example must show the namespace that locates "
+                "the run")
+
+
+# ───────────── round 7: two regressions in the dispatcher I added ─────────────
+
+def test_with_checks_still_dispatches(tmp_path):
+    """--with-checks is documented in the header and was never implemented, so
+    before the option parser existed it was ignored and the phase dispatched.
+    Rejecting it turned a no-op flag into a dispatch that does nothing."""
+    out = _dispatch("phase0", "--with-checks", tmp_path=tmp_path)
+    assert "GCLOUD_CALL" in out, "the phase must still dispatch"
+    assert "not implemented" in out, "and say what it is not doing"
+
+
+def test_canonical_dispatch_clears_a_stale_threshold_override(tmp_path):
+    """`gcloud run jobs execute --update-env-vars` MERGES: a variable the
+    override does not name keeps its job-level value. A job still carrying
+    MAG_THRESHOLDS from an earlier experiment would hand custom cut points to
+    a dispatch that believes it is canonical, and the run would land under
+    _research/, out of the canonical SQL, refused promotion."""
+    out = _dispatch("phase0", tmp_path=tmp_path)
+    assert "MAG_THRESHOLDS=" in out, "the variable must be named to be cleared"
+    # named with an empty value, which resolve_magnitude_thresholds reads as absent
+    assert "|MAG_THRESHOLDS=" in out
+    assert "MAG_THRESHOLDS=0" not in out
+
+
+def test_an_eligible_contract_still_trains_and_can_promote(monkeypatch, joblib_dump_stub):
+    """The early refusal must not swallow the canonical path: a serving-contract
+    run with passing gates still fits, uploads and flips LATEST."""
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    from gcp.research.magnitude_engine.mag_config import (
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS)
+
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)) as lgbm, \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "QQQ", "15m", run_id="eligible-001",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_passing_gates(),
+            label_mode=DEFAULT_LABEL_MODE, thresholds=MAGNITUDE_THRESHOLDS,
+            calibration="none",
+        )
+
+    assert lgbm.call_count == 1
+    assert uri == "gs://test-bucket/magnitude-models/production/QQQ/15m/"
+    assert captured["magnitude-models/production/QQQ/15m/LATEST"] == b"eligible-001"
+
+
+def test_the_contract_is_checked_before_the_fit():
+    """Ordering, not just presence: checking after the fit is what made every
+    research cell pay a guaranteed-wasted retrain."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf._persist_production_model_artifact)
+    assert src.index("serving_contract_reason(") < src.index("model.fit("), (
+        "an ineligible contract must return before any model is trained")
+    # and the dead second check is gone
+    assert src.count("serving_contract_reason(") == 1

@@ -223,8 +223,16 @@ Cross-checks the excursion gate-7 PASS.
 
 ## 8. Where the artifacts live
 
-- **Predictions:** `gs://…-trading-data/research/magnitude_engine/phase0/<ticker>_5m/predictions_<exec>.csv`
-- **Movement-sim summaries:** same prefix, `movement_sim_<position>_<direction>_<ts>.json`
+- **Predictions (canonical body runs):**
+  `gs://…-trading-data/research/magnitude_engine/phase0/<ticker>_5m/predictions_<exec>.csv`
+- **Predictions (excursion / call / put / re-thresholded runs):** under a
+  semantics-specific root, e.g.
+  `gs://…-trading-data/research/magnitude_engine/_research/call/phase0/<ticker>_5m/predictions_<exec>.csv`.
+  Pass `--research=call` (the slug) to the analysis scripts to read them; it
+  also carries the label contract, so `--label-mode` is neither needed nor
+  allowed to disagree with it.
+- **Movement-sim summaries:** same prefix as the run they describe,
+  `movement_sim_<position>_<direction>_<ts>.json`
   (fields: n_bars, overall_mean/median_payoff_atr, per-fold array, costs banner).
 - **Run-id tracking (this session, /tmp):** `wfx.txt` (excursion), `wf_call.txt`,
   `wf_put.txt`, `sim_*.txt`, `g7_*.txt`.

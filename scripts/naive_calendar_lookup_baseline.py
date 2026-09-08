@@ -54,7 +54,8 @@ from gcp.research.magnitude_engine.mag_pred_train import (
     expected_calibration_error, decisive_call_hit_rate, explosive_lift,
 )
 from sklearn.metrics import log_loss
-from scripts._magnitude_analysis_helpers import calendar_keys
+from scripts._magnitude_analysis_helpers import (
+    add_research_arg, apply_research_contract, calendar_keys)
 
 
 def naive_lookup_predict(y_tr: np.ndarray, ts_tr: pd.Series,
@@ -148,7 +149,13 @@ def main():
                         "to isolate the intraday vol smile (reviewer's gate-7 "
                         "pre-screen). Compare the model's EXPLOSIVE lift vs this.")
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    add_research_arg(p)
     args = p.parse_args()
+
+    # The baseline has to be computed on the SAME target the experiment
+    # predicted, or its gate counts cannot say whether the model beats the
+    # calendar prior — they would compare against a different question.
+    _label_mode, _thresholds = apply_research_contract(args.research)
 
     engine = get_engine()
     # Load full dataset for this cell — same query the walk-forward uses
@@ -156,7 +163,8 @@ def main():
     # phase-specific feature joins; the target depends only on OHLCV+atr20
     # which are present in phase0.
     print(f"loading magnitude dataset for {args.ticker} {args.tf}...", file=sys.stderr)
-    df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0")
+    df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0",
+                                label_mode=_label_mode)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     print(f"loaded {len(df)} rows", file=sys.stderr)
 

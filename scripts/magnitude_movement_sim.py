@@ -41,7 +41,11 @@ Usage
         --position straddle --direction none
     python -m scripts.magnitude_movement_sim \
         --ticker QQQ --tf 5m --phase phase0 --run-id <call-run> \
-        --position call --direction label
+        --position call --direction label --research call
+
+A directional or re-thresholded run writes under _research/<slug>/, so
+--research is what locates it; it also supplies the label contract, and
+omitting it now fails loud rather than reading the canonical body run.
 """
 from __future__ import annotations
 import argparse
@@ -61,7 +65,9 @@ from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_TO_IDX, DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
-from scripts._magnitude_analysis_helpers import load_predictions
+from scripts._magnitude_analysis_helpers import (
+    add_research_arg, apply_research_contract, load_predictions,
+    research_prefix)
 
 # Minutes in a trading year, for the implied-move scaling (mirrors gate-7).
 TRADING_MINUTES_PER_YEAR = 252 * 390
@@ -106,11 +112,12 @@ def main():
                         "magnitude label; strat=Strat structure overlay (ARM B).")
     p.add_argument("--strangle-atr", type=float, default=0.5,
                    help="OTM offset for strangle legs, in ATR-20 units.")
-    p.add_argument("--label-mode", default="body",
+    p.add_argument("--label-mode", default=None,
                    choices=["body", "excursion", "call", "put"],
                    help="Label the predictions were trained on (for loading the "
                         "matching dataset/realized columns).")
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    add_research_arg(p)
     args = p.parse_args()
 
     print("=" * 96)
@@ -119,7 +126,10 @@ def main():
     print("=" * 96)
 
     # 1. Predictions → EXPLOSIVE-predicted bars.
-    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id)
+    args.label_mode, _thresholds = apply_research_contract(
+        args.research, args.label_mode)
+    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
+                                 research=args.research)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     expl = LABEL_TO_IDX["EXPLOSIVE"]
     pe = preds[preds["pred_bucket_idx"] == expl].copy()
@@ -230,8 +240,11 @@ def main():
     }
     try:
         from google.cloud import storage as gcs
-        blob = (f"research/magnitude_engine/{args.phase}/{args.ticker.lower()}_{args.tf}/"
-                f"movement_sim_{args.position}_{args.direction}_{int(time.time())}.json")
+        # The summary belongs beside the run it describes: reading from the
+        # research namespace and writing back to the canonical one would file
+        # a call/put/excursion result among body-contract artifacts.
+        blob = (research_prefix(args.phase, args.ticker, args.tf, args.research)
+                + f"movement_sim_{args.position}_{args.direction}_{int(time.time())}.json")
         gcs.Client().bucket(args.bucket).blob(blob).upload_from_string(
             json.dumps(summary, indent=2, default=str), content_type="application/json")
         print(f"saved gs://{args.bucket}/{blob}", file=sys.stderr)

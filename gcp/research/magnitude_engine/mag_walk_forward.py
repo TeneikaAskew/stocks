@@ -37,6 +37,7 @@ from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, PHASES, LABEL_MODES, DEFAULT_LABEL_MODE,
     LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
     DEFAULT_CUTOFFS, MIN_TEST_BARS,
+    MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds,
     DEFAULT_CALIBRATION, DEFAULT_CV,
     PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MAX_MODAL_EXCESS,
     PROMOTION_MIN_DISTINCT_CLASSES,
@@ -44,7 +45,7 @@ from gcp.research.magnitude_engine.mag_config import (
     SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
     SUCCESS_BAR_MIN_FOLDS_LIFT,
-    GCS_BUCKET_DEFAULT, gcs_run_prefix,
+    GCS_BUCKET_DEFAULT, gcs_run_prefix, research_namespace,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.mag_pred_train import (
@@ -473,6 +474,37 @@ _WALK_FORWARD_GATE_LABELS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def serving_contract_reason(label_mode: str,
+                            thresholds: tuple[float, ...]) -> str | None:
+    """Reason to refuse promotion because the labels are not the ones served.
+
+    `LATEST` feeds mag_inference, which feeds the Expected-Move card, and both
+    read one contract: `body` magnitude bucketed at MAGNITUDE_THRESHOLDS. A
+    model trained on `excursion`, `call` or `put`, or at different cut points,
+    predicts buckets that mean something else entirely, and nothing downstream
+    would notice — the values are still 0-3 and the distribution still looks
+    plausible. Neither promotion_verdict nor the walk-forward gates can see it,
+    because both judge numbers rather than semantics.
+
+    Research runs under a non-default label are legitimate and their
+    walk-forward output is kept; they just cannot become the serving model.
+    Returns None when the labels match the serving contract.
+    """
+    mismatches = []
+    if label_mode != DEFAULT_LABEL_MODE:
+        mismatches.append(
+            f"label_mode={label_mode!r} (serving contract is "
+            f"{DEFAULT_LABEL_MODE!r})")
+    if tuple(thresholds) != tuple(MAGNITUDE_THRESHOLDS):
+        mismatches.append(
+            f"thresholds={tuple(thresholds)} (serving contract is "
+            f"{tuple(MAGNITUDE_THRESHOLDS)})")
+    if not mismatches:
+        return None
+    return ("trained on labels the serving path does not read: "
+            + "; ".join(mismatches))
+
+
 def walk_forward_gate_reason(gates: dict) -> str | None:
     """Reason to refuse promotion on the cell's own walk-forward verdict.
 
@@ -517,6 +549,8 @@ def _persist_production_model_artifact(
     X_full: np.ndarray, y_full: np.ndarray,
     feature_cols: list[str],
     gates: dict,
+    label_mode: str,
+    thresholds: tuple[float, ...],
     calibration: str = DEFAULT_CALIBRATION,
     cv: int = DEFAULT_CV,
 ) -> str | None:
@@ -541,6 +575,20 @@ def _persist_production_model_artifact(
     metric persistence is the primary output of the job; this is a side effect).
     A blocked promotion leaves LATEST pointing at the previous production model.
     """
+    # BEFORE the fit: a contract the serving path does not read can never be
+    # promoted, so training a full-data model for it is guaranteed-wasted work
+    # — one extra retrain per cell, on a job whose deployed env sets
+    # MAG_PERSIST_PRODUCTION_MODEL=true, plus artifacts written into the
+    # production namespace for a run that has no business there (Codex on
+    # #1055). The walk-forward output the experiment is actually for is
+    # unaffected; it lives under the research namespace.
+    contract_reason = serving_contract_reason(label_mode, thresholds)
+    if contract_reason:
+        log.info("production model NOT trained for %s:%s — %s. The "
+                 "walk-forward results are unaffected; they are written under "
+                 "the research namespace.", ticker, tf, contract_reason)
+        return None
+
     import io
     import joblib
     bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
@@ -583,6 +631,11 @@ def _persist_production_model_artifact(
     # verdict. Distribution sanity alone let three slv7m cells promote
     # without ever beating the class-prior baseline.
     gate_reason = walk_forward_gate_reason(gates)
+    # No contract check here: an ineligible contract returned above, before
+    # the fit. Leaving a second check would be unreachable code implying a
+    # path that cannot happen.
+    verdict["label_mode"] = label_mode
+    verdict["thresholds"] = list(thresholds)
     verdict["walk_forward_gates"] = {
         k: gates.get(k) for k in (
             "n_ok_folds", "cell_pass_gates_1_to_4",
@@ -705,13 +758,15 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cutoffs: list[str] | None = None,
                   calibration: str = DEFAULT_CALIBRATION,
                   cv: int = DEFAULT_CV,
-                  label_mode: str = "body",
+                  label_mode: str = DEFAULT_LABEL_MODE,
                   persist_production_model: bool = False,
                   features: str = "") -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
+    thresholds = resolve_magnitude_thresholds()
     log.info("=" * 70)
-    log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  label_mode=%s",
-             phase, ticker, tf, len(cutoffs), label_mode)
+    log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
+             "label_mode=%s  thresholds=%s",
+             phase, ticker, tf, len(cutoffs), label_mode, thresholds)
     log.info("=" * 70)
 
     df = load_magnitude_dataset(engine, ticker, tf, phase, label_mode=label_mode)
@@ -834,6 +889,11 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration, "cv": cv,
+        # Recorded so a run's own output says which labels it trained on.
+        # Before #1048's follow-up the summary named neither, and three of the
+        # four dispatch paths silently ignored --label-mode.
+        "label_mode": label_mode,
+        "thresholds": list(thresholds),
         "random_seed": int(os.environ.get("MAG_SEED", "42")),
         "n_features": int(X_full.shape[1]),
         "feature_cols": feature_cols,
@@ -853,7 +913,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         w = csv.writer(buf)
         w.writerow(pred_columns)
         w.writerows(pred_rows)
-        prefix = gcs_run_prefix(phase, ticker, tf)
+        prefix = gcs_run_prefix(phase, ticker, tf,
+                label_mode=label_mode, thresholds=thresholds)
         pred_blob = f"{prefix}/predictions_{run_id}.csv"
         _gcs_upload(buf.getvalue().encode(), pred_blob, "text/csv")
         log.info("predictions: wrote %d rows to gs://%s/%s",
@@ -872,15 +933,33 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # Race on CREATE/INDEX — fine, table will already exist by the
         # time we try to insert.
         log.info("DDL race or no-op (%s): %s", type(e).__name__, e)
+    research = research_namespace(label_mode, thresholds)
     try:
-        _persist_results_table(engine, phase, ticker, tf, folds, run_id)
-        # Per-bar predictions go here BEFORE the pop loop below drops
-        # `_predictions` from each fold dict. Skipped on phase != 'phase0'
-        # to avoid duplicating identical rows across phases (phases share
-        # the same backbone features in our config; only phase0's per-bar
-        # output is canonical for live consumers).
-        if phase == "phase0":
-            _persist_predictions_table(engine, ticker, tf, folds, run_id)
+        if research:
+            # Neither table records the label contract, and
+            # magnitude_walk_forward_results is keyed (phase, ticker, tf,
+            # fold, run_id) while magnitude_per_bar_predictions is keyed
+            # (ticker, tf, ts, model_version) — the same cell keys a body-label
+            # run uses. Writing research folds there would let SQL analysis
+            # group incomparable experiments under one cell, and would put
+            # buckets that mean something else into the very table the
+            # inference and render path reads (Codex on #1055). Adding the
+            # contract as columns is a schema migration through
+            # gcp/schema.sql, not a change this PR can make safely, so the
+            # canonical tables carry canonical labels only. The full evidence
+            # for these runs is in GCS under the namespace below.
+            log.info("research semantics (%s) — NOT writing the canonical "
+                     "Cloud SQL tables; folds and per-bar predictions are in "
+                     "GCS under _research/%s/", research, research)
+        else:
+            _persist_results_table(engine, phase, ticker, tf, folds, run_id)
+            # Per-bar predictions go here BEFORE the pop loop below drops
+            # `_predictions` from each fold dict. Skipped on phase != 'phase0'
+            # to avoid duplicating identical rows across phases (phases share
+            # the same backbone features in our config; only phase0's per-bar
+            # output is canonical for live consumers).
+            if phase == "phase0":
+                _persist_predictions_table(engine, ticker, tf, folds, run_id)
     except Exception as e:
         # Hard failure — log loud, but DON'T fail the task because GCS
         # persistence is the canonical output anyway.
@@ -898,7 +977,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         try:
             uri = _persist_production_model_artifact(
                 ticker, tf, run_id, X_full, y_full, feature_cols,
-                gates=gates, calibration=calibration, cv=cv,
+                gates=gates, label_mode=label_mode, thresholds=thresholds,
+                calibration=calibration, cv=cv,
             )
             if uri:
                 summary["production_model_uri"] = uri
@@ -907,7 +987,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                       type(e).__name__, e)
 
     # Always persist to GCS.
-    prefix = gcs_run_prefix(phase, ticker, tf)
+    prefix = gcs_run_prefix(phase, ticker, tf,
+            label_mode=label_mode, thresholds=thresholds)
     blob = f"{prefix}/walk_forward_{run_id}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved gs://%s/%s",
@@ -918,6 +999,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 def run_all_cells(engine, phase: str,
                    cutoffs: list[str] | None = None,
                    calibration: str = DEFAULT_CALIBRATION,
+                   label_mode: str = DEFAULT_LABEL_MODE,
                    persist_production_model: bool = False,
                    features: str = "") -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
@@ -927,6 +1009,7 @@ def run_all_cells(engine, phase: str,
             try:
                 s = walk_forward(engine, phase, ticker, tf,
                                  cutoffs=cutoffs, calibration=calibration,
+                                 label_mode=label_mode,
                                  persist_production_model=persist_production_model,
                                  features=features)
                 all_summaries.append(s)
@@ -1087,6 +1170,12 @@ def main():
                         "options_iv, positioning, cross_asset, calendar). "
                         "Default empty = baseline (no phase2 change).")
     args = p.parse_args()
+    # Validate the threshold override BEFORE any fan-out. run_all_cells
+    # catches every per-cell exception and main() does not act on its FAIL
+    # verdict, so a malformed MAG_THRESHOLDS reaching that path would error
+    # all nine cells and still exit 0 (Codex on #1055). Resolving here turns
+    # a config mistake into an immediate non-zero exit on every path.
+    resolve_magnitude_thresholds()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
 
@@ -1105,6 +1194,7 @@ def main():
                  phase, ticker, tf)
         walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration,
+                      label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
                       features=args.features)
         return
@@ -1117,6 +1207,7 @@ def main():
         phase, ticker, tf = plan[args.task_index]
         walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration,
+                      label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
                       features=args.features)
         return
@@ -1126,6 +1217,7 @@ def main():
             raise SystemExit("--all-cells needs --phase")
         run_all_cells(engine, args.phase, cutoffs=cutoffs,
                        calibration=args.calibration,
+                       label_mode=args.label_mode,
                        persist_production_model=args.persist_production_model,
                        features=args.features)
         return

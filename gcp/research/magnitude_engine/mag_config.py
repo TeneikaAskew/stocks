@@ -10,6 +10,8 @@ and MUST NOT be tuned after running. Per the project spec:
      a failed phase."
 """
 from __future__ import annotations
+import math
+import os
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -48,6 +50,49 @@ LABEL_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(LABEL_CLASSES)}
 # 1.0 <= move<1.5 → EXPANDED (2)
 # move >= 1.5    → EXPLOSIVE (3)
 MAGNITUDE_THRESHOLDS: tuple[float, ...] = (0.5, 1.0, 1.5)
+
+
+def resolve_magnitude_thresholds() -> tuple[float, ...]:
+    """The ATR-multiple cut points, or the MAG_THRESHOLDS research override.
+
+    The default puts 63-72% of bars in TIGHT depending on the cell (measured
+    on the slv7m prediction CSVs, #1025), which is why gate 1 asks the model
+    to beat so strong a class prior. Whether a different split makes the
+    target learnable is an open research question, and it could not be asked
+    at all while these were a hardcoded constant.
+
+    Override with MAG_THRESHOLDS="0.35,0.75,1.25". A malformed value RAISES
+    rather than falling back to the default: a run that silently trained on
+    labels other than the ones asked for is exactly the failure this override
+    exists to make visible (see the label_mode plumbing bug fixed alongside).
+
+    A non-default value changes what the four buckets MEAN, so the persist
+    path refuses to promote a model trained under one — mag_inference and the
+    Expected-Move card both read the default contract.
+    """
+    raw = os.environ.get("MAG_THRESHOLDS", "").strip()
+    if not raw:
+        return MAGNITUDE_THRESHOLDS
+    want = len(LABEL_CLASSES) - 1
+    try:
+        vals = tuple(float(p) for p in raw.split(","))
+    except ValueError as e:
+        raise ValueError(
+            f"MAG_THRESHOLDS={raw!r} is not a comma-separated list of "
+            f"numbers: {e}") from e
+    if len(vals) != want:
+        raise ValueError(
+            f"MAG_THRESHOLDS={raw!r} has {len(vals)} cut point(s); {want} "
+            f"are needed for the {len(LABEL_CLASSES)} classes {LABEL_CLASSES}")
+    if not all(math.isfinite(v) and v > 0 for v in vals):
+        raise ValueError(
+            f"MAG_THRESHOLDS={raw!r}: every cut point must be finite and "
+            "positive (they are ATR multiples)")
+    if any(a >= b for a, b in zip(vals, vals[1:])):
+        raise ValueError(
+            f"MAG_THRESHOLDS={raw!r} must be strictly ascending; the buckets "
+            "are read as [0,t0) [t0,t1) [t1,t2) [t2,inf)")
+    return vals
 
 # Label modes (reviewer 2026-06-01). The default "body" target,
 # |next_close - next_open| / atr_20, matches the IV expected-move comparison at
@@ -303,8 +348,91 @@ GCS_BUCKET_DEFAULT = "adept-mountain-474619-d4-trading-data"
 GCS_PREFIX = "research/magnitude_engine"
 
 
-def gcs_run_prefix(phase: str, ticker: str, tf: str) -> str:
-    return f"{GCS_PREFIX}/{phase}/{ticker.lower()}_{tf}"
+def research_namespace(label_mode: str | None,
+                       thresholds: Sequence[float] | None) -> str | None:
+    """Slug for a run whose labels are not the serving contract, else None.
+
+    A run under `excursion`/`call`/`put`, or non-default cut points, answers a
+    different question from the canonical `body` phase result, and its
+    walk_forward JSON is not comparable with one. Sharing a GCS prefix let the
+    newer file win: scripts/assemble_magnitude_results.latest_result takes
+    `sorted(files)[-1]` and per_phase_verdict never looks at the labels, so a
+    research experiment would quietly become the reported phase verdict
+    (Codex on #1055).
+    """
+    parts = []
+    if label_mode is not None and label_mode != DEFAULT_LABEL_MODE:
+        parts.append(label_mode)
+    if thresholds is not None and tuple(thresholds) != MAGNITUDE_THRESHOLDS:
+        # repr(), not f"{v:g}": %g keeps six significant digits, so 0.1234564
+        # and 0.12345649 would slug identically and two experiments with
+        # different bucket definitions would share a namespace, which is the
+        # collision this partition exists to prevent (Codex on #1055).
+        # repr() round-trips exactly for every float.
+        # "_" and not "-": repr(1e-07) is '1e-07', so a "-" separator is also
+        # part of the value and t1e-07-2e-07-3e-07 cannot be split back. The
+        # training run would still write under that slug while every
+        # contract-aware reader rejected it (Codex on #1055).
+        parts.append("t" + "_".join(repr(float(v)) for v in thresholds))
+    return "__".join(parts) if parts else None
+
+
+def parse_research_namespace(slug: str) -> tuple[str, tuple[float, ...]]:
+    """Inverse of research_namespace: the label contract a slug stands for.
+
+    The slug is the single source of truth for an analysis run's semantics.
+    Deriving from it, rather than asking an operator to repeat --label-mode
+    alongside --research, removes the mismatch where gate 7 evaluates a `put`
+    model's predictions against `body` realizations and reports a plausible,
+    invalid verdict (Codex on #1055).
+    """
+    label_mode = DEFAULT_LABEL_MODE
+    thresholds = MAGNITUDE_THRESHOLDS
+    seen_threshold = False
+    for part in slug.split("__"):
+        if part.startswith("t") and "_" in part:
+            if seen_threshold:
+                raise ValueError(f"research slug {slug!r} has two threshold parts")
+            try:
+                thresholds = tuple(float(v) for v in part[1:].split("_"))
+            except ValueError as e:
+                raise ValueError(
+                    f"research slug {slug!r}: cannot read thresholds from "
+                    f"{part!r}: {e}") from e
+            if len(thresholds) != len(LABEL_CLASSES) - 1:
+                raise ValueError(
+                    f"research slug {slug!r}: {len(thresholds)} cut point(s), "
+                    f"{len(LABEL_CLASSES) - 1} needed")
+            seen_threshold = True
+        elif part in LABEL_MODES:
+            label_mode = part
+        else:
+            raise ValueError(
+                f"research slug {slug!r}: {part!r} is neither a label mode "
+                f"{LABEL_MODES} nor a threshold part like 't0.35_0.75_1.25'")
+    if research_namespace(label_mode, thresholds) != slug:
+        raise ValueError(
+            f"research slug {slug!r} does not round-trip; the namespace for "
+            f"label_mode={label_mode!r} thresholds={thresholds} is "
+            f"{research_namespace(label_mode, thresholds)!r}")
+    return label_mode, thresholds
+
+
+def gcs_run_prefix(phase: str, ticker: str, tf: str,
+                   label_mode: str | None = None,
+                   thresholds: Sequence[float] | None = None) -> str:
+    """Where a cell-run's artifacts live.
+
+    Canonical serving semantics keep the historical path unchanged. Anything
+    else goes under a sibling `_research/<slug>/` root — a separate root
+    rather than a subdirectory, so no listing of the canonical prefix can
+    reach it however it is written.
+    """
+    cell = f"{phase}/{ticker.lower()}_{tf}"
+    slug = research_namespace(label_mode, thresholds)
+    if slug is None:
+        return f"{GCS_PREFIX}/{cell}"
+    return f"{GCS_PREFIX}/_research/{slug}/{cell}"
 
 
 # Tables for Phase 2 + 4 (NOT created by default — only when those phases
