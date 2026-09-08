@@ -22,6 +22,7 @@ Leakage guardrails:
     outcome.
 """
 from __future__ import annotations
+from lib.eastern_time import ET_NAME
 import logging
 from typing import Any
 
@@ -202,7 +203,7 @@ def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     These are GLOBALLY observable at bar t — no future data.
     """
     df = df.copy()
-    ts_et = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("America/New_York")
+    ts_et = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(ET_NAME)
 
     df["cal_hour_of_day"] = ts_et.dt.hour
     df["cal_minute_of_hour"] = ts_et.dt.minute

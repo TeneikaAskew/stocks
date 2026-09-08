@@ -40,6 +40,7 @@ import pandas as pd
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from lib.eastern_time import ET_NAME
 
 from gcp.database import get_engine, execute_sql, bulk_copy_upsert
 from gcp.research.strat_engine.strat_config import (
@@ -82,7 +83,7 @@ def _compute_enrichments(df: pd.DataFrame, include_current_period: bool = False)
     # 09:30-09:35 and every ORB high/low/mid/range comes back NaN — the
     # orb_5m_high "always NULL" bug that left the magnitude models trained on a
     # dead ORB feature set. Convert to ET before the session filter.
-    orb = calculate_all_orb(times.dt.tz_convert("America/New_York"), h, l, c)
+    orb = calculate_all_orb(times.dt.tz_convert(ET_NAME), h, l, c)
     orb.index = df.index
     log.info("  ORB: %d cols", orb.shape[1])
 

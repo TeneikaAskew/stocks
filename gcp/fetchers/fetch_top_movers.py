@@ -23,12 +23,12 @@ import os
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from lib.eastern_time import ET
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.logging_config import setup_logging
@@ -43,7 +43,7 @@ CATEGORIES = (
     ("most_actively_traded", "most_active"),
 )
 
-_ET = ZoneInfo("America/New_York")
+_ET = ET
 
 
 def _safe_float(val) -> float | None:

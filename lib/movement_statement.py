@@ -51,6 +51,7 @@ Feature flag: MOVEMENT_STATEMENT_ENABLED (env var, default OFF). When OFF,
 """
 from __future__ import annotations
 
+from lib.eastern_time import ET
 import logging
 import os
 from datetime import datetime as datetime_type
@@ -265,9 +266,8 @@ def market_today():
     The API serves requests at any hour; a UTC date is already tomorrow after
     20:00 ET and would push the ladder and its playbook row one session forward.
     """
-    from zoneinfo import ZoneInfo  # noqa: PLC0415
 
-    return datetime_type.now(ZoneInfo("America/New_York")).date()
+    return datetime_type.now(ET).date()
 
 
 def _finite(col: str) -> str:
@@ -813,9 +813,8 @@ def _as_of_market_date(as_of):
         return None
     if isinstance(as_of, datetime_type):
         if as_of.tzinfo is not None:
-            from zoneinfo import ZoneInfo  # noqa: PLC0415
 
-            as_of = as_of.astimezone(ZoneInfo("America/New_York"))
+            as_of = as_of.astimezone(ET)
         return as_of.date()
     return as_of
 

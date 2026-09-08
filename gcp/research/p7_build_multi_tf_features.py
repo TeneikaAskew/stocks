@@ -46,6 +46,7 @@ import pandas as pd
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from lib.eastern_time import ET_NAME
 
 from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert
 from lib.data_loader import DataLoader
@@ -308,7 +309,7 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     out["close"] = closes
     out["volume"] = df_tf["Volume"].astype("int64")
     out["tf"] = tf_label
-    out["bar_date"] = df_tf.index.tz_convert("America/New_York").date
+    out["bar_date"] = df_tf.index.tz_convert(ET_NAME).date
 
     # Strat columns
     out["strat_candle"] = strat_df["strat_candle"]

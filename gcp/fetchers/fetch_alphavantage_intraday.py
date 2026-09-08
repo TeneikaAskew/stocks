@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from lib.eastern_time import ET_NAME
 
 from gcp.database import (
     bulk_insert_dataframe,
@@ -296,7 +297,7 @@ def process_symbol(
 
         # Localize timestamps to UTC
         if df['ts'].dt.tz is None:
-            df['ts'] = df['ts'].dt.tz_localize('America/New_York').dt.tz_convert('UTC')
+            df['ts'] = df['ts'].dt.tz_localize(ET_NAME).dt.tz_convert('UTC')
 
         log.info("    %s: %d bars", month_str, len(df))
 
