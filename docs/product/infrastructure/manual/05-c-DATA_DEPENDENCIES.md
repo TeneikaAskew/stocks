@@ -1,6 +1,14 @@
 # Data Dependencies — table-level write/read graph
 
-**Generated 2026-09-07** from [`gcp/schema.sql`](../../../../gcp/schema.sql), a whole-word scan of `gcp/`, `lib/`, `scripts/` and `platform/api` (tests and `archive/` excluded), and the 2026-09-07 live table statistics, by [`scripts/maintenance/doc_inventory.py`](../../../../scripts/maintenance/doc_inventory.py). Every citation is a `file:line` you can open. The blocks between `<!-- inventory:*:start/end -->` markers are re-rendered by the monthly refresh; the prose between them is maintained by hand.
+> **Hand-maintained snapshot — nothing automated writes to this file.** It is the copy of
+> [`../05-c-DATA_DEPENDENCIES.md`](../05-c-DATA_DEPENDENCIES.md) taken on 2026-09-08, before the monthly refresh began rewriting that
+> document. Edit it freely, including inside any `<!-- inventory:* -->` markers: the refresh
+> workflow's write policy names the four refreshed files only, its stray-write scan fails the run
+> on any other change, and `scripts/verify_docs_against_live.py` does not enrol this folder. Its
+> figures are frozen as of that date and do not track the live fleet; see
+> [`README.md`](README.md) for how to refresh a copy by hand.
+
+**Generated 2026-09-07** from [`gcp/schema.sql`](../../../../gcp/schema.sql), a whole-word scan of `gcp/`, `lib/`, `scripts/` and `platform/api` (tests and `archive/` excluded), and the 2026-09-07 live table statistics, by [`scripts/maintenance/doc_inventory.py`](../../../../scripts/maintenance/doc_inventory.py). Every citation is a `file:line` you can open. In the original, [`../05-c-DATA_DEPENDENCIES.md`](../05-c-DATA_DEPENDENCIES.md), the blocks between `<!-- inventory:*:start/end -->` markers are re-rendered by the monthly refresh; in this copy nothing is, and every line is yours to edit.
 
 This doc complements [ARCHITECTURE.md](../05-a-ARCHITECTURE.md) §5 (schema by domain) and §6 (jobs). Where ARCHITECTURE says "job X runs module Y", this doc answers "module Y writes table Z, and Z is read by A, B, C".
 
@@ -1411,4 +1419,4 @@ Rendered from `table_refs` by `scripts/maintenance/doc_inventory.py`: thick `==>
 
 - 2026-09-07: the 2026-09-02 layout's "1. Table inventory" became "1. Table inventory (declared in `gcp/schema.sql`)" plus "1b. Live relations"; its "`market_data_intraday` (and partitions)" write-graph subsection became the per-table `market_data_intraday` subsection (partitions are routed by Postgres and are listed in §1 and §5 only). Every table that had a §2/§3 entry still has one.
 
-Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](../../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md); inventory blocks rendered by `scripts/maintenance/doc_inventory.py`. The monthly refresh updates this line.
+Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](../../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md); inventory blocks rendered by `scripts/maintenance/doc_inventory.py`. This hand-maintained copy is not refreshed; update this line yourself when you edit it.

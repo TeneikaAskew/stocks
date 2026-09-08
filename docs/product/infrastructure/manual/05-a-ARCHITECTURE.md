@@ -1,8 +1,16 @@
 # Architecture
 
+> **Hand-maintained snapshot — nothing automated writes to this file.** It is the copy of
+> [`../05-a-ARCHITECTURE.md`](../05-a-ARCHITECTURE.md) taken on 2026-09-08, before the monthly refresh began rewriting that
+> document. Edit it freely, including inside any `<!-- inventory:* -->` markers: the refresh
+> workflow's write policy names the four refreshed files only, its stray-write scan fails the run
+> on any other change, and `scripts/verify_docs_against_live.py` does not enrol this folder. Its
+> figures are frozen as of that date and do not track the live fleet; see
+> [`README.md`](README.md) for how to refresh a copy by hand.
+
 > The single architecture reference for this repo: every Cloud Run job and service, scheduler, table, API route, deploy path, data flow and failure path, with each claim cited to a file:line, a live `gcloud` read, or a pull request. The visual companion is [`Architecture.drawio`](../../../../Architecture.drawio); the per-table write/read graph is [`05-c-DATA_DEPENDENCIES.md`](../05-c-DATA_DEPENDENCIES.md); cost is [`05-d-COST_ANALYSIS.md`](../05-d-COST_ANALYSIS.md).
 >
-> **How this file is maintained.** The tables between `<!-- inventory:*:start/end -->` markers are rendered by [`scripts/maintenance/doc_inventory.py`](../../../../scripts/maintenance/doc_inventory.py) from `gcp/deploy.sh`, `gcp/schema.sql`, `platform/api` and a live `gcloud` snapshot; the monthly refresh workflow re-renders them and updates the prose around them in place. Edit prose freely; never hand-edit inside a marker block (it is overwritten). `docs/GCP_ARCHITECTURE.md` was merged into this file on 2026-09-07; its redirect stub was deleted when this document moved to `docs/product/infrastructure/` on the same day.
+> **How the ORIGINAL is maintained** (this copy is not): in [`../05-a-ARCHITECTURE.md`](../05-a-ARCHITECTURE.md) the tables between `<!-- inventory:*:start/end -->` markers are rendered by [`scripts/maintenance/doc_inventory.py`](../../../../scripts/maintenance/doc_inventory.py) from `gcp/deploy.sh`, `gcp/schema.sql`, `platform/api` and a live `gcloud` snapshot, and the monthly refresh workflow re-renders them and updates the prose around them in place. Here every line, marker blocks included, is yours to edit. `docs/GCP_ARCHITECTURE.md` was merged into this file on 2026-09-07; its redirect stub was deleted when this document moved to `docs/product/infrastructure/` on the same day.
 >
 > Live state below was read on **2026-09-07** with `gcloud` as `claude-web@` (jobs, schedulers, services, Cloud SQL, IAM, Cloud Build, domain mappings) and `scripts/db_query_cr.sh` (table stats). Everything below is written against `main`. The pull requests that moved this fleet during the audit have all merged: [#990](https://github.com/TeneikaAskew/stocks/pull/990) (service rename to `solyra-api-prod` / `-staging`, Cloud Build deploy triggers), [#1004](https://github.com/TeneikaAskew/stocks/pull/1004) (scheduler consolidation, image pinning, Discord warm window), [#1005](https://github.com/TeneikaAskew/stocks/pull/1005) (`phase6-playbook` schedule, hourly quality report retired), [#1006](https://github.com/TeneikaAskew/stocks/pull/1006) (branded auth emails), [#1007](https://github.com/TeneikaAskew/stocks/pull/1007) (legacy image retirement) and [#1010](https://github.com/TeneikaAskew/stocks/pull/1010) / [#1013](https://github.com/TeneikaAskew/stocks/pull/1013) (the committed OpenAPI snapshot and its response models). Where the repo and the live fleet still disagree, §15 says so rather than this paragraph.
 
@@ -1123,4 +1131,4 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 
 ---
 
-Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](../../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md); inventory blocks rendered by `scripts/maintenance/doc_inventory.py` from the 2026-09-07 live snapshot. The monthly refresh updates this line.
+Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](../../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md); inventory blocks rendered by `scripts/maintenance/doc_inventory.py` from the 2026-09-07 live snapshot. This hand-maintained copy is not refreshed; update this line yourself when you edit it.

@@ -290,6 +290,37 @@ def test_every_prompt_forbids_the_hand_maintained_folder():
         assert "Never read or write anything under `docs/product/infrastructure/manual/`" in text, name
 
 
+def test_no_manual_copy_claims_to_be_auto_refreshed():
+    """A copied maintenance banner told an owner the monthly workflow rewrites
+    the file and overwrites its marker blocks. Nothing automated writes to
+    docs/product/infrastructure/manual/, so every copy says so up front and
+    no line there claims otherwise for itself. (Codex, PR #1044.)"""
+    manual = REPO / "docs/product/infrastructure/manual"
+    for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md", "05-d-COST_ANALYSIS.md", "ROOT-README.md"):
+        text = (manual / doc).read_text()
+        head = text.split("\n\n")[1] if "\n\n" in text else text
+        assert "Hand-maintained snapshot — nothing automated writes to this file." in head, doc
+        for line in text.splitlines():
+            low = line.lower()
+            if "monthly refresh" not in low and "refresh workflow" not in low:
+                continue
+            # every surviving mention must name the original, not this copy
+            assert any(k in line for k in ("../05-", "../../../../README.md", "the original",
+                                           "ORIGINAL", "docs/product/infrastructure/",
+                                           "is not refreshed", "are frozen", "write policy")), (doc, line[:150])
+
+
+def test_the_manual_readme_points_at_its_own_siblings():
+    """The copy's core links left the snapshot for the auto-refreshed
+    documents, so after a refresh it mixed frozen prose with fresh tables."""
+    text = (REPO / "docs/product/infrastructure/manual/ROOT-README.md").read_text()
+    for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md", "05-d-COST_ANALYSIS.md"):
+        assert f"]({doc}" in text, doc
+        assert f"](../../../../docs/product/infrastructure/{doc}" not in text, doc
+    # a document with no manual counterpart keeps its repo-relative link
+    assert "](../../../../RUNBOOK.md)" in text
+
+
 def test_the_hand_maintained_copies_exist_and_link_correctly():
     manual = REPO / "docs/product/infrastructure/manual"
     for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md", "05-d-COST_ANALYSIS.md", "ROOT-README.md", "README.md"):

@@ -1,5 +1,13 @@
 # Stocks Trading Platform
 
+> **Hand-maintained snapshot — nothing automated writes to this file.** It is the copy of
+> [`README.md`](../../../../README.md) at the repository root, taken on 2026-09-08, before the monthly refresh began rewriting that
+> document. Edit it freely, including inside any `<!-- inventory:* -->` markers: the refresh
+> workflow's write policy names the four refreshed files only, its stray-write scan fails the run
+> on any other change, and `scripts/verify_docs_against_live.py` does not enrol this folder. Its
+> figures are frozen as of that date and do not track the live fleet; see
+> [`README.md`](README.md) for how to refresh a copy by hand.
+
 A private stocks and options trading intelligence platform on GCP: Cloud Run Jobs pull market, options, earnings, macro, filings and news data into Cloud SQL, compute Strat, gamma and signal analytics with one shared `lib/` engine, and deliver briefs and alerts to Discord. A FastAPI service (`solyra-api-prod` behind IAP, `solyra-api-staging` public with Firebase login) serves the [solyra](https://github.com/TeneikaAskew/solyra) React UI. This repository is the backend; the frontend moved to solyra in #957.
 
 ![Last audit](https://img.shields.io/badge/docs_verified-2026--09--07-blue)
@@ -8,15 +16,15 @@ A private stocks and options trading intelligence platform on GCP: Cloud Run Job
 ![Cloud SQL tables](https://img.shields.io/badge/schema_tables-66_declared_%2F_94_live-blue)
 ![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/workflows/refresh-architecture-docs.yml/badge.svg)
 
-Counts are read live by `python -m scripts.maintenance.doc_inventory --live`; the badges are updated by the monthly refresh.
+Counts are read live by `python -m scripts.maintenance.doc_inventory --live`; in the original `README.md` the badges are updated by the monthly refresh, and in this copy they are frozen.
 
 ## Documentation map
 
 | Read this | When you want |
 |---|---|
-| [05-a-ARCHITECTURE.md](../../../../docs/product/infrastructure/05-a-ARCHITECTURE.md) | the whole system: every job, scheduler, service, table, route, deploy path, data flow, failure path, live-vs-repo reconciliation |
-| [05-c-DATA_DEPENDENCIES.md](../../../../docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md) | which module writes and reads each table, multi-writer risks, orphan tables, blast radius per job |
-| [05-d-COST_ANALYSIS.md](../../../../docs/product/infrastructure/05-d-COST_ANALYSIS.md) | the monthly GCP bill by SKU and component |
+| [05-a-ARCHITECTURE.md](05-a-ARCHITECTURE.md) | the whole system: every job, scheduler, service, table, route, deploy path, data flow, failure path, live-vs-repo reconciliation |
+| [05-c-DATA_DEPENDENCIES.md](05-c-DATA_DEPENDENCIES.md) | which module writes and reads each table, multi-writer risks, orphan tables, blast radius per job |
+| [05-d-COST_ANALYSIS.md](05-d-COST_ANALYSIS.md) | the monthly GCP bill by SKU and component |
 | [RUNBOOK.md](../../../../RUNBOOK.md) | something is on fire: failure scenarios, recovery steps, rebuild sequence |
 | [05-b-ERD.md](../../../../docs/product/infrastructure/05-b-ERD.md) | the schema as entity-relationship diagrams, by cluster |
 | [05-f-PIPELINE.md](../../../../docs/product/infrastructure/05-f-PIPELINE.md) | the two-lane model: live trading vs research, and the one indicator engine both share |
@@ -35,7 +43,7 @@ Counts are read live by `python -m scripts.maintenance.doc_inventory --live`; th
 - **Run the API locally**: `make install`, then `make dev` starts FastAPI on `:8000` (no frontend here; run solyra's `npm run dev`, whose proxy uses `:8000` when it is up). Environment and credentials: [CLAUDE.md](../../../../CLAUDE.md).
 - **Add a fetcher**: module under `gcp/fetchers/`, a `deploy_<name>()` function and a scheduler entry in `gcp/deploy.sh`, schema in `gcp/schema.sql` if it writes a new table. The next monthly refresh picks it up in `05-a-ARCHITECTURE.md` and `05-c-DATA_DEPENDENCIES.md` under `docs/product/infrastructure/`; run `python -m scripts.maintenance.doc_inventory --insert` to update them now.
 - **Query Cloud SQL from a sandbox**: `./scripts/db_query_cr.sh -q "SELECT …"` (only port 443 is open there; see [CLAUDE.md → Database access](../../../../CLAUDE.md#database-access)).
-- **Something is broken**: [RUNBOOK.md](../../../../RUNBOOK.md); failed jobs already open a GitHub issue through the failure notifier ([05-a-ARCHITECTURE.md §10.10](../../../../docs/product/infrastructure/05-a-ARCHITECTURE.md#1010-failure-flow)).
+- **Something is broken**: [RUNBOOK.md](../../../../RUNBOOK.md); failed jobs already open a GitHub issue through the failure notifier ([05-a-ARCHITECTURE.md §10.10](05-a-ARCHITECTURE.md#1010-failure-flow)).
 
 ## Maintenance
 
@@ -60,4 +68,4 @@ Prose outside a marker block survives the refresh and is yours to edit; anything
 
 No explicit license has been added to this repo. Treat as **all rights reserved** until that changes. Contact: see git log / GitHub repo owner.
 
-Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](../../../../docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md). The monthly refresh updates this line.
+Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](../../../../docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md). This hand-maintained copy is not refreshed; update this line yourself when you edit it.
