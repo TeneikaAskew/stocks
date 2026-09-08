@@ -480,8 +480,14 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 
   Pasting the four probes here would make a **fourth** copy of a search that has
   drifted from its original in five consecutive rounds of this PR. Load Phase
-  4's helper fence now — it defines `EXCLUDE_STOCKS`/`EXCLUDE_SOLYRA` as well —
-  and call it:
+  4's **definitions** fence now — the one that defines `consumed()`,
+  `absent_everywhere()`, `retired_everywhere()`, `fully_retired()` and the
+  `EXCLUDE_STOCKS`/`EXCLUDE_SOLYRA` arrays, and **nothing else**. It is
+  side-effect free by construction: the `fully_retired "<symbol>" …` template
+  now lives in a separate block, because while it sat at the end of the same
+  fence, sourcing it ran the gate against the literal placeholders and returned
+  1 — killing the shell under `set -e` before the call below could run.
+  Then:
 
   ```bash
   EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )       # required; consumed() returns 2 without it
@@ -528,9 +534,18 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   just bit you:
 
   ```bash
-  git ls-files | grep -oE '(^|/)(archive|_archive|deprecated|retired|quarantined?)/' | sort -u
-  git ls-files | grep -oE '\.(disabled|retired)$' | sort -u
-  grep -rliE 'quarantin|retired|not run in production' $(git ls-files '*README*')
+  # ANCHORED, like every other inventory in this file. These derive a REPO-WIDE
+  # exclusion set, and `git ls-files` with no pathspec lists only the subtree
+  # you are standing in — measured, from gcp/ the scope enumeration reports
+  # `/_archive/` alone, missing root `archive/` and the `.disabled` marker
+  # entirely (231 matching paths from the root, 10 from gcp/), and the
+  # derivation probe below yields 0 non-source artifacts against the root's 1.
+  # The filesystem `grep` needs the same treatment: its argument list comes
+  # from the same subtree-limited listing.
+  root=$(git rev-parse --show-toplevel) || echo "not in a checkout"
+  git -C "$root" ls-files | grep -oE '(^|/)(archive|_archive|deprecated|retired|quarantined?)/' | sort -u
+  git -C "$root" ls-files | grep -oE '\.(disabled|retired)$' | sort -u
+  ( cd "$root" && grep -rliE 'quarantin|retired|not run in production' $(git ls-files '*README*') )
   ```
 
   **`.claude/`, `.github/ISSUE_TEMPLATE/` and every `*.md` come out for a
@@ -597,9 +612,13 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   everything that is not source.
 
   ```bash
+  # ANCHORED for the same reason as the scope enumeration above: from gcp/ this
+  # loop returns 0 non-source artifacts where the root returns 1, so the derived
+  # exclusion list would be empty and read as "nothing to exclude".
+  root=$(git rev-parse --show-toplevel) || echo "not in a checkout"
   for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
            market_data_intraday etf_options_snapshots exit_config_overrides; do
-    git grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+    git -C "$root" grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
       ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
       ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
       ':!.github/workflows/logs.txt'
@@ -1472,12 +1491,24 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # PRESERVE_STOCKS above for why that is measured rather than an oversight.
     sfiles=$(git ls-tree -r --name-only "$REV") \
       || { echo "solyra: could not list files at ${REV:0:12}"; exit 2; }
-    # The solyra approval filters the solyra path list, same as the stocks half.
-    sfiles=$(printf '%s\n' "$sfiles" | while IFS= read -r p; do
+    # The solyra approval filters the solyra path list, same as the stocks half
+    # — INCLUDING the implementation protection that half gained last round. The
+    # stocks filter learned not to let an approval remove a path the caller had
+    # just named as the implementation; this one did not, so the identical
+    # certification was still reachable one repo over. Measured on a two-file
+    # listing with the implementation approved: unconditional filter -> the
+    # named file leaves the inventory and the scan CERTIFIES; protected filter
+    # -> it is retained and the scan BLOCKS. Third consecutive round in which
+    # the stocks half was fixed and its solyra twin was not, so both filters
+    # now read the same variable rather than agreeing by inspection.
+    sfiles=$(IMPL_RE=$_impl_re; printf '%s\n' "$sfiles" | while IFS= read -r p; do
                test -n "$p" || continue
-               for ap in "${REVIEWED_SOLYRA[@]}"; do
-                 test "$p" != "$ap" || { p=; break; }
-               done
+               if [ -z "$IMPL_RE" ] || ! printf '%s' "$p" | grep -qE -- "$IMPL_RE"
+               then
+                 for ap in "${REVIEWED_SOLYRA[@]}"; do
+                   test "$p" != "$ap" || { p=; break; }
+                 done
+               fi
                test -n "$p" || continue
                printf '%s\n' "$p"; done)
     # -E here too. The index-versus-working-tree correction the stocks half
@@ -1575,7 +1606,21 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     shist=$(git log --oneline -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
       || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
     if [ -n "$shist" ]; then
-      test "${SOLYRA_ROLLED_OUT:-}" = "$sym" || {
+      # BIND THE APPROVAL TO THE REMOVAL IT WAS MADE FOR, not to the symbol.
+      # A surface can be removed, rolled out, reintroduced and removed again,
+      # and a `SOLYRA_ROLLED_OUT=<symbol>` from the first removal still
+      # satisfied a symbol-only test for the second — measured on a synthetic
+      # checkout with two removals: the approval made for cdb1f74 was accepted
+      # while the live last removal was a1eabff, which had never been deployed.
+      # That is the same "an approval is symbol-bound" argument REVIEWED_FOR
+      # makes, one dimension short: WHICH removal you checked is exactly what
+      # the acknowledgement is about, since the thing being confirmed is that a
+      # particular removal reached browsers.
+      _srm=$(git log -1 --format=%h -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
+        || { echo "solyra: could not identify the removal commit"; exit 2; }
+      test -n "$_srm" || { echo "solyra: history is non-empty but no commit"
+                           echo "could be identified — asserting nothing"; exit 2; }
+      test "${SOLYRA_ROLLED_OUT:-}" = "$sym@$_srm" || {
         echo "solyra: main no longer uses '$sym', but it once did:"
         printf '%s\n' "$shist" | head -5
         echo "last touched: $(git log -1 --format='%h %cI %s' -G"$sym" \
@@ -1592,14 +1637,14 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
         # or directory", and the gate is never cleared. %q round-trips the
         # value: SOLYRA_ROLLED_OUT=playbook_cards\|/api/playbook assigns the
         # alternation intact, which is what the `=` test above compares.
-        printf 'yourself, then re-run with SOLYRA_ROLLED_OUT=%q\n' "$sym"
+        printf 'yourself, then re-run with SOLYRA_ROLLED_OUT=%q\n' "$sym@$_srm"
         exit 5; }
     fi
     exit 1 )      # absent from main AND the rollout confirmed
   then rc=0; else rc=$?; fi
   test $rc -eq 1 \
     || { echo "solyra: rc=$rc (0=consumed 2=error 3=see above 4=a path survives"
-         echo "        5=gone from main, rollout unconfirmed)"
+         echo "        5=gone from main, that REMOVAL's rollout unconfirmed)"
          return 1; }
 }
 
@@ -1855,6 +1900,17 @@ fully_retired() {   # $1 sym $2 job|none $3 impl|none $4 sched|none [$5 proj] [$
     absent_everywhere "$1" "$3" && retired_everywhere "$2" "$4" "${@:5}"
   fi; }
 
+```
+
+**The fence above is DEFINITIONS ONLY, and that is load-bearing.** Phase 2
+sources it to get `consumed()`, and it used to end with the bare
+`fully_retired` template below — so sourcing ran the gate against the literal
+placeholders, returned 1, and under `set -e` killed the shell before Phase 2's
+own call. Measured: `source` of the combined fence exits 1 on this tree. The
+invocation lives in its own block now, so loading the helpers is side-effect
+free and the acceptance call stays bare where it belongs.
+
+```bash
 # CALL THE ONE YOUR RESOLUTION EARNS, not always this composition. It asserts
 # that the code is gone AND a cloud resource is gone, and half the resolutions
 # this file supports cannot satisfy both:
