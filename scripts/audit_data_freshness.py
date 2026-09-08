@@ -674,7 +674,17 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
             tkr = r["ticker"]
             d = r["d"]
             if tkr in present:
-                present[tkr].add(d if isinstance(d, date) else d.date())
+                # `datetime` (and pandas.Timestamp, which pd.read_sql hands back
+                # for a Postgres DATE column) is itself a `date` subclass, so
+                # `isinstance(d, date)` is True for both and the old
+                # `d if isinstance(d, date) else d.date()` never reached the
+                # `.date()` branch for a Timestamp. A bare `date` then compares
+                # unequal to every Timestamp in the set (Python's date/datetime
+                # equality never mixes the two), so every expected day read back
+                # as "missing" even when the row was there. Check the more
+                # specific `datetime` type first, as `_query_freshness_one`
+                # already does for `last_row_at` a few lines up.
+                present[tkr].add(d.date() if isinstance(d, datetime) else d)
 
     rows: list[FreshnessRow] = []
     for tkr in tickers:
