@@ -6,8 +6,10 @@ from `magnitude_per_bar_predictions` and flags degraded states that
 freshness alone can't catch:
 
 * **Modal-class dominance** — a healthy 4-class softmax should spread
-  probability mass across buckets. When >70% of bars argmax-pick the
-  same bucket for a (ticker, tf) cell, the model is collapsing. Was the
+  probability mass across buckets. When >=90% of bars argmax-pick the
+  same bucket for a (ticker, tf) cell, the model has collapsed (the
+  promotion gate's collapse ceiling; the ~68% TIGHT base rate means a
+  healthy model already sits in the MEDIUM tier). Was the
   symptom of the 2026-06 magnitude cascade (98%+ TIGHT for ~weeks),
   undetected by the existing freshness watchdog because the rows WERE
   being written on schedule — they were just degenerate.
@@ -56,7 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gcp.database import get_engine  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
-    PROMOTION_MAX_MODAL_SHARE,
+    PROMOTION_COLLAPSE_MODAL_SHARE,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -70,11 +72,14 @@ REGION = os.environ.get("GCP_REGION", "us-east1")
 # MEDIUM: modal class >= MODAL_DOMINANCE_MED (50%+ TIGHT bias would
 #         trigger here once we have an ECE baseline to compare to).
 # Imported, not redeclared: the pre-promotion gate in mag_walk_forward uses
-# this same number to refuse to make a collapsed model LATEST. If the two
-# drifted apart, a model could pass promotion and then be flagged HIGH by this
-# auditor every day after (which is exactly what happened with c49qf, when no
-# promotion gate existed at all).
-MODAL_DOMINANCE_HIGH = PROMOTION_MAX_MODAL_SHARE  # >= 70% in one bucket = collapsed
+# this same number as its collapse criterion. If the two drifted apart, a
+# model could pass promotion and then be flagged HIGH by this auditor every
+# day after (which is exactly what happened with c49qf, when no promotion
+# gate existed at all). The gate's second, relative criterion (predicted vs
+# true modal share, mag_config.PROMOTION_MAX_MODAL_EXCESS) needs labels, which
+# live rows do not carry, so it is not mirrored here; a healthy model on a
+# ~68% TIGHT base rate lands in MEDIUM, which is "eyeball", not "page".
+MODAL_DOMINANCE_HIGH = PROMOTION_COLLAPSE_MODAL_SHARE  # >= 90% in one bucket = collapsed
 MODAL_DOMINANCE_MED = 0.55    # >= 55% in one bucket = worth eyeballing
 
 # Lookback for the prediction-distribution sample.
