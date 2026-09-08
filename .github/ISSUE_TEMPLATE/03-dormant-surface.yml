@@ -205,7 +205,10 @@ body:
         Retire: `git grep -q "<name>" -- . ':!docs/' ':!archive/'
         ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
         ':!.claude/commands/' ':!*.md' ':!*.drawio'
-        ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — the same exclusions as the
+        ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — and separately
+        `.claude/agents/` and `.claude/commands/`, which are executable too: an
+        agent delegated to by name, or a command another command routes to, is a
+        live consumer that a prose-shaped exclusion hides — the same exclusions as the
         consumer field above, and repo-wide because
         .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs
         cannot see; the schedule is deleted; the retention/export decision is recorded;

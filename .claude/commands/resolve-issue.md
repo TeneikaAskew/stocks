@@ -501,19 +501,38 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   errored", because `git grep` exits 128 on a bad pathspec and `||` would read
   that as a miss:
 
+  **And `.claude/commands/` is the case that breaks a pure exclusion, so this
+  returns THREE states rather than two.** Those files are executable too —
+  commands route to each other by name. Measured: `debug-workflow` came back
+  **rc=1, "nothing consumes it"**, while `resolve-issue.md:68` and `:98` route
+  to `/debug-workflow`. But they are ALSO where this file cites `TradingAlertSystem`
+  as a worked example, so simply searching them puts a dead symbol permanently
+  at rc=0. Both are true of the same six files and no pathspec separates them.
+
+  So a hit that lands ONLY there is reported as **ambiguous, not absent** — the
+  reader looks at two or three lines and decides, and the assertion never
+  silently calls a live command dead. Phase 4 tests `rc -eq 1`, so 3 fails
+  closed, which is the correct default when the answer is "I cannot tell".
+
   ```bash
-  consumed() {   # 0 = something consumes it, 1 = nothing does, 2 = could not tell
-    local a b
+  consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/commands
+    local a b c
     git grep -q "$1" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
       ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
       ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; a=$?
     git grep -q "$1" -- .claude/agents; b=$?
-    case "$a$b" in
-      00|01|10) return 0 ;;
-      11)       return 1 ;;
-      *) echo "git grep error: stocks=$a agents=$b — asserting nothing"; return 2 ;;
+    git grep -q "$1" -- .claude/commands; c=$?
+    case "$a$b$c" in
+      *2*) echo "git grep error: code=$a agents=$b commands=$c — asserting nothing"
+           return 2 ;;
     esac
-  }
+    case "$a$b" in
+      00|01|10) return 0 ;;                      # real code or an agent uses it
+    esac
+    test "$c" -eq 0 || return 1                  # nothing, anywhere
+    echo "only .claude/commands/ mentions it — a route, or this file's own example?"
+    git grep -n "$1" -- .claude/commands
+    return 3; }
   ```
 
   **Generated artifacts come out for the same reason, and this is where the list
@@ -680,10 +699,14 @@ git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
 
 absent_everywhere() {   # uses consumed() above — both scopes, both repos
   local rc
+  # Only rc=1 is "absent". 0 is consumed, 2 is "grep broke", 3 is "commands
+  # mention it — go read those lines". All three fail, which is the right
+  # default: this assertion may only pass when it actually looked and found
+  # nothing.
   consumed "<symbol>"; rc=$?
-  test $rc -eq 1 || { echo "stocks: rc=$rc — still referenced here"; return 1; }
+  test $rc -eq 1 || { echo "stocks: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
   ( cd "$SOLYRA" && consumed "<symbol>" ); rc=$?
-  test $rc -eq 1 || { echo "solyra: rc=$rc — still referenced there"; return 1; }
+  test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
 }
 
 # TWO names, not one. A Cloud Scheduler trigger and the Cloud Run Job it fires
