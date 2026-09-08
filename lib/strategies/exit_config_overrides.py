@@ -65,23 +65,43 @@ def _is_usable_int(v) -> bool:
     return math.isfinite(f) and f > 0
 
 
+class OverridesUnavailable(RuntimeError):
+    """The override row could not be READ.
+
+    Distinct from "there is no usable row", which is ``None`` and is a
+    legitimate answer meaning Tier-B. Collapsing the two is what made the
+    kill switch fail OPEN: this helper caught every exception from the
+    Cloud SQL read and returned ``None``, so ``get_disabled_directions``
+    saw "no row", answered "nothing is disabled", and the fail-closed
+    handler one level up never ran. The swallow underneath defeated the
+    strict caller above it — CLAUDE.md 3.7.1, and the C-04 incident shape
+    (Codex on #1022).
+
+    Callers that may legitimately degrade use
+    ``_latest_overrides_or_default``, which turns this back into ``None``
+    at their own call site. Kill-switch readers let it propagate.
+    """
+
+
 @lru_cache(maxsize=64)
 def _latest_overrides(ticker: str) -> Optional[dict]:
     """Fetch the most recent exit_config_overrides row for `ticker`.
 
-    Returns None when:
+    Returns None — meaning "no usable override, use Tier-B" — when:
       * Cloud SQL is not configured
-      * The exit_config_overrides table doesn't exist yet (e.g. PR-E1
-        migration hasn't been applied — defends deploy ordering)
-      * Engine creation fails (no GCP creds, e.g. unit-test environment
-        that mocks `is_cloud_sql_configured` without setting up creds)
       * No row exists for the ticker
       * The latest row is older than _STALE_DAYS
 
-    Any failure path falls back to Tier-B (`ExitConfig` defaults), so
-    a missing table or transient DB error degrades gracefully instead
-    of crashing every fire_alert. Cached per-process via lru_cache;
-    force a refresh with `_latest_overrides.cache_clear()`.
+    RAISES ``OverridesUnavailable`` when the row could not be read at all:
+    the table is missing, the engine cannot be created, the query fails.
+    Those are not "nothing is disabled"; they are "I do not know", and the
+    safe reading of an unknown risk control is CLOSED.
+
+    Cached per-process via lru_cache; force a refresh with
+    ``_latest_overrides.cache_clear()``. ``lru_cache`` does not cache
+    exceptions, which matters here: the swallowed ``None`` WAS cached, so
+    one transient failure disabled the kill switch for the remaining ~390
+    bars of the session. A raise is retried on the next bar.
     """
     try:
         from gcp.database import get_engine, is_cloud_sql_configured
@@ -111,13 +131,12 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
         df = pd.read_sql(sql, get_engine(), params={"ticker": ticker.upper()})
     except Exception as e:
         # Table missing (UndefinedTable), no creds, network blip, etc.
-        # All resolve to Tier-B; log once per process per ticker so the
-        # operator notices but the live monitor keeps firing.
-        log.warning(
-            "exit_config_overrides: query failed for %s (%s) — Tier-B fallback",
-            ticker, type(e).__name__,
-        )
-        return None
+        # The caller decides: the exit-target getters degrade to Tier-B via
+        # _latest_overrides_or_default, the kill-switch readers fail closed.
+        raise OverridesUnavailable(
+            f"exit_config_overrides: query failed for {ticker} "
+            f"({type(e).__name__}: {e})"
+        ) from e
     if df.empty:
         log.info("exit_config_overrides: no row for %s — Tier-B fallback", ticker)
         return None
@@ -133,6 +152,22 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
     return row
 
 
+def _latest_overrides_or_default(ticker: str) -> Optional[dict]:
+    """The override row, or None when it cannot be read.
+
+    The exit-target getters below are deliberately lenient: Tier-B defaults
+    are the documented answer when no usable override exists, and a read
+    failure must not take fire_alert down with it. That leniency now lives
+    HERE, at the call sites that want it, instead of inside the fetch where
+    it also silenced the kill-switch readers (Codex on #1022).
+    """
+    try:
+        return _latest_overrides(ticker)
+    except OverridesUnavailable as exc:
+        log.warning("%s — Tier-B fallback for this knob", exc)
+        return None
+
+
 # Single instance of the Tier-B defaults (cheap; ExitConfig is a small
 # dataclass). Constructed lazily so import-time order doesn't matter.
 def _defaults() -> ExitConfig:
@@ -141,42 +176,42 @@ def _defaults() -> ExitConfig:
 
 def get_call_target(ticker: str) -> float:
     """Resolve the CALL target return for `ticker`. Tier A → Tier B fallback."""
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if row and _is_usable_number(row.get("call_target")):
         return float(row["call_target"])
     return _defaults().call_target
 
 
 def get_put_target(ticker: str) -> float:
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if row and _is_usable_number(row.get("put_target")):
         return float(row["put_target"])
     return _defaults().put_target
 
 
 def get_call_stop(ticker: str) -> float:
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if row and _is_usable_number(row.get("call_stop")):
         return float(row["call_stop"])
     return _defaults().call_stop
 
 
 def get_put_stop(ticker: str) -> float:
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if row and _is_usable_number(row.get("put_stop")):
         return float(row["put_stop"])
     return _defaults().put_stop
 
 
 def get_call_time_stop(ticker: str) -> int:
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if row and _is_usable_int(row.get("call_time_stop")):
         return int(float(row["call_time_stop"]))
     return _defaults().call_time_stop
 
 
 def get_put_time_stop(ticker: str) -> int:
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if row and _is_usable_int(row.get("put_time_stop")):
         return int(float(row["put_time_stop"]))
     return _defaults().put_time_stop
@@ -190,10 +225,13 @@ def get_consecutive_periods(ticker: str) -> int:
     Unlike the target/stop knobs (Tier-B = ExitConfig), this one's
     universal default lives in SignalConfig.
     """
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if row and _is_usable_int(row.get("consecutive_periods")):
         return int(float(row["consecutive_periods"]))
     return SignalConfig().consecutive_periods
+
+
+_DIRECTIONS = frozenset({"CALL", "PUT"})
 
 
 def get_disabled_directions(ticker: str) -> set[str]:
@@ -201,8 +239,12 @@ def get_disabled_directions(ticker: str) -> set[str]:
 
     Reads `exit_config_overrides.disabled_directions` (JSONB list, e.g.
     `["PUT"]` or `["CALL", "PUT"]`) and normalises to a set of
-    upper-case strings. Empty set on miss / NULL / parse failure —
-    safe default lets the caller fire normally.
+    upper-case strings. Empty set on a missing row or NULL (nothing is
+    disabled). A value that cannot be parsed RAISES ValueError: it is
+    operator config we own, and reading it as "nothing is disabled" is
+    how the C-04 incident fired a side that had been switched off
+    (docs/audits/FALLBACK_AUDIT_2026-05-13.md P1-#3). Callers fail
+    closed on the exception.
 
     Mirrors the resolution logic inlined inside
     `lib.signals.evaluate_signal` so any new fire path (#369
@@ -214,17 +256,42 @@ def get_disabled_directions(ticker: str) -> set[str]:
     row = _latest_overrides(ticker)
     if not row:
         return set()
-    dd = row.get("disabled_directions") or []
-    if isinstance(dd, str):
-        try:
-            import json as _json
-            dd = _json.loads(dd)
-        except Exception:
-            return set()
-    try:
-        return {str(d).upper() for d in dd}
-    except Exception:
+    # Only NULL and an empty list mean "nothing is disabled". `or []` also
+    # swallowed `{}`, `0`, `""` and `False` — malformed payloads that then
+    # read as an empty set and failed open before the type check below
+    # could see them (Codex on #1022).
+    dd = row.get("disabled_directions")
+    if dd is None:
         return set()
+    if isinstance(dd, str):
+        import json as _json
+        try:
+            dd = _json.loads(dd)
+        except ValueError as exc:
+            raise ValueError(
+                f"{ticker}: exit_config_overrides.disabled_directions is not valid JSON: {dd!r}"
+            ) from exc
+    # An actual list, not merely something iterable: `hasattr(__iter__)` is
+    # true for a dict, so `{"PUT": false}` iterated to {"PUT"} — disabling
+    # the side that object switched OFF — and `{}` became an empty set,
+    # failing open without reaching the callers' suppression (Codex on
+    # #1022).
+    if not isinstance(dd, (list, tuple)):
+        raise ValueError(
+            f"{ticker}: exit_config_overrides.disabled_directions must be a list, got {dd!r}"
+        )
+    out = {str(d).upper() for d in dd}
+    # A typo like ["PUTS"] would disable nothing at all. The set of sides
+    # is closed and this is operator config we own, so an unknown name is
+    # INTERNAL and fails closed at the caller.
+    unknown = out - _DIRECTIONS
+    if unknown:
+        raise ValueError(
+            f"{ticker}: exit_config_overrides.disabled_directions names "
+            f"{sorted(unknown)}, which are not directions; expected any of "
+            f"{sorted(_DIRECTIONS)}"
+        )
+    return out
 
 
 def get_blue_sky_atr_offset(ticker: str) -> Optional[float]:
@@ -238,7 +305,7 @@ def get_blue_sky_atr_offset(ticker: str) -> Optional[float]:
 
     Audit 2026-05-08 G.P1.4 follow-up: SPY/IWM seeded at 0.15, QQQ at 0.20.
     """
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if row and _is_usable_number(row.get("blue_sky_atr_offset")):
         return float(row["blue_sky_atr_offset"])
     return None
@@ -251,7 +318,7 @@ def get_resolution_tier(ticker: str, knob: str) -> str:
     'put_stop', 'call_time_stop', 'put_time_stop', 'blue_sky_atr_offset'.
     Mirrors the convention in calibration.get_resolution_tier.
     """
-    row = _latest_overrides(ticker)
+    row = _latest_overrides_or_default(ticker)
     if not row:
         return "B"
     val = row.get(knob)

@@ -685,7 +685,7 @@ finding is fixed, it says how; where it is not, it says what still stands.
 | C-01 | `gcp/database.py` `query_to_dataframe()` swallows every exception | **PARTIAL.** `query_to_dataframe_strict()` now exists as the raising sibling and the swallowing one carries a docstring warning naming Rule 3.7. But it still swallows, and the callers did not move: **119 call sites use the swallowing helper, 14 use strict.** The trap is documented, not removed. |
 | C-02 | `lib/data_loader.py` same swallow one layer up | **PARTIAL.** Now `log.exception` with a message telling callers that empty means "errored, not zero rows". Still returns an empty DataFrame that no caller checks. |
 | C-03 | `lib/options_greeks.py` hardcoded risk-free rate on FRED failure | **FIXED on this branch.** See §12.2. |
-| C-04 | `lib/signals.py` disabled-conditions resolver swallows | **OPEN.** Marked FIXED here on the strength of PRs #358, #372, #329, and re-checked 2026-09-07 (Codex, PR #994): **both handlers the finding describes are still in the code.** `lib/signals.py:254` turns malformed `disabled_conditions` JSON into `dc = []`, which re-enables a condition an operator disabled for risk; `lib/signals.py:265` swallows any resolver failure with `pass`. Both now LOG rather than degrading in total silence (the old comment claimed "the resolver itself logs the cause", which only holds when the resolver was actually reached). They still degrade: what a resolver failure should do to a live trading signal is a product decision, not a refactor, so it is not being made inside a docs-accuracy fix. Reproduce with `python scripts/audit_silent_fallbacks.py --json`. |
+| C-04 | `lib/signals.py` disabled-conditions resolver swallows | **CLOSED on #1022 (2026-09-07), the safe way round: see §13.1.** Was **OPEN** at this re-verification: Marked FIXED here on the strength of PRs #358, #372, #329, and re-checked 2026-09-07 (Codex, PR #994): **both handlers the finding describes are still in the code.** `lib/signals.py:254` turns malformed `disabled_conditions` JSON into `dc = []`, which re-enables a condition an operator disabled for risk; `lib/signals.py:265` swallows any resolver failure with `pass`. Both now LOG rather than degrading in total silence (the old comment claimed "the resolver itself logs the cause", which only holds when the resolver was actually reached). They still degrade: what a resolver failure should do to a live trading signal is a product decision, not a refactor, so it is not being made inside a docs-accuracy fix. Reproduce with `python scripts/audit_silent_fallbacks.py --json`. |
 | C-05 | six `continue-on-error: true` in fetcher workflows | **FIXED.** `grep -rn "continue-on-error" .github/workflows/` returns nothing. |
 | C-06 | `gcp/signal_monitor.py` `refresh_level_map` swallow | **FIXED** — PR #339. |
 
@@ -845,7 +845,9 @@ skip it; the value is the diff between runs.
 2. `platform/api/routers/signals.py:187` serves the legacy GCS parquet path
    when the Cloud SQL query raises, at `log.warning`, and the response's
    `source` field is the only thing that distinguishes it — a field no
-   consumer checks. Verified on `main` at 2026-09-06.
+   consumer checks. Verified on `main` at 2026-09-06. **CLOSED on #1022**
+   (§13.1): a failed query is a 503, and the router's two queries go
+   through the strict helper, so a failure reaches that branch at all.
 
    `platform/api/main.py:503` (`get_available_dates`) is the same shape and is
    **fixed on #992**, which turns it into a 503 rather than a silent downgrade.
@@ -859,6 +861,8 @@ skip it; the value is the diff between runs.
 3. `lib/strategies/exit_config_overrides.py` `get_disabled_directions()`
    returns `set()` on failure — an empty disable-list reads as "nothing is
    disabled", which is how C-04's incident happened in `lib/signals.py`.
+   **CLOSED on #1022** (§13.1): raises on malformed config; both callers
+   fail closed.
 
 **P2 — a swallowing helper defeats a strict caller**
 
@@ -869,7 +873,7 @@ skip it; the value is the diff between runs.
    storage error, which is what made a 503 one level up unreachable on #992.
 6. `gcp/database.py` `table_exists()` returns `False` on any error, so a
    connection failure reads as "the table is absent" and callers create or
-   skip on that basis.
+   skip on that basis. **CLOSED on #1022** (§13.1): re-raises.
 
 **P3 — ingestion swallows; failure surfaces later as missing data**
 
@@ -892,6 +896,82 @@ skip it; the value is the diff between runs.
 The right sequence is caller-by-caller, and each move needs its own answer to
 "can this caller tell empty from failed?" — a question this document can ask
 but not answer in bulk.
+
+---
+
+## §13 Re-inventory — 2026-09-07 (PR #1022)
+
+Prompted by the owner's instruction on #1022 to "review findings and fixes
+to understand what's truly outstanding, fix those issues, no shortcuts and
+no fallbacks, ensure the repo doesn't have any as well." Two passes: the
+repo's `fallback-guard` agent over the PR's changed files (0 CRITICAL new,
+4 warnings, all fixed on the PR), and a repo-wide inventory of `lib/`,
+`gcp/`, `platform/api/` and `scripts/` against §7's five patterns, run with
+`scripts/audit_silent_fallbacks.py` plus targeted greps and read in context
+before being counted. `platform/src` is solyra's and excluded, as in §12.3.
+
+### 13.1 Closed on #1022
+
+Each closed with a failing test first; the commit body names the test.
+
+| Finding | What changed |
+|---|---|
+| **C-04** `lib/signals.py` resolver swallow | A resolver failure, or malformed `disabled_conditions` JSON, now returns **no signal for that bar** with the traceback at ERROR (fail closed). The product decision §12.1 deferred is taken the safe way round: a kill switch that cannot be read is unknown, and the safe reading of an unknown risk control is closed. A transient blip costs one 60 s evaluation, not a fire on a disabled side. **The first attempt at this on #1022 was itself incomplete, for the same reason the 2026-05-09 incident happened** (Codex, 2026-09-08): the handler was unreachable for the failure it was written for, because `exit_config_overrides._latest_overrides` caught every exception from the Cloud SQL read and returned `None`, which `get_disabled_directions` read as "no row" and answered `set()` — nothing disabled. Driving the real failure fired a PUT with score 5 while the switch was unreadable. The swallow also sat under `lru_cache`, so one transient failure disabled the switch for the rest of the process. Closed by splitting "no usable row" (`None`, Tier-B) from "could not read" (`OverridesUnavailable`, raised); the exit-target getters keep their leniency at their own call sites via `_latest_overrides_or_default`. This is §3.7.1's "a swallowing helper defeats a strict caller" — check the helper before writing the error path. |
+| **P1-#3** `get_disabled_directions()` | Raises `ValueError` on unparseable or non-list config (operator config we own is INTERNAL). The monitor's stand-alone momentum path suppresses the fire, counts it (`kill_switch_failure_count`, on `SESSION_KEEP`) and logs the traceback; it used to "degrade open". |
+| **P1-#2** `platform/api/routers/signals.py` | `_query_signals_sql` and the analog matcher read through `query_to_dataframe_strict` via `_query_or_503`; a failed query is a 503, never the legacy parquet. The parquet path serves only when Cloud SQL is not configured. |
+| **P2-#6** `gcp/database.table_exists()` | Re-raises. `scripts/audit_data_freshness.py` no longer reads an unreachable database as an absent `job_runs`. |
+| §12.3 journal dedupe | `platform/api/routers/journal.py` `_journal_query` forwards to the strict variant, so every `try: ... except: 503` in the router is live; a failed `_existing_entry_keys` is a 503 for every owner (it was `set()` for the local owner, i.e. re-import everything). |
+| `/api/analytics/summary` | Read through the strict variant; a failed query is a 503, not a flat all-zero summary with HTTP 200 (measured by the trade-reader review: the run_kind column missing rendered as zeros). |
+| `signal_alerts` readers | Every reader and updater carries `run_kind = 'live'`: the EOD resolver (its two selects and both UPDATEs), the exit watcher's UPDATEs, `gcp/signal_replay.py`, `gcp/signal_quality_alarm.py`, `gcp/indicator_correlation_job.py`, `lib/agents/summarizers.py`, the journal examples join, `scripts/analysis/per_ticker_calibration.py`, `per_factor_walkforward.py`, `verify_brief_bias.py`, and the freshness watchdog's check. Measured in production 2026-09-07: 23 replay-tagged rows sat in the table and not one reader excluded them; the resolver would have written a replay exit onto the live trades row. `tests/meta/test_production_writers.py::test_every_signal_alerts_reader_filters_on_run_kind` walks every SQL string literal in the four roots. |
+| `gcp/trade_logger.py` | A successful empty Cloud SQL answer is the answer (Cloud SQL is the system of record); only a FAILED query reaches the Parquet fallback, which stays marked `AUDIT-2026-05-13`. `log_trade` requires `run_kind`. The empty all-trades frame keeps the union of the files' columns. |
+| `gcp/migrate_to_gcp.py` `migrate_trades` | Pre-stamp rows (null `run_kind`, or a file without the column) are recorded as live with the count logged, instead of the NOT NULL rejection being swallowed per file; a failed file raises. |
+| `gcp/signal_monitor.py` persist path | `rsi`, `rvol` and `price_at_signal` are NULL when the bar has none (the gate refused the 0 default twenty lines above; the persisted row did not); a bar with no price raises; the two write failures increment counters and log the traceback. `_check_exits` reads a missing RSI as None. |
+| `gcp/backfill_ticker.py`, `gcp/fetchers/fetch_market_data.py` | FTFC is never written as a neutral `0.0` / `'mixed'` where there was no reading. Unparseable vendor timestamps are counted and logged, not silently dropped. |
+| `lib/data_loader.build_multi_timeframe` | Re-raises; `lib/strat.py` relied on the unknown-key `ValueError` this loop was swallowing. |
+| `scripts/backfill_and_replay.py` | A failed insight or Discord job stops the run (the verdict was computed and discarded). |
+| `gcp/deploy.sh` | `_secret` fails loud (it echoed `''`, which `--set-env-vars` would have written onto a live job); the optional-secret probe distinguishes NOT_FOUND from a read failure. |
+| `scripts/replay_signal_monitor.py` `--persist` | A fire dropped by the unique key (a live fire at the same minute) is logged and counted; a failed write raises. |
+
+Three sites the guard flagged were left as designed, each stated in the
+code: `git fetch --deepen` warning-and-continue in the trigger builds (the
+applier refuses an unorderable tie downstream, so the degrade cannot apply
+out of order); the Parquet null-as-live rule (a fact about the files' single
+writer, pinned by a tripwire test that fails on a second writer or caller);
+and `load_trades`' empty frame when Cloud SQL is not configured (marked).
+
+### 13.2 What remains, by module (not on #1022)
+
+Counts are from the 2026-09-07 inventory; every line was read in context.
+Excluded as not violations: ML feature encoding `fillna(0)` in
+`gcp/research/**` and `scripts/research/**` (encoded model features, not raw
+fields feeding a live decision), and the `(x or 0) or None` idiom (always a
+real value or None).
+
+| Module | Sites | Shape |
+|---|---|---|
+| `lib/agents/` (`summarizers.py`, `ranker/signals.py`, `orchestrator.py`, `trade_planner.py`) | 16 | `fillna(0)` on `volume` / `open_interest` / `implied_volatility` feeding a volume-weighted IV and a max-pain proxy; `or 0` on `ftfc_score`, `relevance_score`, `sentiment_score`, `close`, `atr`; `price_vs_ema20 or 0` classifies a missing value as "ranging". Never covered by the 2026-05-13 pass. |
+| `gcp/premarket_brief.py` | 13 | `or 0` / `.get(k, 0)` on `open_interest`, `options_volume`, `playability_*`, `Consecutive_Up/Down`. |
+| `gcp/brief_explanations.py` | 8 | `.get(k, 0)` on price, RSI, BB, stochK, FTFC when building the brief's TEXT: a missing RSI prints "RSI 0" in the report a human reads. Not a display-layer em-dash boundary, so no exemption. |
+| `gcp/signal_monitor.py` (remaining) | 5 | `.get('Close', latest.get('Last', 0))` variants outside the persist path; `latest.get(...)` price reads in the level-break and ORB paths. |
+| `lib/strategies/mean_reversion.py`, `momentum.py`, `timeframe.py`, `lib/signals.py`, `lib/trading_analysis.py` | 10 | `.get('Consecutive_Up', 0)` streak reads (same shape as C-09's `Broke_Prev_Day_*`); `signal_strength or 0` chooses a hold tier. |
+| `lib/gamma.py` | 9 | C-15's `open_interest / volume or 0.0` now at nine sites across functions; one fix, not nine. |
+| `lib/indicators.py`, `lib/options_greeks.py`, `lib/trading_analysis.py` | 7 | H-01/H-02 `rsi.fillna(50)`, H-26 `pre_volume.fillna(0)`, C-13/C-14 zero-filled bid/ask into a mid, H-27. Catalogued since May. |
+| `lib/strat.py` `calculate_ftfc` | 1 | Returns `0.0, 'mixed'` with no inputs (§7.5 shape); every daily writer consumes it, so the fix is a `None` return and a consumer sweep. |
+| `platform/api/` | 8 | `dashboard.py:288` `price or 0.0` (C-33), `catalysts.py` scores (H-16), `main.py` / `admin.py` / `dashboard.py` swallow-to-empty handlers, `journal.py:78` and `analytics.py:34` import guards (the two on #1022's files are removed). |
+| `platform/api/gcs_reader.py` `list_matching_blobs` | 1 | P2-#5, unchanged. |
+| `query_to_dataframe` callers (C-01) | ~110 | The swallowing helper; #1022 moved the journal, analytics and signals routers to strict. Highest-value remainder: the rest of `platform/api/`, then the Cloud Run jobs. |
+| `scripts/` | ~30 | `fetch_earnings_calendar.py` (6 item-dropped handlers), `fetch_alphavantage_options.py`, `backfill_news_sentiment.py`, `calibrate_iwm_strat.py`, `signal_quality_report.py`, `backtest_playability.py`, `analyze_market_data_enhanced.py`, `per_ticker_calibration.py`; offline tooling whose output is inspected. |
+| `gcp/fetchers/` | 5 | Item-dropped `continue` in `fetch_economic_events.py`, `fetch_earnings_history.py`, `fetch_insider_transactions.py`, `fetch_sec_filings.py:391` (P3-#7 shape: rows lost quietly). |
+
+About 106 sites before dedup; none carries the `AUDIT-2026-05-13` marker
+except the three in `gcp/trade_logger.py`. The order that follows §12.4's
+priority: `lib/agents/` and `gcp/brief_explanations.py` first (a fabricated
+number reaches the brief a human reads and the agents' ranking), then
+`gcp/premarket_brief.py` and `lib/gamma.py` (one fix each, many sites), then
+`calculate_ftfc`'s `None` return with its consumer sweep, then the C-01
+callers under `platform/api/`, then the fetchers with the freshness work,
+then `scripts/`. Each is a live-math change with its own consumers and belongs
+in its own PR with its own replay evidence (Rule 3.5), not on #1022.
 
 ---
 

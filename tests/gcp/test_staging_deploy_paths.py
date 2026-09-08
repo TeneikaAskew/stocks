@@ -81,11 +81,20 @@ def test_both_paths_run_the_interlock_inside_their_build():
     first step of each config means the build is registered and tagged when
     the scan happens.
     """
-    for cfg in (TRIGGER, PLATFORM):
-        first = _steps(cfg)[0]
-        assert "assert_no_concurrent_staging_deploy.sh" in _all_args(first), (
-            f"{cfg.name}: the interlock must be the FIRST build step, got "
-            f"{first.get('id', '<unnamed>')!r}")
+    # The operator path refuses; the trigger WAITS for earlier builds of
+    # every deploy tag (internal review of #1022, schema-apply round: the
+    # refusing interlock nested inside the migrate step's wait made the
+    # second of two close pushes die at preflight while its schema build
+    # still applied). Both run inside their submitted build.
+    first = _steps(PLATFORM)[0]
+    assert "assert_no_concurrent_staging_deploy.sh" in _all_args(first), (
+        f"{PLATFORM.name}: the interlock must be the FIRST build step, got "
+        f"{first.get('id', '<unnamed>')!r}")
+    first = _steps(TRIGGER)[0]
+    assert "wait_for_earlier_schema_builds.sh" in _all_args(first), (
+        f"{TRIGGER.name}: the waiter must be the FIRST build step, got "
+        f"{first.get('id', '<unnamed>')!r}")
+    assert "solyra-api-image-build" in _all_args(first), "the trigger must wait for operator builds too"
 
 
 def test_the_pre_submit_check_is_not_presented_as_the_interlock():
@@ -349,6 +358,29 @@ def test_the_staging_trigger_filter_gap_is_recorded():
     assert "gcloud builds triggers update github deploy-solyra-api-staging" in header
 
 
+def test_the_trigger_applies_this_revisions_schema_before_deploying():
+    """Codex on #1022: the schema trigger and this one fire on the same push
+    and cannot see each other, so an API revision reading a new column could
+    serve against the old schema. The staging build now points
+    apply-schema-migrations at the image it just built (which carries this
+    revision's gcp/schema.sql) and executes it BEFORE gcloud run deploy."""
+    steps = _steps(TRIGGER)
+    ids = [s["id"] for s in steps]
+    assert ids.index("migrate") < ids.index("deploy"), ids
+    migrate = next(s for s in steps if s["id"] == "migrate")
+    deploy = next(s for s in steps if s["id"] == "deploy")
+    pin_job = next(s for s in steps if s["id"] == "pin-job")
+    assert deploy["waitFor"] == ["pin-job"] and pin_job["waitFor"] == ["migrate"], \
+        "the deploy must wait for the schema apply (through the job pin)"
+    args = _all_args(migrate)
+    assert "wait_for_earlier_schema_builds.sh" in args, "job mutations are serialized across triggers"
+    assert "fully_qualified_digest" in args
+    update = args.index("gcloud run jobs update apply-schema-migrations")
+    execute = args.index("gcloud run jobs execute apply-schema-migrations")
+    assert update < execute and "--wait" in args[execute:]
+    assert '--image="$${DIGEST}"' in args, "the job must run this revision's image"
+
+
 def test_both_routine_rollouts_carry_the_movement_flag_in_merge_mode():
     """The routine cloudbuild paths deploy the image and leave the service env
     alone, so a repo-owned product flag would never reach the service unless
@@ -439,3 +471,177 @@ def test_pin_tag_surfaces_gclouds_own_error():
             f"stderr of the tag add is discarded again:\n{ln}")
     assert re.search(r'could not tag .*\$\{err', body), (
         "the failure line does not carry gcloud's error text")
+
+
+# ── bootstrap: the secret probe must not gate `setup` (#1022) ─────────────
+
+def _run_deploy_target(tmp_path, target, secret_probe_stderr):
+    """Run `./gcp/deploy.sh TARGET` with a stub gcloud that answers the
+    Secret Manager probe with ``secret_probe_stderr`` and refuses everything
+    else, recording every invocation."""
+    import os
+    import subprocess
+
+    calls = tmp_path / "gcloud-calls.log"
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "gcloud").write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> '{calls}'\n"
+        'if [ "$1" = "secrets" ]; then\n'
+        f"  echo {secret_probe_stderr!r} >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        "echo 'stub gcloud: refusing' >&2\n"
+        "exit 1\n"
+    )
+    (stub / "gcloud").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}",
+           "PROJECT_ID": "test-project"}
+    proc = subprocess.run(
+        ["bash", str(REPO / "gcp/deploy.sh"), target],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=120,
+    )
+    recorded = calls.read_text().splitlines() if calls.exists() else []
+    return proc, recorded
+
+
+# The message gcloud prints when the API itself is off, which is the state
+# `setup` exists to fix. It carries no NOT_FOUND, so the probe cannot read
+# it as "secret absent" and correctly refuses to guess.
+_API_DISABLED = ("ERROR: (gcloud.secrets.versions.access) FAILED_PRECONDITION: "
+                 "Secret Manager API has not been used in project test-project "
+                 "before or it is disabled.")
+
+
+def test_setup_reaches_the_api_enabling_step_on_a_fresh_project(tmp_path):
+    """`./gcp/deploy.sh setup` is the command that ENABLES Secret Manager
+    (gcp/setup_cloud_sql.sh:34), so it cannot require Secret Manager to be
+    readable first. Resolving the Cloud Run secret flag for every target
+    made the bootstrap unreachable on a fresh project: the probe's failure
+    exits under `set -e` before the dispatcher runs (Codex on #1022)."""
+    proc, recorded = _run_deploy_target(tmp_path, "setup", _API_DISABLED)
+    assert not any("secrets versions access" in c for c in recorded), (
+        "setup probed Secret Manager before enabling it: %s" % recorded[:4])
+    assert any("config set project" in c or "services enable" in c
+               for c in recorded), (
+        "setup never reached its own first step; stderr=%s" % proc.stderr[-400:])
+
+
+def test_a_deploying_target_still_aborts_when_the_probe_is_unreadable(tmp_path):
+    """The other half of the guard stays: a target that deploys a job which
+    consumes the flag resolves it up front, so an unreadable secret aborts
+    before any `gcloud run jobs` mutation."""
+    proc, recorded = _run_deploy_target(tmp_path, "monitor", _API_DISABLED)
+    assert proc.returncode != 0
+    assert any("secrets versions access" in c for c in recorded), recorded
+    assert not any("run jobs" in c for c in recorded), (
+        "a job was mutated after the secret set could not be read: %s" % recorded)
+
+
+def test_a_failed_env_secret_aborts_before_any_job_is_mutated(tmp_path):
+    """`_secret` fails loud, but `_env_string` did not carry that failure to
+    its caller (Codex on #1022).
+
+    `_env_string` is only ever invoked as `$(_env_string)` inside a gcloud
+    argument, and a command substitution in that position does not abort the
+    script. Reproduced with a stub gcloud: both reads failed, and gcloud was
+    still called with
+
+        --set-env-vars CLOUD_SQL_CONNECTION_NAME=,DB_USER=,DB_NAME=trading
+
+    `--set-env-vars` REPLACES the job's set, so that writes an empty
+    connection name onto a live job and every later run of it exits 2 as
+    "not configured" — the exact outcome the fail-loud change was made to
+    prevent."""
+    import os
+    import subprocess
+
+    calls = tmp_path / "gcloud-calls.log"
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    # Succeeds for the four optional probes, fails for the connection name.
+    (stub / "gcloud").write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> '{calls}'\n"
+        'if [ "$1" = "secrets" ]; then\n'
+        '  case "$*" in\n'
+        '    *cloud-sql-connection-name*|*db-trading-user*)\n'
+        '      echo "ERROR: (gcloud.secrets.versions.access) PERMISSION_DENIED" >&2\n'
+        '      exit 1 ;;\n'
+        '    *) echo "stub-secret-value" ; exit 0 ;;\n'
+        "  esac\n"
+        "fi\n"
+        "echo 'stub gcloud: refusing' >&2\n"
+        "exit 1\n"
+    )
+    (stub / "gcloud").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}",
+           "PROJECT_ID": "test-project"}
+    proc = subprocess.run(
+        # gamma-levels deploys straight from the research image, so it
+        # reaches _env_string without an image build in front of it.
+        ["bash", str(REPO / "gcp/deploy.sh"), "gamma-levels"],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=120,
+    )
+    recorded = calls.read_text().splitlines() if calls.exists() else []
+    assert proc.returncode != 0, "an unreadable required secret must abort the deploy"
+    mutations = [c for c in recorded
+                 if "run jobs create" in c or "run jobs update" in c
+                 or "run deploy" in c or "run services update" in c]
+    assert mutations == [], (
+        "a job was mutated after a required secret could not be read: %s" % mutations)
+    assert not any("CLOUD_SQL_CONNECTION_NAME=," in c for c in recorded), (
+        "an empty connection name reached a gcloud argument")
+
+
+def test_the_env_string_is_resolved_once_up_front():
+    """Resolving it per call site put 104 Secret Manager reads in every
+    `all)` run and put the failure inside a substitution that could not
+    abort. It is resolved once, next to the secret flag, so both fail
+    before the first mutation."""
+    import re
+
+    src = (REPO / "gcp/deploy.sh").read_text()
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    assert re.search(r'^\s*ENV_STRING="\$\(_env_string\)"', code, re.M), \
+        "the env string must be resolved once at startup"
+    inline = [l for l in code.splitlines() if "$(_env_string)" in l
+              and not l.strip().startswith("ENV_STRING=")]
+    assert inline == [], (
+        "these call sites still resolve the env string inline, where a "
+        "failed secret read cannot abort the deploy: %s" % inline[:5])
+
+
+def test_a_gcloud_warning_does_not_end_up_inside_a_secret(tmp_path):
+    """`_secret` captured with `2>&1`, so a nonfatal gcloud warning on
+    stderr was folded into the value on SUCCESS and deployed as part of
+    CLOUD_SQL_CONNECTION_NAME or DB_USER. Because --set-env-vars replaces
+    a job's set, one harmless warning would break every redeployed job
+    (Codex on #1022)."""
+    import os
+    import subprocess
+
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "gcloud").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "secrets" ]; then\n'
+        '  echo "WARNING: Your active project does not match the quota project." >&2\n'
+        '  echo "the-real-secret-value"\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    (stub / "gcloud").chmod(0o755)
+    script = (
+        f'PATH="{stub}:$PATH"\n'
+        "set -euo pipefail\n"
+        f'source <(sed -n "/^_secret() {{/,/^}}/p" {REPO}/gcp/deploy.sh)\n'
+        'v=$(_secret some-secret)\n'
+        'printf "[%s]" "$v"\n'
+    )
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          env={**os.environ}, timeout=60)
+    assert proc.stdout == "[the-real-secret-value]", (
+        "the warning leaked into the value: %r" % proc.stdout)

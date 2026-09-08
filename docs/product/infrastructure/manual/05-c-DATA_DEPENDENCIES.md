@@ -400,7 +400,6 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 ### `signal_alerts`
 - [`gcp/signal_monitor.py`](../../../../gcp/signal_monitor.py) — line [1598](../../../../gcp/signal_monitor.py#L1598), [1599](../../../../gcp/signal_monitor.py#L1599), [1601](../../../../gcp/signal_monitor.py#L1601), [2204](../../../../gcp/signal_monitor.py#L2204)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../../gcp/signal_monitor_eod_resolver.py) — line [400](../../../../gcp/signal_monitor_eod_resolver.py#L400)
-- [`scripts/backfill_signals.py`](../../../../scripts/backfill_signals.py) — line [227](../../../../scripts/backfill_signals.py#L227), [228](../../../../scripts/backfill_signals.py#L228)
 - [`scripts/replay_signal_monitor.py`](../../../../scripts/replay_signal_monitor.py) — line [283](../../../../scripts/replay_signal_monitor.py#L283)
 
 ### `signal_metrics`
@@ -430,7 +429,6 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/signal_monitor_eod_resolver.py`](../../../../gcp/signal_monitor_eod_resolver.py) — line [413](../../../../gcp/signal_monitor_eod_resolver.py#L413)
 - [`gcp/trade_logger.py`](../../../../gcp/trade_logger.py) — line [68](../../../../gcp/trade_logger.py#L68), [71](../../../../gcp/trade_logger.py#L71)
 - [`scripts/analysis/phase7_feedback_loop.py`](../../../../scripts/analysis/phase7_feedback_loop.py) — line [276](../../../../scripts/analysis/phase7_feedback_loop.py#L276)
-- [`scripts/backfill_signals.py`](../../../../scripts/backfill_signals.py) — line [231](../../../../scripts/backfill_signals.py#L231), [232](../../../../scripts/backfill_signals.py#L232)
 - [`scripts/strat_struct_backtest.py`](../../../../scripts/strat_struct_backtest.py) — line [154](../../../../scripts/strat_struct_backtest.py#L154)
 
 ### `user_preferences`
@@ -710,10 +708,8 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/main.py`](../../../../platform/api/main.py) — line [622](../../../../platform/api/main.py#L622), [767](../../../../platform/api/main.py#L767), [1263](../../../../platform/api/main.py#L1263), [1617](../../../../platform/api/main.py#L1617), [1635](../../../../platform/api/main.py#L1635)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../../scripts/analysis/per_ticker_calibration.py#L208)
 - [`scripts/backfill_and_replay.py`](../../../../scripts/backfill_and_replay.py) — line [459](../../../../scripts/backfill_and_replay.py#L459)
-- [`scripts/backfill_signals.py`](../../../../scripts/backfill_signals.py) — line [52](../../../../scripts/backfill_signals.py#L52)
 - [`scripts/backfill_watchlist_data.py`](../../../../scripts/backfill_watchlist_data.py) — line [117](../../../../scripts/backfill_watchlist_data.py#L117)
 - [`scripts/calibrate_thresholds.py`](../../../../scripts/calibrate_thresholds.py) — line [232](../../../../scripts/calibrate_thresholds.py#L232)
-- [`scripts/compare_tier_fires.py`](../../../../scripts/compare_tier_fires.py) — line [65](../../../../scripts/compare_tier_fires.py#L65)
 - [`scripts/replay_signal_monitor.py`](../../../../scripts/replay_signal_monitor.py) — line [118](../../../../scripts/replay_signal_monitor.py#L118), [225](../../../../scripts/replay_signal_monitor.py#L225)
 - [`scripts/signal_quality_report.py`](../../../../scripts/signal_quality_report.py) — line [407](../../../../scripts/signal_quality_report.py#L407), [410](../../../../scripts/signal_quality_report.py#L410)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../../scripts/validation/validate_brief_accuracy.py) — line [247](../../../../scripts/validation/validate_brief_accuracy.py#L247), [311](../../../../scripts/validation/validate_brief_accuracy.py#L311), [538](../../../../scripts/validation/validate_brief_accuracy.py#L538)
@@ -886,12 +882,20 @@ Tables with two or more writing files. The risk in each case is the same shape: 
 | `news_sentiment` | 5 | `gcp/backfill_ticker.py`, `gcp/fetchers/fetch_news_sentiment.py`, `gcp/fetchers/fetch_rss_news.py`, `scripts/backfill_and_replay.py`, `scripts/backfill_news_sentiment.py` |
 | `premarket_analysis` | 3 | `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/signal_monitor.py` |
 | `premarket_analysis_history` | 2 | `gcp/premarket_brief.py`, `scripts/backfill_history_tables.py` |
-| `signal_alerts` | 4 | `gcp/signal_monitor.py`, `gcp/signal_monitor_eod_resolver.py`, `scripts/backfill_signals.py`, `scripts/replay_signal_monitor.py` |
-| `trades` | 7 | `gcp/migrate_to_gcp.py`, `gcp/signal_monitor.py`, `gcp/signal_monitor_eod_resolver.py`, `gcp/trade_logger.py`, `scripts/analysis/phase7_feedback_loop.py`, `scripts/backfill_signals.py`, `scripts/strat_struct_backtest.py` |
+| `signal_alerts` | 3 | `gcp/signal_monitor.py`, `gcp/signal_monitor_eod_resolver.py`, `scripts/replay_signal_monitor.py` |
+| `trades` | 6 | `gcp/migrate_to_gcp.py`, `gcp/signal_monitor.py`, `gcp/signal_monitor_eod_resolver.py`, `gcp/trade_logger.py`, `scripts/analysis/phase7_feedback_loop.py`, `scripts/strat_struct_backtest.py` |
 | `watchlists` | 3 | `gcp/backfill_ticker.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/_watchlist.py` |
 <!-- inventory:multiwriter:end -->
 
 Notes on the ones that matter operationally:
+
+- **Two writers were removed from this snapshot on #1022**, which is the only
+  edit made to it since it was frozen. `scripts/backfill_signals.py` wrote 432
+  `signal_alerts` and 412 `trades` rows into production on 2026-04-18, bulk
+  inserted and indistinguishable from live fires to every downstream
+  aggregate (#820); `scripts/compare_tier_fires.py` re-implemented the fire
+  decision outside the production path (#821). Both are deleted, so
+  `signal_alerts` has three writers and `trades` six.
 
 - **`market_data_daily`** — `fetch_market_data` is canonical (nightly OHLCV + indicators); `fetch_premarket_refresh` UPDATEs only `gap_pct`/`pre_*` at 08:20; `backfill_daily_indicators` recomputes NULL indicator columns; `premarket_brief` DELETEs NULL-close placeholder rows; `backfill_ticker` and the two backfill scripts are on-demand. Ordering is enforced by the schedule (08:20 before 08:30, 23:00 after close).
 - **`etf_options_snapshots`** — `fetch_av_historical_options` (nightly) and `fetch_av_realtime_options` (every 5 min in RTH) both upsert on `(ticker, snapshot_ts, contract)`; `options_retention_job` DELETEs by age; `compute_spx_greeks` UPDATEs Greek columns; the grid router writes derived rows. A re-fetch can overwrite computed Greeks.

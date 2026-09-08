@@ -73,3 +73,19 @@ def test_execute_sql_returns_zero_when_no_rows_matched(monkeypatch):
     result = database.execute_sql("DELETE FROM t WHERE 1=0")
 
     assert result == 0
+
+
+def test_table_exists_propagates_a_database_failure(monkeypatch):
+    """Audit P2-#6 (docs/audits/FALLBACK_AUDIT_2026-05-13.md 12.4):
+    table_exists() returned False on ANY error, so an unreachable database
+    read as "the table is missing" and the freshness watchdog took a
+    connection failure for an absent job_runs table."""
+    import pytest
+    from gcp import database
+
+    def _boom():
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr(database, "get_engine", _boom)
+    with pytest.raises(RuntimeError, match="connection lost"):
+        database.table_exists("job_runs")

@@ -153,6 +153,7 @@ def _pull_alerts(since: date, tickers: list[str]) -> pd.DataFrame:
           FROM signal_alerts
          WHERE alert_date >= :since
            AND ticker = ANY(:tickers)
+           AND run_kind = 'live'
     """)
     return pd.read_sql(
         sql, get_engine(),

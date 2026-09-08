@@ -161,12 +161,31 @@ def test_av_news_to_rows_explodes_per_ticker_sentiment():
     assert by_ticker["AMD"]["topics"] == ["Mergers & Acquisitions"]
 
 
-def test_av_news_to_rows_skips_unparseable_timestamp():
+def test_av_news_to_rows_skips_unparseable_timestamp_and_says_so(caplog):
+    """An article the vendor stamps unparseably is dropped (EXTERNAL data),
+    never silently: the skip is logged with the raw value and the count."""
+    import logging
     from gcp.backfill_ticker import av_news_to_rows
     feed = [{"time_published": "garbage", "ticker_sentiment": [
         {"ticker": "AMD"}
     ]}]
-    assert av_news_to_rows(feed) == []
+    with caplog.at_level(logging.WARNING, logger="gcp.backfill_ticker"):
+        assert av_news_to_rows(feed) == []
+    assert "garbage" in caplog.text and "1 " in caplog.text and "skipped" in caplog.text.lower()
+
+
+def test_ftfc_is_never_fabricated_by_the_daily_writers():
+    """`float(ftfc_score) if ftfc_score is not None else 0.0` and
+    `ftfc_dir or 'mixed'` wrote a neutral reading where there was none
+    (CLAUDE.md 3.7 pattern 4), in both daily writers."""
+    import re
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    for rel in ("gcp/backfill_ticker.py", "gcp/fetchers/fetch_market_data.py"):
+        src = (repo / rel).read_text()
+        assert not re.search(r"ftfc_score\) if ftfc_score is not None else 0\.0", src), rel
+        assert not re.search(r"ftfc_dir or ['\"]mixed['\"]", src), rel
+        assert not re.search(r"abs\(ftfc_score or 0\.0\)", src), rel
 
 
 def test_av_news_to_rows_tagged_data_source():
@@ -180,3 +199,133 @@ def test_av_news_to_rows_tagged_data_source():
     rows = av_news_to_rows(feed)
     assert rows[0]["data_source"] == "alphavantage"
     assert rows[0]["match_method"] == "av_ticker_sentiment"
+
+
+# ── Watchlist opt-out (Codex on #1022) ────────────────────────────────────
+#
+# run() unconditionally called add_to_watchlist(), which inserts the ticker
+# into the shared `default` watchlist or clears removed_at on a deliberately
+# removed one. That is the Discord /replay contract, but
+# scripts/backfill_and_replay.py now routes historical-test tickers through
+# the same job and every active watchlist row is consumed by the generic
+# fetchers. BACKFILL_ADD_TO_WATCHLIST=false keeps those backfills out of the
+# production universe; the default stays true.
+
+
+@pytest.fixture
+def stubbed_run(monkeypatch):
+    """Stub every network/DB touch in run() and return the add_to_watchlist mock."""
+    import pandas as pd
+    import gcp.backfill_ticker as mod
+
+    monkeypatch.setenv("BACKFILL_TICKER", "amd")
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "k")
+    monkeypatch.setenv("BACKFILL_DATES", "2026-04-24")
+    monkeypatch.setenv("BACKFILL_INCLUDE_NEWS", "false")
+    daily = pd.DataFrame({
+        "date": [date(2026, 4, 23), date(2026, 4, 24)],
+        "open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0],
+        "close": [1.0, 1.0], "adjusted_close": [1.0, 1.0], "volume": [1, 1],
+    })
+    watch = MagicMock()
+    with patch.object(mod, "av_daily_full", return_value=daily), \
+         patch.object(mod, "av_intraday_month", return_value=pd.DataFrame()), \
+         patch.object(mod, "compute_indicators_for_full_range", return_value=0), \
+         patch.object(mod, "compute_indicators_for_dates"), \
+         patch.object(mod, "add_to_watchlist", watch), \
+         patch("gcp.database.upsert_dataframe"):
+        yield mod, watch
+
+
+def test_watchlist_add_is_the_default(stubbed_run, monkeypatch):
+    mod, watch = stubbed_run
+    monkeypatch.delenv("BACKFILL_ADD_TO_WATCHLIST", raising=False)
+    assert mod.run() == 0
+    watch.assert_called_once_with("AMD")
+
+
+def test_watchlist_add_can_be_opted_out(stubbed_run, monkeypatch):
+    mod, watch = stubbed_run
+    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "false")
+    assert mod.run() == 0
+    watch.assert_not_called()
+
+
+def test_a_non_string_vendor_timestamp_is_dropped_not_raised(caplog):
+    """`time_published` is vendor JSON, so its TYPE is not ours to assume.
+    A number or a list made `pub_raw[:15]` raise TypeError, which this path
+    did not catch: the exception left av_news_to_rows(), failed the whole
+    backfill-ticker run, and took the indicator and options steps down with
+    it (Codex on #1022). A malformed article is EXTERNAL data: drop it,
+    count it, keep going."""
+    import logging
+
+    from gcp.backfill_ticker import av_news_to_rows
+
+    feed = [
+        {"time_published": 20260908, "ticker_sentiment": [{"ticker": "AMD"}]},
+        {"time_published": ["20260908T120000"], "ticker_sentiment": [{"ticker": "AMD"}]},
+        {"time_published": {"t": 1}, "ticker_sentiment": [{"ticker": "AMD"}]},
+        {"time_published": "20260908T120000", "title": "kept",
+         "ticker_sentiment": [{"ticker": "AMD"}]},
+    ]
+    with caplog.at_level(logging.WARNING, logger="gcp.backfill_ticker"):
+        rows = av_news_to_rows(feed)
+    assert [r["ticker"] for r in rows] == ["AMD"], "the well-formed article must survive"
+    # The dict case is the one that made the exception type interpreter-
+    # dependent: `{"t": 1}[:15]` is a TypeError on 3.11 and a KeyError on
+    # 3.12, where slices became hashable. The parser checks the type instead
+    # of listing what slicing a wrong one throws, so neither is reachable.
+    assert "isinstance(pub_raw, str)" in __import__("inspect").getsource(
+        __import__("gcp.backfill_ticker", fromlist=["av_news_to_rows"])), \
+        "the guard must be a type check, not an except clause"
+    assert "3" in caplog.text and "skipped" in caplog.text.lower()
+    assert "20260908" in caplog.text, "the skip log must name what was dropped"
+
+
+def test_a_non_list_vendor_collection_is_dropped_not_raised(caplog):
+    """The scalar fields were type-checked but the CONTAINERS were not:
+    `(art.get("topics") or [])` keeps a truthy non-list, so a vendor
+    `topics: 42` or `ticker_sentiment: 42` raised TypeError out of
+    av_news_to_rows and failed the whole backfill run (Codex on #1022)."""
+    import logging
+
+    from gcp.backfill_ticker import av_news_to_rows
+
+    feed = [
+        {"time_published": "20260908T120000", "topics": 42,
+         "ticker_sentiment": [{"ticker": "AMD"}]},
+        {"time_published": "20260908T120100", "ticker_sentiment": 42},
+        {"time_published": "20260908T120200", "ticker_sentiment": "AMD"},
+        {"time_published": "20260908T120300", "title": "kept",
+         "ticker_sentiment": [{"ticker": "NVDA"}]},
+    ]
+    with caplog.at_level(logging.WARNING, logger="gcp.backfill_ticker"):
+        rows = av_news_to_rows(feed)
+    assert sorted(r["ticker"] for r in rows) == ["AMD", "NVDA"]
+    assert "topics" in caplog.text and "ticker_sentiment" in caplog.text
+
+
+def test_a_non_mapping_feed_entry_is_dropped_not_raised():
+    """Field-level validation cannot save a malformed CONTAINER.
+
+    `for art in feed: art.get(...)` raises AttributeError on a feed entry
+    that is None, a number, a string or a list, and that aborts the whole
+    backfill-ticker execution — indicators and every remaining step with
+    it. One bad article must be dropped and counted, not stop the run
+    (EXTERNAL data, CLAUDE.md 3.7; Codex on #1022, round 23)."""
+    from gcp.backfill_ticker import av_news_to_rows
+
+    good = {
+        "time_published": "20260902T130000",
+        "title": "t", "url": "u", "source": "s",
+        "overall_sentiment_score": 0.5,
+        "topics": [{"topic": "Earnings"}],
+        "ticker_sentiment": [
+            {"ticker": "AMD", "relevance_score": "0.9",
+             "ticker_sentiment_score": "0.4", "ticker_sentiment_label": "Bullish"},
+        ],
+    }
+    feed = [None, 42, "AMD", ["AMD"], good]
+    rows = av_news_to_rows(feed)
+    assert [r["ticker"] for r in rows] == ["AMD"], rows

@@ -139,6 +139,16 @@ class InsightCache:
         """For tests + new-session boot."""
         self._cache.clear()
 
+    def evict(self, ticker: str) -> None:
+        """Drop one ticker's entry so the next get() refetches.
+
+        The cache is keyed by ticker with a wall-clock staleness window,
+        so a multi-day replay crossing into the next session within that
+        window would keep serving the previous session's insight; the
+        monitor's session reset evicts the ticker (Codex on #1022).
+        """
+        self._cache.pop(ticker.upper(), None)
+
 
 # ── Gate decision logic (pure, separable from the cache) ───────────
 

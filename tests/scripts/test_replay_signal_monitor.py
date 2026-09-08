@@ -63,18 +63,36 @@ def test_parse_args_json_flag():
 
 # ── 2) resolve_window ─────────────────────────────────────────────────
 
-def test_resolve_window_single_date_spans_24h():
+def test_resolve_window_single_date_is_the_eastern_day():
+    """Internal review of #1022 (monitor and replay-integrity rounds): the
+    session is an ET date (the rollover keys on _now(_ET)) but the window
+    was built on UTC midnights, i.e. ET 20:00 of D-1 to 20:00 of D. A
+    single --date replay therefore began in session D-1, reset once at the
+    04:00Z bar, and never saw D's 16:00-20:00 ET bars; CLAUDE.md 3.9 says
+    the two must frame time identically."""
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
     args = parse_args(["--ticker", "SPY", "--date", "2026-05-01"])
     start, end = resolve_window(args)
-    assert start == datetime(2026, 5, 1, tzinfo=timezone.utc)
-    assert end == datetime(2026, 5, 2, tzinfo=timezone.utc)
+    assert start == datetime(2026, 5, 1, tzinfo=et)
+    assert end == datetime(2026, 5, 2, tzinfo=et)
+    assert start.astimezone(timezone.utc) == datetime(2026, 5, 1, 4, tzinfo=timezone.utc)
 
 
-def test_resolve_window_start_end_explicit_range():
+def test_resolve_window_start_end_explicit_range_is_eastern():
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
     args = parse_args(["--ticker", "SPY", "--start", "2026-04-25", "--end", "2026-05-02"])
     start, end = resolve_window(args)
-    assert start == datetime(2026, 4, 25, tzinfo=timezone.utc)
-    assert end == datetime(2026, 5, 2, tzinfo=timezone.utc)
+    assert start == datetime(2026, 4, 25, tzinfo=et)
+    assert end == datetime(2026, 5, 2, tzinfo=et)
+
+
+def test_window_help_text_says_eastern():
+    import scripts.replay_signal_monitor as mod
+    src = open(mod.__file__).read()
+    assert "UTC start date" not in src and "UTC end date" not in src
+    assert "Harmless for a single-date replay" not in src, "the comment was false once the window and the session disagreed"
 
 
 def test_resolve_window_missing_window_args_raises():
@@ -350,3 +368,30 @@ def test_summary_median_averages_the_middle_on_even_samples():
     assert statistics.median([0.8, 1.2]) == 1.0
     assert sorted([0.8, 1.2])[len([0.8, 1.2]) // 2] == 1.2, \
         "the old expression really did report the upper middle"
+
+
+def test_persist_fire_reports_a_row_dropped_by_the_unique_key(caplog):
+    """signal_alerts is unique on (ticker, alert_ts) and the replay INSERT
+    is ON CONFLICT DO NOTHING, so replaying a session that ran live drops
+    every fire that lands on a live fire's minute. That is a legitimate
+    outcome but it must not be silent (CLAUDE.md 3.7)."""
+    import logging
+    from scripts.replay_signal_monitor import FireRecord, persist_fire_to_signal_alerts
+
+    fire = FireRecord(
+        timestamp=pd.Timestamp("2026-08-28 14:31:00"), ticker="SPY", direction="CALL",
+        base_score=4, total_score=4.0, timeframe_tag=None, expected_hold_min=None,
+        strategy_agreement=None, conditions_met=["x"], embed_title="t",
+        brief_alignment=None, level_state=None, opp_level_state=None, rvol_mod=None,
+    )
+    conn = MagicMock()
+    conn.execute.return_value = MagicMock(rowcount=0)
+    engine = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    engine.begin.return_value.__exit__.return_value = False
+    monitor = MagicMock()
+    with caplog.at_level(logging.WARNING, logger="scripts.replay_signal_monitor"):
+        n = persist_fire_to_signal_alerts(fire, monitor, engine, "replay-1")
+    assert n == 0
+    assert "SPY" in caplog.text and "2026-08-28 14:31" in caplog.text
+    assert "unique" in caplog.text.lower() or "collid" in caplog.text.lower()

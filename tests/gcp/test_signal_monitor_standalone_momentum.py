@@ -301,7 +301,49 @@ def test_get_disabled_directions_helper():
     with patch.object(eco, "_latest_overrides", return_value=None):
         assert eco.get_disabled_directions("ANY") == set()
 
-    # malformed JSON string → empty (degrade-open)
-    with patch.object(eco, "_latest_overrides", return_value={
-        "disabled_directions": "not-json{"}):
-        assert eco.get_disabled_directions("ANY") == set()
+    # a malformed JSON string RAISES: see
+    # test_get_disabled_directions_raises_on_malformed_json
+
+
+def test_get_disabled_directions_raises_on_malformed_json():
+    """Audit P1-#3 (docs/audits/FALLBACK_AUDIT_2026-05-13.md 12.4): an
+    unparseable disabled_directions became set(), i.e. "nothing is
+    disabled", the C-04 incident shape in a second place. Malformed
+    operator config is an INTERNAL failure and raises."""
+    import pytest
+    from lib.strategies import exit_config_overrides as eco
+
+    with patch.object(eco, "_latest_overrides", return_value={"disabled_directions": "not json"}):
+        with pytest.raises(ValueError, match="disabled_directions"):
+            eco.get_disabled_directions("QQQ")
+    with patch.object(eco, "_latest_overrides", return_value={"disabled_directions": 42}):
+        with pytest.raises(ValueError, match="disabled_directions"):
+            eco.get_disabled_directions("QQQ")
+
+
+def test_momentum_fire_is_suppressed_when_the_kill_switch_cannot_be_read():
+    """The stand-alone path allowed the fire when get_disabled_directions
+    raised ("degrade-open"). A kill switch that cannot be read is unknown,
+    and the safe reading of an unknown risk control is closed: the fire
+    is suppressed, the failure is counted and logged with its traceback."""
+    from lib.strategies.base import Signal
+    monitor = _make_monitor()
+    ticker = monitor.tickers[0]
+    monitor.signal_cfg.enable_standalone_momentum = True
+    mom_put = Signal(
+        strategy="momentum", direction="PUT",
+        timestamp=pd.Timestamp.now(), entry_price=720.0,
+        base_score=5.0, weighted_score=5.5,
+        conditions_met=["below_vwap", "below_ema9", "rsi_thrust",
+                        "rvol_above_recent", "atr_expansion"],
+        core_count=2,
+    )
+    with patch("gcp.signal_monitor.evaluate_signal", return_value=None), \
+         patch("gcp.signal_monitor.MOMENTUM") as mom_mock, \
+         patch("lib.strategies.exit_config_overrides.get_disabled_directions",
+               side_effect=RuntimeError("connection lost")):
+        mom_mock.evaluate.return_value = mom_put
+        sig, agreement = monitor._evaluate_strategies_for_bar(_bar(), 720.0, ticker)
+    assert sig is None and agreement is None, "an unreadable kill switch must not read as open"
+    assert monitor.kill_switch_failure_count[ticker] == 1
+    assert "kill_switch_failure_count" in monitor.SESSION_KEEP

@@ -33,6 +33,13 @@ Environment:
   BACKFILL_HISTORY_DAYS    daily-history depth (default 250)
   BACKFILL_INCLUDE_NEWS    "true" / "false" (default "true")
   BACKFILL_NEWS_WINDOW     news lookback in days (default 7)
+  BACKFILL_ADD_TO_WATCHLIST "true" / "false" (default "true"): add the
+                           ticker to the shared `default` watchlist (the
+                           Discord /replay contract). Historical-test
+                           backfills (scripts/backfill_and_replay.py)
+                           pass "false" so an ad-hoc ticker does not
+                           join, or get reactivated in, the production
+                           universe every fetcher iterates.
   ALPHA_VANTAGE_API_KEY    AV key (mounted from Secret Manager)
   CLOUD_SQL_CONNECTION_NAME / DB_USER / DB_PASS / DB_NAME
                            Cloud SQL Connector creds
@@ -43,6 +50,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections import Counter
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -177,27 +186,94 @@ def _safe_float(x) -> Optional[float]:
         return None
 
 
+def _av_text(art: dict, key: str, limit: int, malformed: list[str]):
+    """One text field of a vendor article, or None.
+
+    The vendor's JSON is EXTERNAL: its VALUES are not ours to trust and
+    neither are their TYPES. `(art.get(key) or "")[:limit]` assumed a
+    string and raised TypeError on a number or a list, which escaped
+    av_news_to_rows and failed the whole run (Codex on #1022). A field of
+    the wrong type is recorded as malformed and stored NULL — the article
+    itself still carries its ticker, timestamp and scores.
+    """
+    value = art.get(key)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        malformed.append(key)
+        return None
+    return value[:limit] or None
+
+
+def _av_list(art: dict, key: str, malformed: list[str]) -> list:
+    """One list-valued field of a vendor article, or an empty list.
+
+    `(art.get(key) or [])` keeps a truthy non-list, so `topics: 42` or
+    `ticker_sentiment: "AMD"` reached the iteration and raised TypeError
+    out of av_news_to_rows, taking the whole backfill run with it (Codex
+    on #1022). A wrong-typed container is recorded and dropped, like a
+    wrong-typed scalar.
+    """
+    value = art.get(key)
+    if value is None or value == []:
+        return []
+    if not isinstance(value, list):
+        malformed.append(key)
+        return []
+    return value
+
+
 def av_news_to_rows(feed: list[dict]) -> list[dict]:
     """Explode AV news feed into one row per (article, ticker)."""
     rows = []
+    skipped: list[str] = []
+    malformed: list[str] = []
     for art in feed:
-        pub_raw = art.get("time_published") or ""
+        # The CONTAINER, before any field. `art.get(...)` raises
+        # AttributeError on a None / number / string / list entry, which
+        # aborted the whole backfill-ticker execution — indicators and every
+        # remaining step with it — over one bad article. Field-level checks
+        # cannot reach this (EXTERNAL data, CLAUDE.md 3.7; Codex on #1022).
+        if not isinstance(art, Mapping):
+            skipped.append(repr(art))
+            continue
+        pub_raw = art.get("time_published")
+        # Check the TYPE rather than catching what slicing a wrong one throws.
+        # `{"t": 1}[:15]` raises TypeError on Python 3.11 and KeyError on 3.12,
+        # where slices became hashable — so an except clause listing types is
+        # right on one interpreter and wrong on the other, and CI proved it.
+        # A `time_published` that is not a string is malformed in exactly the
+        # way a garbage string is: the article is dropped and the drop is
+        # visible (EXTERNAL data, CLAUDE.md 3.7; Codex on #1022).
+        if not isinstance(pub_raw, str):
+            skipped.append(repr(pub_raw))
+            continue
         try:
             pub_ts = datetime.strptime(pub_raw[:15], "%Y%m%dT%H%M%S").replace(
                 tzinfo=timezone.utc,
             )
-        except Exception:
+        except ValueError:
+            skipped.append(pub_raw)
             continue
-        title = (art.get("title") or "")[:500] or None
-        url = (art.get("url") or "")[:1000] or None
-        summary = (art.get("summary") or "")[:2000] or None
-        source = (art.get("source") or "")[:100] or None
+        title = _av_text(art, "title", 500, malformed)
+        url = _av_text(art, "url", 1000, malformed)
+        summary = _av_text(art, "summary", 2000, malformed)
+        source = _av_text(art, "source", 100, malformed)
         overall_score = _safe_float(art.get("overall_sentiment_score"))
-        overall_label = (art.get("overall_sentiment_label") or "")[:20] or None
-        topics = [t["topic"] for t in (art.get("topics") or [])
-                  if isinstance(t, dict) and t.get("topic")]
-        for tk in (art.get("ticker_sentiment") or []):
-            tkv = (tk.get("ticker") or "").upper().strip()
+        overall_label = _av_text(art, "overall_sentiment_label", 20, malformed)
+        # The CONTAINERS need the same type check as the scalars: a truthy
+        # non-list survives `or []`, so a vendor `topics: 42` raised
+        # TypeError out of this function and failed the whole run (Codex on
+        # #1022). A string is iterable and is not a list of dicts either.
+        topics = [t["topic"] for t in _av_list(art, "topics", malformed)
+                  if isinstance(t, dict) and isinstance(t.get("topic"), str)
+                  and t.get("topic")]
+        for tk in _av_list(art, "ticker_sentiment", malformed):
+            raw_tk = tk.get("ticker") if isinstance(tk, dict) else None
+            if raw_tk is not None and not isinstance(raw_tk, str):
+                malformed.append("ticker_sentiment.ticker")
+                continue
+            tkv = (raw_tk or "").upper().strip()
             if not tkv:
                 continue
             rows.append({
@@ -213,6 +289,14 @@ def av_news_to_rows(feed: list[dict]) -> list[dict]:
                 "data_source": "alphavantage",
                 "match_method": "av_ticker_sentiment",
             })
+    if skipped:
+        log.warning("av_news_to_rows: skipped %d article(s) with an unparseable "
+                    "time_published: %s", len(skipped), skipped[:5])
+    if malformed:
+        counts = Counter(malformed)
+        log.warning("av_news_to_rows: %d vendor field(s) of the wrong type, "
+                    "stored NULL or skipped: %s", len(malformed),
+                    ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return rows
 
 
@@ -393,9 +477,13 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
                 row["strat_candle"] = str(last_candle)
             if last_combo:
                 row["strat_combo"] = str(last_combo)[:30]
-            row["ftfc_score"] = float(ftfc_score) if ftfc_score is not None else 0.0
-            row["ftfc_direction"] = str(ftfc_dir or "mixed")[:10]
-            row["strat_setup"] = bool(last_combo and abs(ftfc_score or 0.0) >= 0.3)
+            # None stays None: a neutral 0.0 / 'mixed' written where there
+            # was no reading is a fabricated value (CLAUDE.md 3.7).
+            row["ftfc_score"] = float(ftfc_score) if ftfc_score is not None else None
+            row["ftfc_direction"] = str(ftfc_dir)[:10] if ftfc_dir else None
+            row["strat_setup"] = bool(
+                last_combo and ftfc_score is not None and abs(ftfc_score) >= 0.3
+            )
         except Exception as exc:
             log.warning("strat compute failed for %s @ %s: %s", ticker, fd, exc)
 
@@ -483,6 +571,7 @@ def run() -> int:
     history_days = int(_env("BACKFILL_HISTORY_DAYS", "800"))
     include_news = (_env("BACKFILL_INCLUDE_NEWS", "true") or "true").lower() == "true"
     news_window = int(_env("BACKFILL_NEWS_WINDOW", "7"))
+    add_watchlist = (_env("BACKFILL_ADD_TO_WATCHLIST", "true") or "true").lower() == "true"
     dates = _parse_dates(_env("BACKFILL_DATES"))
 
     log.info("backfill ticker=%s dates=%s history=%dd news=%s",
@@ -556,8 +645,13 @@ def run() -> int:
         target.add(prior)
     compute_indicators_for_dates(ticker, sorted(target))
 
-    # 5. Watchlist
-    add_to_watchlist(ticker)
+    # 5. Watchlist — opt-out for research backfills (Codex on #1022): the
+    #    upsert also clears removed_at on a deliberately removed ticker,
+    #    and every active row is consumed by the generic fetchers.
+    if add_watchlist:
+        add_to_watchlist(ticker)
+    else:
+        log.info("BACKFILL_ADD_TO_WATCHLIST=false — %s not added to watchlists", ticker)
 
     log.info("backfill complete for %s", ticker)
     return 0

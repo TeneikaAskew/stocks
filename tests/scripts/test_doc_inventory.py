@@ -219,8 +219,11 @@ def test_reconcile_against_snapshot_reports_the_known_deltas():
     repo = inv.repo_inventory(REPO)
     live = json.loads(FIXTURE.read_text())
     rec = inv.reconcile(repo, live)
-    assert {"backtest-playability", "compare-tier-fires", "p2-build-gamma-levels",
+    assert {"backtest-playability", "compare-tier-fires",
             "strat-dir-features"} <= set(rec["jobs_live_only"])
+    # p2-build-gamma-levels was hand-made and live-only until #829/#834
+    # codified it as deploy_p2_build_gamma_levels; it now reconciles.
+    assert "p2-build-gamma-levels" not in rec["jobs_live_only"]
     assert "compute-spx-greeks-backfill" in rec["jobs_repo_only"]
     # signal-quality-report-hourly was retired by #1005 and its paused live
     # entry deleted on 2026-09-07, so schedulers reconcile exactly.
@@ -422,7 +425,10 @@ def test_live_job_config_drift_is_reported():
     live = json.loads(FIXTURE.read_text())
     drift = inv.reconcile(inv.repo_inventory(REPO), live)["jobs_config_drift"]
     assert any("compute-earnings-reactions.memory" in d and "1Gi" in d and "2Gi" in d for d in drift), drift
-    assert any("strat-engine.memory" in d for d in drift), drift
+    # strat-engine.memory and build-options-greeks.task_timeout were raised
+    # to their live values on #1022; db-query still drifts on both axes.
+    assert any("db-query.memory" in d and "512Mi" in d and "8Gi" in d for d in drift), drift
+    assert not any("strat-engine.memory" in d for d in drift), drift
 
 
 def test_a_deploy_time_variable_is_not_config_drift():
@@ -463,6 +469,33 @@ def test_a_route_registered_only_behind_a_dist_guard_is_not_inventoried():
     routes = {r["path"] for r in inv.repo_inventory(REPO)["routes"]}
     assert "/{full_path:path}" not in routes, "an inactive route is published as live"
 
+
+def test_deploy_jobs_reads_flags_declared_in_a_helper_function(tmp_path):
+    """#1022: apply-schema-migrations' flags live in `_apply_schema_job_flags`,
+    used by both its bootstrap create and the serialized in-build update.
+    The inventory must read them from there, not render Cloud Run defaults."""
+    from scripts.maintenance.doc_inventory import deploy_jobs
+
+    (tmp_path / "gcp").mkdir()
+    (tmp_path / "gcp/deploy.sh").write_text("""#!/usr/bin/env bash
+_apply_schema_job_flags() {
+    printf '%s' "--memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 --service-account ${SA_EMAIL} --command python,-m,gcp.apply_schema ${DB_SECRET_FLAG} --set-env-vars $(_env_string)"
+}
+
+deploy_apply_schema_migrations() {
+    gcloud run jobs create apply-schema-migrations \\
+        --image "${IMAGE}" --region "${REGION}" \\
+        $(_apply_schema_job_flags) \\
+        --quiet
+}
+""")
+    jobs = {j["name"]: j for j in deploy_jobs(tmp_path)}
+    job = jobs["apply-schema-migrations"]
+    assert job["task_timeout"] == "1800" and job["max_retries"] == "0"
+    assert job["memory"] == "512Mi" and job["cpu"] == "1"
+    assert job["command"] == "python -m gcp.apply_schema"
+    assert job["uses_secrets"] is True
+    assert job["timeout_defaulted"] is False and job["retries_defaulted"] is False
 
 
 # ── the §7 graph and the 05-c digest are rendered, not drawn ─────────────────

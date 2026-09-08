@@ -16,6 +16,8 @@ This test suite locks both:
 from __future__ import annotations
 
 import pandas as pd
+from datetime import date
+
 import pytest
 
 from lib.signals import evaluate_signal
@@ -213,18 +215,213 @@ def test_no_ticker_means_no_overrides(monkeypatch):
     assert "above_vwap" in sig["conditions_met"]  # not stripped
 
 
-def test_resolver_failure_degrades_gracefully(monkeypatch):
-    """If the resolver raises (network blip, table missing), the live
-    path must not crash — silently degrade to legacy behaviour."""
+def test_resolver_failure_fails_closed(monkeypatch, caplog):
+    """Audit C-04 (docs/audits/FALLBACK_AUDIT_2026-05-13.md 12.1) was
+    marked OPEN: a resolver failure evaluated "with NO disabled conditions
+    or directions applied", so a side an operator switched OFF for risk
+    fired anyway. The decision is now taken the safe way round: when the
+    kill switch cannot be read, no mean-reversion signal fires for that
+    bar, and the failure is logged at ERROR with its traceback."""
+    import logging
+
     from lib.strategies import exit_config_overrides as eco
     eco._latest_overrides.cache_clear()
 
     def _boom(t):
-        raise RuntimeError("simulated DB failure")
+        raise RuntimeError("connection lost")
 
     monkeypatch.setattr(eco, "_latest_overrides", _boom)
+    row = _put_row()
+    row["Broke_Prev_Day_Low"] = 1
+    with caplog.at_level(logging.ERROR, logger="lib.signals"):
+        sig = evaluate_signal(row, min_conditions=3, ticker="QQQ")
+    assert sig is None, "an unreadable kill switch must not read as open"
+    assert "connection lost" in caplog.text and "Traceback" in caplog.text
 
-    sig = evaluate_signal(_put_row(), min_conditions=3, ticker="QQQ")
-    # Should still fire — fallback to legacy path despite resolver failure.
+
+def test_malformed_disabled_conditions_fails_closed(monkeypatch, caplog):
+    import logging
+
+    from lib.strategies import exit_config_overrides as eco
+    eco._latest_overrides.cache_clear()
+    monkeypatch.setattr(eco, "_latest_overrides", lambda t: {
+        "disabled_conditions": "not json", "disabled_directions": None})
+    row = _put_row()
+    row["Broke_Prev_Day_Low"] = 1
+    with caplog.at_level(logging.ERROR, logger="lib.signals"):
+        assert evaluate_signal(row, min_conditions=3, ticker="QQQ") is None
+    assert "disabled_conditions" in caplog.text
+
+
+def test_a_failed_override_query_fails_closed_not_open(monkeypatch, caplog):
+    """The fail-closed handler above was UNREACHABLE for the failure it was
+    written for (Codex on #1022).
+
+    `_latest_overrides` caught every exception from the Cloud SQL read and
+    returned None, so `get_disabled_directions` saw "no row", answered
+    `set()` = nothing disabled, and evaluation carried on. The swallow one
+    level down defeated the strict caller one level up, which is the exact
+    shape CLAUDE.md 3.7.1 warns about. This test drives the real failure —
+    the query itself raising — rather than a malformed value."""
+    import logging
+
+    from lib.strategies import exit_config_overrides as eco
+    eco._latest_overrides.cache_clear()
+
+    from gcp import database as gcp_db
+    monkeypatch.setattr(gcp_db, "is_cloud_sql_configured", lambda: True)
+
+    def _boom(*a, **k):
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr("pandas.read_sql", _boom)
+    monkeypatch.setattr(gcp_db, "get_engine", lambda: object())
+
+    row = _put_row()
+    row["Broke_Prev_Day_Low"] = 1
+    with caplog.at_level(logging.ERROR, logger="lib.signals"):
+        sig = evaluate_signal(row, min_conditions=3, ticker="QQQ")
+    assert sig is None, "an unreadable kill switch must not read as open"
+    assert "connection lost" in caplog.text
+    eco._latest_overrides.cache_clear()
+
+
+def test_one_failed_read_does_not_disable_the_kill_switch_for_the_process(monkeypatch):
+    """`_latest_overrides` is lru_cached, so the swallowed None was CACHED:
+    a single transient failure turned the kill switch off for the rest of
+    the process, and the next 390 bars of the session fired as though
+    nothing were disabled. A raise is not cached, so the read is retried."""
+    import pandas as pd
+
+    from lib.strategies import exit_config_overrides as eco
+    eco._latest_overrides.cache_clear()
+    from gcp import database as gcp_db
+    monkeypatch.setattr(gcp_db, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(gcp_db, "get_engine", lambda: object())
+
+    calls = {"n": 0}
+    good = pd.DataFrame([{
+        "calibration_date": date.today(), "call_target": None, "put_target": None,
+        "call_stop": None, "put_stop": None, "call_time_stop": None,
+        "put_time_stop": None, "consecutive_periods": None,
+        "disabled_conditions": None, "disabled_directions": ["PUT"],
+        "blue_sky_atr_offset": None, "notes": None,
+    }])
+
+    def _flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("connection lost")
+        return good
+
+    monkeypatch.setattr("pandas.read_sql", _flaky)
+
+    import pytest
+    with pytest.raises(Exception):
+        eco.get_disabled_directions("QQQ")
+    # Second call must reach the database again, not replay a cached failure.
+    assert eco.get_disabled_directions("QQQ") == {"PUT"}
+    assert calls["n"] == 2
+    eco._latest_overrides.cache_clear()
+
+
+def test_the_tier_b_getters_still_degrade_on_a_failed_read(monkeypatch):
+    """The exit-target getters are deliberately lenient: Tier-B defaults are
+    the documented answer when no usable override exists, and a read failure
+    must not take fire_alert down. Their leniency is now explicit at each
+    call site instead of a blanket swallow, so this pins it."""
+    from lib.strategies import exit_config_overrides as eco
+    from lib.config import ExitConfig, SignalConfig
+    eco._latest_overrides.cache_clear()
+    from gcp import database as gcp_db
+    monkeypatch.setattr(gcp_db, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(gcp_db, "get_engine", lambda: object())
+
+    def _boom(*a, **k):
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr("pandas.read_sql", _boom)
+
+    defaults = ExitConfig()
+    assert eco.get_call_target("QQQ") == defaults.call_target
+    assert eco.get_put_stop("QQQ") == defaults.put_stop
+    # This knob's Tier-B default lives in SignalConfig, not ExitConfig.
+    assert eco.get_consecutive_periods("QQQ") == SignalConfig().consecutive_periods
+    assert eco.get_blue_sky_atr_offset("QQQ") is None
+    assert eco.get_resolution_tier("QQQ", "call_target") == "B"
+    eco._latest_overrides.cache_clear()
+
+
+# ─── disabled_conditions shape validation (Codex on #1022, round 23) ──
+
+
+def _overrides(disabled_conditions):
+    import datetime
+    return {
+        "calibration_date": datetime.date.today(),
+        "disabled_conditions": disabled_conditions,
+        "disabled_directions": None,
+        "call_target": 0.00184, "put_target": 0.00202,
+        "call_stop": 0.00075, "put_stop": 0.00075,
+        "call_time_stop": 25, "put_time_stop": 25,
+        "blue_sky_atr_offset": 0.15, "notes": "test",
+    }
+
+
+def test_a_json_object_is_not_a_list_of_disabled_conditions(monkeypatch):
+    """The same defect `get_disabled_directions` had, one module over.
+
+    `ov.get("disabled_conditions") or []` runs BEFORE any shape check, so
+    `{}` became `[]` and read as "nothing is disabled" — failing open on
+    operator config the C-04 remediation deliberately made fail closed.
+    And `set({"above_vwap": False})` is `{"above_vwap"}`, so an object
+    recording a condition as NOT disabled disabled it: the inverse of what
+    was written (Codex on #1022, round 23)."""
+    from lib.strategies import exit_config_overrides as eco
+    from lib.signals import evaluate_signal
+
+    eco._latest_overrides.cache_clear()   # before patching; the stub has no cache
+    for bad in ({}, {"above_vwap": False}, 0, "", False, 42, ["above_vwap", 7]):
+        monkeypatch.setattr(eco, "_latest_overrides", lambda t, b=bad: _overrides(b))
+        assert evaluate_signal(_put_row(), min_conditions=3, ticker="SPY") is None, (
+            "a disabled_conditions payload that is not a list of condition "
+            "names must suppress the bar, not be coerced: %r" % (bad,)
+        )
+
+
+def test_a_well_formed_disabled_conditions_list_still_works(monkeypatch):
+    """The narrowing must not break the shape the column actually holds."""
+    from lib.strategies import exit_config_overrides as eco
+    from lib.signals import evaluate_signal
+
+    eco._latest_overrides.cache_clear()   # before patching; the stub has no cache
+    monkeypatch.setattr(eco, "_latest_overrides",
+                        lambda t: _overrides(["above_vwap"]))
+    sig = evaluate_signal(_put_row(), min_conditions=3, ticker="SPY")
     assert sig is not None
-    assert sig["direction"] == "PUT"
+    assert "above_vwap" not in sig["conditions_met"]
+
+    # An empty list is a real answer: nothing is disabled.
+    monkeypatch.setattr(eco, "_latest_overrides", lambda t: _overrides([]))
+    assert evaluate_signal(_put_row(), min_conditions=3, ticker="SPY") is not None
+
+
+def test_the_disableable_condition_set_matches_what_the_checks_emit():
+    """`DISABLEABLE_CONDITIONS` rejects unknown names, so it has to stay in
+    step with the names the condition checks actually record. A new condition
+    added without updating the set would make every override naming it fail
+    closed, which looks like an outage rather than a stale constant."""
+    import inspect
+    import re
+
+    import lib.signals as sig_mod
+
+    src = inspect.getsource(sig_mod)
+    emitted = set(re.findall(r"conditions\.append\('([a-z_0-9]+)'\)", src))
+    assert emitted, "the scan found no condition names; the pattern has drifted"
+    assert emitted == set(sig_mod.DISABLEABLE_CONDITIONS), (
+        "DISABLEABLE_CONDITIONS is out of step with the checks: only in code %s, "
+        "only in the set %s"
+        % (sorted(emitted - set(sig_mod.DISABLEABLE_CONDITIONS)),
+           sorted(set(sig_mod.DISABLEABLE_CONDITIONS) - emitted))
+    )

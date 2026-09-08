@@ -28,12 +28,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe
-    _HAS_CLOUD_SQL = is_cloud_sql_configured()
-except Exception:  # pragma: no cover - import guard
-    _HAS_CLOUD_SQL = False
-    query_to_dataframe = None  # type: ignore[assignment]
+# gcp.database is first-party: an import failure is a bug and fails the
+# app at import (an earlier try/except turned it into "no Cloud SQL",
+# which answered every request with a 503 that blamed configuration).
+# The strict query raises on a failed statement; the swallowing variant
+# turned a failed query into an empty frame and this endpoint into a flat
+# all-zero summary with HTTP 200 (internal review of #1022; CLAUDE.md 3.7).
+from gcp.database import is_cloud_sql_configured, query_to_dataframe_strict
+
+_HAS_CLOUD_SQL = is_cloud_sql_configured()
+
+from api.http_errors import unavailable
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -132,7 +137,7 @@ def get_trade_summary(ticker: str, days: int = Query(90, ge=1, le=3650)) -> _Tra
     backtested trades use the percent return as the comparable unit).
     """
     ticker_upper = ticker.upper()
-    if not _HAS_CLOUD_SQL or query_to_dataframe is None:
+    if not _HAS_CLOUD_SQL:
         raise HTTPException(
             status_code=503,
             detail="Cloud SQL not configured; cannot query trades table.",
@@ -142,9 +147,17 @@ def get_trade_summary(ticker: str, days: int = Query(90, ge=1, le=3650)) -> _Tra
         SELECT direction, return_pct, exit_time, entry_time
         FROM trades
         WHERE ticker = :ticker
+          AND run_kind = 'live'
           AND entry_time >= NOW() - make_interval(days => :days)
     """
-    df = query_to_dataframe(sql, {"ticker": ticker_upper, "days": days})
+    try:
+        df = query_to_dataframe_strict(sql, {"ticker": ticker_upper, "days": days})
+    except Exception as exc:
+        log.exception("trades summary query failed for %s", ticker_upper)
+        # An invalid column or a drifted schema is a defect, not an outage;
+        # a 503 for it tells an operator to retry code that will never
+        # succeed (Codex on #1022, round 23).
+        unavailable("trade summary temporarily unavailable", exc)
     if df.empty:
         return _compute_stats([])
 

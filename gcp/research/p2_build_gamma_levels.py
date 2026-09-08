@@ -58,7 +58,8 @@ import argparse
 import logging
 import sys
 import time
-from datetime import date as _date
+from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -265,18 +266,46 @@ def _process_ticker(engine, ticker: str, start_year: int, end_year: int) -> int:
     return total_rows
 
 
+_ET = ZoneInfo("America/New_York")
+# Sessions this many days back are always inside the default rebuild window,
+# so the nightly run straddling a year boundary still covers the last
+# sessions of the old year. A month, not a week: the scan is per year, so
+# the extra lookback costs nothing in January and a nightly job that is
+# down for more than a week across the boundary (gcp/deploy.sh records
+# gamma_levels_eod freezing silently on 2026-05-22) still rebuilds
+# December by default (internal review of #1022).
+_DEFAULT_LOOKBACK_DAYS = 31
+
+
+def _default_year_range(today_et: _date | None = None) -> tuple[int, int]:
+    """(start_year, end_year) for a run with no explicit years.
+
+    The nightly scheduler fires at 22:30 ET; on a trading December 31 the
+    container's UTC date is already January 1, and ``_date.today().year``
+    would scan only the new year and never process December 31's freshly
+    fetched chain (Codex on #1022). So the range is derived from the ET
+    date, and it starts from the year of ``today - 31 days`` so all of
+    January still rebuilds the prior year's tail.
+    """
+    if today_et is None:
+        today_et = _datetime.now(_ET).date()
+    return (today_et - _timedelta(days=_DEFAULT_LOOKBACK_DAYS)).year, today_et.year
+
+
 def main():
+    default_start, default_end = _default_year_range()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tickers", default=",".join(TICKERS_DEFAULT),
                         help="Comma-separated ticker list (default SPY,IWM,QQQ)")
-    parser.add_argument("--start-year", type=int, default=_date.today().year,
-                        help="First year to (re)build. Default: current year — "
-                             "the scheduled nightly run uses default args and so "
-                             "only refreshes the current year (~1 min/ticker). "
-                             "Pass --start-year=2015 for a full historical backfill.")
-    parser.add_argument("--end-year", type=int, default=_date.today().year,
-                        help="Last year to (re)build. Default: current year "
-                             "(dynamic — no longer hardcoded).")
+    parser.add_argument("--start-year", type=int, default=default_start,
+                        help="First year to (re)build. Default: the year of "
+                             "(ET today - 7 days) — the scheduled nightly run "
+                             "uses default args and so only refreshes the "
+                             "current year (~1 min/ticker), plus the prior year "
+                             "during the first week of January. Pass "
+                             "--start-year=2015 for a full historical backfill.")
+    parser.add_argument("--end-year", type=int, default=default_end,
+                        help="Last year to (re)build. Default: current ET year.")
     parser.add_argument("--create-table-only", action="store_true",
                         help="Just create the table and exit (for testing)")
     args = parser.parse_args()

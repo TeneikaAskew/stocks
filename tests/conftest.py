@@ -369,3 +369,52 @@ def _default_load_watchlist_stub(monkeypatch, request):
         wl_module, "load_watchlist",
         lambda *a, **kw: ["IWM", "QQQ", "SPY"],
     )
+
+
+# ── Telling an outage from a defect in a test ────────────────────────────────
+#
+# The API answers 503 only for an infrastructure failure and lets everything
+# else surface as a 500 (CLAUDE.md 3.7, platform/api/http_errors.py). A test
+# that raises a bare `RuntimeError` and asserts 503 therefore passes only
+# while the handler answers 503 for EVERYTHING, which is the regression such
+# a test exists to catch — it has shipped twice here, on #999 and on #1022.
+# Use these so the test says which kind of failure it is staging.
+
+@pytest.fixture
+def cloud_sql_outage():
+    """Factory fixture: ``cloud_sql_outage()`` builds the outage below."""
+    return _cloud_sql_outage
+
+
+@pytest.fixture
+def application_defect():
+    """Factory fixture: ``application_defect()`` builds the defect below."""
+    return _application_defect
+
+
+def _cloud_sql_outage(message: str | None = None) -> Exception:
+    """A real Cloud SQL outage, shaped the way the driver raises one.
+
+    `lib.infra_errors` classifies psycopg2's `OperationalError` by SQLSTATE
+    and, for a code-less one, by the driver's own connection-failure message,
+    so a terser stand-in is NOT classified as infrastructure — deliberately,
+    since `OperationalError` is also the base of permanently-wrong-credential
+    errors. Build the real thing here rather than at each call site.
+    """
+    import psycopg2
+    import sqlalchemy.exc
+
+    return sqlalchemy.exc.OperationalError(
+        "SELECT 1", {},
+        psycopg2.OperationalError(
+            message or 'connection to server at "127.0.0.1", port 5432 '
+                       "failed: Connection refused"),
+    )
+
+
+def _application_defect(message: str = 'column "x" does not exist') -> Exception:
+    """A failure in code we own: a drifted schema, a bad key, a wrong type.
+
+    Retrying will never fix it, so it must not be reported as a 503.
+    """
+    return RuntimeError(message)

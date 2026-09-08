@@ -62,6 +62,12 @@
 # `gcloud run revisions list` says which commit built it.
 #
 # Required IAM on the trigger SA (trading-runner@): see README.md in this dir.
+#
+# The live trigger holds its build config INLINE (read 2026-09-07: it starts
+# at the `build` step, without even the preflight interlock this file has).
+# After changing this file, re-import it:
+#   gcloud builds triggers update github deploy-solyra-api-staging \
+#     --region=global --inline-config=gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml
 steps:
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: preflight
@@ -79,7 +85,29 @@ steps:
           echo "       use STAGING_SERVICE=1 ./platform/deploy.sh." >&2
           exit 1
         fi
-        bash gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh "$BUILD_ID"
+        # WAIT for every earlier build of any deploy path instead of
+        # refusing. The refusing interlock (assert_no_concurrent_staging_
+        # deploy.sh, still used by the operator path) composed badly with
+        # the migrate step's wait: build A held the staging lock while it
+        # waited for its schema build, build B for the next push refused
+        # at preflight, B's schema build applied its schema, and staging
+        # served push A's code against push B's schema (internal review of
+        # #1022, schema-apply round). Earlier builds only, so the order is
+        # total; bounded by this build's own timeout minus the reserve.
+        #
+        # RESERVE: the waiter's default (2400 s) is sized for a wait that
+        # happens AFTER the image build — which is where apply-schema calls
+        # it, in its `serialize` step. This call is in `preflight`, before
+        # the docker steps, so the build and push have to be reserved too.
+        # Measured on staging build 527e58c5 (2026-09-08): build 114.1 s,
+        # push 52.5 s, deploy 42.9 s, pin 289.6 s. Apply 1800 s + ~90 s
+        # preamble + those four is 2389 s against a 2400 s default, i.e.
+        # about ten seconds of margin (Codex on #1022). 3000 s carries the
+        # measurement with ~600 s of headroom and still leaves 4200 s of
+        # this build's 7200 s timeout to wait in.
+        TAGS="apply-schema-on-change solyra-api-staging-deploy solyra-api-image-build" \
+        RESERVE_SECONDS=3000 \
+          bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh "$BUILD_ID"
   - name: gcr.io/cloud-builders/docker
     id: build
     waitFor: [preflight]
@@ -88,14 +116,105 @@ steps:
     id: push
     waitFor: [build]
     args: [push, '${_IMAGE}:${SHORT_SHA}']
+  # SCHEMA BEFORE CODE. The image just built carries this revision's
+  # gcp/schema.sql and gcp/apply_schema.py (platform/Dockerfile copies gcp/
+  # and installs the Cloud SQL connector), so the apply-schema-migrations job
+  # is pointed at it and executed BEFORE the service is deployed. An API
+  # revision that reads a new column therefore cannot exist until that
+  # column does; if the apply fails, nothing deploys. This is the ordering
+  # the two triggers could not provide on their own (Codex on #1022): the
+  # apply-schema-on-change trigger fires on the same push but neither could
+  # see the other, so the API could serve against the old schema until the
+  # schema build finished, or indefinitely if it failed. The job keeps its
+  # own env and secrets; only its image moves. Job mutations are serialized
+  # across both triggers by wait_for_earlier_schema_builds.sh (start order).
+  # allowFailure: pin-job below must run whatever this step's outcome, so
+  # the step records its exit code in /workspace/apply.rc and the deploy
+  # step refuses on a non-zero one.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    id: deploy
+    id: migrate
     waitFor: [push]
+    allowFailure: true
     entrypoint: bash
     args:
       - -c
       - |
         set -euo pipefail
+        echo 1 > /workspace/apply.rc
+        bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh "$BUILD_ID"
+        DIGEST=$(gcloud container images describe "${_IMAGE}:${SHORT_SHA}" \
+                   --format='value(image_summary.fully_qualified_digest)')
+        if [ -z "$${DIGEST}" ]; then
+          echo "ERROR: could not resolve ${_IMAGE}:${SHORT_SHA} to a digest" >&2
+          exit 1
+        fi
+        # Source revision + committer time, for the applier's revision guard:
+        # it refuses a revision older than the newest successfully applied
+        # one, so an out-of-order build cannot roll the schema back (Codex on
+        # #1022). Main is linear (squash merges), so committer time orders it.
+        # Fail closed if the checkout cannot answer.
+        # Ancestry for the guard's tie-break: main carries adjacent commits
+        # with the same committer second (38 pairs measured 2026-09-07), so
+        # an equal time is ordered only by the newest applied revision being
+        # an ancestor of this one (Codex on #1022). The trigger checkout is
+        # a single-revision fetch (FETCHSOURCE: `* branch <sha> -> FETCH_HEAD`),
+        # so deepen it first. A checkout that cannot be deepened is reported
+        # here, and the applier then refuses a tie rather than guessing.
+        if ! git fetch --deepen=100 origin "$COMMIT_SHA"; then
+          echo "WARNING: could not deepen the checkout; the applier will refuse a" >&2
+          echo "         same-second revision tie instead of ordering it." >&2
+        fi
+        ANCESTORS=$(git rev-list --max-count=100 "$COMMIT_SHA" | tr '\n' ' ')
+        if ! COMMIT_TIME=$(git log -1 --format=%ct "$COMMIT_SHA" 2>&1); then
+          echo "ERROR: cannot read the committer time of $COMMIT_SHA: $${COMMIT_TIME}" >&2
+          exit 1
+        fi
+        # The job must already exist: `jobs update` cannot create it, and
+        # its env, secrets and service account are owned by gcp/deploy.sh,
+        # so the build refuses with the bootstrap command rather than
+        # creating a partial job (Codex on #1022). `all)` creates it too.
+        if ! gcloud run jobs describe apply-schema-migrations --region=us-east1 \
+               --format='value(name)' >/dev/null; then
+          echo "ERROR: the apply-schema-migrations job does not exist (or cannot be" >&2
+          echo "       described). Bootstrap it with ./gcp/deploy.sh apply-schema" >&2
+          echo "       (or ./gcp/deploy.sh all), then re-run this build." >&2
+          exit 1
+        fi
+        # Only the image moves here. Memory, CPU, timeout, env and secrets
+        # are declared once in gcp/deploy.sh (_apply_schema_job_flags) and
+        # reach the live job through ./gcp/deploy.sh apply-schema, so a
+        # sizing change there is not picked up by this build.
+        echo ">> apply-schema-migrations -> $${DIGEST} (this revision's schema.sql)"
+        gcloud run jobs update apply-schema-migrations \
+          --image="$${DIGEST}" \
+          --region=us-east1 \
+          --quiet
+        gcloud run jobs execute apply-schema-migrations \
+          --region=us-east1 \
+          --args="--revision=$COMMIT_SHA,--revision-time=$${COMMIT_TIME},--revision-ancestors=$${ANCESTORS}" \
+          --wait
+        echo 0 > /workspace/apply.rc
+  # Pin the digest apply-schema-migrations now runs, whatever the migrate
+  # step's outcome (the API image is pinned after the deploy, below).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: pin-job
+    waitFor: [migrate]
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; ./gcp/deploy.sh pin-images --no-sweep']
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: deploy
+    waitFor: [pin-job]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        rc=$(cat /workspace/apply.rc)
+        if [ "$rc" != 0 ]; then
+          echo "ERROR: the migrate step failed (exit $rc); not deploying code over a schema" >&2
+          echo "       that was not applied. See the migrate log above." >&2
+          exit "$rc"
+        fi
         DIGEST=$(gcloud container images describe "${_IMAGE}:${SHORT_SHA}" \
                    --format='value(image_summary.fully_qualified_digest)')
         if [ -z "$${DIGEST}" ]; then
@@ -116,10 +235,10 @@ steps:
   # versions older than 30 days -- which is only safe if the digests actually
   # in use carry an `inuse-*` tag, and this is the step that gives them one.
   #
-  # --no-sweep because this build runs as trading-runner@:
-  # roles/artifactregistry.writer creates and moves tags but cannot delete
-  # them, so releasing stale pins stays with the interactive gcp/deploy.sh
-  # path. Pinning is the safety step and still fails closed.
+  # --no-sweep is a policy choice: trading-runner@ can move tags (the
+  # artifactRegistryTagMover role, README.md, #1043), but releasing stale
+  # pins stays with the interactive gcp/deploy.sh path. Pinning is the
+  # safety step and still fails closed.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: pin
     waitFor: [deploy]
@@ -133,4 +252,9 @@ substitutions:
 tags: [solyra-api-staging-deploy]
 options:
   logging: CLOUD_LOGGING_ONLY
-timeout: 1800s
+# 7200 s: waiting out earlier deploy builds at preflight + image build
+# (4.5-6 min measured) + waiting out an earlier schema build's apply + this
+# build's apply (job timeout 1800 s, plus ~90 s measured before the
+# execution starts) + deploy + pin. The serializer reads this value and
+# stops waiting once less than its 2400 s reserve is left.
+timeout: 7200s

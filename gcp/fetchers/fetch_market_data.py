@@ -368,12 +368,14 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
             row['strat_candle'] = str(last_candle)
         if last_combo:
             row['strat_combo'] = str(last_combo)[:30]
-        row['ftfc_score'] = float(ftfc_score) if ftfc_score is not None else 0.0
-        row['ftfc_direction'] = str(ftfc_dir or 'mixed')[:10]
+        # None stays None: a neutral 0.0 / 'mixed' written where there was
+        # no reading is a fabricated value (CLAUDE.md 3.7).
+        row['ftfc_score'] = float(ftfc_score) if ftfc_score is not None else None
+        row['ftfc_direction'] = str(ftfc_dir)[:10] if ftfc_dir else None
         # `strat_setup` is true when FTFC aligns directionally and a
         # combo is in force — the `premarket-brief` definition.
         row['strat_setup'] = bool(
-            last_combo and abs(ftfc_score or 0.0) >= 0.3
+            last_combo and ftfc_score is not None and abs(ftfc_score) >= 0.3
         )
     except Exception as e:
         log.warning("    Strat compute failed for %s: %s", ticker, e)

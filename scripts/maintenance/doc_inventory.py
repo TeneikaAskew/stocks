@@ -124,6 +124,23 @@ def _resolve_locals(body: str, value: str) -> str:
     return value
 
 
+def _expand_helper_calls(body: str, funcs: dict) -> str:
+    """Append the body of every `$(helper)` the function calls, when `helper`
+    is a function defined in the same file.
+
+    deploy.sh declares apply-schema-migrations' flags ONCE, in
+    `_apply_schema_job_flags`, used by both its bootstrap create and the
+    serialized in-build update (#1022); the flags must be read from there or
+    the job renders with Cloud Run defaults. One level only.
+    """
+    extra = []
+    for m in re.finditer(r"\$\(([A-Za-z_][A-Za-z0-9_]*)\)", body):
+        helper = m.group(1)
+        if helper in funcs:
+            extra.append(funcs[helper][1])
+    return body + "\n" + "\n".join(extra) if extra else body
+
+
 def deploy_jobs(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
     """Every Cloud Run Job `gcp/deploy.sh` creates, with its config.
 
@@ -138,6 +155,7 @@ def deploy_jobs(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
     # Map job name -> function via the create/deploy line.
     rows: dict[str, dict[str, Any]] = {}
     for fname, (start, body) in funcs.items():
+        body = _expand_helper_calls(body, funcs)
         for m in re.finditer(r"gcloud run jobs (?:create|deploy) ([a-z0-9][a-z0-9-]*)", body):
             job = m.group(1)
             if job in rows:

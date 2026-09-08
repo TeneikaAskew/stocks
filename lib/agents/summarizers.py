@@ -811,6 +811,7 @@ def summarize_signals_history(
             "SELECT alert_ts, direction, strength_label, total_score "
             "FROM signal_alerts "
             "WHERE ticker = :ticker "
+            "  AND run_kind = 'live' "
             "  AND alert_ts >= NOW() - (:days || ' days')::interval "
             "ORDER BY alert_ts DESC"
         )
@@ -828,6 +829,7 @@ def summarize_signals_history(
             "SELECT alert_ts, direction, strength_label, total_score "
             "FROM signal_alerts "
             "WHERE ticker = :ticker "
+            "  AND run_kind = 'live' "
             "  AND alert_ts < CAST(:end_ts AS timestamptz) "
             "  AND alert_ts >= CAST(:end_ts AS timestamptz) - (:days || ' days')::interval "
             "ORDER BY alert_ts DESC"

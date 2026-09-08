@@ -211,6 +211,15 @@ T = "IWM"
 D = "2026-09-04"
 UUID0 = "00000000-0000-0000-0000-000000000000"
 
+# Six rows answer 503 where they answered 200 before #1022. That PR closed the
+# swallows behind them: `/api/signals` fell back to the legacy GCS parquet on a
+# Cloud SQL failure and the journal and analytics reads went through the
+# swallowing `query_to_dataframe`, so with no backend they returned an empty
+# 200 that no consumer could tell from "there is nothing to show" (audit P1-#2
+# and the journal/analytics readers). `table_exists()` answered False for any
+# error, so the freshness audit reported a fabricated "table missing" (P2-#6);
+# it now raises, and routers/health.py classifies the failure — an unreachable
+# database is a 503, a defect in the audit is still a 500.
 REQUESTS: list[Req] = [
     # ── live ────────────────────────────────────────────────────────────────
     Req("GET", "/api/live/status", 200),
@@ -265,9 +274,12 @@ REQUESTS: list[Req] = [
     Req("POST", "/api/style/mine-and-validate", 200, json={"ticker": T}),
 
     # ── signals ─────────────────────────────────────────────────────────────
-    Req("GET", f"/api/signals/{T}", 200),
+    Req("GET", f"/api/signals/{T}", 503,
+        note="was 200 from the GCS parquet; #1022 made a Cloud SQL failure "
+             "explicit (audit P1-#2)"),
     Req("GET", f"/api/signals/{T}/similar?direction=CALL&rsi=50&stoch_k=50"
-               "&atr_pct=1.0&score=5.0", 200),
+               "&atr_pct=1.0&score=5.0", 503,
+        note="same: reads through query_to_dataframe_strict"),
 
     # ── insights ────────────────────────────────────────────────────────────
     Req("GET", "/api/insights/ticker/search?keywords=russell", 200),
@@ -289,7 +301,8 @@ REQUESTS: list[Req] = [
 
     # ── journal ─────────────────────────────────────────────────────────────
     Req("GET", f"/api/journal/trades/{T}", 200),
-    Req("GET", f"/api/journal/examples/{T}", 200),
+    Req("GET", f"/api/journal/examples/{T}", 503,
+        note="was 200 with zero rows from the swallowing query; #1022"),
     Req("POST", "/api/journal/trades", 200,
         json={"ticker": T, "direction": "CALL", "entry_date": D,
               "entry_time": "10:00", "entry_price": 200.0}),
@@ -335,18 +348,23 @@ REQUESTS: list[Req] = [
         note="was a bare 500"),
     Req("PUT", f"/api/admin/users/test-uid/status", 503,
         json={"disabled": False}, note="was a bare 500"),
-    Req("GET", "/api/admin/data-sources", 200),
+    Req("GET", "/api/admin/data-sources", 503,
+        note="regroups the freshness audit through the same cache, so it "
+             "answers the outage the same way; #1022"),
     Req("POST", "/api/admin/data-sources/market_data_daily/refresh", 503),
 
     # ── analytics ───────────────────────────────────────────────────────────
     Req("POST", "/api/analytics/trade-stats", 200, json={"trades": []}),
-    Req("GET", f"/api/analytics/summary/{T}", 200),
+    Req("GET", f"/api/analytics/summary/{T}", 503,
+        note="was 200 with zero rows from the swallowing query; #1022"),
 
     # ── config / health / glossary ──────────────────────────────────────────
     Req("GET", "/api/config/firebase", 200),
     Req("GET", "/api/config/indicators", 200),
     Req("GET", "/api/config/market-hours", 200),
-    Req("GET", "/api/health/freshness", 200),
+    Req("GET", "/api/health/freshness", 503,
+        note="table_exists() no longer answers False for an outage (#1022), "
+             "so the audit fails and is classified as infrastructure"),
     Req("GET", "/api/glossary/gamma", 200),
     Req("GET", "/api/health", 200),
     Req("GET", "/api/me", 200),

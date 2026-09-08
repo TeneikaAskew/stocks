@@ -193,7 +193,7 @@ def load_from_db(lookback_days: int, tickers: list[str]) -> tuple[pd.DataFrame, 
         "strength_label, position_size, price_at_signal, target_price, time_stop_minutes, rsi, rvol, "
         "conditions_met, strategy_agreement, timeframe_tag, expected_hold_min, exit_ts, exit_reason, "
         "exit_price, exit_return_pct, is_open, brief_bias, brief_alignment, level_broken "
-        f"FROM signal_alerts WHERE alert_date >= '{cutoff}' AND ticker = ANY(%s) ORDER BY ticker, alert_ts"
+        f"FROM signal_alerts WHERE alert_date >= '{cutoff}' AND ticker = ANY(%s) AND run_kind = 'live' ORDER BY ticker, alert_ts"
     )
     sa = pd.read_sql(sa_sql, eng, params=(tickers,))
 

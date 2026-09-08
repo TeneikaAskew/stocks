@@ -520,13 +520,11 @@ class DataLoader:
         if timeframes is None:
             timeframes = ['5m', '15m', '1h', '4h', '12h', '1d', '1w']
 
-        result = {}
-        for tf in timeframes:
-            try:
-                result[tf] = self.aggregate_to_timeframe(df, tf)
-            except Exception:
-                continue
-        return result
+        # No swallow: lib/strat.py relies on an unknown key raising here
+        # so a mistake surfaces instead of producing empty FTFC, and the
+        # `except Exception: continue` this replaced made that false
+        # (internal review of #1022; CLAUDE.md 3.7).
+        return {tf: self.aggregate_to_timeframe(df, tf) for tf in timeframes}
 
     def load_options(
         self,
@@ -608,13 +606,27 @@ class DataLoader:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         ticker: Optional[str] = None,
+        run_kind: Optional[str] = 'live',
     ) -> pd.DataFrame:
-        """Load logged trades from Cloud SQL trades table."""
+        """Load logged trades from Cloud SQL trades table.
+
+        ``run_kind`` defaults to ``'live'`` so analysis never counts replay
+        or backfill rows as production trades (trades.run_kind, #820: 412
+        simulated rows from a deleted backfill script sat unmarked in the
+        table). Pass ``None`` to read every kind.
+        """
+        # AUDIT-2026-05-13: silent fallback — with no Cloud SQL configured
+        # (local dev) this returns an empty frame the caller cannot tell from
+        # "no trades"; the trades table has no other source, so there is no
+        # cross-source fallback here (§3.7.1), only the unconfigured case.
         if not _cloud_sql_active():
             return pd.DataFrame()
 
         params: dict = {}
         conditions = []
+        if run_kind is not None:
+            conditions.append("run_kind = :run_kind")
+            params['run_kind'] = run_kind
         if ticker:
             conditions.append("ticker = :ticker")
             params['ticker'] = ticker.upper()

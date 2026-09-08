@@ -507,6 +507,7 @@ def _load_signal_outcomes(tickers, start_str, end_str):
         WHERE alert_date BETWEEN :start AND :end
           AND ticker = ANY(:tickers)
           AND exit_return_pct IS NOT NULL
+          AND run_kind = 'live'
         """
     )
     try:

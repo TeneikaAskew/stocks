@@ -732,11 +732,26 @@ def migrate_trades(data_dir: Path, dry_run: bool):
                 df['entry_time'] = _trade_times_to_utc(df['entry_time'])
             if 'exit_time' in df.columns:
                 df['exit_time'] = _trade_times_to_utc(df['exit_time'])
+            # trades.run_kind is NOT NULL and upsert_dataframe binds every
+            # column, so a pre-stamp row (null, or a file without the
+            # column) rejected the whole file. Those rows are 'live' for
+            # the same reason TradeLogger._filter_run_kind reads a null
+            # that way: the files have one writer, the live monitor.
+            if 'run_kind' not in df.columns:
+                df['run_kind'] = None
+            missing = df['run_kind'].isna()
+            if missing.any():
+                log.info("  %s: %d row(s) predate the run_kind stamp; recorded as live "
+                         "(the files' one writer is the live monitor)", f.name, int(missing.sum()))
+                df.loc[missing, 'run_kind'] = 'live'
             if not dry_run:
                 upsert_dataframe(df, 'trades', ['ticker', 'entry_time'])
             total += len(df)
-        except Exception as e:
-            log.warning("  ✗ %s: %s", f.name, e)
+        except Exception:
+            # A file that cannot be restored is a failed restore, not a
+            # warning line in a summary that says "trades: N rows".
+            log.error("  ✗ %s: restore failed", f.name)
+            raise
 
     log.info("trades: %d rows", total)
 
