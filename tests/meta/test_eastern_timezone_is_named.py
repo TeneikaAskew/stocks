@@ -3622,6 +3622,61 @@ def _yaml_argv_hits(seq) -> list:
     return out
 
 
+def _candidate_pattern() -> "re.Pattern[str]":
+    """A cheap lexical prefilter: the tokens WITHOUT which no analyzer in this
+    module -- the Python AST pass, the notebook pass, or the non-Python regex
+    pass -- can produce a finding.
+
+    Built from this module's own vocabulary so it cannot drift from the
+    matchers, and a proven SUPERSET of every finding shape (asserted below by
+    `test_the_candidate_prefilter_keeps_every_finding_shape`):
+
+    * A standalone-flagged constant carries its own token: an UNAMBIGUOUS
+      legacy name or a fixed-offset ZONE (`EST5`, `Etc/GMT+5`) is reported
+      wherever it stands, so the literal name is the token.
+    * Everything else needs a timezone CONTEXT the analyzer can see, and that
+      context is itself a contiguous token in the raw text: a timezone call or
+      constructor (`ZoneInfo`, `pytz.timezone`, `FixedOffset`, `tzoffset`,
+      `timedelta`, ...), a timezone keyword or the `TZ`/`PGTZ` env key, or the
+      `TIME ZONE` / `timezone=` phrase an embedded-SQL or env assignment uses.
+      The bare `EST`/`EDT` tokens and every fixed OFFSET string
+      (`-05:00`, `UTC+5`) only ever fire behind one of these, so the context
+      is what the filter keys on, not the ambiguous value.
+
+    Skipping a file with none of these avoids parsing and walking the ~590
+    unrelated modules the full-tree scan otherwise runs `_python_hits` over --
+    about thirty seconds of every full-suite run for one invariant (Codex,
+    PR #993). `now` is deliberately left out of the call list: it is a
+    substring of ordinary words and is only a timezone context with a receiver
+    (`pd.Timestamp.now`) or an explicit `tz=`/zone argument, both of which
+    bring their own token. `timedelta` is left out for the same reason: a bare
+    `timedelta(hours=-5)` is a duration, not a finding, and is REPORTED only
+    when it reaches `follow` -- as a timezone constructor argument, a `tz=`
+    value, or a timezone-named binding -- so the enclosing `timezone(...)` /
+    `tzinfo=` / `tz` context is a token in the same file. Keeping it in the set
+    kept every module that measures an elapsed duration, which is most of them.
+    """
+    calls = ((_TZ_CALLS | _FIXED_OFFSET_CALLS | _FIXED_OFFSET_SECOND_CALLS)
+             - {"now"})
+    keys = _TZ_KEYWORDS | {k.lower() for k in _POSIX_TZ_KEYS}
+    literals = sorted(
+        set(UNAMBIGUOUS_LEGACY) | set(_FIXED_OFFSET_ZONES) | calls | keys
+        | {"pytz", "dateutil"},
+        key=len, reverse=True)
+    alts = [re.escape(t) for t in literals]
+    # The `TIME ZONE` / `time_zone` / `timezone=` phrase every embedded-SQL and
+    # env-assignment context contains, and a bare numeric Eastern offset as a
+    # belt-and-suspenders net -- both cheap, both case-insensitive.
+    alts.append(r"time[ _]?zone")
+    alts.append(r"-\s*0?[45]:0?0")
+    return re.compile("|".join(alts), re.I)
+
+
+#: One compiled union, evaluated at import. A file the scan can skip entirely
+#: when its raw text matches none of it.
+_CANDIDATE_RX = _candidate_pattern()
+
+
 @functools.lru_cache(maxsize=1)
 def _scan() -> tuple[list[str], list[str]]:
     """Repository-wide (legacy-name hits, fixed-offset hits).
@@ -3646,6 +3701,15 @@ def _scan() -> tuple[list[str], list[str]]:
         text = p.read_text(errors="replace")
         rel = str(p.relative_to(REPO)).replace("\\", "/")
         if rel == SELF:
+            continue
+        if not _CANDIDATE_RX.search(text):
+            # None of the tokens any matcher below can fire on is present, so
+            # neither the AST pass, the notebook pass, nor the regex pass could
+            # report this file -- skip the parse and the walk. The read above
+            # still happened: an unreadable tracked file errors, it is only the
+            # ANALYSIS of a plainly-unrelated module that is avoided (Codex,
+            # PR #993). `_CANDIDATE_RX` is a proven superset of every finding
+            # shape; see `test_the_candidate_prefilter_keeps_every_finding_shape`.
             continue
         if p.suffix == ".py":
             parsed = _python_hits(p, text)
@@ -3729,6 +3793,76 @@ def test_no_fixed_offset_standing_in_for_eastern():
     assert not offsets, (
         "A fixed UTC offset cannot express Eastern time across DST:\n  "
         + "\n  ".join(offsets))
+
+
+def test_the_candidate_prefilter_keeps_every_finding_shape():
+    """`_scan` skips a file whose raw text matches none of `_CANDIDATE_RX`, so
+    the filter MUST be a superset of every shape the analyzers report. Iterates
+    the module's OWN vocabulary -- a name added to `ALL_LEGACY`,
+    `_FIXED_OFFSET_ZONES`, `_TZ_CALLS`, ... is covered by construction -- and
+    pins by hand the ambiguous, offset, numeric-constructor and embedded-SQL
+    shapes that only fire behind a context token. Also proves the point of the
+    filter: an unrelated module is skipped (Codex P2 on #993).
+    """
+    def keep(src):
+        return bool(_CANDIDATE_RX.search(src))
+
+    # Standalone-flagged constants carry their own token wherever they stand.
+    for z in UNAMBIGUOUS_LEGACY + _FIXED_OFFSET_ZONES:
+        assert keep('ZONE = ' + repr(z)), z
+
+    # Ambiguous EST/EDT and fixed OFFSET strings fire only behind a timezone
+    # context; the context is the token, so cover each one the analyzers read.
+    ambiguous_and_offsets = list(AMBIGUOUS_LEGACY) + [
+        "-05:00", "-0500", "-4:00", "-05:00:00", "UTC-05:00", "EST5", "EST+05"]
+    for v in ambiguous_and_offsets:
+        for ctx in ('ZoneInfo(' + repr(v) + ')',
+                    'TIME_ZONE = ' + repr(v),
+                    'os.environ["TZ"] = ' + repr(v),
+                    'os.putenv("PGTZ", ' + repr(v) + ')',
+                    'cur.execute("SET TIME ZONE " + ' + repr(v) + ')'):
+            assert keep(ctx), ctx
+
+    # Every timezone call and offset constructor name is a token. `now` is the
+    # one left out: it needs a receiver or an explicit tz argument to be a
+    # context, and both bring their own token.
+    for call in (_TZ_CALLS | _FIXED_OFFSET_CALLS
+                 | _FIXED_OFFSET_SECOND_CALLS) - {"now"}:
+        assert keep(call + '("EST")'), call
+    assert keep('pd.Timestamp.now(tz="EST")')
+    assert keep('datetime.now(ZoneInfo("US/Eastern"))')
+
+    # Numeric offsets. `FixedOffset`/`tzoffset`/`tzrange` are their own token;
+    # a fixed `timedelta` is reported only inside a timezone context, and that
+    # context -- `timezone(...)`, `tzinfo=`, a timezone-named binding -- is the
+    # token that survives, NOT the bare `timedelta`, which is a duration.
+    for src in ('FixedOffset(-300)', 'tzoffset(None, -18000)',
+                'tzrange("EST", -18000)',
+                'timezone(timedelta(hours=-5))',
+                'timezone(timedelta(seconds=-18000))',
+                'dt.replace(tzinfo=timedelta(hours=-5))',
+                'datetime(2020, 1, 1, tzinfo=timedelta(hours=-4))',
+                'TIME_ZONE = timedelta(hours=-5)'):
+        assert keep(src), src
+    # And a bare fixed-offset duration with no timezone context is NOT a
+    # finding, so the filter is free to skip it -- this is the whole win.
+    assert not keep('elapsed = timedelta(hours=-5)\nreturn elapsed\n')
+
+    # Embedded SQL and the libpq option carry the `TIME ZONE`/`timezone=`
+    # phrase even when the zone itself is split or bound elsewhere.
+    for src in ("q = 'SELECT ts AT TIME ZONE ' + zone + ' FROM t'",
+                'conn = connect(options="-c timezone=EST")',
+                "cur.execute('SET TIME ZONE ' + val)"):
+        assert keep(src), src
+
+    # The whole point of the filter: an unrelated module matches nothing and is
+    # never parsed. These carry the near-miss substrings (`est`, `latest`,
+    # `request`, `+5`) the filter must NOT trip on.
+    for plain in ("import os\nx = os.getcwd()\nreturn len(x)\n",
+                  "def add(a, b):\n    return a + b  # the fastest path\n",
+                  "REQUESTS = 5\nlatest = get_best_request()\nrest = 45\n",
+                  "MULTIPLIER = -45\nSPREAD = a - 450\n"):
+        assert not keep(plain), plain
 
 
 def test_every_scheduler_declaration_uses_the_named_zone():
