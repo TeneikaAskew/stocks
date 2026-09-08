@@ -23,6 +23,13 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
                 headings carry the month's data
 * structure     a regenerated doc carries every numbered section its prompt
                 promises, derived from the prompt
+* elision       no prose line is only an ellipsis: a `replace` that writes
+                `...` deletes the paragraph it stood in (run 27)
+* prose floor   prose outside the marker blocks keeps 80% of its characters
+* tail          no line is the tail of the line above it: a `replace` that
+                rewrote a span and left the end of the old text (run 28)
+* as-of         the "Live <date>" and "read on <date>" labels in prose name
+                the snapshot this run actually read (run 28)
 * stale         no retired name or phrase appears outside history context
 * scaling       no doc states a fixed min-instances for a service whose
                 minInstanceCount is PATCHed on a schedule
@@ -420,6 +427,117 @@ def gate_elided_prose(root: pathlib.Path) -> list[str]:
     return out
 
 
+# A leftover fragment is only a fragment if it is long enough to be one. Below
+# this, `...` and short repeated table cells start matching. Measured over every
+# markdown file in docs/ plus README.md plus run 28's four regenerated
+# documents: exactly one hit, the real one.
+TAIL_FRAGMENT_MIN = 20
+
+
+def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
+    """A line that is the tail of the line above it — a botched `replace`.
+
+    Run 28 finished 05-a-ARCHITECTURE.md with:
+
+        Generated 2026-09-08 ... from the 2026-09-08 live snapshot. The
+        monthly refresh updates this line.
+        pshot. The monthly refresh updates this line.
+
+    The model replaced the trailing span and left the tail of the old text
+    behind as its own line, beginning mid-word. Every other gate passed it:
+    it is not an ellipsis, the churn was 12%, the headings were intact and it
+    names no infrastructure, so `verify_docs_against_live.py` had nothing to
+    check. It is caught here as a shape — a line whose whole text is the end
+    of the line before it, which no sentence in this corpus legitimately is.
+
+    Only this direction is checked. A line that is a PREFIX of its neighbour
+    is a repeated CLI example (`docs/alpha-vantage-quickstart.md` has eleven),
+    and a line the NEXT one ends with is a wrapped shell continuation
+    (`COST_AUDIT_2026-09-06.md:262`). Both shapes are legitimate here, so
+    gating on them would fail honest documents.
+    """
+    out = []
+    for doc in DOCS:
+        f = root / doc
+        if not f.exists():
+            continue
+        lines = _prose_lines(f.read_text())
+        for i in range(1, len(lines)):
+            prev, cur = lines[i - 1].strip(), lines[i].strip()
+            if len(cur) >= TAIL_FRAGMENT_MIN and cur != prev and prev.endswith(cur):
+                out.append(f"{doc}: line is the tail of the one above it: {cur!r} "
+                           f"(prose line {i + 1}) — a `replace` rewrote the span and "
+                           "left the end of the old text behind")
+    return out
+
+
+# The three "as of" labels a human wrote into the prose, every one of which has
+# to track the snapshot the run was taken from. Deliberately literal: a looser
+# pattern would sweep up the historical dates beside them -- 05-a carries 33
+# occurrences of `2026-09-07`, and all but these are records of when something
+# was corrected, deleted or audited and must NOT move.
+ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
+               re.compile(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*"),
+               # 05-a's closing line carries TWO dates: "Generated <date> ...
+               # from the <date> live snapshot". The first is already required
+               # to be today by the workflow's own step 1, which greps every
+               # one of the four documents for `Generated ${TODAY}` before
+               # this script runs; the second is checked nowhere else, and a
+               # refresh that updated only one of the pair would leave the
+               # line self-contradicting. Only the second is added here: the
+               # committed 05-d legitimately carries `Generated 2026-09-02`
+               # (the last run that regenerated it), so gating the first would
+               # fail an honest tree outside the workflow. (Codex, PR #1062.)
+               re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
+# 05-a must carry all three: they are the header note, §3's table column and
+# the closing line, and the architecture prompt names each one. The other
+# documents state no live as-of label, so nothing is required of them.
+REQUIRED_ASOF = {ARCH: ASOF_LABELS}
+
+
+def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
+    """An "as of" label that still names an older snapshot.
+
+    Run 28 updated 05-a's header to `read on **2026-09-08**` and left §3's
+    table header at `| Service | Role | Live 2026-09-07 |`, so a table of the
+    current fleet announced itself as a day old. On a monthly cadence that
+    label is a month out, which is long enough for a reader to discount a
+    table that is in fact current.
+
+    The dates the marker blocks carry are rendered, so they are already right;
+    these three are prose and were not. All are checked against `read_at` from
+    the same snapshot the blocks were rendered from -- and `read_at`, not
+    today, because a run that snapshots before UTC midnight and writes after
+    it has two different days. The prompt is handed the same value.
+    """
+    out = []
+    if not live or not live.get("read_at"):
+        return out
+    day = live["read_at"][:10]
+    for doc in DOCS:
+        f = root / doc
+        if not f.exists():
+            continue
+        matched = {pat: 0 for pat in ASOF_LABELS}
+        for i, line in enumerate(_prose_lines(f.read_text()), 1):
+            for pat in ASOF_LABELS:
+                for m in pat.finditer(line):
+                    matched[pat] += 1
+                    if m.group(1) != day:
+                        out.append(f"{doc}: as-of label says {m.group(1)} but this run read "
+                                   f"live state on {day} (prose line {i}): {m.group(0)!r}")
+        # A date gate that only compares dates fails OPEN on a reword: change
+        # §3's column header to `| Service | Role | Current |` and no pattern
+        # matches, so the document loses its freshness provenance and the gate
+        # reports clean. 05-a is required to carry all three. (Codex, #1062.)
+        for pat in REQUIRED_ASOF.get(doc, ()):  # noqa: SIM118 -- keys are patterns
+            if not matched[pat]:
+                out.append(f"{doc}: no as-of label matching {pat.pattern!r}. That location "
+                           "states when the live state below it was read; rewording it away "
+                           "leaves the reader no way to tell how fresh the table is")
+    return out
+
+
 def gate_prose_floor(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[str]:
     """Prose outside the rendered blocks must not collapse.
 
@@ -608,6 +726,59 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
     return out
 
 
+# The self-contained arithmetic about `gcp/schema.sql`, which 05-a states in
+# TWO places and in two different shapes: §5's "declares **70 relations** (67
+# tables, ...)" and §3's table cell "95 relations (69 declared in
+# `gcp/schema.sql` — 66 tables, ...)". Anchoring on §5's phrasing alone left
+# the §3 copy unchecked, which is the same reading-not-deriving mistake
+# Codex named on #1009 and which I then repeated while fixing this very
+# sentence: I corrected §5 to 70/67 and left §3 at 69/66.
+#
+# Parts are matched as a list rather than a fixed 3-tuple, so a schema that
+# grows a second view or loses its only one is still checked instead of
+# silently unmatched -- a gate that stops matching on a reword fails open.
+# Longest kind first: "materialized views" ends in "views".
+RELATION_TOTAL = re.compile(r"declares \*\*(\d+) relations?\*\*|"
+                            r"\b(\d+) declared in `gcp/schema\.sql`")
+RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
+# What may sit between a declared total and the first of its parts: an opening
+# bracket, a dash, a colon.
+PART_LEAD = re.compile(r"^[\s(:\u2014\u2013-]*")
+# What continues the list: a comma, an "and", or both. Anything else ends it.
+# The bare "and" matters -- "67 tables, 2 materialized views and 1 view" is a
+# natural rephrase, and requiring the comma would silently drop the last part
+# from the check rather than fail, which is the direction that loses.
+PART_SEP = re.compile(r"^(?:\s*,\s*(?:and\s+)?|\s+and\s+)")
+
+
+def declared_parts(rest: str) -> list[tuple[int, str]]:
+    """The parts a declared total introduces, as a contiguous comma-separated run.
+
+    Delimiting on the first `)` or `;` was still too generous: §3's breakdown
+    ends at an EM DASH inside the outer parenthetical, so the scan ran on
+    through the sentence's tail. It happens not to match today ("plus 26
+    created at runtime"), but a rephrase to "plus 26 tables created at
+    runtime" would compare that 26 against the 67 declared tables and abort a
+    monthly refresh whose numbers were correct.
+
+    Consuming the run itself has no such boundary to get wrong: the list ends
+    at the first thing that is not another `N kind` after a comma, whatever
+    punctuation follows. (Codex, PR #1062.)
+    """
+    out: list[tuple[int, str]] = []
+    rest = PART_LEAD.sub("", rest, count=1)
+    while True:
+        m = RELATION_PART.match(rest)
+        if not m:
+            return out
+        out.append((int(m.group(1)), m.group(2)))
+        rest = rest[m.end():]
+        sep = PART_SEP.match(rest)
+        if not sep:
+            return out
+        rest = rest[sep.end():]
+
+
 def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
     """Prose figures that are DERIVED from the inventory must match it.
 
@@ -650,6 +821,43 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
         if int(claimed) != want:
             out.append(f"{ARCH}: claims {claimed} jobs at --max-retries {flag}; "
                        f"gcp/deploy.sh declares {want}")
+
+    # "declares **70 relations** (66 tables, 2 materialized views, 1 view)".
+    # Run 28 raised the total from 69 to 70 -- correctly, `gcp/schema.sql` had
+    # gained a table -- and left the breakdown at 66/2/1, which sums to 69. The
+    # sentence contradicted itself, and every gate passed it: the total was
+    # right, the churn was 12%, and no other document repeats the split. All
+    # four numbers are computable from the same parse the rendered table comes
+    # from, so none of them should be a prose claim anyone keeps in sync.
+    kinds = {"table": len(repo["tables"]), "materialized view": len(repo["materialized_views"]),
+             "view": len(repo["views"])}
+    total = sum(kinds.values())
+    breakdown = ", ".join(f"{v} {k}" + ("s" if v != 1 else "") for k, v in kinds.items())
+    for doc in (ARCH, DEPS):
+        for i, line in enumerate(_prose_lines((root / doc).read_text()), 1):
+            for m in RELATION_TOTAL.finditer(line):
+                claimed = m.group(1) or m.group(2)
+                if int(claimed) != total:
+                    out.append(f"{doc}: claims {claimed} declared relations (prose line {i}); "
+                               f"gcp/schema.sql declares {total} ({breakdown})")
+                parts = declared_parts(line[m.end():])
+                for n, kind_word in parts:
+                    kind = kind_word.rstrip("s")
+                    if n != kinds[kind]:
+                        out.append(f"{doc}: claims {n} {kind_word} in gcp/schema.sql "
+                                   f"(prose line {i}); it declares {kinds[kind]} ({breakdown})")
+                # Every part being individually right does not make the list
+                # complete: "70 relations (67 tables, 2 materialized views)"
+                # passes each comparison while the parts shown sum to 69 -- the
+                # same self-contradiction this gate was added for, recreated by
+                # dropping a category instead of mistyping one. (Codex, #1062.)
+                seen = {k.rstrip("s") for _, k in parts}
+                want = {k for k, v in kinds.items() if v}
+                if parts and seen != want:
+                    missing = ", ".join(sorted(want - seen)) or "-"
+                    out.append(f"{doc}: the breakdown beside {claimed} relations omits "
+                               f"{missing} (prose line {i}); gcp/schema.sql declares "
+                               f"{total} ({breakdown}) and every kind belongs in the list")
 
     if live and live.get("db_tables"):
         declared, runtime = relation_counts(repo, live)
@@ -754,6 +962,8 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_diff_budget(diff_stats(root, previous_dir), allow_rewrite)
     findings += gate_headings_and_size(root, previous_dir)
     findings += gate_elided_prose(root)
+    findings += gate_duplicated_tail(root)
+    findings += gate_stale_asof(root, live)
     findings += gate_prose_floor(root, previous_dir)
     findings += gate_regenerated_structure(root)
     findings += gate_derived_numbers(root, repo, live)

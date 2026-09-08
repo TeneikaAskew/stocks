@@ -44,8 +44,24 @@ PROMPTS = ("architecture", "data-dependencies", "cost-analysis", "readme")
 # db_tables is keyed by relation name, as doc_inventory writes it; 855 live,
 # of which the 700 declared below plus 155 runtime-created.
 LIVE = {
-    "counts": {"jobs": 811, "schedulers": 822, "services": 833, "secrets": 844},
+    "counts": {"jobs": 811, "schedulers": 822, "services": 5, "secrets": 844},
     "db_tables": {f"t{i}": {} for i in range(855)},
+    # Keyed by service name, as doc_inventory's snapshot writes it. The NAMES
+    # are substituted as well as the count: run 28 wrote `solyra-api` where the
+    # live services are `solyra-api-prod` and `solyra-api-staging`, and the
+    # refresh failed on a service that does not exist.
+    #
+    # Invented names, and FIVE of them rather than the real four, for the same
+    # reason every count here is unreal: a prompt that was never rendered must
+    # not be able to pass by carrying the true fleet in its prose. Unlike the
+    # other counts this one has to equal `len(services)`, because the renderer
+    # now cross-checks the name SETS across the two snapshots.
+    "services": {f"svc-{n}": {} for n in ("alpha", "bravo", "charlie", "delta", "echo")},
+    # The day the snapshot was taken, which the two live as-of labels in 05-a
+    # carry. Not today's date, deliberately: a run that snapshots before UTC
+    # midnight and calls the model after it has two different days, and this
+    # value is the one `gate_stale_asof` compares those labels against.
+    "read_at": "2019-03-04T05:06:07Z",
 }
 REPO_INVENTORY = {"repo": {
     "counts": {"jobs": 866, "schedulers": 877, "tables": 690},
@@ -57,7 +73,12 @@ REPO_INVENTORY = {"repo": {
 # it counts, from its own gcloud calls. It must agree with live.json, and the
 # renderer refuses rather than hoping.
 VERIFY_LIVE = {"run_jobs": ["j"] * 811, "schedulers": {f"s{i}": {} for i in range(822)},
-               "services": ["v"] * 833, "secrets": ["k"] * 844}
+               # The verifier stores service NAMES, and they must be the same
+               # names live.json holds: a rename between the two snapshots
+               # leaves the count equal and the sets different, which is what
+               # the renderer now refuses.
+               "services": [f"svc-{n}" for n in ("alpha", "bravo", "charlie", "delta", "echo")],
+               "secrets": ["k"] * 844}
 
 
 @pytest.fixture
@@ -84,6 +105,55 @@ def test_the_cost_prompt_states_the_scheduler_count_as_a_substituted_value(value
     assert "**855** live, **700** declared, **155** runtime-created" in out
 
 
+def test_the_cost_prompt_names_every_live_service(values):
+    """Run 28 wrote `solyra-api` for `solyra-api-prod`, twice, and the run went
+    red on a service that does not exist. A count cannot prevent that -- the
+    count was right. The names are substituted too, so the model copies them.
+
+    Asserted as a SET so a renderer that drops, adds or shortens one fails:
+    `solyra-api` is a substring of `solyra-api-prod`, so a substring check
+    would pass on exactly the output that broke run 28.
+    """
+    out = rp.render((PROMPT_DIR / "cost-analysis.md").read_text(), values, "cost")
+    line = next(ln for ln in out.split("\n") if ln.startswith("- Cloud Run Services:"))
+    assert set(re.findall(r"`([^`]+)`", line)) == set(LIVE["services"])
+    assert "**5**" in line
+
+
+def test_a_rename_between_the_two_snapshots_refuses_to_render():
+    """Equal counts do not mean equal names. The two snapshots are taken by
+    two scripts from two sets of gcloud calls at different points in the run,
+    so a service renamed between them leaves the fleet SIZE unchanged and the
+    NAMES different. The verifier checks the finished document against ITS
+    snapshot, so rendering a name only `live.json` has would fail the run on a
+    name this pipeline supplied -- the exact failure the count cross-check
+    exists to prevent, one field over. (Codex, PR #1062.)"""
+    renamed = [n for n in VERIFY_LIVE["services"] if n != "svc-echo"] + ["svc-echo-v2"]
+    assert len(renamed) == len(VERIFY_LIVE["services"]), "the count must stay equal"
+    with pytest.raises(SystemExit) as e:
+        rp.counts(LIVE, REPO_INVENTORY, {**VERIFY_LIVE, "services": renamed})
+    assert "svc-echo" in str(e.value) and "svc-echo-v2" in str(e.value)
+
+
+def test_a_service_snapshot_with_no_names_refuses_to_render():
+    """Rule 3.7: an empty list is not a fleet, and handing the model one would
+    invite it to derive the names it could not read."""
+    with pytest.raises(SystemExit) as e:
+        rp.counts({**LIVE, "services": {}}, REPO_INVENTORY, VERIFY_LIVE)
+    assert "LIVE_SERVICE_NAMES" in str(e.value)
+
+
+def test_the_service_names_are_a_placeholder_not_prose():
+    """The same defect one layer up: a name written into the template goes
+    stale on the next rename, and nothing fails."""
+    src = (PROMPT_DIR / "cost-analysis.md").read_text()
+    assert "{{LIVE_SERVICE_NAMES}}" in src
+    rendered = rp.render(src, rp.counts(LIVE, REPO_INVENTORY, VERIFY_LIVE), "cost")
+    for name in LIVE["services"]:
+        assert name not in src, f"{name} is hardcoded in the template"
+        assert name in rendered, name
+
+
 def test_every_prompt_carries_the_authoritative_block(values):
     """A prompt that never states the counts cannot be expected to use them."""
     for name in PROMPTS:
@@ -106,11 +176,13 @@ def test_a_malformed_placeholder_never_reaches_the_model(values):
     assert "survived rendering" in str(e.value)
 
 
+# Derived from LIVE so each case is a complete snapshot broken in exactly one
+# place. Spelling them out in full let an earlier version omit a key that was
+# added later, so the case raised on the missing key and stopped exercising the
+# guard it was written for.
 @pytest.mark.parametrize("broken", [
-    {"counts": {"jobs": 0, "schedulers": 822, "services": 833, "secrets": 844},
-     "db_tables": {"x": {}}},
-    {"counts": {"jobs": 811, "schedulers": 822, "services": 833, "secrets": 844},
-     "db_tables": {}},
+    {**LIVE, "counts": {**LIVE["counts"], "jobs": 0}},
+    {**LIVE, "db_tables": {}},
 ])
 def test_an_empty_snapshot_refuses_to_render(broken):
     """Rule 3.7: a zero count is a broken dump, not a fact to hand the model."""
@@ -378,3 +450,27 @@ def test_the_hand_maintained_copies_exist_and_link_correctly():
             if target.startswith(("http", "mailto:")):
                 continue
             assert (f.parent / target).resolve().exists(), (f.name, target)
+
+
+def test_the_snapshot_date_is_substituted_not_called_today(values):
+    """The two live as-of labels in 05-a describe the SNAPSHOT; the `Generated`
+    stamp describes the run. They are the same day on almost every run and
+    different on one that crosses UTC midnight between the two, and
+    `gate_stale_asof` compares the labels against `read_at` — so a prompt that
+    said "use today" would have the model write a date its own gate rejects.
+    (Codex, PR #1062.)"""
+    assert values["LIVE_READ_DATE"] == "2019-03-04"
+    src = (PROMPT_DIR / "architecture.md").read_text()
+    assert "{{LIVE_READ_DATE}}" in src
+    out = rp.render(src, values, "architecture")
+    assert "2019-03-04" in out
+
+
+def test_a_snapshot_without_a_read_date_refuses_to_render():
+    """`read_at` is what every live as-of label in the regenerated documents is
+    checked against. A snapshot missing it, or carrying something that is not a
+    date, cannot produce a document that passes its own gate."""
+    for broken in ({**LIVE, "read_at": ""}, {**LIVE, "read_at": "yesterday"}):
+        with pytest.raises(SystemExit) as e:
+            rp.counts(broken, REPO_INVENTORY, VERIFY_LIVE)
+        assert "LIVE_READ_DATE" in str(e.value)

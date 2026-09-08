@@ -819,3 +819,317 @@ def test_a_dotted_label_is_still_a_label(tmp_path):
     out = gate.gate_elided_prose(tmp_path)
     assert len(out) == 3, out
     assert not any("complete sentence" in f for f in out), out
+
+
+def test_a_line_that_is_the_tail_of_the_one_above_is_a_finding(tmp_path):
+    """Run 28's 05-a ended with the last line's own tail, starting mid-word:
+
+        ... from the 2026-09-08 live snapshot. The monthly refresh updates this line.
+        pshot. The monthly refresh updates this line.
+
+    A `replace` rewrote the trailing span and left the end of the old text
+    behind. The elision gate does not see it, the churn was 12%, the headings
+    were intact, and it names no infrastructure, so the live verifier had
+    nothing to check either. It reached the artifact with 0 findings.
+    """
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "Generated 2026-09-08; inventory blocks rendered by `doc_inventory.py` "
+        "from the 2026-09-08 live snapshot. The monthly refresh updates this line.\n"
+        "pshot. The monthly refresh updates this line.\n")
+    out = gate.gate_duplicated_tail(tmp_path)
+    assert len(out) == 1, out
+    assert "tail of the one above" in out[0]
+
+
+def test_the_committed_documents_carry_no_duplicated_tail(tmp_path):
+    """Calibration, not decoration. The threshold and the single direction were
+    chosen by measuring every markdown file under `docs/` plus README against
+    all four shapes: this one fires once, on the real defect. A future
+    loosening that starts flagging honest prose fails here."""
+    assert gate.gate_duplicated_tail(gate.REPO) == []
+
+
+def test_a_repeated_command_prefix_is_not_a_duplicated_tail(tmp_path):
+    """Both lines below are lifted from the committed corpus, because an
+    invented example proves nothing about it -- a first draft of this test
+    hand-wrote a `gcloud` continuation that WAS a duplicated tail, which the
+    real file at `COST_AUDIT_2026-09-06.md:260` is not.
+
+    `docs/alpha-vantage-quickstart.md:26` shows the same command twice with an
+    extra flag, so each line is a PREFIX of the next; `COST_AUDIT` wraps a
+    `gcloud` invocation so the following line ENDS WITH the one before it.
+    Gating on either shape would fail an honest document, so neither is gated.
+    """
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "python scripts/fetch_alphavantage_intraday.py --symbol IWM --show\n"
+        "python scripts/fetch_alphavantage_intraday.py --symbol IWM --show --rows 200\n"
+        "    trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com \\\n"
+        "    --member=serviceAccount:trading-runner@adept-mountain-474619-d4.iam"
+        ".gserviceaccount.com \\\n")
+    assert gate.gate_duplicated_tail(tmp_path) == []
+
+
+def test_a_short_repeated_ending_is_not_a_duplicated_tail(tmp_path):
+    """Two rows ending in the same short cell are a table, not a botched
+    replace. The 20-character floor is what separates them."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("| `signal-monitor` | main |\n| main |\n")
+    assert gate.gate_duplicated_tail(tmp_path) == []
+
+
+def _asof_stub(root, header="2026-09-08", column="2026-09-08", snapshot="2026-09-08",
+               extra=""):
+    """A minimal 05-a carrying all three as-of labels, one date each.
+
+    All three, because the gate also requires each label to be PRESENT: a stub
+    that states one of them would fail for the reason under test plus two it
+    was not written to exercise.
+    """
+    doc = root / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(f"> Live state below was read on **{header}** with `gcloud`.\n"
+                   f"\n| Service | Role | Live {column} |\n"
+                   f"\nGenerated 2026-09-08 by the refresh; blocks rendered "
+                   f"from the {snapshot} live snapshot.\n{extra}")
+    return doc
+
+
+def test_an_asof_label_naming_an_older_snapshot_is_a_finding(tmp_path):
+    """Run 28 updated 05-a's header to `read on **2026-09-08**` and left §3's
+    table header at `Live 2026-09-07`, so a table of the current fleet
+    announced itself as a day old. On the monthly cadence the label is a month
+    out. The dates inside the marker blocks are rendered and were right; these
+    three are prose."""
+    _asof_stub(tmp_path, column="2026-09-07")
+    out = gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"})
+    assert len(out) == 1, out
+    assert "Live 2026-09-07" in out[0]
+
+
+def test_a_historical_date_is_not_an_asof_label(tmp_path):
+    """05-a carries 33 occurrences of `2026-09-07`, and all but two record when
+    something was corrected, deleted or audited. A gate that moved those would
+    rewrite the document's history, so only the two literal label shapes are
+    matched."""
+    _asof_stub(tmp_path, extra=(
+        "\nStorage corrected 2026-09-07 in this doc, which had said 55 GB.\n"
+        "`signal-quality-report-hourly` deleted 2026-09-07.\n"
+        "See [the audit](../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md).\n"))
+    assert gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"}) == []
+
+
+def test_the_committed_asof_labels_match_their_own_snapshot():
+    """Calibration against the real corpus, in both directions: the committed
+    document is clean as of the date it carries, and all three labels are
+    caught the moment the snapshot moves. A gate that fired on neither, or on
+    everything, would pass the constructed cases above just as well.
+
+    The baseline date is READ from the document, never pinned. The monthly
+    refresh rewrites these labels to the new snapshot date and does not touch
+    this file, so a hard-coded date would make the refresh's own pull request
+    fail CI -- the gate breaking the loop it exists to protect.
+    (Codex, PR #1062.)"""
+    text = (gate.REPO / gate.ARCH).read_text()
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", text).group(1)
+    assert gate.gate_stale_asof(gate.REPO, {"read_at": f"{day}T04:35:16Z"}) == []
+    # Three labels: the header note, §3's table column, and the snapshot date
+    # in the closing line.
+    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "1999-01-01T00:00:00Z"})) == 3
+
+
+def test_no_snapshot_means_no_asof_finding(tmp_path):
+    """A local run without `--snapshot` has nothing to compare against, and
+    guessing today's date would fail every document written yesterday."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("| Service | Role | Live 2020-01-01 |\n")
+    assert gate.gate_stale_asof(tmp_path, None) == []
+    assert gate.gate_stale_asof(tmp_path, {}) == []
+
+
+def test_the_relation_breakdown_must_sum_to_the_total(live, repo, tmp_path):
+    """05-a §5 says `declares **70 relations** (67 tables, 2 materialized
+    views, 1 view)`. Run 28 raised the total from 69 to 70 -- correctly,
+    `gcp/schema.sql` had gained a table -- and left the breakdown at 66/2/1,
+    which sums to 69. The sentence contradicted itself and every gate passed
+    it: the total was right, the churn was 12%, and no other document repeats
+    the split."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / gate.ARCH
+    tables = len(repo["tables"])
+    a.write_text(a.read_text().replace(f"({tables} tables,", f"({tables - 1} tables,"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {tables - 1} tables" in f for f in findings), findings
+
+
+def test_a_wrong_relation_total_is_a_finding(live, repo, tmp_path):
+    """The other half: the parts can agree with each other and disagree with
+    the schema."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    a.write_text(a.read_text().replace(f"declares **{total} relations**",
+                                       f"declares **{total - 1} relations**"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {total - 1} declared relations" in f for f in findings), findings
+
+
+def test_the_breakdown_is_matched_as_parts_not_a_fixed_triple(live, repo, tmp_path):
+    """A schema that grows a second view must still be checked. Matching a
+    literal `(N tables, N materialized views, N view)` shape would stop
+    matching entirely on a reword and fail open, which is the worse
+    direction for a gate."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    a.write_text(re.sub(
+        rf"declares \*\*{total} relations\*\* \([^)]*\)",
+        f"declares **{total} relations** "
+        f"({len(repo['views'])} view, {len(repo['materialized_views'])} materialized views "
+        "and 99 tables)",
+        a.read_text()))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 99 tables" in f for f in findings), findings
+
+
+def test_both_copies_of_the_relation_breakdown_are_checked(live, repo, tmp_path):
+    """05-a states the schema arithmetic twice, in two shapes: §5's `declares
+    **70 relations** (67 tables, ...)` and §3's table cell `95 relations (70
+    declared in `gcp/schema.sql` — 67 tables, ...)`.
+
+    A gate anchored on §5's phrasing alone left §3 unchecked, and I proved the
+    point by hand: I corrected §5 to 70/67 and left §3 at 69/66 -- the same
+    reading-instead-of-deriving mistake Codex named on #1009, made while
+    fixing that exact sentence."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / gate.ARCH
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    tables = len(repo["tables"])
+    before = f"{total} declared in `gcp/schema.sql` — {tables} tables,"
+    assert before in a.read_text(), "the §3 row no longer has the shape this test breaks"
+    a.write_text(a.read_text().replace(
+        before, f"{total - 1} declared in `gcp/schema.sql` — {tables - 1} tables,"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {total - 1} declared relations" in f for f in findings), findings
+    assert any(f"claims {tables - 1} tables" in f for f in findings), findings
+
+
+def test_the_parts_run_ends_where_the_list_ends(live, repo, tmp_path):
+    """Delimiting the parts on the first `)` or `;` was still too generous:
+    §3's breakdown ends at an EM DASH inside the outer parenthetical, so the
+    scan ran on through the sentence's tail. It happens not to match today
+    ("plus 26 created at runtime"), but the rephrase below would compare that
+    26 against the 67 declared tables and abort a refresh whose numbers were
+    correct. Consuming the comma-separated run itself has no boundary to get
+    wrong. (Codex, PR #1062.)"""
+    assert gate.declared_parts(
+        " — 67 tables, 2 materialized views, 1 view — plus 26 tables created at runtime; §5)"
+    ) == [(67, "tables"), (2, "materialized views"), (1, "view")]
+    # both real shapes, and the natural rephrase that joins the last part with
+    # "and" rather than a comma -- dropping it would weaken the check silently
+    assert gate.declared_parts(" (67 tables, 2 materialized views, 1 view); the rest") == \
+        [(67, "tables"), (2, "materialized views"), (1, "view")]
+    assert gate.declared_parts(" (67 tables, 2 materialized views and 1 view)") == \
+        [(67, "tables"), (2, "materialized views"), (1, "view")]
+    assert gate.declared_parts(" is the number of relations declared.") == []
+
+
+def test_a_subset_count_beside_a_view_count_is_not_a_breakdown(live, repo, tmp_path):
+    """Parts are read only from the clause a DECLARED TOTAL introduces, bounded
+    by the first `)` or `;` after it.
+
+    An earlier version recognised the breakdown by shape alone -- a numbered
+    table count somewhere near a numbered materialized-view count -- and then
+    compared every number on that line against the whole-schema totals. Both
+    documents count subsets in passing, so a sentence like the one below would
+    have failed a refresh whose numbers were correct. Anchoring on the total
+    means such a sentence is never examined at all. (Codex, PR #1062.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text() +
+                 "\n12 runtime tables feed 2 materialized views on the weekly refresh.\n"
+                 "\n`apply_schema.py` drops and recreates the two earnings materialized views.\n")
+    assert gate.gate_derived_numbers(root, repo, live) == []
+
+
+def test_the_snapshot_date_in_the_closing_line_is_an_asof_label(tmp_path):
+    """05-a's closing line carries two dates: `Generated <date> ... from the
+    <date> live snapshot`. A refresh that updated one and not the other would
+    leave the line contradicting itself.
+
+    Only the second is gated here. The first is already required to equal
+    today by the workflow's own step 1, which greps all four documents for
+    `Generated ${TODAY}` before this script runs, and gating it here would
+    fail an honest tree: the committed 05-d carries `Generated 2026-09-02`,
+    the last run that regenerated it. (Codex, PR #1062.)"""
+    _asof_stub(tmp_path, snapshot="2026-09-07")
+    out = gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"})
+    assert len(out) == 1, out
+    assert "2026-09-07 live snapshot" in out[0]
+    _asof_stub(tmp_path)
+    assert gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"}) == []
+
+
+def test_a_breakdown_that_drops_a_kind_is_a_finding(live, repo, tmp_path):
+    """Every part being individually right does not make the list complete.
+    `70 relations (67 tables, 2 materialized views)` passes each comparison
+    while the parts shown sum to 69 -- the same self-contradiction this gate
+    was added for, recreated by dropping a category rather than mistyping one.
+    (Codex, PR #1062.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    views, mviews = len(repo["views"]), len(repo["materialized_views"])
+    a.write_text(a.read_text().replace(
+        f", {mviews} materialized views, {views} view)", f", {mviews} materialized views)", 1))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("omits view" in f for f in findings), findings
+
+
+def test_an_asof_label_reworded_away_is_a_finding(live, repo, tmp_path):
+    """A date gate that only compares dates fails OPEN on a reword: change
+    §3's column header to `| Service | Role | Current |` and no pattern
+    matches, so the document loses its freshness provenance and the gate
+    reports clean. 05-a is required to carry all three labels.
+    (Codex, PR #1062.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", a.read_text()).group(1)
+    assert gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"}) == []
+    a.write_text(re.sub(r"\| Service \| Role \| Live \d{4}-\d{2}-\d{2} \|",
+                        "| Service | Role | Current |", a.read_text()))
+    findings = gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"})
+    assert any("no as-of label" in f for f in findings), findings
+
+
+def test_the_other_documents_are_not_required_to_carry_asof_labels(live, repo, tmp_path):
+    """Only 05-a states when the live state below it was read. Requiring the
+    labels everywhere would fail README and the cost report for not making a
+    claim they never make."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*",
+                    (root / gate.ARCH).read_text()).group(1)
+    assert gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"}) == []
+    assert set(gate.REQUIRED_ASOF) == {gate.ARCH}

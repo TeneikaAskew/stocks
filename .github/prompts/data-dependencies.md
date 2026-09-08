@@ -44,6 +44,17 @@ scheduler count under half the live figure and went red on that single line.
 - Update in place with `replace` only; never regenerate from scratch and never `write_file` the document (the output-discipline paragraph above says the same: there is no whole-body path).
 - **Never write `...` or `…` as a stand-in for text you are not changing.** A `replace` call rewrites exactly the span you give it, so an elision marker does not mean "the rest is unchanged" — it deletes the paragraph and leaves three dots in the document. Run 27 did this to five section introductions and four bullets in this file at once, destroying 4,035 characters while every other gate stayed green. If a paragraph needs no change, do not call `replace` on it at all. A gate now fails the run on any line that is only an ellipsis.
 
+- **A `replace` rewrites exactly the span you give it, including its end.** After
+  every call, re-read the region you changed and check that no fragment of the
+  old text survives as its own line. Run 28 left `pshot. The monthly refresh
+  updates this line.` under the closing line of 05-a, the tail of the
+  `...live snapshot.` it had just rewritten. A gate now fails the run on any
+  line that is the tail of the line above it.
+- **A partition is a table, not a view.** `market_data_intraday` is LIST-partitioned;
+  Postgres routes writes through the parent, and four of the children are read
+  directly by name (§5 names them and the modules that do it). Run 28 wrote that
+  the partitions "are read-only views into the main table", which contradicts §5
+  of the same document. Describe routing, not a different object type.
 - Cite `file:line` for every claim about code.
 - No code, no SQL examples: just the dependency graph and its reading.
 - Distinguish live writers (a Cloud Run Job's entrypoint or a module it imports) from one-shot `scripts/` writers.
