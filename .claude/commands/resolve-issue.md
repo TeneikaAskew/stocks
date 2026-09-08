@@ -152,8 +152,24 @@ survey_existing_work() {
   # strict shell this file assumes everywhere else. Capture it, and keep the
   # distinction the rest of the file makes: 1 is the clean miss, anything
   # above it is a broken measurement and must not read as "no branches".
+  # ASK THE REMOTE, NOT THE LOCAL CACHE. `git branch -r` lists
+  # `refs/remotes/origin/*`, which only holds what this checkout has fetched —
+  # and `sync_refs` above deliberately names ONE ref, so a branch that exists
+  # on the remote and was never fetched here is invisible. The narrowing that
+  # made round 63's fetch honest is what makes this listing lie: measured on a
+  # `--single-branch` clone (refspec `+refs/heads/main:refs/remotes/origin/main`)
+  # with `fix/workflow-refresh-architecture-docs-14` pushed upstream,
+  # `survey_existing_work` returned 0 with NO output — "no existing work" —
+  # while `git ls-remote --heads origin` listed the branch. The resolver would
+  # then open a second branch for work already in flight, and the PR search
+  # beside it cannot catch that: a branch with no open PR is exactly what it
+  # misses. `ls-remote` queries the remote itself, so it needs no fetch and
+  # writes no refs; it prints full `refs/heads/…` names, which the pattern
+  # below matches the same way.
   local _b _g
-  _b=$(git branch -r) || { echo "could not list remote branches"; return 1; }
+  _b=$(git ls-remote --heads origin) \
+    || { echo "could not list the remote's branches — NOT reporting 'no"
+         echo "existing work' from a listing that did not run"; return 1; }
   if grep -iE "fix/workflow-|<issue-keyword>" <<<"$_b"; then _g=0; else _g=$?; fi
   test "$_g" -le 1 \
     || { echo "branch survey errored (grep rc=$_g) — not treating this as"
@@ -2615,7 +2631,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       # are answers, and 128 (a bad rev) is not one to read as "not an
       # ancestor".
       if [ ${#impl[@]} -gt 0 ]; then
-        local _isrm _anc
+        local _isrm _anc _ianc
         _isrm=$(git log -1 --format=%h --full-history --diff-merges=separate \
                   --no-patch --no-renames "$REV" -- "${impl[@]}") \
           || { echo "solyra: could not identify the implementation's last commit"
@@ -2628,7 +2644,34 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
           test "$_anc" -le 1 \
             || { echo "solyra: could not order $_srm against $_isrm (rc=$_anc)"
                  echo "— asserting nothing"; exit 2; }
-          test "$_anc" -ne 0 || _srm=$_isrm
+          # ONE ANCESTOR TEST CANNOT ORDER TWO COMMITS. `--is-ancestor` answers
+          # a yes/no about ONE direction, so its rc=1 covers two different
+          # situations: the other commit is older, and neither contains the
+          # other because they came in through different branches. Round 66
+          # read rc=1 as the first and silently kept `$_srm`, which on the
+          # second binds the acknowledgement to a removal that does NOT include
+          # the implementation deletion. Measured on solyra's own DAG, either
+          # side of the merge f0a75f1:
+          #     is-ancestor 227a946 61b0c8c -> 1
+          #     is-ancestor 61b0c8c 227a946 -> 1     both 1: incomparable
+          #     is-ancestor ee84ae7 d553e4d -> 0
+          #     is-ancestor d553e4d ee84ae7 -> 1     0 then 1: ordered
+          # so the second direction is asked, and only "the other is genuinely
+          # an ancestor" keeps `$_srm`. When NEITHER contains the other there is
+          # no single removal commit to name, and refusing would leave the gate
+          # with no clearable value at all — the unreachable-state defect round
+          # 65 fixed one query up. So both are named, `<older>+<newer>` in a
+          # fixed order, and the operator confirms that a revision carrying BOTH
+          # removals is what browsers are running.
+          if [ "$_anc" -eq 0 ]; then _srm=$_isrm
+          else
+            if git merge-base --is-ancestor "$_isrm" "$_srm"; then _ianc=0
+            else _ianc=$?; fi
+            test "$_ianc" -le 1 \
+              || { echo "solyra: could not order $_isrm against $_srm (rc=$_ianc)"
+                   echo "— asserting nothing"; exit 2; }
+            test "$_ianc" -eq 0 || _srm="$_srm+$_isrm"
+          fi
         fi
       fi
       test -n "$_srm" || { echo "solyra: history is non-empty but no commit"
@@ -2641,7 +2684,16 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
         # could come from the implementation half — measured, it printed an
         # EMPTY "last touched:" line for exactly the case above, naming no
         # commit while the line below names one to acknowledge.
-        echo "last touched: $(git show -s --format='%h %cI %s' "$_srm")"
+        # `+` MEANS TWO COMMITS, and `git show -s` on the joined string would
+        # die rather than print either. Split it back for the report, so the
+        # line names exactly what the acknowledgement below asks about.
+        case $_srm in
+          *+*) echo "last touched: $(git show -s --format='%h %cI %s' "${_srm%%+*}")"
+               echo "         and: $(git show -s --format='%h %cI %s' "${_srm#*+}")"
+               echo "neither of those contains the other — they came in on"
+               echo "different branches — so BOTH have to have rolled out.";;
+          *)   echo "last touched: $(git show -s --format='%h %cI %s' "$_srm")";;
+        esac
         test -n "$_shist_src" || test ${#_sapp[@]} -eq 0 || {
           echo "NOTE: every one of those commits touches only files you"
           echo "approved as prose. That is a reason to READ them, not proof:"
@@ -3995,10 +4047,22 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          # passes, since ancestry and TIP_VALIDATED were both true when they
          # ran. The concurrent-build probe does not cover it: it serialises
          # Cloud Builds and has nothing to say about GitHub merges. So the tip
-         # is re-read at the promotion boundary and a move ABORTS rather than
-         # ships: re-running picks up the new tip, revalidates it, and deploys
-         # that. Refusing here costs one build; not refusing costs a silent
-         # revert of somebody else's merge.
+         # is re-read and a move ABORTS rather than ships: re-running picks up
+         # the new tip, revalidates it, and deploys that. Refusing here costs
+         # one build; not refusing costs a silent revert of somebody else's
+         # merge.
+         # AFTER THE BUILD, NOT BEFORE IT. Round 65 added this check one line
+         # too early — above `build-research` — which leaves the whole build
+         # window unguarded, and that window is the long one: the build is a
+         # Cloud Build, the merge it has to notice happens on GitHub, and
+         # nothing serialises the two. Measured on a fixture whose stubbed
+         # `deploy.sh build-research` pushes a commit to origin as it runs:
+         # the earlier placement returned 0 and ran `svcjob` and `schedulers`
+         # against the stale image, exactly the failure the check was written
+         # for. The chain is therefore broken in two, with the fetch at the
+         # image-to-job promotion boundary — which is what round 65's comment
+         # and its reply both CLAIMED, and neither was true of the code.
+         ./gcp/deploy.sh build-research || exit 1
          git fetch origin main || exit 1
          [ "$(git rev-parse FETCH_HEAD)" = "$SRC" ] || {
            echo "main moved from $SRC to $(git rev-parse FETCH_HEAD) while this"
@@ -4006,9 +4070,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
            echo "that OMITS what landed since. NOT deploying — re-run"
            echo "deploy_candidate, which will validate the new tip."
            exit 1; }
-         ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target> \
-           && ./gcp/deploy.sh schedulers
-         # (no research image, no schedule change: just `./gcp/deploy.sh <target>`)
+         ./gcp/deploy.sh <target> && ./gcp/deploy.sh schedulers
+         # (no research image, no schedule change: drop the build line and
+         #  keep the fetch and its check immediately above
+         #  `./gcp/deploy.sh <target>` — the guard belongs against the target
+         #  deploy, not against the build.)
        )
        # `if`, not a bare `)` followed by `rc=$?`, for the reason the retirement
        # helpers take one: under `set -e` a nonzero subshell IS a failed simple
