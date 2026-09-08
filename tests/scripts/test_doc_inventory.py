@@ -804,6 +804,21 @@ def test_a_module_level_sql_constant_counts_only_where_it_is_used(mini_repo):
     assert e["alpha"]["writes"] == ["market_data_intraday_spy", "trades"], e["alpha"]
 
 
+def test_a_docstring_line_is_never_a_reference_and_str_join_is_not_sql(mini_repo):
+    """lib/backtest.py:326, `\"\"\"Convert trades to a DataFrame.\"\"\"`, sat two
+    lines under `return '\\n'.join(lines)`; the docstring line was searched
+    (only its context was blanked) and `.join(` matched JOIN, so the backtest
+    job read the trades table."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "def render(lines):\n    return '\\n'.join(lines)\n\ndef to_df(self):\n    \"\"\"Convert trades to a DataFrame.\"\"\"\n    return 1\n\n\n\n\n"
+           "def raw(conn):\n    return conn.execute(\"SELECT t.* FROM trades t JOIN market_data_intraday m ON 1=1\")\n")
+    refs = inv.table_refs(mini_repo, ["trades", "market_data_intraday"])
+    assert [r["line"] for r in refs["trades"]["reads"]] == [12], refs["trades"]
+    assert refs["trades"]["mentions"] == [], "a docstring line is not even a mention"
+    assert [r["line"] for r in refs["market_data_intraday"]["reads"]] == [12]
+    assert not inv.READ_RE.search("return '\\n'.join(lines)") and inv.READ_RE.search("a JOIN b")
+
+
 def test_the_real_tree_symbol_scope():
     """The three concrete cases from the review, on the committed tree."""
     repo, refs = _repo_and_refs()
@@ -825,6 +840,8 @@ def test_the_real_tree_symbol_scope():
     refs_all.update(inv.table_refs(REPO, tables=inv.runtime_relations(repo, live)))
     e2 = {x["job"]: x for x in inv.job_table_edges(repo, refs_all)}
     assert "magnitude_walk_forward_results" not in e2["magnitude-inference"]["writes"], e2["magnitude-inference"]
+    # round 7: a docstring line is not a reference
+    assert not any(r["file"] == "lib/backtest.py" and r["line"] == 326 for r in refs["trades"]["reads"])
 
 
 def test_the_digest_orphans_cite_their_writers_and_readers():

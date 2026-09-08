@@ -557,7 +557,10 @@ DOC_TOOLING = frozenset({
 WRITE_RE = re.compile(
     r"upsert|bulk_insert|INSERT\s+INTO|UPDATE\s+\w|DELETE\s+FROM|"
     r"\.to_sql\(|TRUNCATE|REFRESH\s+MATERIALIZED\s+VIEW|CREATE\s+TABLE|ON\s+CONFLICT|\bCOPY\b", re.I)
-READ_RE = re.compile(r"\bFROM\b|\bJOIN\b|SELECT|query_to_dataframe|read_sql|row_exists|pd\.read_sql", re.I)
+# `(?<!\.)` on JOIN: `'\\n'.join(lines)` is string code, not SQL, and with re.I
+# it read as a JOIN and coloured the docstring below it as a read of `trades`
+# (lib/backtest.py:326 -- Codex, PR #1044).
+READ_RE = re.compile(r"\bFROM\b|(?<!\.)\bJOIN\b|SELECT|query_to_dataframe|read_sql|row_exists|pd\.read_sql", re.I)
 
 
 def _first_doc_line(path: pathlib.Path) -> str:
@@ -663,13 +666,17 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
         joined = "\n".join(lines)
         # Message text is not executed SQL, and it must not leak into the
         # context window of the lines after it either (Codex, PR #1009).
+        # A diagnostic line (docstring, raise / log / print text) is neither a
+        # match source nor context: it executes no SQL, and recording it as a
+        # reference made lib/backtest.py's `"""Convert trades to a
+        # DataFrame."""` a read of the trades table. (Codex, PR #1044.)
         diag = _diagnostic_lines(joined)
         ctx_lines = ["" if n + 1 in diag else ln for n, ln in enumerate(lines)]
         for t, pat in pats.items():
             if t not in joined:
                 continue
             for i, line in enumerate(lines):
-                if not pat.search(line):
+                if i + 1 in diag or not pat.search(line):
                     continue
                 if line.lstrip().startswith("#"):
                     continue
@@ -682,7 +689,7 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
                 if cm:
                     const = re.compile(rf"\b{re.escape(cm.group(1))}\b")
                     for k, l2 in enumerate(lines):
-                        if k == i or not const.search(l2) or l2.lstrip().startswith("#"):
+                        if k == i or k + 1 in diag or not const.search(l2) or l2.lstrip().startswith("#"):
                             continue
                         ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
                         if WRITE_RE.search(ctx2):
