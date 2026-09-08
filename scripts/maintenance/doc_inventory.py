@@ -164,12 +164,42 @@ def deploy_jobs(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
                 "image": image_tag,
                 "command": command.replace(",", " "),
                 "args": args.replace(",", " "),
+                "env": _env_vars(body),
                 "uses_secrets": "--set-secrets" in body or "DB_SECRET_FLAG" in body,
                 "service_account": _flag(body, "service-account") or "",
                 "timeout_defaulted": _flag(body, "task-timeout") is None,
                 "retries_defaulted": _flag(body, "max-retries") is None,
             }
     return sorted(rows.values(), key=lambda r: r["name"])
+
+
+def _env_vars(body: str) -> dict[str, str]:
+    """`KEY=value` pairs a deploy function passes with --set-env-vars, whether
+    inline or built up in a `non_secret_env="${non_secret_env},KEY=value"`
+    chain. audit-walkforward's real workload is
+    `AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward`, run by
+    gcp/audit_job_runner.py in a subprocess. (Codex, PR #1044.)"""
+    out: dict[str, str] = {}
+    for m in re.finditer(r'(?:_env="\$\{[a-z_]+\},|_env="|--(?:set|update)-env-vars[ =]"?)([^"\n]*)', body):
+        for pair in m.group(1).split(","):
+            k, eq, v = pair.partition("=")
+            if eq and re.fullmatch(r"[A-Z][A-Z0-9_]*", k.strip()) and "${" not in v:
+                out.setdefault(k.strip(), v.strip())
+    return out
+
+
+def _configured_modules(root: pathlib.Path, job: dict[str, Any]) -> list[str]:
+    """Repo modules a job names outside its entry command: env values and
+    args of the form `gcp.a.b` / `scripts.a.b` / `lib.a` that resolve to a
+    file. A wrapper such as gcp/audit_job_runner.py runs them in a
+    subprocess, so they are roots of the job's reachable code."""
+    text = " ".join([job.get("args", ""), *[str(v) for v in (job.get("env") or {}).values()]])
+    out: list[str] = []
+    for m in re.finditer(r"\b((?:gcp|lib|scripts)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b", text):
+        f = _module_file(root, m.group(1).split("."))
+        if f and f not in out and f != entry_module(job):
+            out.append(f)
+    return out
 
 
 def _expand_loop_vars(text: str) -> str:
@@ -560,6 +590,12 @@ WRITE_RE = re.compile(
 # `(?<!\.)` on JOIN: `'\\n'.join(lines)` is string code, not SQL, and with re.I
 # it read as a JOIN and coloured the docstring below it as a read of `trades`
 # (lib/backtest.py:326 -- Codex, PR #1044).
+# What makes a multi-word string SQL rather than prose: an upper-case SQL
+# keyword, or a lower-case statement head. "derives from x" has neither.
+_SQL_HINT = re.compile(
+    r"\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TRUNCATE|REFRESH|COPY|WHERE|JOIN|VALUES|INTO|"
+    r"RETURNING|LIMIT|GROUP BY|ORDER BY|ON CONFLICT|WITH|FROM|SET|AND|OR|AS)\b"
+    r"|(?i:\bselect\b.*\bfrom\b|\binsert\s+into\b|\bdelete\s+from\b|\bcreate\s+(?:table|index|view)\b|\bupdate\s+\w+\s+set\b)")
 READ_RE = re.compile(r"\bFROM\b|(?<!\.)\bJOIN\b|SELECT|query_to_dataframe|read_sql|row_exists|pd\.read_sql", re.I)
 
 
@@ -699,6 +735,74 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
     return out
 
 
+def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """References to tables whose names are assembled at runtime.
+
+    `strat_features_1m` is written as `f"strat_features_{tf_label}"` and the
+    literal scan cannot see it. For each name, every split at an underscore
+    gives a head and a tail; a head followed by `_{`, `_%s`, `_" +` or a tail
+    preceded by `}_`, `%s_`, `" + ..._` is a dynamic reference to every live
+    name with that head or tail. Classified as write / read / mention by the
+    same context rule as table_refs. (Codex, PR #1044.)
+    """
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {t: {"writes": [], "reads": [], "mentions": []} for t in tables}
+    pats: dict[str, list[re.Pattern]] = {}
+    for t in tables:
+        parts = t.split("_")
+        for k in range(1, len(parts)):
+            head, tail = "_".join(parts[:k]), "_".join(parts[k:])
+            pats.setdefault(t, []).append(re.compile(
+                rf"(?<![\w.]){re.escape(head)}_(?:\{{|%s|%\(|\"\s*\+|'\s*\+)"))
+            pats[t].append(re.compile(
+                rf"(?:\}}|%s|%\)|\+\s*[\"']|[\"']\s*\+\s*\w+\s*\+\s*[\"'])_{re.escape(tail)}(?![\w])"))
+    files: list[pathlib.Path] = []
+    for d in SCAN_DIRS:
+        for f in (root / d).rglob("*.py"):
+            rel = str(f.relative_to(root))
+            if "/tests/" in rel or rel.startswith("tests/") or "/_archive/" in rel or "/__pycache__/" in rel or rel in DOC_TOOLING:
+                continue
+            files.append(f)
+    for f in sorted(files):
+        rel = str(f.relative_to(root))
+        try:
+            lines = f.read_text().splitlines()
+        except UnicodeDecodeError:
+            continue
+        joined = "\n".join(lines)
+        diag = _diagnostic_lines(joined)
+        ctx_lines = ["" if n + 1 in diag else ln for n, ln in enumerate(lines)]
+        for t, plist in pats.items():
+            seen: set[int] = set()   # a line matches once, however many split patterns hit it
+
+            def record(kind: str, k: int, text: str) -> None:
+                if k + 1 not in seen:
+                    seen.add(k + 1)
+                    out[t][kind].append({"file": rel, "line": k + 1, "text": text.strip()[:120], "dynamic": True})
+
+            for i, line in enumerate(lines):
+                if i + 1 in diag or line.lstrip().startswith("#") or i + 1 in seen:
+                    continue
+                if not any(pt.search(line) for pt in plist):
+                    continue
+                ctx = "\n".join(ctx_lines[max(0, i - 3): i + 1])
+                kind = "writes" if WRITE_RE.search(ctx) else ("reads" if READ_RE.search(ctx) else "mentions")
+                record(kind, i, line)
+                # `table = f"strat_features_{tf_label}"` then `upsert_dataframe(feat, table, ...)`
+                # further down: follow the name to where it is used, as table_refs does.
+                cm = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*f?[\"']", line)
+                if cm:
+                    const = re.compile(rf"\b{re.escape(cm.group(1))}\b")
+                    for k, l2 in enumerate(lines):
+                        if k == i or k + 1 in diag or not const.search(l2) or l2.lstrip().startswith("#"):
+                            continue
+                        ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
+                        if WRITE_RE.search(ctx2):
+                            record("writes", k, l2)
+                        elif READ_RE.search(ctx2):
+                            record("reads", k, l2)
+    return out
+
+
 def _diagnostic_lines(text: str) -> set[int]:
     """Line numbers whose content is a message, not executed SQL.
 
@@ -710,7 +814,11 @@ def _diagnostic_lines(text: str) -> set[int]:
     signal-monitor a writer of watchlists. (Codex, PR #1009.)
 
     Covers string literals inside `raise ...`, logging calls, `print(...)`,
-    `warnings.warn(...)`, and module / class / function docstrings: the
+    `warnings.warn(...)`, module / class / function docstrings, and PROSE:
+    any string of three or more words carrying no SQL keyword (a config
+    value such as `"rationale": "VEX derives from gamma_levels_eod ..."` in
+    scripts/audit_data_freshness.py made freshness-watchdog a reader of that
+    table because the prose contains "from" -- Codex, PR #1044); and the
     `db-query` job's module docstring shows an operator
     `DB_QUERY_SQL=SELECT count(*) FROM trades` example, and that one line
     made the job a static reader of `trades` in the §7 graph and the digest.
@@ -737,6 +845,11 @@ def _diagnostic_lines(text: str) -> set[int]:
                 out.update(range(sub.lineno, (sub.end_lineno or sub.lineno) + 1))
 
     for node in ast.walk(tree):
+        if isinstance(node, (ast.Constant, ast.JoinedStr)):
+            text = node.value if isinstance(node, ast.Constant) else "".join(
+                v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
+            if isinstance(text, str) and len(text.split()) >= 3 and not _SQL_HINT.search(text):
+                out.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
         if isinstance(node, ast.Raise):
             _mark(node)
         elif isinstance(node, ast.Call):
@@ -1157,6 +1270,19 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
     return scope
 
 
+def _job_scope(root: pathlib.Path, job: dict[str, Any]) -> dict[str, set[int] | None]:
+    """The entry module's scope plus, in full, every module the job's env or
+    args configure a wrapper to run (see _configured_modules)."""
+    scope = _import_scope(root, entry_module(job))
+    for extra in _configured_modules(root, job):
+        for f, lines in _import_scope(root, extra).items():
+            if lines is None or scope.get(f, set()) is None:
+                scope[f] = None
+            else:
+                scope.setdefault(f, set()).update(lines)
+    return scope
+
+
 def _in_scope(scope: dict[str, set[int] | None], ref: dict[str, Any]) -> bool:
     lines = scope.get(ref["file"], set())
     return lines is None or ref["line"] in lines
@@ -1173,7 +1299,7 @@ def blast_radius(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, 
     root = _repo_root(repo)
     for j in repo["jobs"]:
         mod_file = entry_module(j)
-        scope = _import_scope(root, mod_file)
+        scope = _job_scope(root, j)
         written = sorted(t for t, v in refs.items() if any(_in_scope(scope, w) for w in v["writes"]))
         downstream = sorted({f for t in written for f in readers.get(t, set()) if f not in scope})
         out.append({"job": j["name"], "module": mod_file, "writes": written, "readers": downstream})
@@ -1198,7 +1324,7 @@ def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[st
     out = []
     for j in (repo["jobs"] if jobs is None else jobs):
         mod_file = entry_module(j)
-        scope = _import_scope(root, mod_file)
+        scope = _job_scope(root, j)
         cites: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for t, v in refs.items():
             hits = {k: [x for x in v[k] if _in_scope(scope, x)] for k in ("writes", "reads")}
@@ -1305,6 +1431,11 @@ def _render_refs_digest(repo: dict[str, Any], refs: dict[str, dict[str, list[dic
     refs_all = dict(refs)
     if runtime:
         refs_all.update(table_refs(root, tables=runtime))
+        # ...and the references that build a runtime name at run time
+        for t, v in table_refs_dynamic(root, runtime).items():
+            for kind in ("writes", "reads", "mentions"):
+                seen = {(x["file"], x["line"]) for x in refs_all[t][kind]}
+                refs_all[t][kind].extend(x for x in v[kind] if (x["file"], x["line"]) not in seen)
     mark = lambda t: f"`{t}`" + (" (runtime-created)" if t in runtime else "")
     out = ["## Multi-writer tables", "", _render_multiwriter(refs, with_lines=True), "",
            "## Orphan tables", "", _render_orphans(refs, root, _partition_map(repo), with_lines=True), "",

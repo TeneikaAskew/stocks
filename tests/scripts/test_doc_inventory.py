@@ -41,6 +41,19 @@ deploy_alpha() {
     gcloud run jobs update alpha "${common_flags[@]}"
 }
 
+deploy_gamma() {
+    local non_secret_env
+    non_secret_env="PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=gcp.fetchers.beta"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--folds 4"
+    gcloud run jobs create gamma \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.runner" \
+        --set-env-vars "${non_secret_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update gamma --image "${IMAGE}" --quiet
+}
+
 deploy_beta() {
     gcloud run jobs create beta \
         --image "${IMAGE}" --region "${REGION}" \
@@ -121,7 +134,8 @@ def mini_repo(tmp_path: pathlib.Path) -> pathlib.Path:
 
 def test_jobs_ignore_comments_and_read_common_flags_arrays(mini_repo):
     jobs = {j["name"]: j for j in inv.deploy_jobs(mini_repo)}
-    assert set(jobs) == {"alpha", "beta"}, "the comment's `update leaves` must not count as a job"
+    assert set(jobs) == {"alpha", "beta", "gamma"}, "the comment's `update leaves` must not count as a job"
+    assert jobs["gamma"]["env"] == {"AUDIT_SCRIPT_MODULE": "gcp.fetchers.beta", "AUDIT_SCRIPT_ARGS": "--folds 4"}, jobs["gamma"]["env"]
     a = jobs["alpha"]
     assert a["image"] == "research"
     assert a["memory"] == "4Gi" and a["task_timeout"] == "3600" and a["max_retries"] == "0"
@@ -819,6 +833,57 @@ def test_a_docstring_line_is_never_a_reference_and_str_join_is_not_sql(mini_repo
     assert not inv.READ_RE.search("return '\\n'.join(lines)") and inv.READ_RE.search("a JOIN b")
 
 
+def test_a_configured_subprocess_module_is_a_root_of_the_job(mini_repo):
+    """audit-walkforward enters through gcp/audit_job_runner.py, which runs
+    AUDIT_SCRIPT_MODULE in a subprocess; the digest showed the job as dashes."""
+    _write(mini_repo, "gcp/runner.py", "import os, subprocess\n\ndef main():\n    subprocess.run(['python', '-m', os.environ['AUDIT_SCRIPT_MODULE']])\n")
+    _write(mini_repo, "gcp/fetchers/beta.py", "def main(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    assert inv._configured_modules(mini_repo, next(j for j in repo["jobs"] if j["name"] == "gamma")) == ["gcp/fetchers/beta.py"]
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["gamma"]["reads"] == ["trades"], e["gamma"]
+    assert e["beta"]["reads"] == ["trades"], "the module is also a job of its own"
+
+
+def test_a_dynamically_named_runtime_relation_is_attributed(mini_repo):
+    """strat_data_builder.py upserts f"strat_features_{tf_label}"; the
+    literal scan saw only the one name that also appears spelled out."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import build\n\ndef main():\n    build()\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def build(conn, tf, ticker, feat):\n    conn.execute(f\"INSERT INTO strat_features_{tf} VALUES (1)\")\n\n\n\n\n"
+           "    return conn.execute(f\"SELECT * FROM {ticker}_30m_predictions\")\n\n\n\n\n"
+           "def build2(conn, tf, feat):\n    table = f\"strat_features_{tf}\"\n\n\n\n\n    upsert_dataframe(feat, table, conn)\n")
+    repo = inv.repo_inventory(mini_repo)
+    dyn = inv.table_refs_dynamic(mini_repo, ["strat_features_1m", "strat_features_5m", "spy_30m_predictions", "gamma_levels_eod"])
+    # the direct f-string site, and the assign-then-use site (strat_data_builder.py:716 -> upsert further down)
+    assert [r["line"] for r in dyn["strat_features_1m"]["writes"]] == [2, 18], dyn["strat_features_1m"]
+    assert [r["line"] for r in dyn["strat_features_1m"]["mentions"]] == [13]
+    assert [r["line"] for r in dyn["strat_features_5m"]["writes"]] == [2, 18]
+    assert [r["line"] for r in dyn["spy_30m_predictions"]["reads"]] == [7]
+    assert dyn["gamma_levels_eod"] == {"writes": [], "reads": [], "mentions": []}
+    ok = {"last_execution": {"result": "ok", "time": "2026-09-07T00:00:00Z"},
+          "memory": "4Gi", "cpu": "1", "task_timeout": "3600", "max_retries": 0, "tasks": 1}
+    live = {"jobs": {"alpha": dict(ok, command="python", args="-m gcp.research.alpha --mode=full")}, "schedulers": {},
+            "db_tables": {"trades": {"kind": "table", "rows": 5, "size": "8 kB"},
+                          "strat_features_1m": {"kind": "table", "rows": 7, "size": "8 kB"},
+                          "spy_30m_predictions": {"kind": "table", "rows": 7, "size": "8 kB"}}}
+    row = next(l for l in inv.render_markdown("refs_digest", repo, live).splitlines() if l.startswith("| `alpha` |"))
+    assert "`strat_features_1m` (runtime-created)" in row and "`spy_30m_predictions` (runtime-created)" in row, row
+
+
+def test_a_prose_string_is_not_a_reference(mini_repo):
+    """scripts/audit_data_freshness.py:796, `"rationale": "VEX derives from
+    gamma_levels_eod ..."`, is config text; "from" in it made
+    freshness-watchdog a reader of the table."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "CHECKS = {\n    \"rationale\": \"VEX derives from trades date-list, same cascade\",\n}\n\n\n\n\n"
+           "def q(conn, df):\n    upsert_dataframe(df, \"trades\")\n\n\n\n\n    return conn.execute(\"SELECT * FROM trades\")\n")
+    refs = inv.table_refs(mini_repo, ["trades"])
+    assert [r["line"] for r in refs["trades"]["writes"]] == [9], refs["trades"]
+    assert [r["line"] for r in refs["trades"]["reads"]] == [14], refs["trades"]
+    assert refs["trades"]["mentions"] == []
+
+
 def test_the_real_tree_symbol_scope():
     """The three concrete cases from the review, on the committed tree."""
     repo, refs = _repo_and_refs()
@@ -842,6 +907,14 @@ def test_the_real_tree_symbol_scope():
     assert "magnitude_walk_forward_results" not in e2["magnitude-inference"]["writes"], e2["magnitude-inference"]
     # round 7: a docstring line is not a reference
     assert not any(r["file"] == "lib/backtest.py" and r["line"] == 326 for r in refs["trades"]["reads"])
+    # round 8: configured subprocess modules, dynamic runtime names, prose strings
+    assert "signal_alerts" in e["audit-walkforward"]["reads"], e["audit-walkforward"]
+    assert "signal_alerts" in e["audit-brief-bias"]["reads"], e["audit-brief-bias"]
+    dyn = inv.table_refs_dynamic(REPO, ["strat_features_1m"])
+    refs_all["strat_features_1m"]["writes"] += dyn["strat_features_1m"]["writes"]
+    e3 = {x["job"]: x for x in inv.job_table_edges(repo, refs_all)}
+    assert "strat_features_1m" in e3["strat-engine"]["writes"], e3["strat-engine"]
+    assert "gamma_levels_eod" not in e3["freshness-watchdog"]["reads"], e3["freshness-watchdog"]
 
 
 def test_the_digest_orphans_cite_their_writers_and_readers():
@@ -863,7 +936,7 @@ def test_the_digest_carries_the_live_only_name_sets(mini_repo):
     ok = {"last_execution": {"result": "ok", "time": "2026-09-07T00:00:00Z"},
           "memory": "4Gi", "cpu": "1", "task_timeout": "3600", "max_retries": 0, "tasks": 1}
     live = {"jobs": {"alpha": dict(ok, command="python", args="-m gcp.research.alpha --mode=full"),
-                     "gamma": dict(ok, command="python -m gcp.helpers", args=""),
+                     "epsilon": dict(ok, command="python -m gcp.helpers", args=""),
                      "delta": dict(ok, command="python -m gcp.gone", args="")},
             "schedulers": {},
             "db_tables": {"trades": {"kind": "table", "rows": 5, "size": "8 kB"},
@@ -873,7 +946,7 @@ def test_the_digest_carries_the_live_only_name_sets(mini_repo):
     rt = out.split("## Runtime-created relations")[1].split("## Hand-created")[0]
     assert "| `strat_features_1m` | table | 3,105,422 | 4080 MB |" in rt and "`trades`" not in rt
     hc = out.split("## Hand-created live jobs")[1]
-    assert "| `gamma` | `gcp/helpers.py` | `trades` | — | `trades` (writes `gcp/helpers.py:2`) |" in hc, hc
+    assert "| `epsilon` | `gcp/helpers.py` | `trades` | — | `trades` (writes `gcp/helpers.py:2`) |" in hc, hc
     assert "| `delta` | `gcp/gone.py` (not in this checkout) | — | — | — |" in hc
     assert "`alpha`" not in hc, "a declared job is not hand-created"
     # without a snapshot the sections say so, rather than silently listing nothing
