@@ -296,7 +296,8 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
 # ordinary prose ("`gamma_levels_eod`, …") and is NOT matched: the whole line
 # has to be the elision. (Run 27.)
 _ELIDED = re.compile(
-    r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?(?:\*\*[^*]+\*\*\s*(?:[—–:-]\s*)?)?(?:\.\.\.|…)\s*$")
+    r"^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?"
+    r"(?:\*\*[^*]+\*\*\s*(?:[—–:-]\s*)?)?(?:\.\.\.|…)\s*$")
 
 
 # A COMPLETE marker comment line, not any line that mentions one. Both

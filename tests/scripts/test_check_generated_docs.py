@@ -649,3 +649,21 @@ def test_the_prose_floor_honours_the_readme_exemption(tmp_path):
     # but an ellipsis in it is still caught
     (cur / "README.md").write_text("## Docs\n...\n")
     assert len(gate.gate_elided_prose(cur)) == 1
+
+
+def test_an_elision_inside_a_blockquote_is_a_finding(tmp_path):
+    """05-c:7-11 is three blockquoted callouts -- Partition handling, Runtime
+    tables, Ad-hoc access -- and 05-a carries five blockquote lines of its own.
+    The Runtime tables callout is exactly the kind of content run 27 rewrote.
+    Eliding one as `> ...` or `> **Runtime tables.** ...` matched nothing,
+    because only list prefixes were accepted, and one callout is too small to
+    breach the aggregate floor. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("> ...\n"
+                   "> **Runtime tables.** ...\n"
+                   ">> …\n"
+                   "> **Ad-hoc access.** `db_query_cr.sh` reaches Cloud SQL over 443.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("Ad-hoc" in f for f in out), out
