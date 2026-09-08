@@ -970,9 +970,12 @@ def test_only_an_unambiguous_scalar_string_flag_is_read_as_a_constraint(mini_rep
            "p.add_argument('--out-dir', dest='outdir')\n"
            "p.add_argument('--mode', default='full')\n"
            "args = p.parse_args()\n")
-    ns, dests = inv._argparse_dests(ast.parse(src))
+    ns, dests, bools = inv._argparse_dests(ast.parse(src))
     assert ns == {"args"}
     assert dests == {"outdir", "mode"}, dests
+    # a store_true is not a scalar constraint; it is a boolean whose value is
+    # False when the deployment does not pass it
+    assert bools == {"verbose": (True, False)}, bools
 
 
 def test_a_scheduler_override_constrains_only_the_module_it_selects(mini_repo):
@@ -1013,6 +1016,98 @@ def test_a_scheduler_override_constrains_only_the_module_it_selects(mini_repo):
     # enrich-daily selects gcp.research.enrich with --mode=all, so THAT
     # module's branch is live; alpha's own --mode=full never reaches its own.
     assert e["alpha"]["writes"] == ["market_data_intraday"], e["alpha"]
+
+
+def test_a_boolean_flag_the_deployment_omits_prunes_its_branch(mini_repo):
+    """`backtest-pipeline` deploys with no args, so `--walk-forward` is false
+    and the subprocess under `if run_wf:` cannot run; boolean dests were
+    excluded from the constraint entirely, leaving that branch and its
+    backtest_walk_forward_folds write attributed to the base deployment.
+    (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse, subprocess, sys\n"
+           "from pathlib import Path\n"
+           "HERE = Path(__file__).parent\n"
+           "\n"
+           "def shallow(conn):\n"
+           '    conn.execute("INSERT INTO trades VALUES (1)")\n'
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--mode', default='full')\n"
+           "    p.add_argument('--deep', action='store_true')\n"
+           "    args = p.parse_args()\n"
+           "    shallow(None)\n"
+           "    do_deep = args.deep and not args.mode == 'none'\n"
+           "    if do_deep:\n"
+           '        subprocess.run([sys.executable, str(HERE / "child.py")])\n'
+           "\n"
+           "if __name__ == '__main__':\n"
+           "    main()\n")
+    _write(mini_repo, "gcp/research/child.py",
+           'def go(conn):\n    conn.execute("INSERT INTO market_data_intraday VALUES (1)")\n\ngo(None)\n')
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["writes"] == ["trades"], e["alpha"]
+    assert "market_data_intraday" not in e["alpha"]["writes"], \
+        "--deep is a store_true this deployment never passes"
+    # the same module WITH the flag passed reaches the child
+    assert "gcp/research/child.py" not in inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, set())
+    assert "gcp/research/child.py" in inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, {"deep"})
+    assert inv.declared_flags({"name": "j", "command": "python -m m",
+                               "args": "--deep --mode=full"}, None) == {"deep", "mode"}
+
+
+def test_a_fixed_cli_value_narrows_a_run_time_named_family(mini_repo):
+    """`direction-probe` is deployed with `--tf=15m` and passes `args.tf` down
+    to the loader, but the family grouping looked only at whether the scanner
+    resolved the placeholder, never at the job's own declared value, so the
+    digest still offered every timeframe. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse\n"
+           "from gcp.helpers import load\n"
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--tf', default='1m')\n"
+           "    args = p.parse_args()\n"
+           "    load(None, args.tf)\n"
+           "\n"
+           "main()\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def load(conn, tf):\n"
+           '    return conn.execute(f"SELECT * FROM demo_{tf}")\n')
+    names = ["demo_1m", "demo_15m"]
+    refs = inv.table_refs(mini_repo, names)
+    for k, v in inv.table_refs_dynamic(mini_repo, names).items():
+        for kind in ("writes", "reads", "mentions"):
+            refs[k][kind].extend(v[kind])
+    repo = inv.repo_inventory(mini_repo)
+    fixed = {"name": "probe", "command": "python -m gcp.research.alpha", "args": "--tf=15m", "env": {}}
+    loose = {"name": "probe", "command": "python -m gcp.research.alpha", "args": "", "env": {}}
+    got = {x["job"]: x for x in inv.job_table_edges(repo, refs, [fixed])}["probe"]
+    assert got["reads"] == ["demo_15m"], got
+    open_ = {x["job"]: x for x in inv.job_table_edges(repo, refs, [loose])}["probe"]
+    assert open_["reads"] == ["demo_15m", "demo_1m"], \
+        "with no declared value the whole family stands"
+
+
+def test_a_declared_relation_named_at_run_time_is_attributed(mini_repo):
+    """`market_data_intraday_iwm` is declared in gcp/schema.sql and its name is
+    built from the ticker, but the dynamic scan ran only over the live-minus-
+    declared set, so the orphan row said it was never named in code. The hole
+    also has to survive tokenisation: `{t.lower()}` carries parentheses, which
+    the token splitter split on. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "def load(conn, t):\n"
+           '    part = f"market_data_intraday_{t.lower()}" if t in ("SPY",) else "market_data_intraday"\n'
+           '    return conn.execute(f"SELECT ts FROM {part}")\n')
+    repo = inv.repo_inventory(mini_repo)
+    reads = repo["table_refs"]["market_data_intraday_spy"]["reads"]
+    assert [r["line"] for r in reads] == [3], reads
+    forms = inv._dynamic_forms('    part = f"market_data_intraday_{t.lower()}"')
+    assert [f["pat"] for f in forms] == ["market_data_intraday_[A-Za-z0-9]+"], forms
+    assert forms[0]["holes"] == [None], "a call expression is not a resolvable name"
 
 
 def test_a_configured_subprocess_module_is_a_root_of_the_job(mini_repo):

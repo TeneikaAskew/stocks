@@ -535,6 +535,19 @@ def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
     sched = deploy_schedulers(root)
     schema = schema_tables(root)
     routes = api_routes(root)
+    declared = [x["name"] for x in schema["tables"]] \
+        + [x["name"] for x in schema["materialized_views"]] \
+        + [x["name"] for x in schema["views"]]
+    # A declared relation can be named at run time too:
+    # `market_data_intraday_iwm` is a schema partition and
+    # scripts/analysis/per_ticker_calibration.py:202 builds the name from the
+    # ticker. Scanning the dynamic forms only over the runtime-created set left
+    # it reported as never named in code. (Codex, PR #1044.)
+    refs = table_refs(root)
+    for tname, v in table_refs_dynamic(root, declared).items():
+        for kind in ("writes", "reads", "mentions"):
+            seen = {(x["file"], x["line"]) for x in refs[tname][kind]}
+            refs[tname][kind].extend(x for x in v[kind] if (x["file"], x["line"]) not in seen)
     return {
         # The root this inventory was read from. Every consumer that walks the
         # tree again (import scopes, dynamic-name hints) must walk THIS root,
@@ -554,7 +567,7 @@ def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
         "cloudbuild_triggers": cloudbuild_triggers(root),
         "discord_commands": discord_commands(root),
         "modules": python_modules(root, jobs),
-        "table_refs": table_refs(root),
+        "table_refs": refs,
         "counts": {
             "jobs": len(jobs),
             "schedulers": len(sched),
@@ -760,48 +773,6 @@ def _literal_assigns(tree: ast.Module) -> list[tuple[str, str | None, set[str], 
     return out
 
 
-def _name_flow(tree: ast.Module) -> dict[str, list[tuple[str, tuple[int, int] | None]]]:
-    """name -> the names it can flow into, each with the line range in which
-    that name holds the value (None = the whole module).
-
-    Three edges, which together carry `_WEEKLY_VIEWS` to the
-    `REFRESH MATERIALIZED VIEW {view}` f-string: a `for` over the name binds
-    its target inside the loop; a call passing the name binds the matching
-    parameter inside the callee; and `b = a` binds `b`. (Codex, PR #1044.)
-    """
-    out: dict[str, list[tuple[str, tuple[int, int] | None]]] = {}
-    defs = {n.name: n for n in tree.body
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-
-    def span(node: ast.AST) -> tuple[int, int]:
-        return (node.lineno, getattr(node, "end_lineno", None) or node.lineno)
-
-    def edge(src: str, dst: str, bounds: tuple[int, int] | None) -> None:
-        if src != dst or bounds is not None:
-            out.setdefault(src, []).append((dst, bounds))
-
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.For, ast.AsyncFor)) and isinstance(node.iter, ast.Name):
-            tgts = node.target.elts if isinstance(node.target, ast.Tuple) else [node.target]
-            for tg in tgts:
-                if isinstance(tg, ast.Name):
-                    edge(node.iter.id, tg.id, span(node))
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in defs:
-            fn = defs[node.func.id]
-            params = [a.arg for a in list(fn.args.posonlyargs) + list(fn.args.args)]
-            for pos, a in enumerate(node.args):
-                if isinstance(a, ast.Name) and pos < len(params):
-                    edge(a.id, params[pos], span(fn))
-            for kw in node.keywords:
-                if kw.arg and isinstance(kw.value, ast.Name):
-                    edge(kw.value.id, kw.arg, span(fn))
-        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
-            for tgt in node.targets:
-                if isinstance(tgt, ast.Name):
-                    edge(node.value.id, tgt.id, None)
-    return out
-
-
 def _bind_value_lines(tree: ast.Module) -> dict[str, set[int]]:
     """name -> lines where it appears as a value in a dict literal.
 
@@ -816,6 +787,34 @@ def _bind_value_lines(tree: ast.Module) -> dict[str, set[int]]:
             for v in node.values:
                 if isinstance(v, ast.Name):
                     out.setdefault(v.id, set()).add(v.lineno)
+    return out
+
+
+def _derives_from(tree: ast.Module) -> dict[str, set[str]]:
+    """name -> the names its value is derived from, transitively.
+
+    Not a value flow (`_name_flow`): `s_table = strat_features_table(tf)` does
+    NOT give `s_table` the value of `tf`. It records that whatever constrains
+    `tf` also constrains `s_table`, which is what lets a job's declared
+    `--tf=15m` narrow a template whose placeholder is a local in another
+    module. (Codex, PR #1044.)
+    """
+    direct: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            srcs = {s.id for s in ast.walk(node.value) if isinstance(s, ast.Name)}
+            direct.setdefault(node.targets[0].id, set()).update(srcs - {node.targets[0].id})
+    out: dict[str, set[str]] = {}
+    for name in direct:
+        seen, stack = set(), [name]
+        while stack:
+            n = stack.pop()
+            for s in direct.get(n, ()):
+                if s not in seen and len(seen) < 32:
+                    seen.add(s)
+                    stack.append(s)
+        out[name] = seen
     return out
 
 
@@ -1138,9 +1137,13 @@ def _dynamic_forms(line: str) -> list[dict[str, Any]]:
             return
         pat = _PLACEHOLDER.join(re.escape(x) for x in parts)
         pat = (_PLACEHOLDER if pre else "") + pat + (_PLACEHOLDER if post else "")
+        cap = f"({_PLACEHOLDER})"
+        cpat = cap.join(re.escape(x) for x in parts)
+        cpat = (cap if pre else "") + cpat + (cap if post else "")
         if any(f["pat"] == pat for f in out):
             return
-        out.append({"pat": pat, "parts": parts, "holes": holes, "pre": pre, "post": post,
+        out.append({"pat": pat, "cpat": cpat, "parts": parts, "holes": holes,
+                    "pre": pre, "post": post,
                     "text": ("{?}" if pre else "")
                             + "".join(a + ("{" + (holes[i] or "?") + "}" if i < len(holes) else "")
                                       for i, a in enumerate(parts))
@@ -1158,16 +1161,33 @@ def _dynamic_forms(line: str) -> list[dict[str, Any]]:
         else:
             hole = ""
         if hole:
-            # the name template is the whitespace-delimited token holding the
-            # placeholder: `INSERT INTO strat_features_{tf} VALUES (1)` -> `strat_features_{tf}`
-            for token in re.split(r"[\s(),;=]+", body):
-                if not re.search(hole, token):
+            # The name template is the whitespace-delimited token holding the
+            # placeholder: `INSERT INTO strat_features_{tf} VALUES (1)` ->
+            # `strat_features_{tf}`. Holes are masked before the split, because
+            # a hole may itself contain a split character:
+            # `f"market_data_intraday_{t.lower()}"` split on the parentheses
+            # and the token no longer held a whole placeholder, so a declared
+            # partition read looked like no reference at all. (Codex, PR #1044.)
+            found: list[str] = []
+
+            def _mask(m: re.Match) -> str:
+                found.append(m.group(0))
+                return f"\x00{len(found) - 1}\x00"
+
+            masked = re.sub(hole, _mask, body)
+            for token in re.split(r"[\s(),;=]+", masked):
+                if "\x00" not in token:
                     continue
-                names: list[str | None] = []
-                for h in re.findall(hole, token):
+                parts, names = [], []
+                pos = 0
+                for m in re.finditer(r"\x00(\d+)\x00", token):
+                    parts.append(token[pos:m.start()])
+                    pos = m.end()
+                    h = found[int(m.group(1))]
                     inner = h[1:-1].strip() if h.startswith("{") else ""
                     names.append(inner if re.fullmatch(r"[A-Za-z_]\w*", inner) else None)
-                emit(re.split(hole, token), names)
+                parts.append(token[pos:])
+                emit(parts, names)
         elif pre or post:
             # `"INSERT INTO strat_features_levels_" + tf`: the name template is
             # the token adjacent to the `+`; the operand is not read back here.
@@ -1243,6 +1263,10 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
             if form is not None:
                 hit["resolved"] = bool(form.get("resolved"))
                 hit["template"] = form["text"]
+                if form.get("origins"):
+                    hit["origins"] = sorted(form["origins"])
+                if form.get("vars", {}).get(t):
+                    hit["vars"] = list(form["vars"][t])
             out[t][kind].append(hit)
 
     def follow(t: str, rel: str, name_re: re.Pattern, skip: int, depth: int = 0,
@@ -1291,6 +1315,7 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
         # it imports, so only do it where a template has a name to resolve
         holes = {h for fs in forms_at.values() for f in fs for h in f["holes"] if h}
         values = _resolved_values(root, rel, holes) if holes else {}
+        derives = _derives_from(tree) if (tree is not None and holes) else {}
         for i, forms in forms_at.items():
             line = lines[i]
             # Resolve each form to the names its placeholders can really take;
@@ -1308,15 +1333,31 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                     vs = None if any(v is None for v in vs) else vs
                 if vs is not None:
                     form["resolved"] = True
+                    # recorded even on the resolved path, because a copy of
+                    # this form followed into an IMPORTING module is unresolved
+                    # there (its caller may pass anything) and needs them
+                    form["origins"] = {h for h in form["holes"] if h} | {
+                        o for h in form["holes"] if h for o in derives.get(h, ())}
+                    form.setdefault("vars", {})
                     for combo in itertools.product(*vs):
                         name = "".join(a + (combo[j] if j < len(combo) else "")
                                        for j, a in enumerate(form["parts"]))
                         if name in tableset:
+                            form["vars"][name] = combo
                             hits.append((name, form))
                 else:
                     form["resolved"] = False
-                    pt = re.compile(form["pat"])
-                    hits += [(t, form) for t in tables if pt.fullmatch(t)]
+                    # the names that constrain this placeholder, so a job's
+                    # declared CLI value can narrow the family later
+                    form["origins"] = {h for h in form["holes"] if h} | {
+                        o for h in form["holes"] if h for o in derives.get(h, ())}
+                    cpt = re.compile(form["cpat"])
+                    form.setdefault("vars", {})
+                    for tname in tables:
+                        m = cpt.fullmatch(tname)
+                        if m:
+                            form["vars"][tname] = m.groups()
+                            hits.append((tname, form))
             if not hits:
                 continue
             ctx = "\n".join(ctx_lines[max(0, i - 3): i + 1])
@@ -1620,7 +1661,9 @@ def _dotted(node: ast.AST) -> str | None:
 
 
 def _import_scope(root: pathlib.Path, mod_file: str,
-                  argv: dict[str, set[str]] | None = None) -> dict[str, set[int] | None]:
+                  argv: dict[str, set[str]] | None = None,
+                  flags: set[str] | None = None,
+                  out_args: dict[str, set[str] | None] | None = None) -> dict[str, set[int] | None]:
     """The code a job can run, as {repo file: line numbers} (None = whole file).
 
     Symbol-level reachability rather than file membership: from the entry
@@ -1673,14 +1716,27 @@ def _import_scope(root: pathlib.Path, mod_file: str,
     # entrypoint counted as reachable for every job configuration.
     # (Codex, PR #1044.)
     _entry_tree = _parsed(root / mod_file) if mod_file and (root / mod_file).exists() else None
-    _ns_names, _dests = _argparse_dests(_entry_tree) if _entry_tree is not None else (set(), set())
+    _ns_names, _dests, _bool_dests = _argparse_dests(_entry_tree) if _entry_tree is not None \
+        else (set(), set(), {})
     argv_cons = {k: v for k, v in (argv or {}).items() if k in _dests} if _ns_names else {}
+    # A boolean switch the deployment does not pass takes its declared default.
+    # `backtest-pipeline` is deployed with no args, so `--walk-forward` is
+    # false and the walk-forward subprocess under `if run_wf:` cannot run;
+    # excluding boolean dests entirely left that branch, and its
+    # backtest_walk_forward_folds write, attributed to the base deployment.
+    # (Codex, PR #1044.)
+    bool_cons = {d: (on if d in (flags or set()) else off)
+                 for d, (on, off) in _bool_dests.items()} if _ns_names else {}
 
     def argv_of(f: str) -> dict[str, set[str]]:
         return argv_cons if f == mod_file else {}
 
+    def bools_of(f: str) -> dict[str, bool]:
+        return bool_cons if f == mod_file else {}
+
     def observe_call(target: tuple[str, str], call: ast.Call | None,
-                     caller: dict[str, set[str] | None] | None = None) -> bool:
+                     caller: dict[str, set[str] | None] | None = None,
+                     argv_here: dict[str, set[str]] | None = None) -> bool:
         """Record the literal arguments of one call (None = a bare
         reference, everything unknown). True when the constraint set
         changed and the callee, if already walked, must be walked again."""
@@ -1718,6 +1774,11 @@ def _import_scope(root: pathlib.Path, mod_file: str,
                     vals = {val.value}
                 elif isinstance(val, ast.Name) and caller.get(val.id):
                     vals = set(caller[val.id])
+                # `run_probe(engine, args.ticker, args.tf, ...)` in the entry
+                # module, where the deployment fixes `--tf=15m`
+                elif isinstance(val, ast.Attribute) and isinstance(val.value, ast.Name) \
+                        and val.value.id in _ns_names and (argv_here or {}).get(val.attr):
+                    vals = set(argv_here[val.attr])
                 if vals is None:
                     cons[pn] = None
                 elif cons.get(pn, set()) is not None:
@@ -1726,15 +1787,24 @@ def _import_scope(root: pathlib.Path, mod_file: str,
         return before != after
 
     def verdict(test: ast.AST, cons: dict[str, set[str] | None],
-                argv_here: dict[str, set[str]] | None = None) -> bool | None:
-        """True / False when `cons` (or the job's declared CLI values) decides
-        the test, else None."""
+                argv_here: dict[str, set[str]] | None = None,
+                bools_here: dict[str, bool] | None = None) -> bool | None:
+        """True / False when `cons`, the job's declared CLI values, or a
+        boolean switch it does not pass decides the test, else None."""
         argv_here = argv_here or {}
+        bools_here = bools_here or {}
+        if isinstance(test, ast.Attribute) and isinstance(test.value, ast.Name) \
+                and test.value.id in _ns_names and test.attr in bools_here:
+            return bools_here[test.attr]
+        if isinstance(test, ast.Name) and test.id in bools_here:
+            return bools_here[test.id]
+        if isinstance(test, ast.Constant) and isinstance(test.value, bool):
+            return test.value
         if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-            v = verdict(test.operand, cons, argv_here)
+            v = verdict(test.operand, cons, argv_here, bools_here)
             return None if v is None else not v
         if isinstance(test, ast.BoolOp):
-            vs = [verdict(x, cons, argv_here) for x in test.values]
+            vs = [verdict(x, cons, argv_here, bools_here) for x in test.values]
             if isinstance(test.op, ast.And):
                 return False if False in vs else (True if all(v is True for v in vs) else None)
             return True if True in vs else (False if all(v is False for v in vs) else None)
@@ -1749,7 +1819,7 @@ def _import_scope(root: pathlib.Path, mod_file: str,
                 values = cons[left.id]
             else:
                 return None
-            if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(right, ast.Constant):
+            if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(right, ast.Constant):  # noqa: E501
                 hits = {v == right.value for v in values}
                 if len(hits) != 1:
                     return None
@@ -1763,16 +1833,39 @@ def _import_scope(root: pathlib.Path, mod_file: str,
                 return hits.pop() if isinstance(op, ast.In) else not hits.pop()
         return None
 
+    def _fold_bools(fn: ast.AST, cons: dict[str, set[str] | None],
+                    argv_here: dict[str, set[str]], base: dict[str, bool]) -> dict[str, bool]:
+        """Locals assigned a boolean expression over the switches, in source
+        order: `do_walk_forward = args.walk_forward or args.walk_forward_only`
+        then `run_wf = do_walk_forward and not args.report_only` then
+        `if run_wf:`."""
+        known = dict(base)
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            tgt = node.targets[0]
+            if not isinstance(tgt, ast.Name):
+                continue
+            v = verdict(node.value, cons, argv_here, known)
+            if v is None:
+                known.pop(tgt.id, None)
+            else:
+                known[tgt.id] = v
+        return known
+
     def dormant(fn: ast.AST, cons: dict[str, set[str] | None], f: str = "") -> set[int]:
         """ids of the statements behind branches `cons`, or the job's declared
         CLI values in the entry module, rule out."""
         out: set[int] = set()
         argv_here = argv_of(f)
-        if not cons and not argv_here:
+        bools_here = bools_of(f)
+        if not cons and not argv_here and not bools_here:
             return out
+        if bools_here:
+            bools_here = _fold_bools(fn, cons, argv_here, bools_here)
         for node in ast.walk(fn):
             if isinstance(node, ast.If):
-                v = verdict(node.test, cons, argv_here)
+                v = verdict(node.test, cons, argv_here, bools_here)
                 if v is True:
                     out.update(id(x) for x in node.orelse)
                 elif v is False:
@@ -1880,7 +1973,7 @@ def _import_scope(root: pathlib.Path, mod_file: str,
             # a call whose shape fits none of them stays ambiguous: observe it
             # against all, which can only loosen
             for target in (fits or cands):
-                if observe_call(target, c, cons) and target in seen_syms:
+                if observe_call(target, c, cons, argv_of(f)) and target in seen_syms:
                     rewalk.add(target)
         for sub in walked:
             if not isinstance(sub, ast.Name) or id(sub) in call_funcs:
@@ -1938,7 +2031,7 @@ def _import_scope(root: pathlib.Path, mod_file: str,
             for target, _sym in targets:
                 reach_module(target)
         # A subprocess the reached code launches runs its target in full.
-        for target in spawn_targets(f, nodes):
+        for target in spawn_targets(f, nodes, skip):
             reach_module(target, whole=True)
 
     def reach_module(f: str, whole: bool = False) -> None:
@@ -1957,7 +2050,7 @@ def _import_scope(root: pathlib.Path, mod_file: str,
             # `elif args.mode == 'daily'` body is not reachable through it.
             # (Codex, PR #1044.)
             skip: set[int] = set()
-            if argv_of(f):
+            if argv_of(f) or bools_of(f):
                 for node in tree.body:
                     skip |= dormant(node, {}, f)
             if not skip:
@@ -1976,6 +2069,11 @@ def _import_scope(root: pathlib.Path, mod_file: str,
                 lines |= live_lines(node, skip)
             add_lines(f, lines)
             uses(f, top, skip)
+            # A subprocess launch is a whole-module fact: the `subprocess.run`
+            # sits in one helper and the child's path in another, so it is
+            # scanned over the module's live statements rather than per symbol.
+            for target in spawn_targets(f, list(tree.body), skip):
+                reach_module(target, whole=True)
             return
         if f in seen_mods:
             return
@@ -2021,18 +2119,28 @@ def _import_scope(root: pathlib.Path, mod_file: str,
 
     _SPAWN = re.compile(r"\b(?:subprocess\.(?:run|call|check_call|check_output|Popen)|os\.system|os\.exec\w*|os\.spawn\w*|runpy\.run_(?:path|module))\b")
 
-    def spawn_targets(f: str, nodes: list[ast.AST]) -> list[str]:
+    def spawn_targets(f: str, nodes: list[ast.AST], skip: set[int] | None = None) -> list[str]:
         """Repo modules the reached code launches as a subprocess: a `.py`
         string that resolves against the file's own directory or the repo
         root (scripts/run_pipeline.py builds `SCRIPTS_DIR / "run_backtest.py"`),
         or a dotted module after `-m`. Only when the reached code calls
-        subprocess / os.system / runpy at all. (Codex, PR #1044.)"""
-        src = "\n".join(ast.unparse(n) for n in nodes) if nodes else ""
-        if not _SPAWN.search(src):
+        subprocess / os.system / runpy at all. (Codex, PR #1044.)
+
+        Statements in `skip` are not walked, so a child launched only from a
+        branch the job's declared flags rule out is not a root:
+        `scripts/run_pipeline.py` runs `run_walk_forward.py` under
+        `if run_wf:`, and `backtest-pipeline` deploys with no args, so
+        `--walk-forward` is false. (Codex, PR #1044.)
+        """
+        live = list(live_nodes(nodes, skip or set()))
+        if not any(isinstance(n, ast.Call) and _SPAWN.search(_dotted(n.func) or "") for n in live):
             return []
         out: list[str] = []
-        strings = [sub.value for n in nodes for sub in ast.walk(n)
-                   if isinstance(sub, ast.Constant) and isinstance(sub.value, str)]
+        # source order matters: the `-m` form reads the NEXT string, and
+        # live_nodes walks depth-first off a stack rather than in order
+        strings = [n.value for n in sorted(
+            (n for n in live if isinstance(n, ast.Constant) and isinstance(n.value, str)),
+            key=lambda n: (n.lineno, n.col_offset))]
         here = pathlib.Path(f).parent
         for i, sv in enumerate(strings):
             cand: str | None = None
@@ -2069,6 +2177,15 @@ def _import_scope(root: pathlib.Path, mod_file: str,
 
     if mod_file and (root / mod_file).exists():
         reach_module(mod_file, whole=True)
+    if out_args is not None:
+        # every parameter name the walk saw a value for, unioned across the
+        # functions it reached; unknown anywhere makes it unknown
+        for cons in arg_lits.values():
+            for prm, vals in cons.items():
+                if vals is None or out_args.get(prm, set()) is None:
+                    out_args[prm] = None
+                else:
+                    out_args.setdefault(prm, set()).update(vals)
     return scope
 
 
@@ -2077,11 +2194,11 @@ def _scheduler_modules(root: pathlib.Path, job_name: str, schedulers: list[dict[
     job: strat-enrich-daily targets strat-engine with
     `-m gcp.research.strat_engine.strat_enrich_levels`, so that module is a
     root of strat-engine's reachable code. (Codex, PR #1044.)"""
-    return [f for f, _argv in _scheduler_roots(root, job_name, schedulers)]
+    return [f for f, _argv, _flags in _scheduler_roots(root, job_name, schedulers)]
 
 
-def _scheduler_roots(root: pathlib.Path, job_name: str,
-                     schedulers: list[dict[str, Any]]) -> list[tuple[str, dict[str, set[str]]]]:
+def _scheduler_roots(root: pathlib.Path, job_name: str, schedulers: list[dict[str, Any]]
+                     ) -> list[tuple[str, dict[str, set[str]], set[str]]]:
     """Each module a scheduler override selects for this job, paired with the
     CLI values THAT scheduler passes.
 
@@ -2090,15 +2207,16 @@ def _scheduler_roots(root: pathlib.Path, job_name: str,
     (the job's own entry module, which the scheduler does not run) would prune
     branches of a module the flag was never given to. (Codex, PR #1044.)
     """
-    out: list[tuple[str, dict[str, set[str]]]] = []
+    out: list[tuple[str, dict[str, set[str]], set[str]]] = []
     for sch in schedulers:
         if sch.get("target_job") != job_name or not sch.get("args"):
             continue
-        argv = declared_argv({"name": job_name, "command": "", "args": sch["args"]}, None)
+        as_job = {"name": job_name, "command": "", "args": sch["args"]}
+        argv, flags = declared_argv(as_job, None), declared_flags(as_job, None)
         for m in re.finditer(r"\b((?:gcp|lib|scripts)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b", sch["args"]):
             f = _module_file(root, m.group(1).split("."))
-            if f and f != "gcp/database.py" and not any(f == g for g, _ in out):
-                out.append((f, argv))
+            if f and f != "gcp/database.py" and not any(f == g for g, _a, _fl in out):
+                out.append((f, argv, flags))
     return out
 
 
@@ -2138,7 +2256,28 @@ _LIST_ACTIONS = {"append", "extend", "append_const", "count",
                  "store_true", "store_false", "store_const", "version", "help"}
 
 
-def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str]]:
+_ARGV_ANY_FLAG = re.compile(r"--([A-Za-z][\w-]*)")
+
+
+def declared_flags(job: dict[str, Any], schedulers: list[dict[str, Any]] | None = None) -> set[str]:
+    """Every flag name the deployed job passes, in any form.
+
+    `declared_argv` reads only `--flag=value`, since the space form's token
+    boundaries are lost; a boolean flag carries no value, so its PRESENCE is
+    the whole signal and this reads it. (Codex, PR #1044.)
+    """
+    out: set[str] = set()
+    sources = [f"{job.get('command') or ''} {job.get('args') or ''}"]
+    for sch in schedulers or []:
+        if sch.get("target_job") == job["name"] and sch.get("args"):
+            sources.append(sch["args"])
+    for src in sources:
+        for m in _ARGV_ANY_FLAG.finditer(src):
+            out.add(m.group(1).replace("-", "_"))
+    return out
+
+
+def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str], dict[str, tuple[bool, bool]]]:
     """(names bound from `parse_args()`, the SCALAR dests the module declares).
 
     Only a module that declares `--mode` may have its `args.mode` constrained
@@ -2154,6 +2293,17 @@ def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str]]:
     """
     ns: set[str] = set()
     dests: set[str] = set()
+    bools: dict[str, tuple[bool, bool]] = {}
+
+    def _dest_of(node: ast.Call, kw: dict[str, ast.AST]) -> str | None:
+        explicit = kw.get("dest")
+        if isinstance(explicit, ast.Constant) and isinstance(explicit.value, str):
+            return explicit.value
+        for a in node.args:
+            if isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value.startswith("--"):
+                return a.value[2:].replace("-", "_")
+        return None
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
                 and isinstance(node.value.func, ast.Attribute) and node.value.func.attr == "parse_args":
@@ -2163,6 +2313,17 @@ def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str]]:
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
                 and node.func.attr == "add_argument":
             kw = {k.arg: k.value for k in node.keywords if k.arg}
+            act = kw.get("action")
+            # a boolean switch: (value when the flag IS passed, value when it is not)
+            if isinstance(act, ast.Constant) and act.value in ("store_true", "store_false"):
+                d = _dest_of(node, kw)
+                dflt = kw.get("default")
+                on = act.value == "store_true"
+                off = (dflt.value if isinstance(dflt, ast.Constant) and isinstance(dflt.value, bool)
+                       else not on)
+                if d:
+                    bools[d] = (on, off)
+                continue
             if "nargs" in kw:
                 continue
             # a declared type converts the string, so a `--horizon=15` literal
@@ -2175,23 +2336,20 @@ def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str]]:
                 continue
             if act is not None and not isinstance(act, ast.Constant):
                 continue
-            explicit = kw.get("dest")
-            if isinstance(explicit, ast.Constant) and isinstance(explicit.value, str):
-                dests.add(explicit.value)
-                continue
-            for a in node.args:
-                if isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value.startswith("--"):
-                    dests.add(a.value[2:].replace("-", "_"))
-    return ns, dests
+            d = _dest_of(node, kw)
+            if d:
+                dests.add(d)
+    return ns, dests, bools
 
 
 def _job_scope(root: pathlib.Path, job: dict[str, Any],
-               schedulers: list[dict[str, Any]] | None = None) -> dict[str, set[int] | None]:
+               schedulers: list[dict[str, Any]] | None = None,
+               out_args: dict[str, set[str] | None] | None = None) -> dict[str, set[int] | None]:
     """The entry module's scope plus, in full, every module the job's env or
     args configure a wrapper to run (see _configured_modules) and every
     module a scheduler's args override selects for it."""
     sched_roots = _scheduler_roots(root, job["name"], schedulers or [])
-    overridden = {f for f, _ in sched_roots}
+    overridden = {f for f, _a, _fl in sched_roots}
     # The entry module runs under the job's own args plus the args of every
     # scheduler that does NOT redirect the job to a different module.
     plain = [s for s in (schedulers or [])
@@ -2199,14 +2357,17 @@ def _job_scope(root: pathlib.Path, job: dict[str, Any],
              and not any(_module_file(root, m.group(1).split(".")) in overridden
                          for m in re.finditer(r"\b((?:gcp|lib|scripts)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b", s["args"]))]
     entry_argv = declared_argv(job, plain)
-    roots: list[tuple[str, dict[str, set[str]]]] = [(entry_module(job), entry_argv)]
-    roots += [(m, declared_argv({"name": job["name"], "command": "",
-                                 "args": " ".join(str(v) for v in (job.get("env") or {}).values())}, None))
-              for m in _configured_modules(root, job)]
+    entry_flags = declared_flags(job, plain)
+    roots: list[tuple[str, dict[str, set[str]], set[str]]] = [
+        (entry_module(job), entry_argv, entry_flags)]
+    for m in _configured_modules(root, job):
+        env_job = {"name": job["name"], "command": "",
+                   "args": " ".join(str(v) for v in (job.get("env") or {}).values())}
+        roots.append((m, declared_argv(env_job, None), declared_flags(env_job, None)))
     roots += sched_roots
-    scope = _import_scope(root, roots[0][0], roots[0][1])
-    for extra, extra_argv in roots[1:]:
-        for f, lines in _import_scope(root, extra, extra_argv).items():
+    scope = _import_scope(root, roots[0][0], roots[0][1], roots[0][2], out_args)
+    for extra, extra_argv, extra_flags in roots[1:]:
+        for f, lines in _import_scope(root, extra, extra_argv, extra_flags, out_args).items():
             if lines is None or scope.get(f, set()) is None:
                 scope[f] = None
             else:
@@ -2255,14 +2416,30 @@ def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[st
     out = []
     for j in (repo["jobs"] if jobs is None else jobs):
         mod_file = entry_module(j)
-        scope = _job_scope(root, j, repo.get("schedulers"))
+        observed: dict[str, set[str] | None] = {}
+        scope = _job_scope(root, j, repo.get("schedulers"), observed)
+
+        def fits(x: dict[str, Any], _obs: dict[str, set[str] | None] = observed) -> bool:
+            """A run-time-assembled name whose placeholder this job fixes is
+            not a whole family. `direction-probe` is deployed with `--tf=15m`
+            and passes `args.tf` down to the loader, so the only
+            `strat_features_{tf}` relations it can name are the 15m ones.
+            (Codex, PR #1044.)"""
+            if x.get("resolved", True) or not x.get("vars") or not x.get("origins"):
+                return True
+            known = [_obs[o] for o in x["origins"] if _obs.get(o)]
+            if not known:
+                return True
+            allowed = set().union(*known)
+            return any(v in allowed for v in x["vars"])
+
         cites: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for t, v in refs.items():
-            hits = {k: [x for x in v[k] if _in_scope(scope, x)] for k in ("writes", "reads")}
+            hits = {k: [x for x in v[k] if _in_scope(scope, x) and fits(x)] for k in ("writes", "reads")}
             if hits["writes"] or hits["reads"]:
                 cites[t] = hits
-        w = sorted(t for t, v in refs.items() if any(_in_scope(scope, x) for x in v["writes"]))
-        r = sorted(t for t, v in refs.items() if any(_in_scope(scope, x) for x in v["reads"]))
+        w = sorted(t for t, v in cites.items() if v["writes"])
+        r = sorted(t for t, v in cites.items() if v["reads"])
         # An edge every one of whose reached references is an UNRESOLVED
         # run-time template is not a claim about that concrete relation: the
         # evidence says only "one of this family". magnitude-inference picks
@@ -2526,7 +2703,9 @@ def _render_orphans(refs, root: pathlib.Path = REPO, partitions: dict[str, str] 
         if w and r:
             continue
         if t in partitions:
-            status = f"partition of `{partitions[t]}` — routed by Postgres, never named in code"
+            named = w or r
+            status = f"partition of `{partitions[t]}` — routed by Postgres" + \
+                ("" if named else ", never named in code")
         elif not w and not r:
             status = "no writer and no reader in code"
         elif not r:
