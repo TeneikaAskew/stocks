@@ -1129,4 +1129,4 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 
 ---
 
-Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md); inventory blocks rendered by `scripts/maintenance/doc_inventory.py` from the 2026-09-07 live snapshot. The monthly refresh updates this line.
+Generated 2026-09-07 by the monthly documentation refresh; inventory blocks rendered by `scripts/maintenance/doc_inventory.py` from the 2026-09-07 live snapshot. The audits that established this layout are in [`docs/audits/`](../../audits). The monthly refresh updates this line.

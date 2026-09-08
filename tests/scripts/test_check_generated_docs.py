@@ -1263,3 +1263,80 @@ def test_a_heading_with_nothing_under_it_is_a_finding(tmp_path):
     (root / gate.COST).write_text(body + head + "\n\n" + tail.split("\n## ", 1)[-1].join(["## ", ""]))
     assert any("nothing beneath it" in f for f in gate.gate_cost_content(root)), \
         gate.gate_cost_content(root)
+
+
+def test_a_rule_with_text_welded_onto_it_is_a_finding(tmp_path):
+    r"""Run 30 ended 05-a with
+
+        --- \\Generated 2026-09-08 from the ground truth in [...]
+
+    merging the closing rule, a stray backslash and the provenance line into
+    one paragraph. The rule stopped being a rule and the reader was shown
+    `--- \\`. Same cause as the duplicated tail, different shape: a `replace`
+    that swallowed the break between a rule and the paragraph below it."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Some prose.\n\n--- \\Generated 2026-09-08 from the ground truth.\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1, out
+    assert "horizontal rule has text on the same line" in out[0]
+
+
+def test_a_rule_on_its_own_line_is_not_a_finding(tmp_path):
+    """Every document in the corpus separates its sections this way, so the
+    gate has to leave a real rule alone -- including the setext-style `---`
+    underline that turns the line above it into a heading."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Some prose.\n\n---\n\nMore prose.\n\nA heading\n---\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+    assert gate.gate_inline_rule(REPO) == [], "the committed documents must pass"
+
+
+def test_moving_the_date_inside_an_exemption_is_not_a_new_exemption(tmp_path):
+    """05-a's Cloud Build exemption reads "... read live with gcloud builds
+    triggers list 2026-09-07", and the architecture prompt tells the model to
+    move as-of dates to the current snapshot. Run 30 did, and the gate
+    reported a new exemption because it diffed raw strings -- failing a run
+    for an exemption a human had already approved, one date earlier."""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text().replace("gcloud builds triggers list 2026-09-07",
+                                       "gcloud builds triggers list 2026-09-08"))
+    assert gate.gate_new_suppressions(root, prev) == []
+
+
+def test_an_exemption_with_a_new_subject_is_still_a_finding(tmp_path):
+    """The gate's real job: a marker the model wrote to silence a claim no
+    human approved. Normalising the date must not weaken that."""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text() + "\nA stale claim <!-- verify-docs-ok: I decided this is fine -->\n")
+    findings = gate.gate_new_suppressions(root, prev)
+    assert any("I decided this is fine" in f for f in findings), findings
+
+
+def test_no_generated_document_cites_a_dated_filename_in_its_closing_line(tmp_path):
+    """The trap that produced run 30's dead link. The closing line said
+    "Generated <date> by hand from the audit in [ARCHITECTURE_DOCS_AUDIT_<date>.md]",
+    the prompt says to update the date, and the model updated both -- inventing
+    an audit file that does not exist. The hazard is removed rather than
+    documented: the citation now points at the audits directory.
+
+    Scoped to the four documents the model writes. 05-e-API.md is rendered
+    from the router files and never passes through a prompt, so no instruction
+    can make it bump a date."""
+    for doc in gate.DOCS:
+        text = (REPO / doc).read_text()
+        closing = [l for l in text.split("\n") if l.startswith("Generated 2")]
+        assert closing, doc
+        assert not re.search(r"\]\([^)]*\d{4}-\d{2}-\d{2}[^)]*\)", closing[-1]), \
+            f"{doc}: closing line links a path carrying a date, which the model will bump"

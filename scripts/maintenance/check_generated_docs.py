@@ -30,6 +30,8 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
 * prose floor   prose outside the marker blocks keeps 80% of its characters
 * tail          no line is the tail of the line above it: a `replace` that
                 rewrote a span and left the end of the old text (run 28)
+* inline rule   no `---` has text welded onto it: a `replace` that swallowed
+                the break between a rule and the paragraph below (run 30)
 * as-of         the "Live <date>" and "read on <date>" labels in prose name
                 the snapshot this run actually read (run 28)
 * stale         no retired name or phrase appears outside history context
@@ -486,6 +488,39 @@ def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
     return out
 
 
+# A thematic break is `---` alone on its line. Run 30 wrote
+#
+#     --- \Generated 2026-09-08 from the ground truth in [...]
+#
+# merging the closing rule, a stray backslash and the provenance line into one
+# paragraph: the rule stopped being a rule and the document ended in literal
+# `--- \`. Measured over every markdown file under docs/ plus README.md plus
+# runs 28, 29 and 30: zero hits in the corpus, one hit, the real defect.
+INLINE_RULE = re.compile(r"^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s+\S")
+
+
+def gate_inline_rule(root: pathlib.Path) -> list[str]:
+    """A horizontal rule with text welded onto it — another botched `replace`.
+
+    The companion to `gate_duplicated_tail`: same cause, different shape. A
+    `replace` that spans the blank line between a rule and the paragraph after
+    it collapses both into one line, and every other gate passes -- the text
+    is all still there, the churn is a line, and the document merely stops
+    rendering a rule and starts showing `--- \` to the reader.
+    """
+    out = []
+    for doc in DOCS:
+        f = root / doc
+        if not f.exists():
+            continue
+        for i, line in enumerate(_prose_lines(f.read_text()), 1):
+            if INLINE_RULE.match(line):
+                out.append(f"{doc}: a horizontal rule has text on the same line "
+                           f"(prose line {i}): {line.strip()[:80]!r} — a `replace` swallowed "
+                           "the break between the rule and the paragraph below it")
+    return out
+
+
 # The three "as of" labels a human wrote into the prose, every one of which has
 # to track the snapshot the run was taken from. Deliberately literal: a looser
 # pattern would sweep up the historical dates beside them -- 05-a carries 33
@@ -805,6 +840,15 @@ def render_report(stats: list[dict]) -> str:
 
 
 SUPPRESS_RE = re.compile(r"<!--\s*verify-docs-ok:\s*(.+?)\s*-->")
+# An exemption's IDENTITY is its text with any date removed. One of the two in
+# 05-a reads "Cloud Build trigger names, read live with gcloud builds triggers
+# list 2026-09-07": that trailing date is an as-of note, and the architecture
+# prompt tells the model to move as-of dates to the current snapshot. Run 30
+# did exactly that and the gate reported a new exemption had appeared, because
+# it diffed raw strings. The model had granted itself nothing -- the exemption
+# was already on main, one date earlier. Comparing identity keeps the gate's
+# real job (a marker whose SUBJECT is new) while letting the date move.
+SUPPRESS_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 
 
 def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[str]:
@@ -814,8 +858,13 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
     every regeneration can edit the four generated documents. A model that
     wrote one above a stale schedule, service or count claim would have removed
     that claim from the verifier and published a run reporting clean, with no
-    human having approved the exemption. So a marker text that was not in the
-    previous version of the file fails the run. (Codex, PR #1009.)
+    human having approved the exemption. So a marker whose SUBJECT was not in
+    the previous version of the file fails the run. (Codex, PR #1009.)
+
+    Subject, not raw text: one of 05-a's two exemptions ends in an as-of date
+    the prompt tells the model to move, and run 30 moved it. Diffing strings
+    read that as a new exemption and failed a run for an exemption a human had
+    already approved, one date earlier. (Run 30.)
     """
     if previous_dir is None:
         return []
@@ -824,11 +873,14 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
         prev = previous_dir / doc
         if not prev.exists():
             continue
-        was = set(SUPPRESS_RE.findall(prev.read_text()))
-        now = set(SUPPRESS_RE.findall((root / doc).read_text()))
-        for added in sorted(now - was):
+        def _ids(text: str) -> dict[str, str]:
+            return {SUPPRESS_DATE.sub("<date>", m): m for m in SUPPRESS_RE.findall(text)}
+
+        was = _ids(prev.read_text())
+        now = _ids((root / doc).read_text())
+        for key in sorted(set(now) - set(was)):
             out.append(f"{doc}: a new verify-docs-ok exemption appeared in a generated doc "
-                       f"({added!r}) — an exemption is a human decision, not a model's")
+                       f"({now[key]!r}) — an exemption is a human decision, not a model's")
     return out
 
 
@@ -1069,6 +1121,7 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_headings_and_size(root, previous_dir)
     findings += gate_elided_prose(root)
     findings += gate_duplicated_tail(root)
+    findings += gate_inline_rule(root)
     findings += gate_stale_asof(root, live)
     findings += gate_prose_floor(root, previous_dir)
     findings += gate_regenerated_structure(root)

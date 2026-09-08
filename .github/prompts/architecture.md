@@ -56,7 +56,11 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
      day you are running.
    These are the same date on almost every run and different on a run that
    crosses UTC midnight between the snapshot and you; write each from its own
-   source rather than assuming. Run 28 updated the header and left §3 a day
+   source rather than assuming.
+   **A date inside a filename, path or link is never an as-of date.** Run 30
+   bumped `docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md` to `...-09-08.md`
+   in a link, inventing a file that does not exist and failing the run on a
+   dead link. Leave every path exactly as you found it. Run 28 updated the header and left §3 a day
    behind, so a table of the current fleet announced itself as stale; a gate
    now fails the run on any of the three snapshot labels. Leave every OTHER
    date alone — the dates in §4, §15 and §18 record when something was
@@ -87,6 +91,7 @@ survive (carried forward from PR #990):
 ## Rules
 
 - **Never write `...` or `…` as a stand-in for text you are not changing.** A `replace` call rewrites exactly the span you give it, so an elision marker does not mean "the rest is unchanged" — it deletes the paragraph and leaves three dots in the document. Run 27 did this to five section introductions and four bullets in this file at once, destroying 4,035 characters while every other gate stayed green. If a paragraph needs no change, do not call `replace` on it at all. A gate now fails the run on any line that is only an ellipsis.
+- **A horizontal rule (`---`) stays alone on its line.** Run 30 replaced the closing line of this file and welded the rule, a stray backslash and the new text into one paragraph: `--- \\Generated 2026-09-08 ...`. The rule stopped being a rule and the reader was shown `--- \\`. When you replace a paragraph that follows a rule, do not include the rule or the blank line after it in the span you replace. A gate now fails the run on this.
 - **A `replace` rewrites exactly the span you give it, including its end.** After every call, re-read the region you changed and check that no fragment of the old text survives as its own line. Run 28 finished this file with `pshot. The monthly refresh updates this line.` sitting under the closing line — the tail of the `...live snapshot.` it had just rewritten, starting mid-word. Every other gate passed it. A gate now fails the run on any line that is the tail of the line above it.
 
 - Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
