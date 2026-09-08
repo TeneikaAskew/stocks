@@ -281,3 +281,26 @@ def test_a_non_string_vendor_timestamp_is_dropped_not_raised(caplog):
         "the guard must be a type check, not an except clause"
     assert "3" in caplog.text and "skipped" in caplog.text.lower()
     assert "20260908" in caplog.text, "the skip log must name what was dropped"
+
+
+def test_a_non_list_vendor_collection_is_dropped_not_raised(caplog):
+    """The scalar fields were type-checked but the CONTAINERS were not:
+    `(art.get("topics") or [])` keeps a truthy non-list, so a vendor
+    `topics: 42` or `ticker_sentiment: 42` raised TypeError out of
+    av_news_to_rows and failed the whole backfill run (Codex on #1022)."""
+    import logging
+
+    from gcp.backfill_ticker import av_news_to_rows
+
+    feed = [
+        {"time_published": "20260908T120000", "topics": 42,
+         "ticker_sentiment": [{"ticker": "AMD"}]},
+        {"time_published": "20260908T120100", "ticker_sentiment": 42},
+        {"time_published": "20260908T120200", "ticker_sentiment": "AMD"},
+        {"time_published": "20260908T120300", "title": "kept",
+         "ticker_sentiment": [{"ticker": "NVDA"}]},
+    ]
+    with caplog.at_level(logging.WARNING, logger="gcp.backfill_ticker"):
+        rows = av_news_to_rows(feed)
+    assert sorted(r["ticker"] for r in rows) == ["AMD", "NVDA"]
+    assert "topics" in caplog.text and "ticker_sentiment" in caplog.text

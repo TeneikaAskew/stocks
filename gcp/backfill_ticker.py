@@ -204,6 +204,24 @@ def _av_text(art: dict, key: str, limit: int, malformed: list[str]):
     return value[:limit] or None
 
 
+def _av_list(art: dict, key: str, malformed: list[str]) -> list:
+    """One list-valued field of a vendor article, or an empty list.
+
+    `(art.get(key) or [])` keeps a truthy non-list, so `topics: 42` or
+    `ticker_sentiment: "AMD"` reached the iteration and raised TypeError
+    out of av_news_to_rows, taking the whole backfill run with it (Codex
+    on #1022). A wrong-typed container is recorded and dropped, like a
+    wrong-typed scalar.
+    """
+    value = art.get(key)
+    if value is None or value == []:
+        return []
+    if not isinstance(value, list):
+        malformed.append(key)
+        return []
+    return value
+
+
 def av_news_to_rows(feed: list[dict]) -> list[dict]:
     """Explode AV news feed into one row per (article, ticker)."""
     rows = []
@@ -234,10 +252,14 @@ def av_news_to_rows(feed: list[dict]) -> list[dict]:
         source = _av_text(art, "source", 100, malformed)
         overall_score = _safe_float(art.get("overall_sentiment_score"))
         overall_label = _av_text(art, "overall_sentiment_label", 20, malformed)
-        topics = [t["topic"] for t in (art.get("topics") or [])
+        # The CONTAINERS need the same type check as the scalars: a truthy
+        # non-list survives `or []`, so a vendor `topics: 42` raised
+        # TypeError out of this function and failed the whole run (Codex on
+        # #1022). A string is iterable and is not a list of dicts either.
+        topics = [t["topic"] for t in _av_list(art, "topics", malformed)
                   if isinstance(t, dict) and isinstance(t.get("topic"), str)
                   and t.get("topic")]
-        for tk in (art.get("ticker_sentiment") or []):
+        for tk in _av_list(art, "ticker_sentiment", malformed):
             raw_tk = tk.get("ticker") if isinstance(tk, dict) else None
             if raw_tk is not None and not isinstance(raw_tk, str):
                 malformed.append("ticker_sentiment.ticker")

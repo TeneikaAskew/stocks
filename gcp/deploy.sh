@@ -35,11 +35,23 @@ SA_EMAIL="trading-runner@${PROJECT_ID}.iam.gserviceaccount.com"
 # schema-apply round; CLAUDE.md 3.7). Callers that can legitimately run
 # without a secret say so at the call site (`2>/dev/null || true`).
 _secret() {
-    local v
-    if ! v=$(gcloud secrets versions access latest --secret="$1" --quiet 2>&1); then
-        echo "ERROR: cannot read secret '$1': ${v%%$'\n'*}" >&2
+    # stdout is the value, stderr is only ever the diagnostic. Capturing
+    # with `2>&1` folded a nonfatal gcloud warning ("Your active project
+    # does not match the quota project", and friends) into the value on
+    # SUCCESS, and --set-env-vars REPLACES a job's set, so one harmless
+    # warning would have deployed a warning-plus-value as
+    # CLOUD_SQL_CONNECTION_NAME and broken every redeployed job (Codex on
+    # #1022).
+    local v err rc
+    err=$(mktemp)
+    v=$(gcloud secrets versions access latest --secret="$1" --quiet 2>"${err}")
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        echo "ERROR: cannot read secret '$1': $(head -n 1 "${err}")" >&2
+        rm -f "${err}"
         return 1
     fi
+    rm -f "${err}"
     printf '%s' "${v}"
 }
 

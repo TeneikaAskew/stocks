@@ -611,3 +611,37 @@ def test_the_env_string_is_resolved_once_up_front():
     assert inline == [], (
         "these call sites still resolve the env string inline, where a "
         "failed secret read cannot abort the deploy: %s" % inline[:5])
+
+
+def test_a_gcloud_warning_does_not_end_up_inside_a_secret(tmp_path):
+    """`_secret` captured with `2>&1`, so a nonfatal gcloud warning on
+    stderr was folded into the value on SUCCESS and deployed as part of
+    CLOUD_SQL_CONNECTION_NAME or DB_USER. Because --set-env-vars replaces
+    a job's set, one harmless warning would break every redeployed job
+    (Codex on #1022)."""
+    import os
+    import subprocess
+
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "gcloud").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "secrets" ]; then\n'
+        '  echo "WARNING: Your active project does not match the quota project." >&2\n'
+        '  echo "the-real-secret-value"\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    (stub / "gcloud").chmod(0o755)
+    script = (
+        f'PATH="{stub}:$PATH"\n'
+        "set -euo pipefail\n"
+        f'source <(sed -n "/^_secret() {{/,/^}}/p" {REPO}/gcp/deploy.sh)\n'
+        'v=$(_secret some-secret)\n'
+        'printf "[%s]" "$v"\n'
+    )
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          env={**os.environ}, timeout=60)
+    assert proc.stdout == "[the-real-secret-value]", (
+        "the warning leaked into the value: %r" % proc.stdout)

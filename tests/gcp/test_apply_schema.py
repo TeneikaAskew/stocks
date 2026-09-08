@@ -622,7 +622,15 @@ def test_main_sweeps_unpopulated_matviews_even_when_a_unit_failed(tmp_path, monk
     monkeypatch.setattr(mod, "refresh_unpopulated_matviews",
                         lambda engine: calls.append("sweep") or ["v"])
     monkeypatch.setattr("gcp.database.get_engine", lambda: _FakeEngine([]))
-    monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema)])
+    monkeypatch.setattr(mod, "guard_revision",
+                        lambda engine, sha, t, anc, force=False: (True, "prev", ""))
+    monkeypatch.setattr(mod, "record_revision",
+                        lambda engine, sha, t, anc, schema_digest, forced=False,
+                        status="ok": None)
+    # A mutating apply needs a recordable revision (#1022); the sweep this
+    # test is about is unaffected by which revision that is.
+    monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
+                                     "--revision", "abc", "--revision-time", "5"])
     assert mod.main() == 1
     assert calls == ["unit", "unit", "sweep"]
 
@@ -1160,3 +1168,69 @@ def test_a_failed_unit_leaves_the_revision_partial(tmp_path, monkeypatch):
     statuses = [c for c in calls if isinstance(c, tuple) and c[0] == "record"]
     assert statuses, calls
     assert all(st[3] == "partial" for st in statuses), statuses
+
+
+def test_a_mutating_apply_requires_its_revision(tmp_path, monkeypatch):
+    """The guard and the pre-record are both conditional on --revision, so
+    a bare `python -m gcp.apply_schema` mutated the schema while
+    schema_apply_history went on naming the previous revision and digest —
+    and a later unchanged-schema deploy could then take the skip shortcut
+    over the repair (Codex on #1022). An apply that cannot be recorded has
+    no ordering guarantee, so it is refused."""
+    import gcp.apply_schema as mod
+
+    schema = tmp_path / "s.sql"
+    schema.write_text("CREATE TABLE a (id INT);\n")
+    ran = []
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(mod, "run_unit", lambda unit: ran.append(unit))
+    monkeypatch.setattr("gcp.database.get_engine", lambda: _FakeEngine([]))
+    monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema)])
+    assert mod.main() == 2
+    assert ran == [], "nothing may be applied without a recordable revision"
+
+
+def test_a_dry_run_still_needs_no_revision(tmp_path, monkeypatch):
+    import gcp.apply_schema as mod
+
+    schema = tmp_path / "s.sql"
+    schema.write_text("CREATE TABLE a (id INT);\n")
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: False)
+    monkeypatch.setattr("sys.argv", ["apply_schema", "--dry-run", "--file", str(schema)])
+    assert mod.main() == 0
+
+
+def test_a_reapply_downgrades_its_own_ok_row_while_in_flight():
+    """--reapply-unchanged repairs a hand-dropped object on a revision
+    whose row is already 'ok'. The pre-record could not downgrade it, so a
+    unit failing mid-repair left the row advertising 'ok' with a matching
+    digest and the NEXT ordinary apply took the unchanged-digest shortcut
+    over the repair (Codex on #1022). The status the caller asks for is
+    the status written."""
+    eng = _FakeEngine([[("abc", "2026-09-08T10:00:00+00:00", "abc")]])
+    record_revision(eng, "abc", 5, frozenset({"abc"}), "digest", status="partial")
+    upd = [e for e in eng.executed if "UPDATE" in e]
+    assert upd, eng.executed
+    assert "status = :status" in upd[0], (
+        "the in-flight marker must be able to downgrade its own ok row: %s" % upd[0])
+
+
+def test_a_forced_row_does_not_permanently_block_main():
+    """An operator forcing an apply from a branch records that branch's
+    commit time. A squash commit on main does not contain the branch SHA,
+    so ancestry cannot order them, and if main's committer time is lower
+    the merge trigger's apply is classified 'older' and refused — the
+    opposite of the deploy path's promise that the merge restores main
+    (Codex on #1022). A forced row was applied out of band and cannot be
+    the authority on what comes next."""
+    # newest row: forced, branch SHA, high commit time
+    eng = _FakeEngine([[("branch", 9999, "branch", "d", "ok", True)]])
+    ok, newest, _ = guard_revision(eng, "mainsha", 10, frozenset({"mainsha"}))
+    assert ok is True, "a forced row must not block a later apply"
+    assert newest == "branch"
+
+
+def test_an_unforced_newer_row_still_blocks():
+    eng = _FakeEngine([[("newer", 9999, "newer", "d", "ok", False)]])
+    ok, _, _ = guard_revision(eng, "older", 10, frozenset({"older"}))
+    assert ok is False

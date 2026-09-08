@@ -231,6 +231,9 @@ def get_consecutive_periods(ticker: str) -> int:
     return SignalConfig().consecutive_periods
 
 
+_DIRECTIONS = frozenset({"CALL", "PUT"})
+
+
 def get_disabled_directions(ticker: str) -> set[str]:
     """Return the set of upper-cased disabled directions for `ticker`.
 
@@ -253,7 +256,13 @@ def get_disabled_directions(ticker: str) -> set[str]:
     row = _latest_overrides(ticker)
     if not row:
         return set()
-    dd = row.get("disabled_directions") or []
+    # Only NULL and an empty list mean "nothing is disabled". `or []` also
+    # swallowed `{}`, `0`, `""` and `False` — malformed payloads that then
+    # read as an empty set and failed open before the type check below
+    # could see them (Codex on #1022).
+    dd = row.get("disabled_directions")
+    if dd is None:
+        return set()
     if isinstance(dd, str):
         import json as _json
         try:
@@ -262,11 +271,27 @@ def get_disabled_directions(ticker: str) -> set[str]:
             raise ValueError(
                 f"{ticker}: exit_config_overrides.disabled_directions is not valid JSON: {dd!r}"
             ) from exc
-    if isinstance(dd, (str, bytes)) or not hasattr(dd, "__iter__"):
+    # An actual list, not merely something iterable: `hasattr(__iter__)` is
+    # true for a dict, so `{"PUT": false}` iterated to {"PUT"} — disabling
+    # the side that object switched OFF — and `{}` became an empty set,
+    # failing open without reaching the callers' suppression (Codex on
+    # #1022).
+    if not isinstance(dd, (list, tuple)):
         raise ValueError(
             f"{ticker}: exit_config_overrides.disabled_directions must be a list, got {dd!r}"
         )
-    return {str(d).upper() for d in dd}
+    out = {str(d).upper() for d in dd}
+    # A typo like ["PUTS"] would disable nothing at all. The set of sides
+    # is closed and this is operator config we own, so an unknown name is
+    # INTERNAL and fails closed at the caller.
+    unknown = out - _DIRECTIONS
+    if unknown:
+        raise ValueError(
+            f"{ticker}: exit_config_overrides.disabled_directions names "
+            f"{sorted(unknown)}, which are not directions; expected any of "
+            f"{sorted(_DIRECTIONS)}"
+        )
+    return out
 
 
 def get_blue_sky_atr_offset(ticker: str) -> Optional[float]:

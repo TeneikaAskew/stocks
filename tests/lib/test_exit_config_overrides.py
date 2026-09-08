@@ -304,3 +304,37 @@ def test_consecutive_periods_resolution_tier():
         assert eco.get_resolution_tier("QQQ", "consecutive_periods") == "A"
     with patch.object(eco, "_latest_overrides", return_value=None):
         assert eco.get_resolution_tier("QQQ", "consecutive_periods") == "B"
+
+
+def test_a_json_object_is_not_a_list_of_directions(monkeypatch):
+    """`hasattr(dd, "__iter__")` is true for a dict, so `{"PUT": false}`
+    iterated to `{"PUT"}` — disabling a side the operator had explicitly
+    switched OFF in that object — and `{}` became an empty set, failing
+    open without reaching the callers' suppression (Codex on #1022).
+
+    The payload must be an actual list, and every entry must name a side
+    the monitor knows."""
+    import pytest
+
+    for payload in ({"PUT": False}, {}, {"CALL": True, "PUT": True}):
+        with patch.object(eco, "_latest_overrides",
+                          return_value=_row(disabled_directions=payload)):
+            with pytest.raises(ValueError, match="must be a list"):
+                eco.get_disabled_directions("QQQ")
+
+
+def test_an_unknown_direction_is_rejected(monkeypatch):
+    """A typo like ["PUTS"] would silently disable nothing. Only CALL and
+    PUT exist; anything else is operator config we own and is INTERNAL."""
+    import pytest
+
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(disabled_directions=["PUTS"])):
+        with pytest.raises(ValueError, match="PUTS"):
+            eco.get_disabled_directions("QQQ")
+
+
+def test_a_well_formed_list_still_works(monkeypatch):
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(disabled_directions=["put"])):
+        assert eco.get_disabled_directions("QQQ") == {"PUT"}

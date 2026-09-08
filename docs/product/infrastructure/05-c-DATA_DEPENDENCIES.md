@@ -323,7 +323,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [79](../../../scripts/backfill_journal_embeddings.py#L79)
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [382](../../../gcp/backfill_ticker.py#L382), [493](../../../gcp/backfill_ticker.py#L493), [562](../../../gcp/backfill_ticker.py#L562)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [404](../../../gcp/backfill_ticker.py#L404), [515](../../../gcp/backfill_ticker.py#L515), [584](../../../gcp/backfill_ticker.py#L584)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [415](../../../gcp/fetchers/backfill_daily_indicators.py#L415)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [438](../../../gcp/fetchers/fetch_market_data.py#L438), [514](../../../gcp/fetchers/fetch_market_data.py#L514), [522](../../../gcp/fetchers/fetch_market_data.py#L522), [563](../../../gcp/fetchers/fetch_market_data.py#L563), [806](../../../gcp/fetchers/fetch_market_data.py#L806), [940](../../../gcp/fetchers/fetch_market_data.py#L940)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [8](../../../gcp/fetchers/fetch_premarket_refresh.py#L8), [215](../../../gcp/fetchers/fetch_premarket_refresh.py#L215), [251](../../../gcp/fetchers/fetch_premarket_refresh.py#L251), [256](../../../gcp/fetchers/fetch_premarket_refresh.py#L256), [257](../../../gcp/fetchers/fetch_premarket_refresh.py#L257), [258](../../../gcp/fetchers/fetch_premarket_refresh.py#L258), [320](../../../gcp/fetchers/fetch_premarket_refresh.py#L320)
@@ -333,7 +333,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [6](../../../scripts/deep_backfill_ticker.py#L6), [43](../../../scripts/deep_backfill_ticker.py#L43), [102](../../../scripts/deep_backfill_ticker.py#L102)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [583](../../../gcp/backfill_ticker.py#L583)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [605](../../../gcp/backfill_ticker.py#L605)
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [307](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L307)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [466](../../../gcp/fetchers/fetch_market_data.py#L466)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [210](../../../gcp/migrate_to_gcp.py#L210), [244](../../../gcp/migrate_to_gcp.py#L244), [247](../../../gcp/migrate_to_gcp.py#L247)
@@ -357,7 +357,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/agents/model_routing.py`](../../../lib/agents/model_routing.py) — line [193](../../../lib/agents/model_routing.py#L193)
 
 ### `news_sentiment`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [596](../../../gcp/backfill_ticker.py#L596)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [618](../../../gcp/backfill_ticker.py#L618)
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [375](../../../gcp/fetchers/fetch_news_sentiment.py#L375), [376](../../../gcp/fetchers/fetch_news_sentiment.py#L376)
 - [`gcp/fetchers/fetch_rss_news.py`](../../../gcp/fetchers/fetch_rss_news.py) — line [699](../../../gcp/fetchers/fetch_rss_news.py#L699), [710](../../../gcp/fetchers/fetch_rss_news.py#L710), [711](../../../gcp/fetchers/fetch_rss_news.py#L711)
 - [`scripts/backfill_news_sentiment.py`](../../../scripts/backfill_news_sentiment.py) — line [101](../../../scripts/backfill_news_sentiment.py#L101), [102](../../../scripts/backfill_news_sentiment.py#L102)
@@ -391,7 +391,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [189](../../../gcp/regime_combo_job.py#L189), [190](../../../gcp/regime_combo_job.py#L190)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [266](../../../gcp/apply_schema.py#L266), [452](../../../gcp/apply_schema.py#L452)
+- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [267](../../../gcp/apply_schema.py#L267), [473](../../../gcp/apply_schema.py#L473)
 
 ### `sec_filings`
 - [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) — line [581](../../../gcp/fetchers/fetch_sec_filings.py#L581), [582](../../../gcp/fetchers/fetch_sec_filings.py#L582), [583](../../../gcp/fetchers/fetch_sec_filings.py#L583)
@@ -452,7 +452,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [108](../../../scripts/run_param_sweep.py#L108)
 
 ### `watchlists`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [276](../../../gcp/backfill_ticker.py#L276), [295](../../../gcp/backfill_ticker.py#L295), [299](../../../gcp/backfill_ticker.py#L299)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [298](../../../gcp/backfill_ticker.py#L298), [317](../../../gcp/backfill_ticker.py#L317), [321](../../../gcp/backfill_ticker.py#L321)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [655](../../../gcp/discord_interactions/main.py#L655), [691](../../../gcp/discord_interactions/main.py#L691)
 - [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [258](../../../gcp/fetchers/_watchlist.py#L258), [262](../../../gcp/fetchers/_watchlist.py#L262), [263](../../../gcp/fetchers/_watchlist.py#L263), [295](../../../gcp/fetchers/_watchlist.py#L295)
 <!-- inventory:writes:end -->
@@ -608,7 +608,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/maintenance/compute_spx_greeks.py`](../../../scripts/maintenance/compute_spx_greeks.py) — line [91](../../../scripts/maintenance/compute_spx_greeks.py#L91), [101](../../../scripts/maintenance/compute_spx_greeks.py#L101), [113](../../../scripts/maintenance/compute_spx_greeks.py#L113), [121](../../../scripts/maintenance/compute_spx_greeks.py#L121)
 
 ### `exit_config_overrides`
-- [`lib/strategies/exit_config_overrides.py`](../../../lib/strategies/exit_config_overrides.py) — line [4](../../../lib/strategies/exit_config_overrides.py#L4), [124](../../../lib/strategies/exit_config_overrides.py#L124), [141](../../../lib/strategies/exit_config_overrides.py#L141), [267](../../../lib/strategies/exit_config_overrides.py#L267)
+- [`lib/strategies/exit_config_overrides.py`](../../../lib/strategies/exit_config_overrides.py) — line [4](../../../lib/strategies/exit_config_overrides.py#L4), [124](../../../lib/strategies/exit_config_overrides.py#L124), [141](../../../lib/strategies/exit_config_overrides.py#L141)
 - [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [13](../../../scripts/run_param_sweep.py#L13), [143](../../../scripts/run_param_sweep.py#L143)
 
 ### `historical_signals`
@@ -669,7 +669,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [59](../../../scripts/backfill_journal_embeddings.py#L59)
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [341](../../../gcp/backfill_ticker.py#L341), [406](../../../gcp/backfill_ticker.py#L406)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [363](../../../gcp/backfill_ticker.py#L363), [428](../../../gcp/backfill_ticker.py#L428)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [56](../../../gcp/build_intraday_gex.py#L56), [73](../../../gcp/build_intraday_gex.py#L73), [79](../../../gcp/build_intraday_gex.py#L79)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [332](../../../gcp/discord_interactions/main.py#L332)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [117](../../../gcp/fetchers/backfill_daily_indicators.py#L117), [216](../../../gcp/fetchers/backfill_daily_indicators.py#L216), [222](../../../gcp/fetchers/backfill_daily_indicators.py#L222), [252](../../../gcp/fetchers/backfill_daily_indicators.py#L252)
@@ -706,7 +706,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/strat_backtest.py`](../../../scripts/strat_backtest.py) — line [37](../../../scripts/strat_backtest.py#L37)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [463](../../../gcp/backfill_ticker.py#L463)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [485](../../../gcp/backfill_ticker.py#L485)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [106](../../../gcp/build_intraday_gex.py#L106)
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [22](../../../gcp/build_realtime_gex.py#L22), [99](../../../gcp/build_realtime_gex.py#L99)
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [207](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L207)
@@ -797,7 +797,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [7](../../../gcp/regime_combo_job.py#L7), [51](../../../gcp/regime_combo_job.py#L51)
 
 ### `schema_apply_history`
-- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [372](../../../gcp/apply_schema.py#L372), [424](../../../gcp/apply_schema.py#L424)
+- [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [373](../../../gcp/apply_schema.py#L373), [441](../../../gcp/apply_schema.py#L441)
 
 ### `sec_filings`
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [116](../../../lib/agents/ranker/candidates.py#L116)

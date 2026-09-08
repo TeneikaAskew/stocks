@@ -12,8 +12,9 @@ codespace doesn't need direct Postgres connectivity.
 
 Usage
 -----
-    python -m gcp.apply_schema
-    python -m gcp.apply_schema --file gcp/schema.sql
+    python -m gcp.apply_schema --dry-run
+    python -m gcp.apply_schema --revision=<sha> --revision-time=<committer-epoch>
+    ./gcp/deploy.sh apply-schema        # supplies both, through Cloud Build
 """
 from __future__ import annotations
 
@@ -380,6 +381,22 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
                                 commit_sha, commit_time, ancestors)
     log.info("Revision %s (commit time %d) vs newest applied %s (commit time %d): %s",
              commit_sha, commit_time, newest_sha, newest_time, verdict)
+    newest_forced = bool(row[5]) if len(row) > 5 else False
+    if verdict in _REFUSED and newest_forced:
+        # The newest row was applied out of band, over this very guard, by
+        # an operator passing --force-revision — typically from a branch,
+        # whose committer time has no relation to main's. A squash commit
+        # on main does not contain the branch SHA, so ancestry cannot order
+        # them, and a lower committer time would classify main as 'older'
+        # and refuse it forever: the opposite of the deploy path's promise
+        # that the merge trigger restores main (Codex on #1022). A forced
+        # row records that ordering was already bypassed; it cannot then
+        # become a permanent barrier.
+        log.error("Newest applied revision %s was FORCED (applied over the guard), so "
+                  "its commit time %d cannot order revision %s (%s). Applying, and "
+                  "recording this revision as the one in force.",
+                  newest_sha, newest_time, commit_sha, verdict)
+        return True, newest_sha, newest_digest
     if verdict in _REFUSED:
         if verdict == "tie":
             log.error("Refusing to apply revision %s: it shares committer time %d with "
@@ -424,17 +441,21 @@ def record_revision(engine, commit_sha: str, commit_time: int,
             f"SELECT commit_sha, applied_at, ancestors FROM {REVISION_TABLE} "
             "ORDER BY applied_at DESC LIMIT 1"
         )).fetchone()
-        # The same SHA merges whatever the incoming status: the applier now
+        # The same SHA merges whatever the incoming status: the applier
         # writes a 'partial' row before the first unit and promotes it after
-        # (Codex on #1022), so this has to update rather than insert a second
-        # row. Only 'ok' promotes; a later 'partial' leaves an 'ok' alone.
+        # (Codex on #1022), so this has to update rather than insert a
+        # second row. The status the caller asks for is the status written,
+        # including a downgrade: --reapply-unchanged repairs a hand-dropped
+        # object on a revision whose row is already 'ok', and refusing to
+        # downgrade left that row advertising 'ok' with a matching digest
+        # when a unit failed mid-repair, so the NEXT ordinary apply took
+        # the unchanged-digest shortcut over the repair.
         if last is not None and last[0] == commit_sha:
             merged = frozenset((last[2] or "").split()) | ancestors
             conn.execute(
                 sqlalchemy.text(
                     f"UPDATE {REVISION_TABLE} SET ancestors = :anc, schema_sha256 = :dg, "
-                    "status = CASE WHEN :status = 'ok' THEN 'ok' ELSE status END, "
-                    "forced = (forced OR :forced) "
+                    "status = :status, forced = (forced OR :forced) "
                     "WHERE commit_sha = :sha AND applied_at = :at"
                 ),
                 # forced is OR'd: once an operator bypassed the guard for this
@@ -598,6 +619,24 @@ def main() -> int:
     if (args.revision is None) != (args.revision_time is None):
         ap.error("--revision and --revision-time must be given together")
     ancestors = frozenset(args.revision_ancestors.split())
+
+    # A mutating apply must be recordable. The guard and the pre-record are
+    # both keyed on --revision, so a bare `python -m gcp.apply_schema`
+    # changed the schema while schema_apply_history went on naming the
+    # previous revision and digest — and a later unchanged-schema deploy
+    # could then take the skip shortcut over the repair (Codex on #1022).
+    # An apply with no ordering guarantee is refused rather than silently
+    # unrecorded; --dry-run needs none because it changes nothing.
+    if args.revision is None and not args.dry_run:
+        log.error(
+            "Refusing to apply without --revision/--revision-time: the apply "
+            "would mutate the schema with nothing recorded in %s, so nothing "
+            "orders it against the next one. Pass the source revision, e.g. "
+            "--args=\"--revision=$(git rev-parse HEAD),"
+            "--revision-time=$(git log -1 --format=%%ct HEAD)\", or use "
+            "./gcp/deploy.sh apply-schema, which supplies both.",
+            REVISION_TABLE)
+        return 2
 
     schema_path = Path(args.file)
     if not schema_path.exists():
