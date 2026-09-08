@@ -811,7 +811,14 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # untracked node_modules/ file is not searched — and returns a clean 1 on a
   # real miss. It is invalid with a rev (measured, rc=128), hence the guard.
   local untr=(); test ${#rev[@]} -gt 0 || untr=( --untracked )
-  test ${#EXCLUDE[@]} -gt 0 \
+  # `declare -p` FIRST, for the reason the approval arrays got it in round 33 —
+  # which is where this one should have been fixed too. Measured: `bash -uc
+  # 'test ${#EXCLUDE[@]} -gt 0'` raises "EXCLUDE: unbound variable", so under
+  # the `set -u` this repo's scripts use, the documented misuse killed the shell
+  # instead of reaching the diagnostic below. Unlike REVIEWED it is not defaulted
+  # to empty: an unset EXCLUDE must REFUSE, since an empty exclusion set searches
+  # prose and generated files too.
+  declare -p EXCLUDE >/dev/null 2>&1 && test ${#EXCLUDE[@]} -gt 0 \
     || { echo "EXCLUDE unset — set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA first;"
          echo "an empty exclusion set searches prose and generated files too."
          return 2; }
@@ -2355,7 +2362,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
        fi
        wt=$(mktemp -d -t deploy-src-XXXXXX) && rmdir "$wt"
        git worktree add "$wt" "$SRC" || return 1
-       (
+       if (
          cd "$wt" || exit 1
          [ "$(git rev-parse HEAD)" = "$SRC" ] || { echo "worktree HEAD != $SRC"; exit 1; }
          [ -z "$(git status --porcelain)" ] || { git status --porcelain; exit 1; }
@@ -2377,14 +2384,21 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          # `deploy_schedulers` otherwise ships a new image on the old cadence,
          # or with no trigger at all, and every check below still passes.
          # Verify it afterwards with the retirement row's listing, against the
-         # new value. Anything placed AFTER the `)` and before `rc=$?` becomes
-         # the status `rc` captures, so a failed job deploy plus a successful
-         # scheduler update would read as success:
+         # new value. Anything placed AFTER the `)` becomes what `rc` captures
+         # instead of the deploy, so a failed job deploy plus a successful
+         # scheduler update would read as success — chain it INSIDE:
          ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target> \
            && ./gcp/deploy.sh schedulers
          # (no research image, no schedule change: just `./gcp/deploy.sh <target>`)
        )
-       rc=$?                               # capture BEFORE cleanup
+       # `if`, not a bare `)` followed by `rc=$?`, for the reason the retirement
+       # helpers take one: under `set -e` a nonzero subshell IS a failed simple
+       # command, so the shell exits here — before `rc=$?`, before the worktree
+       # is removed, and before the diagnostic below. The deploy still stops,
+       # which is why this hid: what is lost is the registered worktree (which
+       # then breaks the next run twice over, per the note above) and the line
+       # that says what happened.
+       then rc=0; else rc=$?; fi
        git worktree remove "$wt"
        test $rc -eq 0 \
          || { echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"; return 1; }
@@ -2413,14 +2427,26 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      Two things to do about it, neither of which is a fix:
 
      1. **Do not run this concurrently with another deploy.** Check before
-        starting — `gcloud builds list --ongoing --project="${PROJECT_ID:-adept-mountain-474619-d4}"` — and
-        # RESOLVE THE PROJECT IN *THIS* SHELL. Passing --project="$PROJECT_ID"
-        # was the round-28 fix for the probe taking the ambient project, and it
-        # named a variable that gcp/deploy.sh sets at :25 — inside the child
-        # script, which has not run yet and cannot populate the caller anyway.
-        # Measured: PROJECT_ID is unset in a fresh shell, so the flag expanded
-        # to `--project=` (or aborted under set -u). Same literal default the
-        # deploy uses, overridable by exporting PROJECT_ID first.
+        starting — resolve the project first, then probe:
+
+            PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
+            gcloud builds list --ongoing --project="$PROJECT_ID"
+
+        # RESOLVE IT IN *THIS* SHELL, BY THE DEPLOY'S OWN RULE. Passing
+        # --project="$PROJECT_ID" was the round-28 fix for the probe taking the
+        # ambient project, and it named a variable gcp/deploy.sh sets at :25 —
+        # inside the child script, which has not run yet and could not populate
+        # the caller anyway. Measured unset in a fresh shell, so the flag
+        # expanded to `--project=`, or aborted under set -u.
+        # The first repair defaulted to the literal production id and a comment
+        # here called that "the same default the deploy uses". It is not:
+        # `gcp/deploy.sh:25` is `PROJECT_ID="${PROJECT_ID:-$(gcloud config
+        # get-value project)}"`, so with PROJECT_ID unset and a different active
+        # configuration the probe would have watched production while the deploy
+        # went elsewhere — the ambient-project hole again, now with the two
+        # halves looking at different projects. The line above is deploy.sh:25
+        # verbatim, so both resolve the same value, and it is echoed by the
+        # deploy itself.
         say in the status comment that you did. **`--project` is not optional
         here**: `gcp/deploy.sh:25` takes `PROJECT_ID` from the environment or
         the active gcloud config, so a probe without it can list a different
@@ -2440,7 +2466,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
         build finishing and your capture, you capture *their* digest, the job
         update resolves the same tag to the same wrong digest, and the equality
         check passes. It is a self-consistency check wearing the clothes of a
-        provenance check. `gcloud builds list --ongoing --project="${PROJECT_ID:-adept-mountain-474619-d4}"`
+        provenance check. `gcloud builds list --ongoing --project="$PROJECT_ID"`
         beforehand is a snapshot, not a lock, and narrows the window without
         closing it.
 
