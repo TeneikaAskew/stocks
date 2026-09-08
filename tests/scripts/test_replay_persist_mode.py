@@ -441,3 +441,82 @@ def test_the_trim_and_the_limit_compose_across_sessions():
         "day 2's evaluated bars must keep their full warm-up; got %d" % len(day2_pre))
     day1 = et[et.dt.date.astype(str) == "2026-09-02"]
     assert len(day1[day1.dt.time < __import__("datetime").time(9, 30)]) == 100
+
+
+def test_the_live_window_scope_is_not_gated_on_where_output_goes():
+    """The parity work was reachable only with `--persist`, and no
+    documented invocation passes it: CLAUDE.md 3.6's canonical command is
+    `--date ... --tickers ...`, the signal-monitor job wrapper never adds
+    the flag when it forwards REPLAY_DATE, and the resolve-issue workflow
+    explicitly runs `env -u REPLAY_PERSIST` to stay hermetic.
+
+    So the same date produced two different fire counts depending on a flag
+    whose documented job is where rows are written. The simulation must not
+    depend on its destination: the scope is unconditional and `--persist`
+    only decides whether signal_alerts is written."""
+    import inspect
+
+    from scripts import replay_signal_monitor as mod
+
+    src = inspect.getsource(mod.main)
+    assert "evaluate_rth_only=persist_mode" not in src, (
+        "evaluation scope must not be gated on the persistence flag")
+    assert "trim_to_live_window_scope(bars)" in src
+    # The trim must not sit inside a persist-only branch.
+    trim_line = next(l for l in src.splitlines() if "trim_to_live_window_scope(bars)" in l)
+    indent = len(trim_line) - len(trim_line.lstrip())
+    for line in src.splitlines():
+        if "if persist_mode:" in line:
+            assert len(line) - len(line.lstrip()) >= indent, (
+                "the trim is inside a persist-only branch")
+
+
+def test_the_warm_up_matches_the_live_fetch_exactly():
+    """`outputsize=compact` returns the last 100 points INCLUDING the bar
+    being fetched, so at the 09:30 poll live holds at most 99 premarket
+    bars, not 100. Measured on a shared price path, the extra bar moved
+    Price_vs_VWAP by 5.9e-4 percentage points at the open."""
+    from scripts.replay_signal_monitor import _LIVE_WARMUP_BARS
+
+    assert _LIVE_WARMUP_BARS == 99, (
+        "live's 100 points include the 09:30 bar itself")
+
+
+def test_the_warm_up_never_reaches_the_mis_framed_overnight_band():
+    """`market_data_intraday` holds two time conventions (CLAUDE.md 3.9),
+    and the ET-as-UTC rows land at labelled 00:00-03:59 ET where no US
+    equity bar can exist. Measured on SPY 2026-09-02 the 100-bar warm-up
+    stops at 07:50 ET and does not reach them, but that margin depends on
+    the ticker-date having enough genuine premarket bars. The floor makes
+    it unconditional."""
+    import pandas as pd
+
+    from scripts.replay_signal_monitor import trim_to_live_window_scope
+
+    ghosts = pd.date_range("2026-09-02 00:00", periods=200, freq="1min",
+                           tz="America/New_York")
+    real_pre = pd.date_range("2026-09-02 08:00", periods=30, freq="1min",
+                             tz="America/New_York")
+    rth = pd.date_range("2026-09-02 09:30", periods=10, freq="1min",
+                        tz="America/New_York")
+    bars = pd.DataFrame([{"Time": t.tz_convert("UTC"), "Open": 1.0, "High": 1.0,
+                          "Low": 1.0, "Close": 1.0, "Volume": 1}
+                         for t in list(ghosts) + list(real_pre) + list(rth)])
+
+    out = trim_to_live_window_scope(bars, warmup_bars=99)
+    et = out["Time"].dt.tz_convert("America/New_York")
+    assert (et.dt.time >= __import__("datetime").time(4, 0)).all(), (
+        "no bar before 04:00 ET may be used as warm-up; those are the "
+        "mis-framed rows from the second write convention")
+    assert len(out) == 40, len(out)
+
+
+def test_a_bar_with_no_time_is_not_evaluated():
+    """A missing `Time` silently disables VWAP in lib/indicators, which is
+    the 5/6 V2 harness failure. `_is_rth` returned True for such a bar, so
+    it would have been scored with VWAP quietly off. Skip instead."""
+    import pandas as pd
+
+    from scripts.replay_signal_monitor import _is_rth
+
+    assert _is_rth(pd.DataFrame([{"Close": 1.0}])) is False

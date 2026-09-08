@@ -222,16 +222,31 @@ def _is_rth(bar: pd.DataFrame) -> bool:
     the bar still enters the window (see replay_ticker).
     """
     if bar.empty or 'Time' not in bar.columns:
-        return True
+        # Fail CLOSED. A missing `Time` silently disables VWAP
+        # (lib/indicators.py only adds it `if 'Time' in out.columns`),
+        # which is exactly how the 5/6 throwaway harness reported "0
+        # above_vwap fires" while production was firing 46. Scoring such a
+        # bar as if it were RTH would score it with VWAP quietly off.
+        return False
     ts = pd.Timestamp(bar['Time'].iloc[0])
     et = ts.tz_convert(_ET) if ts.tz is not None else ts.tz_localize('UTC').tz_convert(_ET)
     return time(9, 30) <= et.time() < time(16, 0)
 
 
-# The live monitor's first in-hours fetch is `outputsize=compact`, which is
-# the last 100 one-minute points (gcp/signal_monitor.py:331). That, and not
-# "everything since midnight", is the warm-up a session actually opens with.
-_LIVE_WARMUP_BARS = 100
+# The live monitor's first in-hours fetch is `outputsize=compact`, the last
+# 100 one-minute points (gcp/signal_monitor.py:331). Those 100 INCLUDE the
+# 09:30 bar being fetched, so the premarket depth live opens with is at most
+# 99 — and fewer on a thin ticker, since fetch_latest_bar then filters to
+# today. That, and not "everything since midnight", is the warm-up.
+_LIVE_WARMUP_BARS = 99
+
+# Bars labelled before 04:00 ET are not premarket: no US equity bar exists
+# there. They are `market_data_intraday`'s second write convention, the
+# ET-as-UTC rows CLAUDE.md 3.9 records as unresolved, landing four to five
+# hours early. Measured on SPY 2026-09-02 the 99-bar warm-up stops at 07:51
+# ET and never reaches them, but that margin only holds while a ticker-date
+# has enough genuine premarket bars, so the floor makes it unconditional.
+_PREMARKET_FLOOR = time(4, 0)
 
 
 def trim_to_live_window_scope(bars: pd.DataFrame,
@@ -239,22 +254,40 @@ def trim_to_live_window_scope(bars: pd.DataFrame,
     """Keep, per Eastern session, the bars the LIVE window would hold.
 
     Feeding every bar since Eastern midnight warms the open with up to
-    `rolling_window_bars` (200) bars where live has at most 100, and
-    cumulative VWAP and the seeded EMA/MACD values differ enough to change
-    fires (Codex on #1022). Parity is the same warm-up SIZE, not merely a
-    non-empty one.
+    `rolling_window_bars` (200) bars where live has at most 99, and parity
+    is the same warm-up SIZE, not merely a non-empty one (Codex on #1022).
 
-    Post-close bars go too: `run_loop` stops fetching at the close, so
-    16:00-20:00 never enters the live window either. They were inert in
-    replay (nothing is evaluated after 16:00, and the rollover clears the
-    window) but "inert and different" is still different.
+    Cumulative VWAP is the whole of that effect. `calculate_vwap` cumsums
+    within the day, so every extra bar moves it: one extra oldest bar was
+    measured at 5.9e-4 percentage points on `Price_vs_VWAP` at the open,
+    and `above_vwap`/`below_vwap` are strict sign tests on that value. The
+    EMA and MACD seeds are not: `ewm(adjust=False)` decays a leading-bar
+    difference to 4e-12 (EMA9) and 1e-5 (MACD) over 100 bars, so an earlier
+    version of this docstring claiming they "differ enough to change fires"
+    was wrong by five to nine orders of magnitude. RVOL and the ORB window
+    are exactly unaffected: both are bounded windows, and ORB masks to
+    09:30 onward so premarket bars can never enter the opening range.
+
+    Post-close bars go too. They were inert in replay — nothing is
+    evaluated after 16:00 and the rollover clears the window — but
+    "inert and different" is still different, and a 20:00 ET bar is
+    00:00 UTC under EDT, which is the one thing in the frame that could
+    split `_add_vwap`'s raw-stamp date group.
+
+    One boundary this does NOT match: `is_market_hours` is inclusive at
+    the close (`market_open <= t <= market_close`, gcp/signal_monitor.py
+    :318), so live gets a poll inside 16:00:00-16:00:59 and can fire on
+    the 16:00 bar. `filter_to_rth` has always used `< 16:00` and still
+    does, so the replay omits it. Pre-existing and left alone here:
+    changing the bound moves what "RTH" means for every historical fire
+    count this file produces, which is its own change.
     """
     if bars.empty or 'Time' not in bars.columns:
         return bars
     ts = bars['Time']
     et = ts.dt.tz_convert(_ET) if ts.dt.tz is not None \
         else ts.dt.tz_localize('UTC').dt.tz_convert(_ET)
-    is_pre = et.dt.time < time(9, 30)
+    is_pre = (et.dt.time >= _PREMARKET_FLOOR) & (et.dt.time < time(9, 30))
     is_rth = (et.dt.time >= time(9, 30)) & (et.dt.time < time(16, 0))
 
     keep = is_rth.copy()
@@ -520,7 +553,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--start", help="Eastern start date YYYY-MM-DD (a session is an ET day)")
     p.add_argument("--end", help="Eastern end date YYYY-MM-DD (exclusive)")
     p.add_argument("--limit", type=int, default=None,
-                   help="Max bars per ticker (debug/dev)")
+                   help="Max EVALUATED (RTH) bars per ticker, counted across "
+                        "the whole window rather than per session; the "
+                        "premarket warm-up in front of them is kept (debug/dev)")
     p.add_argument("--json", action="store_true",
                    help="Print fires as a JSON array (machine-readable)")
     p.add_argument(
@@ -529,9 +564,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "Persist captured fires to signal_alerts with run_kind='replay' "
             "and replay_id=<UUID>. Required for Phase 1 acceptance testing "
             "and any analysis that needs full per-fire detail (Cloud Run "
-            "log truncation drops the JSON output at ~85 records). When set, "
-            "ALSO restricts bars to RTH (9:30-16:00 ET) to match live "
-            "signal-monitor scope. Equivalent env var: REPLAY_PERSIST=true."
+            "log truncation drops the JSON output at ~85 records). This "
+            "flag decides ONLY whether rows are written: every replay is "
+            "scoped to the live window (premarket warm-up in, evaluation "
+            "RTH-only) whether or not it is set. Equivalent env var: "
+            "REPLAY_PERSIST=true."
         ),
     )
     return p.parse_args(argv)
@@ -622,29 +659,29 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         for ticker in tickers:
             bars = load_intraday_for_replay(engine, ticker, start, end)
-            if persist_mode:
-                # Match live signal-monitor scope (RTH only, 9:30-16:00 ET)
-                # so persisted fire counts are comparable to live
-                # signal_alerts. The bars are NOT dropped: premarket bars
-                # feed the window exactly as they do live, where the first
-                # in-hours fetch returns them, and only RTH bars are
-                # evaluated. Dropping them left every session's 09:30-09:59
-                # unevaluated for want of min_bars_for_signals (Codex on
-                # #1022).
-                pre_n = len(bars)
-                bars = trim_to_live_window_scope(bars)
-                rth_n = int(len(filter_to_rth(bars)))
-                logger.info("ticker=%s persist mode: %d bars loaded, trimmed to "
-                            "%d in the live window's scope, of which %d RTH bars "
-                            "are evaluated; the rest are warm-up",
-                            ticker, pre_n, len(bars), rth_n)
-                bars = limit_to_evaluated_bars(bars, args.limit)
-            elif args.limit:
-                bars = bars.head(args.limit)
+            # The live window's scope, ALWAYS — not only when rows are
+            # written. This was gated on --persist, and nothing documented
+            # passes that flag: CLAUDE.md 3.6's canonical command is
+            # `--date ... --tickers ...`, gcp/signal_monitor.py forwards
+            # REPLAY_DATE without it, and .claude/commands/resolve-issue.md
+            # runs `env -u REPLAY_PERSIST` on purpose. So every replay an
+            # operator is told to run took the unfixed path and evaluated
+            # all ~1200 bars of the day, 810 of them at instants run_loop
+            # would not have been polling, on a 200-bar warm-up instead of
+            # 99 (internal replay-integrity review of #1022). A simulation
+            # must not depend on where its output goes.
+            pre_n = len(bars)
+            bars = trim_to_live_window_scope(bars)
+            rth_n = int(len(filter_to_rth(bars)))
+            logger.info("ticker=%s %d bars loaded, trimmed to %d in the live "
+                        "window's scope, of which %d RTH bars are evaluated; "
+                        "the rest are warm-up",
+                        ticker, pre_n, len(bars), rth_n)
+            bars = limit_to_evaluated_bars(bars, args.limit)
             logger.info("ticker=%s loaded %d bars", ticker, len(bars))
             ticker_fires_before = len(captured_fires)
             n_bars, n_fires = replay_ticker(monitor, ticker, bars, captured_fires,
-                                            evaluate_rth_only=persist_mode)
+                                            evaluate_rth_only=True)
             summary_per_ticker[ticker] = (n_bars, n_fires)
 
             # Persist this ticker's captured fires to signal_alerts
