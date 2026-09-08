@@ -953,15 +953,29 @@ _build_secret_flag() {
 # (Codex on #1022). The rest here build images, pin tags, import build
 # configs, execute jobs or grant IAM.
 #
+# `schedulers`, `pg-dump` and `audit-infra-drift` are exempt for a third
+# reason: they DO mutate, but nothing they mutate carries a Secret Manager
+# payload. deploy_schedulers and its seven _schedule* helpers reference
+# neither gated variable; deploy_weekly_pg_dump builds its env string from
+# literals; deploy_audit_infra_drift passes `--set-secrets` a secret NAME,
+# which Cloud Run resolves at run time and the deployer never reads. Gating
+# them made `./gcp/deploy.sh schedulers` resolve db-trading-pass, four API
+# keys, cloud-sql-connection-name and db-trading-user before the dispatcher
+# ran, so `set -e` on a failed probe left a scheduler administrator without
+# payload access unable to repair a cron at all (Codex on #1022).
+#
 # Every other subcommand deploys something that consumes the flag and
 # resolves it up front, so a read failure aborts before any mutation. The
-# split is pinned by tests/gcp/test_deploy_reachability.py: an exempt
-# target that reached ${DB_SECRET_FLAG} would deploy with an empty
-# --set-secrets and silently strip that job's credentials.
+# split is pinned in BOTH directions by
+# tests/gcp/test_deploy_reachability.py: an exempt target that reached
+# ${DB_SECRET_FLAG} would deploy with an empty --set-secrets and silently
+# strip that job's credentials, and a gated target that reads no secret
+# demands access it has no use for.
 case "${1:-}" in
     setup|setup-notifier-secrets|setup-pg-dump-iam|migrate|build|build-research|\
     backfill|registry-cleanup|retire-legacy-images|pin-images|\
-    cloudbuild-triggers|p7b-classifier|help|"") _NEEDS_DEPLOY_CREDS=0 ;;
+    cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|\
+    help|"") _NEEDS_DEPLOY_CREDS=0 ;;
     *) _NEEDS_DEPLOY_CREDS=1 ;;
 esac
 

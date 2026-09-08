@@ -302,3 +302,32 @@ def test_p2_build_gamma_levels_takes_only_the_database_password():
         "the shared secret set grants more than this job uses")
     assert body.count("--set-secrets=DB_PASS=db-trading-pass:latest") == 2, (
         "both the create and the update branch must name the one secret")
+
+
+def _reaches_a_secret_read(body: str) -> bool:
+    """True when the target resolves ANY Secret Manager value — either
+    through the two eagerly-gated variables or by calling `_secret`
+    itself (the `non_secret_env` locals do the latter)."""
+    return any(_reaches_token(body, t)
+               for t in ("DB_SECRET_FLAG", "ENV_STRING", "_secret "))
+
+
+def test_targets_that_read_no_secret_are_exempt_from_the_eager_probe():
+    """Codex on #1022: `./gcp/deploy.sh schedulers` fell through to
+    `*) _NEEDS_DEPLOY_CREDS=1`, so it resolved db-trading-pass, the four
+    API keys, cloud-sql-connection-name and db-trading-user before the
+    dispatcher ran — while `deploy_schedulers` and its seven `_schedule*`
+    helpers reference none of them. `set -e` on a failed probe means a
+    scheduler administrator without Secret Manager payload access cannot
+    repair a cron at all, and every run hands the session secrets it has
+    no use for.
+
+    The exemption list is therefore an invariant in both directions: the
+    sibling test forbids exempting a target that DOES read a secret, and
+    this one forbids gating a target that reads none."""
+    exempt = _flag_exempt_targets()
+    offenders = sorted(
+        label for label, body in _dispatch_arms().items()
+        if label not in exempt and label != "help" and not _reaches_a_secret_read(body))
+    assert not offenders, (
+        f"these targets resolve no Secret Manager value yet gate on one: {offenders}")
