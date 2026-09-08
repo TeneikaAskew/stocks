@@ -882,6 +882,44 @@ def _top_defs(tree: ast.Module) -> dict[str, ast.AST]:
     return {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
 
 
+def _is_strlike(node: ast.AST) -> bool:
+    """A value that is only text: a string constant, an f-string, string
+    arithmetic, a container of those, or a method called on one
+    (a triple-quoted DDL with `.format(x)` on it; `dedent(...)` is a Call on
+    a Name and is NOT matched, so an executed module-level call keeps
+    counting)."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, ast.JoinedStr):
+        return True
+    if isinstance(node, ast.BinOp):
+        return _is_strlike(node.left) and (_is_strlike(node.right) or isinstance(node.right, (ast.Tuple, ast.Dict, ast.Name)))
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return bool(node.elts) and all(_is_strlike(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return bool(node.values) and all(_is_strlike(v) for v in node.values)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return _is_strlike(node.func.value)
+    return False
+
+
+def _top_consts(tree: ast.Module) -> dict[str, ast.AST]:
+    """Module-level `NAME = <text>` assignments. Building a string touches no
+    table; the lines count only where a reached statement uses the name.
+    (mag_walk_forward.py holds four DDL constants; magnitude-inference imports
+    two, and the other two's CREATE TABLE text was attributed to it as a
+    write -- Codex, PR #1044.)"""
+    out: dict[str, ast.AST] = {}
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and _is_strlike(n.value):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    out[t.id] = n
+        elif isinstance(n, ast.AnnAssign) and n.value is not None and _is_strlike(n.value) and isinstance(n.target, ast.Name):
+            out[n.target.id] = n
+    return out
+
+
 def _lines_of(node: ast.AST) -> set[int]:
     return set(range(node.lineno, (getattr(node, "end_lineno", None) or node.lineno) + 1))
 
@@ -933,6 +971,26 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
     scope: dict[str, set[int] | None] = {}
     seen_syms: set[tuple[str, str]] = set()
     seen_mods: set[str] = set()
+    # Class methods are reached by NAME: a reached class contributes its
+    # header, class-level statements and __init__; a method joins when its
+    # name is used as an attribute anywhere in reached code (receiver types
+    # are unknown, so the match is by name). A class reached only through a
+    # type annotation contributed every method, and one `Optional[DataLoader]`
+    # in lib/data_loader.py handed every DataLoader query to
+    # earnings-reactions-brief. (Codex, PR #1044.)
+    attr_names: set[str] = set()
+    classes: dict[tuple[str, str], ast.ClassDef] = {}
+    reached_methods: set[tuple[str, str, str]] = set()
+    reached_consts: set[tuple[str, str]] = set()
+    ALWAYS = {"__init__", "__new__", "__post_init__"}
+
+    def reach_const(f: str, name: str, node: ast.AST) -> None:
+        # the assignment names its own target, so guard before walking it
+        if (f, name) in reached_consts:
+            return
+        reached_consts.add((f, name))
+        add_lines(f, _lines_of(node))
+        uses(f, [node])
 
     def add_lines(f: str, lines: set[int] | None) -> None:
         if f == "gcp/database.py":
@@ -947,7 +1005,7 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         tree = _parsed(root / f)
         if tree is None:
             return
-        defs = _top_defs(tree)
+        defs, consts = _top_defs(tree), _top_consts(tree)
         # names the reached code can see: the module's own top-level imports
         # plus the imports written inside the reached nodes themselves
         local = _bind_from(root, f, nodes)
@@ -958,17 +1016,27 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
                     binds[k].append(t)
         names: set[str] = set()
         chains: set[str] = set()
+        new_attrs: set[str] = set()
         for n in nodes:
             for sub in ast.walk(n):
                 if isinstance(sub, ast.Name):
                     names.add(sub.id)
                 elif isinstance(sub, ast.Attribute):
+                    if sub.attr not in attr_names:
+                        new_attrs.add(sub.attr)
                     d = _dotted(sub)
                     if d:
                         chains.add(d)
+        attr_names.update(new_attrs)
+        for (cf, cname), cls in list(classes.items()):
+            for m in cls.body:
+                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name in new_attrs:
+                    reach_method(cf, cname, m)
         for name in names:
             if name in defs:
                 reach_symbol(f, name)
+            elif name in consts:
+                reach_const(f, name, consts[name])
             elif name in binds:
                 for target, sym in binds[name]:
                     if sym is not None:
@@ -1020,8 +1088,10 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         if f in seen_mods:
             return
         seen_mods.add(f)
+        inert = {id(n) for n in _top_consts(tree).values()}
         top = [n for n in tree.body
-               if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and not _is_main_guard(n)]
+               if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+               and not _is_main_guard(n) and id(n) not in inert]
         lines: set[int] = set()
         for n in top:
             lines |= _lines_of(n)
@@ -1038,14 +1108,42 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
             return
         defs = _top_defs(tree)
         if sym in defs:
-            add_lines(f, _lines_of(defs[sym]))
-            uses(f, [defs[sym]])
+            node = defs[sym]
+            if isinstance(node, ast.ClassDef):
+                reach_class(f, node)
+            else:
+                add_lines(f, _lines_of(node))
+                uses(f, [node])
+            return
+        consts = _top_consts(tree)
+        if sym in consts:
+            reach_const(f, sym, consts[sym])
             return
         for target, inner in _bindings(root, f).get(sym, []):   # re-export: `from .sub import sym` in __init__
             if inner is not None:
                 reach_symbol(target, inner)
             else:
                 reach_module(target, whole=True)
+
+    def reach_class(f: str, cls: ast.ClassDef) -> None:
+        classes[(f, cls.name)] = cls
+        methods = [m for m in cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        header = _lines_of(cls)
+        for m in methods:
+            header -= _lines_of(m)
+        add_lines(f, header)
+        uses(f, list(cls.bases) + list(cls.keywords) + list(cls.decorator_list)
+             + [n for n in cls.body if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))])
+        for m in methods:
+            if m.name in ALWAYS or m.name in attr_names:
+                reach_method(f, cls.name, m)
+
+    def reach_method(f: str, cname: str, m: ast.AST) -> None:
+        if (f, cname, m.name) in reached_methods:
+            return
+        reached_methods.add((f, cname, m.name))
+        add_lines(f, _lines_of(m))
+        uses(f, [m])
 
     if mod_file and (root / mod_file).exists():
         reach_module(mod_file, whole=True)

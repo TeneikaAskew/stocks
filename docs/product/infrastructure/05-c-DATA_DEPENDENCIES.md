@@ -998,7 +998,7 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `signal-replay` | `gcp/signal_replay.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `strat-engine` | `gcp/research/strat_engine/strat_data_builder.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `validate-brief` | `gcp/validate_brief_job.py` | — (Discord / GCS / no Cloud SQL write found) | — |
-| `weekend-review` | `gcp/weekend_review.py` | `trades` | `gcp/research/strat_engine/strat_walk_forward.py`, `lib/backtest.py`, `lib/data_loader.py`, `platform/api/routers/analytics.py`, `platform/api/routers/journal.py`, `scripts/analysis/phase4_setup_discovery.py`, `scripts/run_pipeline.py` |
+| `weekend-review` | `gcp/weekend_review.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 <!-- inventory:blast:end -->
 
 Hand-created live jobs (no `deploy_*` function, so not in the table above): `p2-build-gamma-levels` writes `gamma_levels_eod`; the `p7*`, `p45-deep-ds`, `strat-dir-features`, `exec-backtest`, `backtest-playability` and `compare-tier-fires` jobs write research tables or GCS reports only.
@@ -1185,7 +1185,6 @@ flowchart LR
     J_signal_monitor_eod_resolver ==> T_signal_alerts
     J_signal_monitor_eod_resolver ==> T_trades
     J_signal_quality_report ==> T_signal_metrics
-    J_weekend_review ==> T_trades
 
     T_earnings_calendar --> J_auto_refresh_top_n
     T_earnings_history --> J_auto_refresh_top_n
@@ -1201,7 +1200,6 @@ flowchart LR
     T_market_data_daily --> J_backfill_daily_indicators
     T_market_data_daily --> J_backfill_ticker
     T_market_data_intraday --> J_backfill_ticker
-    T_etf_options_snapshots --> J_backtest
     T_exit_config_overrides --> J_backtest
     T_market_data_daily --> J_backtest
     T_market_data_intraday --> J_backtest
@@ -1221,8 +1219,6 @@ flowchart LR
     T_daily_rates --> J_compute_spx_greeks_backfill
     T_etf_options_snapshots --> J_compute_spx_greeks_backfill
     T_market_data_daily --> J_compute_spx_greeks_backfill
-    T_market_data_intraday --> J_compute_spx_greeks_backfill
-    T_trades --> J_compute_spx_greeks_backfill
     T_economic_events --> J_direction_baseline
     T_etf_options_snapshots --> J_direction_baseline
     T_options_daily_features --> J_direction_baseline
@@ -1240,11 +1236,7 @@ flowchart LR
     T_earnings_reactions --> J_earnings_options_backfill
     T_earnings_calendar --> J_earnings_reactions_brief
     T_earnings_reactions --> J_earnings_reactions_brief
-    T_etf_options_snapshots --> J_earnings_reactions_brief
     T_insider_transactions --> J_earnings_reactions_brief
-    T_market_data_daily --> J_earnings_reactions_brief
-    T_market_data_intraday --> J_earnings_reactions_brief
-    T_trades --> J_earnings_reactions_brief
     T_earnings_calibration --> J_earnings_sweep
     T_earnings_options_snapshots --> J_earnings_sweep
     T_earnings_reactions --> J_earnings_sweep
@@ -1290,17 +1282,10 @@ flowchart LR
     T_market_data_intraday --> J_historical_signals_watchlist
     T_sec_filings --> J_historical_signals_watchlist
     T_watchlists --> J_historical_signals_watchlist
-    T_etf_options_snapshots --> J_indicator_correlation
-    T_market_data_daily --> J_indicator_correlation
     T_market_data_intraday --> J_indicator_correlation
     T_signal_alerts --> J_indicator_correlation
-    T_trades --> J_indicator_correlation
-    T_etf_options_snapshots --> J_insight_discord_push
     T_insight_reports --> J_insight_discord_push
-    T_market_data_daily --> J_insight_discord_push
-    T_market_data_intraday --> J_insight_discord_push
     T_news_sentiment --> J_insight_discord_push
-    T_trades --> J_insight_discord_push
     T_daily_rates --> J_insight_pipeline
     T_earnings_calendar --> J_insight_pipeline
     T_economic_events --> J_insight_pipeline
@@ -1309,11 +1294,9 @@ flowchart LR
     T_insight_reports --> J_insight_pipeline
     T_journal_entries --> J_insight_pipeline
     T_market_data_daily --> J_insight_pipeline
-    T_market_data_intraday --> J_insight_pipeline
     T_model_routing --> J_insight_pipeline
     T_news_sentiment --> J_insight_pipeline
     T_sec_filings --> J_insight_pipeline
-    T_trades --> J_insight_pipeline
     T_watchlists --> J_insight_pipeline
     T_market_data_intraday --> J_intraday_bulk_backfill
     T_economic_events --> J_magnitude_engine
@@ -1324,24 +1307,17 @@ flowchart LR
     T_options_daily_features --> J_magnitude_recal
     T_daily_rates --> J_options_exec_backtest
     T_etf_options_snapshots --> J_options_exec_backtest
-    T_etf_options_snapshots --> J_param_sweep
     T_exit_config_overrides --> J_param_sweep
     T_market_data_daily --> J_param_sweep
     T_market_data_intraday --> J_param_sweep
-    T_trades --> J_param_sweep
-    T_etf_options_snapshots --> J_phase6_playbook
-    T_market_data_daily --> J_phase6_playbook
     T_market_data_intraday --> J_phase6_playbook
-    T_trades --> J_phase6_playbook
     T_earnings_calendar --> J_premarket_brief
     T_earnings_calibration --> J_premarket_brief
     T_earnings_reactions --> J_premarket_brief
     T_economic_events --> J_premarket_brief
     T_etf_options_snapshots --> J_premarket_brief
     T_market_data_daily --> J_premarket_brief
-    T_market_data_intraday --> J_premarket_brief
     T_premarket_analysis --> J_premarket_brief
-    T_trades --> J_premarket_brief
     T_watchlists --> J_premarket_brief
     T_market_data_daily --> J_premarket_playbook_resolver
     T_market_data_intraday --> J_premarket_playbook_resolver
@@ -1351,14 +1327,10 @@ flowchart LR
     T_earnings_event_outcomes --> J_refresh_earnings_views
     T_earnings_ticker_lean --> J_refresh_earnings_views
     T_market_data_daily --> J_refresh_earnings_views
-    T_etf_options_snapshots --> J_regime_combo
-    T_market_data_daily --> J_regime_combo
     T_market_data_intraday --> J_regime_combo
     T_regime_combo_results --> J_regime_combo
-    T_trades --> J_regime_combo
     T_earnings_calendar --> J_signal_monitor
     T_economic_events --> J_signal_monitor
-    T_etf_options_snapshots --> J_signal_monitor
     T_exit_config_overrides --> J_signal_monitor
     T_insight_reports --> J_signal_monitor
     T_market_data_daily --> J_signal_monitor
@@ -1366,13 +1338,9 @@ flowchart LR
     T_premarket_analysis --> J_signal_monitor
     T_sec_filings --> J_signal_monitor
     T_ticker_calibration --> J_signal_monitor
-    T_trades --> J_signal_monitor
     T_watchlists --> J_signal_monitor
-    T_etf_options_snapshots --> J_signal_monitor_eod_resolver
-    T_market_data_daily --> J_signal_monitor_eod_resolver
     T_market_data_intraday --> J_signal_monitor_eod_resolver
     T_signal_alerts --> J_signal_monitor_eod_resolver
-    T_trades --> J_signal_monitor_eod_resolver
     T_signal_alerts --> J_signal_quality_alarm
     T_signal_metrics --> J_signal_quality_alarm
     T_historical_signals --> J_signal_quality_report
@@ -1380,8 +1348,6 @@ flowchart LR
     T_signal_alerts --> J_signal_replay
     T_etf_options_snapshots --> J_strat_engine
     T_market_data_daily --> J_strat_engine
-    T_market_data_intraday --> J_strat_engine
-    T_trades --> J_strat_engine
     T_insight_reports --> J_validate_brief
     T_market_data_intraday --> J_validate_brief
     T_premarket_analysis --> J_validate_brief

@@ -768,6 +768,42 @@ def test_the_cite_cell_keeps_a_citation_for_each_access_mode(mini_repo):
     assert cell == "`trades` (writes `gcp/helpers.py:11`; reads `gcp/helpers.py:2,3,4`)", cell
 
 
+def test_a_class_reached_by_annotation_contributes_only_the_methods_used(mini_repo):
+    """`_DEFAULT_LOADER: Optional[DataLoader] = None` in lib/data_loader.py
+    reached DataLoader for earnings-reactions-brief, and every query method
+    of the class came with it. Methods join by name, when used as an
+    attribute in reached code; __init__ always does."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import send\n\ndef main():\n    send()\n")
+    _write(mini_repo, "gcp/helpers.py", "from typing import Optional\nfrom gcp.deep import Loader\n\n_D: Optional[Loader] = None\n\n\ndef send():\n    return 1\n")
+    _write(mini_repo, "gcp/deep.py",
+           "class Loader:\n    def __init__(self):\n        self.n = 1\n\n    def load(self, conn):\n        return conn.execute(\"SELECT * FROM trades\")\n\n\n\n\n    def wipe(self, conn):\n        conn.execute(\"DELETE FROM trades\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert (e["alpha"]["writes"], e["alpha"]["reads"]) == ([], []), e["alpha"]
+    # the same class, with one method used as an attribute: only that method
+    _write(mini_repo, "gcp/helpers.py", "from gcp.deep import Loader\n\n\ndef send(conn):\n    return Loader().load(conn)\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert (e["alpha"]["writes"], e["alpha"]["reads"]) == ([], ["trades"]), e["alpha"]
+    scope = inv._import_scope(mini_repo, "gcp/research/alpha.py")
+    assert 6 in scope["gcp/deep.py"] and 12 not in scope["gcp/deep.py"], scope["gcp/deep.py"]
+
+
+def test_a_module_level_sql_constant_counts_only_where_it_is_used(mini_repo):
+    """mag_walk_forward.py holds four DDL strings; magnitude-inference imports
+    two and executes them, and the other two's CREATE TABLE text was
+    attributed to it as a write of magnitude_walk_forward_results."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import A_DDL\n\ndef main(conn):\n    conn.execute(A_DDL)\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "A_DDL = \"CREATE TABLE trades (x int)\"\n\n\n\n\nB_DDL = \"CREATE TABLE market_data_intraday (x int)\"\n\n\n\n\n"
+           "ROWS = conn.execute(\"DELETE FROM market_data_intraday_spy\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    # A_DDL is used; B_DDL is inert text nobody uses; the module-level
+    # DELETE is an executed statement and still counts at import
+    assert e["alpha"]["writes"] == ["market_data_intraday_spy", "trades"], e["alpha"]
+
+
 def test_the_real_tree_symbol_scope():
     """The three concrete cases from the review, on the committed tree."""
     repo, refs = _repo_and_refs()
@@ -782,6 +818,13 @@ def test_the_real_tree_symbol_scope():
     # round 5: a function-local import in an unreached function, and per-mode citations
     assert "etf_options_snapshots" not in e["backfill-daily-indicators"]["reads"], e["backfill-daily-indicators"]
     assert "writes `gcp/options_retention_job.py:79`" in inv._cite_cell(e["etf-options-retention"]["cites"])
+    # round 6: a class reached through an annotation, and inert DDL constants
+    assert "etf_options_snapshots" not in e["earnings-reactions-brief"]["reads"], e["earnings-reactions-brief"]
+    live = json.loads(FIXTURE.read_text())
+    refs_all = dict(refs)
+    refs_all.update(inv.table_refs(REPO, tables=inv.runtime_relations(repo, live)))
+    e2 = {x["job"]: x for x in inv.job_table_edges(repo, refs_all)}
+    assert "magnitude_walk_forward_results" not in e2["magnitude-inference"]["writes"], e2["magnitude-inference"]
 
 
 def test_the_digest_orphans_cite_their_writers_and_readers():
