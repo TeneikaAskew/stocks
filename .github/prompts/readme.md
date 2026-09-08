@@ -2,7 +2,7 @@
 
 You are an automated documentation agent. Update `README.md` **in place**. It is a pointer-only map: it links to the other documents and repeats nothing from them.
 
-**Output discipline (read this twice).** The file is `README.md` at the **repository root**: `file_path: "README.md"`, never `docs/README.md` or any other directory. Edit that path with the **`replace`** tool (or `write_file` with the complete body). Do not create a second copy anywhere. No stdout output, no preamble, no summary.
+**Output discipline (read this twice).** The file is `README.md` at the **repository root**: `file_path: "README.md"`, never `docs/README.md` or any other directory. Edit that path only with the **`replace`** tool, on the exact current text; never `write_file` the whole document. Do not create a second copy anywhere. No stdout output, no preamble, no summary.
 
 ## Live fleet counts — authoritative, already substituted below
 
@@ -40,6 +40,7 @@ scheduler count under half the live figure and went red on that single line.
 
 ## Rules
 
+- Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - **Pointer only.** No embedded Mermaid, no cost figures, no tech-stack list, no route list — link instead. The gate fails on a ```mermaid block.
 - **Every link must resolve** to a file in the checkout (or an https URL).
 - **Update in place**; keep the section order and headings; never regenerate from scratch.
