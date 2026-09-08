@@ -1288,6 +1288,74 @@ def test_every_declared_value_belongs_to_a_declared_invocation():
     assert orphaned == [], orphaned
 
 
+def test_the_runtime_relation_count_is_rendered_not_left_to_the_model(mini_repo, tmp_path):
+    """Run 26 failed its gate on one line: 05-a said "26 runtime relations"
+    where 96 live minus 69 declared is 27, carried forward from the previous
+    version. Runs 24 wrote 26, 28 and 30 against the same true 27. The prompt
+    already substitutes the figure and forbids carrying one forward, and four
+    attempts have not made that stick, so the count is rendered from the live
+    snapshot like any other inventory instead of being written by the model.
+    (Run 26.)"""
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("Live table drift (26 runtime relations) is in section 5.2.\n"
+                   "\n"
+                   "4. 26 runtime-created relations sit outside `gcp/schema.sql`.\n")
+    repo = inv.repo_inventory(mini_repo)
+    declared = inv.declared_relation_names(repo)
+    # a live snapshot carrying every declared relation plus two the schema
+    # does not declare: the true runtime count is therefore 2
+    live = {"db_tables": {n: {"kind": "table", "rows": 0, "size": "16 kB"}
+                          for n in set(declared)
+                          | {"strat_features_1m", "magnitude_per_bar_predictions"}}}
+    assert len(inv.runtime_relations(repo, live)) == 2, inv.runtime_relations(repo, live)
+    assert inv.insert_blocks(doc, repo, live, root=mini_repo) is True
+    body = doc.read_text()
+    assert "2 runtime relations" in body, body
+    assert "2 runtime-created relations" in body, body
+    assert "26 runtime" not in body, body
+    # idempotent: a second render leaves the same bytes
+    assert inv.insert_blocks(doc, repo, live, root=mini_repo) is False
+    # and the gate reads the SAME shape the renderer wrote, so a rendered
+    # document cannot be flagged by the check that follows it
+    assert [m.group(1) for m in inv.RUNTIME_RELATION_COUNT.finditer(body)] == ["2", "2"]
+
+
+def test_restoring_a_block_does_not_correct_a_model_written_count(mini_repo, tmp_path):
+    """`restore_blocks` runs AFTER the model and calls `insert_blocks`, so the
+    count substitution reached the restore path and silently corrected a number
+    the model got wrong -- before `gate_derived_numbers` could report it. The
+    count is rendered once, before the model; restoration touches marker blocks
+    only. (Codex, PR #1058.)"""
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    repo = inv.repo_inventory(mini_repo)
+    declared = inv.declared_relation_names(repo)
+    live = {"db_tables": {n: {"kind": "table", "rows": 0, "size": "16 kB"}
+                          for n in set(declared) | {"strat_features_1m"}},
+            "jobs": {}, "schedulers": {}, "services": {}, "counts": {}}
+    assert len(inv.runtime_relations(repo, live)) == 1
+    # a document whose marker block AND count the model has both edited
+    doc.write_text("<!-- inventory:tables:start -->\nthe model wrote this\n"
+                   "<!-- inventory:tables:end -->\n"
+                   "\n99 runtime-created relations sit outside the schema.\n")
+    names = inv.restore_blocks(doc, repo, live, root=mini_repo)
+    body = doc.read_text()
+    assert names == ["tables"], names
+    assert "the model wrote this" not in body, "the block must be restored"
+    assert "99 runtime-created relations" in body, \
+        "restore must leave the model's count alone so the gate can report it"
+
+
+def test_the_runtime_relation_count_is_left_alone_without_a_live_snapshot(mini_repo, tmp_path):
+    """The count comes from live minus declared, so with no live snapshot there
+    is nothing to render and the prose must survive untouched rather than be
+    rewritten to zero."""
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("4. 26 runtime-created relations sit outside `gcp/schema.sql`.\n")
+    repo = inv.repo_inventory(mini_repo)
+    inv.insert_blocks(doc, repo, None, root=mini_repo)
+    assert "26 runtime-created relations" in doc.read_text()
+
+
 def test_a_branch_local_import_binds_only_its_own_branch(mini_repo):
     """`_run_wf` imports a different `walk_forward` under each axis. The
     four-argument magnitude call also fits the three-argument strat signature,
