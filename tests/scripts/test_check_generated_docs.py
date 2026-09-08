@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import shutil
 
 import pytest
@@ -487,3 +488,334 @@ def test_the_other_documents_keep_heading_persistence(tmp_path):
     a.write_text(a.read_text().replace(f"## {heads[3]}", "## Something Else Entirely", 1))
     findings = gate.gate_headings_and_size(root, prev)
     assert any(f.startswith(f"{gate.ARCH}: heading lost") for f in findings), findings
+
+def test_prose_replaced_by_an_ellipsis_is_a_finding(tmp_path):
+    """Run 27 passed every gate — churn budget, heading persistence, marker
+    restore, live verifier — with five section introductions and four bullets
+    in 05-c replaced by a bare `...`, destroying 4,035 characters. Whole-file
+    size did not notice: the document is 137 KB of which ~120 KB is rendered
+    blocks, so the loss moved its line count by under 1%. (Run 27.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("## 2. Write graph\n...\n\n"
+                   "## 4. Multi-writer\n"
+                   "- **`market_data_daily`** ...\n"
+                   "- **`etf_options_snapshots`** — `fetch_av_historical_options` upserts nightly.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 2, out
+    assert all(gate.DEPS in f for f in out)
+    assert any("'...'" in f for f in out)
+    assert any("market_data_daily" in f for f in out)
+    # the bullet that says something real is not flagged
+    assert not any("etf_options_snapshots" in f for f in out), out
+
+
+def test_a_mid_sentence_ellipsis_is_ordinary_prose(tmp_path):
+    """`gamma_levels_eod`, … inside a sentence is how these documents already
+    elide a list, and flagging it would fail every run. Only a line that is
+    ENTIRELY an ellipsis is an elided paragraph."""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("27 runtime-created relations (`strat_features_*`, `gamma_levels_eod`, …) "
+                   "are outside `gcp/schema.sql`.\n"
+                   "The fetchers run at 08:20, 08:30, ... and 23:00.\n")
+    assert gate.gate_elided_prose(tmp_path) == []
+
+
+def test_an_ellipsis_inside_a_rendered_block_is_not_the_models_doing(tmp_path):
+    """The blocks are rendered by the workflow and restored after the model, so
+    an ellipsis inside one came from the renderer, not from an elided edit."""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("<!-- inventory:blast:start -->\n...\n<!-- inventory:blast:end -->\n")
+    assert gate.gate_elided_prose(tmp_path) == []
+
+
+def test_collapsing_prose_outside_the_blocks_is_a_finding(tmp_path):
+    """The companion to the elision gate: a paragraph deleted outright rather
+    than replaced by a marker. Measured on run 27 with the corrected marker
+    matching, 05-c fell 11,046 -> 6,867 prose characters (-37.8%) while its
+    line count barely moved; the 8,876 figure this docstring first carried was
+    produced by the substring bug. (Codex, PR #1061.)"""
+    prev, cur = tmp_path / "prev", tmp_path / "cur"
+    for d in (prev, cur):
+        (d / gate.DEPS).parent.mkdir(parents=True, exist_ok=True)
+    body = "Notes on the ones that matter operationally: " + ("x" * 4000) + "\n"
+    (prev / gate.DEPS).write_text(body)
+    (cur / gate.DEPS).write_text("Notes on the ones that matter operationally:\n")
+    out = gate.gate_prose_floor(cur, prev)
+    assert len(out) == 1 and "shrank" in out[0], out
+    # unchanged prose passes
+    (cur / gate.DEPS).write_text(body)
+    assert gate.gate_prose_floor(cur, prev) == []
+
+
+def test_the_prose_floor_ignores_growth_inside_a_rendered_block(tmp_path):
+    """A month that adds twenty jobs grows the blocks enormously and must not
+    thereby mask prose that was deleted beside them."""
+    prev, cur = tmp_path / "prev", tmp_path / "cur"
+    for d in (prev, cur):
+        (d / gate.DEPS).parent.mkdir(parents=True, exist_ok=True)
+    (prev / gate.DEPS).write_text("A real paragraph explaining the graph. " * 40 +
+                                "\n<!-- inventory:blast:start -->\nsmall\n<!-- inventory:blast:end -->\n")
+    (cur / gate.DEPS).write_text("\n<!-- inventory:blast:start -->\n" + ("| row |\n" * 500) +
+                               "<!-- inventory:blast:end -->\n")
+    out = gate.gate_prose_floor(cur, prev)
+    assert len(out) == 1, out
+
+
+def test_prose_that_mentions_a_marker_is_not_a_marker(tmp_path):
+    """Both documents describe their own markers in prose -- 05-a line 5 says
+    "the tables between `<!-- inventory:*:start/end -->` markers". A substring
+    test read that sentence as opening a block and skipped everything to the
+    next real end marker, keeping 76 of 05-c's 1,403 lines, so an elision in
+    the hidden region was invisible to both gates. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The tables between `<!-- inventory:*:start/end -->` markers are rendered.\n"
+        "...\n"
+        "<!-- inventory:blast:start -->\n"
+        "| a | b |\n"
+        "<!-- inventory:blast:end -->\n"
+        "A closing paragraph.\n")
+    kept = gate._prose_lines(doc.read_text())
+    assert "| a | b |" not in kept, "the real block must still be skipped"
+    assert any(l.startswith("The tables between") for l in kept)
+    assert "A closing paragraph." in kept
+    # and the elision beside the descriptive sentence is now visible
+    assert len(gate.gate_elided_prose(tmp_path)) == 1, gate.gate_elided_prose(tmp_path)
+
+
+def test_an_ordered_list_elision_is_a_finding(tmp_path):
+    """`1. ...` is the same destruction as `- ...`; 05-a carries numbered prose
+    lists and one replaced item can be too small to move the prose floor.
+    (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("1. ...\n2) …\n3. A real numbered point that says something.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 2, out
+
+
+def test_a_gutted_fenced_diagram_is_a_finding(tmp_path):
+    """05-a's Mermaid topology and flow diagrams are hand-authored inside
+    fences. Skipping fenced content hid a diagram replaced by a bare `...` from
+    both gates, and each diagram is far too small to move the whole-document
+    floor by itself. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("## 2. Topology\n\n```mermaid\n...\n```\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 1, out
+
+
+def test_the_prose_floor_matches_the_size_floor(tmp_path):
+    """An earlier revision set 0.90 and called it "lower than SIZE_FLOOR". A
+    HIGHER floor permits LESS shrinkage, so it was stricter than the gate it
+    claimed to be looser than, and would have failed a refresh that
+    legitimately retires a prose-heavy section -- including on the two
+    documents SIZE_FLOOR exempts. (Codex, PR #1061.)"""
+    assert gate.PROSE_FLOOR == gate.SIZE_FLOOR == 0.80
+
+
+def test_an_elision_after_the_bullet_separator_is_a_finding(tmp_path):
+    """05-c's real bullet style is `- **`name`** — text`. An updater that keeps
+    the em dash and elides only the body writes `- **`name`** — ...`, which the
+    first regex missed because it required the ellipsis immediately after the
+    bold label. One such bullet is far too small to move the prose floor.
+    (Codex, PR #1061.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("- **`market_data_daily`** — ...\n"
+                   "- **`etf_options_snapshots`**: …\n"
+                   "- **`signal_alerts`** - ...\n"
+                   "- **`watchlists`** — `backfill_ticker` manages it; soft-delete via `removed_at`.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("watchlists" in f for f in out), out
+
+
+def test_the_prose_floor_honours_the_readme_exemption(tmp_path):
+    """README is SIZE_FLOOR_EXEMPT because its length is not a content signal:
+    it is a pointer map, and a refresh that retires obsolete rows legitimately
+    shortens it. The floor must not reject that. The elision gate still covers
+    README, and that signal is exact rather than proportional.
+    (Codex, PR #1061.)"""
+    prev, cur = tmp_path / "prev", tmp_path / "cur"
+    prev.mkdir(); cur.mkdir()
+    (prev / "README.md").write_text("A pointer map. " * 400)
+    (cur / "README.md").write_text("A pointer map. " * 100)      # -75%
+    assert gate.gate_prose_floor(cur, prev) == []
+    # but an ellipsis in it is still caught
+    (cur / "README.md").write_text("## Docs\n...\n")
+    assert len(gate.gate_elided_prose(cur)) == 1
+
+
+def test_an_elision_inside_a_blockquote_is_a_finding(tmp_path):
+    """05-c:7-11 is three blockquoted callouts -- Partition handling, Runtime
+    tables, Ad-hoc access -- and 05-a carries five blockquote lines of its own.
+    The Runtime tables callout is exactly the kind of content run 27 rewrote.
+    Eliding one as `> ...` or `> **Runtime tables.** ...` matched nothing,
+    because only list prefixes were accepted, and one callout is too small to
+    breach the aggregate floor. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("> ...\n"
+                   "> **Runtime tables.** ...\n"
+                   ">> …\n"
+                   "> **Ad-hoc access.** `db_query_cr.sh` reaches Cloud SQL over 443.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("Ad-hoc" in f for f in out), out
+
+
+def test_every_prose_line_shape_in_the_real_documents_can_be_caught():
+    """Derived from the corpus, not from the incident.
+
+    Four review rounds each found another shape the matcher missed -- ordered
+    lists, fenced diagrams, the em-dash bullet style, blockquotes -- because it
+    was written against the nine lines run 27 happened to damage rather than
+    against the shapes these documents actually use. This enumerates the
+    leading structure of every prose line in the four regenerated documents and
+    asserts an elision in each of them is caught, so a shape the corpus already
+    contains cannot slip past again. (Codex, PR #1061.)
+    """
+    root = pathlib.Path(__file__).resolve().parents[2]
+    shapes = set()
+    for doc in gate.DOCS:
+        for line in gate._prose_lines((root / doc).read_text()):
+            if not line.strip():
+                continue
+            if line.strip().startswith("|"):
+                # a table row elides by cell, not at end of line; flattening it
+                # to a bare "..." is what hid that gap from this test before
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                row = "| " + " | ".join(["..."] + cells[1:]) + " |"
+                assert gate._is_elided(row), f"an elided table row is not caught: {row!r}"
+                continue
+            m = re.match(r"^(\s*(?:>\s*)*)((?:[-*+]|\d+[.)])\s+)?(.*)$", line)
+            bq, lst, body = bool(m.group(1).strip()), bool(m.group(2)), m.group(3)
+            # The label FORM matters, not just its presence. An earlier version
+            # of this test recognised only `**bold**` as a label, so it could
+            # not discover the inline-code (15 lines) and plain-text (4) list
+            # labels the corpus also uses -- the same blind spot as the matcher
+            # it was written to police. (Codex, PR #1061.)
+            if body.startswith("**"):
+                label = "**x**"
+            elif body.startswith("`"):
+                # a REAL code label, dots and all: normalising it to `x` is
+                # what hid a dotted filename from this test
+                label = re.match(r"^(`[^`]*`)", body).group(1)
+            elif re.match(r"^[A-Za-z][^.!?]{0,60}?[—–:-]\s", body):
+                label = "Open paths:"
+            else:
+                label = ""
+            shapes.add((bq, lst, label))
+    assert shapes, "no prose found — the marker matching is broken"
+    for bq, lst, label in sorted(shapes):
+        for sep in ("", " — "):
+            line = (("> " if bq else "") + ("- " if lst else "")
+                    + (label + sep if label else "") + "...")
+            if not (bq or lst) and label not in ("**x**", ""):
+                continue   # a free-form label is only read as one behind a marker
+            assert gate._is_elided(line), \
+                f"a shape the documents already use is not caught: {line!r}"
+
+
+def test_an_elision_after_a_non_bold_label_is_a_finding(tmp_path):
+    """The corpus labels list items four ways, and only one is bold: measured
+    on the four documents, 30 bullets open with `**bold**`, 30 with plain text,
+    15 with `inline code` and 4 with a plain label and a separator. Successive
+    revisions of the matcher each covered the form the last incident used, so
+    `- `AUTH_MODE` — ...` and `- Open paths: ...` still went through.
+    (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("- `AUTH_MODE` — ...\n"
+                   "- Open paths: ...\n"
+                   "1. `strat_combo_results` ...\n"
+                   "- `AUTH_MODE` is one of `iap`, `firebase` or `open` (auth.py:34).\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("firebase" in f for f in out), out
+
+
+def test_a_sentence_ending_in_an_ellipsis_is_not_a_finding(tmp_path):
+    """The broad label form is only safe because it cannot swallow a real
+    sentence. Measured: no line in the four documents ends in an ellipsis
+    today, and a label may not carry sentence-ending punctuation, so prose
+    that happens to trail off is still prose. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("The fetchers run at 08:20, 08:30, ... and 23:00.\n"
+                   "- **`watchlists`** — `backfill_ticker` manages it; soft-delete via `removed_at`.\n"
+                   "27 runtime-created relations (`strat_features_*`, `gamma_levels_eod`, …) are outside.\n")
+    assert gate.gate_elided_prose(tmp_path) == []
+
+
+def test_bare_prose_ending_in_an_ellipsis_is_not_an_elision(tmp_path):
+    """The free-form label is only a label behind a blockquote or list marker.
+    Allowing it on a bare line made any short sentence without terminal
+    punctuation match, so `Loading...` and `This section continues…` would have
+    failed a legitimate refresh. My earlier "must not match" test did not
+    exercise this: none of its lines actually ended in an ellipsis, so it
+    proved nothing about the case that mattered. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Loading...\n"
+                   "This section continues…\n"
+                   "See the runbook for the rest ...\n")
+    assert gate.gate_elided_prose(tmp_path) == []
+    # behind a marker the same text IS a label, and the line is an elision
+    doc.write_text("- Loading: ...\n")
+    assert len(gate.gate_elided_prose(tmp_path)) == 1
+
+
+def test_an_elided_table_row_is_a_finding(tmp_path):
+    """A row keeps its label cell and loses its explanation:
+    `| Cloud SQL | ... |`. The end-of-line matcher cannot see it because the
+    row ends in a pipe. Measured, the corpus carries 171 prose table rows over
+    503 cells and not one cell is an ellipsis today, so an ellipsis-only cell
+    is an elision rather than a truncation mark. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("| Component | Notes |\n|---|---|\n"
+                   "| Cloud SQL | ... |\n"
+                   "| Cloud Run | … |\n"
+                   "| Scheduler | 65 jobs, all reconciled against `deploy.sh`. |\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 2, out
+    assert not any("Scheduler" in f for f in out), out
+
+
+def test_a_markdown_wrapped_ellipsis_is_an_elision(tmp_path):
+    """`- **...**` and `` - `...` `` render as an ellipsis-only body: the
+    updater kept the emphasis or code wrapper and deleted the text inside it.
+    A syntax-enumerating matcher treated the bold form as a label with no
+    ellipsis after it and rejected the code form outright, which is why this
+    check now strips decoration and then asks one question. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("- **...**\n- `...`\n**…**\n"
+                   "- **`watchlists`** — `backfill_ticker` manages it.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("watchlists" in f for f in out), out
+
+
+def test_a_dotted_label_is_still_a_label(tmp_path):
+    """A period inside a code span or a bold run belongs to a name, not to a
+    sentence: `gcp/fetchers/fetch_rss_news.py` is a filename and
+    **Runtime tables.** is a callout label. Rejecting every period lost list
+    and blockquote shapes both documents already use, while a genuine sentence
+    before an ellipsis must still be left alone. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("3. `gcp/fetchers/fetch_rss_news.py` ...\n"
+                   "> **Runtime tables.** ...\n"
+                   "**Note.** ...\n"
+                   "This is a complete sentence. ...\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("complete sentence" in f for f in out), out

@@ -91,6 +91,14 @@ SIZE_FLOOR_EXEMPT = ("README.md",)
 REGENERATED = (COST,)
 BYTE_FLOOR = 0.80
 
+# Prose outside the rendered marker blocks. The same 80% as SIZE_FLOOR, and
+# deliberately not tighter: an earlier revision set 0.90 and described it as
+# "lower than SIZE_FLOOR", which it is not -- a higher floor permits LESS
+# shrinkage, so it would have failed a refresh that legitimately retires a
+# prose-heavy section, including on the two documents SIZE_FLOOR exempts.
+# Run 27's damage is caught at 80% regardless. (Codex, PR #1061.)
+PROSE_FLOOR = 0.80
+
 # An update that rewrites most of a document is a regeneration wearing an
 # update's clothes: the 2026-09-02 run replaced 394 lines with 158 and every
 # gate passed on the result because each gate looked at the OUTPUT, not at the
@@ -278,6 +286,171 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
         o, n = len(old.splitlines()), len(new.splitlines())
         if doc not in SIZE_FLOOR_EXEMPT and n < o * SIZE_FLOOR:
             out.append(f"{doc}: shrank from {o} to {n} lines (< {int(SIZE_FLOOR*100)}%) — content was dropped, not updated")
+    return out
+
+
+# A line whose ENTIRE content is an ellipsis, optionally behind a list marker
+# and a bold label. Run 27 wrote exactly these, five as bare section intros and
+# four as `- **`market_data_daily`** ...`, eliding 4,035 characters of prose
+# that had taken the place of real sentences. A mid-sentence ellipsis is
+# ordinary prose ("`gamma_levels_eod`, …") and is NOT matched: the whole line
+# has to be the elision. (Run 27.)
+# An elided line: one whose body has been replaced by an ellipsis.
+#
+# NORMALISE, then test. Seven review rounds each added an alternation to a
+# single regex -- ordered lists, fenced diagrams, the em-dash bullet style,
+# blockquotes, non-bold labels, table rows -- and each round found another
+# shape the corpus already used: a dotted filename in a code label that a
+# blanket "no periods" rule rejected, an ellipsis wrapped as `**...**` or
+# `` `...` ``. Enumerating syntax was the wrong shape for this check. Strip
+# the decoration, then ask one question: is what remains only an ellipsis?
+# (Codex, PR #1061.)
+_ELL_ONLY = re.compile(r"^(?:\.\.\.|…)$")
+_DECORATION = re.compile(r"[*_`]+")
+_MARKER = re.compile(r"^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?")
+_SEPARATOR = re.compile(r"\s*[—–:-]\s*")
+# Spans whose punctuation belongs to a name, not to a sentence: `a.py` and
+# **Runtime tables.** both carry a period that does not end anything.
+_LABEL_SPAN = re.compile(r"`[^`]*`|\*\*[^*]+\*\*")
+
+
+def _is_ellipsis(text: str) -> bool:
+    """Whether `text` is an ellipsis once Markdown decoration is removed, so
+    `...`, `**...**` and `` `...` `` all read alike."""
+    return bool(_ELL_ONLY.match(_DECORATION.sub("", text).strip()))
+
+
+def _is_label(text: str) -> bool:
+    """A short lead-in rather than a sentence. Sentence-ending punctuation is
+    judged with code and emphasis spans removed first:
+    `gcp/fetchers/fetch_rss_news.py` is a filename inside backticks and
+    **Runtime tables.** is a bold callout label -- neither period ends a
+    sentence, and rejecting every period lost list and blockquote shapes both
+    documents already use."""
+    bare = _LABEL_SPAN.sub("", text)
+    return len(text) <= 80 and not any(c in bare for c in ".!?")
+
+
+def _is_elided(line: str) -> bool:
+    st = line.strip()
+    if st.startswith("|"):
+        # a row elides by CELL: `| Cloud SQL | ... |` keeps its label cell and
+        # loses the explanation, and never ends in an ellipsis
+        return any(_is_ellipsis(c) for c in st.strip("|").split("|"))
+    body = _MARKER.sub("", line, count=1).strip()
+    structured = line.strip() != body or _DECORATION.match(body or " ")
+    if _is_ellipsis(body):
+        return True
+    # `<label><separator><ellipsis>`, e.g. `- **`market_data_daily`** — ...`.
+    # A free-form label is only read as one behind a marker or emphasis: on a
+    # bare line it would make any short sentence match, and `Loading...` is
+    # prose, not an elision.
+    parts = _SEPARATOR.split(body)
+    if len(parts) >= 2 and _is_ellipsis(parts[-1]):
+        head = _SEPARATOR.sub(" ", " ".join(parts[:-1])).strip()
+        if _is_label(head) and (structured or _DECORATION.match(head or " ")):
+            return True
+    # `- <label> ...` with no separator at all
+    head, _, tail = body.rpartition(" ")
+    if structured and head and _is_ellipsis(tail) and _is_label(head):
+        return True
+    # `**label**...` -- no space either. Safe without a marker because the head
+    # is a COMPLETE emphasis or code span, which is what separates it from
+    # `Loading...`, where the head is a bare word and the line is prose.
+    for ell in ("...", "…"):
+        if body.endswith(ell):
+            head = body[: -len(ell)].strip()
+            if head and _LABEL_SPAN.fullmatch(head):
+                return True
+    return False
+
+
+# A COMPLETE marker comment line, not any line that mentions one. Both
+# documents describe their own markers in prose -- 05-a line 5 says "the tables
+# between `<!-- inventory:*:start/end -->` markers", 05-c says the same in its
+# header -- and a substring test treated those sentences as opening a block,
+# swallowing everything to the next real end marker. Measured: it kept 76 of
+# 05-c's 1,403 lines and 258 of 05-a's 1,129, so an elision in the hidden
+# regions was invisible to both gates. (Codex, PR #1061.)
+_MARKER_LINE = re.compile(r"^\s*<!--\s*inventory:[A-Za-z0-9_]+:(start|end)\s*-->\s*$")
+
+
+def _prose_lines(text: str) -> list[str]:
+    """The document's own sentences: everything outside the rendered marker
+    blocks. Whole-document size is the wrong unit for these files -- 05-c is
+    137 KB of which most is rendered blocks, so deleting every explanatory
+    paragraph in it moved the line count by less than 1% and the existing size
+    floor did not notice. (Run 27.)
+
+    Fenced blocks are KEPT. 05-a carries hand-authored Mermaid diagrams and a
+    runbook block inside fences; a diagram replaced by a bare `...` is exactly
+    the damage this gate exists to catch, and skipping fences hid it from both
+    gates while each diagram is far too small to move the whole-document floor
+    on its own. (Codex, PR #1061.)
+    """
+    out, in_block = [], False
+    for line in text.split("\n"):
+        m = _MARKER_LINE.match(line)
+        if m:
+            in_block = m.group(1) == "start"
+            continue
+        if not in_block:
+            out.append(line)
+    return out
+
+
+def gate_elided_prose(root: pathlib.Path) -> list[str]:
+    """Prose replaced by an ellipsis instead of rewritten.
+
+    The model is asked to update prose in place with targeted `replace` calls.
+    A `...` written where a paragraph was is the summarising habit leaking into
+    a file edit, and it destroys content while leaving every other gate green:
+    run 27 passed the churn budget, the heading check, the marker restore and
+    the live verifier with five sections gutted this way.
+    """
+    out = []
+    for doc in DOCS:
+        f = root / doc
+        if not f.exists():
+            continue
+        for i, line in enumerate(_prose_lines(f.read_text()), 1):
+            if _is_elided(line):
+                out.append(f"{doc}: prose replaced by an ellipsis: {line.strip()!r} "
+                           f"(prose line {i}) — the paragraph that belongs here was deleted")
+    return out
+
+
+def gate_prose_floor(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[str]:
+    """Prose outside the rendered blocks must not collapse.
+
+    The companion to the elision gate: it catches a paragraph that was deleted
+    outright rather than replaced with a marker. Measured on the run-27 damage
+    with the corrected marker matching, 05-c fell 11,046 -> 6,867 characters
+    (-37.8%) while its line count moved by less than 1%, so the floor is on
+    prose characters, not on the file. The 8,876 / -22.6% figures this
+    docstring first carried came from the substring bug fixed above -- the
+    numbers the fix itself disproved. (Codex, PR #1061.)
+    """
+    out = []
+    if previous_dir is None:
+        return out
+    for doc in DOCS:
+        # README is SIZE_FLOOR_EXEMPT because its length is not a content
+        # signal -- it is a pointer map, and a refresh that retires obsolete
+        # rows legitimately shortens it. Honour that exemption here too, or a
+        # valid refresh fails on a document whose headings and links are
+        # intact. The elision gate still covers README, and that signal is
+        # exact rather than proportional. (Codex, PR #1061.)
+        if doc in SIZE_FLOOR_EXEMPT:
+            continue
+        prev, cur = previous_dir / doc, root / doc
+        if not prev.exists() or not cur.exists():
+            continue
+        o = sum(len(l) for l in _prose_lines(prev.read_text()))
+        n = sum(len(l) for l in _prose_lines(cur.read_text()))
+        if o and n < o * PROSE_FLOOR:
+            out.append(f"{doc}: prose outside the rendered blocks shrank from {o} to {n} "
+                       f"characters (< {int(PROSE_FLOOR*100)}%) — paragraphs were dropped, not updated")
     return out
 
 
@@ -580,6 +753,8 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_markers(root, repo, live)
     findings += gate_diff_budget(diff_stats(root, previous_dir), allow_rewrite)
     findings += gate_headings_and_size(root, previous_dir)
+    findings += gate_elided_prose(root)
+    findings += gate_prose_floor(root, previous_dir)
     findings += gate_regenerated_structure(root)
     findings += gate_derived_numbers(root, repo, live)
     findings += gate_new_suppressions(root, previous_dir)
