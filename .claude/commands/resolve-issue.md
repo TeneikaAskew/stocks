@@ -939,10 +939,17 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
 # a scheduler retirement asks GCP, not the frontend. Only the code-retirement
 # half does, so the requirement lives there.
 _solyra_ok() {          # 0 usable, 1 refuse (and say why)
-  SOLYRA=${SOLYRA:-../solyra}
+  # The DEFAULT is a sibling of the stocks root, not of wherever you are
+  # standing. Measured from gcp/, `../solyra` resolves to stocks/solyra and the
+  # probe refuses every valid code-retirement check — the same CWD-relative
+  # defect just fixed in the searches, in the line that finds the other repo.
+  local _root
+  _root=$(git rev-parse --show-toplevel) \
+    || { echo "not inside a git repository — asserting nothing"; return 1; }
+  SOLYRA=${SOLYRA:-$_root/../solyra}
   git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
     echo "no solyra checkout at '$SOLYRA'. Set SOLYRA=<path>, or:"
-    echo "  git clone https://github.com/TeneikaAskew/solyra ../solyra"
+    echo "  git clone https://github.com/TeneikaAskew/solyra $_root/../solyra"
     echo "NOT asserting — a surface can be dead here and live in the frontend."
     return 1; }
   # `rev-parse --git-dir` only says "a git checkout" — measured, it exits 0 for
@@ -1062,6 +1069,18 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
       || { echo "solyra: fetch failed — no current revision to search"; exit 2; }
     REV=$(git rev-parse FETCH_HEAD) || exit 2
     echo "solyra: searching origin/main @ ${REV:0:12} (not the working tree)"
+    # THE DEFINITION CHECK APPLIES OVER HERE TOO, against the pinned rev. The
+    # one in the stocks half above reads the stocks working tree only, and
+    # consumed() excludes the surface's own file in BOTH repos — so a Claude
+    # surface whose implementation lives in solyra returns rc=1 there with its
+    # definition still committed on main, and the cross-repo check accepts it.
+    # Same self-exclusion-versus-retirement split, on the other side.
+    for d in ".claude/agents/$sym.md" ".claude/commands/$sym.md" \
+             ".github/prompts/$sym.md"; do
+      test -n "$(git ls-tree --name-only "$REV" -- "$d")" || continue
+      echo "solyra $d still exists at ${REV:0:12} — its definition is not deleted"
+      exit 1
+    done
     EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
     consumed "$sym" "${REVIEWED_SOLYRA[@]}" ); rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
@@ -1199,9 +1218,14 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
     # so a partially-reshaped response would return the rows it still
     # understands and quietly drop the rest — including, possibly, the one you
     # are asking about.
-    jq -e 'all(has("metadata") and (.metadata|has("name")) or has("name"))' \
+    # A NON-EMPTY STRING, not merely a present key. `has("name")` accepts
+    # `name: null` — measured, a two-row listing where one name is null passes
+    # the presence check, `// empty` then drops that row, and the "some rows
+    # carry no name" guard still passes because the OTHER row supplied one. If
+    # the dropped row is the resource being asked about, it reads as retired.
+    jq -e 'all((.metadata.name // .name) | type=="string" and length>0)' \
       <<<"$json" >/dev/null 2>&1 \
-      || { echo "$1: some rows carry no name field — asserting nothing" >&2
+      || { echo "$1: a row has no usable name — asserting nothing" >&2
            return 1; }
     # `// empty` rather than letting `sub` hit a null: without it jq ABORTS on a
     # row carrying neither field, and jq's own error text replaces the
@@ -2060,8 +2084,14 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      Two things to do about it, neither of which is a fix:
 
      1. **Do not run this concurrently with another deploy.** Check before
-        starting — `gcloud builds list --ongoing` — and say in the status
-        comment that you did.
+        starting — `gcloud builds list --ongoing --project="$PROJECT_ID"` — and
+        say in the status comment that you did. **`--project` is not optional
+        here**: `gcp/deploy.sh:25` takes `PROJECT_ID` from the environment or
+        the active gcloud config, so a probe without it can list a different
+        project's builds, report "none ongoing", and clear you to deploy while
+        the tag you are about to ship is being moved. The retirement checks in
+        Phase 4 were pinned for the same reason; this one was written after
+        them and inherited the defect anyway.
      2. **Compare the job's digest against the tag — and know what that does
         NOT prove.** `deploy.sh` records a job's deployed digest from its
         latest execution (`gcp/deploy.sh:112-119`), and `_resolve_image_ref`
@@ -2074,8 +2104,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
         build finishing and your capture, you capture *their* digest, the job
         update resolves the same tag to the same wrong digest, and the equality
         check passes. It is a self-consistency check wearing the clothes of a
-        provenance check. `gcloud builds list --ongoing` beforehand is a
-        snapshot, not a lock, and narrows the window without closing it.
+        provenance check. `gcloud builds list --ongoing --project="$PROJECT_ID"`
+        beforehand is a snapshot, not a lock, and narrows the window without
+        closing it.
 
         Binding it properly means taking the digest from the build invocation
         itself rather than from the tag afterwards. **This repo cannot do that
