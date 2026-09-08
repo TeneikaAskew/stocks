@@ -1739,3 +1739,75 @@ def test_a_bash_local_is_resolved_before_reading_the_declared_environment():
     assert "MAG_PLAN" in inv.deployment_env_names()
     assert "CLOUD_RUN_TASK_INDEX" not in inv.deployment_env_names(), \
         "a name Cloud Run injects is not declared, so it must stay unknown"
+
+
+def test_an_inline_comment_is_not_executable_code(mini_repo):
+    """`platform/api/routers/grid.py:925` ends a line with `# Phase D — needs
+    economic_events join`. Only lines BEGINNING with `#` were excluded, so
+    READ_RE saw the comment's `join` beside the relation name and published
+    that router as a reader of a table it never queries. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           '"""m."""\n'
+           "def go(conn):\n"
+           '    out = {"hedge": [],  # Phase D - needs trades join\n'
+           '           "hash": "a # b FROM market_data_intraday"}\n'
+           "    return out\n")
+    refs = inv.table_refs(mini_repo, ["trades", "market_data_intraday"])
+    assert refs["trades"]["reads"] == [] and refs["trades"]["mentions"] == [], \
+        "a comment executes nothing"
+    assert inv._strip_py_comments(['x = 1  # trades join']) == ["x = 1"]
+    assert inv._strip_py_comments(['s = "a # b"  # c']) == ['s = "a # b"'], \
+        "a # inside a string literal is not a comment"
+    assert inv._strip_py_comments(["def f(:", "  # x"]) == ["def f(:", "  # x"], \
+        "a file the tokenizer cannot read is returned unchanged"
+
+
+def test_a_logical_word_alone_does_not_make_prose_into_sql(mini_repo):
+    """`lib/gamma_glossary.py:259-260` writes the display formula
+    "|distance from spot| > 5% AND |GEX| growth > 30% ... economic_events
+    row". The upper-case AND kept it off the diagnostic list and READ_RE then
+    read the prose "from" as a SQL FROM. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           '"""m."""\n'
+           "GLOSSARY = {\n"
+           '    "math": ("|distance from spot| > 5% AND |GEX| growth > 30% over the "\n'
+           '             "five days before the nearest high-impact trades row"),\n'
+           "}\n")
+    refs = inv.table_refs(mini_repo, ["trades"])
+    assert refs["trades"]["reads"] == [], refs["trades"]
+    # and a real fragment carrying AND is still SQL, because the f-string it
+    # belongs to is judged whole rather than fragment by fragment
+    _write(mini_repo, "gcp/fetchers/gamma.py",
+           "def go(conn, a, b):\n"
+           '    return conn.execute(f"SELECT * FROM trades s "\n'
+           '                        f"LEFT JOIN {a} l ON l.t = s.t AND l.ts = s.ts {b}")\n')
+    refs = inv.table_refs(mini_repo, ["trades"])
+    assert any(x["file"].endswith("gamma.py") for x in refs["trades"]["reads"]), refs["trades"]
+
+
+def test_a_conditional_template_names_only_the_values_its_branch_allows(mini_repo):
+    """`scripts/analysis/per_ticker_calibration.py:202` builds a suffixed
+    partition only for four tickers and uses the parent table otherwise, but
+    the template was matched against every declared name, inventing a read of
+    `market_data_intraday_other`. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           "def go(conn, t):\n"
+           '    part = f"market_data_intraday_{t.lower()}" if t.upper() in ("SPY", "IWM") \\\n'
+           '        else "market_data_intraday"\n'
+           '    return conn.execute(f"SELECT * FROM {part}")\n')
+    names = ["market_data_intraday", "market_data_intraday_spy",
+             "market_data_intraday_iwm", "market_data_intraday_other"]
+    dyn = inv.table_refs_dynamic(mini_repo, names)
+    cited = {n: sorted({x["line"] for k in ("reads", "writes", "mentions") for x in dyn[n][k]})
+             for n in names}
+    assert cited["market_data_intraday_spy"] and cited["market_data_intraday_iwm"], cited
+    assert cited["market_data_intraday_other"] == [], \
+        "the branch cannot produce that suffix"
+    # the placeholder EXPRESSION is what carries the name, since `t.lower()`
+    # is not a bare name and reads as None in `holes`
+    form = inv._dynamic_forms('    part = f"market_data_intraday_{t.lower()}"')[0]
+    assert form["holes"] == [None] and form["exprs"] == ["t.lower()"]
+    cond = {"t": {"SPY", "IWM"}}
+    assert inv._conditional_ok(form, ("spy",), cond)
+    assert not inv._conditional_ok(form, ("other",), cond)
+    assert inv._conditional_ok(form, ("other",), {}), "no conditional filters nothing"

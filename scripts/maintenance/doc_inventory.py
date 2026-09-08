@@ -43,6 +43,7 @@ import os
 import pathlib
 import re
 import subprocess
+import tokenize
 import sys
 from typing import Any
 
@@ -629,9 +630,16 @@ WRITE_RE = re.compile(
 # (lib/backtest.py:326 -- Codex, PR #1044).
 # What makes a multi-word string SQL rather than prose: an upper-case SQL
 # keyword, or a lower-case statement head. "derives from x" has neither.
+# `AND`, `OR` and `AS` are NOT in this list. They carry no SQL shape of their
+# own, and lib/gamma_glossary.py:259-260 writes a display formula
+# "|distance from spot| > 5% AND |GEX| growth > 30% ... economic_events row":
+# the upper-case AND alone kept it off the diagnostic list, and READ_RE then
+# read the prose "from" as a SQL FROM and published that glossary as a reader
+# of economic_events. A real statement carrying AND carries a clause keyword
+# too. (Codex, PR #1044.)
 _SQL_HINT = re.compile(
     r"\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TRUNCATE|REFRESH|COPY|WHERE|JOIN|VALUES|INTO|"
-    r"RETURNING|LIMIT|GROUP BY|ORDER BY|ON CONFLICT|WITH|FROM|SET|AND|OR|AS)\b"
+    r"RETURNING|LIMIT|GROUP BY|ORDER BY|ON CONFLICT|WITH|FROM|SET)\b"
     r"|(?i:\bselect\b.*\bfrom\b|\binsert\s+into\b|\bdelete\s+from\b|\bcreate\s+(?:table|index|view)\b|\bupdate\s+\w+\s+set\b)")
 # `from gcp.helpers import build` is a Python import, not a SQL FROM, and
 # READ_RE is case-insensitive: an import line in the three-line context window
@@ -1041,6 +1049,7 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
             lines = f.read_text().splitlines()
         except UnicodeDecodeError:
             continue
+        lines = _strip_py_comments(lines)
         joined = "\n".join(lines)
         # Message text is not executed SQL, and it must not leak into the
         # context window of the lines after it either (Codex, PR #1009).
@@ -1157,6 +1166,76 @@ def _accepts(fn: ast.AST, call: ast.Call) -> bool:
     return True
 
 
+def _conditional_holes(tree: ast.Module, lineno: int) -> dict[str, set[str]]:
+    """The literal values a conditional expression on `lineno` restricts a name
+    to, keyed by that name.
+
+    `scripts/analysis/per_ticker_calibration.py:202` builds a suffixed
+    partition only for four tickers:
+
+        partition = f"market_data_intraday_{t.lower()}" \
+            if t.upper() in ("SPY", "IWM", "QQQ", "SPX") else "market_data_intraday"
+
+    Matching the template against every declared name invented a read of
+    `market_data_intraday_other`, a partition this branch cannot name.
+    Only the `in`-a-tuple and `==` forms are read, and only when the tested
+    expression is the bare name or one case transform of it; anything else
+    leaves the template unfiltered. (Codex, PR #1044.)
+    """
+    out: dict[str, set[str]] = {}
+
+    def base(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Call) and not node.args and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in ("lower", "upper") and isinstance(node.func.value, ast.Name):
+            return node.func.value.id
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.IfExp):
+            continue
+        body = node.body
+        if not (getattr(body, "lineno", 0) <= lineno <= getattr(body, "end_lineno", 0)):
+            continue
+        test = node.test
+        if not (isinstance(test, ast.Compare) and len(test.ops) == 1):
+            continue
+        name = base(test.left)
+        if name is None:
+            continue
+        right = test.comparators[0]
+        if isinstance(test.ops[0], ast.In) and isinstance(right, (ast.Tuple, ast.List, ast.Set)) \
+                and right.elts and all(isinstance(e, ast.Constant) and isinstance(e.value, str)
+                                       for e in right.elts):
+            out.setdefault(name, set()).update(e.value for e in right.elts)
+        elif isinstance(test.ops[0], ast.Eq) and isinstance(right, ast.Constant) \
+                and isinstance(right.value, str):
+            out.setdefault(name, set()).add(right.value)
+    return out
+
+
+_HOLE_NAME = re.compile(r"^\s*([A-Za-z_]\w*)\s*(?:\.\s*(?:lower|upper)\s*\(\s*\))?\s*$")
+
+
+def _conditional_ok(form: dict[str, Any], values: tuple[str, ...],
+                    cond: dict[str, set[str]]) -> bool:
+    """Whether a candidate name's placeholder values are ones the enclosing
+    conditional allows. Case-insensitive, because the branch tests `t.upper()`
+    while the template writes `t.lower()`."""
+    if not cond:
+        return True
+    for j, hole in enumerate(form.get("exprs") or form["holes"]):
+        if not hole or j >= len(values) or values[j] is None:
+            continue
+        m = _HOLE_NAME.match(hole)
+        if not m or m.group(1) not in cond:
+            continue
+        if values[j].casefold() not in {v.casefold() for v in cond[m.group(1)]}:
+            return False
+    return True
+
+
 def _dynamic_forms(line: str) -> list[dict[str, Any]]:
     """Every run-time-assembled table name a source line can produce.
 
@@ -1171,7 +1250,8 @@ def _dynamic_forms(line: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
     def emit(parts: list[str], holes: list[str | None],
-             pre: bool = False, post: bool = False) -> None:
+             pre: bool = False, post: bool = False,
+             exprs: list[str] | None = None) -> None:
         static = "".join(parts)
         if "_" not in static or not any(len(x) >= 2 for x in parts) or any(ch in static for ch in " ()\\"):
             return
@@ -1183,6 +1263,12 @@ def _dynamic_forms(line: str) -> list[dict[str, Any]]:
         if any(f["pat"] == pat for f in out):
             return
         out.append({"pat": pat, "cpat": cpat, "parts": parts, "holes": holes,
+                    # the placeholder's SOURCE text, kept beside `holes`
+                    # because `holes` carries only bare names: `{t.lower()}`
+                    # is not a name and reads as None there, which left the
+                    # enclosing conditional unable to say which values it can
+                    # take. (Codex, PR #1044.)
+                    "exprs": list(exprs if exprs is not None else holes),
                     "pre": pre, "post": post,
                     "text": ("{?}" if pre else "")
                             + "".join(a + ("{" + (holes[i] or "?") + "}" if i < len(holes) else "")
@@ -1218,7 +1304,7 @@ def _dynamic_forms(line: str) -> list[dict[str, Any]]:
             for token in re.split(r"[\s(),;=]+", masked):
                 if "\x00" not in token:
                     continue
-                parts, names = [], []
+                parts, names, exprs = [], [], []
                 pos = 0
                 for m in re.finditer(r"\x00(\d+)\x00", token):
                     parts.append(token[pos:m.start()])
@@ -1226,8 +1312,9 @@ def _dynamic_forms(line: str) -> list[dict[str, Any]]:
                     h = found[int(m.group(1))]
                     inner = h[1:-1].strip() if h.startswith("{") else ""
                     names.append(inner if re.fullmatch(r"[A-Za-z_]\w*", inner) else None)
+                    exprs.append(inner)
                 parts.append(token[pos:])
-                emit(parts, names)
+                emit(parts, names, exprs=exprs)
         elif pre or post:
             # `"INSERT INTO strat_features_levels_" + tf`: the name template is
             # the token adjacent to the `+`; the operand is not read back here.
@@ -1391,6 +1478,7 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
             # concrete reads. (Codex, PR #1044.)
             hits: list[tuple[str, dict[str, Any]]] = []
             tableset = set(tables)
+            cond = _conditional_holes(tree, i + 1) if tree is not None else {}
             for form in forms:
                 vs = None
                 if form["holes"] and not form["pre"] and not form["post"] \
@@ -1408,7 +1496,7 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                     for combo in itertools.product(*vs):
                         name = "".join(a + (combo[j] if j < len(combo) else "")
                                        for j, a in enumerate(form["parts"]))
-                        if name in tableset:
+                        if name in tableset and _conditional_ok(form, combo, cond):
                             form["vars"][name] = combo
                             hits.append((name, form))
                 else:
@@ -1421,7 +1509,7 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                     form.setdefault("vars", {})
                     for tname in tables:
                         m = cpt.fullmatch(tname)
-                        if m:
+                        if m and _conditional_ok(form, m.groups(), cond):
                             form["vars"][tname] = m.groups()
                             hits.append((tname, form))
             if not hits:
@@ -1449,6 +1537,33 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                         follow(t, other, re.compile(rf"(?<![\w.]){re.escape(local)}\s*\("), -1, 0, away)
     _DYN_CACHE[ckey] = copy.deepcopy(out)
     return out
+
+
+def _strip_py_comments(lines: list[str]) -> list[str]:
+    """`lines` with every `#` comment removed, using the tokenizer so a `#`
+    inside a string literal survives.
+
+    Blanking only lines that BEGIN with `#` left an inline comment searchable
+    as executable code: `"hedge_nodes": [], # Phase D -- needs economic_events
+    join` at platform/api/routers/grid.py:925 gave READ_RE a `join` beside the
+    relation name and published that router as a reader of a table it never
+    queries. A fully commented line becomes empty here, which subsumes the
+    line-start rule. A file the tokenizer cannot read is returned unchanged.
+    (Codex, PR #1044.)
+    """
+    cuts: dict[int, int] = {}
+    it = iter([ln + "\n" for ln in lines])
+    try:
+        for tok in tokenize.generate_tokens(lambda: next(it, "")):
+            if tok.type == tokenize.COMMENT:
+                row, col = tok.start
+                cuts[row] = min(cuts.get(row, col), col)
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return list(lines)
+    if not cuts:
+        return list(lines)
+    return [ln[: cuts[n + 1]].rstrip() if (n + 1) in cuts else ln
+            for n, ln in enumerate(lines)]
 
 
 def _diagnostic_lines(text: str) -> set[int]:
@@ -1492,8 +1607,16 @@ def _diagnostic_lines(text: str) -> set[int]:
             elif isinstance(sub, ast.JoinedStr):
                 out.update(range(sub.lineno, (sub.end_lineno or sub.lineno) + 1))
 
+    # An f-string's literal fragments are not standalone strings: judge the
+    # whole JoinedStr and skip its parts. `f"LEFT JOIN {l} l ON l.ticker =
+    # s.ticker AND l.ts = s.ts "` carries JOIN, but its second fragment on its
+    # own carries no clause keyword at all, so once AND stopped counting as
+    # evidence every strat_features_levels_* read in the tree vanished.
+    # (Codex, PR #1044.)
+    in_fstring = {id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr)
+                  for v in n.values}
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Constant, ast.JoinedStr)):
+        if isinstance(node, (ast.Constant, ast.JoinedStr)) and id(node) not in in_fstring:
             text = node.value if isinstance(node, ast.Constant) else "".join(
                 v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
             if isinstance(text, str) and len(text.split()) >= 3 and not _SQL_HINT.search(text):
