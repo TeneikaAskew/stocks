@@ -704,7 +704,9 @@ def test_every_prose_line_shape_in_the_real_documents_can_be_caught():
             if body.startswith("**"):
                 label = "**x**"
             elif body.startswith("`"):
-                label = "`x`"
+                # a REAL code label, dots and all: normalising it to `x` is
+                # what hid a dotted filename from this test
+                label = re.match(r"^(`[^`]*`)", body).group(1)
             elif re.match(r"^[A-Za-z][^.!?]{0,60}?[—–:-]\s", body):
                 label = "Open paths:"
             else:
@@ -785,3 +787,35 @@ def test_an_elided_table_row_is_a_finding(tmp_path):
     out = gate.gate_elided_prose(tmp_path)
     assert len(out) == 2, out
     assert not any("Scheduler" in f for f in out), out
+
+
+def test_a_markdown_wrapped_ellipsis_is_an_elision(tmp_path):
+    """`- **...**` and `` - `...` `` render as an ellipsis-only body: the
+    updater kept the emphasis or code wrapper and deleted the text inside it.
+    A syntax-enumerating matcher treated the bold form as a label with no
+    ellipsis after it and rejected the code form outright, which is why this
+    check now strips decoration and then asks one question. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("- **...**\n- `...`\n**…**\n"
+                   "- **`watchlists`** — `backfill_ticker` manages it.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("watchlists" in f for f in out), out
+
+
+def test_a_dotted_label_is_still_a_label(tmp_path):
+    """A period inside a code span or a bold run belongs to a name, not to a
+    sentence: `gcp/fetchers/fetch_rss_news.py` is a filename and
+    **Runtime tables.** is a callout label. Rejecting every period lost list
+    and blockquote shapes both documents already use, while a genuine sentence
+    before an ellipsis must still be left alone. (Codex, PR #1061.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("3. `gcp/fetchers/fetch_rss_news.py` ...\n"
+                   "> **Runtime tables.** ...\n"
+                   "**Note.** ...\n"
+                   "This is a complete sentence. ...\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("complete sentence" in f for f in out), out

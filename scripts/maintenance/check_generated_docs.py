@@ -295,43 +295,74 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
 # that had taken the place of real sentences. A mid-sentence ellipsis is
 # ordinary prose ("`gamma_levels_eod`, …") and is NOT matched: the whole line
 # has to be the elision. (Run 27.)
-# An elided line: one whose body has been replaced by an ellipsis. Three
-# forms, kept apart on purpose.
+# An elided line: one whose body has been replaced by an ellipsis.
 #
-# A FREE-FORM label is only read as a label behind a structural marker -- a
-# blockquote or a list bullet. Allowing it on a bare line made any short
-# sentence without terminal punctuation match, so `Loading...` and
-# `This section continues…` would have failed a legitimate refresh. A bare
-# line has to be the ellipsis alone, or a bold label and the ellipsis, both
-# of which are unambiguous.
-#
-# The label forms are measured, not guessed: across the four documents list
-# items open with plain text 30 times, bold 30, inline code 15, and plain
-# text with a separator 4. (Codex, PR #1061.)
-_SEP = r"(?:[—–:-]\s*)?"
-_ELL = r"(?:\.\.\.|…)"
-_BOLD_LABEL = r"\*\*[^*]+\*\*\s*" + _SEP
-_FREE_LABEL = r"[^.!?\n|]{0,80}?\s*" + _SEP
-_MARKER = r"(?:(?:>\s*)+|(?:>\s*)*(?:[-*+]|\d+[.)])\s+)"
-_ELIDED = re.compile(
-    r"^\s*(?:"
-    + _MARKER + r"(?:" + _BOLD_LABEL + r"|" + _FREE_LABEL + r")?" + _ELL
-    + r"|(?:" + _BOLD_LABEL + r")?" + _ELL
-    + r")\s*$")
+# NORMALISE, then test. Seven review rounds each added an alternation to a
+# single regex -- ordered lists, fenced diagrams, the em-dash bullet style,
+# blockquotes, non-bold labels, table rows -- and each round found another
+# shape the corpus already used: a dotted filename in a code label that a
+# blanket "no periods" rule rejected, an ellipsis wrapped as `**...**` or
+# `` `...` ``. Enumerating syntax was the wrong shape for this check. Strip
+# the decoration, then ask one question: is what remains only an ellipsis?
+# (Codex, PR #1061.)
+_ELL_ONLY = re.compile(r"^(?:\.\.\.|…)$")
+_DECORATION = re.compile(r"[*_`]+")
+_MARKER = re.compile(r"^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?")
+_SEPARATOR = re.compile(r"\s*[—–:-]\s*")
+# Spans whose punctuation belongs to a name, not to a sentence: `a.py` and
+# **Runtime tables.** both carry a period that does not end anything.
+_LABEL_SPAN = re.compile(r"`[^`]*`|\*\*[^*]+\*\*")
 
-# A table row whose explanation cell has been replaced by an ellipsis, e.g.
-# `| Cloud SQL | ... |`. The corpus carries 171 prose table rows across 503
-# cells and not one of them is an ellipsis today, so an ellipsis-only cell is
-# an elision rather than a legitimate truncation mark. The end-of-line matcher
-# above cannot see these because the row ends in a pipe. (Codex, PR #1061.)
-_ELIDED_CELL = re.compile(r"^(?:\.\.\.|…)$")
+
+def _is_ellipsis(text: str) -> bool:
+    """Whether `text` is an ellipsis once Markdown decoration is removed, so
+    `...`, `**...**` and `` `...` `` all read alike."""
+    return bool(_ELL_ONLY.match(_DECORATION.sub("", text).strip()))
+
+
+def _is_label(text: str) -> bool:
+    """A short lead-in rather than a sentence. Sentence-ending punctuation is
+    judged with code and emphasis spans removed first:
+    `gcp/fetchers/fetch_rss_news.py` is a filename inside backticks and
+    **Runtime tables.** is a bold callout label -- neither period ends a
+    sentence, and rejecting every period lost list and blockquote shapes both
+    documents already use."""
+    bare = _LABEL_SPAN.sub("", text)
+    return len(text) <= 80 and not any(c in bare for c in ".!?")
 
 
 def _is_elided(line: str) -> bool:
     st = line.strip()
     if st.startswith("|"):
-        return any(_ELIDED_CELL.match(c.strip()) for c in st.strip("|").split("|"))
-    return bool(_ELIDED.match(line))
+        # a row elides by CELL: `| Cloud SQL | ... |` keeps its label cell and
+        # loses the explanation, and never ends in an ellipsis
+        return any(_is_ellipsis(c) for c in st.strip("|").split("|"))
+    body = _MARKER.sub("", line, count=1).strip()
+    structured = line.strip() != body or _DECORATION.match(body or " ")
+    if _is_ellipsis(body):
+        return True
+    # `<label><separator><ellipsis>`, e.g. `- **`market_data_daily`** — ...`.
+    # A free-form label is only read as one behind a marker or emphasis: on a
+    # bare line it would make any short sentence match, and `Loading...` is
+    # prose, not an elision.
+    parts = _SEPARATOR.split(body)
+    if len(parts) >= 2 and _is_ellipsis(parts[-1]):
+        head = _SEPARATOR.sub(" ", " ".join(parts[:-1])).strip()
+        if _is_label(head) and (structured or _DECORATION.match(head or " ")):
+            return True
+    # `- <label> ...` with no separator at all
+    head, _, tail = body.rpartition(" ")
+    if structured and head and _is_ellipsis(tail) and _is_label(head):
+        return True
+    # `**label**...` -- no space either. Safe without a marker because the head
+    # is a COMPLETE emphasis or code span, which is what separates it from
+    # `Loading...`, where the head is a bare word and the line is prose.
+    for ell in ("...", "…"):
+        if body.endswith(ell):
+            head = body[: -len(ell)].strip()
+            if head and _LABEL_SPAN.fullmatch(head):
+                return True
+    return False
 
 
 # A COMPLETE marker comment line, not any line that mentions one. Both
