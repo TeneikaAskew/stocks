@@ -554,10 +554,16 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
                # (the last run that regenerated it), so gating the first would
                # fail an honest tree outside the workflow. (Codex, PR #1062.)
                re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
-# 05-a must carry all three: they are the header note, §3's table column and
-# the closing line, and the architecture prompt names each one. The other
-# documents state no live as-of label, so nothing is required of them.
-REQUIRED_ASOF = {ARCH: ASOF_LABELS}
+# 05-a must carry all three, each IN ITS OWN PLACE. Counting a pattern
+# anywhere in the document let §3's table header be reworded away while some
+# other sentence carrying `Live <date>` kept the count non-zero, so the table
+# lost its provenance and the gate stayed clean. Each label is now paired with
+# the line that must carry it. (Codex, PR #1064.)
+REQUIRED_ASOF = {ARCH: (
+    (ASOF_LABELS[1], re.compile(r"Live state below was read on"), "the header note"),
+    (ASOF_LABELS[0], re.compile(r"^\|\s*Service\s*\|\s*Role\s*\|"), "§3's table header"),
+    (ASOF_LABELS[2], re.compile(r"^Generated\b"), "the closing line"),
+)}
 
 
 def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
@@ -583,11 +589,10 @@ def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
         f = root / doc
         if not f.exists():
             continue
-        matched = {pat: 0 for pat in ASOF_LABELS}
-        for i, line in enumerate(_prose_lines(f.read_text()), 1):
+        lines = _prose_lines(f.read_text())
+        for i, line in enumerate(lines, 1):
             for pat in ASOF_LABELS:
                 for m in pat.finditer(line):
-                    matched[pat] += 1
                     if m.group(1) != day:
                         out.append(f"{doc}: as-of label says {m.group(1)} but this run read "
                                    f"live state on {day} (prose line {i}): {m.group(0)!r}")
@@ -595,11 +600,12 @@ def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
         # §3's column header to `| Service | Role | Current |` and no pattern
         # matches, so the document loses its freshness provenance and the gate
         # reports clean. 05-a is required to carry all three. (Codex, #1062.)
-        for pat in REQUIRED_ASOF.get(doc, ()):  # noqa: SIM118 -- keys are patterns
-            if not matched[pat]:
-                out.append(f"{doc}: no as-of label matching {pat.pattern!r}. That location "
-                           "states when the live state below it was read; rewording it away "
-                           "leaves the reader no way to tell how fresh the table is")
+        for pat, where, name in REQUIRED_ASOF.get(doc, ()):
+            if not any(where.search(l) and pat.search(l) for l in lines):
+                out.append(f"{doc}: {name} carries no as-of label matching {pat.pattern!r}. "
+                           "That line states when the live state around it was read; "
+                           "rewording it away leaves the reader no way to tell how fresh "
+                           "the section is")
     return out
 
 
@@ -683,7 +689,7 @@ def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
 # and run 29's.
 #
 #   metric                     main  run28  run29   floor
-#   cost figures (whole doc)     37     18     33     12
+#   monetary values (whole doc)  43     15     14      8
 #   §1 table data rows            2      3      3      2
 #   §2 table data rows           10     10     10      8
 #   §5 recommendation entries     3      5      6      3
@@ -693,9 +699,14 @@ def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
 # list in two versions and a table in the third, and run 28 carried only two
 # lines with a cost figure in it, so any threshold worth having would fail an
 # honest document.
-COST_FIGURE = re.compile(r"\$?\b\d+\.\d{2}\b")
+# Only MONETARY values count. The optional `$` let any decimal satisfy the
+# floor, so a degraded report carrying the workflow's one required dollar
+# figure plus eleven percentages or durations scored twelve (Codex, PR #1064).
+# Re-measured with `$` required: main 43, run 28 15, run 29 14, run 30 11 --
+# so the floor moves to 8, still under every real version.
+COST_FIGURE = re.compile(r"\$\s?\d+(?:\.\d{2})?\b")
 COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
-COST_MIN_FIGURES = 12
+COST_MIN_FIGURES = 8
 COST_MIN_SECTION_LINES = 2
 COST_MIN_ROWS = {"1": 2, "2": 8}
 COST_MIN_RECOMMENDATIONS = 3
@@ -705,7 +716,12 @@ def _numbered_sections(text: str) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     cur = None
     for line in text.split("\n"):
-        m = re.match(r"^#{2,4}\s+(\d+)\.", line)
+        # H2 only. Accepting `###` too meant a report that ranks its
+        # recommendations as `### 1. Reduce ...` inside §5 read as three new
+        # top-level sections, leaving §5 empty and its recommendation count
+        # zero -- rejecting a valid report. The prompt delimits sections with
+        # `## N.`; nothing below that level does. (Codex, PR #1064.)
+        m = re.match(r"^##\s+(\d+)\.", line)
         if m:
             cur = m.group(1)
             out.setdefault(cur, [])
@@ -714,11 +730,25 @@ def _numbered_sections(text: str) -> dict[str, list[str]]:
     return out
 
 
+# A table row in either style: `| a | b |` or the outer pipes omitted,
+# `a | b`. Requiring a leading `|` rejected a valid table for its formatting
+# (Codex, PR #1064); requiring two pipes when there are none on the outside
+# keeps ordinary prose containing a single `|` out.
+TABLE_SEP = re.compile(r"^\|?[\s|:-]+\|?$")
+
+
 def _table_rows(body: list[str]) -> int:
-    """Data rows of the first markdown table in a section: pipe lines, minus
+    """Data rows of the first markdown table in a section: table lines, minus
     the header, minus the `|---|` separator."""
-    rows = [l for l in body if l.strip().startswith("|")
-            and not re.fullmatch(r"\|[\s|:-]+\|", l.strip())]
+    rows = []
+    for line in body:
+        st = line.strip()
+        if not st or "|" not in st:
+            continue
+        if TABLE_SEP.fullmatch(st):
+            continue
+        if st.startswith("|") or st.count("|") >= 2:
+            rows.append(st)
     return max(len(rows) - 1, 0)
 
 
@@ -739,8 +769,8 @@ def gate_cost_content(root: pathlib.Path) -> list[str]:
     out = []
     figures = len(COST_FIGURE.findall(text))
     if figures < COST_MIN_FIGURES:
-        out.append(f"{COST}: only {figures} cost figures in the whole document "
-                   f"(floor {COST_MIN_FIGURES}); the three real versions carry 18 to 37. "
+        out.append(f"{COST}: only {figures} monetary values in the whole document "
+                   f"(floor {COST_MIN_FIGURES}); the four real versions carry 11 to 43. "
                    "This is prose where a billing report should be")
     secs = _numbered_sections(text)
     for num, floor in sorted(COST_MIN_ROWS.items()):
@@ -1031,13 +1061,23 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                 # passes each comparison while the parts shown sum to 69 -- the
                 # same self-contradiction this gate was added for, recreated by
                 # dropping a category instead of mistyping one. (Codex, #1062.)
-                seen = {k.rstrip("s") for _, k in parts}
-                want = {k for k, v in kinds.items() if v}
-                if parts and seen != want:
-                    missing = ", ".join(sorted(want - seen)) or "-"
-                    out.append(f"{doc}: the breakdown beside {claimed} relations omits "
-                               f"{missing} (prose line {i}); gcp/schema.sql declares "
-                               f"{total} ({breakdown}) and every kind belongs in the list")
+                # Kinds present, WITH multiplicity, and the parts' own sum.
+                # A set comparison alone accepts "(67 tables, 2 materialized
+                # views, 1 view, 1 view)": every part matches the schema, the
+                # set collapses the repeat, and the list sums to 71.
+                # (Codex, PR #1064.)
+                if parts:
+                    listed = [k.rstrip("s") for _, k in parts]
+                    want = sorted(k for k, v in kinds.items() if v)
+                    if sorted(listed) != want:
+                        out.append(f"{doc}: the breakdown beside {claimed} relations lists "
+                                   f"{', '.join(listed)} (prose line {i}); gcp/schema.sql "
+                                   f"declares {total} ({breakdown}) and every kind belongs "
+                                   "in the list exactly once")
+                    elif sum(n for n, _ in parts) != total:
+                        out.append(f"{doc}: the breakdown beside {claimed} relations sums to "
+                                   f"{sum(n for n, _ in parts)} (prose line {i}); "
+                                   f"gcp/schema.sql declares {total} ({breakdown})")
 
     if live and live.get("db_tables"):
         declared, runtime = relation_counts(repo, live)

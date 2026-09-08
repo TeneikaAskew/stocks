@@ -1109,7 +1109,25 @@ def test_a_breakdown_that_drops_a_kind_is_a_finding(live, repo, tmp_path):
     assert before in a.read_text(), "the breakdown no longer has the shape this test breaks"
     a.write_text(a.read_text().replace(before, f", {mviews} materialized views)", 1))
     findings = gate.gate_derived_numbers(root, repo, live)
-    assert any("omits view" in f for f in findings), findings
+    assert any("every kind belongs in the list exactly once" in f for f in findings), findings
+
+
+def test_a_breakdown_that_repeats_a_kind_is_a_finding(live, repo, tmp_path):
+    """A set comparison alone erases multiplicity: `(67 tables, 2 materialized
+    views, 1 view, 1 view)` has every part matching the schema, collapses the
+    repeat, and sums to 71. Kinds are compared WITH multiplicity, and the
+    parts' own sum against the total. (Codex, PR #1064.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    views, mviews = len(repo["views"]), len(repo["materialized_views"])
+    before = f", {mviews} materialized views, {views} view)"
+    assert before in a.read_text(), "the breakdown no longer has the shape this test breaks"
+    a.write_text(a.read_text().replace(
+        before, f", {mviews} materialized views, {views} view, {views} view)", 1))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("exactly once" in f for f in findings), findings
 
 
 def test_an_asof_label_reworded_away_is_a_finding(live, repo, tmp_path):
@@ -1240,7 +1258,7 @@ def test_prose_shaped_like_a_cost_report_is_a_finding(tmp_path):
     (root / gate.COST).write_text("\n".join(body) + "\n")
     assert gate.gate_regenerated_structure(root) == [], "it keeps every promised heading"
     findings = gate.gate_cost_content(root)
-    assert any("cost figures" in f for f in findings), findings
+    assert any("monetary values" in f for f in findings), findings
     assert any("§1 has 0 table row" in f for f in findings), findings
     assert any("§2 has 0 table row" in f for f in findings), findings
     assert any("§5 lists 0 recommendation" in f for f in findings), findings
@@ -1384,3 +1402,71 @@ def test_no_generated_document_cites_a_dated_filename_in_its_closing_line(tmp_pa
         assert closing, doc
         assert not re.search(r"\]\([^)]*\d{4}-\d{2}-\d{2}[^)]*\)", closing[-1]), \
             f"{doc}: closing line links a path carrying a date, which the model will bump"
+
+
+def test_a_recommendation_heading_stays_inside_section_five(tmp_path):
+    """A report that ranks its recommendations as `### 1. Reduce ...` is
+    valid — the prompt does not prescribe the `#### #1` spelling — but
+    accepting `###` as a section delimiter read those three headings as new
+    top-level sections, leaving §5 empty and its recommendation count zero.
+    Only `## N.` delimits a section. (Codex, PR #1064.)"""
+    root = tmp_path
+    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    body = ["# Cost Analysis", "", "Total spend was $222.71.", ""]
+    for num, title in gate._promised_sections(REPO, "cost-analysis.md"):
+        body += [f"## {num}. {title}", ""]
+        if num == "1":
+            body += ["Month | Spend (USD) | Notes", "--- | --- | ---",
+                     "2026-07 | $4.77 | partial", "2026-08 | $211.00 | full", ""]
+        elif num == "2":
+            body += ["Rank | Service | SKU | Cost", "--- | --- | --- | ---"] + \
+                    [f"{i} | Cloud Run | SKU {i} | ${i}.00" for i in range(1, 11)] + [""]
+        elif num == "5":
+            for i in (1, 2, 3):
+                body += [f"### {i}. Reduce something {i}", "", f"Saves ~${i}0/month.", ""]
+        else:
+            body += ["Some substance here.", "And another line.", ""]
+    (root / gate.COST).write_text("\n".join(body) + "\n")
+    assert gate.gate_cost_content(root) == [], gate.gate_cost_content(root)
+    assert sorted(gate._numbered_sections((root / gate.COST).read_text())) == list("12345")
+
+
+def test_a_table_without_outer_pipes_still_counts(tmp_path):
+    """`Rank | Service | SKU` with no leading or trailing pipe is a valid
+    markdown table. Requiring the outer pipes rejected an otherwise compliant
+    report for its formatting. (Codex, PR #1064.)"""
+    # four lines: the separator is skipped and the header is not a data row
+    assert gate._table_rows(["Month | Spend | Notes", "--- | --- | ---",
+                             "2026-07 | $4.77 | partial", "2026-08 | $211.00 | full"]) == 2
+    assert gate._table_rows(["| Month | Spend |", "|---|---|", "| 2026-07 | $4.77 |"]) == 1
+    # prose carrying a single pipe is not a table
+    assert gate._table_rows(["Run `a | b` to pipe one into the other."]) == 0
+
+
+def test_only_monetary_values_count_toward_the_cost_floor(tmp_path):
+    """The optional `$` let any decimal satisfy the floor, so the workflow's
+    one required dollar figure plus eleven percentages scored twelve.
+    (Codex, PR #1064.)"""
+    assert gate.COST_FIGURE.findall("spend was $222.71 and $4.77") == ["$222.71", "$4.77"]
+    assert gate.COST_FIGURE.findall("utilisation 50.00%, latency 1.25s") == []
+    # every real version stays above the floor
+    for doc in (REPO / gate.COST,):
+        assert len(gate.COST_FIGURE.findall(doc.read_text())) >= gate.COST_MIN_FIGURES
+
+
+def test_each_asof_label_is_required_in_its_own_location(tmp_path):
+    """Counting a pattern anywhere let §3's table header be reworded away
+    while another sentence carrying `Live <date>` kept the count non-zero, so
+    the table lost its provenance and the gate stayed clean.
+    (Codex, PR #1064.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", a.read_text()).group(1)
+    a.write_text(re.sub(r"\| Service \| Role \| Live \d{4}-\d{2}-\d{2} \|",
+                        "| Service | Role | Current |", a.read_text())
+                 + f"\n\nA new note: Live {day} state was read for the diagram.\n")
+    findings = gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"})
+    assert any("§3's table header carries no as-of label" in f for f in findings), findings
