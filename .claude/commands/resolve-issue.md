@@ -309,14 +309,26 @@ new_tree() {                       # $1 = variable name to set, $2 = commit-ish
 # next statement's status replaces it — here with `$MAIN_TREE` unset, so
 # `git worktree remove ""` errors and the block still ends 0.
 baselines() {
+  local MAIN_TREE= BASE_TREE=   # local AND cleared: a value left by a previous
+                                # run would make the cleanup below try to remove
+                                # a path this call never created
+  # Armed BEFORE anything is created, so it fires on EVERY return path and not
+  # just the happy one. Cleanup at the END of the function only runs when the
+  # function reaches the end: if the FIRST tree is made and the SECOND fails,
+  # `return 1` jumps over both removes and leaks the first — measured, one
+  # worktree still registered and still on disk, which then makes the NEXT run's
+  # `git worktree add` fail at that path. `[ -n "$t" ]` is what keeps it honest:
+  # new_tree assigns only after a successful add, so an unset variable means
+  # nothing was created and there is nothing to remove.
+  trap 'for t in "$BASE_TREE" "$MAIN_TREE"; do
+          [ -n "$t" ] && git worktree remove --force "$t" 2>/dev/null
+        done; trap - RETURN' RETURN
+
   new_tree MAIN_TREE origin/main || return 1      # validity: is it still real?
   new_tree BASE_TREE "$(git merge-base origin/main <headRefName>)" || return 1
 
   # ...measure in each, and say WHICH tree produced which number. The
   # failing-before test in Phase 4 runs in the merge-base one.
-
-  git worktree remove "$MAIN_TREE"   # each, when its half is captured
-  git worktree remove "$BASE_TREE"
 }
 baselines                # BARE, and now nothing follows it to overwrite $?
 ```
@@ -421,7 +433,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 - **Establish who consumes the surface** before deciding what to fix. If nothing
   reads it, disabling the render is one line and ships today.
   ```bash
-  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
   ```
   **Repo-wide over tracked files, not the five source directories** — the same
   scope Phase 4's deletion check uses, and for the same reason. Excluding `archive/`
@@ -446,6 +458,15 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   `':!docs/'` or `':!archive/'` here — measured, they hold 114 and 145 tracked
   non-markdown files.
 
+  **`.claude/` as a DIRECTORY does not come out, and that distinction is the
+  point.** `':!*.md'` already excludes every prose file under it — measured, the
+  only tracked non-markdown file there is `.claude/settings.json`, and that one
+  is EXECUTABLE: it registers a `UserPromptSubmit` command hook that runs `jq`
+  and names `gh-stocks-repo-pat` and `.github/workflows/gh-api.yml`. Excluding
+  the directory would report a surface consumed only by that hook as having no
+  consumer. Exclude prose by what it IS, not by where it lives; a blanket
+  directory exclusion is how an executable file gets swept up with it.
+
   **Generated artifacts come out for the same reason, and this is where the list
   stops being reactive.** Do not extend it one reported file at a time. Derive
   it: run the search over a handful of real surfaces, union the files, and read
@@ -454,9 +475,8 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   ```bash
   for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
            market_data_intraday etf_options_snapshots exit_config_overrides; do
-    git grep -l "$s" -- . ':!docs/' ':!archive/' ':!.claude/' \
-      ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' \
-      ':!tests/fixtures/live_gcp_snapshot_*.json'
+    git grep -l "$s" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' \
+      ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
   done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
   ```
 
@@ -559,7 +579,7 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
+| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
 | A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself. **`basename()` is not optional**: `name` is a fully qualified resource name (`projects/…/locations/…/jobs/<job>`), so `grep -qx "<job>"` against the raw value never matches and the check reports "retired" while both resources are live. It is a no-op on an already-bare value, so it is right without resolving which shape this gcloud prints — which I cannot check here, the session's gcloud being unauthenticated (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
@@ -595,9 +615,9 @@ assertion through one function that returns on the first failure:
 # `&&`-chained, so the first failure short-circuits and IS the status.
 absent_everywhere() {
   local rc
-  git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
+  git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc — still referenced here"; return 1; }
-  git -C ../solyra grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.claude/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
+  git -C ../solyra grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc — still referenced there"; return 1; }
 }
 
