@@ -100,15 +100,24 @@ body:
         # search cannot see it.
         # ':!archive/' too: archive/ is retired code that does not run in
         # production, so a hit there is not a consumer.
-        # The other three exclude PROSE, this form included. A surface named in
-        # a placeholder here, in .claude/, or in any *.md matches itself, so the
-        # search can never reach "no consumers" — measured on TradingAlertSystem,
-        # rc=0 from this file and .claude/commands/resolve-issue.md alone.
-        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' | wc -l
+        # ':!.github/ISSUE_TEMPLATE/', ':!.claude/commands/' and ':!*.md' exclude
+        # the files that cite example symbols in their own prose, THIS ONE
+        # INCLUDED — measured on TradingAlertSystem, rc=0 from this file and
+        # .claude/commands/resolve-issue.md alone, so the search could never
+        # reach "no consumers". Note this is NOT a rule about markdown or about
+        # .claude/: both hold EXECUTABLE files here (.claude/settings.json is a
+        # hook, .claude/agents/*.md are delegated to by name), and the resolver
+        # searches those separately for exactly that reason.
+        # Echo PIPESTATUS[0]. `wc` supplies the pipeline's exit status, so a
+        # git grep that FAILED still prints a number and the pipeline exits 0 —
+        # measured, a bad regex exits 128 on its own and 0 through the pipe,
+        # which files as "no matches" instead of "the measurement broke". 0 is
+        # a hit, 1 is a clean miss, anything else means the count is meaningless.
+        # `wc -l` also counts matching LINES, not occurrences — a line with two
+        # matches counts once. Say which you mean; `git grep -Eo` counts those.
+        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
         107
-        # `wc -l` counts matching LINES, not occurrences — a line with two
-        # matches counts once. Say which you mean; `git grep -Eo | wc -l` counts
-        # occurrences.
+        grep rc=0
         Live consumers in solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
     validations:
       required: true

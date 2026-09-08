@@ -111,7 +111,7 @@ body:
         # Phase 2. platform/api/openapi.json deliberately stays IN: it is
         # generated, so a retired route still named there means the snapshot was
         # not regenerated, which the check SHOULD catch.
-        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
         (142 matching LINES across 13 files: router, writer, tests. Lines, not
         occurrences — `git grep -c`/`wc -l` count lines, and 7 of these carry
         both alternatives, so the pattern occurs 149 times. Use `git grep -Eo`

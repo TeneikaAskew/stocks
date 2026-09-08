@@ -433,7 +433,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 - **Establish who consumes the surface** before deciding what to fix. If nothing
   reads it, disabling the render is one line and ships today.
   ```bash
-  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
   ```
   **Repo-wide over tracked files, not the five source directories** — the same
   scope Phase 4's deletion check uses, and for the same reason. Excluding `archive/`
@@ -514,26 +514,10 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   silently calls a live command dead. Phase 4 tests `rc -eq 1`, so 3 fails
   closed, which is the correct default when the answer is "I cannot tell".
 
-  ```bash
-  consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/commands
-    local a b c
-    git grep -q "$1" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
-      ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
-      ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; a=$?
-    git grep -q "$1" -- .claude/agents; b=$?
-    git grep -q "$1" -- .claude/commands; c=$?
-    case "$a$b$c" in
-      *2*) echo "git grep error: code=$a agents=$b commands=$c — asserting nothing"
-           return 2 ;;
-    esac
-    case "$a$b" in
-      00|01|10) return 0 ;;                      # real code or an agent uses it
-    esac
-    test "$c" -eq 0 || return 1                  # nothing, anywhere
-    echo "only .claude/commands/ mentions it — a route, or this file's own example?"
-    git grep -n "$1" -- .claude/commands
-    return 3; }
-  ```
+  The helper itself is defined in **Phase 4**, in the same fence as the
+  assertion that reads its exit status, and deliberately not duplicated here:
+  two copies in two fences drift, and the one that matters is the one the gate
+  runs. What this phase needs is the hits, not a boolean — so read them.
 
   **Generated artifacts come out for the same reason, and this is where the list
   stops being reactive.** Do not extend it one reported file at a time. Derive
@@ -648,7 +632,7 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
+| A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
 | A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself. **`basename()` is not optional**: `name` is a fully qualified resource name (`projects/…/locations/…/jobs/<job>`), so `grep -qx "<job>"` against the raw value never matches and the check reports "retired" while both resources are live. It is a no-op on an already-bare value, so it is right without resolving which shape this gcloud prints — which I cannot check here, the session's gcloud being unauthenticated (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
@@ -696,6 +680,35 @@ git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
   echo "  git clone https://github.com/TeneikaAskew/solyra ../solyra"
   echo "NOT asserting — a surface can be dead here and live in the frontend."
   return 1 2>/dev/null || exit 1; }
+
+# Defined HERE, in the same fence as the assertion. Shell functions do not
+# survive between tool invocations — measured, calling `consumed` in a fresh
+# bash exits **127**, and `test $rc -eq 1` then rejects every correctly
+# deleted surface, so the before/after proof this phase demands could never
+# be produced. Phase 2 describes the search; this block is what runs.
+consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/commands
+  local a b c
+  git grep -q "$1" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+    ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
+    ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; a=$?
+  # ':!.claude/agents/$1.md' — an agent ALWAYS matches its own definition, so
+  # without this every agent reads as consumed and none is ever found dormant.
+  # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
+  # file as the only hit. Excluding a path that does not exist (the surface is
+  # not an agent) is safe — measured rc=1, not 128.
+  git grep -q "$1" -- .claude/agents ":!.claude/agents/$1.md"; b=$?
+  git grep -q "$1" -- .claude/commands ":!.claude/commands/$1.md"; c=$?
+  case "$a$b$c" in
+    *2*) echo "git grep error: code=$a agents=$b commands=$c — asserting nothing"
+         return 2 ;;
+  esac
+  case "$a$b" in
+    00|01|10) return 0 ;;                      # real code or an agent uses it
+  esac
+  test "$c" -eq 0 || return 1                  # nothing, anywhere
+  echo "only .claude/commands/ mentions it — a route, or this file's own example?"
+  git grep -n "$1" -- .claude/commands
+  return 3; }
 
 absent_everywhere() {   # uses consumed() above — both scopes, both repos
   local rc
