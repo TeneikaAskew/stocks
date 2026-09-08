@@ -793,12 +793,13 @@ def _resolve_import(root: pathlib.Path, importer: str, module: str | None, level
     return parts if parts and parts[0] in ("gcp", "lib", "scripts") else None
 
 
-def _bindings(root: pathlib.Path, rel: str) -> dict[str, list[tuple[str, str | None]]]:
-    """name bound in `rel` -> every (repo file, symbol or None for a whole
-    module) it can be bound to. A list, because branches import different
-    functions under one local name (`walk_forward` in
-    direction_program/baseline_runner.py is one of three, by axis) and the
-    last one seen must not erase the others. (Codex, PR #1044.)
+def _bind_from(root: pathlib.Path, rel: str, nodes: list[ast.AST]) -> dict[str, list[tuple[str, str | None]]]:
+    """name bound by the import statements inside `nodes` (code in `rel`) ->
+    every (repo file, symbol or None for a whole module) it can be bound to.
+    A list, because branches import different functions under one local name
+    (`walk_forward` in direction_program/baseline_runner.py is one of three,
+    by axis) and the last one seen must not erase the others. (Codex, PR
+    #1044.)
 
     `import gcp.a.b [as x]` binds `x` (or `gcp`, and the attribute chain is
     matched on use) to the module. `from gcp.a import n` binds `n` to the
@@ -807,19 +808,13 @@ def _bindings(root: pathlib.Path, rel: str) -> dict[str, list[tuple[str, str | N
     against the importer's package (Codex, PR #1044: `from .summarizers`
     in lib/agents/orchestrator.py was invisible and insight-pipeline lost
     every read behind it)."""
-    key = _sig(root / rel)
-    if key is not None and key in _BIND_CACHE:
-        return _BIND_CACHE[key]
-    tree = _parsed(root / rel)
     out: dict[str, list[tuple[str, str | None]]] = {}
-    if tree is None:
-        return out
 
     def bind(name: str, target: tuple[str, str | None]) -> None:
         if target not in out.setdefault(name, []):
             out[name].append(target)
 
-    for node in ast.walk(tree):
+    for node in (sub for n in nodes for sub in ast.walk(n)):
         if isinstance(node, ast.Import):
             for a in node.names:
                 parts = _resolve_import(root, rel, a.name, 0)
@@ -841,8 +836,40 @@ def _bindings(root: pathlib.Path, rel: str) -> dict[str, list[tuple[str, str | N
                     bind(a.asname or a.name, (sub, None))
                 elif base:
                     bind(a.asname or a.name, (base, a.name))
+    return out
+
+
+def _bindings(root: pathlib.Path, rel: str) -> dict[str, list[tuple[str, str | None]]]:
+    """Every import binding anywhere in `rel` (module-level and function-local)."""
+    key = _sig(root / rel)
+    if key is not None and key in _BIND_CACHE:
+        return _BIND_CACHE[key]
+    tree = _parsed(root / rel)
+    out = _bind_from(root, rel, [tree]) if tree is not None else {}
     if key is not None:
         _BIND_CACHE[key] = out
+    return out
+
+
+_MODBIND_CACHE: dict[tuple[pathlib.Path, int, int], dict[str, list[tuple[str, str | None]]]] = {}
+
+
+def _module_bindings(root: pathlib.Path, rel: str) -> dict[str, list[tuple[str, str | None]]]:
+    """Bindings made by `rel`'s module-level statements only: the names any
+    function in the module can see. A function-local import binds a name in
+    that function alone and executes only when the function runs; treating
+    every import in a file as module-wide made `StratClassifier` from
+    lib/strat.py drag in the DataLoader imports of unrelated compute_strat_*
+    functions, and backfill-daily-indicators read three tables it never
+    touches. (Codex, PR #1044.)"""
+    key = _sig(root / rel)
+    if key is not None and key in _MODBIND_CACHE:
+        return _MODBIND_CACHE[key]
+    tree = _parsed(root / rel)
+    top = [n for n in tree.body if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))] if tree else []
+    out = _bind_from(root, rel, top)
+    if key is not None:
+        _MODBIND_CACHE[key] = out
     return out
 
 
@@ -920,7 +947,15 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         tree = _parsed(root / f)
         if tree is None:
             return
-        defs, binds = _top_defs(tree), _bindings(root, f)
+        defs = _top_defs(tree)
+        # names the reached code can see: the module's own top-level imports
+        # plus the imports written inside the reached nodes themselves
+        local = _bind_from(root, f, nodes)
+        binds = {k: list(v) for k, v in _module_bindings(root, f).items()}
+        for k, v in local.items():
+            for t in v:
+                if t not in binds.setdefault(k, []):
+                    binds[k].append(t)
         names: set[str] = set()
         chains: set[str] = set()
         for n in nodes:
@@ -961,9 +996,11 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
                     reach_module(target, whole=True)
         for target, _sym in binds.get("*", []):
             reach_module(target, whole=True)
-        # An import executes the target's module-level statements whether or
-        # not the bound name is ever used.
-        for targets in binds.values():
+        # An import statement inside the reached code executes the target's
+        # module-level statements whether or not the bound name is ever used.
+        # Only those: an import inside a function that is not reached does
+        # not run.
+        for targets in local.values():
             for target, _sym in targets:
                 reach_module(target)
 
@@ -1057,10 +1094,10 @@ def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[st
     for j in (repo["jobs"] if jobs is None else jobs):
         mod_file = entry_module(j)
         scope = _import_scope(root, mod_file)
-        cites: dict[str, list[dict[str, Any]]] = {}
+        cites: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for t, v in refs.items():
-            hits = [x for x in v["writes"] + v["reads"] if _in_scope(scope, x)]
-            if hits:
+            hits = {k: [x for x in v[k] if _in_scope(scope, x)] for k in ("writes", "reads")}
+            if hits["writes"] or hits["reads"]:
                 cites[t] = hits
         w = sorted(t for t, v in refs.items() if any(_in_scope(scope, x) for x in v["writes"]))
         r = sorted(t for t, v in refs.items() if any(_in_scope(scope, x) for x in v["reads"]))
@@ -1068,15 +1105,23 @@ def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[st
     return out
 
 
-def _cite_cell(cites: dict[str, list[dict[str, Any]]]) -> str:
-    """`table: file:line[,line]` per reached table, for a digest row."""
+def _cite_cell(cites: dict[str, dict[str, list[dict[str, Any]]]]) -> str:
+    """`table (writes file:line[,line]; reads file:line[,line])` per reached
+    table, for a digest row. Cited per access mode, each capped separately,
+    so a table read in many places and written in one keeps its write
+    citation (etf-options-retention's single DELETE was truncated away
+    behind four SELECTs -- Codex, PR #1044)."""
     parts = []
     for t in sorted(cites):
-        by_file: dict[str, list[int]] = {}
-        for x in cites[t]:
-            by_file.setdefault(x["file"], []).append(x["line"])
-        parts.append(f"`{t}`: " + ", ".join(
-            f"`{f}:{','.join(str(l) for l in sorted(set(ls))[:4])}`" for f, ls in sorted(by_file.items())[:3]))
+        modes = []
+        for mode in ("writes", "reads"):
+            by_file: dict[str, list[int]] = {}
+            for x in cites[t][mode]:
+                by_file.setdefault(x["file"], []).append(x["line"])
+            if by_file:
+                modes.append(f"{mode} " + ", ".join(
+                    f"`{f}:{','.join(str(l) for l in sorted(set(ls))[:3])}`" for f, ls in sorted(by_file.items())[:2]))
+        parts.append(f"`{t}` ({'; '.join(modes)})")
     return "; ".join(parts) or "—"
 
 
@@ -1159,9 +1204,12 @@ def _render_refs_digest(repo: dict[str, Any], refs: dict[str, dict[str, list[dic
     out = ["## Multi-writer tables", "", _render_multiwriter(refs, with_lines=True), "",
            "## Orphan tables", "", _render_orphans(refs, root, _partition_map(repo), with_lines=True), "",
            "## Tables per job (code reachable from the entry module through the names it imports)", ""]
+    # Every declared job, including the ones with no static table edge: the
+    # prompt promises each job is here, and a missing row reads as missing
+    # inventory rather than as a job that touches no table. (Codex, PR #1044.)
     rows = [[f"`{e['job']}`", ", ".join(mark(t) for t in e["writes"]) or "—",
              ", ".join(mark(t) for t in e["reads"]) or "—", _cite_cell(e["cites"])]
-            for e in job_table_edges(repo, refs_all) if e["writes"] or e["reads"]]
+            for e in job_table_edges(repo, refs_all)]
     out.append(_md_table(["Job", "Writes", "Reads", "Where (file:line)"], rows) if rows else "_none_")
     out += ["", "## Runtime-created relations (live, not declared in gcp/schema.sql)", ""]
     if live is None:

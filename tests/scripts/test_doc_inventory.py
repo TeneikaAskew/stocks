@@ -726,11 +726,46 @@ def test_the_digest_job_rows_cite_lines_and_include_runtime_relations(mini_repo)
                           "gamma_levels_eod": {"kind": "table", "rows": 7, "size": "8 kB"}}}
     out = inv.render_markdown("refs_digest", repo, live)
     per_job = out.split("## Tables per job")[1].split("## Runtime-created")[0]
-    assert "| `alpha` | `gamma_levels_eod` (runtime-created) | `trades` | `gamma_levels_eod`: `gcp/helpers.py:2`; `trades`: `gcp/helpers.py:7` |" in per_job, per_job
+    assert "| `alpha` | `gamma_levels_eod` (runtime-created) | `trades` | `gamma_levels_eod` (writes `gcp/helpers.py:2`); `trades` (reads `gcp/helpers.py:7`) |" in per_job, per_job
     hc = out.split("## Hand-created live jobs")[1]
-    assert "| `p2` | `gcp/helpers.py` | `gamma_levels_eod` (runtime-created) | `trades` | `gamma_levels_eod`: `gcp/helpers.py:2`; `trades`: `gcp/helpers.py:7` |" in hc, hc
+    assert "| `p2` | `gcp/helpers.py` | `gamma_levels_eod` (runtime-created) | `trades` | `gamma_levels_eod` (writes `gcp/helpers.py:2`); `trades` (reads `gcp/helpers.py:7`) |" in hc, hc
+    # a declared job with no static edge keeps its row rather than vanishing
+    assert "| `beta` | — | — | — |" in per_job, per_job
     # the rendered blocks are unchanged: declared relations only
     assert "gamma_levels_eod" not in inv.render_markdown("graph", repo, live)
+
+
+def test_a_function_local_import_in_an_unreached_function_does_not_run(mini_repo):
+    """backfill-daily-indicators imports StratClassifier from lib/strat.py;
+    the DataLoader imports inside unrelated compute_strat_* functions were
+    treated as import-time and every DataLoader read became an edge."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import Cls\n\ndef main():\n    Cls()\n")
+    # Cls.run names `load`, which only an UNREACHED function's local import
+    # binds; a file-wide binding table resolved it and reached deep.load.
+    _write(mini_repo, "gcp/helpers.py",
+           "class Cls:\n    def run(self):\n        return load\n\n\n\n\ndef other():\n    from gcp.deep import load\n    return load()\n")
+    _write(mini_repo, "gcp/deep.py", "def load(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert (e["alpha"]["writes"], e["alpha"]["reads"]) == ([], []), e["alpha"]
+    # ...while the same import inside a REACHED function does run
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import other\n\ndef main():\n    other()\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["trades"], e["alpha"]
+
+
+def test_the_cite_cell_keeps_a_citation_for_each_access_mode(mini_repo):
+    """etf-options-retention reads etf_options_snapshots on four lines and
+    deletes from it on one; a single sorted cap of four cited the reads only."""
+    reads = "\n".join(f"    conn.execute(\"SELECT {i} FROM trades\")" for i in range(5))
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import go\n\ndef main():\n    go()\n")
+    _write(mini_repo, "gcp/helpers.py", "def go(conn):\n" + reads + "\n\n\n\n\n    conn.execute(\"DELETE FROM trades\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = next(x for x in inv.job_table_edges(repo, repo["table_refs"]) if x["job"] == "alpha")
+    assert e["writes"] == ["trades"] and e["reads"] == ["trades"], e
+    cell = inv._cite_cell(e["cites"])
+    assert cell == "`trades` (writes `gcp/helpers.py:11`; reads `gcp/helpers.py:2,3,4`)", cell
 
 
 def test_the_real_tree_symbol_scope():
@@ -744,6 +779,9 @@ def test_the_real_tree_symbol_scope():
     # round 4: a dormant main guard, and every binding of a name
     assert "premarket_analysis" not in e["earnings-reactions-brief"]["writes"], e["earnings-reactions-brief"]
     assert "economic_events" in e["direction-baseline"]["reads"], e["direction-baseline"]
+    # round 5: a function-local import in an unreached function, and per-mode citations
+    assert "etf_options_snapshots" not in e["backfill-daily-indicators"]["reads"], e["backfill-daily-indicators"]
+    assert "writes `gcp/options_retention_job.py:79`" in inv._cite_cell(e["etf-options-retention"]["cites"])
 
 
 def test_the_digest_orphans_cite_their_writers_and_readers():
@@ -775,7 +813,7 @@ def test_the_digest_carries_the_live_only_name_sets(mini_repo):
     rt = out.split("## Runtime-created relations")[1].split("## Hand-created")[0]
     assert "| `strat_features_1m` | table | 3,105,422 | 4080 MB |" in rt and "`trades`" not in rt
     hc = out.split("## Hand-created live jobs")[1]
-    assert "| `gamma` | `gcp/helpers.py` | `trades` | — | `trades`: `gcp/helpers.py:2` |" in hc, hc
+    assert "| `gamma` | `gcp/helpers.py` | `trades` | — | `trades` (writes `gcp/helpers.py:2`) |" in hc, hc
     assert "| `delta` | `gcp/gone.py` (not in this checkout) | — | — | — |" in hc
     assert "`alpha`" not in hc, "a declared job is not hand-created"
     # without a snapshot the sections say so, rather than silently listing nothing
