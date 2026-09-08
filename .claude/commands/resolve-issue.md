@@ -1192,13 +1192,40 @@ _solyra_ok() {          # 0 usable, 1 refuse (and say why)
        return 1;;
   esac; }
 
-absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
+absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # `local REV=` so an ambient REV in the caller's shell cannot pin the STOCKS
   # half to some other revision — the same ambient-state hazard as the project
   # id in retired_everywhere. The solyra subshell sets this local deliberately.
-  test $# -ge 1 || { echo "usage: absent_everywhere <symbol>"; return 1; }
-  local sym=$1 rc REV=
-  test -n "$sym" || { echo "usage: absent_everywhere <symbol>"; return 1; }
+  test $# -ge 1 || {
+    echo "usage: absent_everywhere <symbol> [implementation path or stem…]"
+    return 1; }
+  local sym=$1 rc REV=; shift
+  test -n "$sym" || {
+    echo "usage: absent_everywhere <symbol> [implementation path or stem…]"
+    return 1; }
+  # A JOB NAME IS NOT ITS IMPLEMENTATION, and separator normalisation cannot
+  # bridge the gap — it only handles the case where the two spellings differ by
+  # `-` versus `_`. Measured: `historical-signals-watchlist` runs
+  # `python -m scripts.run_historical_signals` (`gcp/deploy.sh:571-584`), and
+  # `historical[-_]signals[-_]watchlist` matches ZERO tracked paths while
+  # scripts/run_historical_signals.py and its two test files sit right there.
+  # Remove the deploy and scheduler references and this certifies a retirement
+  # with the implementation untouched — the job-name content hits that remain
+  # are prose the documented REVIEWED mechanism excludes.
+  # So the caller NAMES what the surface runs; nothing here infers it. Each
+  # extra argument is scanned exactly as the symbol is, and a completed
+  # retirement deleted those files too, so the passing state stays reachable.
+  # `${#impl[@]}` guards rather than a bare `"${impl[@]}"`: bash 3.2, still
+  # /bin/bash on macOS, treats expanding an EMPTY array under `set -u` as an
+  # unbound variable, and no implementation argument is the ordinary case.
+  local impl=( "$@" ) _i
+  if [ ${#impl[@]} -gt 0 ]; then
+    for _i in "${impl[@]}"; do
+      test -n "$_i" || {
+        echo "an empty implementation argument matches every path — refusing"
+        return 1; }
+    done
+  fi
   # AN APPROVAL IS SYMBOL-BOUND. REVIEWED clears the rc=3 ambiguity by naming
   # command files you read and judged to be prose — for ONE symbol. Left set
   # while you check the next one, it excludes that file for a symbol you never
@@ -1356,12 +1383,25 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   pathsym=${pathsym//$'\x01'/[-_]}
   # `if` for errexit, as in consumed(): a clean miss is rc=1 and an untested
   # nonzero assignment kills the shell under `set -e` — measured.
-  if leftover=$(printf '%s\n' "$files" | grep -E -- "$pathsym"); then st=0
+  # Every implementation the caller named is normalised and scanned the same
+  # way, joined into one ERE so a single pass answers for all of them.
+  local _p _alts=$pathsym
+  if [ ${#impl[@]} -gt 0 ]; then
+    for _i in "${impl[@]}"; do
+      _p=${_i//_/$'\x01'}; _p=${_p//-/$'\x01'}; _p=${_p//$'\x01'/[-_]}
+      _alts="$_alts|$_p"
+    done
+  fi
+  if leftover=$(printf '%s\n' "$files" | grep -E -- "$_alts"); then st=0
   else st=$?; fi
   test "$st" -le 1 \
     || { echo "path scan errored (rc=$st) — asserting nothing"; return 1; }
   if [ -n "$leftover" ]; then
-    echo "these paths still contain '$sym':"
+    if [ ${#impl[@]} -gt 0 ]; then
+      echo "these paths still contain '$sym' or an implementation you named:"
+    else
+      echo "these paths still contain '$sym':"
+    fi
     printf '  %s\n' $leftover
     echo "a retirement deletes the surface's own files too. consumed() excludes"
     echo "a Claude surface's own definition so it does not match itself, and it"
@@ -1492,7 +1532,14 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
         echo "solyra registers no service worker and no update prompt, so a tab"
         echo "keeps its bundle until someone reloads. This repo cannot resolve"
         echo "solyra's serving revision (no deploy config in it), so confirm it"
-        echo "yourself, then re-run with SOLYRA_ROLLED_OUT=$sym"
+        # %q, NOT the raw symbol. consumed() takes an ERE and the forms' own
+        # worked example is the alternation `playbook_cards|/api/playbook`;
+        # printed raw, pasting the suggested line makes bash read `|` as a
+        # pipeline and try to execute /api/playbook — measured, "No such file
+        # or directory", and the gate is never cleared. %q round-trips the
+        # value: SOLYRA_ROLLED_OUT=playbook_cards\|/api/playbook assigns the
+        # alternation intact, which is what the `=` test above compares.
+        printf 'yourself, then re-run with SOLYRA_ROLLED_OUT=%q\n' "$sym"
         exit 5; }
     fi
     exit 1 )      # absent from main AND the rollout confirmed
@@ -1692,13 +1739,27 @@ retired_everywhere() {   # $1 = job|none $2 = scheduler|none [$3 project] [$4 re
            echo "shape changed. Asserting nothing." >&2
            return 1; }
     printf '%s' "$names"; }
+  # `! grep` TURNS AN ERROR INTO A CERTIFICATION. grep exits 0 on a hit, 1 on a
+  # clean miss and >1 on an error, and `!` maps every one of those errors to
+  # "absent" — measured, a grep stub returning 2 certified a live resource as
+  # retired. This is the same error-versus-clean-miss distinction consumed()
+  # handles explicitly, and it was missing here; only rc=1 is an answer.
+  _gone() {   # $1 = name, $2 = listing, $3 = label
+    local g
+    if grep -qx "$1" <<<"$2"; then g=0; else g=$?; fi
+    case $g in
+      0) echo "$1 $3still exists"; return 1;;
+      1) return 0;;
+      *) echo "the $3listing could not be searched (grep rc=$g) — asserting nothing"
+         return 1;;
+    esac; }
   if [ "$job" != none ]; then
     list=$(_names run) || return 1
-    ! grep -qx "$job" <<<"$list" || { echo "$job still exists"; return 1; }
+    _gone "$job" "$list" "" || return 1
   fi
   if [ "$sched" != none ]; then
     list=$(_names scheduler) || return 1
-    ! grep -qx "$sched" <<<"$list" || { echo "$sched trigger still exists"; return 1; }
+    _gone "$sched" "$list" "trigger " || return 1
   fi
 }
 # ONE call, `&&`-chained. Two bare calls have the same defect the functions
@@ -1711,15 +1772,35 @@ retired_everywhere() {   # $1 = job|none $2 = scheduler|none [$3 project] [$4 re
 # checked the literal strings — and `<job>` cannot exist in GCP, so the resource
 # half passed having inspected nothing while the real job stayed live. A check
 # that cannot fail, one more time, in the wrapper rather than in either half.
-fully_retired() {   # $1 symbol $2 job|none $3 sched|none [$4 project] [$5 region]
-  test $# -ge 3 || {
-    echo "usage: fully_retired <symbol> <job|none> <scheduler|none> [project] [region]"
+fully_retired() {   # $1 sym $2 job|none $3 impl|none $4 sched|none [$5 proj] [$6 region]
+  test $# -ge 4 || {
+    echo "usage: fully_retired <symbol> <job|none> <implementation|none> \\"
+    echo "                     <scheduler|none> [project] [region]"
     return 1; }
-  # "${@:4}" and not "$4" "$5": an absent optional argument must stay ABSENT,
+  # A JOB NAME IS AN ALIAS. `historical-signals-watchlist` runs
+  # `scripts.run_historical_signals`, and no normalisation of the job name
+  # reaches that path — measured, zero tracked paths match it. So a deployed
+  # job must say what it runs, and this refuses rather than inferring. `none`
+  # is for the case the caller has actually checked: the job name IS the
+  # module stem, as with premarket-brief and gcp/premarket_brief.py, which the
+  # separator normalisation already covers.
+  test "$2" = none || test "$3" != none || {
+    echo "job '$2' named but no implementation given. A job name is an alias:"
+    echo "measured, historical-signals-watchlist runs scripts.run_historical_signals"
+    echo "and NO tracked path matches the job name, so the path scan sees"
+    echo "nothing and certifies a retirement with the module still there."
+    echo "Pass the path or module stem the job runs, or 'none' if you have"
+    echo "checked that the job name IS the stem up to - vs _."
+    return 1; }
+  # "${@:5}" and not "$5" "$6": an absent optional argument must stay ABSENT,
   # because retired_everywhere uses $# to tell an omitted project or region from
   # an empty one. The slice forwards however many were actually given, so adding
   # the region needed no change here — which is the point of the form.
-  absent_everywhere "$1" && retired_everywhere "$2" "$3" "${@:4}"; }
+  if [ "$3" = none ]; then
+    absent_everywhere "$1"      && retired_everywhere "$2" "$4" "${@:5}"
+  else
+    absent_everywhere "$1" "$3" && retired_everywhere "$2" "$4" "${@:5}"
+  fi; }
 
 # CALL THE ONE YOUR RESOLUTION EARNS, not always this composition. It asserts
 # that the code is gone AND a cloud resource is gone, and half the resolutions
@@ -1740,7 +1821,7 @@ fully_retired() {   # $1 symbol $2 job|none $3 sched|none [$4 project] [$5 regio
 # invokes the checks rather than in the checks themselves. Uncomment one:
 # absent_everywhere "<symbol>"     # code only
 # retired_everywhere none "<sched>"  # resource only
-fully_retired "<symbol>" "<job>" "<scheduler>"   # both — BARE, nothing after
+fully_retired "<symbol>" "<job>" "<implementation>" "<scheduler>"  # BARE
 ```
 
 Skipping the before half is what is never acceptable. "It passes now" says
@@ -2498,7 +2579,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
      ```bash
      deploy_candidate() {                  # <target> and MERGE_SHA are yours to fill
-       local MERGE_SHA="<the merge commit the PR reports>" SRC rc wt
+       local MERGE_SHA="<the merge commit the PR reports>" SRC rc wt wrc
        git fetch origin main || return 1
        git merge-base --is-ancestor "$MERGE_SHA" origin/main \
          || { echo "$MERGE_SHA is not on main — not deploying"; return 1; }
@@ -2554,9 +2635,29 @@ inside that window.** An empty review list at 60 seconds means "wait", not
        # then breaks the next run twice over, per the note above) and the line
        # that says what happened.
        then rc=0; else rc=$?; fi
-       git worktree remove "$wt"
-       test $rc -eq 0 \
-         || { echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"; return 1; }
+       # CAPTURE THE REMOVAL. A bare `git worktree remove` followed by a
+       # successful `test` discards its status — measured, a failing removal
+       # then `test $rc -eq 0` returns 0 and the recipe reports success with the
+       # worktree still registered, which is the leak this file says breaks the
+       # next run twice over. It fails for ordinary reasons: the deploy leaves
+       # the tree dirty, or git cannot remove the directory.
+       # NOT `--force`. baselines() forces because its removal is cleanup in a
+       # RETURN trap where the original error has already propagated; here the
+       # removal is part of the result, and forcing would delete the evidence
+       # of whatever dirtied the tree.
+       if git worktree remove "$wt"; then wrc=0; else wrc=$?; fi
+       # The DEPLOY's status first — it is the more important failure, and the
+       # leak is reported alongside rather than instead of it.
+       test $rc -eq 0 || {
+         echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"
+         test $wrc -eq 0 || echo "and the worktree at $wt is still registered"
+         return 1; }
+       test $wrc -eq 0 || {
+         echo "the deploy succeeded but the worktree at $wt could NOT be removed"
+         echo "(git worktree remove rc=$wrc). It is still registered, which"
+         echo "breaks the next resolver run. Clean it up before continuing:"
+         echo "  git worktree remove --force $wt && git worktree prune"
+         return 1; }
      }
      deploy_candidate      # BARE. `|| echo` here exits 0 — see below
      ```
@@ -2584,9 +2685,19 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      1. **Do not run this concurrently with another deploy.** Check before
         starting — resolve the project first, then probe:
 
-            PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
+            export PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
             gcloud builds list --ongoing --project="$PROJECT_ID"
 
+        # EXPORT IT, or the probe and the deploy watch DIFFERENT PROJECTS.
+        # `./gcp/deploy.sh <target>` below is a CHILD PROCESS and cannot see an
+        # unexported variable, so `gcp/deploy.sh:25` —
+        # `PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"` —
+        # falls back to the active gcloud configuration. Measured: an operator
+        # selecting a non-active project with a plain `PROJECT_ID=staging-project`
+        # had the probe inspect staging-project while the deploy resolved the
+        # ambient one, and every check in the recipe still passed. The `export`
+        # is what makes the sentence below ("by the deploy's own rule") true of
+        # the deploy as well as of the probe.
         # RESOLVE IT IN *THIS* SHELL, BY THE DEPLOY'S OWN RULE. Passing
         # --project="$PROJECT_ID" was the round-28 fix for the probe taking the
         # ambient project, and it named a variable gcp/deploy.sh sets at :25 —
