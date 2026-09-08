@@ -111,7 +111,7 @@ body:
         # Phase 2. platform/api/openapi.json deliberately stays IN: it is
         # generated, so a retired route still named there means the snapshot was
         # not regenerated, which the check SHOULD catch.
-        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
         (142 matching LINES across 13 files: router, writer, tests. Lines, not
         occurrences — `git grep -c`/`wc -l` count lines, and 7 of these carry
         both alternatives, so the pattern occurs 149 times. Use `git grep -Eo`
@@ -272,7 +272,8 @@ body:
         Retire: `git grep -qE "<name>" -- . ':!docs/' ':!archive/'
         ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
         ':!.claude/commands/' ':!*.md' ':!*.drawio'
-        ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — and separately
+        ':!tests/fixtures/live_gcp_snapshot_*.json'
+        ':!.github/workflows/logs.txt'` returns 1 — and separately
         `.claude/agents/`, `.claude/commands/`, `.github/prompts/` and root
         `CLAUDE.md`, which are executable too: an agent delegated to by name, a
         command another command routes to, a prompt a workflow cats into Gemini,
@@ -280,8 +281,17 @@ body:
         live consumer that a prose-shaped exclusion hides — the same exclusions as the
         consumer field above, and repo-wide because
         .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs
-        cannot see; the schedule is deleted; the retention/export decision is recorded;
-        the cost delta is measured.
+        cannot see; AND the surface's own definition is gone, which no consumer
+        search can tell you: every executable-markdown scope excludes the
+        surface's own file so an agent does not match itself, and a module's
+        contents need not contain its basename, so both come back "no consumers"
+        with the implementation still on disk — measured on two dormant agents
+        in this repo. Assert it on PATHS instead, over the working tree rather
+        than the index, since Phase 4 runs before anything is staged:
+        `git ls-files --cached --others --exclude-standard | grep -E "<name>"`
+        names nothing that still exists. `/resolve-issue`'s `absent_everywhere`
+        runs exactly this pair, in both repos; the schedule is deleted; the
+        retention/export decision is recorded; the cost delta is measured.
 
         Restore: writer scheduled and in gcp/deploy.sh `all)`; an entry in
         scripts/audit_data_freshness.py with writer_job and min_rows_per_day; a max-age guard at

@@ -449,7 +449,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 - **Establish who consumes the surface** before deciding what to fix. If nothing
   reads it, disabling the render is one line and ships today.
   ```bash
-  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
   ```
   **Repo-wide over tracked files, not the five source directories** — the same
   scope Phase 4's deletion check uses, and for the same reason. Excluding `archive/`
@@ -545,7 +545,8 @@ For each candidate cause, state the evidence and what would falsify it. Then:
            market_data_intraday etf_options_snapshots exit_config_overrides; do
     git grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
       ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
-      ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
+      ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \\
+      ':!.github/workflows/logs.txt'
   done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
   ```
 
@@ -717,8 +718,19 @@ assertion through one function that returns on the first failure:
 # there is a real "you did not regenerate it".
 EXCLUDE_SHARED=( ':!docs/' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/'
                  ':!*.md' ':!*.drawio' )
+# ':!.github/workflows/logs.txt' — a 442-line captured Actions runner log,
+# committed by accident in 2025. `.github/workflows/README.md:26` says it
+# outright: "a runner log accidentally committed in 2025 and is not read by
+# anything" (GH Actions only picks up .yml/.yaml, so it never runs). It is
+# historical OUTPUT, and it names the commands that ran: measured, retiring
+# fetch_market_data leaves it among the hits with every real caller removed,
+# because line 243 records `python scripts/fetch_market_data.py --tickers ALL`.
+# One inert file then holds the search at rc=0 forever — the unreachable
+# passing state again, arriving through a generated artifact the other
+# exclusions do not cover.
 EXCLUDE_STOCKS=( "${EXCLUDE_SHARED[@]}" ':!archive/' ':!gcp/research/_archive/'
-                 ':!*.disabled' ':!tests/fixtures/live_gcp_snapshot_*.json' )
+                 ':!*.disabled' ':!tests/fixtures/live_gcp_snapshot_*.json'
+                 ':!.github/workflows/logs.txt' )
 EXCLUDE_SOLYRA=( "${EXCLUDE_SHARED[@]}" ':!package-lock.json' ':!bun.lock'
                  ':!package.json' ':!tests/fixtures/stocks-openapi.json' )
 
@@ -903,6 +915,37 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     test "${st[1]}" -eq 0 \
       || { echo "jq failed on package.json (rc=${st[1]}) — asserting nothing"
            return 2; }
+    # A DECLARED DEPENDENCY IS A CONSUMER TOO. `npm install` fetches it whether
+    # or not a line of code imports it, and nothing above can see the
+    # declaration: EXCLUDE_SOLYRA drops package.json and both lockfiles (they
+    # name every dependency, so any dependency retirement would match them
+    # forever), the block just above reads only `.scripts`, and a package name
+    # is not part of any path, so absent_everywhere's path scan is blind to it
+    # as well. A package whose imports are all gone then certifies as retired
+    # while installs keep pulling it.
+    # EXACT KEYS, not a grep of the manifest. `-E "$sym"` over the names is a
+    # substring match, so retiring `react` would match `react-dom` and the check
+    # would have no passing state — the unreachable-assertion shape again. The
+    # symbol is split on `|`, which is the documented coupled-retirement form,
+    # and each alternative compared for equality.
+    local dep
+    dep=$(printf '%s' "$pkg" | jq -r --arg s "$sym" '
+            ($s | split("|")) as $alts
+            | [.dependencies, .devDependencies, .peerDependencies,
+               .optionalDependencies]
+            | map(select(. != null)) | add // {} | keys[]
+            | select(. as $k | $alts | index($k))') \
+      || { echo "could not read package.json's dependency sections"; return 2; }
+    test -z "$dep" || d=0
+    # The LOCKFILES are generated from these sections and are deliberately not
+    # asserted separately. A whole-lockfile scan would have no passing state:
+    # measured on solyra main cb383ba, 15 of the 36 declared dependencies are
+    # also required by some other package in the 569-entry graph (eslint by 8
+    # of them, @types/react by 11), so a retired direct dependency legitimately
+    # survives there. Their root entries mirror these sections exactly —
+    # measured, identical sets of 15 and 21 — so the declaration is the thing
+    # with one home. (bun.lock could not be checked with jq in any case: it is
+    # JSONC, and jq rejects it with a parse error at line 23, rc=5.)
   fi
   # NUMERIC, not a `*2*` string match on the concatenation. git grep is not
   # limited to 0/1/128: a signalled grep exits 130 (SIGINT), 137 (SIGKILL),
@@ -1065,16 +1108,40 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   local root files st leftover
   root=$(git rev-parse --show-toplevel) \
     || { echo "not inside a git repository — asserting nothing"; return 1; }
-  files=$(git -C "$root" ls-files) \
-    || { echo "could not list tracked files — asserting nothing"; return 1; }
+  # THE WORKING TREE, NOT THE INDEX. `git ls-files` reads the index, and this
+  # gate runs in Phase 4, BEFORE Phase 7 stages anything — the same window
+  # `--untracked` was added to consumed() for. Measured on a scratch repo:
+  # after a plain `rm scripts/mod_alpha.py` the index entry is STILL listed, so
+  # the after-check cannot pass until an undocumented early `git add`; and an
+  # untracked `scripts/mod_beta.py` is NOT listed at all, so a replacement whose
+  # contents do not name it passes falsely and is committed afterwards.
+  # `--cached --others --exclude-standard` lists both (measured), which leaves
+  # the removed one to filter out by asking whether it is still there.
+  files=$(git -C "$root" ls-files --cached --others --exclude-standard) \
+    || { echo "could not list files — asserting nothing"; return 1; }
+  # `-e` is false for a broken symlink, which is still a path that exists, so
+  # ask `-L` as well rather than silently dropping one. Nothing here can fail
+  # in a way worth propagating — the listing above is the fallible step and it
+  # is checked — but an empty $files would otherwise feed one empty line
+  # through, and `test -e "$root/"` is TRUE for the root directory.
+  files=$(printf '%s\n' "$files" | while IFS= read -r p; do
+            test -n "$p" || continue
+            test -e "$root/$p" || test -L "$root/$p" || continue
+            printf '%s\n' "$p"; done)
   # NOT `git ls-files | grep`: grep would supply the pipeline's status, so a
   # failed listing feeds it empty input, it returns 1, and "no leftovers" is
   # exactly the wrong answer. Same swallowed-status shape as everywhere else.
-  leftover=$(printf '%s\n' "$files" | grep -F -- "$sym"); st=$?
+  # -E, NOT -F, for the reason every scope in consumed() is -E: a coupled
+  # retirement is documented as an alternation and -F looks for a literal `|`.
+  # Measured here with `validate_track2_live|/api/track2`: -F returns rc=1,
+  # "no path left", a clean pass — while -E names scripts/validate_track2_live.py,
+  # which is tracked and whose contents do not mention its own basename, so the
+  # content searches cannot see it either and the coupled deletion certifies.
+  leftover=$(printf '%s\n' "$files" | grep -E -- "$sym"); st=$?
   test "$st" -le 1 \
     || { echo "path scan errored (rc=$st) — asserting nothing"; return 1; }
   if [ -n "$leftover" ]; then
-    echo "these tracked paths still contain '$sym':"
+    echo "these paths still contain '$sym':"
     printf '  %s\n' $leftover
     echo "a retirement deletes the surface's own files too. consumed() excludes"
     echo "a Claude surface's own definition so it does not match itself, and it"
@@ -1097,7 +1164,10 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     # tracked PATH naming the symbol, not only the three Claude ones.
     sfiles=$(git ls-tree -r --name-only "$REV") \
       || { echo "solyra: could not list files at ${REV:0:12}"; exit 2; }
-    sleft=$(printf '%s\n' "$sfiles" | grep -F -- "$sym"); sst=$?
+    # -E here too. The index-versus-working-tree correction the stocks half
+    # needs does NOT apply over here: ls-tree reads a committed revision, where
+    # there is no unstaged deletion and no untracked file to miss.
+    sleft=$(printf '%s\n' "$sfiles" | grep -E -- "$sym"); sst=$?
     test "$sst" -le 1 \
       || { echo "solyra: path scan errored (rc=$sst)"; exit 2; }
     if [ -n "$sleft" ]; then
@@ -1147,7 +1217,7 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
 # `none`, not an empty string: an unset or misspelled variable expands to empty,
 # and an empty argument that silently skipped its half is exactly how a live
 # resource passes a retirement check. Empty is refused; skipping is deliberate.
-retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
+retired_everywhere() {   # $1 = job|none $2 = scheduler|none [$3 project] [$4 region]
   # PIN THE PROJECT, AND NOT FROM THE ENVIRONMENT. The active gcloud project is
   # ambient state this function does not control, and the empty-inventory guard
   # below cannot catch a wrong one: another project with jobs of its own returns
@@ -1177,16 +1247,39 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
                       return 1; }
     proj=$3
   fi
+  # THE REGION IS THE SAME KIND OF PIN, and it was hardcoded to us-east1 while
+  # the deploy script it is checking against does not hardcode it:
+  # `gcp/deploy.sh:26` is `REGION="${REGION:-us-east1}"`, and every create passes
+  # `--region "${REGION}"` / `--location "${REGION}"` — the Run jobs at :513
+  # onward, the scheduler jobs at :824, :955 and :3605. A resource deployed with
+  # that override is simply not in the inventory this function reads, so the
+  # listing succeeds, is non-empty, and does not contain the name: "retired",
+  # while the job is live in the other region.
+  # ONE argument covers both listings because deploy.sh gives Cloud Run's
+  # --region and Cloud Scheduler's --location the same value; binding them
+  # together here is what keeps them from drifting apart.
+  # NOT `${REGION:-us-east1}`, for the reason $GCP_PROJECT was rejected: REGION
+  # is a live, exported variable name in that very script, so reading the
+  # environment would let an ambient value redirect both listings silently. A
+  # literal default, a deliberate FOURTH argument to override, echoed below.
+  local region=us-east1
+  if [ $# -ge 4 ]; then
+    test -n "$4" || { echo "fourth argument (region) is present but EMPTY —"
+                      echo "an unset variable, not a request for us-east1."
+                      echo "Omit it to mean us-east1, or pass a region."
+                      return 1; }
+    region=$4
+  fi
   local job=$1 sched=$2 list
   test -n "$job" && test -n "$sched" || {
-    echo "usage: retired_everywhere <job|none> <scheduler|none> [project]"
+    echo "usage: retired_everywhere <job|none> <scheduler|none> [project] [region]"
     echo "pass 'none' EXPLICITLY for a resource this retirement does not touch;"
     echo "an empty argument is a typo, and a skipped check is a false pass."
     return 1; }
   test "$job$sched" != nonenone \
     || { echo "both 'none' — nothing to assert"; return 1; }
-  echo "retirement check against project: $proj"   # after the guards, so this
-  # never announces a query the function then refuses to run.
+  echo "retirement check against project: $proj  region: $region"   # after the
+  # guards, so this never announces a query the function then refuses to run.
   # ONE QUERY, VALIDATED AND PROJECTED FROM THE SAME RESPONSE. Two things had
   # to be reconciled here and the obvious combination of them is wrong.
   #
@@ -1223,9 +1316,9 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
     # see a failed gcloud — measured, `case x in x) false;; esac || echo` fires.
     case $1 in
       run)       json=$(gcloud run jobs list --project="$proj" \
-                          --region=us-east1 --format=json);;
+                          --region="$region" --format=json);;
       scheduler) json=$(gcloud scheduler jobs list --project="$proj" \
-                          --location=us-east1 --format=json);;
+                          --location="$region" --format=json);;
     esac || { echo "$1 listing FAILED — asserting nothing" >&2; return 1; }
     # TYPE-CHECK IT. `jq 'length'` succeeds on an object too — measured, `{}`
     # gives length 0 and the `.[]` extraction gives no names, so a listing whose
@@ -1283,12 +1376,14 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
 # checked the literal strings — and `<job>` cannot exist in GCP, so the resource
 # half passed having inspected nothing while the real job stayed live. A check
 # that cannot fail, one more time, in the wrapper rather than in either half.
-fully_retired() {   # $1 = symbol, $2 = job|none, $3 = scheduler|none, [$4 project]
+fully_retired() {   # $1 symbol $2 job|none $3 sched|none [$4 project] [$5 region]
   test $# -ge 3 || {
-    echo "usage: fully_retired <symbol> <job|none> <scheduler|none> [project]"
+    echo "usage: fully_retired <symbol> <job|none> <scheduler|none> [project] [region]"
     return 1; }
-  # "${@:4}" and not "$4": an absent fourth argument must stay ABSENT, because
-  # retired_everywhere uses $# to tell an omitted project from an empty one.
+  # "${@:4}" and not "$4" "$5": an absent optional argument must stay ABSENT,
+  # because retired_everywhere uses $# to tell an omitted project or region from
+  # an empty one. The slice forwards however many were actually given, so adding
+  # the region needed no change here — which is the point of the form.
   absent_everywhere "$1" && retired_everywhere "$2" "$3" "${@:4}"; }
 
 # CALL THE ONE YOUR RESOLUTION EARNS, not always this composition. It asserts
@@ -1299,6 +1394,8 @@ fully_retired() {   # $1 = symbol, $2 = job|none, $3 = scheduler|none, [$4 proje
 #                                            (retired_everywhere none none is
 #                                             refused, by design)
 #   retired a scheduler, job stays        -> retired_everywhere none "<sched>"
+#   anything deployed with REGION set     -> pass the region as the LAST
+#                                            argument; the default is us-east1
 #                                            (the implementation is KEPT, so
 #                                             absent_everywhere must fail)
 #   deleted the code and its resources    -> fully_retired

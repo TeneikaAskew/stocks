@@ -115,7 +115,7 @@ body:
         # a hit, 1 is a clean miss, anything else means the count is meaningless.
         # `wc -l` also counts matching LINES, not occurrences — a line with two
         # matches counts once. Say which you mean; `git grep -Eo` counts those.
-        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
+        $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
         107
         grep rc=0
         # AND the executable Claude scopes, which the search above excludes as
