@@ -783,7 +783,7 @@ def test_research_labels_cannot_become_the_serving_model(monkeypatch, joblib_dum
     X, y = _toy_data()
     fake_client, captured = _capture_blob_uploads()
 
-    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)) as lgbm, \
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         uri = mwf._persist_production_model_artifact(
             "IWM", "15m", run_id="excursion-001",
@@ -794,11 +794,12 @@ def test_research_labels_cannot_become_the_serving_model(monkeypatch, joblib_dum
         )
 
     assert uri is None
-    assert "magnitude-models/production/IWM/15m/LATEST" not in captured
-    payload = json.loads(
-        captured["magnitude-models/production/IWM/15m/excursion-001/PROMOTION_BLOCKED"].decode())
-    assert "label_mode='excursion'" in payload["reason"]
-    assert payload["label_mode"] == "excursion"
+    # refused BEFORE the fit: an ineligible contract can never be promoted, so
+    # training it is guaranteed-wasted work and writes production-namespace
+    # artifacts for a run that does not belong there
+    assert lgbm.call_count == 0, "no model should be trained for a contract "\
+        "that cannot be promoted"
+    assert captured == {}, f"nothing should be uploaded, got {list(captured)}"
 
 
 def test_non_default_thresholds_cannot_become_the_serving_model(monkeypatch, joblib_dump_stub):
@@ -808,7 +809,7 @@ def test_non_default_thresholds_cannot_become_the_serving_model(monkeypatch, job
     X, y = _toy_data()
     fake_client, captured = _capture_blob_uploads()
 
-    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)) as lgbm, \
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         uri = mwf._persist_production_model_artifact(
             "SPY", "15m", run_id="thresh-001",
@@ -819,10 +820,8 @@ def test_non_default_thresholds_cannot_become_the_serving_model(monkeypatch, job
         )
 
     assert uri is None
-    payload = json.loads(
-        captured["magnitude-models/production/SPY/15m/thresh-001/PROMOTION_BLOCKED"].decode())
-    assert payload["thresholds"] == [0.35, 0.75, 1.25]
-    assert "serving contract is (0.5, 1.0, 1.5)" in payload["reason"]
+    assert lgbm.call_count == 0
+    assert captured == {}
 
 
 # ─────────── --label-mode reached only ONE of four dispatch paths ───────────
@@ -1353,3 +1352,42 @@ def test_canonical_dispatch_clears_a_stale_threshold_override(tmp_path):
     # named with an empty value, which resolve_magnitude_thresholds reads as absent
     assert "|MAG_THRESHOLDS=" in out
     assert "MAG_THRESHOLDS=0" not in out
+
+
+def test_an_eligible_contract_still_trains_and_can_promote(monkeypatch, joblib_dump_stub):
+    """The early refusal must not swallow the canonical path: a serving-contract
+    run with passing gates still fits, uploads and flips LATEST."""
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    from gcp.research.magnitude_engine.mag_config import (
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS)
+
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)) as lgbm, \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "QQQ", "15m", run_id="eligible-001",
+            X_full=X, y_full=y, feature_cols=["x"],
+            gates=_passing_gates(),
+            label_mode=DEFAULT_LABEL_MODE, thresholds=MAGNITUDE_THRESHOLDS,
+            calibration="none",
+        )
+
+    assert lgbm.call_count == 1
+    assert uri == "gs://test-bucket/magnitude-models/production/QQQ/15m/"
+    assert captured["magnitude-models/production/QQQ/15m/LATEST"] == b"eligible-001"
+
+
+def test_the_contract_is_checked_before_the_fit():
+    """Ordering, not just presence: checking after the fit is what made every
+    research cell pay a guaranteed-wasted retrain."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf._persist_production_model_artifact)
+    assert src.index("serving_contract_reason(") < src.index("model.fit("), (
+        "an ineligible contract must return before any model is trained")
+    # and the dead second check is gone
+    assert src.count("serving_contract_reason(") == 1

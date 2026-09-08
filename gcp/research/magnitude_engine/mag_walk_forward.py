@@ -575,6 +575,20 @@ def _persist_production_model_artifact(
     metric persistence is the primary output of the job; this is a side effect).
     A blocked promotion leaves LATEST pointing at the previous production model.
     """
+    # BEFORE the fit: a contract the serving path does not read can never be
+    # promoted, so training a full-data model for it is guaranteed-wasted work
+    # — one extra retrain per cell, on a job whose deployed env sets
+    # MAG_PERSIST_PRODUCTION_MODEL=true, plus artifacts written into the
+    # production namespace for a run that has no business there (Codex on
+    # #1055). The walk-forward output the experiment is actually for is
+    # unaffected; it lives under the research namespace.
+    contract_reason = serving_contract_reason(label_mode, thresholds)
+    if contract_reason:
+        log.info("production model NOT trained for %s:%s — %s. The "
+                 "walk-forward results are unaffected; they are written under "
+                 "the research namespace.", ticker, tf, contract_reason)
+        return None
+
     import io
     import joblib
     bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
@@ -617,10 +631,9 @@ def _persist_production_model_artifact(
     # verdict. Distribution sanity alone let three slv7m cells promote
     # without ever beating the class-prior baseline.
     gate_reason = walk_forward_gate_reason(gates)
-    contract_reason = serving_contract_reason(label_mode, thresholds)
-    if contract_reason:
-        gate_reason = (f"{gate_reason}; {contract_reason}" if gate_reason
-                       else contract_reason)
+    # No contract check here: an ineligible contract returned above, before
+    # the fit. Leaving a second check would be unreachable code implying a
+    # path that cannot happen.
     verdict["label_mode"] = label_mode
     verdict["thresholds"] = list(thresholds)
     verdict["walk_forward_gates"] = {
