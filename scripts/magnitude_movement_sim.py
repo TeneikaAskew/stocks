@@ -62,7 +62,8 @@ from gcp.research.magnitude_engine.mag_config import (
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from scripts._magnitude_analysis_helpers import (
-    add_research_arg, load_predictions)
+    add_research_arg, apply_research_contract, load_predictions,
+    research_prefix)
 
 # Minutes in a trading year, for the implied-move scaling (mirrors gate-7).
 TRADING_MINUTES_PER_YEAR = 252 * 390
@@ -107,7 +108,7 @@ def main():
                         "magnitude label; strat=Strat structure overlay (ARM B).")
     p.add_argument("--strangle-atr", type=float, default=0.5,
                    help="OTM offset for strangle legs, in ATR-20 units.")
-    p.add_argument("--label-mode", default="body",
+    p.add_argument("--label-mode", default=None,
                    choices=["body", "excursion", "call", "put"],
                    help="Label the predictions were trained on (for loading the "
                         "matching dataset/realized columns).")
@@ -121,6 +122,8 @@ def main():
     print("=" * 96)
 
     # 1. Predictions → EXPLOSIVE-predicted bars.
+    args.label_mode, _thresholds = apply_research_contract(
+        args.research, args.label_mode)
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
                                  research=args.research)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
@@ -233,8 +236,11 @@ def main():
     }
     try:
         from google.cloud import storage as gcs
-        blob = (f"research/magnitude_engine/{args.phase}/{args.ticker.lower()}_{args.tf}/"
-                f"movement_sim_{args.position}_{args.direction}_{int(time.time())}.json")
+        # The summary belongs beside the run it describes: reading from the
+        # research namespace and writing back to the canonical one would file
+        # a call/put/excursion result among body-contract artifacts.
+        blob = (research_prefix(args.phase, args.ticker, args.tf, args.research)
+                + f"movement_sim_{args.position}_{args.direction}_{int(time.time())}.json")
         gcs.Client().bucket(args.bucket).blob(blob).upload_from_string(
             json.dumps(summary, indent=2, default=str), content_type="application/json")
         print(f"saved gs://{args.bucket}/{blob}", file=sys.stderr)

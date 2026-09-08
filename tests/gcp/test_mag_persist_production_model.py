@@ -16,6 +16,7 @@ file imports cleanly without google-cloud-* / sklearn installed.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 from unittest.mock import MagicMock, patch
@@ -1032,3 +1033,122 @@ def test_research_runs_stay_out_of_the_canonical_sql_tables():
     assert guard_at < persist_at, (
         "the canonical-table writes must sit under the else branch of the "
         "research guard")
+
+
+# ── round 3: the namespace must DRIVE the analysis, not just locate it ──
+
+@pytest.mark.parametrize("label_mode,thresholds", [
+    ("excursion", (0.5, 1.0, 1.5)),
+    ("body", (0.35, 0.75, 1.25)),
+    ("put", (0.35, 0.75, 1.25)),
+    ("body", (0.1234564, 0.75, 1.25)),
+    ("call", (0.25, 0.6, 1.1)),
+])
+def test_research_slug_round_trips_exactly(label_mode, thresholds):
+    from gcp.research.magnitude_engine.mag_config import (
+        research_namespace, parse_research_namespace)
+
+    slug = research_namespace(label_mode, thresholds)
+    assert parse_research_namespace(slug) == (label_mode, thresholds)
+
+
+def test_near_identical_thresholds_do_not_share_a_namespace():
+    """%g keeps six significant digits, so 0.1234564 and 0.12345649 slugged
+    identically and two experiments with different bucket definitions shared a
+    prefix — the collision the partition exists to prevent."""
+    from gcp.research.magnitude_engine.mag_config import research_namespace
+
+    a = research_namespace("body", (0.1234564, 0.75, 1.25))
+    b = research_namespace("body", (0.12345649, 0.75, 1.25))
+    assert a != b
+
+
+def test_malformed_research_slug_is_refused():
+    from gcp.research.magnitude_engine.mag_config import parse_research_namespace
+
+    for bad in ("nonsense", "t0.5-1.0", "body__body", "t1-2-3__t4-5-6",
+                "excursion__banana"):
+        with pytest.raises(ValueError):
+            parse_research_namespace(bad)
+
+
+@pytest.fixture
+def isolated_mag_thresholds():
+    """Restore MAG_THRESHOLDS around a test.
+
+    apply_research_contract() writes os.environ directly — deliberately, so a
+    one-shot analysis script buckets the way its model was trained — and
+    monkeypatch does not undo writes it did not make. Without this the leak
+    reaches every later test in the session: it turned
+    test_magnitude_gates.py::test_expanded_bucket red by rebucketing at
+    0.35/0.75/1.25.
+    """
+    prev = os.environ.get("MAG_THRESHOLDS")
+    os.environ.pop("MAG_THRESHOLDS", None)
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("MAG_THRESHOLDS", None)
+        else:
+            os.environ["MAG_THRESHOLDS"] = prev
+
+
+def test_contract_comes_from_the_namespace(isolated_mag_thresholds):
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import apply_research_contract
+    from gcp.research.magnitude_engine.mag_config import (
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS)
+
+    assert apply_research_contract(None) == (DEFAULT_LABEL_MODE,
+                                             tuple(MAGNITUDE_THRESHOLDS))
+    assert "MAG_THRESHOLDS" not in os.environ
+
+    # a directional namespace supplies the label mode without being told
+    assert apply_research_contract("put")[0] == "put"
+
+    # and a threshold namespace exports the cut points, so the dataset builder
+    # buckets the way the model was trained rather than at the defaults
+    mode, thr = apply_research_contract("t0.35-0.75-1.25")
+    assert (mode, thr) == (DEFAULT_LABEL_MODE, (0.35, 0.75, 1.25))
+    from gcp.research.magnitude_engine.mag_config import resolve_magnitude_thresholds
+    assert resolve_magnitude_thresholds() == (0.35, 0.75, 1.25)
+
+
+def test_label_mode_contradicting_the_namespace_is_refused(isolated_mag_thresholds):
+    """`--research=put --label-mode=body` would evaluate a put model's
+    predictions against body realizations and emit a plausible, invalid
+    verdict. Refused rather than silently resolved either way."""
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import apply_research_contract
+
+    with pytest.raises(SystemExit, match="contradicts"):
+        apply_research_contract("put", "body")
+    # agreeing is fine, and so is leaving it unset
+    assert apply_research_contract("put", "put")[0] == "put"
+    assert apply_research_contract("put", None)[0] == "put"
+
+
+def test_label_building_scripts_take_their_labels_from_the_contract():
+    """Loading the right predictions and then rebuilding labels at the
+    defaults scores a model against a target it never predicted."""
+    for script, call in [
+        ("implied_vs_realized_check", "label_mode=args.label_mode"),
+        ("model_vs_calendar_explosive_decomp", "label_mode=_label_mode"),
+        ("magnitude_movement_sim", "label_mode=args.label_mode"),
+    ]:
+        src = pathlib.Path(f"scripts/{script}.py").read_text()
+        assert "apply_research_contract(" in src, script
+        assert call in src, script
+        assert src.index("apply_research_contract(") < src.index(
+            "load_magnitude_dataset(engine"), (
+            f"{script}: the contract must be adopted before the dataset "
+            "is built")
+
+
+def test_movement_sim_writes_into_its_own_namespace():
+    """Reading from _research/<slug>/ and writing back to the canonical prefix
+    would file a research result among body-contract artifacts."""
+    src = pathlib.Path("scripts/magnitude_movement_sim.py").read_text()
+    assert "research_prefix(args.phase, args.ticker, args.tf, args.research)" in src
+    assert 'blob = (f"research/magnitude_engine/{args.phase}' not in src

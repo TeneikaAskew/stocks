@@ -35,6 +35,40 @@ def add_research_arg(p) -> None:
              "label_mode + thresholds.")
 
 
+def apply_research_contract(research: str | None,
+                            label_mode: str | None = None) -> tuple[str, tuple]:
+    """Adopt the label contract the selected research namespace stands for.
+
+    Returns `(label_mode, thresholds)` and, for a non-default threshold set,
+    exports MAG_THRESHOLDS so the dataset builder buckets the SAME way the
+    model was trained. Without this an analysis loads the right predictions
+    and then rebuilds `body` labels at the default cut points, scoring a model
+    against a target it never predicted (Codex on #1055).
+
+    `label_mode` is the value the caller's own --label-mode carries, when it
+    has one. It must agree with the namespace: a `put` run evaluated with
+    `body` realizations produces a plausible and invalid verdict, so a
+    conflict is refused rather than silently resolved either way.
+    """
+    import os
+    from gcp.research.magnitude_engine.mag_config import (
+        DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS, parse_research_namespace)
+
+    if not research:
+        resolved, thresholds = (label_mode or DEFAULT_LABEL_MODE,
+                                MAGNITUDE_THRESHOLDS)
+    else:
+        resolved, thresholds = parse_research_namespace(research)
+        if label_mode is not None and label_mode != resolved:
+            raise SystemExit(
+                f"--label-mode={label_mode} contradicts --research={research}, "
+                f"which was trained with label_mode={resolved}. The namespace "
+                f"carries the contract; drop --label-mode or make it match.")
+    if tuple(thresholds) != tuple(MAGNITUDE_THRESHOLDS):
+        os.environ["MAG_THRESHOLDS"] = ",".join(repr(float(v)) for v in thresholds)
+    return resolved, tuple(thresholds)
+
+
 def research_prefix(phase: str, ticker: str, tf: str,
                     research: str | None = None) -> str:
     """GCS prefix for a cell's artifacts, canonical or research."""

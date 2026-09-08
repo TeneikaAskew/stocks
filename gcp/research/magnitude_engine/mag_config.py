@@ -364,8 +364,54 @@ def research_namespace(label_mode: str | None,
     if label_mode is not None and label_mode != DEFAULT_LABEL_MODE:
         parts.append(label_mode)
     if thresholds is not None and tuple(thresholds) != MAGNITUDE_THRESHOLDS:
-        parts.append("t" + "-".join(f"{v:g}" for v in thresholds))
+        # repr(), not f"{v:g}": %g keeps six significant digits, so 0.1234564
+        # and 0.12345649 would slug identically and two experiments with
+        # different bucket definitions would share a namespace, which is the
+        # collision this partition exists to prevent (Codex on #1055).
+        # repr() round-trips exactly for every float.
+        parts.append("t" + "-".join(repr(float(v)) for v in thresholds))
     return "__".join(parts) if parts else None
+
+
+def parse_research_namespace(slug: str) -> tuple[str, tuple[float, ...]]:
+    """Inverse of research_namespace: the label contract a slug stands for.
+
+    The slug is the single source of truth for an analysis run's semantics.
+    Deriving from it, rather than asking an operator to repeat --label-mode
+    alongside --research, removes the mismatch where gate 7 evaluates a `put`
+    model's predictions against `body` realizations and reports a plausible,
+    invalid verdict (Codex on #1055).
+    """
+    label_mode = DEFAULT_LABEL_MODE
+    thresholds = MAGNITUDE_THRESHOLDS
+    seen_threshold = False
+    for part in slug.split("__"):
+        if part.startswith("t") and "-" in part:
+            if seen_threshold:
+                raise ValueError(f"research slug {slug!r} has two threshold parts")
+            try:
+                thresholds = tuple(float(v) for v in part[1:].split("-"))
+            except ValueError as e:
+                raise ValueError(
+                    f"research slug {slug!r}: cannot read thresholds from "
+                    f"{part!r}: {e}") from e
+            if len(thresholds) != len(LABEL_CLASSES) - 1:
+                raise ValueError(
+                    f"research slug {slug!r}: {len(thresholds)} cut point(s), "
+                    f"{len(LABEL_CLASSES) - 1} needed")
+            seen_threshold = True
+        elif part in LABEL_MODES:
+            label_mode = part
+        else:
+            raise ValueError(
+                f"research slug {slug!r}: {part!r} is neither a label mode "
+                f"{LABEL_MODES} nor a threshold part like 't0.35-0.75-1.25'")
+    if research_namespace(label_mode, thresholds) != slug:
+        raise ValueError(
+            f"research slug {slug!r} does not round-trip; the namespace for "
+            f"label_mode={label_mode!r} thresholds={thresholds} is "
+            f"{research_namespace(label_mode, thresholds)!r}")
+    return label_mode, thresholds
 
 
 def gcs_run_prefix(phase: str, ticker: str, tf: str,
