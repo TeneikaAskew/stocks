@@ -1024,6 +1024,24 @@ def _timedelta_seconds(node: ast.AST, env, seen=None):
         if left is None or right is None:
             return None
         return left + right if isinstance(node.op, ast.Add) else left - right
+    # A timedelta scaled by a constant is still a constant duration:
+    # `timedelta(hours=-10) / 2` and `timedelta(hours=-1) * 5` are UTC-5, and
+    # reading only add/sub let the outer operation escape (Codex, PR #993
+    # final review). Exactly one side of a `*` is the duration and the other a
+    # number; a `/` divides the duration on the left by a nonzero number.
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        for a, b in ((node.left, node.right), (node.right, node.left)):
+            secs = _timedelta_seconds(a, env, seen)
+            factor = _const_number(b, env)
+            if secs is not None and factor is not None:
+                return secs * factor
+        return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.FloorDiv)):
+        secs = _timedelta_seconds(node.left, env, seen)
+        divisor = _const_number(node.right, env)
+        if secs is None or not divisor:
+            return None
+        return secs // divisor if isinstance(node.op, ast.FloorDiv) else secs / divisor
     if isinstance(node, ast.Name):
         if node.id in seen:
             return None
@@ -2657,7 +2675,16 @@ def _python_hits(path: pathlib.Path, text: str):
                         is_offset, shown = hit
                         note(offsets if is_offset else legacy, node.args[0],
                              f"{name}(folded: {shown})")
-                for param in node.args[1:]:
+                # Positional bindings AND the `vars=` keyword: psycopg2's
+                # `execute(query, vars=None)` and sqlite3's `parameters=` name
+                # the same tuple, so a keyword form escaped the positional-only
+                # scan (Codex, PR #993 final review).
+                binding_params = list(node.args[1:])
+                for kw in node.keywords:
+                    if kw.arg in ("vars", "parameters", "params", "args"):
+                        binding_params.append(kw.value)
+                for param in binding_params:
+                    param = _resolve_binding(param, env)
                     items = (param.elts
                              if isinstance(param, (ast.Tuple, ast.List))
                              else [param])
@@ -3970,6 +3997,48 @@ def _redirects_outside_quotes(text: str) -> bool:
     return False
 
 
+_HEREDOC_START = re.compile(
+    r"<<[-~]?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
+#: Commands whose heredoc is text going to the terminal, not configuration.
+_HEREDOC_DIAGNOSTIC = re.compile(
+    r"(?<![A-Za-z0-9_/-])(?:cat|echo|printf|print|:|true|usage|warn|error|die"
+    r"|say|notice|info|debug|help)(?![A-Za-z0-9_-])")
+
+
+def _blank_heredoc_bodies(text: str) -> str:
+    """Blank a heredoc body that only prints, width-preserving.
+
+    `cat <<'EOF'` / `... Example: export TZ=EST` / `EOF` prints usage text and
+    configures nothing, but the body's `export TZ=EST` was read as a real
+    assignment (Codex, PR #993 final review). The same captured-output rule
+    `_blank_shell_output` applies to `echo`/`printf` arguments applies here: a
+    body is data unless its command is a diagnostic AND it is not redirected
+    to a file or piped onward (`>`, `>>`, `|`, `tee`), in which case it is
+    configuration and is kept. Newlines are preserved so offsets hold.
+    """
+    lines = text.splitlines(keepends=True)
+    out = list(lines)
+    i = 0
+    while i < len(lines):
+        m = _HEREDOC_START.search(lines[i])
+        if m is None:
+            i += 1
+            continue
+        before = lines[i][:m.start()]
+        diagnostic = bool(
+            _HEREDOC_DIAGNOSTIC.search(before)
+            and not re.search(r">>?|(?<![A-Za-z0-9_/-])tee(?![A-Za-z0-9_-])|\|",
+                              before))
+        delim = m.group(2)
+        j = i + 1
+        while j < len(lines) and lines[j].strip() != delim:
+            if diagnostic:
+                out[j] = re.sub(r"[^\n]", " ", lines[j])
+            j += 1
+        i = j + 1
+    return "".join(out)
+
+
 def _blank_shell_output(text: str) -> str:
     """Empty the quoted arguments of a command that only prints them.
 
@@ -4216,10 +4285,22 @@ def _expand_make_vars(text: str) -> str:
             continue
         scalars.setdefault(name, []).append((at, _Deferred(value), False))
 
+    end = len(text)
+
     def one(m):
-        value = _scalar_in_force(scalars, m.group(2), m.start())
+        # GNU Make expands a recursive (`=`) variable's references when it
+        # builds the recipe environment -- so `export TZ = $(ZONE)` before a
+        # later `ZONE = EST` still exports `EST`, and a redefinition of `ZONE`
+        # after the export wins. Resolving at the reference offset saw only
+        # earlier definitions, missing a forward reference and falsely
+        # rejecting a later override. An immediate (`:=`) export is expanded
+        # at its definition, so it keeps the reference-offset semantics
+        # (Codex, PR #993 final review).
+        immediate = ":=" in m.group(1) or "::=" in m.group(1)
+        at = m.start() if immediate else end
+        value = _scalar_in_force(scalars, m.group(2), at)
         if isinstance(value, _Deferred):
-            value = _resolve_make_value(value, scalars, m.start())
+            value = _resolve_make_value(value, scalars, at)
         return m.group(1) + value if value is not None else m.group(0)
 
     return _MAKE_TZ_VAR.sub(one, text)
@@ -4339,6 +4420,7 @@ def _expand_shell_defaults(text: str, make: bool = False) -> str:
     # Output arguments go first, so a usage message quoting `${TZ:-EST}` is
     # emptied before the expansion pass can promote its default.
     text = _blank_shell_output(text)
+    text = _blank_heredoc_bodies(text)
     text = _blank_dead_shell_branches(text)
     text = _join_shell_fragments(text)
     text = _SHELL_DEFAULT.sub(
@@ -4371,7 +4453,7 @@ def _opens_escape_string(text: str, i: int) -> bool:
 # `--` is a real comment, not string data. Requiring a non-identifier char
 # (or start of text) before the opener stops the stripper preserving that
 # comment and reporting a false violation (Codex, PR #993 final review).
-_DOLLAR_QUOTE = re.compile(r"(?<![A-Za-z0-9_])\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+_DOLLAR_QUOTE = re.compile(r"(?<![A-Za-z0-9_$])\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
 def _strip_pine_comments(text: str) -> str:
@@ -5003,12 +5085,40 @@ def _declares_zone_flag(cmd: str) -> bool:
     silent one. `gcp/deploy.sh` parses today, and
     `test_the_real_deploy_script_tokenises` fails if it stops.
     """
+    # Only the FIRST command: `gcloud ... ; echo --time-zone X` puts the flag
+    # on `echo`, and searching the whole line vouched for a scheduler that
+    # defaults to UTC (Codex, PR #993 final review). Truncate at the first
+    # unquoted `;`, `&&`, `||` or pipe before tokenising.
+    cmd = _first_shell_command(cmd)
     try:
         tokens = shlex.split(cmd)
     except ValueError:
         return False
     return any(t == "--time-zone" or t.startswith("--time-zone=")
                for t in tokens)
+
+
+def _first_shell_command(cmd: str) -> str:
+    """`cmd` up to the first unquoted `;`, `&&`, `||` or `|` separator."""
+    quote = ""
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            elif c == "\\" and quote == '"':
+                i += 1
+        elif c in ("'", '"'):
+            quote = c
+        elif c == "\\":
+            i += 1
+        elif c in (";", "|") or cmd[i:i + 2] in ("&&", "||"):
+            return cmd[:i]
+        elif c == "&":
+            return cmd[:i]
+        i += 1
+    return cmd
 
 
 def _scheduler_offenders(name: str, func: str) -> list[str]:
@@ -10527,3 +10637,71 @@ def test_a_quoted_paren_does_not_close_a_scheduler_array():
            '  local flags=(--message-body ")" --uri https://x)\n'
            '  gcloud scheduler jobs create http j "${flags[@]}"\n}\n')
     assert _offenders(bad)
+
+
+def test_scalar_arithmetic_on_a_timedelta_folds(tmp_path):
+    """`timezone(timedelta(hours=-10) / 2)` and `... * 5` are UTC-5 (Codex,
+    PR #993 final review)."""
+    head = "from datetime import timedelta, timezone\n"
+    assert _python_finds(tmp_path, head + "timezone(timedelta(hours=-10) / 2)\n")
+    assert _python_finds(tmp_path, head + "timezone(timedelta(hours=-1) * 5)\n")
+    assert _python_finds(tmp_path, head + "timezone(5 * timedelta(hours=-1))\n")
+    # -3h and -8h are not Eastern; -4h would be EDT and IS a finding.
+    assert not _python_finds(tmp_path, head + "timezone(timedelta(hours=-1) * 3)\n")
+    assert not _python_finds(tmp_path, head + "timezone(timedelta(hours=-1) * 8)\n")
+    assert _python_finds(tmp_path, head + "timezone(timedelta(hours=-1) * 4)\n")  # EDT
+
+
+def test_a_recursive_make_export_resolves_at_recipe_time():
+    """A recursive `export TZ = $(ZONE)` uses ZONE's value at recipe time, so a
+    forward definition installs the zone and a later redefinition wins; an
+    immediate `:=` export keeps definition-time semantics (Codex, PR #993
+    final review)."""
+    assert _scanned_shell("export TZ = $(ZONE)\nZONE = EST\n", make=True)
+    assert not _scanned_shell(
+        "ZONE = EST\nexport TZ = $(ZONE)\nZONE = America/New_York\n", make=True)
+    # Immediate assignment is expanded at its definition: a forward reference
+    # is empty there, so nothing is installed.
+    assert not _scanned_shell("export TZ := $(ZONE)\nZONE = EST\n", make=True)
+
+
+def test_a_scheduler_command_ends_at_a_shell_separator():
+    """`gcloud ... ; echo --time-zone X` sets no scheduler timezone: the flag
+    is on `echo` (Codex, PR #993 final review)."""
+    body = ('deploy() {\n'
+            "  gcloud scheduler jobs create http bad --schedule '0 2 * * *'"
+            " ; echo --time-zone America/New_York\n}\n")
+    assert _offenders(body), _offenders(body)
+    # The compliant form, flag on the gcloud command itself, is not an offender.
+    ok = ('deploy() {\n'
+          "  gcloud scheduler jobs create http j --schedule '0 2 * * *'"
+          " --time-zone America/New_York\n}\n")
+    assert not _offenders(ok)
+
+
+def test_a_keyword_binding_to_a_sql_executor_is_read(tmp_path):
+    """`cur.execute("SET TIME ZONE %s", vars=("EST",))` installs the zone
+    (Codex, PR #993 final review)."""
+    assert _python_finds(tmp_path, 'cur.execute("SET TIME ZONE %s", vars=("EST",))\n')
+    assert _python_finds(tmp_path, 'cur.execute("SET TIME ZONE %s", vars=["EST"])\n')
+    assert _python_finds(tmp_path, 'P = ("EST",)\ncur.execute("SET TIME ZONE %s", vars=P)\n')
+    assert not _python_finds(tmp_path, 'cur.execute("SET TIME ZONE %s", vars=("America/New_York",))\n')
+
+
+def test_a_dollar_after_a_dollar_is_not_a_dollar_quote():
+    """`SELECT foo$$tag$ -- SET TIME ZONE 'EST'`: every `$` continues the
+    identifier, so the `--` is a real comment (Codex, PR #993 final review)."""
+    out = _strip_sql_comments("SELECT foo$$tag$ -- SET TIME ZONE 'EST'\n")
+    assert "SET TIME ZONE 'EST'" not in out, out
+    assert "SET TIME ZONE 'EST'" in _strip_sql_comments("SELECT $$ -- x $$; SET TIME ZONE 'EST';")
+
+
+def test_a_diagnostic_heredoc_body_is_not_a_finding():
+    """`cat <<'EOF'` printing `Example: export TZ=EST` configures nothing
+    (Codex, PR #993 final review)."""
+    usage = "usage() {\n  cat <<'EOF'\nExample: export TZ=EST\nEOF\n}\n"
+    assert not _scanned_shell(usage), usage
+    # A heredoc redirected to a config file IS configuration and is read.
+    config = "write() {\n  cat > app.env <<'EOF'\nexport TZ=EST\nEOF\n}\n"
+    assert _scanned_shell(config), config
+
