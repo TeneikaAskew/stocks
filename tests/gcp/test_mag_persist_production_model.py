@@ -61,7 +61,7 @@ def _promotable_model(y):
 
     Since 2026-08-28 _persist_production_model_artifact scores the fitted model
     on X_full and refuses to flip LATEST when the argmax collapses onto one
-    bucket (mag_config.PROMOTION_MAX_MODAL_SHARE). A bare MagicMock returns a
+    bucket (mag_config.PROMOTION_COLLAPSE_MODAL_SHARE). A bare MagicMock returns a
     MagicMock from .predict(), which reads as zero usable predictions and is
     correctly blocked — so any test exercising the SUCCESSFUL publish path has
     to hand back a realistic spread.
@@ -412,27 +412,111 @@ def test_promotion_verdict_blocks_collapsed_model():
     assert "only 1 distinct bucket" in v["reason"]
 
 
-def test_promotion_verdict_blocks_at_threshold_passes_below():
+def test_promotion_verdict_collapse_ceiling_is_inclusive():
+    """The absolute criterion: 90.0% in one bucket is collapsed whatever the
+    labels say; 89.9% is not (and with no labels passed, nothing else can
+    block it)."""
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
-    from gcp.research.magnitude_engine.mag_config import PROMOTION_MAX_MODAL_SHARE
+    from gcp.research.magnitude_engine.mag_config import PROMOTION_COLLAPSE_MODAL_SHARE
 
-    assert PROMOTION_MAX_MODAL_SHARE == 0.70
-    at = np.array([0] * 700 + [1] * 300)
-    under = np.array([0] * 699 + [1] * 301)
-    assert mwf.promotion_verdict(at)["ok"] is False
+    assert PROMOTION_COLLAPSE_MODAL_SHARE == 0.90
+    at = np.array([0] * 900 + [1] * 100)
+    under = np.array([0] * 899 + [1] * 101)
+    v_at = mwf.promotion_verdict(at)
+    assert v_at["ok"] is False and "collapsed" in v_at["reason"]
     assert mwf.promotion_verdict(under)["ok"] is True
 
 
 def test_promotion_verdict_passes_realistic_base_rates():
     """The real magnitude class balance (~64/27/7/2) must NOT be blocked —
-    the gate targets argmax collapse, not label imbalance."""
+    the gate targets argmax collapse and over-prediction, not label
+    imbalance. A model that predicts exactly the label distribution has zero
+    excess."""
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
     y = np.array([0] * 640 + [1] * 270 + [2] * 70 + [3] * 20)
-    v = mwf.promotion_verdict(y)
+    v = mwf.promotion_verdict(y, y_true=y)
     assert v["ok"] is True
     assert v["distinct_classes"] == 4
     assert v["class_counts"] == {0: 640, 1: 270, 2: 70, 3: 20}
+    assert v["true_modal_share"] == pytest.approx(0.64)
+    assert v["modal_excess"] == pytest.approx(0.0)
+
+
+def test_promotion_verdict_measures_the_model_not_the_labels():
+    """slv7m, 2026-09-07 (#1025): a 68.7% TIGHT base rate put a calibrated
+    model 1.5 points from the old fixed 70% ceiling. SPY/15m (68.7% predicted)
+    passed and IWM/15m (76.1% predicted) was blocked as if it were c49qf's
+    100%. Under the relative criterion IWM's +7.4 passes; a model 15 points
+    over the same labels does not; the reason names both shares."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    from gcp.research.magnitude_engine.mag_config import PROMOTION_MAX_MODAL_EXCESS
+
+    assert PROMOTION_MAX_MODAL_EXCESS == 0.10
+    n = 1000
+    y_true = np.array([0] * 687 + [1] * 245 + [2] * 52 + [3] * 16)
+    assert y_true.size == n
+    iwm_like = np.array([0] * 761 + [1] * 191 + [2] * 42 + [3] * 6)
+    v = mwf.promotion_verdict(iwm_like, y_true=y_true)
+    assert v["ok"] is True, v["reason"]
+    assert v["modal_excess"] == pytest.approx(0.074)
+
+    over = np.array([0] * 840 + [1] * 120 + [2] * 30 + [3] * 10)
+    v = mwf.promotion_verdict(over, y_true=y_true)
+    assert v["ok"] is False
+    assert "over-predicts bucket 0" in v["reason"]
+    assert "84.0% predicted vs 68.7% true" in v["reason"]
+    assert v["modal_share"] < 0.90, "this case must be caught by excess, not collapse"
+
+    # Exactly the allowed excess is still fine; one row more is not.
+    boundary = np.array([0] * 787 + [1] * 165 + [2] * 40 + [3] * 8)
+    assert mwf.promotion_verdict(boundary, y_true=y_true)["ok"] is True
+    beyond = np.array([0] * 788 + [1] * 164 + [2] * 40 + [3] * 8)
+    assert mwf.promotion_verdict(beyond, y_true=y_true)["ok"] is False
+
+
+def test_promotion_verdict_excess_boundary_is_exact_not_floating_point():
+    """4/10 predicted vs 3/10 true is exactly the allowed +10 points; in
+    binary floating point the subtraction is 0.10000000000000003 and a
+    float compare blocked it with the contradictory reason "+10.0% > 10%"
+    (Codex, #1042). Counts are compared exactly."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    assert (4 / 10) - (3 / 10) > 0.10, "the hazard this test guards"
+    y_pred = np.array([0] * 4 + [1] * 3 + [2] * 3)
+    y_true = np.array([0] * 3 + [1] * 4 + [2] * 3)
+    v = mwf.promotion_verdict(y_pred, y_true=y_true)
+    assert v["ok"] is True, v["reason"]
+    assert v["modal_excess"] == pytest.approx(0.10)
+
+
+def test_promotion_verdict_judges_every_class_tied_for_the_mode():
+    """Predicted {0: 4, 1: 4, 2: 2} against true {0: 6, 1: 1, 2: 3}: class 0
+    is under-predicted by 20 points but class 1, equally modal, is over-
+    predicted by 30. Picking the lowest id would pass this (Codex, #1042);
+    the tied class with the greatest excess is judged and named."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    y_pred = np.array([0] * 4 + [1] * 4 + [2] * 2)
+    y_true = np.array([0] * 6 + [1] * 1 + [2] * 3)
+    v = mwf.promotion_verdict(y_pred, y_true=y_true)
+    assert v["ok"] is False
+    assert v["modal_class"] == 1
+    assert v["true_modal_share"] == pytest.approx(0.1)
+    assert v["modal_excess"] == pytest.approx(0.3)
+    assert "over-predicts bucket 1" in v["reason"]
+    # Without labels a tie falls back to the lowest id, and only the collapse
+    # criterion can judge it.
+    assert mwf.promotion_verdict(y_pred)["modal_class"] == 0
+
+
+def test_promotion_verdict_refuses_mismatched_labels():
+    """A label vector for different rows would make the excess meaningless;
+    that is an error, never a silent skip of the criterion."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    with pytest.raises(ValueError, match="same rows"):
+        mwf.promotion_verdict(np.array([0, 0, 1]), y_true=np.array([0, 1]))
 
 
 def test_promotion_verdict_handles_empty():

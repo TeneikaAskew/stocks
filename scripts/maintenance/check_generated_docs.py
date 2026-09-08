@@ -200,17 +200,37 @@ def gate_subsections(root: pathlib.Path, repo: dict) -> list[str]:
     return out
 
 
+def relation_counts(repo: dict, live: dict) -> tuple[int, int]:
+    """(declared, runtime-created) relation counts, the way the gate checks
+    them and the way the prompts now state them.
+
+    A SET difference, not a subtraction of totals: a relation declared in
+    schema.sql but not yet migrated live would make the subtraction
+    undercount, rejecting correct prose and accepting a wrong number. (Codex,
+    PR #1009.) Declared means tables, views AND materialized views -- run 24
+    wrote 26, 28 and 30 "runtime relations" against a true 27 because the
+    model was handed the live and table counts and left to derive this one.
+    """
+    declared_names = ({t_["name"] for t_ in repo["tables"]}
+                      | {v["name"] for v in repo["materialized_views"]}
+                      | {v["name"] for v in repo["views"]})
+    return len(declared_names), len(set(live["db_tables"]) - declared_names)
+
+
 def gate_markers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
     out = []
     for doc in MARKER_DOCS:
-        src = root / doc
-        with tempfile.TemporaryDirectory() as td:
-            tmp = pathlib.Path(td) / doc
-            tmp.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(src, tmp)
-            inv.insert_blocks(tmp, repo, live, root=pathlib.Path(td))
-            if tmp.read_text() != src.read_text():
-                out.append(f"{doc}: an inventory marker block differs from a fresh render — the model edited inside a block, or a block is missing its end marker")
+        # Per block, by name. Run 24 reported "an inventory marker block
+        # differs" for 05-c and nothing else, and the artifact holding the
+        # answer is behind an endpoint this sandbox cannot reach; a finding
+        # that names the block and the first differing line is the difference
+        # between a fix and a guess.
+        try:
+            for name, first_diff in inv.differing_blocks(root / doc, repo, live, root=root):
+                out.append(f"{doc}: inventory:{name} block differs from a fresh render "
+                           f"(the model edited inside it); first difference: {first_diff}")
+        except ValueError as e:
+            out.append(f"{doc}: {e}")
     for doc in MARKER_DOCS:
         text = (root / doc).read_text()
         for name in inv.SECTIONS:
@@ -461,15 +481,7 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                        f"gcp/deploy.sh declares {want}")
 
     if live and live.get("db_tables"):
-        # A SET difference, not a subtraction of totals: a relation declared in
-        # schema.sql but not yet migrated live would make the subtraction
-        # undercount, rejecting correct prose and accepting a wrong number.
-        # (Codex, PR #1009.)
-        declared_names = ({t_["name"] for t_ in repo["tables"]}
-                          | {v["name"] for v in repo["materialized_views"]}
-                          | {v["name"] for v in repo["views"]})
-        declared = len(declared_names)
-        runtime = len(set(live["db_tables"]) - declared_names)
+        declared, runtime = relation_counts(repo, live)
         for doc in (ARCH, DEPS):
             body = (root / doc).read_text()
             for m in re.finditer(r"(\d+) runtime[- ](?:created )?relations", body):

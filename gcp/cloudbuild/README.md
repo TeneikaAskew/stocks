@@ -6,6 +6,26 @@ repo. They live here for traceability / version control; the
 authoritative copies are the trigger definitions in Cloud Build
 itself (`gcloud builds triggers describe <NAME>`).
 
+**A merged change to one of these files does not run until it is imported
+into its trigger.** Nothing does that automatically. Read live on
+2026-09-07 (#1033), both API deploy triggers still ran the three-step
+configs they were created with on 2026-05-31; every change merged here
+since (#990, #1004, #1030) had never executed. After merging a change to
+any file in this directory:
+
+```bash
+./gcp/deploy.sh cloudbuild-triggers --check   # show the drift, change nothing
+./gcp/deploy.sh cloudbuild-triggers           # import each file into its trigger
+```
+
+The target exports the live trigger, replaces only its `build` block with
+the committed file, and imports it back; the event filter, `includedFiles`,
+repository and service account on the trigger are untouched. Run `--check`
+whenever a deploy behaves like the old config, and after importing run the
+staging trigger once (`gcloud builds triggers run deploy-solyra-api-staging
+--branch=main`) rather than waiting for the next merge to find out whether
+the new steps run under `trading-runner@`.
+
 | File | Trigger | GHA workflow replaced |
 |------|---------|----------------------|
 | `apply-schema-cloudbuild.yaml`           | `apply-schema-on-change` (push to main on `gcp/schema.sql`) | `.github/workflows/apply-schema-migrations-on-change.yml` |
@@ -94,14 +114,57 @@ account holds `roles/run.admin` (the reads) but only
 `roles/artifactregistry.writer` on both repos on 2026-09-07; the workflow
 header carries the commands in case the SA is ever rebuilt.
 
-It does NOT hold `artifactregistry.tags.delete`, which is why the trigger
-path passes `--no-sweep`: releasing pins nothing needs any more is left to
-the interactive `gcp/deploy.sh` path (`build`, `pin-images`, any deploy
-command), which runs as an operator or `claude-web@`.
+`trading-runner@` (the triggers' identity, not the workflow's) also holds
+`artifactregistry.tags.delete`, through the project custom role
+`artifactRegistryTagMover` bound at repository level on `trading`
+(us-east1) and `gcr.io` (us) on 2026-09-07. That permission is not for
+sweeping: **re-pointing an existing tag is a delete plus a create in
+Artifact Registry**, so every re-pin of a job whose image moved is a tag
+move, and `roles/artifactregistry.writer` alone (create and update, no
+delete) can only ever pin a tag that did not exist yet. The first trigger
+run of the pin step (build `b76462ad`, #1033) pinned the one fresh
+service tag and failed all six moves with
+`PERMISSION_DENIED: Permission 'artifactregistry.tags.delete' denied`;
+the next run after the grant (`0428cbd8`) moved them.
 
-These bindings need `roles/resourcemanager.projectIamAdmin` (or
-`roles/owner`) to set. The sandbox `claude-web@` SA only has
-`roles/editor` which lacks `setIamPolicy` — must be applied by an
+Both identities that run the pin step need the binding: `trading-runner@`
+(the Cloud Build triggers, granted 2026-09-07) and `arch-refresh-bot@`
+(the WIF identity behind `.github/workflows/deploy-staging.yml`, whose
+`platform/deploy.sh` run calls `pin-images --no-sweep` before building).
+`arch-refresh-bot@` still held `writer` only when this was written, so the
+manual staging deploy fails in `pin-images` on its first tag move until
+the second loop iteration below has been applied.
+
+```bash
+PROJECT=adept-mountain-474619-d4
+gcloud iam roles create artifactRegistryTagMover --project="$PROJECT" \
+  --title="Artifact Registry tag mover" --permissions=artifactregistry.tags.delete --stage=GA
+for SA in trading-runner arch-refresh-bot; do
+  for r in "trading us-east1" "gcr.io us"; do set -- $r
+    gcloud artifacts repositories add-iam-policy-binding "$1" --location="$2" --project="$PROJECT" \
+      --member="serviceAccount:${SA}@${PROJECT}.iam.gserviceaccount.com" \
+      --role="projects/${PROJECT}/roles/artifactRegistryTagMover"
+  done
+done
+```
+
+Roles the operator running that block needs (an owner has all of them;
+`roles/resourcemanager.projectIamAdmin` alone has none of them, it only
+covers the project-level policy):
+
+- `iam.roles.create` for the custom role, e.g. `roles/iam.roleAdmin`;
+- `artifactregistry.repositories.setIamPolicy` for the repository
+  bindings, e.g. `roles/artifactregistry.admin`.
+
+The trigger path still passes `--no-sweep`; that is now a policy choice
+(releasing pins nothing needs any more is left to the interactive
+`gcp/deploy.sh` path, which runs as an operator or `claude-web@`), not a
+permission limit.
+
+The project-level bindings earlier in this section need
+`roles/resourcemanager.projectIamAdmin` (or `roles/owner`) to set. The
+sandbox `claude-web@` SA only has `roles/editor`, which lacks every
+`setIamPolicy` permission named here, so all of it must be applied by an
 account with broader permissions.
 
 After granting both, test:

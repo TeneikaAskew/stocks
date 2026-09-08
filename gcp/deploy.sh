@@ -217,12 +217,31 @@ _pin_tag() {
         return 0
     fi
     local short=${ref#*@sha256:}
-    if gcloud artifacts docker tags add "${ref}" "${repo_image}:${tag}" --quiet >/dev/null 2>&1; then
-        echo "  pinned ${tag} -> ${short:0:12}"
+    # Surface gcloud's own reason. The first trigger run of this step
+    # (build b76462ad, 2026-09-07, #1033) failed six pins, every one a tag
+    # that already existed on another digest, and printed nothing but
+    # "could not tag" because stderr was discarded here; the same six moves
+    # succeeded from an operator shell minutes later, so the reason was the
+    # one thing needed and the one thing not shown.
+    local errf err
+    errf=$(mktemp)
+    if gcloud artifacts docker tags add "${ref}" "${repo_image}:${tag}" --quiet >/dev/null 2>"${errf}"; then
+        rm -f "${errf}"
+        if [ -n "${existing}" ]; then
+            echo "  moved  ${tag}: ${existing#sha256:}"
+            echo "         -> ${short:0:12}"
+        else
+            echo "  pinned ${tag} -> ${short:0:12}"
+        fi
         unset "_TAG_CACHE[${repo_image}]"
         return 0
     fi
-    echo "  ERROR: could not tag ${ref} as ${tag}" >&2
+    # `|| true`: under pipefail an empty stderr makes grep exit 1, which
+    # would abort the function here and skip the fallback line and the
+    # caller's per-pin accounting (Codex, #1040).
+    err=$(grep -v '^$' "${errf}" | head -n 1 || true)
+    rm -f "${errf}"
+    echo "  ERROR: could not tag ${ref} as ${tag}: ${err:-<no stderr>}" >&2
     return 1
 }
 
@@ -913,12 +932,13 @@ _build_secret_flag() {
     pairs="${pairs}${extra}"
     echo "--set-secrets=${pairs}"
 }
-# pin-images needs no job declaration and is the one subcommand the Cloud
-# Build triggers run (as trading-runner@); every other subcommand deploys
-# something and resolves the secret set up front so a read failure aborts
-# before any mutation.
+# Subcommands that deploy nothing need no job declaration: pin-images (the
+# one subcommand the Cloud Build triggers run, as trading-runner@),
+# cloudbuild-triggers (imports build configs) and help. Every other
+# subcommand deploys something and resolves the secret set up front so a
+# read failure aborts before any mutation.
 case "${1:-}" in
-    pin-images) DB_SECRET_FLAG="" ;;
+    pin-images|cloudbuild-triggers|help|"") DB_SECRET_FLAG="" ;;
     *) DB_SECRET_FLAG="$(_build_secret_flag)" ;;
 esac
 
@@ -4763,6 +4783,81 @@ backfill_watchlist() {
     python3 -m scripts.backfill_watchlist_data "${args[@]}"
 }
 
+# ── Cloud Build triggers ─────────────────────────────────────────────────────
+# The API deploy triggers carry their build config INLINE in Cloud Build; the
+# YAML under gcp/cloudbuild/ is a copy, and until this target nothing synced
+# the two. Read live on 2026-09-07 (#1033): both triggers still ran the
+# three-step configs they were created with on 2026-05-31, so every change
+# merged to those files since (#990 interlocks, #1004 pin-images, #1030
+# --update-env-vars) had never executed.
+#
+#   ./gcp/deploy.sh cloudbuild-triggers          # import each file into its trigger
+#   ./gcp/deploy.sh cloudbuild-triggers --check  # print drift, change nothing; exit 2 on drift
+#
+# Export the live trigger, replace ONLY its `build` block with the committed
+# file, import it back. The trigger's event filter, includedFiles, repo and
+# service account are untouched. Import is idempotent.
+_CLOUDBUILD_TRIGGERS=(
+    "deploy-solyra-api-staging:gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"
+    "deploy-solyra-api-prod:gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml"
+    "apply-schema-on-change:gcp/cloudbuild/apply-schema-cloudbuild.yaml"
+)
+sync_cloudbuild_triggers() {
+    # The default action writes to three live triggers, so anything that is
+    # not exactly the one documented option is a usage error, not a fall-
+    # through to import (Codex, #1037: `--checks` used to import).
+    local mode
+    case "$#:${1:-}" in
+        0:)         mode="import" ;;
+        1:--check)  mode="check" ;;
+        *) echo "ERROR: cloudbuild-triggers takes no argument or exactly --check; got: $*" >&2
+           return 64 ;;
+    esac
+    python3 -c 'import yaml' 2>/dev/null \
+        || { echo "ERROR: python3 needs PyYAML (pip3 install --user pyyaml)" >&2; return 1; }
+    local pair name file tmp rc=0
+    for pair in "${_CLOUDBUILD_TRIGGERS[@]}"; do
+        name="${pair%%:*}"; file="${pair#*:}"
+        tmp="$(mktemp)"
+        gcloud beta builds triggers export "$name" --region=global --project "$PROJECT_ID" \
+            --destination="$tmp"
+        if python3 - "$mode" "$tmp" "$file" "$name" <<'PY'
+import difflib, sys, yaml
+mode, trig_path, build_path, name = sys.argv[1:5]
+with open(trig_path) as fh:
+    trig = yaml.safe_load(fh)
+with open(build_path) as fh:
+    build = yaml.safe_load(fh)
+live = trig.get("build")
+a = yaml.safe_dump(live, sort_keys=True).splitlines()
+b = yaml.safe_dump(build, sort_keys=True).splitlines()
+if a == b:
+    print(f"{name}: live build config matches {build_path}")
+    sys.exit(0)
+print(f"{name}: live build config differs from {build_path}")
+print("\n".join(difflib.unified_diff(a, b, "live", build_path, lineterm="")))
+if mode == "check":
+    sys.exit(2)
+trig.pop("filename", None)
+trig.pop("gitFileSource", None)
+trig["build"] = build
+with open(trig_path, "w") as fh:
+    yaml.safe_dump(trig, fh, sort_keys=False)
+PY
+        then
+            if [ "$mode" = "import" ]; then
+                gcloud beta builds triggers import --region=global --project "$PROJECT_ID" \
+                    --source="$tmp"
+                echo "imported $file into trigger $name"
+            fi
+        else
+            rc=2
+        fi
+        rm -f "$tmp"
+    done
+    return "$rc"
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 # Every command that deploys a job or service is followed by pin_image_tags
 # (see the tail of this file), so the digest a job was just pinned to gets
@@ -4785,6 +4880,7 @@ case "${1:-help}" in
     migrate)     _PIN_AFTER=0; shift; migrate "$@" ;;
     build)       _PIN_AFTER=0; build_image ;;
     pin-images)  _PIN_AFTER=0; pin_image_tags "${2:-}" ;;
+    cloudbuild-triggers) _PIN_AFTER=0; shift; sync_cloudbuild_triggers "$@" ;;
     registry-cleanup) _PIN_AFTER=0; _run pin_image_tags setup_registry_cleanup ;;
     retire-legacy-images) _PIN_AFTER=0; retire_legacy_images ;;
     build-research) _PIN_AFTER=0; build_research_image ;;
@@ -4908,6 +5004,10 @@ case "${1:-help}" in
         echo "  setup      Provision Cloud SQL, GCS bucket, service account"
         echo "  migrate    Migrate local Parquet data → GCS + Cloud SQL"
         echo "  build      Build and push Docker image"
+        echo "  cloudbuild-triggers [--check]"
+        echo "             Import gcp/cloudbuild/*.yaml into the Cloud Build triggers"
+        echo "             that carry them inline (the file is not read by the trigger"
+        echo "             otherwise; see #1033). --check prints drift, exit 2, no write."
         echo "  premarket  Deploy pre-market brief job"
         echo "  earnings-reactions-brief"
         echo "             Deploy earnings-reactions-brief job (Discord post"

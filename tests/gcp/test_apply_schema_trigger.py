@@ -507,7 +507,7 @@ def test_pin_images_does_not_resolve_the_secret_set():
     start-up so a read failure aborts before any mutation."""
     src = (REPO / "gcp/deploy.sh").read_text()
     top = src[:src.index("_env_string() {")]
-    assert 'pin-images) DB_SECRET_FLAG="" ;;' in top
+    assert 'pin-images|cloudbuild-triggers|help|"") DB_SECRET_FLAG="" ;;' in top
     assert '*) DB_SECRET_FLAG="$(_build_secret_flag)" ;;' in top
 
 

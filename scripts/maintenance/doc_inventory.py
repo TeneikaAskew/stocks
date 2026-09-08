@@ -1419,6 +1419,67 @@ def _rebase_links(body: str, depth: int) -> str:
     return re.sub(r"\]\((?!https?://|#|\.\./|/)", "](" + prefix, body)
 
 
+def _block_bodies(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
+                  root: pathlib.Path) -> list[tuple[str, str, str, re.Pattern]]:
+    """(name, current body, fresh body, block pattern) for every block present.
+
+    Raises ValueError on a start marker without its end, as insert_blocks
+    does: that block cannot be located, so it cannot be compared or restored.
+    """
+    text = doc_path.read_text()
+    try:
+        depth = len(doc_path.resolve().relative_to(root.resolve()).parents) - 1
+    except ValueError:
+        depth = 0
+    out = []
+    for name in SECTIONS:
+        start, end = MARKER_START.format(name=name), MARKER_END.format(name=name)
+        if start not in text:
+            continue
+        if end not in text:
+            raise ValueError(f"{doc_path}: {start} without {end}")
+        pattern = re.compile(re.escape(start) + r"\n(.*?)\n" + re.escape(end), re.S)
+        m = pattern.search(text)
+        current = m.group(1) if m else ""
+        fresh = _rebase_links(render_markdown(name, repo, live), depth)
+        out.append((name, current, fresh, pattern))
+    return out
+
+
+def differing_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
+                     root: pathlib.Path = REPO) -> list[tuple[str, str]]:
+    """Blocks whose current body differs from a fresh render, with the first
+    differing line of each, as `name` and `-old / +new`."""
+    out = []
+    for name, current, fresh, _pattern in _block_bodies(doc_path, repo, live, root):
+        if current != fresh:
+            cur_lines, new_lines = current.splitlines(), fresh.splitlines()
+            for i in range(max(len(cur_lines), len(new_lines))):
+                a = cur_lines[i] if i < len(cur_lines) else "<missing>"
+                b = new_lines[i] if i < len(new_lines) else "<missing>"
+                if a != b:
+                    out.append((name, f"line {i + 1}: -{a[:120]!r} +{b[:120]!r}"))
+                    break
+    return out
+
+
+def restore_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
+                   root: pathlib.Path = REPO) -> list[str]:
+    """Rewrite every block that differs from a fresh render; return their names.
+
+    The blocks are the workflow's, rendered from the frozen snapshot before the
+    model runs and told to the model as off-limits. A model edit inside one is
+    overwritten with the authoritative render and REPORTED by name, rather than
+    failing the whole refresh: the correct bytes are known exactly, and the
+    prose around the block still goes through every gate. A start marker
+    without its end is not restorable and raises, as insert_blocks does.
+    """
+    names = [name for name, _first_diff in differing_blocks(doc_path, repo, live, root)]
+    if names:
+        insert_blocks(doc_path, repo, live, root=root)
+    return names
+
+
 def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
                   root: pathlib.Path = REPO) -> bool:
     """Replace every marker block in doc_path with freshly rendered content.
@@ -1463,6 +1524,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true", help="print the combined inventory as JSON")
     ap.add_argument("--markdown", choices=SECTIONS, help="print one rendered section")
     ap.add_argument("--insert", nargs="*", help="rewrite marker blocks in these docs")
+    ap.add_argument("--restore", nargs="*", help="rewrite only the marker blocks that differ from a fresh render, and name each one")
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root)
@@ -1481,6 +1543,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {args.write_snapshot}: {live['counts']}", file=sys.stderr)
     if args.markdown:
         print(render_markdown(args.markdown, repo, live))
+    if args.restore is not None:
+        default_docs = ["docs/product/infrastructure/05-a-ARCHITECTURE.md",
+                        "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"]
+        for doc in (args.restore or default_docs):
+            for name in restore_blocks(root / doc, repo, live):
+                print(f"restored inventory:{name} in {doc}")
     if args.insert is not None:
         default_docs = ["docs/product/infrastructure/05-a-ARCHITECTURE.md",
                         "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"]

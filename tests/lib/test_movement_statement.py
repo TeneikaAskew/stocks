@@ -1055,14 +1055,28 @@ def test_healthy_spread_model_is_rendered_with_degeneracy_evidence():
 
 
 def test_degeneracy_threshold_is_exclusive_of_just_under():
-    """69.9% renders; 70.0% is withheld. Guards the boundary against an
-    off-by-one that would either nag on healthy models or let c49qf through."""
+    """89.9% renders; 90.0% is withheld. Guards the boundary against an
+    off-by-one that would either nag on healthy models or let c49qf through.
+    The ceiling moved from 70% with the promotion gate (#1025): the TIGHT
+    base rate is ~68.5%, so 70% withheld a calibrated model."""
     just_under = ms._build_expected_move(
-        "SPY", "15m", _degeneracy_qf({0: 699, 1: 301}), as_of=None)
+        "SPY", "15m", _degeneracy_qf({0: 899, 1: 101}), as_of=None)
     assert just_under["status"] == "OK"
     at_threshold = ms._build_expected_move(
-        "SPY", "15m", _degeneracy_qf({0: 700, 1: 300}), as_of=None)
+        "SPY", "15m", _degeneracy_qf({0: 900, 1: 100}), as_of=None)
     assert at_threshold["status"] == "UNAVAILABLE"
+
+
+def test_degeneracy_backstop_renders_a_model_over_the_base_rate():
+    """slv7m IWM/15m predicts TIGHT on 76% of bars against a 68.7% base rate.
+    That is the promotion gate's business (relative criterion, with labels),
+    not the render backstop's: withholding here would blank the card for a
+    model the gate is allowed to promote."""
+    em = ms._build_expected_move(
+        "IWM", "15m", _degeneracy_qf({0: 761, 1: 191, 2: 42, 3: 6}), as_of=None)
+    assert em["status"] == "OK"
+    assert em["degeneracy"]["degenerate"] is False
+    assert em["degeneracy"]["modal_share"] == pytest.approx(0.761)
 
 
 def test_degeneracy_check_failure_does_not_take_the_card_down():
@@ -1108,8 +1122,8 @@ def test_render_guard_threshold_matches_promotion_gate():
     """The render backstop and the promotion gate must use the same number.
     lib/ cannot import gcp/research/ (LightGBM), so the constant is duplicated
     — this test is what stops the two copies from drifting apart."""
-    from gcp.research.magnitude_engine.mag_config import PROMOTION_MAX_MODAL_SHARE
-    assert ms._MAG_DEGENERATE_MODAL_SHARE == PROMOTION_MAX_MODAL_SHARE
+    from gcp.research.magnitude_engine.mag_config import PROMOTION_COLLAPSE_MODAL_SHARE
+    assert ms._MAG_DEGENERATE_MODAL_SHARE == PROMOTION_COLLAPSE_MODAL_SHARE
 
 
 def test_degeneracy_check_counts_only_inference_rows():

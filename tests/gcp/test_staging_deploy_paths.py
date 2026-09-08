@@ -391,3 +391,83 @@ def test_both_routine_rollouts_carry_the_movement_flag_in_merge_mode():
         src = (REPO / "gcp" / "cloudbuild" / name).read_text()
         assert "--update-env-vars=MOVEMENT_STATEMENT_ENABLED=true" in src, name
         assert "--set-env-vars" not in src.split("gcloud run deploy", 1)[1].split("\n\n", 1)[0], name
+
+
+# ── cloudbuild-triggers: the file-to-trigger import (#1033, #1037) ───────────
+
+def _run_cloudbuild_triggers(tmp_path, *args):
+    """Run `./gcp/deploy.sh cloudbuild-triggers ARGS` with a stub gcloud on
+    PATH that records every invocation and fails, so the test proves what the
+    target does BEFORE it reaches Cloud Build."""
+    import os
+    import subprocess
+
+    calls = tmp_path / "gcloud-calls.log"
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "gcloud").write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> '{calls}'\n"
+        "echo 'stub gcloud: refusing' >&2\n"
+        "exit 1\n"
+    )
+    (stub / "gcloud").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}",
+           "PROJECT_ID": "test-project"}
+    proc = subprocess.run(
+        ["bash", str(REPO / "gcp/deploy.sh"), "cloudbuild-triggers", *args],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=60,
+    )
+    # deploy.sh probes a few secrets at startup for every target; only the
+    # trigger commands are this target's own.
+    recorded = [c for c in (calls.read_text().splitlines() if calls.exists() else [])
+                if "builds triggers" in c]
+    return proc, recorded
+
+
+def test_cloudbuild_triggers_rejects_an_unknown_option_before_touching_gcloud(tmp_path):
+    """The default action imports into three live triggers, so a mistyped
+    safety flag must be a usage error, not a silent import (Codex, #1037):
+    `--checks` used to leave the mode as `import` and proceed.
+    """
+    proc, recorded = _run_cloudbuild_triggers(tmp_path, "--checks")
+    assert proc.returncode == 64, (proc.returncode, proc.stdout, proc.stderr)
+    assert "--check" in proc.stderr
+    assert recorded == [], f"a trigger command ran before the usage check: {recorded}"
+
+
+def test_cloudbuild_triggers_rejects_extra_arguments(tmp_path):
+    proc, recorded = _run_cloudbuild_triggers(tmp_path, "--check", "extra")
+    assert proc.returncode == 64, (proc.returncode, proc.stdout, proc.stderr)
+    assert recorded == []
+
+
+def test_cloudbuild_triggers_check_mode_only_exports(tmp_path):
+    """`--check` reaches gcloud (the stub refuses, so the run fails there) and
+    the only command it issues is an export; import is never attempted."""
+    proc, recorded = _run_cloudbuild_triggers(tmp_path, "--check")
+    assert proc.returncode != 0
+    assert recorded, "expected the export call to be recorded"
+    assert all("triggers export" in c for c in recorded), recorded
+    assert not any("triggers import" in c for c in recorded), recorded
+
+
+def test_pin_tag_surfaces_gclouds_own_error():
+    """`_pin_tag` used to send `gcloud artifacts docker tags add`'s stderr to
+    /dev/null and print only "could not tag". The first trigger run of the
+    pin step (build b76462ad, #1033) failed six moves that way, and the
+    reason was the one thing needed. The add command must keep its stderr
+    and the error line must carry it."""
+    import re
+
+    gcp_deploy_sh = (REPO / "gcp/deploy.sh").read_text()
+    m = re.search(r"^_pin_tag\(\) \{\n(.*?)^\}", gcp_deploy_sh, re.S | re.M)
+    assert m is not None, "_pin_tag not found in deploy.sh"
+    body = m.group(1)
+    add_lines = [ln for ln in body.splitlines() if "docker tags add" in ln]
+    assert add_lines, "no `gcloud artifacts docker tags add` in _pin_tag"
+    for ln in add_lines:
+        assert "2>&1" not in ln and "2>/dev/null" not in ln, (
+            f"stderr of the tag add is discarded again:\n{ln}")
+    assert re.search(r'could not tag .*\$\{err', body), (
+        "the failure line does not carry gcloud's error text")

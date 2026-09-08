@@ -85,6 +85,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # ── This workflow can only run from main ──────────────────────────────
+      # The Workload Identity provider's attribute condition is
+      #
+      #   assertion.repository=='TeneikaAskew/stocks' && assertion.ref=='refs/heads/main'
+      #
+      # read 2026-09-07 with `gcloud iam workload-identity-pools providers list
+      # --workload-identity-pool=github-pool --location=global`. So a
+      # workflow_dispatch from a feature branch dies inside
+      # google-github-actions/auth with no explanation, then opens a failure
+      # issue and a draft PR about it. Run 23 was dispatched from a branch to
+      # validate a fix and got exactly that.
+      #
+      # The condition is the right boundary -- it is what stops any PR branch
+      # from assuming this project's GCP identity -- so this step says so
+      # rather than loosening it. A fix to this workflow is validated by
+      # merging it and dispatching from main, not from the branch.
+      #
+      # The ref goes through env rather than into the script text: a branch
+      # name may contain `$`, `(` and backticks, and `${{ }}` inside `run:` is
+      # expanded before bash reads it.
+      - name: Refuse to run from anywhere but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::This workflow authenticates to GCP through a Workload Identity provider whose attribute condition pins assertion.ref to refs/heads/main, so it cannot run from ${REF}. Merge the change and dispatch from main."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -382,6 +410,28 @@ jobs:
           fi
           echo "all $(find refresh-inputs -type f | wc -l) refresh inputs are readable by the model"
 
+      # ── Substitute the live counts into the prompts, BEFORE Gemini ───────
+      # Run 22 regenerated 05-d-COST_ANALYSIS.md with "24 Cloud Scheduler jobs"
+      # against a live fleet of 65 and went red on that one verifier finding.
+      # The prompt already said to use the live counts and named live.json as
+      # the source; the model still had to find and read it, and produced a
+      # number from somewhere else. The counts are now literals in the prompt
+      # text, so the model copies rather than derives. Rendered into RUNNER_TEMP
+      # so nothing lands in the workspace for the stray-write scan to attribute
+      # to the model.
+      - name: Render prompts with the live counts substituted in
+        run: |
+          set -e
+          python -m scripts.maintenance.render_doc_prompts \
+            --live refresh-inputs/live.json \
+            --repo-inventory refresh-inputs/repo_inventory.json \
+            --verify-live refresh-inputs/verify_live.json \
+            --out "$RUNNER_TEMP/prompts"
+          for P in architecture data-dependencies cost-analysis readme; do
+            test -s "$RUNNER_TEMP/prompts/${P}.md" || {
+              echo "::error::$RUNNER_TEMP/prompts/${P}.md was not rendered"; exit 1; }
+          done
+
       # ── Keep the previous versions for the loss gates ─────────────────────
       - name: Save previous doc versions
         run: |
@@ -484,7 +534,7 @@ jobs:
           set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
           mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/architecture.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/architecture.log"
+            --prompt "$(cat "$RUNNER_TEMP/prompts/architecture.md")" 2>&1 | tee "$RUNNER_TEMP/transcripts/architecture.log"
 
       - name: Regenerate 05-c-DATA_DEPENDENCIES.md
         env:
@@ -495,7 +545,7 @@ jobs:
           set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
           mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/data-dependencies.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/data-dependencies.log"
+            --prompt "$(cat "$RUNNER_TEMP/prompts/data-dependencies.md")" 2>&1 | tee "$RUNNER_TEMP/transcripts/data-dependencies.log"
 
       - name: Regenerate 05-d-COST_ANALYSIS.md
         env:
@@ -506,7 +556,7 @@ jobs:
           set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
           mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/cost-analysis.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/cost-analysis.log"
+            --prompt "$(cat "$RUNNER_TEMP/prompts/cost-analysis.md")" 2>&1 | tee "$RUNNER_TEMP/transcripts/cost-analysis.log"
 
       # README runs LAST so it can read the freshly-regenerated other docs
       # to populate the doc-map table + Mermaid embed + cost headlines.
@@ -519,7 +569,7 @@ jobs:
           set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
           mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/readme.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/readme.log"
+            --prompt "$(cat "$RUNNER_TEMP/prompts/readme.md")" 2>&1 | tee "$RUNNER_TEMP/transcripts/readme.log"
 
       # ── Verify the regenerations actually happened and are complete ──────
       # The 2026-09-01 run shipped a placeholder COST_ANALYSIS.md, a
@@ -616,6 +666,23 @@ jobs:
           cp "$RUNNER_TEMP/frozen/docs/product/infrastructure/05-e-API.md" docs/product/infrastructure/05-e-API.md
           cp "$RUNNER_TEMP/frozen/docs/INVESTMENT_MODELS_SUMMARY.md" docs/INVESTMENT_MODELS_SUMMARY.md
           echo "gate inputs restored and verified against the pre-Gemini manifest"
+          # The inventory marker blocks are the workflow's: rendered from the
+          # frozen snapshot before the model ran and told to it as off-limits.
+          # Run 24 edited inside one in 05-c and the whole refresh went red for
+          # it. The correct bytes are known exactly, so a block the model
+          # touched is rewritten from the fresh render, using the inputs just
+          # restored, and named here as a warning; the prose around it still
+          # goes through every gate. A start marker without its end is not
+          # restorable and fails loud below.
+          RESTORED=$(python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json \
+            --restore docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md)
+          if [ -n "$RESTORED" ]; then
+            while IFS= read -r LINE; do
+              echo "::warning::the model edited a rendered block; ${LINE}"
+            done <<< "$RESTORED"
+          else
+            echo "no marker block was touched by the model"
+          fi
 
       # Re-run the drawio validation against what will actually be committed:
       # the render step validated the diagrams BEFORE the model could reach
@@ -887,7 +954,7 @@ jobs:
           # The added/removed accounting the gate step produced, so a reviewer
           # sees what moved without reading the whole diff.
           DIFF_REPORT=$(cat refresh-inputs/diff_report.md 2>/dev/null || echo "_no accounting produced_")
-          DRIFT=$(cat refresh-inputs/verify_other.md 2>/dev/null || true)
+          DRIFT=$(cat refresh-inputs/verify_other.md 2>/dev/null || echo "_no docs-vs-live report produced_")
 
           # A PR may already be open for this branch from an earlier run this
           # month. `gh pr create` errors loudly in that case even though the
@@ -909,6 +976,7 @@ jobs:
           \`\`\`
 
           ${DIFF_REPORT}
+
           ${DRIFT}
 
           ## What ran

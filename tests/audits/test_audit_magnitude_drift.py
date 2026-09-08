@@ -50,8 +50,9 @@ def _row(ticker: str, tf: str, pred_bucket: int, n: int,
     }
 
 
-def test_modal_dominance_high_fires_above_70pct():
-    """The bug-class signature: one bucket dominates >=70% of bars."""
+def test_modal_dominance_high_fires_at_collapse():
+    """The bug-class signature: one bucket dominates >=90% of bars (the
+    promotion gate's collapse ceiling, shared so the two cannot disagree)."""
     from gcp.audit_magnitude_drift import (
         Report, check_modal_dominance,
     )
@@ -71,7 +72,28 @@ def test_modal_dominance_high_fires_above_70pct():
     assert "98" in f.detail  # the 98% share appears in the message
 
 
-def test_modal_dominance_medium_fires_55_to_70():
+def test_modal_dominance_medium_for_a_model_over_the_base_rate():
+    """slv7m IWM/15m: TIGHT on 76% of bars against a ~68.7% base rate. The
+    detector has no labels, so it cannot apply the gate's relative criterion;
+    this is MEDIUM (eyeball), not HIGH (collapsed). Before #1025 the HIGH
+    tier sat at 70% and would have paged on a promotable model every day."""
+    from gcp.audit_magnitude_drift import (
+        Report, check_modal_dominance, MODAL_DOMINANCE_HIGH,
+    )
+    assert MODAL_DOMINANCE_HIGH == 0.90
+    rows = [
+        _row("IWM", "15m", 0, 761),
+        _row("IWM", "15m", 1, 191),
+        _row("IWM", "15m", 2, 42),
+        _row("IWM", "15m", 3, 6),
+    ]
+    r = Report()
+    check_modal_dominance(rows, r)
+    assert len(r.findings) == 1
+    assert r.findings[0].severity == "MEDIUM"
+
+
+def test_modal_dominance_medium_fires_55_to_90():
     """Mild bias gets a MEDIUM finding — eyeball, don't page."""
     from gcp.audit_magnitude_drift import (
         Report, check_modal_dominance,
