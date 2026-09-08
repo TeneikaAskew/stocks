@@ -210,18 +210,23 @@ def av_news_to_rows(feed: list[dict]) -> list[dict]:
     skipped: list[str] = []
     malformed: list[str] = []
     for art in feed:
-        pub_raw = art.get("time_published") or ""
+        pub_raw = art.get("time_published")
+        # Check the TYPE rather than catching what slicing a wrong one throws.
+        # `{"t": 1}[:15]` raises TypeError on Python 3.11 and KeyError on 3.12,
+        # where slices became hashable — so an except clause listing types is
+        # right on one interpreter and wrong on the other, and CI proved it.
+        # A `time_published` that is not a string is malformed in exactly the
+        # way a garbage string is: the article is dropped and the drop is
+        # visible (EXTERNAL data, CLAUDE.md 3.7; Codex on #1022).
+        if not isinstance(pub_raw, str):
+            skipped.append(repr(pub_raw))
+            continue
         try:
             pub_ts = datetime.strptime(pub_raw[:15], "%Y%m%dT%H%M%S").replace(
                 tzinfo=timezone.utc,
             )
-        except (ValueError, TypeError):
-            # Vendor data we do not control (EXTERNAL): the article is
-            # dropped, and the drop is visible (CLAUDE.md 3.7). TypeError
-            # covers a non-string time_published, which is malformed in
-            # the same way a garbage string is and must not take the run
-            # down with it (Codex on #1022).
-            skipped.append(pub_raw if isinstance(pub_raw, str) else repr(pub_raw))
+        except ValueError:
+            skipped.append(pub_raw)
             continue
         title = _av_text(art, "title", 500, malformed)
         url = _av_text(art, "url", 1000, malformed)

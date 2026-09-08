@@ -272,5 +272,12 @@ def test_a_non_string_vendor_timestamp_is_dropped_not_raised(caplog):
     with caplog.at_level(logging.WARNING, logger="gcp.backfill_ticker"):
         rows = av_news_to_rows(feed)
     assert [r["ticker"] for r in rows] == ["AMD"], "the well-formed article must survive"
+    # The dict case is the one that made the exception type interpreter-
+    # dependent: `{"t": 1}[:15]` is a TypeError on 3.11 and a KeyError on
+    # 3.12, where slices became hashable. The parser checks the type instead
+    # of listing what slicing a wrong one throws, so neither is reachable.
+    assert "isinstance(pub_raw, str)" in __import__("inspect").getsource(
+        __import__("gcp.backfill_ticker", fromlist=["av_news_to_rows"])), \
+        "the guard must be a type check, not an except clause"
     assert "3" in caplog.text and "skipped" in caplog.text.lower()
     assert "20260908" in caplog.text, "the skip log must name what was dropped"
