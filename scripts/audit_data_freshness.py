@@ -586,6 +586,11 @@ def _query_freshness_one(
     # Measure lag relative to expected session close, not wall clock.
     # Wall-clock lag inflates over weekends/holidays (e.g., Friday data looks
     # 65h old on Monday morning), causing false stale alarms.
+    # ISSUE-1066: this 20:00 UTC is only 16:00 ET during EDT; under EST
+    # (winter) 16:00 ET is 21:00 UTC, so lag_hours under-counts by up to 1h
+    # for every check in CHECKS, not just this one. See issue for why a
+    # fix belongs in a dedicated PR (ET-aware close, full regression
+    # across every check) rather than here.
     expected_close_dt = datetime.combine(expected_date, time(20, 0, 0))  # 4 PM ET = 20:00 UTC
     lag_hours = max(0, (expected_close_dt - last_dt).total_seconds() / 3600.0)
     expected_max = check["expected_lag_hours"]

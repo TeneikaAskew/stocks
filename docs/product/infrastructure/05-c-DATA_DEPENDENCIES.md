@@ -488,7 +488,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `daily_rates`
 - [`lib/options_exec_backtest/runner.py`](../../../lib/options_exec_backtest/runner.py) — line [207](../../../lib/options_exec_backtest/runner.py#L207)
 - [`lib/options_greeks.py`](../../../lib/options_greeks.py) — line [196](../../../lib/options_greeks.py#L196), [202](../../../lib/options_greeks.py#L202)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 
 ### `earnings_calendar`
 - [`gcp/earnings_long_watchlist.py`](../../../gcp/earnings_long_watchlist.py) — line [149](../../../gcp/earnings_long_watchlist.py#L149)
@@ -507,7 +507,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1264](../../../lib/agents/summarizers.py#L1264)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [234](../../../lib/strategies/catalyst_proximity.py#L234)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [446](../../../platform/api/routers/catalysts.py#L446), [716](../../../platform/api/routers/catalysts.py#L716)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 - [`scripts/fetch_earnings_calendar.py`](../../../scripts/fetch_earnings_calendar.py) — line [357](../../../scripts/fetch_earnings_calendar.py#L357)
 
 ### `earnings_calibration`
@@ -559,7 +559,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1255](../../../lib/agents/summarizers.py#L1255)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [194](../../../lib/strategies/catalyst_proximity.py#L194)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [416](../../../platform/api/routers/catalysts.py#L416)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 - [`scripts/check_event_window_concentration.py`](../../../scripts/check_event_window_concentration.py) — line [61](../../../scripts/check_event_window_concentration.py#L61)
 
 ### `etf_options_daily_greeks`
@@ -587,7 +587,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/routers/options.py`](../../../platform/api/routers/options.py) — line [349](../../../platform/api/routers/options.py#L349), [451](../../../platform/api/routers/options.py#L451), [457](../../../platform/api/routers/options.py#L457), [567](../../../platform/api/routers/options.py#L567), [573](../../../platform/api/routers/options.py#L573), [586](../../../platform/api/routers/options.py#L586)
 - [`scripts/analysis/calibrate_intraday_theta.py`](../../../scripts/analysis/calibrate_intraday_theta.py) — line [52](../../../scripts/analysis/calibrate_intraday_theta.py#L52)
 - [`scripts/analysis/options_pnl_translation.py`](../../../scripts/analysis/options_pnl_translation.py) — line [258](../../../scripts/analysis/options_pnl_translation.py#L258), [359](../../../scripts/analysis/options_pnl_translation.py#L359)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1019](../../../scripts/audit_data_freshness.py#L1019), [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1024](../../../scripts/audit_data_freshness.py#L1024), [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [125](../../../scripts/backfill_watchlist_data.py#L125)
 - [`scripts/implied_vs_realized_check.py`](../../../scripts/implied_vs_realized_check.py) — line [115](../../../scripts/implied_vs_realized_check.py#L115), [130](../../../scripts/implied_vs_realized_check.py#L130)
 - [`scripts/maintenance/compute_spx_greeks.py`](../../../scripts/maintenance/compute_spx_greeks.py) — line [91](../../../scripts/maintenance/compute_spx_greeks.py#L91), [101](../../../scripts/maintenance/compute_spx_greeks.py#L101), [121](../../../scripts/maintenance/compute_spx_greeks.py#L121)
@@ -600,7 +600,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [95](../../../gcp/historical_signals.py#L95), [98](../../../gcp/historical_signals.py#L98)
 - [`platform/api/routers/signals.py`](../../../platform/api/routers/signals.py) — line [169](../../../platform/api/routers/signals.py#L169), [192](../../../platform/api/routers/signals.py#L192), [368](../../../platform/api/routers/signals.py#L368), [410](../../../platform/api/routers/signals.py#L410)
 - [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [316](../../../scripts/analyze_timeframe_heuristic.py#L316)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 - [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [73](../../../scripts/backfill_timeframe_tags.py#L73)
 - [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [382](../../../scripts/signal_quality_report.py#L382)
 
@@ -621,7 +621,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [357](../../../gcp/insight_pipeline_job.py#L357)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [284](../../../lib/strategies/insight_cache.py#L284)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [209](../../../platform/api/routers/insights.py#L209), [221](../../../platform/api/routers/insights.py#L221), [242](../../../platform/api/routers/insights.py#L242), [278](../../../platform/api/routers/insights.py#L278)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [247](../../../scripts/backfill_and_replay.py#L247)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [154](../../../scripts/backfill_history_tables.py#L154), [188](../../../scripts/backfill_history_tables.py#L188), [189](../../../scripts/backfill_history_tables.py#L189)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [365](../../../scripts/validation/validate_brief_accuracy.py#L365)
@@ -642,7 +642,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/intraday_gex.py`](../../../lib/features/intraday_gex.py) — line [231](../../../lib/features/intraday_gex.py#L231)
 
 ### `job_runs`
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1224](../../../scripts/audit_data_freshness.py#L1224)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1229](../../../scripts/audit_data_freshness.py#L1229)
 
 ### `journal_entries`
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1543](../../../lib/agents/summarizers.py#L1543)
@@ -678,7 +678,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [743](../../../platform/api/routers/catalysts.py#L743)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [150](../../../platform/api/routers/dashboard.py#L150), [279](../../../platform/api/routers/dashboard.py#L279)
 - [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [408](../../../platform/api/routers/live.py#L408)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1004](../../../scripts/audit_data_freshness.py#L1004), [1011](../../../scripts/audit_data_freshness.py#L1011), [1135](../../../scripts/audit_data_freshness.py#L1135), [1143](../../../scripts/audit_data_freshness.py#L1143), [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1009](../../../scripts/audit_data_freshness.py#L1009), [1016](../../../scripts/audit_data_freshness.py#L1016), [1140](../../../scripts/audit_data_freshness.py#L1140), [1148](../../../scripts/audit_data_freshness.py#L1148), [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [240](../../../scripts/backfill_and_replay.py#L240)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [109](../../../scripts/backfill_watchlist_data.py#L109)
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [127](../../../scripts/deep_backfill_ticker.py#L127)
@@ -699,7 +699,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [592](../../../lib/options_intraday.py#L592)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [622](../../../platform/api/main.py#L622), [767](../../../platform/api/main.py#L767), [1263](../../../platform/api/main.py#L1263), [1617](../../../platform/api/main.py#L1617), [1635](../../../platform/api/main.py#L1635)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../scripts/analysis/per_ticker_calibration.py#L208), [205](../../../scripts/analysis/per_ticker_calibration.py#L205)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [117](../../../scripts/backfill_watchlist_data.py#L117)
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [232](../../../scripts/calibrate_thresholds.py#L232)
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [119](../../../scripts/replay_signal_monitor.py#L119), [494](../../../scripts/replay_signal_monitor.py#L494)
@@ -750,7 +750,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `playbook_cards`
 - [`platform/api/routers/playbook.py`](../../../platform/api/routers/playbook.py) — line [156](../../../platform/api/routers/playbook.py#L156), [161](../../../platform/api/routers/playbook.py#L161), [168](../../../platform/api/routers/playbook.py#L168)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 
 ### `playbook_cards_staging`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
@@ -762,7 +762,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [336](../../../lib/movement_statement.py#L336), [408](../../../lib/movement_statement.py#L408)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [109](../../../platform/api/routers/dashboard.py#L109), [117](../../../platform/api/routers/dashboard.py#L117)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [104](../../../scripts/backfill_history_tables.py#L104), [127](../../../scripts/backfill_history_tables.py#L127), [128](../../../scripts/backfill_history_tables.py#L128)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [336](../../../scripts/validation/validate_brief_accuracy.py#L336)
 
@@ -800,7 +800,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analysis/per_factor_walkforward.py`](../../../scripts/analysis/per_factor_walkforward.py) — line [254](../../../scripts/analysis/per_factor_walkforward.py#L254)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [196](../../../scripts/analysis/per_ticker_calibration.py#L196)
 - [`scripts/analysis/verify_brief_bias.py`](../../../scripts/analysis/verify_brief_bias.py) — line [153](../../../scripts/analysis/verify_brief_bias.py#L153)
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [689](../../../scripts/audit_data_freshness.py#L689)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [534](../../../scripts/audit_data_freshness.py#L534), [535](../../../scripts/audit_data_freshness.py#L535), [694](../../../scripts/audit_data_freshness.py#L694)
 
 ### `signal_metrics`
 - [`gcp/signal_quality_alarm.py`](../../../gcp/signal_quality_alarm.py) — line [174](../../../gcp/signal_quality_alarm.py#L174), [198](../../../gcp/signal_quality_alarm.py#L198)
