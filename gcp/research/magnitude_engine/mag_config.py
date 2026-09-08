@@ -286,6 +286,17 @@ PROMOTION_COLLAPSE_MODAL_SHARE = 0.90
 PROMOTION_MAX_MODAL_EXCESS = 0.10
 PROMOTION_MIN_DISTINCT_CLASSES = 2
 
+# 2026-09-08 (#1025): the three criteria above judge the prediction
+# DISTRIBUTION, which says a candidate is not stuck on one bucket. They do not
+# say it learned anything, and `magnitude-engine-slv7m` promoted three cells
+# on them alone whose walk-forward verdict was FAIL -- SPY/15m and QQQ/15m
+# beat the class-prior baseline on 0 of 8 folds (gate 1) and cleared the ECE
+# ceiling on 2 of 8 (gate 2), then served the Expected-Move card. Promotion now
+# also requires `cell_pass_gates_1_to_4` from the cell's own walk-forward run;
+# mag_walk_forward.walk_forward_gate_reason holds that check and the persist
+# path refuses on either criterion, writing PROMOTION_BLOCKED with both.
+# The gates themselves live in ECE_CEILING_BY_TF / SUCCESS_BAR_* above.
+
 
 # ─────────────────────── Storage ───────────────────────
 GCS_BUCKET_DEFAULT = "adept-mountain-474619-d4-trading-data"

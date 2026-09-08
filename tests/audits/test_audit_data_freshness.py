@@ -339,6 +339,52 @@ def test_gap_scan_silent_when_no_gaps(monkeypatch):
     assert out == []
 
 
+def test_gap_scan_matches_present_day_when_ts_is_date_returns_timestamp(monkeypatch):
+    """`ts_is_date=True` columns (e.g. playbook_cards.analysis_date) come back
+    from `pd.read_sql` over the production SQLAlchemy/pg8000 connection as
+    `pandas.Timestamp`, not a bare `datetime.date`. Issue #1035: the watchdog
+    reported playbook_cards as a total gap (0 of 3 expected days present) for
+    IWM/SPY/QQQ even though a direct SQL check showed all 12 rows/ticker/day
+    were there — `Timestamp` is itself a `date` subclass, so the old
+    `d if isinstance(d, date) else d.date()` never called `.date()`, and a
+    bare `date` never compares equal to a `Timestamp` in the resulting set.
+    """
+    from scripts import audit_data_freshness as mod
+    from scripts.audit_data_freshness import _query_gap_scan
+
+    days = [date(2026, 9, 8), date(2026, 9, 4), date(2026, 9, 3)]
+    # Only 2026-09-08 has rows — the production shape that triggered #1035:
+    # a real, partial gap (09-03/09-04 predate the writer job's revival)
+    # must still be reported as PARTIAL, not as every day missing.
+    rows = [{"ticker": t, "d": pd.Timestamp(days[0]), "c": 12}
+            for t in ("IWM", "SPY", "QQQ")]
+    monkeypatch.setattr(
+        mod, "query_to_dataframe",
+        lambda sql, params: pd.DataFrame(rows),
+    )
+
+    check = {
+        "name": "playbook_cards", "ts_column": "analysis_date",
+        "ts_is_date": True, "per_ticker": True,
+        "gap_scan_days": 3, "tickers": ["IWM", "SPY", "QQQ"],
+        "writer_job": "phase6-playbook",
+        "settle_hour_et": 5,  # matches the real CHECKS entry
+    }
+    # 12:25 UTC = 08:25 ET, past the 05:00 settle hour, so 09-08 is
+    # already the anchor day — the same wall-clock position as the
+    # freshness-watchdog run that produced the false "(none)" report.
+    now = datetime(2026, 9, 8, 12, 25, 0)
+    out = _query_gap_scan(check, now)
+
+    assert len(out) == 3
+    for row in out:
+        # 1 of 3 expected days present (09-08), not 0 — the bug reported 0.
+        assert row.row_count_recent == 1, (
+            f"{row.ticker}: expected 1 present day (09-08 matched via "
+            f"Timestamp), got {row.row_count_recent}"
+        )
+
+
 def test_gap_scan_returns_empty_for_non_per_ticker_check(monkeypatch):
     """`per_ticker=False` → not applicable, return []."""
     from scripts.audit_data_freshness import _query_gap_scan
