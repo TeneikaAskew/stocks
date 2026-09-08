@@ -181,12 +181,25 @@ body:
         # measured, `code-reviewer` returns 0 commits without it and 2 with it.
         # Meanwhile these forms name example symbols, so leaving ISSUE_TEMPLATE
         # in returns commits that touched only this prose and none of the code.
+        # .claude/agents IS implementation history; .claude/commands is BOTH,
+        # and mixing them buries the answer. Measured on TradingAlertSystem,
+        # which this resolver cites as its worked example: the combined form
+        # returned FOUR commits, every one of them an edit to
+        # .claude/commands/resolve-issue.md and none a consumer change — and
+        # --no-patch shows only summaries, so they read like real history.
+        # Split, and label which is which:
         $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames \
-            -- lib gcp platform scripts .github tests .claude \
+            -- lib gcp platform scripts .github tests .claude/agents \
                ':!.github/ISSUE_TEMPLATE/'
         <sha> (date) added it and wired it into <the caller>
         <sha> (date) rewrote that caller, silently dropping the mount
+
+        # Then .claude/commands SEPARATELY. For a slash-command surface these ARE
+        # its implementation history; for anything else they are this resolver's
+        # own prose about the example. Read them knowing which you have.
+        $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
+            -G "<symbol>" --no-renames -- .claude/commands
 
         The shape of a conclusive answer: the second commit enumerates the new code's
         contents and never mentions the removal. That reads as accidental rewrite debris

@@ -784,6 +784,13 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
 # and an empty argument that silently skipped its half is exactly how a live
 # resource passes a retirement check. Empty is refused; skipping is deliberate.
 retired_everywhere() {   # $1 = Cloud Run Job or 'none', $2 = Scheduler or 'none'
+  # PIN THE PROJECT. The active gcloud project is ambient state this function
+  # does not control, and the empty-inventory guard below cannot catch a wrong
+  # one: another project with jobs of its own returns a NON-empty list that
+  # simply lacks these names, which reads as "retired" while the production
+  # resources are untouched. gcp/deploy.sh and every recipe in CLAUDE.md pass
+  # --project explicitly for the same reason.
+  local proj=${GCP_PROJECT:-adept-mountain-474619-d4}
   local job=$1 sched=$2 list
   test -n "$job" && test -n "$sched" || {
     echo "usage: retired_everywhere <job|none> <scheduler|none>"
@@ -793,14 +800,16 @@ retired_everywhere() {   # $1 = Cloud Run Job or 'none', $2 = Scheduler or 'none
   test "$job$sched" != nonenone \
     || { echo "both 'none' — nothing to assert"; return 1; }
   if [ "$job" != none ]; then
-    list=$(gcloud run jobs list --region=us-east1 --format='value(metadata.name)') \
+    list=$(gcloud run jobs list --project="$proj" --region=us-east1 \
+             --format='value(metadata.name)') \
       || { echo "job listing FAILED — asserting nothing"; return 1; }
     test -n "$list" \
       || { echo "job inventory EMPTY — wrong projection? asserting nothing"; return 1; }
     ! grep -qx "$job" <<<"$list" || { echo "$job still exists"; return 1; }
   fi
   if [ "$sched" != none ]; then
-    list=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') \
+    list=$(gcloud scheduler jobs list --project="$proj" --location=us-east1 \
+             --format='value(name.basename())') \
       || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
     test -n "$list" \
       || { echo "scheduler inventory EMPTY — wrong projection? asserting nothing"; return 1; }
