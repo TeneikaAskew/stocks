@@ -1352,6 +1352,8 @@ def test_infrastructure_errors_are_classified_by_type():
                 pg_errors.ProtocolViolation("protocol violation"),      # 08P01
                 pg_errors.AdminShutdown("terminating connection"),      # 57P01
                 pg_errors.CannotConnectNow("starting up"),              # 57P03
+                pg_errors.DatabaseDropped("database has been dropped"), # 57P04
+                pg_errors.IdleSessionTimeout("idle-session timeout"),   # 57P05
                 pg_errors.TooManyConnections("too many clients"),       # 53300
                 pg_errors.DiskFull("could not write"),                  # 53100
                 pg_errors.OutOfMemory("out of memory"),                 # 53200
@@ -1360,6 +1362,7 @@ def test_infrastructure_errors_are_classified_by_type():
     for exc in (pg_errors.InvalidPassword("password authentication failed"),
                 pg_errors.InvalidAuthorizationSpecification("no role"),  # 28000
                 pg_errors.QueryCanceled("canceling statement"),          # 57014
+                pg_errors.OperatorIntervention("intervention"),          # 57000
                 pg_errors.ObjectInUse("database is being accessed")):    # 55006
         assert isinstance(exc, psycopg2.OperationalError), type(exc).__name__
         assert not is_infrastructure_error(exc), type(exc).__name__
@@ -1425,12 +1428,12 @@ def test_infrastructure_errors_are_classified_by_type():
     # SQLSTATE under `C` decides. A failover's shutdown, a lost connection
     # and an exhausted server are outages; our SQL being wrong is not
     # (Codex P1 on #999).
-    for code in ("57P01", "57P02", "57P03", "08006", "08003", "08001", "53300",
-                 "53100", "53200", "58030", "XX001"):
+    for code in ("57P01", "57P02", "57P03", "57P04", "57P05", "08006", "08003",
+                 "08001", "53300", "53100", "53200", "58030", "XX001"):
         assert is_infrastructure_error(pg8000_exc.DatabaseError(
             {"S": "FATAL", "C": code, "M": "terminating connection"})), code
-    for code in ("42601", "42P01", "23505", "22P02", "0A000", "57014", "28P01",
-                 "3D000", "F0000", "55006"):
+    for code in ("42601", "42P01", "23505", "22P02", "0A000", "57014", "57000",
+                 "28P01", "3D000", "F0000", "55006"):
         assert not is_infrastructure_error(pg8000_exc.DatabaseError(
             {"S": "ERROR", "C": code, "M": "syntax error at or near"})), code
     assert not is_infrastructure_error(pg8000_exc.DatabaseError("no payload"))

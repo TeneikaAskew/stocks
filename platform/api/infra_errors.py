@@ -311,14 +311,19 @@ def _tls_transport_failure(exc: BaseException) -> bool:
 #: exception"; 53 is "insufficient resources" (disk full, out of memory, too
 #: many connections -- capacity outages of the same kind as the pool's
 #: `TimeoutError`); 58 is "system error" (I/O); XX is "internal error", the
-#: server's own. 57P01, 57P02 and 57P03 are what a Cloud SQL restart or
+#: server's own. Class 57, "operator intervention", is taken by code rather
+#: than as a class: 57P01, 57P02 and 57P03 are what a Cloud SQL restart or
 #: failover sends every open session -- administrator shutdown, crash
-#: shutdown, cannot connect now -- and are the only members of class 57:
-#: 57014 is query_canceled, a statement timeout on a query of OURS. Class 28
-#: (a bad credential), 3D (no such database), F0 (the server's config file)
-#: and 55 (an object in the wrong state) are permanent and stay loud.
+#: shutdown, cannot connect now; 57P04 is database_dropped and 57P05 is
+#: idle_session_timeout, both of which the server sends as it terminates the
+#: session (Codex P2 on #999); 57014 is query_canceled, a statement timeout
+#: on a query of OURS, and 57000 is the bare class code, and neither is an
+#: outage. Class 28 (a bad credential), 3D (no such database), F0 (the
+#: server's config file) and 55 (an object in the wrong state) are permanent
+#: and stay loud.
 _SERVER_GONE_SQLSTATE_CLASSES: frozenset[str] = frozenset({"08", "53", "58", "XX"})
-_SERVER_GONE_SQLSTATES: frozenset[str] = frozenset({"57P01", "57P02", "57P03"})
+_SERVER_GONE_SQLSTATES: frozenset[str] = frozenset(
+    {"57P01", "57P02", "57P03", "57P04", "57P05"})
 
 
 def _server_gone(sqlstate) -> bool:
