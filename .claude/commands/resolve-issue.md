@@ -1813,6 +1813,33 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
         echo "  an implementation argument."
         return 1;;
     esac
+    # A BACKSLASH INSIDE A BRACKET EXPRESSION IS A MEMBER TO ONE ENGINE AND AN
+    # ESCAPE TO THE OTHER. Round 64 refused an escaped alphanumeric, but its
+    # walk runs on `_bare` — the text left after these spans are STRIPPED — so
+    # `[\d]3` never reached it. Measured end to end at 1e2677f, on a manifest
+    # declaring d3 with package.json excluded from the grep scopes as
+    # EXCLUDE_SOLYRA has it: `consumed '[\d]3'` returned 1, "nothing,
+    # anywhere", while `consumed 'd3'` returned 0 and npm still installs it.
+    # The rule here is WIDER than round 64's, because the context is different.
+    # Outside a class an escaped punctuation mark is a literal to both engines,
+    # which is why that stayed allowed. Inside one, POSIX makes the backslash
+    # itself a MEMBER and Oniguruma makes it an escape, so the two classes
+    # differ whatever follows it — measured:
+    #     grep -E '[\d]3'  hits d3 and \3      jq test('[\d]3')  hits 03
+    #     grep -E '[\.]3'  hits .3 and \3      jq test('[\.]3')  hits .3
+    # and there is no portable spelling for a literal backslash in a class to
+    # lose by refusing all of them.
+    case $_span in
+      *'\'*)
+        echo "'$1' has a backslash inside a bracket expression. POSIX reads it"
+        echo "  as a literal MEMBER of the class and jq's engine reads it as an"
+        echo "  escape, and this file uses both — the package.json dependency"
+        echo "  scan is jq, every other scope is grep -E. Measured: '[\d]3'"
+        echo "  matches d3 under grep and only 03..93 under jq, so a dependency"
+        echo "  can read as absent while npm still installs it. Spell the class"
+        echo "  out, e.g. [0-9]."
+        return 1;;
+    esac
     case $_span in
       *'|'*) echo "'$1' has a '|' inside a bracket expression. The three splits"
              echo "  on '|' in this file would cut there and rebuild a pattern"
