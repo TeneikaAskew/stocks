@@ -747,20 +747,41 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
 # only half of it: ANY future projection change fails loudly instead of passing.
 # An inventory that comes back empty when ~35 jobs exist is a broken query, not
 # an empty account, and it must never be read as "absent".
-retired_everywhere() {   # $1 = Cloud Run Job name, $2 = Cloud Scheduler name
+# Either resource may be OUT OF SCOPE, and saying so is explicit. Not every
+# retirement removes both: the dormant-surface form has an "Unscheduled — the
+# job exists and is deployable but no scheduler fires it" condition, and this
+# repo's own Cloud-Run migration convention deliberately keeps a manually
+# runnable job with its cron removed. Demanding both names turned those into an
+# unconditional failure — measured, `retired_everywhere "phase6-playbook" ""`
+# refused outright.
+#
+# So pass the literal `none` for a resource this retirement does not touch.
+# `none`, not an empty string: an unset or misspelled variable expands to empty,
+# and an empty argument that silently skipped its half is exactly how a live
+# resource passes a retirement check. Empty is refused; skipping is deliberate.
+retired_everywhere() {   # $1 = Cloud Run Job or 'none', $2 = Scheduler or 'none'
   local job=$1 sched=$2 list
-  test -n "$job" && test -n "$sched" \
-    || { echo "need BOTH names: retired_everywhere <job> <scheduler>"; return 1; }
-  list=$(gcloud run jobs list --region=us-east1 --format='value(metadata.name)') \
-    || { echo "job listing FAILED — asserting nothing"; return 1; }
-  test -n "$list" \
-    || { echo "job inventory EMPTY — wrong projection? asserting nothing"; return 1; }
-  ! grep -qx "$job" <<<"$list" || { echo "$job still exists"; return 1; }
-  list=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') \
-    || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
-  test -n "$list" \
-    || { echo "scheduler inventory EMPTY — wrong projection? asserting nothing"; return 1; }
-  ! grep -qx "$sched" <<<"$list" || { echo "$sched trigger still exists"; return 1; }
+  test -n "$job" && test -n "$sched" || {
+    echo "usage: retired_everywhere <job|none> <scheduler|none>"
+    echo "pass 'none' EXPLICITLY for a resource this retirement does not touch;"
+    echo "an empty argument is a typo, and a skipped check is a false pass."
+    return 1; }
+  test "$job$sched" != nonenone \
+    || { echo "both 'none' — nothing to assert"; return 1; }
+  if [ "$job" != none ]; then
+    list=$(gcloud run jobs list --region=us-east1 --format='value(metadata.name)') \
+      || { echo "job listing FAILED — asserting nothing"; return 1; }
+    test -n "$list" \
+      || { echo "job inventory EMPTY — wrong projection? asserting nothing"; return 1; }
+    ! grep -qx "$job" <<<"$list" || { echo "$job still exists"; return 1; }
+  fi
+  if [ "$sched" != none ]; then
+    list=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') \
+      || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
+    test -n "$list" \
+      || { echo "scheduler inventory EMPTY — wrong projection? asserting nothing"; return 1; }
+    ! grep -qx "$sched" <<<"$list" || { echo "$sched trigger still exists"; return 1; }
+  fi
 }
 # ONE call, `&&`-chained. Two bare calls have the same defect the functions
 # were written to remove, one level up: if the code is still referenced but both

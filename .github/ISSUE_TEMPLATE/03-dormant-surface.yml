@@ -117,6 +117,22 @@ body:
         both alternatives, so the pattern occurs 149 times. Use `git grep -Eo`
         if you mean occurrences; say which one your number is.)
 
+        # THE SEARCH ABOVE IS NOT THE WHOLE ANSWER. It excludes *.md and
+        # .claude/commands/ because those cite example symbols in their own
+        # prose — but .claude/agents/*.md and .claude/commands/*.md are also
+        # EXECUTABLE, and a Claude agent or slash command is a surface you can
+        # be retiring. Measured: gcp-config-reviewer returns NO MATCHES above
+        # while .claude/agents/pre-deploy-check.md:75 delegates to it on every
+        # deploy. So run these two as well, and exclude the surface's OWN
+        # definition file — an agent always matches itself, which would make
+        # every agent look consumed:
+        $ git grep -n "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ git grep -n "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        A hit in .claude/commands/ is AMBIGUOUS, not proof: it may be a real
+        route (`/debug-workflow`) or one of these forms quoting an example.
+        Read the two or three lines and say which. The resolver's Phase 4
+        helper returns a distinct exit code for exactly this case.
+
         solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
         Both live. So this is Tier 1: stale rows rendered as today's setups.
     validations:
