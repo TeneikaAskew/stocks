@@ -686,16 +686,36 @@ git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
 # bash exits **127**, and `test $rc -eq 1` then rejects every correctly
 # deleted surface, so the before/after proof this phase demands could never
 # be produced. Phase 2 describes the search; this block is what runs.
+# THE EXCLUSION SET IS PER-REPO, and consumed() runs in BOTH. Hardcoding
+# stocks' set and then `cd`-ing into solyra leaves solyra's own generated
+# artifacts in the search — measured, retiring an API surface leaves exactly one
+# non-consumer hit there, `tests/fixtures/stocks-openapi.json`. That one is
+# fatal rather than noisy: solyra vendors it FROM stocks `main`
+# (scripts/sync-api-contract.mjs:27), so it cannot stop naming a retired route
+# until this PR merges, while the assertion is required BEFORE merge. The
+# check would never pass. Note stocks' own platform/api/openapi.json stays IN
+# for the opposite reason — it is regenerated in the same PR, so a leftover
+# there is a real "you did not regenerate it".
+EXCLUDE_SHARED=( ':!docs/' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/'
+                 ':!*.md' ':!*.drawio' )
+EXCLUDE_STOCKS=( "${EXCLUDE_SHARED[@]}" ':!archive/' ':!gcp/research/_archive/'
+                 ':!*.disabled' ':!tests/fixtures/live_gcp_snapshot_*.json' )
+EXCLUDE_SOLYRA=( "${EXCLUDE_SHARED[@]}" ':!package-lock.json' ':!bun.lock'
+                 ':!package.json' ':!tests/fixtures/stocks-openapi.json' )
+
 consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/commands
   # $1 = symbol. $2.. = command files you have READ and confirmed are prose,
   # not routes — see the rc=3 note below. Naming them is the point; there is no
   # blanket override, because a flag you can set without looking is not a review.
+  # EXCLUDE must be set by the caller to the array for the repo you are in.
   local sym=$1; shift
   local a b c rc reviewed=()
+  test ${#EXCLUDE[@]} -gt 0 \
+    || { echo "EXCLUDE unset — set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA first;"
+         echo "an empty exclusion set searches prose and generated files too."
+         return 2; }
   for rc in "$@"; do reviewed+=(":!$rc"); done
-  git grep -q "$sym" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
-    ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
-    ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; a=$?
+  git grep -q "$sym" -- . "${EXCLUDE[@]}"; a=$?
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
@@ -740,9 +760,12 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
   # Pass through any command files you inspected and confirmed are prose. Leave
   # REVIEWED empty until consumed() has actually printed lines and you have read
   # them; pre-filling it is how a route gets waved through as an example.
+  EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )
   consumed "<symbol>" $REVIEWED; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
-  ( cd "$SOLYRA" && consumed "<symbol>" $REVIEWED_SOLYRA ); rc=$?
+  ( cd "$SOLYRA" || exit 2
+    EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
+    consumed "<symbol>" $REVIEWED_SOLYRA ); rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
 }
 
