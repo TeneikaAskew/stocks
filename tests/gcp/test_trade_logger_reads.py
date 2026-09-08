@@ -136,14 +136,15 @@ def test_a_failed_cloud_sql_query_still_reaches_parquet(tmp_path):
         assert sorted(tl.get_daily_trades(d1)["trade_id"]) == [1]
 
 
-def test_log_trade_requires_provenance():
+def test_log_trade_requires_provenance(tmp_path):
     """The stamp lives in the writer's contract, not only in the one
     caller: a trade without run_kind is refused, so the Parquet null-as-
     live rule can only ever apply to rows written before the stamp."""
     import pytest
-    tl = TradeLogger(output_dir="/nonexistent-never-written")
+    tl = TradeLogger(output_dir=str(tmp_path))
     with pytest.raises(ValueError, match="run_kind"):
         tl.log_trade({"ticker": "SPY", "direction": "CALL", "entry_time": "2026-09-07T14:31:00"})
+    assert not list(tmp_path.glob("*.parquet")), "a refused trade writes nothing"
 
 
 def test_empty_all_trades_keeps_the_union_of_the_files_columns(tmp_path):
