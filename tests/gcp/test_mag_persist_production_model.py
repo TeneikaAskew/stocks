@@ -16,6 +16,7 @@ file imports cleanly without google-cloud-* / sklearn installed.
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -977,3 +978,57 @@ def test_walk_forward_writes_under_the_namespace_it_resolved():
         "label_mode=label_mode, thresholds=thresholds)") == 2
     # and the persist path is told the same semantics it wrote under
     assert "gates=gates, label_mode=label_mode, thresholds=thresholds," in src
+
+
+# ─────── the namespace has to reach every consumer of the artifacts ───────
+
+def test_analysis_loader_reads_the_research_namespace():
+    """The post-hoc scripts search a prefix they build themselves. Moving the
+    predictions CSV without teaching them would make gate 7 and the other
+    required evidence exit claiming the run has no predictions — for exactly
+    the runs the namespace exists to hold (Codex on #1055)."""
+    sys.path.insert(0, "scripts")
+    from _magnitude_analysis_helpers import research_prefix
+    from gcp.research.magnitude_engine.mag_config import gcs_run_prefix
+
+    assert research_prefix("phase0", "SPY", "15m") == \
+        gcs_run_prefix("phase0", "SPY", "15m") + "/"
+    assert research_prefix("phase0", "SPY", "15m", "excursion") == \
+        gcs_run_prefix("phase0", "SPY", "15m",
+                       label_mode="excursion",
+                       thresholds=(0.5, 1.0, 1.5)) + "/"
+    assert research_prefix("phase0", "SPY", "15m", "t0.35-0.75-1.25") == \
+        gcs_run_prefix("phase0", "SPY", "15m", label_mode="body",
+                       thresholds=(0.35, 0.75, 1.25)) + "/"
+
+
+@pytest.mark.parametrize("script", [
+    "implied_vs_realized_check",          # gate 7
+    "bootstrap_gate_fragility",           # gate 5
+    "check_event_window_concentration",
+    "model_vs_calendar_explosive_decomp",
+    "magnitude_movement_sim",
+])
+def test_every_analysis_script_accepts_and_forwards_research(script):
+    src = pathlib.Path(f"scripts/{script}.py").read_text()
+    assert "add_research_arg(p)" in src, f"{script} cannot name the namespace"
+    assert "research=args.research" in src, f"{script} does not forward it"
+
+
+def test_research_runs_stay_out_of_the_canonical_sql_tables():
+    """magnitude_walk_forward_results is keyed (phase, ticker, tf, fold,
+    run_id) and magnitude_per_bar_predictions by (ticker, tf, ts,
+    model_version) — the same cell keys a body run uses, and neither records
+    the label contract. Research folds in there would group incomparable
+    experiments under one cell, and put other-meaning buckets into the table
+    the inference and render path reads."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    assert "research = research_namespace(label_mode, thresholds)" in src
+    persist_at = src.index("_persist_results_table(engine")
+    guard_at = src.index("if research:")
+    assert guard_at < persist_at, (
+        "the canonical-table writes must sit under the else branch of the "
+        "research guard")

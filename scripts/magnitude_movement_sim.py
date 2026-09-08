@@ -61,7 +61,8 @@ from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_TO_IDX, DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
-from scripts._magnitude_analysis_helpers import load_predictions
+from scripts._magnitude_analysis_helpers import (
+    add_research_arg, load_predictions)
 
 # Minutes in a trading year, for the implied-move scaling (mirrors gate-7).
 TRADING_MINUTES_PER_YEAR = 252 * 390
@@ -111,6 +112,7 @@ def main():
                    help="Label the predictions were trained on (for loading the "
                         "matching dataset/realized columns).")
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    add_research_arg(p)
     args = p.parse_args()
 
     print("=" * 96)
@@ -119,7 +121,8 @@ def main():
     print("=" * 96)
 
     # 1. Predictions → EXPLOSIVE-predicted bars.
-    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id)
+    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
+                                 research=args.research)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     expl = LABEL_TO_IDX["EXPLOSIVE"]
     pe = preds[preds["pred_bucket_idx"] == expl].copy()

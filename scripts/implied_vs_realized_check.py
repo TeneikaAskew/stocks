@@ -61,7 +61,8 @@ from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 # not the 365×24×60 calendar convention.
 TRADING_MINUTES_PER_YEAR = 252 * 390  # 98,280
 
-from scripts._magnitude_analysis_helpers import load_predictions
+from scripts._magnitude_analysis_helpers import (
+    add_research_arg, load_predictions)
 
 
 def load_atm_iv_per_date(engine, ticker: str,
@@ -155,6 +156,7 @@ def main():
     p.add_argument("--tf", required=True, choices=list(TIMEFRAMES))
     p.add_argument("--run-id", required=True)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    add_research_arg(p)
     p.add_argument("--label-mode", default="body",
                    choices=["body", "excursion", "call", "put"],
                    help="Must match the label the predictions were trained on. "
@@ -166,7 +168,8 @@ def main():
     iv_option_type = "puts" if args.label_mode == "put" else "calls"
 
     # Load model predictions for EXPLOSIVE filtering
-    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id)
+    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
+                                 research=args.research)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     explosive_idx = LABEL_TO_IDX["EXPLOSIVE"]
     pe = preds[preds["pred_bucket_idx"] == explosive_idx].copy()

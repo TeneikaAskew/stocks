@@ -56,7 +56,8 @@ from gcp.research.magnitude_engine.mag_config import (
     DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
-from scripts._magnitude_analysis_helpers import load_predictions, calendar_keys
+from scripts._magnitude_analysis_helpers import (
+    add_research_arg, load_predictions, calendar_keys)
 
 
 def main():
@@ -67,10 +68,12 @@ def main():
     p.add_argument("--run-id", required=True)
     p.add_argument("--bucket-minutes", type=int, default=30)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    add_research_arg(p)
     args = p.parse_args()
 
     # Load predictions
-    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id)
+    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
+                                 research=args.research)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     print(f"loaded {len(preds)} prediction rows", file=sys.stderr)
 

@@ -14,16 +14,49 @@ import pandas as pd
 from google.cloud import storage as gcs
 
 
+def add_research_arg(p) -> None:
+    """Register --research on a post-hoc analysis script.
+
+    A run under non-default label semantics writes its artifacts to a
+    sibling `_research/<slug>/` root (mag_config.gcs_run_prefix), so every
+    consumer of the prediction CSVs needs to be told which experiment it is
+    reading. Without it these scripts search only the canonical prefix and
+    exit claiming the run has no predictions — including gate 7
+    (implied_vs_realized_check), which is required post-hoc evidence for
+    exactly the research runs the namespace exists to hold.
+    """
+    p.add_argument(
+        "--research", default=None, metavar="SLUG",
+        help="Read from the research namespace with this slug (e.g. "
+             "'excursion', 't0.35-0.75-1.25', 'put__t0.35-0.75-1.25') "
+             "instead of the canonical body-label prefix. The slug is the "
+             "path segment mag_config.research_namespace() produced for the "
+             "run, and it is recorded in the run's walk_forward JSON as "
+             "label_mode + thresholds.")
+
+
+def research_prefix(phase: str, ticker: str, tf: str,
+                    research: str | None = None) -> str:
+    """GCS prefix for a cell's artifacts, canonical or research."""
+    cell = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
+    if not research:
+        return cell
+    return (f"research/magnitude_engine/_research/{research}/"
+            f"{phase}/{ticker.lower()}_{tf}/")
+
+
 def load_predictions(phase: str, ticker: str, tf: str,
-                      bucket: str, run_id: str | None) -> pd.DataFrame:
+                      bucket: str, run_id: str | None,
+                      research: str | None = None) -> pd.DataFrame:
     """Load the latest predictions CSV for a (phase, ticker, tf) cell.
 
-    Filters by run_id when supplied. Raises SystemExit when no matching
-    blob exists — callers wrap into a per-cell skip if doing a sweep.
+    Filters by run_id when supplied. `research` selects the namespace a
+    non-default-label run wrote to. Raises SystemExit when no matching blob
+    exists — callers wrap into a per-cell skip if doing a sweep.
     """
     client = gcs.Client()
     bkt = client.bucket(bucket)
-    prefix = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
+    prefix = research_prefix(phase, ticker, tf, research)
     blobs = [b for b in bkt.list_blobs(prefix=prefix)
              if b.name.endswith(".csv") and "predictions_" in b.name]
     if not blobs:

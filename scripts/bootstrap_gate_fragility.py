@@ -44,7 +44,8 @@ from gcp.research.magnitude_engine.mag_pred_train import (
     expected_calibration_error, decisive_call_hit_rate, explosive_lift,
 )
 from sklearn.metrics import log_loss
-from scripts._magnitude_analysis_helpers import load_predictions
+from scripts._magnitude_analysis_helpers import (
+    add_research_arg, load_predictions)
 
 
 def fold_gates(fold_df: pd.DataFrame, tf: str) -> dict:
@@ -156,10 +157,12 @@ def main():
     p.add_argument("--run-id", default=None)
     p.add_argument("--bootstrap-n", type=int, default=1000)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    add_research_arg(p)
     p.add_argument("--seed", type=int, default=1)
     args = p.parse_args()
 
-    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id)
+    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
+                                 research=args.research)
     print(f"\nLoaded {len(preds)} prediction rows for {args.phase} {args.ticker} {args.tf}")
     print(f"Bootstrap iterations: {args.bootstrap_n}")
 

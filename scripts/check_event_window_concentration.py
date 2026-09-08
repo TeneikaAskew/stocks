@@ -36,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from gcp.research.magnitude_engine.mag_config import (
     LABEL_CLASSES, LABEL_TO_IDX, GCS_BUCKET_DEFAULT,
 )
-from scripts._magnitude_analysis_helpers import load_predictions
+from scripts._magnitude_analysis_helpers import (
+    add_research_arg, load_predictions)
 
 
 def load_high_impact_events(min_ts: pd.Timestamp, max_ts: pd.Timestamp) -> pd.DataFrame:
@@ -176,6 +177,7 @@ def main():
     p.add_argument("--run-id", default=None)
     p.add_argument("--window-hours", type=float, default=4.0)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    add_research_arg(p)
     args = p.parse_args()
 
     if args.all_cells:
@@ -189,7 +191,8 @@ def main():
     for t in tickers:
         for tf in tfs:
             try:
-                preds = load_predictions(args.phase, t, tf, args.bucket, args.run_id)
+                preds = load_predictions(args.phase, t, tf, args.bucket, args.run_id,
+                                 research=args.research)
             except SystemExit as e:
                 print(f"\n[{args.phase} {t} {tf}] skipped: {e}")
                 continue

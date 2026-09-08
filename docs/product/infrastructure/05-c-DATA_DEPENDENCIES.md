@@ -572,7 +572,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [194](../../../lib/strategies/catalyst_proximity.py#L194)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [416](../../../platform/api/routers/catalysts.py#L416), [424](../../../platform/api/routers/catalysts.py#L424)
 - [`platform/api/routers/grid.py`](../../../platform/api/routers/grid.py) — line [925](../../../platform/api/routers/grid.py#L925)
-- [`scripts/check_event_window_concentration.py`](../../../scripts/check_event_window_concentration.py) — line [60](../../../scripts/check_event_window_concentration.py#L60)
+- [`scripts/check_event_window_concentration.py`](../../../scripts/check_event_window_concentration.py) — line [61](../../../scripts/check_event_window_concentration.py#L61)
 
 ### `etf_options_daily_greeks`
 - [`lib/features/flow_direction.py`](../../../lib/features/flow_direction.py) — line [516](../../../lib/features/flow_direction.py#L516)
@@ -603,7 +603,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analysis/options_pnl_translation.py`](../../../scripts/analysis/options_pnl_translation.py) — line [258](../../../scripts/analysis/options_pnl_translation.py#L258), [359](../../../scripts/analysis/options_pnl_translation.py#L359)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [990](../../../scripts/audit_data_freshness.py#L990)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [125](../../../scripts/backfill_watchlist_data.py#L125)
-- [`scripts/implied_vs_realized_check.py`](../../../scripts/implied_vs_realized_check.py) — line [25](../../../scripts/implied_vs_realized_check.py#L25), [72](../../../scripts/implied_vs_realized_check.py#L72), [114](../../../scripts/implied_vs_realized_check.py#L114), [129](../../../scripts/implied_vs_realized_check.py#L129)
+- [`scripts/implied_vs_realized_check.py`](../../../scripts/implied_vs_realized_check.py) — line [25](../../../scripts/implied_vs_realized_check.py#L25), [73](../../../scripts/implied_vs_realized_check.py#L73), [115](../../../scripts/implied_vs_realized_check.py#L115), [130](../../../scripts/implied_vs_realized_check.py#L130)
 - [`scripts/maintenance/compute_spx_greeks.py`](../../../scripts/maintenance/compute_spx_greeks.py) — line [91](../../../scripts/maintenance/compute_spx_greeks.py#L91), [101](../../../scripts/maintenance/compute_spx_greeks.py#L101), [113](../../../scripts/maintenance/compute_spx_greeks.py#L113), [121](../../../scripts/maintenance/compute_spx_greeks.py#L121)
 
 ### `exit_config_overrides`

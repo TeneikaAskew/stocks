@@ -920,15 +920,33 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # Race on CREATE/INDEX — fine, table will already exist by the
         # time we try to insert.
         log.info("DDL race or no-op (%s): %s", type(e).__name__, e)
+    research = research_namespace(label_mode, thresholds)
     try:
-        _persist_results_table(engine, phase, ticker, tf, folds, run_id)
-        # Per-bar predictions go here BEFORE the pop loop below drops
-        # `_predictions` from each fold dict. Skipped on phase != 'phase0'
-        # to avoid duplicating identical rows across phases (phases share
-        # the same backbone features in our config; only phase0's per-bar
-        # output is canonical for live consumers).
-        if phase == "phase0":
-            _persist_predictions_table(engine, ticker, tf, folds, run_id)
+        if research:
+            # Neither table records the label contract, and
+            # magnitude_walk_forward_results is keyed (phase, ticker, tf,
+            # fold, run_id) while magnitude_per_bar_predictions is keyed
+            # (ticker, tf, ts, model_version) — the same cell keys a body-label
+            # run uses. Writing research folds there would let SQL analysis
+            # group incomparable experiments under one cell, and would put
+            # buckets that mean something else into the very table the
+            # inference and render path reads (Codex on #1055). Adding the
+            # contract as columns is a schema migration through
+            # gcp/schema.sql, not a change this PR can make safely, so the
+            # canonical tables carry canonical labels only. The full evidence
+            # for these runs is in GCS under the namespace below.
+            log.info("research semantics (%s) — NOT writing the canonical "
+                     "Cloud SQL tables; folds and per-bar predictions are in "
+                     "GCS under _research/%s/", research, research)
+        else:
+            _persist_results_table(engine, phase, ticker, tf, folds, run_id)
+            # Per-bar predictions go here BEFORE the pop loop below drops
+            # `_predictions` from each fold dict. Skipped on phase != 'phase0'
+            # to avoid duplicating identical rows across phases (phases share
+            # the same backbone features in our config; only phase0's per-bar
+            # output is canonical for live consumers).
+            if phase == "phase0":
+                _persist_predictions_table(engine, ticker, tf, folds, run_id)
     except Exception as e:
         # Hard failure — log loud, but DON'T fail the task because GCS
         # persistence is the canonical output anyway.
