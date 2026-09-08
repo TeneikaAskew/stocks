@@ -393,6 +393,13 @@ jobs:
           python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown services > refresh-inputs/services.md
           python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown schedulers > refresh-inputs/schedulers.md
           python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown jobs > refresh-inputs/jobs.md
+          # What the 05-c prompt reads instead of repo_inventory.json: the
+          # 220 KB table_refs graph digested to a few KB from the same data
+          # the rendered blocks come from. 05-c was the step that kept dying
+          # inside the CLI's 300 s idle timeout while re-deriving that graph
+          # to write about 10 KB of prose (runs 20, 21, 25 x2).
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown refs_digest > refresh-inputs/table_refs_digest.md
+          test -s refresh-inputs/table_refs_digest.md
           ls -la refresh-inputs/
           # Every input, not the three that were listed by hand. The digest step
           # writes billing_by_sku.csv and billing_by_month.csv, which the repo's

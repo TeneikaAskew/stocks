@@ -257,3 +257,124 @@ def test_the_runtime_relation_count_is_the_gates_own_arithmetic():
     assert rp.counts(nothing_extra, REPO_INVENTORY, VERIFY_LIVE)["RUNTIME_RELATIONS"] == "0"
     for name in PROMPTS:
         assert "{{RUNTIME_RELATIONS}}" in (PROMPT_DIR / f"{name}.md").read_text(), name
+
+
+
+def test_the_05c_prompt_reads_the_digest_not_the_raw_graph():
+    """Runs 20, 21 and 25 (twice) died at the 05-c step and nowhere else. The
+    prompt sent the model to repo_inventory.json (400 KB, table_refs 220 KB)
+    to derive prose the workflow already renders, and to redraw the §7 graph.
+    It now reads a digest (50 KB on the committed fixture) and names the prose
+    it may edit; the graph is a rendered block."""
+    src = (PROMPT_DIR / "data-dependencies.md").read_text()
+    inputs = src.split("## Inputs", 1)[1].split("## What ", 1)[0]
+    assert "`table_refs_digest.md`" in inputs
+    assert "- `repo_inventory.json`" not in inputs and "- `live.json`" not in inputs
+    assert "graph" in src and "you do not draw it" in src
+    # And the workflow produces the digest before the prompts are rendered.
+    import yaml
+    steps = yaml.safe_load((REPO / ".github/workflows/refresh-architecture-docs.yml").read_text())["jobs"]["refresh"]["steps"]
+    names = [s.get("name") for s in steps]
+    digest_i = next(i for i, s in enumerate(steps) if "table_refs_digest.md" in (s.get("run") or ""))
+    assert digest_i < names.index("Render prompts with the live counts substituted in")
+    assert "--markdown refs_digest" in steps[digest_i]["run"]
+
+
+def test_every_digest_section_the_05c_prompt_cites_exists_in_the_digest():
+    """The prompt sends the model to named sections of `table_refs_digest.md`.
+    A name that no longer matches a heading does not fail anything: the model
+    hunts for it, which is what the 05-c step was doing for the 5m18s of
+    silence before the connection dropped. Rendered from the committed
+    fixture, so a renamed heading fails here rather than in production."""
+    import scripts.maintenance.doc_inventory as inv
+    live = json.loads((REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json").read_text())
+    digest = inv.render_markdown("refs_digest", inv.repo_inventory(), live)
+    headings = [l.lstrip("# ").strip() for l in digest.splitlines() if l.startswith("## ")]
+    src = (PROMPT_DIR / "data-dependencies.md").read_text()
+    cited = set(re.findall(r"the digest's \*\*([^*]+)\*\* section", src))
+    assert cited, "the prompt must name the digest sections it reads"
+    for name in sorted(cited):
+        assert any(h.startswith(name) for h in headings), \
+            f"the 05-c prompt sends the model to a digest section '{name}' that is not a heading: {headings}"
+    # The two live-only name sets the prose states come from here and nowhere
+    # else, so they must both be among the sections it cites.
+    assert {"Runtime-created relations", "Hand-created live jobs"} <= cited
+
+
+def test_every_prompt_forbids_the_hand_maintained_folder():
+    """docs/product/infrastructure/manual/ holds the hand-edited copies of
+    the four refreshed documents; the workflow's write policy and stray-write
+    scan already fail a change there, and the prompts say so up front."""
+    for name in ("architecture.md", "data-dependencies.md", "cost-analysis.md", "readme.md"):
+        text = (REPO / ".github/prompts" / name).read_text()
+        assert "docs/product/infrastructure/manual/" in text, name
+        assert "Never read or write anything under `docs/product/infrastructure/manual/`" in text, name
+
+
+def test_no_manual_copy_claims_to_be_auto_refreshed():
+    """A copied maintenance banner told an owner the monthly workflow rewrites
+    the file and overwrites its marker blocks. Nothing automated writes to
+    docs/product/infrastructure/manual/, so every copy says so up front and
+    no line there claims otherwise for itself. (Codex, PR #1044.)"""
+    manual = REPO / "docs/product/infrastructure/manual"
+    for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md", "05-d-COST_ANALYSIS.md", "ROOT-README.md"):
+        text = (manual / doc).read_text()
+        head = text.split("\n\n")[1] if "\n\n" in text else text
+        assert "Hand-maintained snapshot — nothing automated writes to this file." in head, doc
+        for line in text.splitlines():
+            low = line.lower()
+            if "monthly refresh" not in low and "refresh workflow" not in low:
+                continue
+            # every surviving mention must name the original, not this copy
+            assert any(k in line for k in ("../05-", "../../../../README.md", "the original",
+                                           "ORIGINAL", "docs/product/infrastructure/",
+                                           "is not refreshed", "are frozen", "write policy")), (doc, line[:150])
+
+
+def test_the_manual_readme_points_at_its_own_siblings():
+    """The copy's core links left the snapshot for the auto-refreshed
+    documents, so after a refresh it mixed frozen prose with fresh tables."""
+    text = (REPO / "docs/product/infrastructure/manual/ROOT-README.md").read_text()
+    for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md", "05-d-COST_ANALYSIS.md"):
+        assert f"]({doc}" in text, doc
+        assert f"](../../../../docs/product/infrastructure/{doc}" not in text, doc
+    # a document with no manual counterpart keeps its repo-relative link
+    assert "](../../../../RUNBOOK.md)" in text
+
+
+def test_a_manual_copy_links_to_its_siblings_not_to_the_refreshed_originals():
+    """The three companion pointers (05-a -> 05-c/05-d, 05-c -> 05-a,
+    05-d -> 05-a) still crossed into the auto-refreshed folder, so a reader in
+    the frozen snapshot who followed one landed in a document the monthly
+    workflow rewrites. A link to a refreshed document is allowed only on a
+    line that says it is talking ABOUT the original. (Codex, PR #1044.)"""
+    import re
+    manual = REPO / "docs/product/infrastructure/manual"
+    copied = {"05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md",
+              "05-d-COST_ANALYSIS.md", "../../../../README.md"}
+    # a line may point at the refreshed original only while describing it
+    describes_original = ("ORIGINAL", "the original", "taken on 2026", "regenerated monthly")
+    offenders = []
+    for f in sorted(manual.glob("*.md")):
+        for i, line in enumerate(f.read_text().splitlines(), 1):
+            for target in re.findall(r"\]\((\.\./[^)\s#`]+)", line):
+                name = target.rsplit("/", 1)[-1]
+                if name not in copied and target not in copied:
+                    continue
+                if any(k in line for k in describes_original):
+                    continue
+                offenders.append(f"{f.name}:{i} -> {target}")
+    assert not offenders, offenders
+
+
+def test_the_hand_maintained_copies_exist_and_link_correctly():
+    manual = REPO / "docs/product/infrastructure/manual"
+    for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md", "05-d-COST_ANALYSIS.md", "ROOT-README.md", "README.md"):
+        assert (manual / doc).exists(), doc
+    import re
+    for f in manual.glob("*.md"):
+        for m in re.finditer(r"\]\(([^)\s#`]+)", f.read_text()):
+            target = m.group(1)
+            if target.startswith(("http", "mailto:")):
+                continue
+            assert (f.parent / target).resolve().exists(), (f.name, target)
