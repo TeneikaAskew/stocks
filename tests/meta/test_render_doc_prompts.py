@@ -264,8 +264,8 @@ def test_the_05c_prompt_reads_the_digest_not_the_raw_graph():
     """Runs 20, 21 and 25 (twice) died at the 05-c step and nowhere else. The
     prompt sent the model to repo_inventory.json (400 KB, table_refs 220 KB)
     to derive prose the workflow already renders, and to redraw the §7 graph.
-    It now reads an 11 KB digest and names the prose it may edit; the graph is
-    a rendered block."""
+    It now reads a digest (50 KB on the committed fixture) and names the prose
+    it may edit; the graph is a rendered block."""
     src = (PROMPT_DIR / "data-dependencies.md").read_text()
     inputs = src.split("## Inputs", 1)[1].split("## What ", 1)[0]
     assert "`table_refs_digest.md`" in inputs
@@ -278,6 +278,27 @@ def test_the_05c_prompt_reads_the_digest_not_the_raw_graph():
     digest_i = next(i for i, s in enumerate(steps) if "table_refs_digest.md" in (s.get("run") or ""))
     assert digest_i < names.index("Render prompts with the live counts substituted in")
     assert "--markdown refs_digest" in steps[digest_i]["run"]
+
+
+def test_every_digest_section_the_05c_prompt_cites_exists_in_the_digest():
+    """The prompt sends the model to named sections of `table_refs_digest.md`.
+    A name that no longer matches a heading does not fail anything: the model
+    hunts for it, which is what the 05-c step was doing for the 5m18s of
+    silence before the connection dropped. Rendered from the committed
+    fixture, so a renamed heading fails here rather than in production."""
+    import scripts.maintenance.doc_inventory as inv
+    live = json.loads((REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json").read_text())
+    digest = inv.render_markdown("refs_digest", inv.repo_inventory(), live)
+    headings = [l.lstrip("# ").strip() for l in digest.splitlines() if l.startswith("## ")]
+    src = (PROMPT_DIR / "data-dependencies.md").read_text()
+    cited = set(re.findall(r"the digest's \*\*([^*]+)\*\* section", src))
+    assert cited, "the prompt must name the digest sections it reads"
+    for name in sorted(cited):
+        assert any(h.startswith(name) for h in headings), \
+            f"the 05-c prompt sends the model to a digest section '{name}' that is not a heading: {headings}"
+    # The two live-only name sets the prose states come from here and nowhere
+    # else, so they must both be among the sections it cites.
+    assert {"Runtime-created relations", "Hand-created live jobs"} <= cited
 
 
 def test_every_prompt_forbids_the_hand_maintained_folder():
