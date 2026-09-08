@@ -211,10 +211,8 @@ def relation_counts(repo: dict, live: dict) -> tuple[int, int]:
     wrote 26, 28 and 30 "runtime relations" against a true 27 because the
     model was handed the live and table counts and left to derive this one.
     """
-    declared_names = ({t_["name"] for t_ in repo["tables"]}
-                      | {v["name"] for v in repo["materialized_views"]}
-                      | {v["name"] for v in repo["views"]})
-    return len(declared_names), len(set(live["db_tables"]) - declared_names)
+    declared_names = inv.declared_relation_names(repo)
+    return len(declared_names), len(inv.runtime_relations(repo, live))
 
 
 def gate_markers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:

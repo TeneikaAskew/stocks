@@ -110,6 +110,12 @@ def mini_repo(tmp_path: pathlib.Path) -> pathlib.Path:
     (tmp_path / "gcp").mkdir()
     (tmp_path / "gcp/deploy.sh").write_text(DEPLOY_SNIPPET)
     (tmp_path / "gcp/schema.sql").write_text(SCHEMA_SNIPPET)
+    # repo_inventory reads these two unconditionally; empty stand-ins let a
+    # test build a whole inventory from this tree.
+    (tmp_path / "platform/api/routers").mkdir(parents=True)
+    (tmp_path / "platform/api/main.py").write_text("")
+    (tmp_path / "scripts/discord").mkdir(parents=True)
+    (tmp_path / "scripts/discord/register_commands.py").write_text("")
     return tmp_path
 
 
@@ -484,5 +490,144 @@ def test_the_refs_digest_is_small_and_carries_what_the_prose_needs():
     out = inv.render_markdown("refs_digest", repo, None)
     assert len(out) < 40_000, len(out)
     assert "## Multi-writer tables" in out and "## Orphan tables" in out and "## Tables per job" in out
-    # It IS the multiwriter block's content, so the prose cannot disagree with it.
-    assert inv._render_multiwriter(refs) in out
+    # Same tables and writer counts as the §4 block, so the prose cannot
+    # disagree with it; the digest additionally cites each writer file:line.
+    block_rows = {(r.split("|")[1].strip(), r.split("|")[2].strip())
+                  for r in inv._render_multiwriter(refs).splitlines()[2:]}
+    digest_rows = {(r.split("|")[1].strip(), r.split("|")[2].strip())
+                   for r in out.split("## Multi-writer tables")[1].split("## Orphan tables")[0].strip().splitlines()[2:]}
+    assert block_rows and block_rows == digest_rows
+
+
+# ── Codex, PR #1044: seven findings on the digest and the edge attribution ────
+
+def test_the_digest_multiwriter_rows_cite_file_and_line():
+    """The prompt requires `file:line` for every claim about code, and the
+    digest is the only code input the 05-c model reads; a files-only writer
+    list left it nothing to cite."""
+    import re
+    repo, refs = _repo_and_refs()
+    out = inv.render_markdown("refs_digest", repo, None)
+    rows = out.split("## Multi-writer tables")[1].split("## Orphan tables")[0].strip().splitlines()[2:]
+    assert rows
+    for r in rows:
+        writers = r.split("|")[3]
+        cited = re.findall(r"`([\w/.-]+\.py):(\d+(?:,\d+)*)`", writers)
+        assert len(cited) == int(r.split("|")[2].strip()), r
+    # and the §4 block itself stays files-only
+    assert not re.search(r"\.py:\d+", inv._render_multiwriter(refs))
+
+
+def test_the_digest_orphans_carry_the_same_partition_status_as_the_block():
+    """The §5 block labels the five `market_data_intraday_*` children as
+    partitions routed by Postgres; the digest called them 'no writer and no
+    reader', and the model would have written that into the prose."""
+    repo, refs = _repo_and_refs()
+    block = inv.render_markdown("orphans", repo, None)
+    digest = inv.render_markdown("refs_digest", repo, None)
+    section = digest.split("## Orphan tables")[1].split("## Tables per job")[0].strip()
+    assert section == block
+    spy = next(r for r in section.splitlines() if r.startswith("| `market_data_intraday_spy`"))
+    assert "partition of `market_data_intraday`" in spy, spy
+
+
+def test_a_read_is_recorded_even_when_the_same_job_writes_the_table():
+    """backfill-daily-indicators runs `SELECT DISTINCT ticker FROM
+    market_data_daily` and then writes market_data_daily; dropping the read
+    because a write exists hid the dependency from the graph and the digest."""
+    repo, refs = _repo_and_refs()
+    e = next(x for x in inv.job_table_edges(repo, refs) if x["job"] == "backfill-daily-indicators")
+    assert "market_data_daily" in e["writes"] and "market_data_daily" in e["reads"], e
+    graph = inv.render_markdown("graph", repo, None)
+    j, t = inv._mermaid_id("J", "backfill-daily-indicators"), inv._mermaid_id("T", "market_data_daily")
+    assert f"{j} ==> {t}" in graph and f"{t} --> {j}" in graph
+
+
+def test_a_docstring_sql_example_is_not_an_edge():
+    """gcp/db_query_job.py's module docstring shows an operator example
+    `DB_QUERY_SQL=SELECT count(*) FROM trades`; that line made db-query a
+    static reader of `trades`. The job reads whatever SQL it is handed at
+    run time and has no static table edge at all."""
+    src = "\"\"\"Run me:\n  DB_QUERY_SQL=SELECT count(*) FROM trades\n\"\"\"\n\n\ndef f():\n    \"\"\"SELECT 1 FROM trades\"\"\"\n    return 1\n"
+    assert inv._diagnostic_lines(src) >= {1, 2, 3, 7}
+    assert 8 not in inv._diagnostic_lines(src)
+    repo, refs = _repo_and_refs()
+    e = next(x for x in inv.job_table_edges(repo, refs) if x["job"] == "db-query")
+    assert e["writes"] == [] and e["reads"] == [], e
+    assert not any(r["file"] == "gcp/db_query_job.py" for r in refs["trades"]["reads"])
+
+
+def test_job_table_edges_walks_the_selected_root_not_the_checkout(mini_repo):
+    """`--root` selects a tree; the import scope used to be resolved against
+    the checkout the script lives in, so a job in the selected tree whose
+    writes live in a module it imports lost every edge."""
+    (mini_repo / "gcp/research").mkdir()
+    (mini_repo / "gcp/research/alpha.py").write_text("from gcp import helpers\n\ndef main():\n    helpers.save()\n")
+    # four blank lines apart: the scanner's context window is the three
+    # lines above a match, and the write above must not colour the read.
+    (mini_repo / "gcp/helpers.py").write_text(
+        "def save(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n\n\n\n\n"
+        "def load(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    assert repo["root"] == str(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["writes"] == ["trades"] and e["alpha"]["reads"] == ["trades"], e["alpha"]
+    blast = {b["job"]: b for b in inv.blast_radius(repo, repo["table_refs"])}
+    assert blast["alpha"]["writes"] == ["trades"]
+    # the graph and the digest rendered from this inventory see the same tree
+    assert f"{inv._mermaid_id('J', 'alpha')} ==> {inv._mermaid_id('T', 'trades')}" in inv.render_markdown("graph", repo, None)
+    assert "| `alpha` | `trades` | `trades` |" in inv.render_markdown("refs_digest", repo, None)
+
+
+def test_the_digest_carries_the_live_only_name_sets(mini_repo):
+    """The 05-c prose names the runtime-created relations and the
+    hand-created jobs, and `live.json` and the §1b block are off-limits to
+    the model, so those names have to travel in the digest."""
+    (mini_repo / "gcp/helpers.py").write_text("def save(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    ok = {"last_execution": {"result": "ok", "time": "2026-09-07T00:00:00Z"},
+          "memory": "4Gi", "cpu": "1", "task_timeout": "3600", "max_retries": 0, "tasks": 1}
+    live = {"jobs": {"alpha": dict(ok, command="python", args="-m gcp.research.alpha --mode=full"),
+                     "gamma": dict(ok, command="python -m gcp.helpers", args=""),
+                     "delta": dict(ok, command="python -m gcp.gone", args="")},
+            "schedulers": {},
+            "db_tables": {"trades": {"kind": "table", "rows": 5, "size": "8 kB"},
+                          "strat_features_1m": {"kind": "table", "rows": 3105422, "size": "4080 MB"}}}
+    assert inv.runtime_relations(repo, live) == ["strat_features_1m"]
+    out = inv.render_markdown("refs_digest", repo, live)
+    rt = out.split("## Runtime-created relations")[1].split("## Hand-created")[0]
+    assert "| `strat_features_1m` | table | 3,105,422 | 4080 MB |" in rt and "`trades`" not in rt
+    hc = out.split("## Hand-created live jobs")[1]
+    assert "| `gamma` | `gcp/helpers.py` | `trades` | — |" in hc
+    assert "| `delta` | `gcp/gone.py` (not in this checkout) | — | — |" in hc
+    assert "`alpha`" not in hc, "a declared job is not hand-created"
+    # without a snapshot the sections say so, rather than silently listing nothing
+    out = inv.render_markdown("refs_digest", repo, None)
+    assert out.count("_no live snapshot supplied; not computable_") == 2
+
+
+def test_restore_prints_only_the_names_of_the_blocks_it_rewrote(mini_repo, capsys):
+    """The workflow captures `--restore` stdout and emits one `::warning::`
+    per line. The CLI fell through to the inventory summary on that path, so
+    an untouched document still produced three lines of warnings."""
+    doc = mini_repo / "doc.md"
+    doc.write_text("# t\n\n<!-- inventory:tables:start -->\nx\n<!-- inventory:tables:end -->\n")
+    assert inv.main(["--root", str(mini_repo), "--insert", "doc.md"]) == 0
+    capsys.readouterr()
+    assert inv.main(["--root", str(mini_repo), "--restore", "doc.md"]) == 0
+    assert capsys.readouterr().out == "", "an untouched document must print nothing"
+    doc.write_text(doc.read_text().replace("| `trades` |", "| `trades_edited` |"))
+    assert inv.main(["--root", str(mini_repo), "--restore", "doc.md"]) == 0
+    assert capsys.readouterr().out == "restored inventory:tables in doc.md\n"
+    assert "| `trades` |" in doc.read_text()
+
+
+def test_the_fixture_digest_names_every_runtime_relation_and_hand_created_job():
+    repo, refs = _repo_and_refs()
+    live = json.loads(FIXTURE.read_text())
+    out = inv.render_markdown("refs_digest", repo, live)
+    for t in inv.runtime_relations(repo, live):
+        assert f"| `{t}` |" in out, t
+    for j in inv.reconcile(repo, live)["jobs_live_only"]:
+        assert f"| `{j}` |" in out, j
+    assert len(out) < 40_000, len(out)

@@ -504,6 +504,12 @@ def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
     schema = schema_tables(root)
     routes = api_routes(root)
     return {
+        # The root this inventory was read from. Every consumer that walks the
+        # tree again (import scopes, dynamic-name hints) must walk THIS root,
+        # not the module-level default: `--root` selected a different tree and
+        # job_table_edges was still importing from the checkout the script
+        # lives in. (Codex, PR #1044.)
+        "root": str(root),
         "jobs": jobs,
         "schedulers": sched,
         "deploy_targets": deploy_targets(root),
@@ -565,6 +571,24 @@ def _first_doc_line(path: pathlib.Path) -> str:
         if line and not line.startswith(("=", "-", "#")):
             return line[:140]
     return ""
+
+
+def _repo_root(repo: dict[str, Any]) -> pathlib.Path:
+    """The tree an inventory was read from (see repo_inventory)."""
+    return pathlib.Path(repo["root"]) if repo.get("root") else REPO
+
+
+def declared_relation_names(repo: dict[str, Any]) -> set[str]:
+    """Tables, views AND materialized views declared in gcp/schema.sql."""
+    return ({t["name"] for t in repo["tables"]}
+            | {v["name"] for v in repo["materialized_views"]}
+            | {v["name"] for v in repo["views"]})
+
+
+def runtime_relations(repo: dict[str, Any], live: dict[str, Any]) -> list[str]:
+    """Live relations gcp/schema.sql does not declare: a set difference, the
+    way check_generated_docs counts them and the §1b block labels them."""
+    return sorted(set(live["db_tables"]) - declared_relation_names(repo))
 
 
 def entry_module(job: dict[str, Any]) -> str:
@@ -678,14 +702,25 @@ def _diagnostic_lines(text: str) -> set[int]:
     cited two lines that execute nothing and the blast radius named
     signal-monitor a writer of watchlists. (Codex, PR #1009.)
 
-    Covers string literals inside `raise ...`, logging calls, `print(...)` and
-    `warnings.warn(...)`. SQL that reaches a driver is never in one of those.
+    Covers string literals inside `raise ...`, logging calls, `print(...)`,
+    `warnings.warn(...)`, and module / class / function docstrings: the
+    `db-query` job's module docstring shows an operator
+    `DB_QUERY_SQL=SELECT count(*) FROM trades` example, and that one line
+    made the job a static reader of `trades` in the §7 graph and the digest.
+    SQL that reaches a driver is never in one of those. (Codex, PR #1044.)
     """
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return set()
     out: set[int] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and node.body and isinstance(node.body[0], ast.Expr) \
+                and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str):
+            doc = node.body[0].value
+            out.update(range(doc.lineno, (doc.end_lineno or doc.lineno) + 1))
 
     def _mark(node: ast.AST) -> None:
         for sub in ast.walk(node):
@@ -740,7 +775,7 @@ def blast_radius(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, 
     readers: dict[str, set[str]] = {t: {r["file"] for r in v["reads"]} for t, v in refs.items()}
     writers: dict[str, set[str]] = {t: {w["file"] for w in v["writes"]} for t, v in refs.items()}
     out = []
-    root = REPO
+    root = _repo_root(repo)
     for j in repo["jobs"]:
         mod_file = entry_module(j)
         # entry module plus the repo modules it imports directly (one level)
@@ -754,22 +789,51 @@ def blast_radius(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, 
     return out
 
 
-def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]]
-                    ) -> list[dict[str, Any]]:
+def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]],
+                    jobs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Per job: the tables its entry module (plus direct repo imports) writes
     and reads. The same attribution blast_radius uses, so the graph and the
-    blast table cannot disagree about who writes what."""
+    blast table cannot disagree about who writes what.
+
+    Reads and writes are recorded independently: `backfill-daily-indicators`
+    reads `market_data_daily` (`SELECT DISTINCT ticker FROM market_data_daily`)
+    and writes it, and dropping the read because a write exists hid a real
+    dependency from the graph and the digest. (Codex, PR #1044.)
+
+    `jobs` defaults to the declared jobs; a caller may pass live job records
+    (same `command` / `args` keys) to attribute hand-created jobs the same way.
+    """
+    root = _repo_root(repo)
     readers = {t: {r["file"] for r in v["reads"]} for t, v in refs.items()}
     writers = {t: {w["file"] for w in v["writes"]} for t, v in refs.items()}
     out = []
-    for j in repo["jobs"]:
+    for j in (repo["jobs"] if jobs is None else jobs):
         mod_file = entry_module(j)
-        scope = {mod_file} | (_local_imports(REPO, mod_file) if mod_file else set())
+        scope = {mod_file} | (_local_imports(root, mod_file) if mod_file else set())
         scope.discard("gcp/database.py")
         w = sorted(t for t, fs in writers.items() if fs & scope)
-        r = sorted(t for t, fs in readers.items() if fs & scope and t not in w)
-        out.append({"job": j["name"], "writes": w, "reads": r})
+        r = sorted(t for t, fs in readers.items() if fs & scope)
+        out.append({"job": j["name"], "module": mod_file, "writes": w, "reads": r})
     return out
+
+
+def hand_created_job_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]],
+                           live: dict[str, Any]) -> list[dict[str, Any]]:
+    """Live jobs with no `deploy_*` function, attributed by the entry module
+    their live command names, with the same scope rule as job_table_edges.
+    `in_repo` is False when that module does not exist in the checkout."""
+    root = _repo_root(repo)
+    declared = {j["name"] for j in repo["jobs"]}
+    jobs = [dict(live["jobs"][n], name=n) for n in sorted(live["jobs"]) if n not in declared]
+    out = job_table_edges(repo, refs, jobs)
+    for e in out:
+        e["in_repo"] = bool(e["module"]) and (root / e["module"]).exists()
+    return out
+
+
+def _partition_map(repo: dict[str, Any]) -> dict[str, str]:
+    """child partition -> parent, from schema.sql."""
+    return {t["name"]: t["partition_of"] for t in repo["tables"] if t["partition_of"]}
 
 
 def _mermaid_id(prefix: str, name: str) -> str:
@@ -809,18 +873,54 @@ def _render_graph(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str,
     return "\n".join(lines)
 
 
-def _render_refs_digest(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]]) -> str:
+def _render_refs_digest(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]],
+                        live: dict[str, Any] | None = None) -> str:
     """What the 05-c prompt is handed instead of the raw table_refs graph: the
-    multi-writer tables with their writers, the orphans with their status, and
-    each job's written and read tables. A few KB, from the same data the
-    rendered blocks come from, so the prose agrees with the blocks."""
-    out = ["## Multi-writer tables", "", _render_multiwriter(refs), "",
-           "## Orphan tables", "", _render_orphans(refs), "",
+    multi-writer tables with their writers cited `file:line`, the orphans with
+    the same partition-aware status the §5 block carries, each job's written
+    and read tables, and -- when a live snapshot is given -- the two name sets
+    the prose states that exist only live: the runtime-created relations and
+    the hand-created jobs. `live.json` and the §1b block are off-limits to the
+    model, so those names have to travel here. (Codex, PR #1044.) A few KB,
+    from the same data the rendered blocks come from, so the prose agrees
+    with the blocks."""
+    root = _repo_root(repo)
+    out = ["## Multi-writer tables", "", _render_multiwriter(refs, with_lines=True), "",
+           "## Orphan tables", "", _render_orphans(refs, root, _partition_map(repo)), "",
            "## Tables per job (entry module plus its direct repo imports)", ""]
     rows = [[f"`{e['job']}`", ", ".join(f"`{t}`" for t in e["writes"]) or "—",
              ", ".join(f"`{t}`" for t in e["reads"]) or "—"]
             for e in job_table_edges(repo, refs) if e["writes"] or e["reads"]]
     out.append(_md_table(["Job", "Writes", "Reads"], rows) if rows else "_none_")
+    out += ["", "## Runtime-created relations (live, not declared in gcp/schema.sql)", ""]
+    if live is None:
+        out.append("_no live snapshot supplied; not computable_")
+    else:
+        rt = runtime_relations(repo, live)
+        # Same rendering as the §1b block: a view has no row estimate and
+        # shows "—"; a missing count is never rendered as 0.
+        rows = []
+        for t in rt:
+            d = live["db_tables"][t]
+            n = d.get("rows")
+            rows.append([f"`{t}`", d.get("kind") or "—", "—" if n is None else f"{n:,}", d["size"]])
+        out.append(_md_table(["Relation", "Kind", "Rows", "Size"], rows) if rows else "_none_")
+    out += ["", "## Hand-created live jobs (not in gcp/deploy.sh)", ""]
+    if live is None:
+        out.append("_no live snapshot supplied; not computable_")
+    else:
+        rows = []
+        for e in hand_created_job_edges(repo, refs, live):
+            mod = f"`{e['module']}`" if e["module"] else "—"
+            if not e["in_repo"]:
+                mod += " (not in this checkout)"
+            rows.append([f"`{e['job']}`", mod,
+                         ", ".join(f"`{t}`" for t in e["writes"]) or "—",
+                         ", ".join(f"`{t}`" for t in e["reads"]) or "—"])
+        out.append(_md_table(["Job", "Entry module", "Writes", "Reads"], rows) if rows else "_none_")
+        out += ["", "Writes and reads name declared relations only, as in every block above: a"
+                " runtime-created relation one of these jobs writes is listed in the previous"
+                " section and has no edge here."]
     return "\n".join(out)
 
 
@@ -851,12 +951,21 @@ def _render_refs(refs: dict[str, dict[str, list[dict[str, Any]]]], kind: str) ->
     return "\n".join(out).rstrip()
 
 
-def _render_multiwriter(refs) -> str:
+def _render_multiwriter(refs, with_lines: bool = False) -> str:
+    """Tables with two or more writing files. `with_lines` cites each writer
+    as `file:line[,line...]` (the digest form, so the prose can cite
+    `file:line` as the prompt requires); the §4 block lists files only."""
     rows = []
     for t in sorted(refs):
-        files = sorted({w["file"] for w in refs[t]["writes"]})
-        if len(files) >= 2:
-            rows.append([f"`{t}`", str(len(files)), ", ".join(f"`{f}`" for f in files)])
+        by_file: dict[str, list[int]] = {}
+        for w in refs[t]["writes"]:
+            by_file.setdefault(w["file"], []).append(w["line"])
+        if len(by_file) >= 2:
+            if with_lines:
+                cites = ", ".join(f"`{f}:{','.join(str(l) for l in sorted(set(ls)))}`" for f, ls in sorted(by_file.items()))
+            else:
+                cites = ", ".join(f"`{f}`" for f in sorted(by_file))
+            rows.append([f"`{t}`", str(len(by_file)), cites])
     return _md_table(["Table", "Writers", "Files"], rows) if rows else "_none_"
 
 
@@ -1451,13 +1560,13 @@ def render_markdown(section: str, repo: dict[str, Any], live: dict[str, Any] | N
     if section == "multiwriter":
         return _render_multiwriter(repo["table_refs"])
     if section == "orphans":
-        return _render_orphans(repo["table_refs"], REPO, {t["name"]: t["partition_of"] for t in repo["tables"] if t["partition_of"]})
+        return _render_orphans(repo["table_refs"], _repo_root(repo), _partition_map(repo))
     if section == "blast":
         return _render_blast(repo, repo["table_refs"])
     if section == "graph":
         return _render_graph(repo, repo["table_refs"])
     if section == "refs_digest":
-        return _render_refs_digest(repo, repo["table_refs"])
+        return _render_refs_digest(repo, repo["table_refs"], live)
     if section == "dbtables":
         return _render_dbtables(repo, live)
     raise ValueError(f"unknown section {section!r}")
@@ -1604,13 +1713,13 @@ def main(argv: list[str] | None = None) -> int:
         default_docs = ["docs/product/infrastructure/05-a-ARCHITECTURE.md",
                         "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"]
         for doc in (args.restore or default_docs):
-            for name in restore_blocks(root / doc, repo, live):
+            for name in restore_blocks(root / doc, repo, live, root=root):
                 print(f"restored inventory:{name} in {doc}")
     if args.insert is not None:
         default_docs = ["docs/product/infrastructure/05-a-ARCHITECTURE.md",
                         "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"]
         for doc in (args.insert or default_docs):
-            changed = insert_blocks(root / doc, repo, live)
+            changed = insert_blocks(root / doc, repo, live, root=root)
             print(f"{doc}: {'updated' if changed else 'unchanged'}", file=sys.stderr)
     if args.json:
         out = {"repo": repo}
@@ -1618,7 +1727,12 @@ def main(argv: list[str] | None = None) -> int:
             out["live"] = live
             out["reconcile"] = reconcile(repo, live)
         print(json.dumps(out, indent=1, sort_keys=True, default=str))
-    if not (args.markdown or args.json or args.insert is not None or args.write_snapshot):
+    # `--restore` prints ONLY the names of the blocks it rewrote: the workflow
+    # captures its stdout and turns every line into a `::warning::`, so the
+    # summary below on that path would have flagged a rendered-block edit on
+    # every run, touched or not.
+    if not (args.markdown or args.json or args.insert is not None or args.restore is not None
+            or args.write_snapshot):
         c = repo["counts"]
         print(f"repo: {c['jobs']} jobs, {c['schedulers']} schedulers, {c['tables']} tables, {c['routes']} routes in {c['routers']} routers")
         if live:
