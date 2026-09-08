@@ -2292,7 +2292,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # measured case was `absent_everywhere 'ab*c'` next to a file named `abc`,
   # which rebuilt pathsym as the literal `abc` and then missed a tracked
   # lib/ac.py, certifying the retirement.
-  local pathsym= _psa _psn _psp _pspre _pspost _pspan _pssep _psi=$IFS _psg=
+  local pathsym= _psa _psn _psp _pspre _pspost _pspan _pssep _psneg _psi=$IFS _psg=
   case $- in *f*) _psg=on;; esac
   set -f
   IFS='|'
@@ -2319,24 +2319,44 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
           # inside a class the caller wrote is the defect round 52 fixed, and
           # widening a one-sided class is that same rewrite. The passing state
           # is the spelling both messages already name.
-          # THE TEST IS ON THE SPAN, and only where the span is separators and
-          # nothing else. `d[0-9]`, `foo[a[b]bar` and `[^_]` all carry a
-          # non-separator character and are left exactly as typed — checked,
-          # all three still accepted.
-          case $_pspan in
-            ''|*[!_-]*) ;;
+          # A `-` IN THE MIDDLE OF A SPAN IS THE RANGE OPERATOR, NOT A MEMBER.
+          # Round 66 asked whether the span text CONTAINED both characters,
+          # which is not the same question — measured in the C locale, with
+          # `foo-bar` and `foo_bar` as the two subjects:
+          #     [-_] [_-]   match both          the two spellings that work
+          #     [_-_]       matches only _      `-` is a range, `_` to `_`
+          #     [_-a]       matches only _      a range, and round 66's other
+          #     [0-9_]      matches only _      arm skipped both of these
+          # so all three certified at 217a476 with lib/foo-bar.py tracked.
+          # POSIX makes this decidable without the bracket parser this file
+          # keeps refusing to write: a `-` is a literal member only when it is
+          # FIRST or LAST in the list. Anywhere else it is an operator. So the
+          # question the span is asked is "does it offer a separator at all,
+          # and if so does it offer BOTH" — `_` anywhere, and a `-` in one of
+          # the two literal positions.
+          # A span offering NO separator is still left exactly as typed, which
+          # is what keeps round 52's bypass and round 57's `d[0-9]` alive:
+          # `0-9`, `a[b` and the negated `^_` name no separator member, and a
+          # NEGATED span is skipped outright because `[^_]` excludes a
+          # separator rather than offering one — checked, all four unchanged.
+          _pssep=; _psneg=
+          case $_pspan in ^*) _psneg=on;; esac
+          if [ -z "$_psneg" ]; then
+            case $_pspan in *_*) _pssep=u;; esac
+            case $_pspan in -*|*-) _pssep="${_pssep}h";; esac
+          fi
+          case $_pssep in
+            ''|uh) ;;
             *)
-              _pssep=both
-              case $_pspan in *-*) ;; *) _pssep=one;; esac
-              case $_pspan in *_*) ;; *) _pssep=one;; esac
-              test "$_pssep" = both || {
-                echo "'$_psa' writes a separator as the one-sided class"
-                echo "  '[$_pspan]'. A class is left exactly as typed, so that"
-                echo "  matches only the spelling inside it and a path using the"
-                echo "  other separator would read as absent."
-                echo "  Write both, e.g.  foo[-_]bar"
-                IFS=$_psi; test -n "$_psg" || set +f
-                return 1; };;
+              echo "'$_psa' offers only one separator spelling in the class"
+              echo "  '[$_pspan]'. A class is left exactly as typed, so a path"
+              echo "  using the other separator would read as absent. Note a"
+              echo "  '-' counts only where it is a literal member — FIRST or"
+              echo "  LAST in the class; in the middle it is a range operator,"
+              echo "  so '[_-_]' and '[_-a]' match '_' and not '-'."
+              echo "  Write both, e.g.  foo[-_]bar  or  foo[0-9_-]bar"
+              IFS=$_psi; test -n "$_psg" || set +f
+              return 1;;
           esac
           _psp="$_pspre$_pspost"
         done
