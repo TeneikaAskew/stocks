@@ -1282,6 +1282,30 @@ def test_a_rule_with_text_welded_onto_it_is_a_finding(tmp_path):
     assert "horizontal rule has text on the same line" in out[0]
 
 
+def test_a_rule_with_no_space_before_the_text_is_a_finding(tmp_path):
+    """A replacement that drops the newline without adding one produces
+    `---Generated 2026-09-08 ...` — the same malformed footer with no space,
+    which a `\\s+` between the rule and the text let through.
+    (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Some prose.\n\n---Generated 2026-09-08 from the ground truth.\n")
+    assert len(gate.gate_inline_rule(tmp_path)) == 1, gate.gate_inline_rule(tmp_path)
+
+
+def test_a_longer_rule_does_not_match_itself(tmp_path):
+    """`--------` is a thematic break too, and a pattern that allows no space
+    between the rule and the text can satisfy itself by backtracking onto the
+    run's own last dash. Emphasis at the start of a line (`***text***`,
+    `___text___`) is excluded for the same reason: all 16 breaks in these four
+    documents are written `---`, so treating `*` and `_` as rule characters
+    would fail honest prose to catch a shape this corpus never uses."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("---\n\n--------\n\n***bold lead-in*** and prose.\n\n___emphasis___ here.\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+
+
 def test_a_rule_on_its_own_line_is_not_a_finding(tmp_path):
     """Every document in the corpus separates its sections this way, so the
     gate has to leave a real rule alone -- including the setext-style `---`

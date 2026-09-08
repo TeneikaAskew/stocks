@@ -60,7 +60,10 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
    **A date inside a filename, path or link is never an as-of date.** Run 30
    bumped `docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md` to `...-09-08.md`
    in a link, inventing a file that does not exist and failing the run on a
-   dead link. Leave every path exactly as you found it. Run 28 updated the header and left §3 a day
+   dead link. Never change a date that is part of a path. This is not a rule
+   against updating links: if a module has moved or been renamed, retarget the
+   link to where the code now lives, as step 7 requires — just never by
+   editing a date in place. Run 28 updated the header and left §3 a day
    behind, so a table of the current fleet announced itself as stale; a gate
    now fails the run on any of the three snapshot labels. Leave every OTHER
    date alone — the dates in §4, §15 and §18 record when something was

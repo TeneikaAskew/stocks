@@ -496,7 +496,18 @@ def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
 # paragraph: the rule stopped being a rule and the document ended in literal
 # `--- \`. Measured over every markdown file under docs/ plus README.md plus
 # runs 28, 29 and 30: zero hits in the corpus, one hit, the real defect.
-INLINE_RULE = re.compile(r"^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s+\S")
+#
+# The space is optional: a replacement that drops the newline without adding
+# one produces `---Generated 2026-09-08 ...`, the same malformed footer, and
+# requiring `\s+` let it through (Codex, PR #1064). What follows the run must
+# not itself be rule punctuation, or a longer break (`--------`) matches by
+# backtracking onto its own last dash.
+#
+# Only `-` is treated as a rule character. All 16 thematic breaks in these four
+# documents are written `---`; at the start of a line `***text***` and
+# `___text___` are emphasis far more often than a break, so including them
+# would fail honest prose to catch a shape this corpus never uses.
+INLINE_RULE = re.compile(r"^\s{0,3}-{3,}\s*(?![-\s])\S")
 
 
 def gate_inline_rule(root: pathlib.Path) -> list[str]:
