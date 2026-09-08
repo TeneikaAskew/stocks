@@ -735,26 +735,70 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
     return out
 
 
+_PLACEHOLDER = r"[A-Za-z0-9]+"
+
+
+def _dynamic_templates(line: str) -> list[str]:
+    """Regexes for the table names a source line can assemble at run time.
+
+    An f-string, %-format or .format() template becomes a pattern in which
+    every placeholder stands for ONE underscore-free segment; a literal
+    followed by `+` gains a trailing placeholder and one preceded by `+` a
+    leading one. The whole candidate name must match, so
+    `f"strat_features_{tf_label}"` names `strat_features_15m` and never
+    `strat_features_levels_15m`, whose extra static segment the builder does
+    not write (that is strat_enrich_levels). (Codex, PR #1044.)
+    """
+    out: list[str] = []
+
+    def emit(parts: list[str], pre: bool = False, post: bool = False) -> None:
+        static = "".join(parts)
+        if "_" not in static or not any(len(x) >= 2 for x in parts) or any(ch in static for ch in " ()\\"):
+            return
+        pat = _PLACEHOLDER.join(re.escape(x) for x in parts)
+        pat = (_PLACEHOLDER if pre else "") + pat + (_PLACEHOLDER if post else "")
+        if pat not in out:
+            out.append(pat)
+
+    for m in re.finditer(r"(?P<pre>\+\s*)?(?P<f>[fF]?)(?P<q>[\"'])(?P<body>(?:(?!(?P=q)).)*)(?P=q)(?P<post>\s*\+)?", line):
+        body, is_f = m.group("body"), bool(m.group("f"))
+        pre, post = bool(m.group("pre")), bool(m.group("post"))
+        if is_f and "{" in body:
+            hole = r"\{[^{}]*\}"
+        elif "%s" in body or "%d" in body or re.search(r"%\(\w+\)[sd]", body):
+            hole = r"%\(\w+\)[sd]|%[sd]"
+        elif "{}" in body or re.search(r"\{\w+\}", body):
+            hole = r"\{\w*\}"
+        else:
+            hole = ""
+        if hole:
+            # the name template is the whitespace-delimited token holding the
+            # placeholder: `INSERT INTO strat_features_{tf} VALUES (1)` -> `strat_features_{tf}`
+            for token in re.split(r"[\s(),;=]+", body):
+                if re.search(hole, token):
+                    emit(re.split(hole, token))
+        elif pre or post:
+            # `"INSERT INTO strat_features_levels_" + tf`: the name template is
+            # the token adjacent to the `+`
+            tokens = re.split(r"[\s(),;=]+", body.strip())
+            if post and tokens:
+                emit([tokens[-1]], False, True)
+            if pre and tokens:
+                emit([tokens[0]], True, False)
+    return out
+
+
 def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    """References to tables whose names are assembled at runtime.
+    """References to tables whose names are assembled at run time.
 
     `strat_features_1m` is written as `f"strat_features_{tf_label}"` and the
-    literal scan cannot see it. For each name, every split at an underscore
-    gives a head and a tail; a head followed by `_{`, `_%s`, `_" +` or a tail
-    preceded by `}_`, `%s_`, `" + ..._` is a dynamic reference to every live
-    name with that head or tail. Classified as write / read / mention by the
-    same context rule as table_refs. (Codex, PR #1044.)
+    literal scan cannot see it. Every string template on a non-diagnostic
+    line (see _dynamic_templates) is matched in full against each live name;
+    a hit is classified write / read / mention by the same context rule as
+    table_refs, and an assigned name is followed to its use site the way a
+    literal constant is. (Codex, PR #1044.)
     """
     out: dict[str, dict[str, list[dict[str, Any]]]] = {t: {"writes": [], "reads": [], "mentions": []} for t in tables}
-    pats: dict[str, list[re.Pattern]] = {}
-    for t in tables:
-        parts = t.split("_")
-        for k in range(1, len(parts)):
-            head, tail = "_".join(parts[:k]), "_".join(parts[k:])
-            pats.setdefault(t, []).append(re.compile(
-                rf"(?<![\w.]){re.escape(head)}_(?:\{{|%s|%\(|\"\s*\+|'\s*\+)"))
-            pats[t].append(re.compile(
-                rf"(?:\}}|%s|%\)|\+\s*[\"']|[\"']\s*\+\s*\w+\s*\+\s*[\"'])_{re.escape(tail)}(?![\w])"))
     files: list[pathlib.Path] = []
     for d in SCAN_DIRS:
         for f in (root / d).rglob("*.py"):
@@ -771,25 +815,29 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
         joined = "\n".join(lines)
         diag = _diagnostic_lines(joined)
         ctx_lines = ["" if n + 1 in diag else ln for n, ln in enumerate(lines)]
-        for t, plist in pats.items():
-            seen: set[int] = set()   # a line matches once, however many split patterns hit it
+        seen: dict[str, set[int]] = {t: set() for t in tables}
 
-            def record(kind: str, k: int, text: str) -> None:
-                if k + 1 not in seen:
-                    seen.add(k + 1)
-                    out[t][kind].append({"file": rel, "line": k + 1, "text": text.strip()[:120], "dynamic": True})
+        def record(t: str, kind: str, k: int, text: str) -> None:
+            if k + 1 not in seen[t]:
+                seen[t].add(k + 1)
+                out[t][kind].append({"file": rel, "line": k + 1, "text": text.strip()[:120], "dynamic": True})
 
-            for i, line in enumerate(lines):
-                if i + 1 in diag or line.lstrip().startswith("#") or i + 1 in seen:
-                    continue
-                if not any(pt.search(line) for pt in plist):
-                    continue
-                ctx = "\n".join(ctx_lines[max(0, i - 3): i + 1])
-                kind = "writes" if WRITE_RE.search(ctx) else ("reads" if READ_RE.search(ctx) else "mentions")
-                record(kind, i, line)
+        for i, line in enumerate(lines):
+            if i + 1 in diag or line.lstrip().startswith("#"):
+                continue
+            pats = [re.compile(p) for p in _dynamic_templates(line)] if ("{" in line or "%" in line or "+" in line) else []
+            if not pats:
+                continue
+            hits = [t for t in tables if any(pt.fullmatch(t) for pt in pats)]
+            if not hits:
+                continue
+            ctx = "\n".join(ctx_lines[max(0, i - 3): i + 1])
+            kind = "writes" if WRITE_RE.search(ctx) else ("reads" if READ_RE.search(ctx) else "mentions")
+            cm = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*", line)
+            for t in hits:
+                record(t, kind, i, line)
                 # `table = f"strat_features_{tf_label}"` then `upsert_dataframe(feat, table, ...)`
                 # further down: follow the name to where it is used, as table_refs does.
-                cm = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*f?[\"']", line)
                 if cm:
                     const = re.compile(rf"\b{re.escape(cm.group(1))}\b")
                     for k, l2 in enumerate(lines):
@@ -797,9 +845,9 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                             continue
                         ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
                         if WRITE_RE.search(ctx2):
-                            record("writes", k, l2)
+                            record(t, "writes", k, l2)
                         elif READ_RE.search(ctx2):
-                            record("reads", k, l2)
+                            record(t, "reads", k, l2)
     return out
 
 
@@ -1191,6 +1239,9 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         for targets in local.values():
             for target, _sym in targets:
                 reach_module(target)
+        # A subprocess the reached code launches runs its target in full.
+        for target in spawn_targets(f, nodes):
+            reach_module(target, whole=True)
 
     def reach_module(f: str, whole: bool = False) -> None:
         if f == "gcp/database.py":
@@ -1244,6 +1295,34 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
                 reach_symbol(target, inner)
             else:
                 reach_module(target, whole=True)
+
+    _SPAWN = re.compile(r"\b(?:subprocess\.(?:run|call|check_call|check_output|Popen)|os\.system|os\.exec\w*|os\.spawn\w*|runpy\.run_(?:path|module))\b")
+
+    def spawn_targets(f: str, nodes: list[ast.AST]) -> list[str]:
+        """Repo modules the reached code launches as a subprocess: a `.py`
+        string that resolves against the file's own directory or the repo
+        root (scripts/run_pipeline.py builds `SCRIPTS_DIR / "run_backtest.py"`),
+        or a dotted module after `-m`. Only when the reached code calls
+        subprocess / os.system / runpy at all. (Codex, PR #1044.)"""
+        src = "\n".join(ast.unparse(n) for n in nodes) if nodes else ""
+        if not _SPAWN.search(src):
+            return []
+        out: list[str] = []
+        strings = [sub.value for n in nodes for sub in ast.walk(n)
+                   if isinstance(sub, ast.Constant) and isinstance(sub.value, str)]
+        here = pathlib.Path(f).parent
+        for i, sv in enumerate(strings):
+            cand: str | None = None
+            if sv.endswith(".py") and "/" not in sv.strip("./") or sv.endswith(".py"):
+                for rel in (str(here / pathlib.Path(sv).name), sv.lstrip("./")):
+                    if (root / rel).exists() and rel.startswith(("gcp/", "lib/", "scripts/")):
+                        cand = rel
+                        break
+            elif sv == "-m" and i + 1 < len(strings):
+                cand = _module_file(root, strings[i + 1].split("."))
+            if cand and cand != f and cand not in out:
+                out.append(cand)
+        return out
 
     def reach_class(f: str, cls: ast.ClassDef) -> None:
         classes[(f, cls.name)] = cls

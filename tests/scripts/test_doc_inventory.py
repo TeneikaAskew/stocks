@@ -853,14 +853,23 @@ def test_a_dynamically_named_runtime_relation_is_attributed(mini_repo):
            "def build(conn, tf, ticker, feat):\n    conn.execute(f\"INSERT INTO strat_features_{tf} VALUES (1)\")\n\n\n\n\n"
            "    return conn.execute(f\"SELECT * FROM {ticker}_30m_predictions\")\n\n\n\n\n"
            "def build2(conn, tf, feat):\n    table = f\"strat_features_{tf}\"\n\n\n\n\n    upsert_dataframe(feat, table, conn)\n")
+    _write(mini_repo, "gcp/levels.py", "def build(conn, tf):\n    conn.execute(\"INSERT INTO strat_features_levels_\" + tf + \" VALUES (1)\")\n")
     repo = inv.repo_inventory(mini_repo)
-    dyn = inv.table_refs_dynamic(mini_repo, ["strat_features_1m", "strat_features_5m", "spy_30m_predictions", "gamma_levels_eod"])
+    dyn = inv.table_refs_dynamic(mini_repo, ["strat_features_1m", "strat_features_5m", "strat_features_levels_1m",
+                                             "spy_30m_predictions", "gamma_levels_eod"])
     # the direct f-string site, and the assign-then-use site (strat_data_builder.py:716 -> upsert further down)
     assert [r["line"] for r in dyn["strat_features_1m"]["writes"]] == [2, 18], dyn["strat_features_1m"]
     assert [r["line"] for r in dyn["strat_features_1m"]["mentions"]] == [13]
     assert [r["line"] for r in dyn["strat_features_5m"]["writes"]] == [2, 18]
     assert [r["line"] for r in dyn["spy_30m_predictions"]["reads"]] == [7]
     assert dyn["gamma_levels_eod"] == {"writes": [], "reads": [], "mentions": []}
+    # a placeholder is ONE segment: `strat_features_{tf}` never names the levels table,
+    # and the concatenation form names only it
+    assert [(r["file"], r["line"]) for r in dyn["strat_features_levels_1m"]["writes"]] == [("gcp/levels.py", 2)], dyn["strat_features_levels_1m"]
+    assert inv._dynamic_templates('f"strat_features_{tf_label}"') == ["strat_features_[A-Za-z0-9]+"]
+    assert inv._dynamic_templates('"strat_features_%s" % tf') == ["strat_features_[A-Za-z0-9]+"]
+    assert inv._dynamic_templates('"{}_30m_predictions".format(t)') == ["[A-Za-z0-9]+_30m_predictions"]
+    assert inv._dynamic_templates('log.info("loaded %s rows", n)') == []
     ok = {"last_execution": {"result": "ok", "time": "2026-09-07T00:00:00Z"},
           "memory": "4Gi", "cpu": "1", "task_timeout": "3600", "max_retries": 0, "tasks": 1}
     live = {"jobs": {"alpha": dict(ok, command="python", args="-m gcp.research.alpha --mode=full")}, "schedulers": {},
@@ -869,6 +878,27 @@ def test_a_dynamically_named_runtime_relation_is_attributed(mini_repo):
                           "spy_30m_predictions": {"kind": "table", "rows": 7, "size": "8 kB"}}}
     row = next(l for l in inv.render_markdown("refs_digest", repo, live).splitlines() if l.startswith("| `alpha` |"))
     assert "`strat_features_1m` (runtime-created)" in row and "`spy_30m_predictions` (runtime-created)" in row, row
+
+
+def test_a_subprocess_target_in_reached_code_is_a_root(mini_repo):
+    """scripts/run_pipeline.py launches run_backtest.py and
+    generate_backtest_report.py by file path; backtest-pipeline rendered as
+    dashes although those children write three tables."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import subprocess, sys\nfrom pathlib import Path\nHERE = Path(__file__).parent\n\ndef main():\n"
+           "    subprocess.run([sys.executable, str(HERE / \"child.py\")])\n    cmd = [sys.executable, \"gcp/other.py\", \"--x\"]\n    subprocess.run(cmd)\n"
+           "    subprocess.run([sys.executable, \"-m\", \"gcp.third\"])\n")
+    _write(mini_repo, "gcp/research/child.py", "def main(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n")
+    _write(mini_repo, "gcp/other.py", "def main(conn):\n    return conn.execute(\"SELECT * FROM market_data_intraday\")\n")
+    _write(mini_repo, "gcp/third.py", "def main(conn):\n    return conn.execute(\"SELECT * FROM market_data_intraday_spy\")\n")
+    _write(mini_repo, "gcp/unrelated.py", "NAME = \"gcp/other.py\"\n\ndef f(conn):\n    conn.execute(\"DELETE FROM trades\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["writes"] == ["trades"], e["alpha"]
+    assert e["alpha"]["reads"] == ["market_data_intraday", "market_data_intraday_spy"], e["alpha"]
+    # a `.py` string in code that spawns nothing is not a root
+    scope = inv._import_scope(mini_repo, "gcp/unrelated.py")
+    assert "gcp/other.py" not in scope
 
 
 def test_a_prose_string_is_not_a_reference(mini_repo):
@@ -910,11 +940,17 @@ def test_the_real_tree_symbol_scope():
     # round 8: configured subprocess modules, dynamic runtime names, prose strings
     assert "signal_alerts" in e["audit-walkforward"]["reads"], e["audit-walkforward"]
     assert "signal_alerts" in e["audit-brief-bias"]["reads"], e["audit-brief-bias"]
-    dyn = inv.table_refs_dynamic(REPO, ["strat_features_1m"])
-    refs_all["strat_features_1m"]["writes"] += dyn["strat_features_1m"]["writes"]
+    dyn = inv.table_refs_dynamic(REPO, ["strat_features_1m", "strat_features_levels_1m"])
+    for t in ("strat_features_1m", "strat_features_levels_1m"):
+        refs_all[t]["writes"] += dyn[t]["writes"]
+        refs_all[t]["reads"] += dyn[t]["reads"]
     e3 = {x["job"]: x for x in inv.job_table_edges(repo, refs_all)}
     assert "strat_features_1m" in e3["strat-engine"]["writes"], e3["strat-engine"]
     assert "gamma_levels_eod" not in e3["freshness-watchdog"]["reads"], e3["freshness-watchdog"]
+    # round 9: a placeholder is one segment, and subprocess targets are roots
+    assert "strat_features_levels_1m" not in e3["strat-engine"]["writes"], e3["strat-engine"]
+    assert "strat_features_levels_1m" not in e3["strat-engine"]["reads"], e3["strat-engine"]
+    assert {"backtest_trades", "backtest_reports"} <= set(e["backtest-pipeline"]["writes"]), e["backtest-pipeline"]
 
 
 def test_the_digest_orphans_cite_their_writers_and_readers():
