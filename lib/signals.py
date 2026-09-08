@@ -160,6 +160,21 @@ def check_put_conditions(
     return score, conditions
 
 
+#: Every condition name `check_call_conditions` / `check_put_conditions` can
+#: record, and therefore the only names `disabled_conditions` may carry. A
+#: name outside this set disables nothing while looking like it does, so it
+#: is rejected rather than ignored (Codex on #1022). Kept honest by
+#: tests/lib/test_signals_per_ticker_overrides.py::
+#: test_the_disableable_condition_set_matches_what_the_checks_emit.
+DISABLEABLE_CONDITIONS = frozenset({
+    "above_vwap", "below_vwap",
+    "consecutive_down", "consecutive_up",
+    "level_break_pdh", "level_break_pdl",
+    "rsi_overbought_zone", "rsi_oversold_zone",
+    "stoch_rsi_overbought", "stoch_rsi_oversold",
+})
+
+
 def evaluate_signal(
     row: pd.Series,
     min_conditions: int = 3,
@@ -250,7 +265,12 @@ def evaluate_signal(
             )
             ov = _latest_overrides(ticker.upper())
             if ov:
-                dc = ov.get("disabled_conditions") or []
+                # NOT `or []`: that ran before any shape check, so `{}`, `0`,
+                # `""` and `False` all became "nothing is disabled" and failed
+                # OPEN on the operator config C-04 deliberately made fail
+                # closed. Only None means nothing is disabled (Codex on #1022,
+                # round 23).
+                dc = ov.get("disabled_conditions")
                 if isinstance(dc, str):
                     import json as _json
                     try:
@@ -267,6 +287,22 @@ def evaluate_signal(
                             "valid JSON (%r); no mean-reversion signal fires for this "
                             "bar until the override row is fixed",
                             ticker, dc)
+                        return None
+                if dc is not None:
+                    # A dict passes `set(...)` and yields its KEYS, so
+                    # `{"above_vwap": False}` disabled the very condition it
+                    # recorded as not disabled — the inverse of the operator's
+                    # intent. And an unrecognised name disables nothing while
+                    # looking like it does, which is how a typo becomes a
+                    # silent no-op. Both fail closed, like the decode above.
+                    if not isinstance(dc, (list, tuple)) or \
+                            any(c not in DISABLEABLE_CONDITIONS for c in dc):
+                        log.error(
+                            "%s: exit_config_overrides.disabled_conditions is not a "
+                            "list of known condition names (%r); no mean-reversion "
+                            "signal fires for this bar until the override row is "
+                            "fixed. Known: %s",
+                            ticker, dc, sorted(DISABLEABLE_CONDITIONS))
                         return None
                 if dc:
                     disabled_set = set(dc)

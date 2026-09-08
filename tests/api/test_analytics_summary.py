@@ -48,15 +48,37 @@ def test_summary_restricts_to_live_trades(monkeypatch):
     assert seen[0][1] == {"ticker": "SPY", "days": 30}
 
 
-def test_summary_is_503_not_a_flat_zero_when_the_query_fails(monkeypatch):
+def test_summary_is_not_a_flat_zero_when_the_query_fails(monkeypatch,
+                                                        application_defect):
     """Internal review of #1022 (trade-reader round): the endpoint read
-    through the swallowing query_to_dataframe, so a failed query (for
-    instance the run_kind column missing until the schema is applied)
-    rendered as HTTP 200 with every stat at 0, a legitimate-looking flat
-    summary. CLAUDE.md 3.7: an INTERNAL failure fails loud."""
+    through the swallowing query_to_dataframe, so a failed query rendered as
+    HTTP 200 with every stat at 0, a legitimate-looking flat summary.
+    CLAUDE.md 3.7: an INTERNAL failure fails loud.
+
+    This version of the test asserted 503 while its own docstring named the
+    failure as "the run_kind column missing until the schema is applied" —
+    which is a defect, not an outage. A 503 there tells an operator to retry
+    a schema regression that retrying cannot fix, and the assertion would
+    have held even if the handler answered 503 for literally everything
+    (Codex on #1022, round 23). It is a 500 now, and the outage case is the
+    test below."""
 
     def _boom(sql, params=None):
-        raise RuntimeError('column "run_kind" does not exist')
+        raise application_defect('column "run_kind" does not exist')
+
+    monkeypatch.setattr(analytics_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(analytics_module, "query_to_dataframe_strict", _boom)
+    loud = TestClient(main.app, raise_server_exceptions=False)
+    r = loud.get("/api/analytics/summary/SPY", params={"days": 30})
+    assert r.status_code == 500, r.text
+
+
+def test_summary_is_503_when_cloud_sql_is_unreachable(monkeypatch,
+                                                      cloud_sql_outage):
+    """The other half: a real outage IS retryable and keeps the 503."""
+
+    def _boom(sql, params=None):
+        raise cloud_sql_outage()
 
     monkeypatch.setattr(analytics_module, "_HAS_CLOUD_SQL", True)
     monkeypatch.setattr(analytics_module, "query_to_dataframe_strict", _boom)

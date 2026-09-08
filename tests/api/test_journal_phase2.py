@@ -215,11 +215,11 @@ def test_seed_endpoint_converts_fraction_to_percent(monkeypatch):
     assert trade["strat_combo"] == "212"
 
 
-def test_seed_endpoint_503_on_db_failure(monkeypatch):
+def test_seed_endpoint_503_on_db_failure(monkeypatch, cloud_sql_outage):
     monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
 
     def boom(*a, **k):
-        raise RuntimeError("db down")
+        raise cloud_sql_outage()
 
     monkeypatch.setattr(journal_module, "_seed_query", boom)
     client = TestClient(main.app)

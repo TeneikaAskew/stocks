@@ -51,6 +51,7 @@ import logging
 import os
 import sys
 from collections import Counter
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -228,6 +229,14 @@ def av_news_to_rows(feed: list[dict]) -> list[dict]:
     skipped: list[str] = []
     malformed: list[str] = []
     for art in feed:
+        # The CONTAINER, before any field. `art.get(...)` raises
+        # AttributeError on a None / number / string / list entry, which
+        # aborted the whole backfill-ticker execution — indicators and every
+        # remaining step with it — over one bad article. Field-level checks
+        # cannot reach this (EXTERNAL data, CLAUDE.md 3.7; Codex on #1022).
+        if not isinstance(art, Mapping):
+            skipped.append(repr(art))
+            continue
         pub_raw = art.get("time_published")
         # Check the TYPE rather than catching what slicing a wrong one throws.
         # `{"t": 1}[:15]` raises TypeError on Python 3.11 and KeyError on 3.12,

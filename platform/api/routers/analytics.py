@@ -38,6 +38,8 @@ from gcp.database import is_cloud_sql_configured, query_to_dataframe_strict
 
 _HAS_CLOUD_SQL = is_cloud_sql_configured()
 
+from api.http_errors import unavailable
+
 log = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -150,9 +152,12 @@ def get_trade_summary(ticker: str, days: int = Query(90, ge=1, le=3650)) -> _Tra
     """
     try:
         df = query_to_dataframe_strict(sql, {"ticker": ticker_upper, "days": days})
-    except Exception:
+    except Exception as exc:
         log.exception("trades summary query failed for %s", ticker_upper)
-        raise HTTPException(status_code=503, detail="trade summary temporarily unavailable")
+        # An invalid column or a drifted schema is a defect, not an outage;
+        # a 503 for it tells an operator to retry code that will never
+        # succeed (Codex on #1022, round 23).
+        unavailable("trade summary temporarily unavailable", exc)
     if df.empty:
         return _compute_stats([])
 

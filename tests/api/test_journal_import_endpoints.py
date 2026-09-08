@@ -536,7 +536,7 @@ def test_commit_local_fallback_stores_entry_ts_with_seconds(client_local_owner):
 
 # ── a failed dedupe lookup is a 503 for every owner ─────────────────────
 
-def test_commit_is_503_when_the_dedupe_lookup_fails_even_for_the_local_owner(client_local_owner, monkeypatch):
+def test_commit_is_503_when_the_dedupe_lookup_fails_even_for_the_local_owner(client_local_owner, monkeypatch, cloud_sql_outage):
     """Internal review of #1022 (trade-reader round; audit 12.3): with
     Cloud SQL configured, a failed `_existing_entry_keys` for the local
     owner became an empty key set, so every trade already in the journal
@@ -546,7 +546,7 @@ def test_commit_is_503_when_the_dedupe_lookup_fails_even_for_the_local_owner(cli
     body = _commit_body_from_preview(preview)
 
     def _boom(sql, params=None):
-        raise RuntimeError("connection lost")
+        raise cloud_sql_outage()
 
     monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
     monkeypatch.setattr(journal_module, "_journal_query", _boom)

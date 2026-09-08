@@ -549,9 +549,13 @@ def test_examples_unknown_ticker_returns_empty(monkeypatch, cloud_sql_client):
 # ── DB-unavailable envelope parity (Rule 3.7) ───────────────────────────────
 
 
-def test_examples_503_on_db_query_failure(monkeypatch, cloud_sql_client):
+def test_examples_503_on_db_query_failure(monkeypatch, cloud_sql_client,
+                                          cloud_sql_outage):
+    """A real outage, not a bare RuntimeError: only an infrastructure
+    failure earns the retryable 503 now, so staging a defect here would
+    assert the wrong thing (Codex on #1022, round 23)."""
     def boom(*a, **k):
-        raise RuntimeError("db down")
+        raise cloud_sql_outage()
 
     monkeypatch.setattr(journal_module, "_journal_query", boom)
     r = cloud_sql_client.get("/api/journal/examples/SPY")
@@ -695,14 +699,14 @@ def test_examples_pipeline_excludes_extended_hours_rows(monkeypatch, cloud_sql_c
     assert "BETWEEN TIME '09:30' AND TIME '16:00'" in pipeline_sql
 
 
-def test_examples_503_when_pipeline_query_fails(monkeypatch, cloud_sql_client):
+def test_examples_503_when_pipeline_query_fails(monkeypatch, cloud_sql_client, cloud_sql_outage):
     """A real pipeline-query failure fails the WHOLE endpoint loud (503) —
     never a silent degrade to admin-only rows (CLAUDE.md Rule 3.7)."""
     inner = _make_fake_query([])
 
     def flaky(sql, params=None):
         if _is_pipeline_sql(sql):
-            raise RuntimeError("pipeline db down")
+            raise cloud_sql_outage()
         return inner(sql, params)
 
     monkeypatch.setattr(journal_module, "_journal_query", flaky)

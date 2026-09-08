@@ -319,11 +319,11 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/database.py`](../../../gcp/database.py) — line [906](../../../gcp/database.py#L906)
 
 ### `journal_entries`
-- [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [673](../../../platform/api/routers/journal.py#L673), [1187](../../../platform/api/routers/journal.py#L1187), [1241](../../../platform/api/routers/journal.py#L1241)
+- [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [675](../../../platform/api/routers/journal.py#L675), [1195](../../../platform/api/routers/journal.py#L1195), [1250](../../../platform/api/routers/journal.py#L1250)
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [79](../../../scripts/backfill_journal_embeddings.py#L79)
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [404](../../../gcp/backfill_ticker.py#L404), [515](../../../gcp/backfill_ticker.py#L515), [584](../../../gcp/backfill_ticker.py#L584)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [413](../../../gcp/backfill_ticker.py#L413), [524](../../../gcp/backfill_ticker.py#L524), [593](../../../gcp/backfill_ticker.py#L593)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [415](../../../gcp/fetchers/backfill_daily_indicators.py#L415)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [439](../../../gcp/fetchers/fetch_market_data.py#L439), [515](../../../gcp/fetchers/fetch_market_data.py#L515), [523](../../../gcp/fetchers/fetch_market_data.py#L523), [564](../../../gcp/fetchers/fetch_market_data.py#L564), [807](../../../gcp/fetchers/fetch_market_data.py#L807), [940](../../../gcp/fetchers/fetch_market_data.py#L940)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [8](../../../gcp/fetchers/fetch_premarket_refresh.py#L8), [215](../../../gcp/fetchers/fetch_premarket_refresh.py#L215), [251](../../../gcp/fetchers/fetch_premarket_refresh.py#L251), [256](../../../gcp/fetchers/fetch_premarket_refresh.py#L256), [257](../../../gcp/fetchers/fetch_premarket_refresh.py#L257), [258](../../../gcp/fetchers/fetch_premarket_refresh.py#L258), [320](../../../gcp/fetchers/fetch_premarket_refresh.py#L320)
@@ -333,7 +333,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [6](../../../scripts/deep_backfill_ticker.py#L6), [43](../../../scripts/deep_backfill_ticker.py#L43), [102](../../../scripts/deep_backfill_ticker.py#L102)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [605](../../../gcp/backfill_ticker.py#L605)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [614](../../../gcp/backfill_ticker.py#L614)
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [308](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L308)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [467](../../../gcp/fetchers/fetch_market_data.py#L467)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [211](../../../gcp/migrate_to_gcp.py#L211), [245](../../../gcp/migrate_to_gcp.py#L245), [248](../../../gcp/migrate_to_gcp.py#L248)
@@ -357,7 +357,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/agents/model_routing.py`](../../../lib/agents/model_routing.py) — line [193](../../../lib/agents/model_routing.py#L193)
 
 ### `news_sentiment`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [618](../../../gcp/backfill_ticker.py#L618)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [627](../../../gcp/backfill_ticker.py#L627)
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [375](../../../gcp/fetchers/fetch_news_sentiment.py#L375), [376](../../../gcp/fetchers/fetch_news_sentiment.py#L376)
 - [`gcp/fetchers/fetch_rss_news.py`](../../../gcp/fetchers/fetch_rss_news.py) — line [699](../../../gcp/fetchers/fetch_rss_news.py#L699), [710](../../../gcp/fetchers/fetch_rss_news.py#L710), [711](../../../gcp/fetchers/fetch_rss_news.py#L711)
 - [`scripts/backfill_news_sentiment.py`](../../../scripts/backfill_news_sentiment.py) — line [101](../../../scripts/backfill_news_sentiment.py#L101), [102](../../../scripts/backfill_news_sentiment.py#L102)
@@ -452,7 +452,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [108](../../../scripts/run_param_sweep.py#L108)
 
 ### `watchlists`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [298](../../../gcp/backfill_ticker.py#L298), [317](../../../gcp/backfill_ticker.py#L317), [321](../../../gcp/backfill_ticker.py#L321)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [307](../../../gcp/backfill_ticker.py#L307), [326](../../../gcp/backfill_ticker.py#L326), [330](../../../gcp/backfill_ticker.py#L330)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [655](../../../gcp/discord_interactions/main.py#L655), [691](../../../gcp/discord_interactions/main.py#L691)
 - [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [258](../../../gcp/fetchers/_watchlist.py#L258), [262](../../../gcp/fetchers/_watchlist.py#L262), [263](../../../gcp/fetchers/_watchlist.py#L263), [295](../../../gcp/fetchers/_watchlist.py#L295)
 <!-- inventory:writes:end -->
@@ -665,11 +665,11 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `journal_entries`
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1543](../../../lib/agents/summarizers.py#L1543)
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [545](../../../platform/api/routers/backtest.py#L545), [717](../../../platform/api/routers/backtest.py#L717)
-- [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [450](../../../platform/api/routers/journal.py#L450), [850](../../../platform/api/routers/journal.py#L850), [887](../../../platform/api/routers/journal.py#L887), [979](../../../platform/api/routers/journal.py#L979), [1164](../../../platform/api/routers/journal.py#L1164)
+- [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [452](../../../platform/api/routers/journal.py#L452), [852](../../../platform/api/routers/journal.py#L852), [889](../../../platform/api/routers/journal.py#L889), [984](../../../platform/api/routers/journal.py#L984), [1172](../../../platform/api/routers/journal.py#L1172)
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [59](../../../scripts/backfill_journal_embeddings.py#L59)
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [363](../../../gcp/backfill_ticker.py#L363), [428](../../../gcp/backfill_ticker.py#L428)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [372](../../../gcp/backfill_ticker.py#L372), [437](../../../gcp/backfill_ticker.py#L437)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [57](../../../gcp/build_intraday_gex.py#L57), [74](../../../gcp/build_intraday_gex.py#L74), [80](../../../gcp/build_intraday_gex.py#L80)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [332](../../../gcp/discord_interactions/main.py#L332)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [117](../../../gcp/fetchers/backfill_daily_indicators.py#L117), [216](../../../gcp/fetchers/backfill_daily_indicators.py#L216), [222](../../../gcp/fetchers/backfill_daily_indicators.py#L222), [252](../../../gcp/fetchers/backfill_daily_indicators.py#L252)
@@ -706,7 +706,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/strat_backtest.py`](../../../scripts/strat_backtest.py) — line [37](../../../scripts/strat_backtest.py#L37)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [485](../../../gcp/backfill_ticker.py#L485)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [494](../../../gcp/backfill_ticker.py#L494)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [107](../../../gcp/build_intraday_gex.py#L107)
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [22](../../../gcp/build_realtime_gex.py#L22), [99](../../../gcp/build_realtime_gex.py#L99)
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [208](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L208)
@@ -814,7 +814,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/signal_quality_alarm.py`](../../../gcp/signal_quality_alarm.py) — line [197](../../../gcp/signal_quality_alarm.py#L197)
 - [`gcp/signal_replay.py`](../../../gcp/signal_replay.py) — line [8](../../../gcp/signal_replay.py#L8), [110](../../../gcp/signal_replay.py#L110), [118](../../../gcp/signal_replay.py#L118)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [812](../../../lib/agents/summarizers.py#L812), [830](../../../lib/agents/summarizers.py#L830)
-- [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [486](../../../platform/api/routers/journal.py#L486), [927](../../../platform/api/routers/journal.py#L927), [1032](../../../platform/api/routers/journal.py#L1032)
+- [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [488](../../../platform/api/routers/journal.py#L488), [932](../../../platform/api/routers/journal.py#L932), [1038](../../../platform/api/routers/journal.py#L1038)
 - [`scripts/analysis/per_factor_walkforward.py`](../../../scripts/analysis/per_factor_walkforward.py) — line [13](../../../scripts/analysis/per_factor_walkforward.py#L13), [254](../../../scripts/analysis/per_factor_walkforward.py#L254)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [6](../../../scripts/analysis/per_ticker_calibration.py#L6), [93](../../../scripts/analysis/per_ticker_calibration.py#L93), [196](../../../scripts/analysis/per_ticker_calibration.py#L196), [893](../../../scripts/analysis/per_ticker_calibration.py#L893)
 - [`scripts/analysis/verify_brief_bias.py`](../../../scripts/analysis/verify_brief_bias.py) — line [53](../../../scripts/analysis/verify_brief_bias.py#L53), [153](../../../scripts/analysis/verify_brief_bias.py#L153)
@@ -860,9 +860,9 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [188](../../../lib/data_loader.py#L188), [611](../../../lib/data_loader.py#L611), [614](../../../lib/data_loader.py#L614), [641](../../../lib/data_loader.py#L641)
 - [`lib/insights.py`](../../../lib/insights.py) — line [39](../../../lib/insights.py#L39), [854](../../../lib/insights.py#L854)
 - [`lib/style_miner.py`](../../../lib/style_miner.py) — line [80](../../../lib/style_miner.py#L80)
-- [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) — line [131](../../../platform/api/routers/analytics.py#L131), [146](../../../platform/api/routers/analytics.py#L146), [154](../../../platform/api/routers/analytics.py#L154)
+- [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) — line [133](../../../platform/api/routers/analytics.py#L133), [148](../../../platform/api/routers/analytics.py#L148), [156](../../../platform/api/routers/analytics.py#L156)
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [7](../../../platform/api/routers/backtest.py#L7), [190](../../../platform/api/routers/backtest.py#L190)
-- [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [10](../../../platform/api/routers/journal.py#L10), [13](../../../platform/api/routers/journal.py#L13), [451](../../../platform/api/routers/journal.py#L451), [452](../../../platform/api/routers/journal.py#L452), [459](../../../platform/api/routers/journal.py#L459), [486](../../../platform/api/routers/journal.py#L486), [489](../../../platform/api/routers/journal.py#L489), [923](../../../platform/api/routers/journal.py#L923) (+3 more)
+- [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [10](../../../platform/api/routers/journal.py#L10), [13](../../../platform/api/routers/journal.py#L13), [453](../../../platform/api/routers/journal.py#L453), [454](../../../platform/api/routers/journal.py#L454), [461](../../../platform/api/routers/journal.py#L461), [488](../../../platform/api/routers/journal.py#L488), [491](../../../platform/api/routers/journal.py#L491), [928](../../../platform/api/routers/journal.py#L928) (+3 more)
 - [`scripts/analysis/per_factor_walkforward.py`](../../../scripts/analysis/per_factor_walkforward.py) — line [15](../../../scripts/analysis/per_factor_walkforward.py#L15)
 - [`scripts/analysis/phase4_setup_discovery.py`](../../../scripts/analysis/phase4_setup_discovery.py) — line [270](../../../scripts/analysis/phase4_setup_discovery.py#L270)
 - [`scripts/generate_backtest_report.py`](../../../scripts/generate_backtest_report.py) — line [127](../../../scripts/generate_backtest_report.py#L127), [136](../../../scripts/generate_backtest_report.py#L136)

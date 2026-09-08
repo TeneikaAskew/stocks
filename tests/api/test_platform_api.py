@@ -489,16 +489,26 @@ class TestJournalCRUD:
         assert "user_email = :user_email" in del_sql
         assert del_params == {"id": "abc-123", "user_email": "local"}
 
-    def test_post_falls_back_to_local_on_cloud_sql_failure(self, client, monkeypatch, tmp_path):
-        """If Cloud SQL throws, the router writes to a local JSON file
-        keyed by ticker (the gitignored `data/journal/{ticker}_journal.json`)."""
+    def test_post_falls_back_to_local_on_cloud_sql_failure(
+            self, client, monkeypatch, tmp_path, cloud_sql_outage):
+        """If Cloud SQL is UNREACHABLE, the router writes to a local JSON file
+        keyed by ticker (the gitignored `data/journal/{ticker}_journal.json`).
+
+        The outage has to be a real one now. This staged a bare RuntimeError,
+        which is a defect, and a defect must not reach a fallback at all — see
+        the test below (Codex on #1022, round 23)."""
         from api.routers import journal as journal_module
 
-        # Force Cloud SQL "ON" but make execute_sql raise
+        # Force Cloud SQL "ON" and make the insert this path actually calls
+        # raise. It patched `execute_sql`, which `create_trade` never calls —
+        # it goes through `_insert_cloud_sql_trade` — so the failure the test
+        # saw was the real `get_engine` raising "Cloud SQL not configured",
+        # and the blanket handler caught that and fell back. The test passed
+        # for a reason unrelated to its name.
         monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
         monkeypatch.setattr(
-            journal_module, "execute_sql",
-            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("DB down")),
+            journal_module, "_insert_cloud_sql_trade",
+            lambda **k: (_ for _ in ()).throw(cloud_sql_outage()),
         )
         # Redirect the local journal dir to tmp_path so we don't pollute
         # the real data/ directory
@@ -536,6 +546,37 @@ class TestMarketDataAPI:
     The endpoints bind `query_to_dataframe` and `_CLOUD_SQL` at module
     import time, so tests patch them on the `api.main` module object.
     """
+
+
+    def test_post_does_not_fall_back_to_local_on_an_application_defect(
+            self, client, monkeypatch, tmp_path, application_defect):
+        """A local-file write is a fallback for an OUTAGE. Reaching it on a
+        defect writes the trade somewhere no one reads and reports success,
+        which is the fabricated-success case CLAUDE.md 3.7 forbids."""
+        from api.routers import journal as journal_module
+
+        monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+        monkeypatch.setattr(
+            journal_module, "_insert_cloud_sql_trade",
+            lambda **k: (_ for _ in ()).throw(
+                application_defect('column "return_pct" does not exist')),
+        )
+        monkeypatch.setattr(journal_module, "LOCAL_JOURNAL_DIR", tmp_path)
+
+        body = {
+            "ticker": "IWM", "direction": "CALL",
+            "entry_date": "2026-04-25", "entry_time": "10:00",
+            "entry_price": 200.0,
+            "exit_date": "2026-04-25", "exit_time": "10:30",
+            "exit_price": 202.0,
+        }
+        from starlette.testclient import TestClient as _TC
+        loud = _TC(client.app, raise_server_exceptions=False)
+        r = loud.post("/api/journal/trades", json=body)
+        assert r.status_code == 500, r.text
+        assert not list(tmp_path.glob("*.json")), (
+            "a defect must not write the trade to the local journal: %s"
+            % list(tmp_path.glob("*.json")))
 
     def _patch_intraday(self, monkeypatch, df):
         """Force Cloud SQL ON in api.main and install a fake

@@ -350,3 +350,78 @@ def test_the_tier_b_getters_still_degrade_on_a_failed_read(monkeypatch):
     assert eco.get_blue_sky_atr_offset("QQQ") is None
     assert eco.get_resolution_tier("QQQ", "call_target") == "B"
     eco._latest_overrides.cache_clear()
+
+
+# ─── disabled_conditions shape validation (Codex on #1022, round 23) ──
+
+
+def _overrides(disabled_conditions):
+    import datetime
+    return {
+        "calibration_date": datetime.date.today(),
+        "disabled_conditions": disabled_conditions,
+        "disabled_directions": None,
+        "call_target": 0.00184, "put_target": 0.00202,
+        "call_stop": 0.00075, "put_stop": 0.00075,
+        "call_time_stop": 25, "put_time_stop": 25,
+        "blue_sky_atr_offset": 0.15, "notes": "test",
+    }
+
+
+def test_a_json_object_is_not_a_list_of_disabled_conditions(monkeypatch):
+    """The same defect `get_disabled_directions` had, one module over.
+
+    `ov.get("disabled_conditions") or []` runs BEFORE any shape check, so
+    `{}` became `[]` and read as "nothing is disabled" — failing open on
+    operator config the C-04 remediation deliberately made fail closed.
+    And `set({"above_vwap": False})` is `{"above_vwap"}`, so an object
+    recording a condition as NOT disabled disabled it: the inverse of what
+    was written (Codex on #1022, round 23)."""
+    from lib.strategies import exit_config_overrides as eco
+    from lib.signals import evaluate_signal
+
+    eco._latest_overrides.cache_clear()   # before patching; the stub has no cache
+    for bad in ({}, {"above_vwap": False}, 0, "", False, 42, ["above_vwap", 7]):
+        monkeypatch.setattr(eco, "_latest_overrides", lambda t, b=bad: _overrides(b))
+        assert evaluate_signal(_put_row(), min_conditions=3, ticker="SPY") is None, (
+            "a disabled_conditions payload that is not a list of condition "
+            "names must suppress the bar, not be coerced: %r" % (bad,)
+        )
+
+
+def test_a_well_formed_disabled_conditions_list_still_works(monkeypatch):
+    """The narrowing must not break the shape the column actually holds."""
+    from lib.strategies import exit_config_overrides as eco
+    from lib.signals import evaluate_signal
+
+    eco._latest_overrides.cache_clear()   # before patching; the stub has no cache
+    monkeypatch.setattr(eco, "_latest_overrides",
+                        lambda t: _overrides(["above_vwap"]))
+    sig = evaluate_signal(_put_row(), min_conditions=3, ticker="SPY")
+    assert sig is not None
+    assert "above_vwap" not in sig["conditions_met"]
+
+    # An empty list is a real answer: nothing is disabled.
+    monkeypatch.setattr(eco, "_latest_overrides", lambda t: _overrides([]))
+    assert evaluate_signal(_put_row(), min_conditions=3, ticker="SPY") is not None
+
+
+def test_the_disableable_condition_set_matches_what_the_checks_emit():
+    """`DISABLEABLE_CONDITIONS` rejects unknown names, so it has to stay in
+    step with the names the condition checks actually record. A new condition
+    added without updating the set would make every override naming it fail
+    closed, which looks like an outage rather than a stale constant."""
+    import inspect
+    import re
+
+    import lib.signals as sig_mod
+
+    src = inspect.getsource(sig_mod)
+    emitted = set(re.findall(r"conditions\.append\('([a-z_0-9]+)'\)", src))
+    assert emitted, "the scan found no condition names; the pattern has drifted"
+    assert emitted == set(sig_mod.DISABLEABLE_CONDITIONS), (
+        "DISABLEABLE_CONDITIONS is out of step with the checks: only in code %s, "
+        "only in the set %s"
+        % (sorted(emitted - set(sig_mod.DISABLEABLE_CONDITIONS)),
+           sorted(set(sig_mod.DISABLEABLE_CONDITIONS) - emitted))
+    )

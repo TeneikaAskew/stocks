@@ -304,3 +304,28 @@ def test_a_non_list_vendor_collection_is_dropped_not_raised(caplog):
         rows = av_news_to_rows(feed)
     assert sorted(r["ticker"] for r in rows) == ["AMD", "NVDA"]
     assert "topics" in caplog.text and "ticker_sentiment" in caplog.text
+
+
+def test_a_non_mapping_feed_entry_is_dropped_not_raised():
+    """Field-level validation cannot save a malformed CONTAINER.
+
+    `for art in feed: art.get(...)` raises AttributeError on a feed entry
+    that is None, a number, a string or a list, and that aborts the whole
+    backfill-ticker execution — indicators and every remaining step with
+    it. One bad article must be dropped and counted, not stop the run
+    (EXTERNAL data, CLAUDE.md 3.7; Codex on #1022, round 23)."""
+    from gcp.backfill_ticker import av_news_to_rows
+
+    good = {
+        "time_published": "20260902T130000",
+        "title": "t", "url": "u", "source": "s",
+        "overall_sentiment_score": 0.5,
+        "topics": [{"topic": "Earnings"}],
+        "ticker_sentiment": [
+            {"ticker": "AMD", "relevance_score": "0.9",
+             "ticker_sentiment_score": "0.4", "ticker_sentiment_label": "Bullish"},
+        ],
+    }
+    feed = [None, 42, "AMD", ["AMD"], good]
+    rows = av_news_to_rows(feed)
+    assert [r["ticker"] for r in rows] == ["AMD"], rows
