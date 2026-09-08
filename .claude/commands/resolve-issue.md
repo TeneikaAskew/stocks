@@ -724,19 +724,39 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   git grep -q "$sym" -- .claude/agents ":!.claude/agents/$sym.md"; b=$?
   git grep -q "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
     "${reviewed[@]}"; c=$?
+  # package.json stays EXCLUDED from the pathspec above — it names every
+  # dependency, so a dependency retirement would match it forever. But its
+  # `scripts` block is EXECUTABLE: `npm run contract:sync` invokes
+  # scripts/sync-api-contract.mjs. Measured with the other consumers gone, the
+  # excluded form returned rc=1 "dead" while npm still exposed a broken command.
+  # So read the scripts block on its own, with jq rather than grepping the file.
+  local d=1 st
+  if [ -f package.json ]; then
+    command -v jq >/dev/null \
+      || { echo "jq not found — cannot inspect package.json scripts"; return 2; }
+    jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"' package.json \
+      | grep -qF -- "$sym"
+    # CAPTURE THE WHOLE ARRAY FIRST. Measured: `d=$?` resets PIPESTATUS to (0),
+    # the assignment's own status, and jq's real exit is gone. A jq failure is
+    # otherwise invisible here — measured, malformed JSON gives jq rc=5 and grep
+    # rc=1, and rc=1 reads as "not found", i.e. absent.
+    st=( "${PIPESTATUS[@]}" ); d=${st[1]}
+    test "${st[0]}" -eq 0 \
+      || { echo "jq failed on package.json (rc=${st[0]}) — asserting nothing"
+           return 2; }
+  fi
   # NUMERIC, not a `*2*` string match on the concatenation. git grep is not
   # limited to 0/1/128: a signalled grep exits 130 (SIGINT), 137 (SIGKILL),
   # 141 (SIGPIPE), and measured, `1${b}1` for each of those contains no `2` at
   # all — the error fell through to the hit/miss logic and, with the other two
   # scopes at 1, certified the surface ABSENT. Anything above 1 is an error.
-  for rc in "$a" "$b" "$c"; do
+  for rc in "$a" "$b" "$c" "$d"; do
     test "$rc" -le 1 \
-      || { echo "git grep error: code=$a agents=$b commands=$c — asserting nothing"
+      || { echo "git grep error: code=$a agents=$b commands=$c scripts=$d — asserting nothing"
            return 2; }
   done
-  case "$a$b" in
-    00|01|10) return 0 ;;                      # real code or an agent uses it
-  esac
+  # code, an agent, or an npm script uses it
+  if [ "$a" -eq 0 ] || [ "$b" -eq 0 ] || [ "$d" -eq 0 ]; then return 0; fi
   test "$c" -eq 0 || return 1                  # nothing, anywhere
   # rc=3 is "a grep cannot tell" — and it has to be ESCAPABLE, or a symbol this
   # file names as an example can never be retired. TradingAlertSystem is exactly
