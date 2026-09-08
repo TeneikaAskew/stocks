@@ -1110,6 +1110,31 @@ def test_a_declared_relation_named_at_run_time_is_attributed(mini_repo):
     assert forms[0]["holes"] == [None], "a call expression is not a resolvable name"
 
 
+def test_a_propagated_name_is_followed_only_inside_its_own_function(mini_repo):
+    """A dynamic name flowing through common locals (`table` -> `sql` -> `df`
+    -> `out`) was searched across the whole module, so `out = df.copy()` in an
+    unrelated helper was cited as a write of every `strat_features_*`
+    relation: `.copy()` also matched the case-insensitive SQL `COPY`, the same
+    shape as `.join(` matching JOIN. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "def build(conn, tf, feat):\n"
+           '    table = f"demo_{tf}"\n'
+           "    upsert_dataframe(feat, table, conn)\n"
+           "\n"
+           "def _capitalize(df):\n"
+           '    """Unrelated helper: no database access at all."""\n'
+           "    out = df.copy()\n"
+           "    table = 1\n"
+           "    return out\n")
+    dyn = inv.table_refs_dynamic(mini_repo, ["demo_1m"])
+    assert [r["line"] for r in dyn["demo_1m"]["writes"]] == [3], dyn["demo_1m"]
+    for kind in ("writes", "reads", "mentions"):
+        assert not [r for r in dyn["demo_1m"][kind] if r["line"] >= 5], \
+            "the helper's lines belong to a different function"
+    assert not inv.WRITE_RE.search("out = df.copy()"), "`.copy()` is not SQL COPY"
+    assert inv.WRITE_RE.search("COPY trades FROM STDIN"), "a real COPY still counts"
+
+
 def test_a_configured_subprocess_module_is_a_root_of_the_job(mini_repo):
     """audit-walkforward enters through gcp/audit_job_runner.py, which runs
     AUDIT_SCRIPT_MODULE in a subprocess; the digest showed the job as dashes."""

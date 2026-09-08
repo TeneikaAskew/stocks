@@ -601,7 +601,7 @@ DOC_TOOLING = frozenset({
 })
 WRITE_RE = re.compile(
     r"upsert|bulk_insert|INSERT\s+INTO|UPDATE\s+\w|DELETE\s+FROM|"
-    r"\.to_sql\(|TRUNCATE|REFRESH\s+MATERIALIZED\s+VIEW|CREATE\s+TABLE|ON\s+CONFLICT|\bCOPY\b", re.I)
+    r"\.to_sql\(|TRUNCATE|REFRESH\s+MATERIALIZED\s+VIEW|CREATE\s+TABLE|ON\s+CONFLICT|(?<!\.)\bCOPY\b", re.I)
 # `(?<!\.)` on JOIN: `'\\n'.join(lines)` is string code, not SQL, and with re.I
 # it read as a JOIN and coloured the docstring below it as a read of `trades`
 # (lib/backtest.py:326 -- Codex, PR #1044).
@@ -1253,6 +1253,21 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                 if sym:
                     importers.setdefault((target, sym), []).append((rel, local))
     seen: dict[tuple[str, str], set[int]] = {}
+    _scopes: dict[str, list[tuple[int, int]]] = {}
+
+    def _enclosing(rel: str, line: int) -> tuple[int, int] | None:
+        """The innermost function containing `line`, as (first, last)."""
+        if rel not in _scopes:
+            tree = _parsed(root / rel)
+            _scopes[rel] = sorted(
+                ((n.lineno, getattr(n, "end_lineno", None) or n.lineno)
+                 for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))),
+                key=lambda s: s[1] - s[0]) if tree is not None else []
+        for lo, hi in _scopes[rel]:
+            if lo <= line <= hi:
+                return (lo, hi)
+        return None
 
     def record(t: str, rel: str, kind: str, k: int, text: str,
                form: dict[str, Any] | None = None) -> None:
@@ -1270,13 +1285,23 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
             out[t][kind].append(hit)
 
     def follow(t: str, rel: str, name_re: re.Pattern, skip: int, depth: int = 0,
-               form: dict[str, Any] | None = None) -> None:
+               form: dict[str, Any] | None = None,
+               bounds: tuple[int, int] | None = None) -> None:
         """Every non-diagnostic line in `rel` using `name_re` is a use of the
-        table; an assignment there is followed one level further."""
+        table; an assignment there is followed one level further, INSIDE the
+        function that made it.
+
+        Following a propagated name across the whole module let common locals
+        (`table` -> `sql` -> `df` -> `out`) reach unrelated code: `out =
+        df.copy()` in `_capitalize_ohlcv` was cited as a write of every
+        `strat_features_*` relation. (Codex, PR #1044.)
+        """
         if rel not in src:
             return
         lines, diag, ctx_lines = src[rel]
-        for k, l2 in enumerate(lines):
+        lo, hi = bounds or (1, len(lines))
+        for k in range(lo - 1, min(hi, len(lines))):
+            l2 = lines[k]
             if k == skip or k + 1 in diag or not name_re.search(l2) or l2.lstrip().startswith("#"):
                 continue
             ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
@@ -1288,7 +1313,8 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                 record(t, rel, "mentions", k, l2, form)
             am = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*", l2)
             if am and depth < 2:
-                follow(t, rel, re.compile(rf"\b{re.escape(am.group(1))}\b"), k, depth + 1, form)
+                follow(t, rel, re.compile(rf"\b{re.escape(am.group(1))}\b"), k, depth + 1,
+                       form, _enclosing(rel, k + 1))
 
     for rel, (lines, diag, ctx_lines) in src.items():
         forms_at: dict[int, list[dict[str, Any]]] = {}
@@ -1369,7 +1395,8 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                 # `table = f"strat_features_{tf_label}"` then `upsert_dataframe(feat, table, ...)`
                 # further down: follow the name to where it is used, as table_refs does.
                 if cm:
-                    follow(t, rel, re.compile(rf"\b{re.escape(cm.group(1))}\b"), i, 0, form)
+                    follow(t, rel, re.compile(rf"\b{re.escape(cm.group(1))}\b"), i, 0,
+                           form, _enclosing(rel, i + 1))
                 # `def levels_table(tf): return f"strat_features_levels_{tf}"` then
                 # `bulk_copy_upsert(df, levels_table(tf))`: follow the helper's calls,
                 # here and in every module that imports it.
