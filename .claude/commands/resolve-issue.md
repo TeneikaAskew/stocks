@@ -2020,7 +2020,12 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # `${#impl[@]}` guards rather than a bare `"${impl[@]}"`: bash 3.2, still
   # /bin/bash on macOS, treats expanding an EMPTY array under `set -u` as an
   # unbound variable, and no implementation argument is the ordinary case.
-  local impl=( "$@" ) _i _iorig _p _impl_re=
+  # AND ONE REGEX PER ARGUMENT, not only their alternation. The rollout gate
+  # needs each implementation's OWN last removal — see the fold in the solyra
+  # half — and `$_impl_re` collapses them into a single pattern the moment
+  # there is more than one. Both are kept because the scans genuinely want the
+  # union and only the gate wants them apart.
+  local impl=( "$@" ) _i _iorig _p _impl_re= _impl_res=()
   if [ ${#impl[@]} -gt 0 ]; then
     for _i in "${impl[@]}"; do
       test -n "$_i" || {
@@ -2095,6 +2100,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       _p=$(_ere_literal "$_i")
       _p=${_p//_/$'\x01'}; _p=${_p//-/$'\x01'}; _p=${_p//$'\x01'/[-_]}
       _impl_re="${_impl_re:+$_impl_re|}$_p"
+      _impl_res+=( "$_p" )
     done
   fi
   # AN APPROVAL IS SYMBOL-BOUND. REVIEWED clears the rc=3 ambiguity by naming
@@ -2797,57 +2803,63 @@ SOLYRA_IMPL_PATHS
       # than tested inline, for the reason every other status here is: 0 and 1
       # are answers, and 128 (a bad rev) is not one to read as "not an
       # ancestor".
-      # THE RESOLVED PATHS HERE TOO, not `${impl[@]}`. This query and the union
-      # above have to name the same commits or the gate binds to one and
-      # reports the other — the same "two halves, one question" failure the
-      # resolution comment cites. `${_ipa[@]+…}` because bash 3.2 treats an
-      # empty array expansion under `set -u` as unbound; `_ipa` is declared by
-      # the block above under the identical `${#impl[@]}` guard, so it exists
-      # whenever this runs, and the guard is belt-and-braces rather than a
-      # reachable case.
+      # ONE COMMIT PER IMPLEMENTATION, not one over their union. Round 67
+      # ordered a PAIR — the `-G` removal against a single implementation
+      # commit — and round 70 fed it the resolved paths of ALL of them at
+      # once. `git log -1` over that union returns the newest single commit,
+      # so with two implementations removed on incomparable branches the other
+      # one is never ordered and never named, and an acknowledgement for the
+      # branch that happened to win clears the gate while the other deletion
+      # has not aged out. The function documents `$2..` as plural and this
+      # collapsed them.
+      # THE PAIRWISE TEST GENERALISES RATHER THAN GAINING A SIBLING. `$_srm`
+      # holds a `+`-joined ANTICHAIN — the set of removals none of which
+      # contains another — and each candidate is folded in with the same two
+      # `--is-ancestor` questions round 67 already asked: drop the candidate if
+      # some member already contains it, drop any member the candidate
+      # contains, otherwise keep both. With one implementation this reduces to
+      # exactly round 67's three outcomes, which is why the measurements there
+      # still hold.
+      # EQUALITY FIRST. Two implementations removed in the SAME commit make
+      # both `--is-ancestor` calls return 0, and without this the candidate is
+      # read as redundant AND the member it equals is dropped — losing it
+      # entirely. Cheap to get wrong and silent when wrong.
       if [ ${#impl[@]} -gt 0 ] && [ ${#_ipa[@]} -gt 0 ]; then
-        local _isrm _anc _ianc
-        _isrm=$(git log -1 --format=%h --full-history --diff-merges=separate \
-                  --no-patch --no-renames "$REV" -- ${_ipa[@]+"${_ipa[@]}"}) \
-          || { echo "solyra: could not identify the implementation's last commit"
-               exit 2; }
-        _isrm=${_isrm%%$'\n'*}
-        if [ -z "$_srm" ]; then _srm=$_isrm
-        elif [ -n "$_isrm" ] && [ "$_srm" != "$_isrm" ]; then
-          if git merge-base --is-ancestor "$_srm" "$_isrm"; then _anc=0
-          else _anc=$?; fi
-          test "$_anc" -le 1 \
-            || { echo "solyra: could not order $_srm against $_isrm (rc=$_anc)"
-                 echo "— asserting nothing"; exit 2; }
-          # ONE ANCESTOR TEST CANNOT ORDER TWO COMMITS. `--is-ancestor` answers
-          # a yes/no about ONE direction, so its rc=1 covers two different
-          # situations: the other commit is older, and neither contains the
-          # other because they came in through different branches. Round 66
-          # read rc=1 as the first and silently kept `$_srm`, which on the
-          # second binds the acknowledgement to a removal that does NOT include
-          # the implementation deletion. Measured on solyra's own DAG, either
-          # side of the merge f0a75f1:
-          #     is-ancestor 227a946 61b0c8c -> 1
-          #     is-ancestor 61b0c8c 227a946 -> 1     both 1: incomparable
-          #     is-ancestor ee84ae7 d553e4d -> 0
-          #     is-ancestor d553e4d ee84ae7 -> 1     0 then 1: ordered
-          # so the second direction is asked, and only "the other is genuinely
-          # an ancestor" keeps `$_srm`. When NEITHER contains the other there is
-          # no single removal commit to name, and refusing would leave the gate
-          # with no clearable value at all — the unreachable-state defect round
-          # 65 fixed one query up. So both are named, `<older>+<newer>` in a
-          # fixed order, and the operator confirms that a revision carrying BOTH
-          # removals is what browsers are running.
-          if [ "$_anc" -eq 0 ]; then _srm=$_isrm
-          else
-            if git merge-base --is-ancestor "$_isrm" "$_srm"; then _ianc=0
-            else _ianc=$?; fi
-            test "$_ianc" -le 1 \
-              || { echo "solyra: could not order $_isrm against $_srm (rc=$_ianc)"
-                   echo "— asserting nothing"; exit 2; }
-            test "$_ianc" -eq 0 || _srm="$_srm+$_isrm"
-          fi
-        fi
+        local _ire _icand _ipa2=() _ipl2 _c _m _new _redun _a _b _oi
+        for _ire in ${_impl_res[@]+"${_impl_res[@]}"}; do
+          _ipa2=()
+          while IFS= read -r _ipl2; do
+            test -z "$_ipl2" || _ipa2+=( "$_ipl2" )
+          done <<SOLYRA_ONE_IMPL
+$(printf '%s\n' ${_ipa[@]+"${_ipa[@]}"} | grep -E -- "$_ire" || :)
+SOLYRA_ONE_IMPL
+          test ${#_ipa2[@]} -gt 0 || continue
+          _icand=$(git log -1 --format=%h --full-history --diff-merges=separate \
+                     --no-patch --no-renames "$REV" -- "${_ipa2[@]}") \
+            || { echo "solyra: could not identify a last commit for one of the"
+                 echo "implementations you named — asserting nothing"; exit 2; }
+          _c=${_icand%%$'\n'*}
+          test -n "$_c" || continue
+          if [ -z "$_srm" ]; then _srm=$_c; continue; fi
+          _new=; _redun=
+          _oi=$IFS; IFS='+'
+          for _m in $_srm; do
+            IFS=$_oi
+            if [ "$_m" = "$_c" ]; then
+              _redun=1; _new="${_new:+$_new+}$_m"; IFS='+'; continue; fi
+            if git merge-base --is-ancestor "$_c" "$_m"; then _a=0; else _a=$?; fi
+            if git merge-base --is-ancestor "$_m" "$_c"; then _b=0; else _b=$?; fi
+            test "$_a" -le 1 && test "$_b" -le 1 \
+              || { echo "solyra: could not order $_c against $_m — asserting"
+                   echo "nothing"; exit 2; }
+            test "$_a" -ne 0 || _redun=1
+            test "$_b" -eq 0 || _new="${_new:+$_new+}$_m"
+            IFS='+'
+          done
+          IFS=$_oi
+          test -n "$_redun" || _new="${_new:+$_new+}$_c"
+          _srm=$_new
+        done
       fi
       test -n "$_srm" || { echo "solyra: history is non-empty but no commit"
                            echo "could be identified — asserting nothing"; exit 2; }
@@ -4259,6 +4271,41 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          #  keep the fetch and its check immediately above
          #  `./gcp/deploy.sh <target>` — the guard belongs against the target
          #  deploy, not against the build.)
+         # THE CHECK ABOVE DOES NOT COVER EVERY TARGET, and saying otherwise is
+         # what round 67's comment and its review reply both did. MOST TARGETS
+         # BUILD THE MAIN IMAGE THEMSELVES: `gcp/deploy.sh` dispatches them as
+         # `_run build_image deploy_<x>` — measured, 32 of them, `premarket`
+         # and `monitor` and `phase6-playbook` among them, at deploy.sh:4565
+         # onward. For those, `<target>` IS a build followed by a deploy, the
+         # fetch above runs BEFORE that build, and the window it was moved to
+         # close is inside a command this recipe cannot get between. `build` is
+         # a separate target, but `<target>` would then build a second time and
+         # reopen the same window — `build_image` submits a Cloud Build every
+         # call, with no short-circuit when the image is current (deploy.sh:55).
+         # The targets that do NOT build — the research-image ones,
+         # strat-engine, magnitude-engine and friends — are unaffected: for
+         # them the fetch above is at the promotion boundary and the guarantee
+         # holds as written.
+         # SO THE WINDOW IS DETECTED RATHER THAN PREVENTED for the other 32,
+         # and the remedy is named. Detection after the fact is weaker than a
+         # gate and it is not nothing: re-running deploy_candidate revalidates
+         # the new tip and redeploys it, so production converges on main's tip
+         # at the cost of one build. What is NOT acceptable is the silence,
+         # which is what shipping only the earlier check would have left.
+         # A DISTINCT CODE, because the diagnostic below reads a nonzero rc as
+         # "the chain stopped part way through" and that is exactly what did
+         # not happen here: the chain finished, and what it published is now
+         # behind.
+         git fetch origin main || exit 1
+         [ "$(git rev-parse FETCH_HEAD)" = "$SRC" ] || {
+           echo "DEPLOYED $SRC, but main is now $(git rev-parse FETCH_HEAD)."
+           echo "The chain COMPLETED — this is not a partial deploy. If the"
+           echo "target you named builds its own image (32 of them do; see"
+           echo "gcp/deploy.sh:4565 onward), main moved during that internal"
+           echo "build and production is now serving a tree that omits what"
+           echo "landed since. Re-run deploy_candidate: it revalidates the new"
+           echo "tip and redeploys it."
+           exit 3; }
        )
        # `if`, not a bare `)` followed by `rc=$?`, for the reason the retirement
        # helpers take one: under `set -e` a nonzero subshell IS a failed simple
@@ -4292,6 +4339,15 @@ inside that window.** An empty review list at 60 seconds means "wait", not
        # chain did not finish; how far it got is not, and this says so rather
        # than guessing. Distinct exit codes per stage would say more, and are
        # a mechanism rather than a repair — see the scope note in the PR.
+       # rc=3 FIRST, and it is not a failure of the chain. The post-deploy tip
+       # check exits 3 for "the chain finished and what it published is now
+       # behind", which the generic branch below would report as "stopped part
+       # way through, production is in an UNKNOWN state" — the opposite of what
+       # is known. Its own message already printed the SHAs and the remedy;
+       # this only stops the wrong one being printed over the top of it.
+       test $rc -ne 3 || {
+         test $wrc -eq 0 || echo "and the worktree at $wt is still registered"
+         return 1; }
        test $rc -eq 0 || {
          echo "DEPLOY FAILED rc=$rc — the chain stopped part way through"
          echo "build-research -> <target> -> schedulers, so production is in an"
