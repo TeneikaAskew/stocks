@@ -165,13 +165,22 @@ body:
         # definition — so both report themselves as consumers and a dormant
         # pair can never satisfy this field. Substituting per alternative:
         #   $ at_root grep -nE -e "code-reviewer|pine-script-reviewer" -- .claude/agents \
-        #       ':!.claude/agents/code-reviewer.md' \
-        #       ':!.claude/agents/pine-script-reviewer.md'
+        #       ':(exclude,literal).claude/agents/code-reviewer.md' \
+        #       ':(exclude,literal).claude/agents/pine-script-reviewer.md'
         # The resolver's helper splits the alternation itself; here the
         # substitution is yours, so the splitting is too.
-        $ at_root grep -nE -e "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ at_root grep -nE -e "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
-        $ at_root grep -nE -e "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        # `:(exclude,literal)` on the SELF-exclusions only. A symbol is an ERE
+        # and a pathspec is a glob, and they share `*`, `?` and `[`. Under `:!`
+        # the substituted surface is pasted into a glob, so it can exclude a
+        # file that is not its definition at all — measured with `ab*c` on a
+        # checkout holding one live `.claude/agents/abXYZc.md` that names the
+        # symbol: the search returns a clean miss, and the path scan cannot
+        # catch it either, since the ERE `ab*c` does not match `abXYZc.md`.
+        # The scope exclusions above (`:!*.md`, `:!docs/`, `:!.claude/commands/`)
+        # stay plain `:!` — those ARE meant to be globs.
+        $ at_root grep -nE -e "<surface>" -- .claude/agents ':(exclude,literal).claude/agents/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .claude/commands ':(exclude,literal).claude/commands/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .github/prompts ':(exclude,literal).github/prompts/<surface>.md'
         $ at_root grep -nE -e "<surface>" -- CLAUDE.md
         CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
         mistake for prose: Claude Code loads it automatically and it routes by
@@ -251,8 +260,8 @@ body:
         # four — checked, not assumed symmetric with stocks.
         # One exclusion per alternative here too — see the note on the stocks
         # probes above.
-        $ at_solyra grep -nE -e "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ at_solyra grep -nE -e "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ at_solyra grep -nE -e "<surface>" -- .claude/agents ':(exclude,literal).claude/agents/<surface>.md'
+        $ at_solyra grep -nE -e "<surface>" -- .claude/commands ':(exclude,literal).claude/commands/<surface>.md'
         $ at_solyra grep -nE -e "<surface>" -- CLAUDE.md
         src/pages/DashboardPage.tsx:142:  const { data } = useQuery(['<surface>', d])
         src/pages/PlaybookPage.tsx:88:    fetch(`/api/<surface>?date=${d}`)

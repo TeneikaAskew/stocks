@@ -1210,10 +1210,31 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   local _oldifs=$IFS; IFS='|'
   for _alt in $sym; do
     test -n "$_alt" || continue
-    _selfx+=( ":!.claude/agents/$_alt.md" ":!.claude/commands/$_alt.md"
-              ":!.github/prompts/$_alt.md" )
+    _selfx+=( ":(exclude,literal).claude/agents/$_alt.md"
+              ":(exclude,literal).claude/commands/$_alt.md"
+              ":(exclude,literal).github/prompts/$_alt.md" )
   done
   IFS=$_oldifs
+  # `:(exclude,literal)`, NOT `:!`. `$sym` is an ERE and a pathspec is a GLOB,
+  # and they share `*`, `?` and `[`. Under `:!` the alternative is pasted into
+  # a glob, so it can exclude a file that is not the surface's definition at
+  # all — measured on a checkout holding one live `.claude/agents/abXYZc.md`
+  # that names the symbol: with `ab*c`, `git grep -- .claude/agents
+  # ':!.claude/agents/ab*c.md'` returns 1, a clean miss, while the same search
+  # without the exclusion returns 0 and names that file. The path scan cannot
+  # catch it either, since the ERE `ab*c` does not match `abXYZc.md`, so
+  # `absent_everywhere` certifies with a live agent still delegating to the
+  # surface. `:(exclude,literal)` turns off glob interpretation: the same
+  # search returns 0 and the agent stays visible.
+  # THE COST IS IN THE SAFE DIRECTION, and it is real: for an ERE symbol the
+  # literal exclusion may not name the definition file that actually exists —
+  # `foo[0-9]bar` excludes `foo[0-9]bar.md` and not `foo3bar.md` — so the
+  # surface's own definition matches itself and the scope reports CONSUMED.
+  # That is a refusal to certify, not a false certification, and the way
+  # through is the one this file already documents: name the definition in an
+  # implementation argument. Rejecting ERE symbols here instead would break
+  # `foo[-_]bar` and `foo[0-9][-_]bar`, which this file recommends — the same
+  # reason round 57 anchored the dependency match rather than refusing it.
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
