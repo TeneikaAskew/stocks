@@ -278,3 +278,26 @@ def test_the_05c_prompt_reads_the_digest_not_the_raw_graph():
     digest_i = next(i for i, s in enumerate(steps) if "table_refs_digest.md" in (s.get("run") or ""))
     assert digest_i < names.index("Render prompts with the live counts substituted in")
     assert "--markdown refs_digest" in steps[digest_i]["run"]
+
+
+def test_every_prompt_forbids_the_hand_maintained_folder():
+    """docs/product/infrastructure/manual/ holds the hand-edited copies of
+    the four refreshed documents; the workflow's write policy and stray-write
+    scan already fail a change there, and the prompts say so up front."""
+    for name in ("architecture.md", "data-dependencies.md", "cost-analysis.md", "readme.md"):
+        text = (REPO / ".github/prompts" / name).read_text()
+        assert "docs/product/infrastructure/manual/" in text, name
+        assert "Never read or write anything under `docs/product/infrastructure/manual/`" in text, name
+
+
+def test_the_hand_maintained_copies_exist_and_link_correctly():
+    manual = REPO / "docs/product/infrastructure/manual"
+    for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md", "05-d-COST_ANALYSIS.md", "ROOT-README.md", "README.md"):
+        assert (manual / doc).exists(), doc
+    import re
+    for f in manual.glob("*.md"):
+        for m in re.finditer(r"\]\(([^)\s#`]+)", f.read_text()):
+            target = m.group(1)
+            if target.startswith(("http", "mailto:")):
+                continue
+            assert (f.parent / target).resolve().exists(), (f.name, target)

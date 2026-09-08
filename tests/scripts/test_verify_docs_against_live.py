@@ -816,3 +816,14 @@ def test_a_count_claim_is_matched_anywhere_in_its_row(tmp_path):
     assert [f.check for f in out] == ["count-drift"], out
     # the correct counts pass
     assert _check(tmp_path, "| Scheduled Jobs | Cloud Run Jobs | 3 jobs | notes |\n") == []
+
+
+def test_the_hand_maintained_copies_are_not_enrolled():
+    """A stale hand copy under docs/product/infrastructure/manual/ must never
+    turn the monthly refresh red: the verifier enrols the folder's direct
+    children only."""
+    from scripts import verify_docs_against_live as v
+    root = pathlib.Path(__file__).resolve().parents[2]
+    enrolled = {str(p.relative_to(root)) for pattern in v.LIVE_STATE_GLOBS for p in root.glob(pattern)}
+    assert "docs/product/infrastructure/05-a-ARCHITECTURE.md" in enrolled
+    assert not any("/manual/" in e for e in enrolled), sorted(e for e in enrolled if "/manual/" in e)

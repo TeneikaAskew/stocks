@@ -40,6 +40,7 @@ scheduler count under half the live figure and went red on that single line.
 
 ## Rules
 
+- Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - Update in place with `replace` only; never regenerate from scratch and never `write_file` the document (the output-discipline paragraph above says the same: there is no whole-body path).
 - Cite `file:line` for every claim about code.
 - No code, no SQL examples: just the dependency graph and its reading.

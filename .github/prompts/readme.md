@@ -40,6 +40,7 @@ scheduler count under half the live figure and went red on that single line.
 
 ## Rules
 
+- Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - **Pointer only.** No embedded Mermaid, no cost figures, no tech-stack list, no route list — link instead. The gate fails on a ```mermaid block.
 - **Every link must resolve** to a file in the checkout (or an https URL).
 - **Update in place**; keep the section order and headings; never regenerate from scratch.

@@ -68,6 +68,7 @@ survive (carried forward from PR #990):
 
 ## Rules
 
+- Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - **Update in place; never regenerate from scratch.** The previous version is the baseline, not a style reference.
 - **Never edit inside a marker block.**
 - **Facts come from the inputs and the code, not from older prose.** Two examples that were wrong before: this repo serves the API only (the React frontend lives in `github.com/TeneikaAskew/solyra` since #957; there is no SPA in the image), and the API has real per-request auth (`platform/api/auth.py`: `AUTH_MODE` iap/firebase/open, roles from the `user_roles` table). Read `platform/api/auth.py` and `platform/deploy.sh` before writing anything about auth or services.
