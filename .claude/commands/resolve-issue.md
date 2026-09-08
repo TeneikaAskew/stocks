@@ -1669,11 +1669,37 @@ _sym_ok() {   # $2 = "path" also refuses anchors. 0 = safe, 1 = refuse and say w
   # and a `case` over the raw text cannot tell them apart. Character at a time
   # rather than a sed pass, so the guard needs nothing the helper file does not
   # already carry.
+  # THE SAME WALK ANSWERS THE SEPARATOR QUESTION, so it is asked here rather
+  # than in a second loop somewhere else. An ESCAPED `-` or `_` outside a class
+  # is a no-op as an ERE — `foo\-bar` and `foo-bar` match the same text — but
+  # the path builder rewrites separators by substitution and cannot see the
+  # backslash: measured, `foo\-bar` became `foo\[-_]bar`, which matches the
+  # literal filename `foo[-_]bar.py` and NEITHER `foo-bar.py` NOR `foo_bar.py`,
+  # so a surviving module read as absent. Skipping escaped separators in the
+  # builder would mean writing this escape walk a second time, in a transformer
+  # rather than a guard, which is how the last six rounds' defects were made.
+  # Refusing is exact and the form is not one this file recommends: every other
+  # scope treats the two spellings identically, so nothing is expressible only
+  # with the escape. Unescaped matches BOTH spellings, which is the usual
+  # intent, and an implementation argument names one exact file.
+  local _esc_sep=
   while [ -n "$_bare" ]; do
     _c=${_bare%"${_bare#?}"}; _bare=${_bare#?}
-    if [ "$_c" = '\' ]; then _bare=${_bare#?}; continue; fi
+    if [ "$_c" = '\' ]; then
+      case ${_bare%"${_bare#?}"} in -|_) _esc_sep=${_bare%"${_bare#?}"};; esac
+      _bare=${_bare#?}; continue
+    fi
     _out=$_out$_c
   done
+  test -z "$_esc_sep" || {
+    echo "'$1' escapes a '$_esc_sep' outside a bracket expression. That escape"
+    echo "  is a no-op as an ERE, so it says nothing the plain spelling does"
+    echo "  not — but the path scan rewrites '-' and '_' to [-_] by"
+    echo "  substitution and would rewrite the escaped one too, producing a"
+    echo "  pattern that matches neither spelling. Measured. Write it"
+    echo "  unescaped to match both, or name the file in an implementation"
+    echo "  argument to match exactly one."
+    return 1; }
   case $_out in
     *'^'*|*'$'*)
       echo "'$1' anchors with '^' or '\$' outside a bracket expression."
@@ -1714,12 +1740,13 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # `${#impl[@]}` guards rather than a bare `"${impl[@]}"`: bash 3.2, still
   # /bin/bash on macOS, treats expanding an EMPTY array under `set -u` as an
   # unbound variable, and no implementation argument is the ordinary case.
-  local impl=( "$@" ) _i _p _impl_re=
+  local impl=( "$@" ) _i _iorig _p _impl_re=
   if [ ${#impl[@]} -gt 0 ]; then
     for _i in "${impl[@]}"; do
       test -n "$_i" || {
         echo "an empty implementation argument matches every path — refusing"
         return 1; }
+      _iorig=$_i
       # ROOT-RELATIVE, LIKE THE INVENTORIES. `git ls-files` and
       # `git ls-tree --name-only` both emit `scripts/x.py`, never `./scripts/x.py`
       # — measured, zero of this repo's tracked paths carry a `./` prefix. A
@@ -1739,7 +1766,27 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       while case "$_i" in */./*|*//*) true;; *) false;; esac; do
         _i=${_i//\/.\///}; _i=${_i//\/\///}
       done
+      # A TRAILING `/.` NAMES THE SAME DIRECTORY and the loop above cannot see
+      # it: `*/./*` needs a second slash after the dot. Measured, `pkg/.`
+      # survived as the literal ERE `pkg/\.`, which does not match
+      # `pkg/main.py`, so absent_everywhere certified with the module on disk.
+      # A loop, not one strip, because `pkg/./.` reduces to `pkg/.` above and
+      # would otherwise still arrive here with one segment left.
+      while case "$_i" in */.) true;; *) false;; esac; do _i=${_i%/.}; done
       while [ "${_i#./}" != "$_i" ]; do _i=${_i#./}; done
+      # AND SAY SO WHEN NOTHING IS LEFT. `.` and `./` normalise away entirely,
+      # and an empty `_p` makes `${_impl_re:+…}` drop the whole implementation
+      # clause — so the operator named a file, the argument silently became
+      # nothing, and the scan answered as if none had been given. Measured:
+      # `absent_everywhere <sym> ./` certified with the module on disk. This is
+      # the one shape where the redundant-segment removal can consume the whole
+      # argument, so it is checked after the removal rather than before it.
+      case "$_i" in
+        ''|.) echo "'$_iorig' names no file once the redundant '.' segments are"
+              echo "  removed. Give the path as the inventories emit it, e.g."
+              echo "  scripts/run_historical_signals.py"
+              return 1;;
+      esac
       case "$_i" in
         /*)      echo "'$_i' is absolute; implementation paths are repo-relative,"
                  echo "  as the inventories emit them. Did you mean ${_i#/} ?"
