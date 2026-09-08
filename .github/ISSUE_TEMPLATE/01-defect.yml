@@ -140,7 +140,15 @@ body:
               || { echo "empty top level — this probe did not run" >&2; return 2; }
             git -C "$root" "$@"
           }
-        $ at_root grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
+        # `-e` BEFORE THE PATTERN. git grep and plain grep both read a first
+        # argument beginning with `-` as an option, and the `--` further along
+        # separates PATHS, not the pattern. Measured on git 2.43.0 with a
+        # surface named `--legacy-mode`: `error: unknown option 'legacy-mode'`
+        # plus a usage dump, rc=129 through the `| wc -l` form below. The
+        # PIPESTATUS rule above catches it only if you read the number, and the
+        # recipes without a pipe do not print one at all. `-e` says the next
+        # word is the pattern, whatever it starts with.
+        $ at_root grep -En -e "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
         107
         grep rc=0
         # AND the executable Claude scopes, which the search above excludes as
@@ -149,10 +157,10 @@ body:
         # .claude/agents/pre-deploy-check.md:75 delegates to it on every deploy.
         # Exclude the surface's own definition file: an agent always matches
         # itself, which would make every agent look consumed.
-        $ at_root grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ at_root grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
-        $ at_root grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
-        $ at_root grep -nE "<surface>" -- CLAUDE.md
+        $ at_root grep -nE -e "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- CLAUDE.md
         CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
         mistake for prose: Claude Code loads it automatically and it routes by
         name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and
@@ -198,18 +206,18 @@ body:
             esac
             git -C "$s" "$@"
           }
-        $ at_solyra grep -nE "<symbol>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
+        $ at_solyra grep -nE -e "<symbol>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
             ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!package-lock.json' \
             ':!bun.lock' ':!package.json' ':!tests/fixtures/stocks-openapi.json'
         # package.json separately, because that list excludes it and its
         # `scripts` block and dependency entries are executable.
-        $ at_solyra grep -nE "<symbol>" -- package.json
+        $ at_solyra grep -nE -e "<symbol>" -- package.json
         # The executable markdown, self-excluded per scope, and one exclusion
         # per alternative if <symbol> is the coupled `a|b` form. Solyra has no
         # .github/prompts — three scopes, not four.
-        $ at_solyra grep -nE "<symbol>" -- .claude/agents ':!.claude/agents/<symbol>.md'
-        $ at_solyra grep -nE "<symbol>" -- .claude/commands ':!.claude/commands/<symbol>.md'
-        $ at_solyra grep -nE "<symbol>" -- CLAUDE.md
+        $ at_solyra grep -nE -e "<symbol>" -- .claude/agents ':!.claude/agents/<symbol>.md'
+        $ at_solyra grep -nE -e "<symbol>" -- .claude/commands ':!.claude/commands/<symbol>.md'
+        $ at_solyra grep -nE -e "<symbol>" -- CLAUDE.md
         src/pages/DashboardPage.tsx:142:  const { data } = useQuery(['<symbol>', d])
         src/pages/PlaybookPage.tsx:88:    fetch(`/api/<symbol>?date=${d}`)
 

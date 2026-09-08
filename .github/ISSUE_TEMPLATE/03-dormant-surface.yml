@@ -71,7 +71,7 @@ body:
         $ gcloud beta run jobs executions list --job=phase6-playbook --region=us-east1 --limit=10
         (six executions, all 2026-06-14)
 
-        $ grep -n "phase6-playbook" gcp/deploy.sh
+        $ grep -n -e "phase6-playbook" gcp/deploy.sh
         (no _schedule entry; not in the all) target)
     validations:
       required: true
@@ -135,7 +135,15 @@ body:
               || { echo "empty top level — this probe did not run" >&2; return 2; }
             git -C "$root" "$@"
           }
-        $ at_root grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
+        # `-e` BEFORE THE PATTERN. git grep and plain grep both read a first
+        # argument beginning with `-` as an option, and the `--` further along
+        # separates PATHS, not the pattern. Measured on git 2.43.0 with a
+        # surface named `--legacy-mode`: `error: unknown option 'legacy-mode'`
+        # plus a usage dump, rc=129 through the `| wc -l` form below. The
+        # PIPESTATUS rule above catches it only if you read the number, and the
+        # recipes without a pipe do not print one at all. `-e` says the next
+        # word is the pattern, whatever it starts with.
+        $ at_root grep -En -e "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
         (142 matching LINES across 13 files: router, writer, tests. Lines, not
         occurrences — `git grep -c`/`wc -l` count lines, and 7 of these carry
         both alternatives, so the pattern occurs 149 times. Use `git grep -Eo`
@@ -156,15 +164,15 @@ body:
         # `code-reviewer|pine-script-reviewer.md`, which excludes neither real
         # definition — so both report themselves as consumers and a dormant
         # pair can never satisfy this field. Substituting per alternative:
-        #   $ at_root grep -nE "code-reviewer|pine-script-reviewer" -- .claude/agents \
+        #   $ at_root grep -nE -e "code-reviewer|pine-script-reviewer" -- .claude/agents \
         #       ':!.claude/agents/code-reviewer.md' \
         #       ':!.claude/agents/pine-script-reviewer.md'
         # The resolver's helper splits the alternation itself; here the
         # substitution is yours, so the splitting is too.
-        $ at_root grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ at_root grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
-        $ at_root grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
-        $ at_root grep -nE "<surface>" -- CLAUDE.md
+        $ at_root grep -nE -e "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- CLAUDE.md
         CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
         mistake for prose: Claude Code loads it automatically and it routes by
         name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and
@@ -219,7 +227,7 @@ body:
             esac
             git -C "$s" "$@"
           }
-        $ at_solyra grep -nE "<surface>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
+        $ at_solyra grep -nE -e "<surface>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
             ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!package-lock.json' \
             ':!bun.lock' ':!package.json' ':!tests/fixtures/stocks-openapi.json'
         # AND package.json SEPARATELY, because the search above excludes it and
@@ -232,7 +240,7 @@ body:
         # search than the gate runs. An npm ALIAS hides the installed package
         # inside the value (`"charts": "npm:d3@^7"`), so read the lines rather
         # than counting them.
-        $ at_solyra grep -nE "<surface>" -- package.json
+        $ at_solyra grep -nE -e "<surface>" -- package.json
         # SELF-EXCLUDED PER SCOPE, exactly as the stocks probes above are. A
         # Solyra agent or slash command is a retirable surface too, and its own
         # definition always mentions its name — so a combined search returns
@@ -243,9 +251,9 @@ body:
         # four — checked, not assumed symmetric with stocks.
         # One exclusion per alternative here too — see the note on the stocks
         # probes above.
-        $ at_solyra grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ at_solyra grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
-        $ at_solyra grep -nE "<surface>" -- CLAUDE.md
+        $ at_solyra grep -nE -e "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ at_solyra grep -nE -e "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ at_solyra grep -nE -e "<surface>" -- CLAUDE.md
         src/pages/DashboardPage.tsx:142:  const { data } = useQuery(['<surface>', d])
         src/pages/PlaybookPage.tsx:88:    fetch(`/api/<surface>?date=${d}`)
 
@@ -412,7 +420,7 @@ body:
       label: Acceptance criteria
       description: Retiring and restoring have different bars. Restoring needs a writer, a schedule, a freshness SLO and a consumer guard, not just a re-run.
       placeholder: |
-        Retire: `git grep -qE "<name>" -- . ':!docs/' ':!archive/'
+        Retire: `git grep -qE -e "<name>" -- . ':!docs/' ':!archive/'
         ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
         ':!.claude/commands/' ':!*.md' ':!*.drawio'
         ':!tests/fixtures/live_gcp_snapshot_*.json'

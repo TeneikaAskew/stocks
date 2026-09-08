@@ -670,7 +670,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
     # form pastes an unquoted command substitution into an argument list, and
     # when it is EMPTY `grep -rliE <pattern>` has no file operand and reads
     # STDIN — the probe hangs rather than answering.
-    if git -C "$root" grep -liE 'quarantin|retired|not run in production' -- '*README*'
+    if git -C "$root" grep -liE -e 'quarantin|retired|not run in production' -- '*README*'
     then d=0; else d=$?; fi
     test "$d" -le 1 || { echo "the README scan errored (rc=$d)"; return 1; }
   }
@@ -765,7 +765,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
     # runs in a pipe.
     hits=$(for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
                     market_data_intraday etf_options_snapshots exit_config_overrides; do
-             git -C "$root" grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+             git -C "$root" grep -lE -e "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
                ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
                ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
                ':!.github/workflows/logs.txt' || { test $? -eq 1 || exit 3; }
@@ -1006,6 +1006,10 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # functions it calls did not.
   test $# -ge 1 || { echo "usage: consumed <symbol> [reviewed files…]"; return 2; }
   local sym=$1; shift
+  # BEFORE anything splits it. Both entry points check, rather than one relying
+  # on the other's ordering: absent_everywhere calls consumed early today, and
+  # a check that depends on that call order is one refactor from silent.
+  _sym_ok "$sym" || return 2
   # `${arr[@]+"${arr[@]}"}` AT EVERY EXPANSION OF THESE THREE. `reviewed`,
   # `rev` and `untr` are all legitimately EMPTY in the ordinary call — no
   # approvals, no pinned revision, so `--untracked` instead — and bash 3.2,
@@ -1126,7 +1130,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # does not mention the symbol is a no-op for an honest reviewer and is
     # precisely what a glob does — measured, `debug-workflow` matches exactly
     # one command file, so a six-entry glob drags in five that match nothing.
-    git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- "$rc" \
+    git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- "$rc" \
       || { echo "REVIEWED entry '$rc' does not mention '$sym'."
            echo "Name only files the rc=0 or rc=3 report printed. An entry that"
            echo "matches nothing is either a typo or a glob that expanded."
@@ -1149,7 +1153,14 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # this block into one gets a silent death instead of an answer. A condition
   # context suppresses errexit and preserves the exact status.
   # The approvals apply HERE too now, for the ordinary-word case above.
-  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- . "${EXCLUDE[@]}" \
+  # `-e "$sym"`, NOT a bare pattern. `git grep` parses its pattern as an option
+  # when it starts with `-`, because the pattern comes BEFORE the `--` that
+  # separates paths — measured, a symbol like `--legacy-mode` exits 129 with a
+  # usage dump, so a retired CLI flag cannot be measured at all and neither
+  # Phase 2 nor the gate completes. `-e` is git's explicit pattern form and is
+  # a no-op for every other symbol. On every `git grep` in this file, not the
+  # one that was reported.
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- . "${EXCLUDE[@]}" \
        ${reviewed[@]+"${reviewed[@]}"}
   then a=0; else a=$?; fi
   # ONE SELF-EXCLUSION PER ALTERNATIVE. `$sym` is an ERE and the documented
@@ -1180,10 +1191,10 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # the word `earnings_reactions` in a path list, so clearing the code scope
   # alone still left the check unpassable. Applying the approval to one scope
   # and not its siblings is the miss this file keeps making.
-  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/agents \
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- .claude/agents \
        ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
   then b=0; else b=$?; fi
-  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/commands \
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- .claude/commands \
        ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
   then c=0; else c=$?; fi
   # FOURTH executable-markdown scope. .github/prompts/*.md reach Gemini through
@@ -1204,7 +1215,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # file's own worked example. Self-exclusion for symmetry with the agent scope,
   # and the whole scope is a safe no-op where the directory does not exist —
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
-  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .github/prompts \
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- .github/prompts \
        ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
   then e=0; else e=$?; fi
   # SIXTH executable-markdown scope, and the one that is easiest to read as
@@ -1216,7 +1227,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # away: code 1, agents 1, prompts 1 — "absent, safe to delete" — while
   # CLAUDE.md still routes sessions to it. A hit here is a CONSUMER, like an
   # agent or a prompt. Only the root file: docs/*.md and the rest stay prose.
-  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- CLAUDE.md \
+  if git -C "$root" grep -qE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- CLAUDE.md \
        ${reviewed[@]+"${reviewed[@]}"}
   then f=0; else f=$?; fi
   # package.json stays EXCLUDED from the pathspec above — it names every
@@ -1354,12 +1365,44 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # check will not show them. Only the code scope is printed: the other four
     # are single files or narrow directories you can look at directly, and the
     # rc=3 branch below already prints the commands scope.
-    # No status check on this one, deliberately: it is a diagnostic printed
-    # only after `a` has already been read, and `git grep` was run with the
+    # No status check on these, deliberately: they are diagnostics printed only
+    # after the scope has already been read, and `git grep` was run with the
     # same arguments a moment ago.
+    # EVERY scope that matched, not only the code one. The earlier version
+    # printed `a` alone and justified it as "the other four are single files or
+    # narrow directories you can look at directly" — which was written before
+    # round 42 pointed Phase 2 at this helper as the search that establishes
+    # WHO consumes the surface. A surface consumed only from .claude/agents,
+    # .github/prompts or CLAUDE.md then produced the whole output `consumed
+    # rc=0`, and the operator could not read, record or judge the consumer the
+    # remediation decision rests on.
+    if [ "$b" -eq 0 ]; then
+      echo ".claude/agents mentions '$sym':"
+      git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- .claude/agents \
+        ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
+    fi
+    if [ "$e" -eq 0 ]; then
+      echo ".github/prompts mentions '$sym':"
+      git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- .github/prompts \
+        ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
+    fi
+    if [ "$f" -eq 0 ]; then
+      echo "CLAUDE.md mentions '$sym':"
+      git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- CLAUDE.md \
+        ${reviewed[@]+"${reviewed[@]}"}
+    fi
+    # `-n "$_scripts"` rather than `|| :` on the grep. The scope only reports 0
+    # because the same grep matched a moment ago, so it matches again here —
+    # what the guard removes is the unset case, not a failure, and `|| :` would
+    # be the swallow this file spends its length arguing against.
+    if [ "$d" -eq 0 ] && [ -n "${_scripts:-}" ]; then
+      echo "package.json declares '$sym' (an npm ALIAS hides the installed"
+      echo "package inside the value, so read the line, do not count it):"
+      printf '%s\n' "$_scripts" | grep -E -e "$sym"
+    fi
     if [ "$a" -eq 0 ]; then
       echo "code/config mentions '$sym':"
-      git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- . \
+      git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- . \
         "${EXCLUDE[@]}" ${reviewed[@]+"${reviewed[@]}"}
       echo "If every line above is prose rather than a caller — an ordinary"
       echo "word inside a comment, say — read them, then re-run naming those"
@@ -1382,7 +1425,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # and a NEW command that starts routing to the surface is not on your list, so
   # it drops back to 3 instead of riding an old approval.
   echo "only .claude/commands/ mentions it — a route, or this file's own example?"
-  git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} "$sym" ${rev[@]+"${rev[@]}"} -- .claude/commands \
+  git -C "$root" grep -nE ${untr[@]+"${untr[@]}"} -e "$sym" ${rev[@]+"${rev[@]}"} -- .claude/commands \
     ${_selfx[@]+"${_selfx[@]}"} ${reviewed[@]+"${reviewed[@]}"}
   return 3; }
 
@@ -1459,6 +1502,32 @@ _solyra_ok() {          # 0 usable, 1 refuse (and say why)
 # `[-_]` it inserts must stay live.
 _ere_literal() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/[]^$*+?(){}|.[]/\\&/g'; }
 
+# A `|` INSIDE A BRACKET EXPRESSION IS NOT AN ALTERNATION. Three places split
+# `$sym` on `|` — the self-exclusions, the definition paths and the separator
+# normalisation — and all three use `IFS='|'`, which cuts at every pipe
+# including one the caller wrote inside a class. Measured on `foo[|_]bar`: the
+# rebuilt pathsym is `foo[|[-_]]bar`, which matches neither `foo_bar.py` nor
+# `foo|bar.py`, so a surviving implementation reads as absent and the scan
+# certifies. Splitting only top-level pipes needs the bracket parser round 53
+# declined to write, for the same reason; this refuses the form instead, and
+# the refusal is cheap: walk the `[…]` spans and look for a pipe inside one.
+# A symbol needing a literal pipe can still be retired — name it in an
+# implementation argument, or run the two halves as separate retirements.
+_sym_ok() {   # 0 = safe to split on `|`, 1 = refuse and say why
+  local _q=$1 _span
+  while case $_q in *'['*']'*) true;; *) false;; esac; do
+    _span=${_q#*[}; _span=${_span%%]*}
+    case $_span in
+      *'|'*) echo "'$1' has a '|' inside a bracket expression. The three splits"
+             echo "  on '|' in this file would cut there and rebuild a pattern"
+             echo "  matching neither spelling — measured. Retire the halves"
+             echo "  separately, or name the file in an implementation argument."
+             return 1;;
+    esac
+    _q=${_q#*[}; _q=${_q#*]}
+  done
+  return 0; }
+
 absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # `local REV=` so an ambient REV in the caller's shell cannot pin the STOCKS
   # half to some other revision — the same ambient-state hazard as the project
@@ -1470,6 +1539,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   test -n "$sym" || {
     echo "usage: absent_everywhere <symbol> [implementation path or stem…]"
     return 1; }
+  _sym_ok "$sym" || return 1
   # A JOB NAME IS NOT ITS IMPLEMENTATION, and separator normalisation cannot
   # bridge the gap — it only handles the case where the two spellings differ by
   # `-` versus `_`. Measured: `historical-signals-watchlist` runs
@@ -2325,7 +2395,11 @@ fully_retired() {   # $1 sym $2 job|none $3 impl|none $4 sched|none [$5 proj] [$
 # a plain top-level assignment: global even inside a function, and valid on 3.2.
 # `declare -ax` for an exported array is stripped by the same pattern.
 persist_helpers() {
-  declare -f _ere_literal _solyra_ok consumed absent_everywhere \
+  # EVERY helper the functions below call, or the fresh shell gets a 127 from a
+  # missing dependency instead of an answer. `_sym_ok` was added in round 54 and
+  # missed here on the first draft — caught by running the round trip rather
+  # than by reading the list.
+  declare -f _ere_literal _sym_ok _solyra_ok consumed absent_everywhere \
              retired_everywhere fully_retired > "$HELPERS" \
     || { echo "could not write $HELPERS"; return 1; }
   declare -p EXCLUDE_SHARED EXCLUDE_STOCKS EXCLUDE_SOLYRA PRESERVE_STOCKS \
