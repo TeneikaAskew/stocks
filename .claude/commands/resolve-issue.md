@@ -2407,7 +2407,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # measured case was `absent_everywhere 'ab*c'` next to a file named `abc`,
   # which rebuilt pathsym as the literal `abc` and then missed a tracked
   # lib/ac.py, certifying the retirement.
-  local pathsym= _psa _psn _psp _pspre _pspost _pspan _pssep _psneg _psi=$IFS _psg=
+  local pathsym= _psa _psn _psp _pspre _pspost _pspan _pssep _psinner _psi=$IFS _psg=
   case $- in *f*) _psg=on;; esac
   set -f
   IFS='|'
@@ -2449,27 +2449,50 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
           # question the span is asked is "does it offer a separator at all,
           # and if so does it offer BOTH" — `_` anywhere, and a `-` in one of
           # the two literal positions.
-          # A span offering NO separator is still left exactly as typed, which
+          # A span naming NO separator is still left exactly as typed, which
           # is what keeps round 52's bypass and round 57's `d[0-9]` alive:
-          # `0-9`, `a[b` and the negated `^_` name no separator member, and a
-          # NEGATED span is skipped outright because `[^_]` excludes a
-          # separator rather than offering one — checked, all four unchanged.
-          _pssep=; _psneg=
-          case $_pspan in ^*) _psneg=on;; esac
-          if [ -z "$_psneg" ]; then
-            case $_pspan in *_*) _pssep=u;; esac
-            case $_pspan in -*|*-) _pssep="${_pssep}h";; esac
-          fi
+          # `0-9` and `a[b` name neither, so there is no separator question to
+          # get wrong — checked, both unchanged.
+          # A NEGATED SPAN IS THE SAME QUESTION, NOT AN EXEMPT ONE. Round 68
+          # skipped `[^…]` outright, reasoning that it "excludes a separator
+          # rather than offering one". That is true and it is not a defence:
+          # excluding ONE separator is exactly how a class ends up matching the
+          # other and only the other. Measured in the C locale:
+          #     qzfoo[^-]bar   matches qzfoo_bar, NOT qzfoo-bar
+          #     qzfoo[^_]bar   matches qzfoo-bar, NOT qzfoo_bar
+          # and end to end at bf2d0e4, each fixture holding the named file
+          # tracked with contents naming neither spelling:
+          #     absent_everywhere 'qzfoo[^-]bar'  -> 0   lib/qzfoo-bar.py survives
+          #     absent_everywhere 'qzfoo[^_]bar'  -> 0   lib/qzfoo_bar.py survives
+          # Round 68 listed `foo[^_]bar` as an unchanged control, and it was
+          # unchanged — rc=1 before and after — but for an unrelated reason:
+          # it matched real solyra prose. An rc that does not move is not a
+          # demonstration that the form is safe.
+          # SO THE TEST RUNS ON THE SPAN MINUS ITS LEADING `^`, and the same
+          # two questions answer both senses. For a positive class `$_pssep`
+          # says which separators it OFFERS; for a negated one, which it
+          # EXCLUDES. Either way `uh` and `''` are safe — offer both or offer
+          # neither, exclude both or exclude neither — and exactly one is the
+          # one-sided form. Checked: `[^-_]` (excludes both, matches neither)
+          # and `[^a-z]` (excludes neither, matches both) stay accepted, and
+          # `[^0-9_]` is refused, matching `-` and never `_`.
+          _pssep=; _psinner=$_pspan
+          case $_pspan in ^*) _psinner=${_pspan#^};; esac
+          case $_psinner in *_*) _pssep=u;; esac
+          case $_psinner in -*|*-) _pssep="${_pssep}h";; esac
           case $_pssep in
             ''|uh) ;;
             *)
-              echo "'$_psa' offers only one separator spelling in the class"
-              echo "  '[$_pspan]'. A class is left exactly as typed, so a path"
-              echo "  using the other separator would read as absent. Note a"
-              echo "  '-' counts only where it is a literal member — FIRST or"
-              echo "  LAST in the class; in the middle it is a range operator,"
+              echo "'$_psa' names exactly one separator in the class"
+              echo "  '[$_pspan]'. A class is left exactly as typed, so it"
+              echo "  matches one spelling and not the other — a positive class"
+              echo "  offering one, or a negated class excluding one — and a"
+              echo "  path using the other would read as absent. Note a '-'"
+              echo "  counts only where it is a literal member: FIRST (after"
+              echo "  any '^') or LAST; in the middle it is a range operator,"
               echo "  so '[_-_]' and '[_-a]' match '_' and not '-'."
-              echo "  Write both, e.g.  foo[-_]bar  or  foo[0-9_-]bar"
+              echo "  Name both or neither, e.g.  foo[-_]bar  foo[0-9_-]bar"
+              echo "  foo[^-_]bar"
               IFS=$_psi; test -n "$_psg" || set +f
               return 1;;
           esac
@@ -2718,7 +2741,7 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     # means every match is in an approved file — which is a reason to go and
     # READ those commits, not evidence that they are prose, because the file
     # you approved today is not the file that was committed then.
-    local _sapp=() _sp
+    local _sapp=() _sp _srm_first _m _oi
     for _sp in ${REVIEWED_SOLYRA[@]+"${REVIEWED_SOLYRA[@]}"}; do
       _sapp+=( ":!$_sp" )
     done
@@ -2915,11 +2938,32 @@ SOLYRA_ONE_IMPL
         # `+` MEANS TWO COMMITS, and `git show -s` on the joined string would
         # die rather than print either. Split it back for the report, so the
         # line names exactly what the acknowledgement below asks about.
+        # EVERY COMPONENT, not the first two. The fold above builds an
+        # antichain of ARBITRARY length — one member per implementation that
+        # nothing else contains — and this read it as exactly two:
+        # `${_srm#*+}` on `a+b+c` is `b+c`, which is not a revision. Measured
+        # on real solyra hashes: `git show -s 61b0c8c+ee84ae7` fails, so the
+        # second line would be EMPTY while the text below claimed BOTH had to
+        # have rolled out. The same shape as round 71's own finding, one layer
+        # up: a fix written for a pair, handed N. Split on `+` and report each,
+        # which makes the two-member case identical to what it printed before.
         case $_srm in
-          *+*) echo "last touched: $(git show -s --format='%h %cI %s' "${_srm%%+*}")"
-               echo "         and: $(git show -s --format='%h %cI %s' "${_srm#*+}")"
-               echo "neither of those contains the other — they came in on"
-               echo "different branches — so BOTH have to have rolled out.";;
+          *+*) _srm_first=1
+               _oi=$IFS; IFS='+'
+               for _m in $_srm; do
+                 IFS=$_oi
+                 if [ -n "$_srm_first" ]; then
+                   echo "last touched: $(git show -s --format='%h %cI %s' "$_m")"
+                   _srm_first=
+                 else
+                   echo "         and: $(git show -s --format='%h %cI %s' "$_m")"
+                 fi
+                 IFS='+'
+               done
+               IFS=$_oi
+               echo "none of those contains another — they came in on"
+               echo "different branches — so ALL of them have to have"
+               echo "rolled out.";;
           *)   echo "last touched: $(git show -s --format='%h %cI %s' "$_srm")";;
         esac
         test -n "$_shist_src" || test ${#_sapp[@]} -eq 0 || {
