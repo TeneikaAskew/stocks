@@ -47,13 +47,20 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
 2. Update every prose claim that the inputs contradict: counts in the header note, §1, §2 diagram labels, §3, §4 (tier, disk, IP config, backups, latest dump), §6 intro (live vs declared counts, hand-created jobs, retry split), §7.1 (services, auth modes, domain mappings, images, triggers), §8 intro and the daily-rhythm table (from `schedulers.md`), §9 (model names from `gcp/schema.sql` `model_routing` seed and `gcp/brief_explanations.py`), §14 (workflows and triggers from `repo_inventory.json`), §15 interpretation, §17 open questions.
 3. If a job, scheduler, service, table, route, workflow or trigger appeared since the previous version, make sure the prose that groups or explains it mentions it (§6 groups, §8 rhythm, §10 flows, §14). If one disappeared, remove it from the prose and add a dated bullet under "§18 Removed since last refresh" naming it and why.
 4. Keep every existing H2/H3 heading. If a section genuinely no longer applies, keep the heading, replace the body with one sentence saying so, and record it under §18.
-5. Update **every** as-of date to today: the header note's `read on **YYYY-MM-DD**`,
-   the `| Service | Role | Live YYYY-MM-DD |` column header in §3, and the final
-   `Generated YYYY-MM-DD …` line. Run 28 updated the header and left §3 a day
-   behind, so a table of the current fleet announced itself as stale; a gate now
-   fails the run on either label. Leave every OTHER date alone — the dates in
-   §4, §15 and §18 record when something was corrected, deleted or audited and
-   are history, not as-of labels.
+5. Update **every** as-of date. There are two kinds and they can differ:
+   - The three labels that describe the **live snapshot** take
+     **{{LIVE_READ_DATE}}** — the header note's `read on **YYYY-MM-DD**`, the
+     `| Service | Role | Live YYYY-MM-DD |` column header in §3, and the
+     `from the YYYY-MM-DD live snapshot` half of the final line.
+   - The `Generated YYYY-MM-DD` half of that final line takes **today**, the
+     day you are running.
+   These are the same date on almost every run and different on a run that
+   crosses UTC midnight between the snapshot and you; write each from its own
+   source rather than assuming. Run 28 updated the header and left §3 a day
+   behind, so a table of the current fleet announced itself as stale; a gate
+   now fails the run on any of the three snapshot labels. Leave every OTHER
+   date alone — the dates in §4, §15 and §18 record when something was
+   corrected, deleted or audited and are history, not as-of labels.
 6. When a sentence states a total and its parts — §5's `declares **N relations**
    (N tables, N materialized views, N view)` — update every number in it, not just
    the one the inputs contradict. Run 28 raised that total from 69 to 70 and left

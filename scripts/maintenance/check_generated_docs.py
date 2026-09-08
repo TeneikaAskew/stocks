@@ -724,6 +724,42 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
 RELATION_TOTAL = re.compile(r"declares \*\*(\d+) relations?\*\*|"
                             r"\b(\d+) declared in `gcp/schema\.sql`")
 RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
+# What may sit between a declared total and the first of its parts: an opening
+# bracket, a dash, a colon.
+PART_LEAD = re.compile(r"^[\s(:\u2014\u2013-]*")
+# What continues the list: a comma, an "and", or both. Anything else ends it.
+# The bare "and" matters -- "67 tables, 2 materialized views and 1 view" is a
+# natural rephrase, and requiring the comma would silently drop the last part
+# from the check rather than fail, which is the direction that loses.
+PART_SEP = re.compile(r"^(?:\s*,\s*(?:and\s+)?|\s+and\s+)")
+
+
+def declared_parts(rest: str) -> list[tuple[int, str]]:
+    """The parts a declared total introduces, as a contiguous comma-separated run.
+
+    Delimiting on the first `)` or `;` was still too generous: §3's breakdown
+    ends at an EM DASH inside the outer parenthetical, so the scan ran on
+    through the sentence's tail. It happens not to match today ("plus 26
+    created at runtime"), but a rephrase to "plus 26 tables created at
+    runtime" would compare that 26 against the 67 declared tables and abort a
+    monthly refresh whose numbers were correct.
+
+    Consuming the run itself has no such boundary to get wrong: the list ends
+    at the first thing that is not another `N kind` after a comma, whatever
+    punctuation follows. (Codex, PR #1062.)
+    """
+    out: list[tuple[int, str]] = []
+    rest = PART_LEAD.sub("", rest, count=1)
+    while True:
+        m = RELATION_PART.match(rest)
+        if not m:
+            return out
+        out.append((int(m.group(1)), m.group(2)))
+        rest = rest[m.end():]
+        sep = PART_SEP.match(rest)
+        if not sep:
+            return out
+        rest = rest[sep.end():]
 
 
 def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
@@ -787,19 +823,10 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                 if int(claimed) != total:
                     out.append(f"{doc}: claims {claimed} declared relations (prose line {i}); "
                                f"gcp/schema.sql declares {total} ({breakdown})")
-                # Parts are read ONLY from the clause this total introduces,
-                # bounded by the first `)` or `;` after it. Scanning the whole
-                # line let any sentence that happened to count a table subset
-                # beside a materialized-view count -- "12 runtime tables feed
-                # 2 materialized views" -- be compared against the whole-schema
-                # totals and fail a refresh whose numbers were correct.
-                # (Codex, PR #1062.)
-                rest = line[m.end():]
-                clause = re.split(r"[);]", rest, maxsplit=1)[0]
-                for part in RELATION_PART.finditer(clause):
-                    kind = part.group(2).rstrip("s")
-                    if int(part.group(1)) != kinds[kind]:
-                        out.append(f"{doc}: claims {part.group(1)} {part.group(2)} in gcp/schema.sql "
+                for n, kind_word in declared_parts(line[m.end():]):
+                    kind = kind_word.rstrip("s")
+                    if n != kinds[kind]:
+                        out.append(f"{doc}: claims {n} {kind_word} in gcp/schema.sql "
                                    f"(prose line {i}); it declares {kinds[kind]} ({breakdown})")
 
     if live and live.get("db_tables"):

@@ -57,6 +57,11 @@ LIVE = {
     # other counts this one has to equal `len(services)`, because the renderer
     # now cross-checks the name SETS across the two snapshots.
     "services": {f"svc-{n}": {} for n in ("alpha", "bravo", "charlie", "delta", "echo")},
+    # The day the snapshot was taken, which the two live as-of labels in 05-a
+    # carry. Not today's date, deliberately: a run that snapshots before UTC
+    # midnight and calls the model after it has two different days, and this
+    # value is the one `gate_stale_asof` compares those labels against.
+    "read_at": "2019-03-04T05:06:07Z",
 }
 REPO_INVENTORY = {"repo": {
     "counts": {"jobs": 866, "schedulers": 877, "tables": 690},
@@ -445,3 +450,27 @@ def test_the_hand_maintained_copies_exist_and_link_correctly():
             if target.startswith(("http", "mailto:")):
                 continue
             assert (f.parent / target).resolve().exists(), (f.name, target)
+
+
+def test_the_snapshot_date_is_substituted_not_called_today(values):
+    """The two live as-of labels in 05-a describe the SNAPSHOT; the `Generated`
+    stamp describes the run. They are the same day on almost every run and
+    different on one that crosses UTC midnight between the two, and
+    `gate_stale_asof` compares the labels against `read_at` — so a prompt that
+    said "use today" would have the model write a date its own gate rejects.
+    (Codex, PR #1062.)"""
+    assert values["LIVE_READ_DATE"] == "2019-03-04"
+    src = (PROMPT_DIR / "architecture.md").read_text()
+    assert "{{LIVE_READ_DATE}}" in src
+    out = rp.render(src, values, "architecture")
+    assert "2019-03-04" in out
+
+
+def test_a_snapshot_without_a_read_date_refuses_to_render():
+    """`read_at` is what every live as-of label in the regenerated documents is
+    checked against. A snapshot missing it, or carrying something that is not a
+    date, cannot produce a document that passes its own gate."""
+    for broken in ({**LIVE, "read_at": ""}, {**LIVE, "read_at": "yesterday"}):
+        with pytest.raises(SystemExit) as e:
+            rp.counts(broken, REPO_INVENTORY, VERIFY_LIVE)
+        assert "LIVE_READ_DATE" in str(e.value)

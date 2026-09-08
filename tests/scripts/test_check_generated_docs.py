@@ -999,6 +999,26 @@ def test_both_copies_of_the_relation_breakdown_are_checked(live, repo, tmp_path)
     assert any("claims 66 tables" in f for f in findings), findings
 
 
+def test_the_parts_run_ends_where_the_list_ends(live, repo, tmp_path):
+    """Delimiting the parts on the first `)` or `;` was still too generous:
+    §3's breakdown ends at an EM DASH inside the outer parenthetical, so the
+    scan ran on through the sentence's tail. It happens not to match today
+    ("plus 26 created at runtime"), but the rephrase below would compare that
+    26 against the 67 declared tables and abort a refresh whose numbers were
+    correct. Consuming the comma-separated run itself has no boundary to get
+    wrong. (Codex, PR #1062.)"""
+    assert gate.declared_parts(
+        " — 67 tables, 2 materialized views, 1 view — plus 26 tables created at runtime; §5)"
+    ) == [(67, "tables"), (2, "materialized views"), (1, "view")]
+    # both real shapes, and the natural rephrase that joins the last part with
+    # "and" rather than a comma -- dropping it would weaken the check silently
+    assert gate.declared_parts(" (67 tables, 2 materialized views, 1 view); the rest") == \
+        [(67, "tables"), (2, "materialized views"), (1, "view")]
+    assert gate.declared_parts(" (67 tables, 2 materialized views and 1 view)") == \
+        [(67, "tables"), (2, "materialized views"), (1, "view")]
+    assert gate.declared_parts(" is the number of relations declared.") == []
+
+
 def test_a_subset_count_beside_a_view_count_is_not_a_breakdown(live, repo, tmp_path):
     """Parts are read only from the clause a DECLARED TOTAL introduces, bounded
     by the first `)` or `;` after it.

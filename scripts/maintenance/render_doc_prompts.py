@@ -82,6 +82,17 @@ def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str
     for name, value in names.items():
         if not value or not all(isinstance(v, str) and v for v in value):
             raise SystemExit(f"{name} is {value!r} — refusing to render a prompt from an empty snapshot")
+    # The date the live state was actually read, which is NOT necessarily
+    # today: a run that takes the snapshot before UTC midnight and calls the
+    # model after it has two different days, and the two as-of labels in 05-a
+    # describe the SNAPSHOT while the `Generated` stamp describes the run.
+    # `gate_stale_asof` compares those labels against this same `read_at`, so
+    # telling the model "use today" would have it write a date the gate then
+    # rejects. Substituted rather than described. (Codex, PR #1062.)
+    dates = {"LIVE_READ_DATE": live["read_at"][:10]}
+    for name, value in dates.items():
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value or ""):
+            raise SystemExit(f"{name} is {value!r}, not a YYYY-MM-DD date — the snapshot is broken")
     for name, value in raw.items():
         if not isinstance(value, int) or isinstance(value, bool):
             raise SystemExit(f"{name} is {value!r}, not an int — the inputs are broken")
@@ -114,6 +125,7 @@ def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str
             "verifier on a name this pipeline supplied.")
     out = {name: str(value) for name, value in raw.items()}
     out.update({name: ", ".join(f"`{v}`" for v in value) for name, value in names.items()})
+    out.update(dates)
     return out
 
 
