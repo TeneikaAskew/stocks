@@ -532,8 +532,10 @@ def test_an_ellipsis_inside_a_rendered_block_is_not_the_models_doing(tmp_path):
 
 def test_collapsing_prose_outside_the_blocks_is_a_finding(tmp_path):
     """The companion to the elision gate: a paragraph deleted outright rather
-    than replaced by a marker. Measured on run 27, 05-c fell 8,876 -> 6,867
-    prose characters while its line count barely moved."""
+    than replaced by a marker. Measured on run 27 with the corrected marker
+    matching, 05-c fell 11,046 -> 6,867 prose characters (-37.8%) while its
+    line count barely moved; the 8,876 figure this docstring first carried was
+    produced by the substring bug. (Codex, PR #1061.)"""
     prev, cur = tmp_path / "prev", tmp_path / "cur"
     for d in (prev, cur):
         (d / gate.DEPS).parent.mkdir(parents=True, exist_ok=True)
@@ -614,3 +616,36 @@ def test_the_prose_floor_matches_the_size_floor(tmp_path):
     legitimately retires a prose-heavy section -- including on the two
     documents SIZE_FLOOR exempts. (Codex, PR #1061.)"""
     assert gate.PROSE_FLOOR == gate.SIZE_FLOOR == 0.80
+
+
+def test_an_elision_after_the_bullet_separator_is_a_finding(tmp_path):
+    """05-c's real bullet style is `- **`name`** — text`. An updater that keeps
+    the em dash and elides only the body writes `- **`name`** — ...`, which the
+    first regex missed because it required the ellipsis immediately after the
+    bold label. One such bullet is far too small to move the prose floor.
+    (Codex, PR #1061.)"""
+    doc = tmp_path / gate.DEPS
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("- **`market_data_daily`** — ...\n"
+                   "- **`etf_options_snapshots`**: …\n"
+                   "- **`signal_alerts`** - ...\n"
+                   "- **`watchlists`** — `backfill_ticker` manages it; soft-delete via `removed_at`.\n")
+    out = gate.gate_elided_prose(tmp_path)
+    assert len(out) == 3, out
+    assert not any("watchlists" in f for f in out), out
+
+
+def test_the_prose_floor_honours_the_readme_exemption(tmp_path):
+    """README is SIZE_FLOOR_EXEMPT because its length is not a content signal:
+    it is a pointer map, and a refresh that retires obsolete rows legitimately
+    shortens it. The floor must not reject that. The elision gate still covers
+    README, and that signal is exact rather than proportional.
+    (Codex, PR #1061.)"""
+    prev, cur = tmp_path / "prev", tmp_path / "cur"
+    prev.mkdir(); cur.mkdir()
+    (prev / "README.md").write_text("A pointer map. " * 400)
+    (cur / "README.md").write_text("A pointer map. " * 100)      # -75%
+    assert gate.gate_prose_floor(cur, prev) == []
+    # but an ellipsis in it is still caught
+    (cur / "README.md").write_text("## Docs\n...\n")
+    assert len(gate.gate_elided_prose(cur)) == 1

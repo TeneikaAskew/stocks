@@ -295,7 +295,8 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
 # that had taken the place of real sentences. A mid-sentence ellipsis is
 # ordinary prose ("`gamma_levels_eod`, …") and is NOT matched: the whole line
 # has to be the elision. (Run 27.)
-_ELIDED = re.compile(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?(?:\*\*[^*]+\*\*\s*)?(?:\.\.\.|…)\s*$")
+_ELIDED = re.compile(
+    r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?(?:\*\*[^*]+\*\*\s*(?:[—–:-]\s*)?)?(?:\.\.\.|…)\s*$")
 
 
 # A COMPLETE marker comment line, not any line that mentions one. Both
@@ -357,14 +358,25 @@ def gate_prose_floor(root: pathlib.Path, previous_dir: pathlib.Path | None) -> l
     """Prose outside the rendered blocks must not collapse.
 
     The companion to the elision gate: it catches a paragraph that was deleted
-    outright rather than replaced with a marker. Measured on the run-27 damage,
-    05-c fell 8,876 -> 6,867 characters (-22.6%) while its line count moved by
-    less than 1%, so the floor is on prose characters, not on the file.
+    outright rather than replaced with a marker. Measured on the run-27 damage
+    with the corrected marker matching, 05-c fell 11,046 -> 6,867 characters
+    (-37.8%) while its line count moved by less than 1%, so the floor is on
+    prose characters, not on the file. The 8,876 / -22.6% figures this
+    docstring first carried came from the substring bug fixed above -- the
+    numbers the fix itself disproved. (Codex, PR #1061.)
     """
     out = []
     if previous_dir is None:
         return out
     for doc in DOCS:
+        # README is SIZE_FLOOR_EXEMPT because its length is not a content
+        # signal -- it is a pointer map, and a refresh that retires obsolete
+        # rows legitimately shortens it. Honour that exemption here too, or a
+        # valid refresh fails on a document whose headings and links are
+        # intact. The elision gate still covers README, and that signal is
+        # exact rather than proportional. (Codex, PR #1061.)
+        if doc in SIZE_FLOOR_EXEMPT:
+            continue
         prev, cur = previous_dir / doc, root / doc
         if not prev.exists() or not cur.exists():
             continue
