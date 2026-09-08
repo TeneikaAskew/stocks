@@ -117,6 +117,13 @@ from typing import Any, Optional
 
 import pytest
 
+# What libpq actually raises for a refused connection (libpq 17, captured
+# live). The classifier reads a code-less OperationalError by its message,
+# so a harness that raised a bare "refused" would exercise a path
+# production never takes.
+_REFUSED = 'connection to server at "127.0.0.1", port 5432 failed: Connection refused'
+
+
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "platform"))
 
@@ -1148,7 +1155,7 @@ def test_a_successful_route_write_still_guards_its_reload(client, monkeypatch):
     monkeypatch.setattr(
         admin, "list_routes",
         lambda: (_ for _ in ()).throw(
-            psycopg2.OperationalError("connection refused")))
+            psycopg2.OperationalError(_REFUSED)))
 
     resp = client.put("/api/admin/routes/analyst",
                       json={"provider": "vertex", "model": "gemini-2.5-flash"})
@@ -1214,7 +1221,7 @@ def test_an_internal_defect_is_not_reported_as_an_outage(client, monkeypatch):
     # And the same call sites still answer 503 for a real driver failure, so
     # the narrowing did not simply delete the guards.
     def outage(*_a, **_k):
-        raise psycopg2.OperationalError("connection refused")
+        raise psycopg2.OperationalError(_REFUSED)
 
     monkeypatch.setattr(admin, "list_routes", outage)
     r = client.get("/api/admin/routes")
@@ -1226,7 +1233,7 @@ def test_infrastructure_errors_are_classified_by_type():
     import psycopg2
     from api.infra_errors import is_infrastructure_error
 
-    for exc in (psycopg2.OperationalError("refused"),
+    for exc in (psycopg2.OperationalError(_REFUSED),
                 psycopg2.InterfaceError("connection already closed"),
                 ConnectionRefusedError(),
                 TimeoutError(),
@@ -1245,7 +1252,7 @@ def test_infrastructure_errors_are_classified_by_type():
     # A driver error re-raised inside a helper's own wrapper is still an
     # outage; the chain is followed.
     wrapped = RuntimeError("could not load routes")
-    wrapped.__cause__ = psycopg2.OperationalError("refused")
+    wrapped.__cause__ = psycopg2.OperationalError(_REFUSED)
     assert is_infrastructure_error(wrapped)
 
     # ...but a wrapper around a DEFECT is not.
@@ -1310,6 +1317,11 @@ def test_infrastructure_errors_are_classified_by_type():
     for exc in (OSError(errno.ENETUNREACH, "Network is unreachable"),
                 OSError(errno.EHOSTUNREACH, "No route to host"),
                 OSError(errno.ENETDOWN, "Network is down"),
+                # ...and a socket that could not be ALLOCATED: descriptors or
+                # buffers exhausted, a capacity outage (Codex P2 on #999).
+                OSError(errno.EMFILE, "Too many open files"),
+                OSError(errno.ENFILE, "Too many open files in system"),
+                OSError(errno.ENOBUFS, "No buffer space available"),
                 socket.gaierror(-2, "Name or service not known"),
                 socket.herror(1, "Unknown host"),
                 socket.timeout("timed out")):
@@ -1345,9 +1357,23 @@ def test_infrastructure_errors_are_classified_by_type():
     import psycopg2.errors as pg_errors
     assert psycopg2.OperationalError not in INFRASTRUCTURE_ERRORS
     assert sa_exc.OperationalError not in INFRASTRUCTURE_ERRORS
+    # A code-less OperationalError is the driver's own. libpq 17's spellings
+    # of a connection FAILING classify (captured live: a refused port, an
+    # unresolvable host, a connect timeout); a connection OPTION it could not
+    # read is a broken deployment and stays loud (Codex P2 on #999).
     for exc in (psycopg2.OperationalError("could not connect to server"),
                 psycopg2.OperationalError(
                     "server closed the connection unexpectedly"),
+                psycopg2.OperationalError(
+                    'connection to server at "127.0.0.1", port 1 failed: '
+                    "Connection refused"),
+                psycopg2.OperationalError(
+                    'connection to server at "10.255.255.1", port 5432 failed: '
+                    "timeout expired"),
+                psycopg2.OperationalError(
+                    'could not translate host name "db.invalid" to address: '
+                    "Name or service not known"),
+                psycopg2.OperationalError("SSL SYSCALL error: EOF detected"),
                 pg_errors.ConnectionFailure("connection failure"),      # 08006
                 pg_errors.ProtocolViolation("protocol violation"),      # 08P01
                 pg_errors.AdminShutdown("terminating connection"),      # 57P01
@@ -1359,7 +1385,11 @@ def test_infrastructure_errors_are_classified_by_type():
                 pg_errors.OutOfMemory("out of memory"),                 # 53200
                 pg_errors.IoError("could not read block")):             # 58030
         assert is_infrastructure_error(exc), type(exc).__name__
-    for exc in (pg_errors.InvalidPassword("password authentication failed"),
+    for exc in (psycopg2.OperationalError(
+                    'invalid integer value "abc" for connection option "port"'),
+                psycopg2.OperationalError('invalid sslmode value: "bogus"'),
+                psycopg2.OperationalError("some new message"),
+                pg_errors.InvalidPassword("password authentication failed"),
                 pg_errors.InvalidAuthorizationSpecification("no role"),  # 28000
                 pg_errors.QueryCanceled("canceling statement"),          # 57014
                 pg_errors.OperatorIntervention("intervention"),          # 57000
@@ -1386,7 +1416,12 @@ def test_infrastructure_errors_are_classified_by_type():
     # The SQLAlchemy wrapper is decided by what it wraps, in both directions.
     for orig, expected in ((pg_errors.InvalidPassword("bad password"), False),
                            (pg_errors.AdminShutdown("terminating"), True),
-                           (psycopg2.OperationalError("refused"), True)):
+                           (psycopg2.OperationalError(
+                               'connection to server at "h", port 5432 failed: '
+                               "Connection refused"), True),
+                           (psycopg2.OperationalError(
+                               'invalid integer value "x" for connection option '
+                               '"port"'), False)):
         try:
             raise sa_exc.OperationalError("connect", {}, orig) from orig
         except sa_exc.OperationalError as wrapped_sa:

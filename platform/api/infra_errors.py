@@ -150,15 +150,18 @@ def _optional_dependency_missing(exc: BaseException) -> bool:
 #: its data-plane socket with `socket.create_connection` before handing it to
 #: pg8000, so a VPC or routing outage surfaces as a plain `OSError` carrying
 #: one of these, and a DNS failure as `socket.gaierror` -- neither a
-#: `ConnectionError` (Codex P1 on #999). `OSError` itself stays out: a
-#: `FileNotFoundError` on a path we chose is our bug.
+#: `ConnectionError` (Codex P1 on #999). And the socket that could not be
+#: ALLOCATED: EMFILE and ENFILE (the process's or the host's descriptors are
+#: exhausted) and ENOBUFS (no socket buffers) are capacity outages of the
+#: same kind as too_many_connections (Codex P2 on #999). `OSError` itself
+#: stays out: a `FileNotFoundError` on a path we chose is our bug.
 _NETWORK_ERRNOS: frozenset[int] = frozenset(
     {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.ENETRESET,
-     errno.EHOSTDOWN})
+     errno.EHOSTDOWN, errno.EMFILE, errno.ENFILE, errno.ENOBUFS})
 
 
 def _network_unreachable(exc: BaseException) -> bool:
-    """A socket that failed because the network or the name is gone."""
+    """A socket that failed because the network, the name, or the descriptors are gone."""
     if isinstance(exc, (socket.gaierror, socket.herror)):
         return True
     return isinstance(exc, OSError) and exc.errno in _NETWORK_ERRNOS
@@ -258,6 +261,28 @@ def _psycopg2_sqlstates() -> dict:
 
 _PSYCOPG2_SQLSTATE_OF: dict = _psycopg2_sqlstates()
 
+#: How libpq begins the message of a CONNECTION failure it reports without a
+#: SQLSTATE, verbatim from libpq 17 (older releases spelled the first two
+#: "could not connect to server" and a bare "timeout expired", kept for
+#: them). A code-less `OperationalError` is also what a malformed connection
+#: option raises -- `invalid integer value "abc" for connection option
+#: "port"`, `invalid sslmode value` -- and that is a broken deployment, not
+#: an outage; accepting the whole code-less class answered a retryable 503
+#: for it indefinitely (Codex P2 on #999).
+_PSYCOPG2_CONNECTION_PREFIXES: tuple[str, ...] = (
+    "connection to server",              # refused, timed out, reset, no route
+    "could not connect to server",
+    "could not translate host name",     # DNS
+    "server closed the connection unexpectedly",
+    "could not receive data from server",
+    "could not send data to server",
+    "lost synchronization with server",
+    "SSL SYSCALL error",
+    "SSL connection has been closed unexpectedly",
+    "terminating connection",
+    "timeout expired",
+)
+
 
 def _psycopg2_server_gone(exc: BaseException) -> bool:
     """A psycopg2 server error whose SQLSTATE says the server is gone.
@@ -273,14 +298,19 @@ def _psycopg2_server_gone(exc: BaseException) -> bool:
     `pgcode` when the server set it and from the class otherwise, through the
     same code sets pg8000 uses. A code-less plain `OperationalError` is the
     driver's own connection failure -- refused, "server closed the connection
-    unexpectedly", an SSL SYSCALL error -- and is an outage; any other
-    code-less error is not decided here.
+    unexpectedly", an SSL SYSCALL error -- and is an outage when its message
+    says so; a code-less error about a connection OPTION libpq could not read
+    is a broken deployment and stays loud (Codex P2 on #999), as does any
+    other code-less error.
     """
     if _psycopg2 is None or not isinstance(exc, _psycopg2.DatabaseError):
         return False
     code = getattr(exc, "pgcode", None) or _PSYCOPG2_SQLSTATE_OF.get(type(exc))
     if code is None:
-        return type(exc) is _psycopg2.OperationalError
+        # The driver's own, with no server behind it: the connection failing
+        # is an outage; a connection OPTION it cannot read is not.
+        return (type(exc) is _psycopg2.OperationalError
+                and str(exc).lstrip().startswith(_PSYCOPG2_CONNECTION_PREFIXES))
     return _server_gone(code)
 
 
