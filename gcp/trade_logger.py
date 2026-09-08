@@ -135,10 +135,10 @@ class TradeLogger:
         """Load trades for a specific date (Cloud SQL preferred, Parquet fallback)."""
         if _cloud_sql_active():
             try:
-                from gcp.database import query_to_dataframe
+                from gcp.database import query_to_dataframe_strict
                 date_str = str(date or datetime.now().date())
                 params = {'d': date_str}
-                df = query_to_dataframe(
+                df = query_to_dataframe_strict(
                     "SELECT * FROM trades WHERE trade_date = :d"
                     + self._run_kind_clause(run_kind, params)
                     + " ORDER BY entry_time",
@@ -146,7 +146,14 @@ class TradeLogger:
                 )
                 # Cloud SQL is the system of record: its answer, empty or
                 # not, is the answer. Only a FAILED query reaches the files
-                # (CLAUDE.md 3.7.1; internal review of #1022).
+                # (CLAUDE.md 3.7.1; internal review of #1022). That claim
+                # was false while this read went through the SWALLOWING
+                # query_to_dataframe, which returns an empty frame on a
+                # connection failure: the except below and the Parquet
+                # fallback under it were both dead code, and an outage
+                # answered "no trades" while the backup held live rows
+                # (Codex on #1022). The strict helper is what makes the
+                # sentence true.
                 return df
             except Exception as e:
                 # AUDIT-2026-05-13: silent fallback — a failed query falls
@@ -163,12 +170,12 @@ class TradeLogger:
         """Load all trades from the past 7 days (Cloud SQL preferred)."""
         if _cloud_sql_active():
             try:
-                from gcp.database import query_to_dataframe
+                from gcp.database import query_to_dataframe_strict
                 if week_end_date is None:
                     week_end_date = datetime.now().date()
                 start = week_end_date - pd.Timedelta(days=6)
                 params = {'start': str(start), 'end': str(week_end_date)}
-                df = query_to_dataframe(
+                df = query_to_dataframe_strict(
                     "SELECT * FROM trades WHERE trade_date BETWEEN :start AND :end"
                     + self._run_kind_clause(run_kind, params)
                     + " ORDER BY entry_time",
@@ -197,10 +204,10 @@ class TradeLogger:
         """Load all logged trades (Cloud SQL preferred, then all local Parquet files)."""
         if _cloud_sql_active():
             try:
-                from gcp.database import query_to_dataframe
+                from gcp.database import query_to_dataframe_strict
                 params: dict = {}
                 clause = self._run_kind_clause(run_kind, params)
-                df = query_to_dataframe(
+                df = query_to_dataframe_strict(
                     "SELECT * FROM trades"
                     + (" WHERE" + clause[len(" AND"):] if clause else "")
                     + " ORDER BY entry_time",

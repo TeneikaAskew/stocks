@@ -26,7 +26,7 @@ def _capture(method, *args, **kwargs):
         return pd.DataFrame({"trade_id": [1]})
 
     with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
-         patch("gcp.database.query_to_dataframe", fake_query):
+         patch("gcp.database.query_to_dataframe_strict", fake_query):
         out = method(*args, **kwargs)
     assert len(seen) == 1, seen
     assert len(out) == 1
@@ -116,7 +116,7 @@ def test_an_empty_cloud_sql_answer_is_the_answer_not_a_parquet_fallthrough(tmp_p
         _write_parquet(f, [{"trade_id": 3, "run_kind": "live"}])
     empty = pd.DataFrame(columns=["trade_id", "run_kind"])
     with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
-         patch("gcp.database.query_to_dataframe", lambda sql, params=None: empty):
+         patch("gcp.database.query_to_dataframe_strict", lambda sql, params=None: empty):
         assert tl.get_daily_trades(d1).empty
         assert tl.get_weekly_trades(date(2026, 4, 7)).empty
         assert tl.get_all_trades().empty
@@ -132,7 +132,7 @@ def test_a_failed_cloud_sql_query_still_reaches_parquet(tmp_path):
         raise RuntimeError("connection lost")
 
     with patch("gcp.trade_logger._cloud_sql_active", return_value=True), \
-         patch("gcp.database.query_to_dataframe", _boom):
+         patch("gcp.database.query_to_dataframe_strict", _boom):
         assert sorted(tl.get_daily_trades(d1)["trade_id"]) == [1]
 
 
@@ -239,3 +239,58 @@ def test_the_trade_parquet_files_have_exactly_one_writer():
                 callers.append(rel)
     assert other_writers == [], other_writers
     assert callers == ["gcp/signal_monitor.py"], callers
+
+
+def test_a_failed_cloud_sql_read_reaches_the_parquet_backup(tmp_path, monkeypatch):
+    """The three readers' `except` clause and their Parquet fallback were
+    both UNREACHABLE for a failed query (Codex on #1022).
+
+    They read through `query_to_dataframe`, which catches the exception and
+    returns an empty frame, so the unconditional `return df` above the
+    handler answered "no trades" — and the comment claiming only a failed
+    query reaches the files was false. The weekend review would report an
+    empty week during a database outage while the local backup held live
+    rows. Same shape as the kill-switch finding in this round: a swallowing
+    helper defeats the caller's error path (CLAUDE.md 3.7.1)."""
+    import pandas as pd
+
+    from gcp import trade_logger as tl
+
+    logger = tl.TradeLogger(output_dir=str(tmp_path))
+    d = date.today()
+    backup = pd.DataFrame([{
+        "ticker": "IWM", "direction": "CALL", "entry_time": "09:35",
+        "trade_date": str(d), "run_kind": "live",
+    }])
+    logger._daily_file(d).parent.mkdir(parents=True, exist_ok=True)
+    backup.to_parquet(logger._daily_file(d), index=False)
+
+    monkeypatch.setattr(tl, "_cloud_sql_active", lambda: True)
+
+    # Patch the ENGINE, not the helper: patching the helper would make it
+    # raise and hide the very swallow under test.
+    from gcp import database
+
+    def _refused():
+        raise RuntimeError("connection to server ... failed: Connection refused")
+
+    monkeypatch.setattr(database, "get_engine", _refused)
+
+    out = logger.get_daily_trades(d)
+    assert not out.empty, "an outage must reach the Parquet backup, not answer 'no trades'"
+    assert list(out["ticker"]) == ["IWM"]
+
+
+def test_the_readers_do_not_read_through_the_swallowing_helper():
+    """Pin the class, not the instance: `query_to_dataframe` cannot appear
+    in this module, because every use of it makes the fallback below it
+    dead code."""
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parents[2] / "gcp" / "trade_logger.py").read_text()
+    bad = [l for l in src.splitlines()
+           if "query_to_dataframe" in l and "query_to_dataframe_strict" not in l
+           and not l.lstrip().startswith("#")]
+    assert bad == [], (
+        "these lines read through the swallowing helper, so their except "
+        "clause and Parquet fallback are unreachable: %s" % bad)
