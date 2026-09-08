@@ -22,7 +22,9 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
                 REGENERATED doc is measured in bytes instead, since its
                 headings carry the month's data
 * structure     a regenerated doc carries every numbered section its prompt
-                promises, derived from the prompt
+                promises, derived from the prompt. COST_ANALYSIS.md is exempt
+                from the churn ceiling for the same reason: it is told to
+                regenerate, so churn measures nothing about it
 * elision       no prose line is only an ellipsis: a `replace` that writes
                 `...` deletes the paragraph it stood in (run 27)
 * prose floor   prose outside the marker blocks keeps 80% of its characters
@@ -115,18 +117,31 @@ PROSE_FLOOR = 0.80
 # the report says which sections moved.
 CHURN_CEILING = 0.50
 # Documents that are wholly rendered from the inventory legitimately churn
-# hard when the fleet changes, so they carry a higher ceiling.
-# Two documents are legitimately re-derived in full every month rather than
-# edited in place, so a high churn there is normal and a 50% ceiling would
-# block the refresh for doing its job:
-#   05-e-API.md      — every line comes from the router files
-#   COST_ANALYSIS.md — written wholesale from the billing CSVs; when the SKU
-#                      ordering shifts, most of its table rows change
-# They are not unprotected: the size floor is the real guard for
-# COST_ANALYSIS.md, and it catches the degradation that matters. In the
-# 2026-09-02 incident it fell 163 -> 103 lines (63% of its previous size,
-# under the 80% floor) and would have been stopped on that alone.
-CHURN_CEILING_RENDERED = {API: 0.90, COST: 0.85}
+# hard when the fleet changes, so 05-e-API.md carries a higher ceiling: every
+# line of it comes from the router files.
+#
+# COST_ANALYSIS.md has NO ceiling, because churn does not measure anything
+# about it. Its prompt says "Regenerate ... with write_file", so a full
+# rewrite is the specified behaviour, not a symptom; churn there answers "did
+# this month's billing differ from last month's", which it always does.
+# Measured across the two runs that got far enough to be measured, run 28 came
+# in at 81% and run 29 at 96% -- a ceiling of 0.85 sits inside the normal
+# range and fires at random on good output, which is worse than no ceiling
+# because it teaches the operator to disregard a red run. Run 29's document
+# was read line by line before this was changed: correct service names,
+# pasteable commands, a per-component table that reconciles to the SKU table
+# with an explicit rounding row, and implemented-vs-outstanding recommendations.
+# It failed only for having rewritten what it was told to rewrite.
+#
+# What guards it instead, none of which depends on textual continuity:
+# BYTE_FLOOR (mass), gate_regenerated_structure (every promised section),
+# gate_elided_prose, gate_duplicated_tail, gate_derived_numbers, gate_stale,
+# gate_links, the workflow's own "must contain a dollar figure / must not call
+# itself a placeholder" checks, and verify_docs_against_live on every name.
+# The churn figure is still computed and printed in the run's diff report,
+# where a human can read it. (Run 29.)
+CHURN_CEILING_RENDERED = {API: 0.90}
+CHURN_EXEMPT = (COST,)
 DIFF_DOCS = DOCS + (API,)
 REMOVED_HEADING = "Removed since last refresh"
 
@@ -587,20 +602,111 @@ def _promised_sections(root: pathlib.Path, prompt: str) -> list[tuple[str, str]]
 
 def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
     """A regenerated document loses the heading-persistence gate, so its
-    sections are checked against what its prompt promises instead. The titles
-    are matched without any data suffix -- "(Partial August data)" is this
-    month's caveat, not part of the section's identity."""
+    sections are checked against what its prompt promises instead.
+
+    The whole heading must match, not a prefix of it. A prefix test tolerated
+    an appended qualifier, so "2. Top 10 cost line items by SKU (90-day
+    trailing)" passed while the prompt said to copy the heading exactly --
+    a rule stated and not enforced, which is how the heading drift it exists
+    to prevent gets in. This month's caveat belongs in the sentence under the
+    heading. Case is folded because GitHub lowercases anchors, so Title Case
+    breaks no link; adding or rewording a word does. (Codex, PR #1063.)
+    """
     out = []
     for doc, prompt in ((COST, "cost-analysis.md"),):
         promised = _promised_sections(root, prompt)
         if not promised:
             out.append(f"{prompt}: no numbered sections found; the structure gate for {doc} is not running")
             continue
-        heads = [h.lower() for h in _headings((root / doc).read_text())]
+        heads = [h.strip().casefold() for h in _headings((root / doc).read_text())]
         for num, title in promised:
-            want = f"{num}. {title.strip().lower()}"
-            if not any(h.startswith(want) for h in heads):
-                out.append(f"{doc}: missing the section its prompt promises: {num}. {title.strip()!r}")
+            want = f"{num}. {title.strip()}"
+            if want.casefold() not in heads:
+                out.append(f"{doc}: section heading must be exactly '{want}'; "
+                           f"the prompt lists it and this gate compares the whole line. "
+                           f"Found: {[h for h in heads if h.startswith(num + '. ')] or 'nothing with that number'}")
+    return out
+
+
+# Floors for 05-d's substance, every one of them measured against the three
+# real versions of the document rather than chosen: the copy on main, run 28's
+# and run 29's.
+#
+#   metric                     main  run28  run29   floor
+#   cost figures (whole doc)     37     18     33     12
+#   §1 table data rows            2      3      3      2
+#   §2 table data rows           10     10     10      8
+#   §5 recommendation entries     3      5      6      3
+#   non-blank lines, per §      6-20   2-28   3-28      2
+#
+# §3 is deliberately unfloored beyond the per-section minimum: it was a bullet
+# list in two versions and a table in the third, and run 28 carried only two
+# lines with a cost figure in it, so any threshold worth having would fail an
+# honest document.
+COST_FIGURE = re.compile(r"\$?\b\d+\.\d{2}\b")
+COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
+COST_MIN_FIGURES = 12
+COST_MIN_SECTION_LINES = 2
+COST_MIN_ROWS = {"1": 2, "2": 8}
+COST_MIN_RECOMMENDATIONS = 3
+
+
+def _numbered_sections(text: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    cur = None
+    for line in text.split("\n"):
+        m = re.match(r"^#{2,4}\s+(\d+)\.", line)
+        if m:
+            cur = m.group(1)
+            out.setdefault(cur, [])
+        elif cur is not None:
+            out[cur].append(line)
+    return out
+
+
+def _table_rows(body: list[str]) -> int:
+    """Data rows of the first markdown table in a section: pipe lines, minus
+    the header, minus the `|---|` separator."""
+    rows = [l for l in body if l.strip().startswith("|")
+            and not re.fullmatch(r"\|[\s|:-]+\|", l.strip())]
+    return max(len(rows) - 1, 0)
+
+
+def gate_cost_content(root: pathlib.Path) -> list[str]:
+    """05-d must still contain a cost report, not prose shaped like one.
+
+    Dropping the churn ceiling for this document (run 29) removed the only
+    check that noticed a wholesale replacement, and nothing that remains looks
+    at what is IN it: generic prose carrying the five headings, one dollar
+    figure and 80% of the previous byte count would pass the byte floor, the
+    structure gate, and every prose gate. That is the hole this closes.
+    (Codex, PR #1063.)
+    """
+    f = root / COST
+    if not f.exists():
+        return []
+    text = f.read_text()
+    out = []
+    figures = len(COST_FIGURE.findall(text))
+    if figures < COST_MIN_FIGURES:
+        out.append(f"{COST}: only {figures} cost figures in the whole document "
+                   f"(floor {COST_MIN_FIGURES}); the three real versions carry 18 to 37. "
+                   "This is prose where a billing report should be")
+    secs = _numbered_sections(text)
+    for num, floor in sorted(COST_MIN_ROWS.items()):
+        rows = _table_rows(secs.get(num, []))
+        if rows < floor:
+            out.append(f"{COST}: §{num} has {rows} table row(s), floor {floor} — "
+                       "the table its prompt asks for is missing or empty")
+    recs = len([l for l in secs.get("5", []) if COST_REC.match(l)])
+    if recs < COST_MIN_RECOMMENDATIONS:
+        out.append(f"{COST}: §5 lists {recs} recommendation(s), floor "
+                   f"{COST_MIN_RECOMMENDATIONS} — its prompt asks for three, ranked")
+    for num in sorted(secs):
+        n = len([l for l in secs[num] if l.strip()])
+        if n < COST_MIN_SECTION_LINES:
+            out.append(f"{COST}: §{num} has {n} non-blank line(s) under its heading — "
+                       "the section is a heading with nothing beneath it")
     return out
 
 
@@ -659,7 +765,7 @@ def gate_diff_budget(stats: list[dict], allow_rewrite: tuple[str, ...] = ()) -> 
         ceiling = CHURN_CEILING_RENDERED.get(st["doc"], CHURN_CEILING)
         if st["doc"] in allow_rewrite:
             continue
-        if st["churn"] > ceiling:
+        if st["doc"] not in CHURN_EXEMPT and st["churn"] > ceiling:
             out.append(
                 f"{st['doc']}: {st['removed']} of {st['lines_before']} previous lines were replaced "
                 f"or deleted ({st['churn']:.0%} churn, ceiling {ceiling:.0%}) — this is a rewrite, "
@@ -966,6 +1072,7 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_stale_asof(root, live)
     findings += gate_prose_floor(root, previous_dir)
     findings += gate_regenerated_structure(root)
+    findings += gate_cost_content(root)
     findings += gate_derived_numbers(root, repo, live)
     findings += gate_new_suppressions(root, previous_dir)
     findings += gate_scheduled_scaling(root, repo)

@@ -33,6 +33,15 @@ and went red on that single line.
 
 ## What to produce
 
+**Copy the five `### N. ...` headings below into the document exactly as
+written**, including their capitalisation, and use them as the document's
+`## N. ...` section headings. They are the spec, not a summary of one: a gate
+checks the document for each of them by number and title. Run 29 rewrote all
+five in Title Case with its own qualifiers ("2. Top 10 Cost Line Items
+(90-Day Trailing)" for "2. Top 10 cost line items by SKU") and the run went
+red on the one that no longer matched. Put this month's qualifier in the
+sentence under the heading, never in the heading.
+
 ### 1. Total spend by month
 Table from `billing_by_month.csv`: Month | Spend (USD) | Notes. Flag partial months (the oldest month in a 90-day window, and the current month).
 
