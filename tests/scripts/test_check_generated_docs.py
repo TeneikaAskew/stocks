@@ -973,3 +973,45 @@ def test_the_breakdown_is_matched_as_parts_not_a_fixed_triple(live, repo, tmp_pa
         "declares **70 relations** (1 view, 2 materialized views and 99 tables)"))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any("claims 99 tables" in f for f in findings), findings
+
+
+def test_both_copies_of_the_relation_breakdown_are_checked(live, repo, tmp_path):
+    """05-a states the schema arithmetic twice, in two shapes: §5's `declares
+    **70 relations** (67 tables, ...)` and §3's table cell `95 relations (70
+    declared in `gcp/schema.sql` — 67 tables, ...)`.
+
+    A gate anchored on §5's phrasing alone left §3 unchecked, and I proved the
+    point by hand: I corrected §5 to 70/67 and left §3 at 69/66 -- the same
+    reading-instead-of-deriving mistake Codex named on #1009, made while
+    fixing that exact sentence."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / gate.ARCH
+    a.write_text(a.read_text().replace(
+        "95 relations (70 declared in `gcp/schema.sql` — 67 tables,",
+        "95 relations (69 declared in `gcp/schema.sql` — 66 tables,"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 69 declared relations" in f for f in findings), findings
+    assert any("claims 66 tables" in f for f in findings), findings
+
+
+def test_prose_about_materialized_views_is_not_mistaken_for_a_breakdown(live, repo, tmp_path):
+    """Two corpus lines mention materialized views while enumerating nothing:
+    05-a's "drops and recreates the two earnings materialized views" and 05-c's
+    reading of the orphan statuses. Neither is the schema breakdown, and a
+    gate that read them as one would fail an honest document.
+
+    The scope is deliberately the breakdown SHAPE -- adjacent counts of two
+    named kinds -- and not every `N tables` in the prose. Both documents count
+    subsets in passing ("the twelve `strat_features_*` tables"), and those are
+    correct statements that a schema-total comparison would reject."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text() +
+                 "\n`apply_schema.py` drops and recreates the two earnings materialized views.\n"
+                 "\nThe twelve `strat_features_*` tables are created at runtime.\n")
+    assert gate.gate_derived_numbers(root, repo, live) == []

@@ -698,12 +698,27 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
     return out
 
 
-# The self-contained arithmetic in 05-a §5. Matched as a total plus a list of
-# parts rather than a fixed 3-tuple, so a schema that grows a second view or
-# loses its only one is still checked instead of silently unmatched. Longest
-# kind first: "materialized views" ends in "views".
-RELATION_BREAKDOWN = re.compile(r"declares \*\*(\d+) relations?\*\*\s*\(([^)]*)\)")
+# The self-contained arithmetic about `gcp/schema.sql`, which 05-a states in
+# TWO places and in two different shapes: §5's "declares **70 relations** (67
+# tables, ...)" and §3's table cell "95 relations (69 declared in
+# `gcp/schema.sql` — 66 tables, ...)". Anchoring on §5's phrasing alone left
+# the §3 copy unchecked, which is the same reading-not-deriving mistake
+# Codex named on #1009 and which I then repeated while fixing this very
+# sentence: I corrected §5 to 70/67 and left §3 at 69/66.
+#
+# Parts are matched as a list rather than a fixed 3-tuple, so a schema that
+# grows a second view or loses its only one is still checked instead of
+# silently unmatched -- a gate that stops matching on a reword fails open.
+# Longest kind first: "materialized views" ends in "views".
+RELATION_TOTAL = re.compile(r"declares \*\*(\d+) relations?\*\*|"
+                            r"\b(\d+) declared in `gcp/schema\.sql`")
 RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
+# The breakdown's fingerprint. Two prose lines mention materialized views
+# without enumerating the schema ("drops and recreates the two earnings
+# materialized views"); requiring a NUMBERED table count beside a NUMBERED
+# materialized-view count separates them.
+RELATION_BREAKDOWN = re.compile(r"\d+ tables?\b(?=.*?\b\d+ materialized views?\b)|"
+                                r"\d+ materialized views?\b(?=.*?\b\d+ tables?\b)")
 
 
 def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
@@ -760,15 +775,20 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
              "view": len(repo["views"])}
     total = sum(kinds.values())
     breakdown = ", ".join(f"{v} {k}" + ("s" if v != 1 else "") for k, v in kinds.items())
-    for m in RELATION_BREAKDOWN.finditer(text):
-        if int(m.group(1)) != total:
-            out.append(f"{ARCH}: claims {m.group(1)} declared relations; "
-                       f"gcp/schema.sql declares {total} ({breakdown})")
-        for part in RELATION_PART.finditer(m.group(2)):
-            kind = part.group(2).rstrip("s")
-            if int(part.group(1)) != kinds[kind]:
-                out.append(f"{ARCH}: claims {part.group(1)} {part.group(2)} in gcp/schema.sql; "
-                           f"it declares {kinds[kind]} ({breakdown})")
+    for doc in (ARCH, DEPS):
+        for i, line in enumerate(_prose_lines((root / doc).read_text()), 1):
+            for m in RELATION_TOTAL.finditer(line):
+                claimed = m.group(1) or m.group(2)
+                if int(claimed) != total:
+                    out.append(f"{doc}: claims {claimed} declared relations (prose line {i}); "
+                               f"gcp/schema.sql declares {total} ({breakdown})")
+            if not RELATION_BREAKDOWN.search(line):
+                continue
+            for part in RELATION_PART.finditer(line):
+                kind = part.group(2).rstrip("s")
+                if int(part.group(1)) != kinds[kind]:
+                    out.append(f"{doc}: claims {part.group(1)} {part.group(2)} in gcp/schema.sql "
+                               f"(prose line {i}); it declares {kinds[kind]} ({breakdown})")
 
     if live and live.get("db_tables"):
         declared, runtime = relation_counts(repo, live)
