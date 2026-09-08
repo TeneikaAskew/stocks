@@ -1882,6 +1882,25 @@ def test_a_retryable_credential_refresh_is_an_outage_and_a_missing_package_is_no
                 _uexc.SSLError("self-signed certificate in chain"),
                 cert_conn):
         assert not is_infrastructure_error(exc), type(exc).__name__
+
+    # google-cloud-storage's DEFAULT_RETRY also retries HTTP 408/429/5xx, and
+    # 408 has no dedicated google.api_core class -- it is a bare
+    # GoogleAPICallError with code == 408 -- so the whole retryable status set
+    # is matched by code, whether it arrives as an API error or a storage
+    # InvalidResponse (Codex P1 on #999). 404/403/400 stay loud.
+    from google.api_core import exceptions as _gapi
+    for code in (408, 429, 500, 502, 503, 504):
+        assert is_backend_outage(_gapi.from_http_status(code, "x")), code
+    for code in (400, 403, 404, 409):
+        assert not is_backend_outage(_gapi.from_http_status(code, "x")), code
+    from google.cloud.storage.exceptions import InvalidResponse as _InvalidResponse
+
+    class _Resp:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    assert is_backend_outage(_InvalidResponse(_Resp(408), "request timeout"))
+    assert not is_backend_outage(_InvalidResponse(_Resp(404), "absent"))
     for exc in (psycopg2.OperationalError(_REFUSED),
                 gauth.RefreshError("server_error", retryable=True),
                 ConnectionRefusedError()):

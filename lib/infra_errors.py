@@ -215,6 +215,10 @@ try:                                        # pragma: no cover - image without i
     from urllib3 import exceptions as _urllib3_exc
 except Exception:                           # pragma: no cover
     _urllib3_exc = None
+try:                                        # pragma: no cover - image without it
+    from google.api_core import exceptions as _gapi_exc
+except Exception:                           # pragma: no cover
+    _gapi_exc = None
 
 
 def _connector_transport_failure(exc: BaseException) -> bool:
@@ -618,6 +622,56 @@ def _storage_transport_outage(exc: BaseException) -> bool:
     return True
 
 
+def _storage_response_types() -> tuple[type[BaseException], ...]:
+    """google-cloud-storage's `InvalidResponse` and the `google.resumable_media`
+    base it subclasses. Imported defensively: a router image without the
+    storage extra still classifies the generic API errors.
+    """
+    types: list[type[BaseException]] = []
+    for mod, name in (("google.cloud.storage.exceptions", "InvalidResponse"),
+                      ("google.resumable_media", "InvalidResponse")):
+        try:                                    # pragma: no cover - image without it
+            module = __import__(mod, fromlist=[name])
+            types.append(getattr(module, name))
+        except Exception:                       # pragma: no cover
+            pass
+    return tuple(types)
+
+
+_STORAGE_RESPONSE_TYPES = _storage_response_types()
+
+#: The HTTP statuses google-cloud-storage's DEFAULT_RETRY retries
+#: (`google.cloud.storage.retry._RETRYABLE_STATUS_CODES`). 429/500/502/503/504
+#: already arrive as their own registered `google.api_core` classes, but 408
+#: has no dedicated class -- it is a bare `GoogleAPICallError` with `code == 408`
+#: -- so the whole set is matched by CODE here to close it, and to cover a
+#: response that reaches us as a storage `InvalidResponse` rather than a raised
+#: API class.
+_RETRYABLE_STORAGE_STATUS: frozenset[int] = frozenset(
+    {408, 429, 500, 502, 503, 504})
+
+
+def _retryable_storage_status(exc: BaseException) -> bool:
+    """A GCS response carrying a retryable HTTP status that exhausted retries.
+
+    `_should_retry` in `google.cloud.storage.retry` retries a
+    `GoogleAPICallError` (or a storage `InvalidResponse`) whose status is in
+    `_RETRYABLE_STATUS_CODES` = {408, 429, 500, 502, 503, 504}. HTTP 408 alone
+    has no dedicated `google.api_core` class, so it arrived as a bare
+    `GoogleAPICallError` and fell through the registered-class checks, and when
+    retries expired `_gcs_load_bytes` swallowed the outage to None and answered
+    200 (Codex P1 on #999). 404/403/400 stay loud: a missing artifact or a
+    denied/ malformed request is not a retryable outage.
+    """
+    if _gapi_exc is not None and isinstance(exc, _gapi_exc.GoogleAPICallError):
+        if getattr(exc, "code", None) in _RETRYABLE_STORAGE_STATUS:
+            return True
+    if _STORAGE_RESPONSE_TYPES and isinstance(exc, _STORAGE_RESPONSE_TYPES):
+        response = getattr(exc, "response", None)
+        return getattr(response, "status_code", None) in _RETRYABLE_STORAGE_STATUS
+    return False
+
+
 def _retryable_auth_refresh(exc: BaseException) -> bool:
     """google-auth's `RefreshError`, when google-auth itself marked it retryable.
 
@@ -648,6 +702,7 @@ _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
                               _retryable_http_response,
                               _auth_transport_outage,
                               _storage_transport_outage,
+                              _retryable_storage_status,
                               _retryable_auth_refresh)
 
 #: The same rules minus "a feature this image cannot serve": what a library
