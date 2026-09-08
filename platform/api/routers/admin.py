@@ -38,7 +38,7 @@ from lib.agents.model_routing import (  # noqa: E402
 from lib.agents.schema import ALL_ROLES, AgentRole  # noqa: E402
 from api import auth as auth_state  # noqa: E402 — module ref: AUTH_MODE read at call time
 from api.auth import configured_admin_email, current_user_email, is_admin_email  # noqa: E402
-from api.infra_errors import is_infrastructure_error  # noqa: E402
+from lib.infra_errors import is_infrastructure_error  # noqa: E402
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])

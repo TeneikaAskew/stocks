@@ -16,7 +16,7 @@ from api.schemas import (
     DashboardBriefResponse,
     MovementStatementResponse,
 )
-from api.infra_errors import is_infrastructure_error
+from lib.infra_errors import is_backend_outage, is_infrastructure_error
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -426,7 +426,9 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
 
     Returns None (→ levels UNAVAILABLE) rather than raising, because a
     missing LevelMap is a legitimate "data unavailable" state for ONE block
-    of the statement, not a reason to fail the whole read.
+    of the statement, not a reason to fail the whole read. Cloud SQL being
+    unreachable is not a data gap: that is re-raised, and the route guard
+    answers 503 for it (Codex P1 on #999).
     """
     try:
         import pandas as pd  # noqa: PLC0415
@@ -513,6 +515,12 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
             analysis_date=session,
         )
     except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
+        # A backend OUTAGE is not a data gap. It propagates to the route
+        # guard, which answers 503 for it; swallowed here it became a None
+        # the guard never saw, so the 503 it names could not fire for the
+        # very outage it exists for (Codex P1 on #999).
+        if is_backend_outage(exc):
+            raise
         logger.warning("movement-statement level map unavailable for %s: %s", ticker, exc)
         return None
 
@@ -568,6 +576,12 @@ def movement_statement(
     # UNAVAILABLE statuses for missing data; infrastructure being down is a
     # different thing and answers 503, so a caller cannot read it as "the
     # levels were consulted and had nothing".
+    # The reads beneath used to catch every failure into those envelopes, so
+    # with a real engine -- lazy, failing inside the reads rather than at
+    # `get_engine()` -- this guard never saw the outage and the statement
+    # assembled as a 200 whose every field said "query failed" (Codex P1 on
+    # #999). They now re-raise a backend outage (`is_backend_outage`) and
+    # keep the envelope for a failure of one source.
     #
     # One session date for both the ladder anchor and the playbook row the
     # rungs are matched against (Codex P2 on #1030). Inside the guard rather

@@ -56,7 +56,7 @@ import httpx
 import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import ThreadSafeCache
-from api.infra_errors import is_infrastructure_error
+from lib.infra_errors import is_infrastructure_error
 from lib.single_flight import SingleFlight
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel

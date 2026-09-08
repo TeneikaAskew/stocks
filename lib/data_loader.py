@@ -14,6 +14,8 @@ Parquet files if the query returns no rows.  All call-site code is unchanged.
 import logging
 import os
 import pandas as pd
+
+from lib.infra_errors import is_backend_outage
 import numpy as np
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -62,7 +64,7 @@ def _cloud_sql_active() -> bool:
 
 
 def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
-    """Run a SELECT against Cloud SQL; returns empty DataFrame on any error.
+    """Run a SELECT against Cloud SQL; empty DataFrame on any error but an outage.
 
     Track D / G.P1.1: log the full traceback before swallowing the
     exception so production silent failures (e.g. Cloud SQL Connector
@@ -78,7 +80,15 @@ def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     try:
         from gcp.database import query_to_dataframe
         return query_to_dataframe(sql, params)
-    except Exception:
+    except Exception as exc:
+        # A backend OUTAGE propagates. An empty frame for an unreachable
+        # Cloud SQL is exactly the fabricated zero-row result the docstring
+        # warns every caller about, and the API's level-map builder could
+        # not tell it from a real gap, so the 503 its route guard names
+        # could never fire (Codex P1 on #999). Anything else keeps the
+        # logged-then-empty contract below.
+        if is_backend_outage(exc):
+            raise
         log.exception(
             "_query_cloud_sql: query failed; returning empty DataFrame "
             "(callers must treat empty as a signal that the underlying "

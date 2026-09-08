@@ -21,6 +21,12 @@ stay green through a schema regression (Codex P1 on #999).
 So the guards ask this module instead. Nothing here is a fallback: an
 infrastructure failure still surfaces as an explicit, renderable 503, and
 everything else is re-raised untouched.
+
+It lives in `lib` rather than beside the routers because the library's own
+read helpers consult it too: a per-source UNAVAILABLE envelope is the right
+answer to a corrupt artifact and the wrong answer to Cloud SQL being down,
+and only this module can tell the two apart (Codex P1 on #999). See
+`is_backend_outage`.
 """
 
 from __future__ import annotations
@@ -179,6 +185,10 @@ try:                                        # pragma: no cover - image without i
     import aiohttp as _aiohttp
 except Exception:                           # pragma: no cover
     _aiohttp = None
+try:                                        # pragma: no cover - image without it
+    from google.auth import exceptions as _gauth_exc
+except Exception:                           # pragma: no cover
+    _gauth_exc = None
 
 
 def _connector_transport_failure(exc: BaseException) -> bool:
@@ -488,6 +498,25 @@ def _retryable_http_response(exc: BaseException) -> bool:
 
 #: What cannot be decided by class alone. Each reads the one exception it is
 #: about and answers False for everything else.
+def _retryable_auth_refresh(exc: BaseException) -> bool:
+    """google-auth's `RefreshError`, when google-auth itself marked it retryable.
+
+    The Cloud SQL connector refreshes ADC credentials before it opens a
+    connection, and when the OAuth token endpoint keeps answering 5xx (or
+    `server_error` / `temporarily_unavailable`) through google-auth's own
+    retries, the library raises `RefreshError(..., retryable=True)`
+    (`google.oauth2._client._handle_error_response`, decided by
+    `_can_retry`). That is a control-plane outage, and the class subclasses
+    neither `TransportError` nor `DefaultCredentialsError`, so it fell
+    through the registrations above as a bare 500 (Codex P1 on #999). A
+    `RefreshError` google-auth did NOT mark retryable -- `invalid_grant`, a
+    revoked or malformed credential -- is a deployment problem and stays
+    loud, as does one built without the flag at all.
+    """
+    return (_gauth_exc is not None and isinstance(exc, _gauth_exc.RefreshError)
+            and bool(getattr(exc, "retryable", False)))
+
+
 _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
                               _network_unreachable,
                               _tls_transport_failure,
@@ -496,7 +525,13 @@ _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
                               _psycopg2_transport_failure,
                               _psycopg2_server_gone,
                               _connector_transport_failure,
-                              _retryable_http_response)
+                              _retryable_http_response,
+                              _retryable_auth_refresh)
+
+#: The same rules minus "a feature this image cannot serve": what a library
+#: read helper re-raises rather than folding into a per-source envelope.
+_OUTAGE_PREDICATES = tuple(p for p in _INFRASTRUCTURE_PREDICATES
+                           if p is not _optional_dependency_missing)
 
 #: Evaluated once at import. The set of installed drivers does not change
 #: while the process runs, and rebuilding it per request would put a dozen
@@ -517,6 +552,23 @@ def is_infrastructure_error(exc: BaseException) -> bool:
     file's resolvers do, because a chain has no natural length and what it
     cannot do is revisit an exception.
     """
+    return _classified(exc, _INFRASTRUCTURE_PREDICATES)
+
+
+def is_backend_outage(exc: BaseException) -> bool:
+    """`is_infrastructure_error`, minus an optional dependency this image lacks.
+
+    For a library read helper deciding whether a failure is ITS source's --
+    fold it into that source's UNAVAILABLE envelope -- or the backend's --
+    re-raise it, so the route answers 503 for the whole call. A missing
+    research package is an unavailable feature, not an outage: the block
+    that needs it stays an envelope and the rest of the statement still
+    assembles (Codex P1 on #999).
+    """
+    return _classified(exc, _OUTAGE_PREDICATES)
+
+
+def _classified(exc: BaseException, predicates) -> bool:
     seen: set[int] = set()
     pending: list[BaseException] = [exc]
     while pending:
@@ -525,7 +577,7 @@ def is_infrastructure_error(exc: BaseException) -> bool:
             continue
         seen.add(id(cur))
         if (isinstance(cur, INFRASTRUCTURE_ERRORS)
-                or any(decide(cur) for decide in _INFRASTRUCTURE_PREDICATES)):
+                or any(decide(cur) for decide in predicates)):
             return True
         for nxt in (cur.__cause__, getattr(cur, "orig", None)):
             if isinstance(nxt, BaseException):

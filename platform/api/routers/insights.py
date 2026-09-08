@@ -40,7 +40,7 @@ import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
 # Server-verified identity for per-user watchlist scoping (mirrors journal.py).
 from api.auth import current_user_email  # noqa: E402
-from api.infra_errors import is_infrastructure_error  # noqa: E402
+from lib.infra_errors import is_infrastructure_error  # noqa: E402
 from api.schemas import (
     InsightHistoryResponse,
     TickerSearchResponse,

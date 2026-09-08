@@ -396,7 +396,7 @@ class _BackendDown(ConnectionError):
     """Raised where a socket to Cloud SQL or GCS would be opened.
 
     A `ConnectionError`, not a bare `RuntimeError`, because the handlers now
-    ask `api.infra_errors.is_infrastructure_error` whether a failure is an
+    ask `lib.infra_errors.is_infrastructure_error` whether a failure is an
     outage or a bug, and a harness that raises something no real outage raises
     would exercise a classification path production never takes. This is the
     same correction as the harness rewrite recorded above: what stands in for
@@ -819,16 +819,28 @@ def test_the_allowlist_is_empty():
 # A status in this set means FastAPI produced it. 500 means an unhandled
 # exception reached the framework, which is what `/levels` did for every
 # request while 4,253 tests passed.
-ANSWERED = {200, 204, 304, 400, 401, 403, 404, 409, 422, 429, 500, 502, 503}
-NOT_A_CRASH = ANSWERED - {500}
+# Any success counts: 200 today, and a 201 for a create or a 202 for an
+# asynchronous job tomorrow must not fail the crash check when the table
+# expects exactly that status -- the exact-status assertion below is what
+# pins the contract (Codex P2 on #999). The error side stays a closed list:
+# these are the envelopes the handlers raise.
+ANSWERED_ERRORS = {304, 400, 401, 403, 404, 409, 422, 429, 500, 502, 503}
 
 
-# A 204 or a 304 carries no body by definition (RFC 9110 §15.3.5 and
-# §15.4.5) and so no content-type. Both are in ANSWERED, and the envelope
-# check ran on every status alike, which would have failed the sweep the
-# first time an operation answered 204 (Codex P2 on #999). None does today;
-# the gate must not be what forbids it.
-BODYLESS = frozenset({204, 304})
+def _answered(status: int) -> bool:
+    return 200 <= status < 300 or status in ANSWERED_ERRORS
+
+
+def _not_a_crash(status: int) -> bool:
+    return _answered(status) and status != 500
+
+
+# A 204, a 205 or a 304 carries no body by definition (RFC 9110 §15.3.5,
+# §15.3.6 and §15.4.5) and so no content-type. All three are answers, and
+# the envelope check ran on every status alike, which would have failed the
+# sweep the first time an operation answered 204 (Codex P2 on #999). None
+# does today; the gate must not be what forbids it.
+BODYLESS = frozenset({204, 205, 304})
 
 
 def _assert_json_envelope(label: str, response) -> None:
@@ -852,7 +864,7 @@ def _assert_json_envelope(label: str, response) -> None:
 def test_operation_answers(client, req: Req):
     r = client.request(req.method, req.url, json=req.json)
 
-    assert r.status_code in NOT_A_CRASH, (
+    assert _not_a_crash(r.status_code), (
         f"{req.label} returned {r.status_code}. A 500 here is an unhandled "
         f"exception reaching FastAPI, not an error the frontend can render.\n"
         f"body: {r.text[:400]}")
@@ -1162,6 +1174,15 @@ def test_the_feature_gated_handlers_survive_a_backend_outage(
         f"expected 503 for a backend outage on the enabled path, got "
         f"{resp.status_code}: {resp.text[:400]}")
     assert resp.headers.get("content-type", "").startswith("application/json")
+def test_every_success_status_is_an_answer():
+    """201 and 202 are answers, as any 2xx is; 500 and a redirect are not."""
+    for status in (200, 201, 202, 204, 205, 206):
+        assert _not_a_crash(status), status
+    for status in (304, 400, 401, 403, 404, 409, 422, 429, 502, 503):
+        assert _not_a_crash(status), status
+    for status in (500, 302, 307, 501):
+        assert not _not_a_crash(status), status
+    assert _answered(500) and not _not_a_crash(500)
 
 
 @pytest.mark.parametrize("path,flag", [
@@ -1300,7 +1321,7 @@ def test_an_internal_defect_is_not_reported_as_an_outage(client, monkeypatch):
 def test_infrastructure_errors_are_classified_by_type():
     """The predicate itself, over the cases the guards depend on."""
     import psycopg2
-    from api.infra_errors import is_infrastructure_error
+    from lib.infra_errors import is_infrastructure_error
 
     for exc in (psycopg2.OperationalError(_REFUSED),
                 psycopg2.InterfaceError("connection already closed"),
@@ -1375,7 +1396,7 @@ def test_infrastructure_errors_are_classified_by_type():
     assert is_infrastructure_error(
         ModuleNotFoundError("No module named 'scipy'", name="scipy"))
 
-    from api.infra_errors import INFRASTRUCTURE_ERRORS
+    from lib.infra_errors import INFRASTRUCTURE_ERRORS
     # The data-plane socket. The connector opens it with
     # `socket.create_connection` before handing it to pg8000, and a network
     # that is gone is a plain `OSError` by errno, or a `socket.gaierror` for
@@ -1736,3 +1757,36 @@ def test_the_final_four_guards_keep_the_split(client, monkeypatch):
                          json={"ticker": T, "timeframe": "15m",
                                "as_of_timestamp": "2026-09-05T15:30:00Z"}),
              "timestamp parser")
+
+
+def test_a_retryable_credential_refresh_is_an_outage_and_a_missing_package_is_not():
+    """Two edges of the classifier (Codex P1 on #999).
+
+    google-auth marks a `RefreshError` retryable when the token endpoint
+    answered 5xx through its own retries; that is a control-plane outage and
+    subclasses neither registered google-auth class. And `is_backend_outage`
+    is the classifier a library read helper consults: everything
+    `is_infrastructure_error` accepts except a research package this image
+    lacks, which is an unavailable feature rather than an outage.
+    """
+    import psycopg2
+    from google.auth import exceptions as gauth
+    from lib.infra_errors import is_backend_outage, is_infrastructure_error
+
+    assert is_infrastructure_error(gauth.RefreshError("server_error", retryable=True))
+    assert not is_infrastructure_error(
+        gauth.RefreshError("invalid_grant: Bad Request", retryable=False))
+    assert not is_infrastructure_error(gauth.RefreshError("invalid_grant"))
+    assert is_infrastructure_error(gauth.TransportError("connection reset"))
+
+    missing = ModuleNotFoundError("No module named 'lightgbm'", name="lightgbm")
+    assert is_infrastructure_error(missing)
+    assert not is_backend_outage(missing)
+    for exc in (psycopg2.OperationalError(_REFUSED),
+                gauth.RefreshError("server_error", retryable=True),
+                ConnectionRefusedError()):
+        assert is_backend_outage(exc), type(exc).__name__
+    for exc in (TypeError("bad"), RuntimeError("corrupt artifact"),
+                gauth.RefreshError("invalid_grant")):
+        assert not is_backend_outage(exc), type(exc).__name__
+

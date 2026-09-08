@@ -200,3 +200,23 @@ def test_session_summary_includes_level_refresh_counters():
             f"signal_monitor.py must reference `{token}`; see G.P1.1 "
             f"instrumentation in session_summary"
         )
+
+
+def test_query_cloud_sql_propagates_a_backend_outage():
+    """An unreachable Cloud SQL is not a zero-row result.
+
+    The empty frame this wrapper answers for a failed query is the fabricated
+    result its own docstring warns about, and the API's level-map builder
+    could not tell it from a real gap (Codex P1 on #999). A backend outage
+    now propagates; the logged-then-empty contract above holds for anything
+    else.
+    """
+    import psycopg2
+    from lib import data_loader
+
+    refused = 'connection to server at "127.0.0.1", port 5432 failed: Connection refused'
+    with patch("gcp.database.query_to_dataframe",
+               side_effect=psycopg2.OperationalError(refused)):
+        with pytest.raises(psycopg2.OperationalError):
+            data_loader._query_cloud_sql("SELECT 1", {})
+

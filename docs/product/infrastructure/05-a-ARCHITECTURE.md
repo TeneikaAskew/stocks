@@ -542,7 +542,7 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../../../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:145`](../../../platform/api/routers/profile.py#L145) |  |
 | `PUT` | `/api/me/profile` | [`platform/api/routers/profile.py:162`](../../../platform/api/routers/profile.py#L162) | Upsert the provided subset of fields and return the full stored row. |
-| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:520`](../../../platform/api/routers/dashboard.py#L520) | PHASE 3 — read-only, feature-flagged movement statement. |
+| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:528`](../../../platform/api/routers/dashboard.py#L528) | PHASE 3 — read-only, feature-flagged movement statement. |
 | `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:318`](../../../platform/api/routers/options.py#L318) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
 | `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:753`](../../../platform/api/routers/options.py#L753) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
 | `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:633`](../../../platform/api/routers/options.py#L633) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
@@ -1034,6 +1034,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`lib/gamma.py`](../../../lib/gamma.py) | Gamma exposure analytics — single source of truth for the platform. | — |
 | [`lib/gamma_glossary.py`](../../../lib/gamma_glossary.py) | Cross-framework gamma vocabulary dictionary — single source of truth. | — |
 | [`lib/indicators.py`](../../../lib/indicators.py) | Consolidated technical indicator functions. | — |
+| [`lib/infra_errors.py`](../../../lib/infra_errors.py) | What counts as an INFRASTRUCTURE failure, in one place. | — |
 | [`lib/insights.py`](../../../lib/insights.py) | Template-driven insight generator for backtest results. | — |
 | [`lib/logging_config.py`](../../../lib/logging_config.py) | Centralized logging configuration for the trading system. | — |
 | [`lib/movement_statement.py`](../../../lib/movement_statement.py) | Movement-statement assembler — PHASE 2 (feature-flagged, NOT user-facing). | — |
@@ -1066,7 +1067,6 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`lib/walk_forward.py`](../../../lib/walk_forward.py) | Walk-forward validation and parameter sensitivity analysis. | — |
 | [`platform/api/auth.py`](../../../platform/api/auth.py) | App-level authentication, gated by the AUTH_MODE env var. | — |
 | [`platform/api/gcs_reader.py`](../../../platform/api/gcs_reader.py) | Shared GCS reader for platform API routers. | — |
-| [`platform/api/infra_errors.py`](../../../platform/api/infra_errors.py) | What counts as an INFRASTRUCTURE failure, in one place. | — |
 | [`platform/api/main.py`](../../../platform/api/main.py) | Trading Platform API - FastAPI backend | — |
 | [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) | Admin router — model-routing dashboard backend. | — |
 | [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) | Analytics router — trade stats computed server-side. | — |
