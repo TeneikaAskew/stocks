@@ -469,7 +469,14 @@ For each candidate cause, state the evidence and what would falsify it. Then:
 - **Establish who consumes the surface** before deciding what to fix. If nothing
   reads it, disabling the render is one line and ships today.
   ```bash
-  git grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
+  # ANCHORED, like Phase 4's helper and both forms. `.` is relative to your CWD,
+  # and a pathspec that does not exist there is a clean miss rather than an
+  # error — measured elsewhere in this file, from gcp/ a bare search returns
+  # rc=1 for a surface whose only caller is at the root. This is the search that
+  # decides what to fix, so a false "nothing reads it" here is worse than one in
+  # the gate: it picks the wrong fix before the gate ever runs.
+  root=$(git rev-parse --show-toplevel) || echo "not in a checkout"
+  git -C "$root" grep -En "<table|endpoint|function>" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
   ```
   **Repo-wide over tracked files, not the five source directories** — the same
   scope Phase 4's deletion check uses, and for the same reason. Excluding `archive/`
@@ -1419,6 +1426,23 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
     # outside both repos), so there is nothing to query. That makes the second
     # case a human confirmation, and the honest thing is to require it by name
     # rather than to let the search imply it.
+    # SHALLOW HISTORY IS NOT ABSENT HISTORY, and `git fetch origin main` does
+    # not unshallow — measured on a depth-1 clone of a repo where a consumer was
+    # added and then removed: `git log -G` returns 0 commits where the full repo
+    # returns 2, and `--is-shallow-repository` still says true after the fetch.
+    # The gate added last round would have read that as "never used" and passed
+    # without the confirmation, which is a false pass in the check written to
+    # stop one. The forensics recipe in the dormant form already guards this;
+    # the gate did not, one round after it was written.
+    if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+      git fetch -q --unshallow origin main 2>/dev/null || :
+      test "$(git rev-parse --is-shallow-repository)" != true || {
+        echo "solyra: the checkout at $SOLYRA is SHALLOW and could not be"
+        echo "unshallowed, so its history cannot show whether '$sym' was ever"
+        echo "used. An empty result here would be an artefact of the graft, not"
+        echo "evidence. Run: git -C $SOLYRA fetch --unshallow origin main"
+        exit 2; }
+    fi
     shist=$(git log --oneline -G"$sym" "$REV" -- .) \
       || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
     if [ -n "$shist" ]; then
@@ -2613,16 +2637,35 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      whole point of noticing, and the filter documented above guarantees the
      case for any fix under `scripts/**` or most of `gcp/**`:
 
+     **A function, for the reason spelled out above.** As a run of statements
+     these guards said "do not proceed" and then proceeded: `false` inside a
+     `|| { …; false; }` sets the status and execution continues to the next
+     line, so a failed trigger or an empty extractor still reached
+     `gcloud builds log` and `gcloud builds describe` with an invalid build id.
+     That is the behaviour this file documents a few hundred lines up and then
+     did anyway. `return` stops; `false` does not.
+
+     **And `--project` on every call**, resolved once, for the reason the
+     retirement helpers give: without it these run in whatever project the
+     active gcloud configuration points at.
+
      ```bash
-     BUILD_ID=$(gcloud builds triggers run deploy-solyra-api-staging \
-                  --branch=main --format=json \
-                | python3 -c "import sys,json; d=json.load(sys.stdin); \
-                    print(d.get('id') or d.get('metadata',{}).get('build',{}).get('id') or '')") \
-       || { echo "trigger did not run"; false; }
-     test -n "$BUILD_ID" || { echo "no build id — do not proceed"; false; }
-     gcloud builds log --stream "$BUILD_ID"          # blocks until it finishes
-     test "$(gcloud builds describe "$BUILD_ID" --format='value(status)')" = SUCCESS \
-       || { echo "build $BUILD_ID did not succeed"; false; }
+     stage_and_wait() {
+       local PROJECT_ID BUILD_ID
+       PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
+       test -n "$PROJECT_ID" || { echo "no project resolved"; return 1; }
+       BUILD_ID=$(gcloud builds triggers run deploy-solyra-api-staging \
+                    --project="$PROJECT_ID" --branch=main --format=json \
+                  | python3 -c "import sys,json; d=json.load(sys.stdin); \
+                      print(d.get('id') or d.get('metadata',{}).get('build',{}).get('id') or '')") \
+         || { echo "trigger did not run"; return 1; }
+       test -n "$BUILD_ID" || { echo "no build id — do not proceed"; return 1; }
+       gcloud builds log --stream "$BUILD_ID" --project="$PROJECT_ID"
+       test "$(gcloud builds describe "$BUILD_ID" --project="$PROJECT_ID" \
+                 --format='value(status)')" = SUCCESS \
+         || { echo "build $BUILD_ID did not succeed"; return 1; }
+     }
+     stage_and_wait      # BARE, and nothing after it — see the note above
      ```
 
      Bind to **that** build id. `gcloud builds list --limit=1` is a query
@@ -2672,13 +2715,47 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      fail closed on exactly the cases the helper exists to catch. It also fails
      loud on nothing-serving or a traffic split, rather than picking one:
 
+     **`--project` on both, resolved once.** Neither command carried it, so
+     both ran in whatever project the active gcloud configuration points at:
+     the describe reads a `solyra-api-staging` that may not be the one you
+     validated, and the trigger promotes in that project or not at all. This is
+     the ambient-project hole the retirement helpers refuse by construction,
+     reintroduced in the block that promotes to production.
+
+     **A function here too, and for a second reason.** `return` outside a
+     function is not merely wrong, it is the `false` bug wearing different
+     clothes: bash prints `return: can only \`return\' from a function or
+     sourced script` and **carries on to the next line** — measured, the guard
+     above printed "no project resolved" and the following command ran anyway.
+     Under `set -e` it aborts instead, so the same two lines behave differently
+     depending on a shell option the reader cannot see. `exit` is not the
+     alternative: these blocks are pasted into a live shell, and `exit` closes
+     it. A function is the only form that stops exactly the recipe.
+
      ```bash
-     REV=$(gcloud run services describe solyra-api-staging --region=us-east1 \
-             --format=json | python gcp/cloudbuild/serving_revision.py)
-     # ...verify against staging while it is serving $REV...
-     gcloud builds triggers run deploy-solyra-api-prod --branch=main \
-       --substitutions=_EXPECT_STAGING_REVISION="$REV"
+     promote_to_prod() {
+       local PROJECT_ID REV
+       PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
+       test -n "$PROJECT_ID" || { echo "no project resolved"; return 1; }
+       REV=$(gcloud run services describe solyra-api-staging \
+               --project="$PROJECT_ID" --region=us-east1 \
+               --format=json | python gcp/cloudbuild/serving_revision.py) \
+         || { echo "could not read the staging serving revision"; return 1; }
+       test -n "$REV" || { echo "staging is serving nothing, or is split"; return 1; }
+       # ...verify against staging while it is serving $REV, THEN promote...
+       gcloud builds triggers run deploy-solyra-api-prod \
+         --project="$PROJECT_ID" --branch=main \
+         --substitutions=_EXPECT_STAGING_REVISION="$REV"
+     }
+     promote_to_prod     # BARE, and nothing after it
      ```
+
+     The `|| { …; return 1; }` on the `REV=` assignment is not decoration. A
+     command substitution's failure is invisible to the next line: `REV=$(…)`
+     that dies still assigns the empty string, and `--substitutions=_EXPECT_STAGING_REVISION=`
+     is precisely the empty value `deploy-solyra-api-prod-cloudbuild.yaml:84-92`
+     exits 1 on — a promotion that reports failure for the wrong reason, from a
+     read that failed rather than a revision that moved.
 
      It fails closed, which is the safe direction — but "run the trigger" as
      written simply does not promote anything, so the issue would be closed on a
