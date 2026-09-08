@@ -783,6 +783,14 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # not routes — see the rc=3 note below. Naming them is the point; there is no
   # blanket override, because a flag you can set without looking is not a review.
   # EXCLUDE must be set by the caller to the array for the repo you are in.
+  # $# BEFORE $1. Under `set -u` a missing argument is not an empty string, it
+  # is a fatal unbound-variable error — measured, a no-argument call dies with
+  # "$1: unbound variable" and the usage line below never prints, so the one
+  # diagnostic that would say what you did wrong is exactly what is lost. The
+  # existing `test -n` checks catch an EMPTY argument, which is a different
+  # mistake. fully_retired already had this ordering, from round 29; the three
+  # functions it calls did not.
+  test $# -ge 1 || { echo "usage: consumed <symbol> [reviewed files…]"; return 2; }
   local sym=$1; shift
   local a b c e f rc reviewed=()
   # REV pins the search to a COMMITTED revision instead of the working tree.
@@ -1156,6 +1164,7 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # `local REV=` so an ambient REV in the caller's shell cannot pin the STOCKS
   # half to some other revision — the same ambient-state hazard as the project
   # id in retired_everywhere. The solyra subshell sets this local deliberately.
+  test $# -ge 1 || { echo "usage: absent_everywhere <symbol>"; return 1; }
   local sym=$1 rc REV=
   test -n "$sym" || { echo "usage: absent_everywhere <symbol>"; return 1; }
   # AN APPROVAL IS SYMBOL-BOUND. REVIEWED clears the rc=3 ambiguity by naming
@@ -1444,6 +1453,16 @@ retired_everywhere() {   # $1 = job|none $2 = scheduler|none [$3 project] [$4 re
   # apart: measured, $# is 3 and the default still wins, so the check silently
   # queries production while the resources live in the project the caller meant.
   # The first two arguments already refuse empty for exactly this reason.
+  # $# BEFORE $1. Under `set -u` a missing argument is not an empty string, it
+  # is a fatal unbound-variable error — measured, a no-argument call dies with
+  # "$1: unbound variable" and the usage line below never prints, so the one
+  # diagnostic that would say what you did wrong is exactly what is lost. The
+  # existing `test -n` checks catch an EMPTY argument, which is a different
+  # mistake. It goes first here, before the project and region blocks, because
+  # they read $3 and $4.
+  test $# -ge 2 || {
+    echo "usage: retired_everywhere <job|none> <scheduler|none> [project] [region]"
+    return 1; }
   local proj=adept-mountain-474619-d4
   if [ $# -ge 3 ]; then
     test -n "$3" || { echo "third argument (project) is present but EMPTY —"
@@ -1476,6 +1495,8 @@ retired_everywhere() {   # $1 = job|none $2 = scheduler|none [$3 project] [$4 re
     region=$4
   fi
   local job=$1 sched=$2 list
+  # (the arity guard for these two is at the top of the function, before the
+  # project and region blocks read $3 and $4)
   test -n "$job" && test -n "$sched" || {
     echo "usage: retired_everywhere <job|none> <scheduler|none> [project] [region]"
     echo "pass 'none' EXPLICITLY for a resource this retirement does not touch;"
