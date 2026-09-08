@@ -127,6 +127,13 @@ body:
         $ git grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
         $ git grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
         $ git grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        $ git grep -nE "<surface>" -- CLAUDE.md
+        CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
+        mistake for prose: Claude Code loads it automatically and it routes by
+        name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and
+        pre-deploy-check. Measured on fallback-guard with its code and agent
+        callers simulated away: every other scope returns no matches while
+        CLAUDE.md still routes to it. Root file only; docs/*.md stay prose.
         .github/prompts/*.md is the fourth executable-markdown scope:
         scripts/maintenance/render_doc_prompts.py renders them and
         refresh-architecture-docs.yml:537 cats the result into Gemini, so the

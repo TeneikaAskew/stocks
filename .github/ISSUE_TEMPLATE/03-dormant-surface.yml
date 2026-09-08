@@ -129,6 +129,13 @@ body:
         $ git grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
         $ git grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
         $ git grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        $ git grep -nE "<surface>" -- CLAUDE.md
+        CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
+        mistake for prose: Claude Code loads it automatically and it routes by
+        name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and
+        pre-deploy-check. Measured on fallback-guard with its code and agent
+        callers simulated away: every other scope returns no matches while
+        CLAUDE.md still routes to it. Root file only; docs/*.md stay prose.
         That third one is the fourth executable-markdown scope found so far:
         scripts/maintenance/render_doc_prompts.py renders .github/prompts/*.md
         and refresh-architecture-docs.yml:537 cats the result into Gemini, so a
@@ -215,7 +222,7 @@ body:
                ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
                ':!*.drawio'
         $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
-            -G "<symbol>" --no-renames -- .claude/agents .github/prompts
+            -G "<symbol>" --no-renames -- .claude/agents .github/prompts CLAUDE.md
         <sha> (date) added it and wired it into <the caller>
         <sha> (date) rewrote that caller, silently dropping the mount
 
@@ -266,9 +273,10 @@ body:
         ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
         ':!.claude/commands/' ':!*.md' ':!*.drawio'
         ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — and separately
-        `.claude/agents/`, `.claude/commands/` and `.github/prompts/`, which are
-        executable too: an agent delegated to by name, a command another command
-        routes to, or a prompt a workflow cats into Gemini, is a
+        `.claude/agents/`, `.claude/commands/`, `.github/prompts/` and root
+        `CLAUDE.md`, which are executable too: an agent delegated to by name, a
+        command another command routes to, a prompt a workflow cats into Gemini,
+        or an agent the auto-loaded project instructions name, is a
         live consumer that a prose-shaped exclusion hides — the same exclusions as the
         consumer field above, and repo-wide because
         .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs

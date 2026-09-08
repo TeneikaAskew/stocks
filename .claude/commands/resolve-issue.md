@@ -816,6 +816,23 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # defect again.
     test ${#rev[@]} -gt 0 || test -f "$rc" \
       || { echo "REVIEWED entry '$rc' does not exist"; return 2; }
+    # AND IT MUST ACTUALLY MENTION THE SYMBOL. Shape checks cannot stop a glob:
+    # `REVIEWED=( .claude/commands/*.md )` is expanded by bash AT ASSIGNMENT, so
+    # six concrete, existing, correctly-named files arrive and nothing about
+    # them says they were typed by a person — measured, that is exactly what the
+    # unquoted array form produces. Making the array quoted only moves the
+    # expansion; it does not remove it.
+    #
+    # What a real approval looks like is different in a checkable way: you name
+    # the files consumed() JUST PRINTED for THIS symbol. Excluding a file that
+    # does not mention the symbol is a no-op for an honest reviewer and is
+    # precisely what a glob does — measured, `debug-workflow` matches exactly
+    # one command file, so a six-entry glob drags in five that match nothing.
+    git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- "$rc" \
+      || { echo "REVIEWED entry '$rc' does not mention '$sym'."
+           echo "Name only the files the rc=3 report printed. An entry that"
+           echo "matches nothing is either a typo or a glob that expanded."
+           return 2; }
     reviewed+=(":!$rc")
   done
   # -E on EVERY scope. The forms demonstrate coupled retirements with
@@ -881,8 +898,16 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # deliberately excludes package.json, so an npm-script-only consumer vanishes
   # and the deletion is certified. Ask whether the path exists first, then
   # require the read to succeed.
+  # `git cat-file -e` CANNOT tell absence from a failed probe — measured, it
+  # returns 128 both for a rev that genuinely lacks the path and for a rev it
+  # cannot read at all. `git ls-tree` separates them: rc=0 with empty output
+  # means the entry is not there, and a nonzero rc means the lookup itself
+  # failed. Check the status and the output as two different questions.
   if [ ${#rev[@]} -gt 0 ]; then
-    if git cat-file -e "$REV:package.json" 2>/dev/null; then
+    local entry
+    entry=$(git ls-tree --name-only "$REV" -- package.json) \
+      || { echo "could not read the tree at $REV — asserting nothing"; return 2; }
+    if [ -n "$entry" ]; then
       pkg=$(git show "$REV:package.json") \
         || { echo "package.json exists at $REV but could not be read —"
              echo "asserting nothing rather than reading it as absent"; return 2; }
@@ -948,7 +973,7 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # inspected. Measured, and it is not hypothetical: resolve-issue.md really is
   # prose for TradingAlertSystem AND the only live route for debug-workflow
   # (`:68`, `:98`), so
-  #     REVIEWED=( .claude/commands/resolve-issue.md )   # an ARRAY
+  #     REVIEWED=( '.claude/commands/resolve-issue.md' )  # ARRAY, entries QUOTED
   #     consumed TradingAlertSystem  -> 1   correct
   #     consumed debug-workflow      -> 1   FALSELY CERTIFIED, was 3
   # deletes a live command. So the approval carries the symbol it was made for
