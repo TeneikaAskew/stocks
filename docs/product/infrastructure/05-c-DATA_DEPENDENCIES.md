@@ -956,15 +956,15 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `direction-probe` | `gcp/research/strat_engine/strat_dir_probes.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `earnings-long-watchlist` | `gcp/earnings_long_watchlist.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `earnings-options-backfill` | `gcp/fetchers/fetch_av_earnings_options_backfill.py` | `earnings_options_snapshots` | `scripts/backtest_playability.py` |
-| `earnings-reactions-brief` | `gcp/earnings_reactions_brief.py` | `market_data_daily`, `premarket_analysis`, `premarket_analysis_history`, `strat_levels` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py` (+20) |
+| `earnings-reactions-brief` | `gcp/earnings_reactions_brief.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `earnings-sweep` | `scripts/calibrate_earnings.py` | `earnings_calibration`, `earnings_options_strategy_insights`, `earnings_options_strategy_winners` | `gcp/earnings_long_watchlist.py`, `platform/api/routers/earnings.py` |
 | `etf-options-retention` | `gcp/options_retention_job.py` | `etf_options_snapshots` | `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/fetchers/fetch_av_historical_options.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/research/p2_build_gamma_levels.py`, `gcp/research/p7_build_multi_tf_features.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_data_builder.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/data_loader.py` (+12) |
-| `evaluate-ew-strikes` | `gcp/fetchers/evaluate_ew_strikes.py` | `earnings_calendar`, `market_data_daily`, `market_data_intraday` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/discord_interactions/main.py`, `gcp/earnings_long_watchlist.py`, `gcp/earnings_reactions_brief.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_alphavantage_intraday.py`, `gcp/fetchers/fetch_earnings_history.py`, `gcp/fetchers/fetch_insider_transactions.py`, `gcp/fetchers/fetch_news_sentiment.py` (+42) |
+| `evaluate-ew-strikes` | `gcp/fetchers/evaluate_ew_strikes.py` | `earnings_calendar` | `gcp/earnings_long_watchlist.py`, `gcp/earnings_reactions_brief.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_earnings_history.py`, `gcp/fetchers/fetch_insider_transactions.py`, `gcp/fetchers/fetch_news_sentiment.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/fetchers/fetch_sec_filings.py`, `gcp/premarket_brief.py`, `gcp/refresh_earnings_views.py`, `lib/agents/ranker/candidates.py`, `lib/agents/summarizers.py` (+3) |
 | `fetch-alphavantage-intraday` | `gcp/fetchers/fetch_alphavantage_intraday.py` | `market_data_intraday` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/historical_signals.py`, `gcp/premarket_playbook_resolver.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/signal_monitor.py`, `lib/data_loader.py`, `lib/features/intraday_flow.py`, `lib/options_intraday.py`, `platform/api/main.py` (+9) |
 | `fetch-av-options-backfill` | `gcp/fetchers/fetch_av_historical_options.py` | `etf_options_snapshots` | `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/migrate_to_gcp.py`, `gcp/options_retention_job.py`, `gcp/premarket_brief.py`, `gcp/research/p2_build_gamma_levels.py`, `gcp/research/p7_build_multi_tf_features.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_data_builder.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/data_loader.py` (+12) |
 | `fetch-av-options-realtime` | `gcp/fetchers/fetch_av_realtime_options.py` | `etf_options_snapshots` | `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/fetchers/fetch_av_historical_options.py`, `gcp/migrate_to_gcp.py`, `gcp/options_retention_job.py`, `gcp/premarket_brief.py`, `gcp/research/p2_build_gamma_levels.py`, `gcp/research/p7_build_multi_tf_features.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_data_builder.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py` (+13) |
 | `fetch-earnings-calendar` | `scripts/fetch_earnings_calendar.py` | `earnings_calendar` | `gcp/earnings_long_watchlist.py`, `gcp/earnings_reactions_brief.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/evaluate_ew_strikes.py`, `gcp/fetchers/fetch_earnings_history.py`, `gcp/fetchers/fetch_insider_transactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_news_sentiment.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/fetchers/fetch_sec_filings.py`, `gcp/premarket_brief.py`, `gcp/refresh_earnings_views.py` (+4) |
-| `fetch-earnings-history` | `gcp/fetchers/fetch_earnings_history.py` | `earnings_history`, `market_data_daily`, `market_data_intraday` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_alphavantage_intraday.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/historical_signals.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py` (+33) |
+| `fetch-earnings-history` | `gcp/fetchers/fetch_earnings_history.py` | `earnings_history`, `market_data_daily` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py` (+19) |
 | `fetch-economic-events` | `gcp/fetchers/fetch_economic_events.py` | `economic_events` | `gcp/premarket_brief.py`, `gcp/research/magnitude_engine/mag_dataset.py`, `lib/agents/ranker/candidates.py`, `lib/agents/summarizers.py`, `lib/gamma_glossary.py`, `lib/strategies/catalyst_proximity.py`, `platform/api/routers/catalysts.py`, `platform/api/routers/grid.py`, `scripts/check_event_window_concentration.py` |
 | `fetch-fred-rates` | `gcp/fetchers/fetch_fred_rates.py` | `daily_rates` | `lib/options_exec_backtest/runner.py`, `lib/options_greeks.py` |
 | `fetch-insider-transactions` | `gcp/fetchers/fetch_insider_transactions.py` | `insider_transactions` | `gcp/earnings_reactions_brief.py`, `lib/agents/ranker/candidates.py`, `lib/agents/ranker/signals.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
@@ -972,13 +972,13 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `fetch-news-sentiment` | `gcp/fetchers/fetch_news_sentiment.py` | `news_sentiment` | `gcp/insight_discord_push.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/features/experimental/news_sentiment.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
 | `fetch-news-sentiment-earnings` | `gcp/fetchers/fetch_news_sentiment.py` | `news_sentiment` | `gcp/insight_discord_push.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/features/experimental/news_sentiment.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
 | `fetch-news-sentiment-topics` | `gcp/fetchers/fetch_news_sentiment.py` | `news_sentiment` | `gcp/insight_discord_push.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/features/experimental/news_sentiment.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
-| `fetch-premarket-refresh` | `gcp/fetchers/fetch_premarket_refresh.py` | `market_data_daily`, `market_data_intraday` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_alphavantage_intraday.py`, `gcp/historical_signals.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py` (+32) |
+| `fetch-premarket-refresh` | `gcp/fetchers/fetch_premarket_refresh.py` | `market_data_daily` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py`, `gcp/research/p7_build_multi_tf_features.py` (+18) |
 | `fetch-sec-filings` | `gcp/fetchers/fetch_sec_filings.py` | `sec_filings` | `lib/agents/ranker/candidates.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/strategies/catalyst_proximity.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
 | `fetch-top-movers` | `gcp/fetchers/fetch_top_movers.py` | `top_movers_daily`, `top_movers_intraday` | `lib/agents/ranker/candidates.py`, `lib/agents/ranker/signals.py`, `platform/api/main.py` |
 | `freshness-watchdog` | `scripts/audit_data_freshness.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `historical-signals-watchlist` | `scripts/run_historical_signals.py` | `historical_signals` | `platform/api/routers/signals.py`, `scripts/analyze_timeframe_heuristic.py`, `scripts/backfill_timeframe_tags.py`, `scripts/signal_quality_report.py` |
 | `indicator-correlation` | `gcp/indicator_correlation_job.py` | `indicator_correlation` | — |
-| `insight-discord-push` | `gcp/insight_discord_push.py` | `market_data_daily`, `premarket_analysis`, `premarket_analysis_history`, `strat_levels` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py` (+20) |
+| `insight-discord-push` | `gcp/insight_discord_push.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `insight-pipeline` | `gcp/insight_pipeline_job.py` | `insight_reports`, `insight_reports_history`, `insight_runs` | `gcp/auto_refresh_top_n.py`, `gcp/discord_interactions/main.py`, `gcp/insight_discord_push.py`, `lib/strategies/insight_cache.py`, `platform/api/routers/insights.py`, `scripts/backfill_and_replay.py`, `scripts/backfill_history_tables.py`, `scripts/validation/validate_brief_accuracy.py` |
 | `intraday-bulk-backfill` | `gcp/fetchers/fetch_alphavantage_intraday.py` | `market_data_intraday` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/historical_signals.py`, `gcp/premarket_playbook_resolver.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/signal_monitor.py`, `lib/data_loader.py`, `lib/features/intraday_flow.py`, `lib/options_intraday.py`, `platform/api/main.py` (+9) |
 | `magnitude-engine` | `gcp/research/magnitude_engine/mag_walk_forward.py` | — (Discord / GCS / no Cloud SQL write found) | — |
@@ -990,7 +990,7 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `premarket-brief` | `gcp/premarket_brief.py` | `market_data_daily`, `premarket_analysis`, `premarket_analysis_history`, `strat_levels` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py` (+20) |
 | `premarket-playbook-resolver` | `gcp/premarket_playbook_resolver.py` | `premarket_analysis` | `gcp/discord_interactions/main.py`, `gcp/premarket_brief.py`, `lib/movement_statement.py`, `lib/strategies/brief_bias.py`, `platform/api/routers/dashboard.py`, `scripts/backfill_history_tables.py`, `scripts/validation/validate_brief_accuracy.py` |
 | `refresh-earnings-views` | `gcp/refresh_earnings_views.py` | `earnings_upcoming_with_history` | `platform/api/routers/earnings.py` |
-| `regime-combo` | `gcp/regime_combo_job.py` | `indicator_correlation`, `regime_combo_results` | — |
+| `regime-combo` | `gcp/regime_combo_job.py` | `regime_combo_results` | — |
 | `signal-monitor` | `gcp/signal_monitor.py` | `premarket_analysis`, `signal_alerts`, `trades` | `gcp/discord_interactions/main.py`, `gcp/indicator_correlation_job.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/research/strat_engine/strat_walk_forward.py`, `gcp/signal_monitor_eod_resolver.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py`, `lib/agents/summarizers.py`, `lib/backtest.py`, `lib/movement_statement.py`, `platform/api/routers/analytics.py` (+9) |
 | `signal-monitor-eod-resolver` | `gcp/signal_monitor_eod_resolver.py` | `signal_alerts`, `trades` | `gcp/indicator_correlation_job.py`, `gcp/research/strat_engine/strat_walk_forward.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py`, `gcp/trade_logger.py`, `lib/agents/summarizers.py`, `lib/backtest.py`, `platform/api/routers/analytics.py`, `platform/api/routers/journal.py`, `scripts/analysis/per_factor_walkforward.py`, `scripts/analysis/per_ticker_calibration.py`, `scripts/analysis/phase4_setup_discovery.py` (+2) |
 | `signal-quality-alarm` | `gcp/signal_quality_alarm.py` | — (Discord / GCS / no Cloud SQL write found) | — |
@@ -1057,7 +1057,6 @@ flowchart LR
         J_insight_pipeline[insight-pipeline]
         J_intraday_bulk_backfill[intraday-bulk-backfill]
         J_magnitude_engine[magnitude-engine]
-        J_magnitude_inference[magnitude-inference]
         J_magnitude_recal[magnitude-recal]
         J_options_exec_backtest[options-exec-backtest]
         J_param_sweep[param-sweep]
@@ -1141,24 +1140,17 @@ flowchart LR
     J_compute_earnings_reactions ==> T_earnings_reactions
     J_compute_spx_greeks_backfill ==> T_etf_options_snapshots
     J_earnings_options_backfill ==> T_earnings_options_snapshots
-    J_earnings_reactions_brief ==> T_market_data_daily
-    J_earnings_reactions_brief ==> T_premarket_analysis
-    J_earnings_reactions_brief ==> T_premarket_analysis_history
-    J_earnings_reactions_brief ==> T_strat_levels
     J_earnings_sweep ==> T_earnings_calibration
     J_earnings_sweep ==> T_earnings_options_strategy_insights
     J_earnings_sweep ==> T_earnings_options_strategy_winners
     J_etf_options_retention ==> T_etf_options_snapshots
     J_evaluate_ew_strikes ==> T_earnings_calendar
-    J_evaluate_ew_strikes ==> T_market_data_daily
-    J_evaluate_ew_strikes ==> T_market_data_intraday
     J_fetch_alphavantage_intraday ==> T_market_data_intraday
     J_fetch_av_options_backfill ==> T_etf_options_snapshots
     J_fetch_av_options_realtime ==> T_etf_options_snapshots
     J_fetch_earnings_calendar ==> T_earnings_calendar
     J_fetch_earnings_history ==> T_earnings_history
     J_fetch_earnings_history ==> T_market_data_daily
-    J_fetch_earnings_history ==> T_market_data_intraday
     J_fetch_economic_events ==> T_economic_events
     J_fetch_fred_rates ==> T_daily_rates
     J_fetch_insider_transactions ==> T_insider_transactions
@@ -1168,16 +1160,11 @@ flowchart LR
     J_fetch_news_sentiment_earnings ==> T_news_sentiment
     J_fetch_news_sentiment_topics ==> T_news_sentiment
     J_fetch_premarket_refresh ==> T_market_data_daily
-    J_fetch_premarket_refresh ==> T_market_data_intraday
     J_fetch_sec_filings ==> T_sec_filings
     J_fetch_top_movers ==> T_top_movers_daily
     J_fetch_top_movers ==> T_top_movers_intraday
     J_historical_signals_watchlist ==> T_historical_signals
     J_indicator_correlation ==> T_indicator_correlation
-    J_insight_discord_push ==> T_market_data_daily
-    J_insight_discord_push ==> T_premarket_analysis
-    J_insight_discord_push ==> T_premarket_analysis_history
-    J_insight_discord_push ==> T_strat_levels
     J_insight_pipeline ==> T_insight_reports
     J_insight_pipeline ==> T_insight_reports_history
     J_insight_pipeline ==> T_insight_runs
@@ -1191,7 +1178,6 @@ flowchart LR
     J_premarket_brief ==> T_strat_levels
     J_premarket_playbook_resolver ==> T_premarket_analysis
     J_refresh_earnings_views ==> T_earnings_upcoming_with_history
-    J_regime_combo ==> T_indicator_correlation
     J_regime_combo ==> T_regime_combo_results
     J_signal_monitor ==> T_premarket_analysis
     J_signal_monitor ==> T_signal_alerts
@@ -1244,24 +1230,19 @@ flowchart LR
     T_market_data_daily --> J_compute_spx_greeks_backfill
     T_market_data_intraday --> J_compute_spx_greeks_backfill
     T_trades --> J_compute_spx_greeks_backfill
+    T_economic_events --> J_direction_baseline
     T_etf_options_snapshots --> J_direction_baseline
     T_options_daily_features --> J_direction_baseline
-    T_trades --> J_direction_baseline
     T_economic_events --> J_direction_importance
-    T_etf_options_snapshots --> J_direction_importance
-    T_options_daily_features --> J_direction_importance
-    T_trades --> J_direction_importance
     T_economic_events --> J_direction_phase2
     T_etf_options_snapshots --> J_direction_phase2
     T_options_daily_features --> J_direction_phase2
-    T_trades --> J_direction_phase2
     T_etf_options_daily_greeks --> J_direction_probe
     T_etf_options_snapshots --> J_direction_probe
     T_intraday_flow_15m --> J_direction_probe
     T_intraday_gex_15m --> J_direction_probe
     T_market_data_daily --> J_direction_probe
     T_market_data_intraday --> J_direction_probe
-    T_options_daily_features --> J_direction_probe
     T_realtime_gex_15m --> J_direction_probe
     T_trades --> J_direction_probe
     T_earnings_calendar --> J_earnings_long_watchlist
@@ -1269,27 +1250,21 @@ flowchart LR
     T_earnings_options_snapshots --> J_earnings_options_backfill
     T_earnings_reactions --> J_earnings_options_backfill
     T_earnings_calendar --> J_earnings_reactions_brief
-    T_earnings_calibration --> J_earnings_reactions_brief
     T_earnings_reactions --> J_earnings_reactions_brief
-    T_economic_events --> J_earnings_reactions_brief
     T_etf_options_snapshots --> J_earnings_reactions_brief
     T_insider_transactions --> J_earnings_reactions_brief
     T_market_data_daily --> J_earnings_reactions_brief
     T_market_data_intraday --> J_earnings_reactions_brief
-    T_premarket_analysis --> J_earnings_reactions_brief
     T_trades --> J_earnings_reactions_brief
-    T_watchlists --> J_earnings_reactions_brief
     T_earnings_calibration --> J_earnings_sweep
     T_earnings_options_snapshots --> J_earnings_sweep
     T_earnings_reactions --> J_earnings_sweep
     T_etf_options_snapshots --> J_etf_options_retention
     T_earnings_calendar --> J_evaluate_ew_strikes
-    T_earnings_history --> J_evaluate_ew_strikes
     T_etf_options_snapshots --> J_evaluate_ew_strikes
     T_market_data_daily --> J_evaluate_ew_strikes
     T_market_data_intraday --> J_evaluate_ew_strikes
     T_trades --> J_evaluate_ew_strikes
-    T_watchlists --> J_evaluate_ew_strikes
     T_market_data_intraday --> J_fetch_alphavantage_intraday
     T_etf_options_snapshots --> J_fetch_av_options_backfill
     T_watchlists --> J_fetch_av_options_backfill
@@ -1320,7 +1295,6 @@ flowchart LR
     T_news_sentiment --> J_fetch_news_sentiment_topics
     T_watchlists --> J_fetch_news_sentiment_topics
     T_earnings_calendar --> J_fetch_premarket_refresh
-    T_earnings_history --> J_fetch_premarket_refresh
     T_etf_options_snapshots --> J_fetch_premarket_refresh
     T_market_data_daily --> J_fetch_premarket_refresh
     T_market_data_intraday --> J_fetch_premarket_refresh
@@ -1344,18 +1318,12 @@ flowchart LR
     T_market_data_intraday --> J_indicator_correlation
     T_signal_alerts --> J_indicator_correlation
     T_trades --> J_indicator_correlation
-    T_earnings_calendar --> J_insight_discord_push
-    T_earnings_calibration --> J_insight_discord_push
-    T_earnings_reactions --> J_insight_discord_push
-    T_economic_events --> J_insight_discord_push
     T_etf_options_snapshots --> J_insight_discord_push
     T_insight_reports --> J_insight_discord_push
     T_market_data_daily --> J_insight_discord_push
     T_market_data_intraday --> J_insight_discord_push
     T_news_sentiment --> J_insight_discord_push
-    T_premarket_analysis --> J_insight_discord_push
     T_trades --> J_insight_discord_push
-    T_watchlists --> J_insight_discord_push
     T_daily_rates --> J_insight_pipeline
     T_earnings_calendar --> J_insight_pipeline
     T_economic_events --> J_insight_pipeline
@@ -1374,9 +1342,6 @@ flowchart LR
     T_economic_events --> J_magnitude_engine
     T_etf_options_snapshots --> J_magnitude_engine
     T_options_daily_features --> J_magnitude_engine
-    T_economic_events --> J_magnitude_inference
-    T_etf_options_snapshots --> J_magnitude_inference
-    T_options_daily_features --> J_magnitude_inference
     T_economic_events --> J_magnitude_recal
     T_etf_options_snapshots --> J_magnitude_recal
     T_options_daily_features --> J_magnitude_recal
@@ -1415,7 +1380,6 @@ flowchart LR
     T_market_data_daily --> J_regime_combo
     T_market_data_intraday --> J_regime_combo
     T_regime_combo_results --> J_regime_combo
-    T_signal_alerts --> J_regime_combo
     T_trades --> J_regime_combo
     T_earnings_calendar --> J_signal_monitor
     T_economic_events --> J_signal_monitor
@@ -1451,7 +1415,7 @@ flowchart LR
 
     classDef job fill:#3B82F6,stroke:#1E40AF,color:#fff
     classDef tbl fill:#10B981,stroke:#065F46,color:#fff
-    class J_auto_refresh_top_n,J_backfill_daily_indicators,J_backfill_ticker,J_backtest,J_backtest_pipeline,J_build_options_daily_features,J_build_options_greeks,J_build_realtime_gex,J_calibrate_thresholds,J_compute_earnings_reactions,J_compute_spx_greeks_backfill,J_direction_baseline,J_direction_importance,J_direction_phase2,J_direction_probe,J_earnings_long_watchlist,J_earnings_options_backfill,J_earnings_reactions_brief,J_earnings_sweep,J_etf_options_retention,J_evaluate_ew_strikes,J_fetch_alphavantage_intraday,J_fetch_av_options_backfill,J_fetch_av_options_realtime,J_fetch_earnings_calendar,J_fetch_earnings_history,J_fetch_economic_events,J_fetch_fred_rates,J_fetch_insider_transactions,J_fetch_market_data,J_fetch_news_sentiment,J_fetch_news_sentiment_earnings,J_fetch_news_sentiment_topics,J_fetch_premarket_refresh,J_fetch_sec_filings,J_fetch_top_movers,J_freshness_watchdog,J_historical_signals_watchlist,J_indicator_correlation,J_insight_discord_push,J_insight_pipeline,J_intraday_bulk_backfill,J_magnitude_engine,J_magnitude_inference,J_magnitude_recal,J_options_exec_backtest,J_param_sweep,J_phase6_playbook,J_premarket_brief,J_premarket_playbook_resolver,J_refresh_earnings_views,J_regime_combo,J_signal_monitor,J_signal_monitor_eod_resolver,J_signal_quality_alarm,J_signal_quality_report,J_signal_replay,J_strat_engine,J_validate_brief,J_weekend_review job
+    class J_auto_refresh_top_n,J_backfill_daily_indicators,J_backfill_ticker,J_backtest,J_backtest_pipeline,J_build_options_daily_features,J_build_options_greeks,J_build_realtime_gex,J_calibrate_thresholds,J_compute_earnings_reactions,J_compute_spx_greeks_backfill,J_direction_baseline,J_direction_importance,J_direction_phase2,J_direction_probe,J_earnings_long_watchlist,J_earnings_options_backfill,J_earnings_reactions_brief,J_earnings_sweep,J_etf_options_retention,J_evaluate_ew_strikes,J_fetch_alphavantage_intraday,J_fetch_av_options_backfill,J_fetch_av_options_realtime,J_fetch_earnings_calendar,J_fetch_earnings_history,J_fetch_economic_events,J_fetch_fred_rates,J_fetch_insider_transactions,J_fetch_market_data,J_fetch_news_sentiment,J_fetch_news_sentiment_earnings,J_fetch_news_sentiment_topics,J_fetch_premarket_refresh,J_fetch_sec_filings,J_fetch_top_movers,J_freshness_watchdog,J_historical_signals_watchlist,J_indicator_correlation,J_insight_discord_push,J_insight_pipeline,J_intraday_bulk_backfill,J_magnitude_engine,J_magnitude_recal,J_options_exec_backtest,J_param_sweep,J_phase6_playbook,J_premarket_brief,J_premarket_playbook_resolver,J_refresh_earnings_views,J_regime_combo,J_signal_monitor,J_signal_monitor_eod_resolver,J_signal_quality_alarm,J_signal_quality_report,J_signal_replay,J_strat_engine,J_validate_brief,J_weekend_review job
     class T_backtest_trades,T_daily_rates,T_earnings_calendar,T_earnings_calibration,T_earnings_event_outcomes,T_earnings_history,T_earnings_options_snapshots,T_earnings_options_strategy_insights,T_earnings_options_strategy_winners,T_earnings_reactions,T_earnings_ticker_lean,T_earnings_upcoming_with_history,T_economic_events,T_etf_options_daily_greeks,T_etf_options_snapshots,T_exit_config_overrides,T_historical_signals,T_indicator_correlation,T_insider_transactions,T_insight_reports,T_insight_reports_history,T_insight_runs,T_intraday_flow_15m,T_intraday_gex_15m,T_job_runs,T_journal_entries,T_market_data_daily,T_market_data_intraday,T_model_routing,T_news_sentiment,T_options_daily_features,T_playbook_cards,T_premarket_analysis,T_premarket_analysis_history,T_ranker_runs,T_realtime_gex_15m,T_regime_combo_results,T_sec_filings,T_signal_alerts,T_signal_metrics,T_strat_levels,T_ticker_calibration,T_top_movers_daily,T_top_movers_intraday,T_trades,T_walk_forward_results,T_watchlists tbl
 ```
 <!-- inventory:graph:end -->

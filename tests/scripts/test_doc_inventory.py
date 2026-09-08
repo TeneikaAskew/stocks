@@ -654,7 +654,7 @@ def test_relative_and_package_imports_are_followed(mini_repo):
     _write(mini_repo, "gcp/pkg/__init__.py", "")
     _write(mini_repo, "gcp/pkg/sub.py", "def go(conn):\n    conn.execute(\"INSERT INTO market_data_intraday VALUES (1)\")\n")
     binds = inv._bindings(mini_repo, "gcp/agents/orchestrator.py")
-    assert binds == {"build": ("gcp/agents/summarizers.py", "build")}, binds
+    assert binds == {"build": [("gcp/agents/summarizers.py", "build")]}, binds
     repo = inv.repo_inventory(mini_repo)
     e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
     assert e["alpha"]["reads"] == ["trades"], e["alpha"]
@@ -669,7 +669,7 @@ def test_module_alias_reaches_only_the_attributes_used(mini_repo):
     _write(mini_repo, "gcp/other.py", "def write(conn):\n    conn.execute(\"INSERT INTO market_data_intraday VALUES (1)\")\n")
     repo = inv.repo_inventory(mini_repo)
     e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
-    assert e["alpha"] == {"job": "alpha", "module": "gcp/research/alpha.py", "writes": ["market_data_intraday"], "reads": ["trades"]}, e["alpha"]
+    assert (e["alpha"]["writes"], e["alpha"]["reads"]) == (["market_data_intraday"], ["trades"]), e["alpha"]
 
 
 def test_an_unused_import_still_runs_the_module_level_code(mini_repo):
@@ -678,7 +678,59 @@ def test_an_unused_import_still_runs_the_module_level_code(mini_repo):
     _write(mini_repo, "gcp/deep.py", "CONN = object()\nCONN.execute(\"INSERT INTO trades VALUES (1)\")\n\ndef unused(conn):\n    conn.execute(\"SELECT * FROM trades\")\n")
     repo = inv.repo_inventory(mini_repo)
     e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
-    assert e["alpha"] == {"job": "alpha", "module": "gcp/research/alpha.py", "writes": ["trades"], "reads": []}, e["alpha"]
+    assert (e["alpha"]["writes"], e["alpha"]["reads"]) == (["trades"], []), e["alpha"]
+
+
+def test_a_main_guard_in_an_imported_module_is_dormant(mini_repo):
+    """earnings-reactions-brief imports one helper from gcp/premarket_brief.py
+    and was shown writing every table premarket_brief.main() writes, because
+    the imported module's `if __name__ == "__main__": main()` block was
+    walked as module-level code. The entry module's own guard still runs."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "from gcp.helpers import send\n\ndef main():\n    send()\n    conn.execute(\"SELECT * FROM trades\")\n\nif __name__ == \"__main__\":\n    main()\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def send():\n    return 1\n\n\n\n\ndef main(conn):\n    conn.execute(\"INSERT INTO market_data_intraday VALUES (1)\")\n\n\nif __name__ == \"__main__\":\n    main(None)\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert (e["alpha"]["writes"], e["alpha"]["reads"]) == ([], ["trades"]), e["alpha"]
+
+
+def test_every_binding_of_a_name_is_followed(mini_repo):
+    """direction_program/baseline_runner.py imports three different
+    walk_forward functions under one name, by axis; only the last survived."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "def run(axis):\n    if axis == 'a':\n        from gcp.wa import wf\n    else:\n        from gcp.wb import wf\n    return wf()\n")
+    _write(mini_repo, "gcp/wa.py", "def wf(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n")
+    _write(mini_repo, "gcp/wb.py", "def wf(conn):\n    conn.execute(\"INSERT INTO market_data_intraday VALUES (1)\")\n")
+    assert inv._bindings(mini_repo, "gcp/research/alpha.py")["wf"] == [("gcp/wa.py", "wf"), ("gcp/wb.py", "wf")]
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert (e["alpha"]["writes"], e["alpha"]["reads"]) == (["market_data_intraday"], ["trades"]), e["alpha"]
+
+
+def test_the_digest_job_rows_cite_lines_and_include_runtime_relations(mini_repo):
+    """p2-build-gamma-levels upserts gamma_levels_eod, a runtime-created
+    relation; the digest listed the relation and the job but never the edge,
+    and no job row carried a file:line the prose could cite."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import go\n\ndef main():\n    go()\n")
+    # four blank lines between the two statements: the scanner's three-line
+    # context window must not colour the read with the insert above it
+    _write(mini_repo, "gcp/helpers.py", "def go(conn):\n    conn.execute(\"INSERT INTO gamma_levels_eod VALUES (1)\")\n\n\n\n\n    return conn.execute(\"SELECT * FROM trades\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    ok = {"last_execution": {"result": "ok", "time": "2026-09-07T00:00:00Z"},
+          "memory": "4Gi", "cpu": "1", "task_timeout": "3600", "max_retries": 0, "tasks": 1}
+    live = {"jobs": {"alpha": dict(ok, command="python", args="-m gcp.research.alpha --mode=full"),
+                     "p2": dict(ok, command="python -m gcp.helpers", args="")},
+            "schedulers": {},
+            "db_tables": {"trades": {"kind": "table", "rows": 5, "size": "8 kB"},
+                          "gamma_levels_eod": {"kind": "table", "rows": 7, "size": "8 kB"}}}
+    out = inv.render_markdown("refs_digest", repo, live)
+    per_job = out.split("## Tables per job")[1].split("## Runtime-created")[0]
+    assert "| `alpha` | `gamma_levels_eod` (runtime-created) | `trades` | `gamma_levels_eod`: `gcp/helpers.py:2`; `trades`: `gcp/helpers.py:7` |" in per_job, per_job
+    hc = out.split("## Hand-created live jobs")[1]
+    assert "| `p2` | `gcp/helpers.py` | `gamma_levels_eod` (runtime-created) | `trades` | `gamma_levels_eod`: `gcp/helpers.py:2`; `trades`: `gcp/helpers.py:7` |" in hc, hc
+    # the rendered blocks are unchanged: declared relations only
+    assert "gamma_levels_eod" not in inv.render_markdown("graph", repo, live)
 
 
 def test_the_real_tree_symbol_scope():
@@ -689,6 +741,9 @@ def test_the_real_tree_symbol_scope():
     assert {"market_data_daily", "economic_events", "earnings_calendar", "journal_entries"} <= set(e["insight-pipeline"]["reads"])
     for j in ("magnitude-engine", "magnitude-inference", "magnitude-recal"):
         assert "options_daily_features" not in e[j]["writes"], (j, e[j])
+    # round 4: a dormant main guard, and every binding of a name
+    assert "premarket_analysis" not in e["earnings-reactions-brief"]["writes"], e["earnings-reactions-brief"]
+    assert "economic_events" in e["direction-baseline"]["reads"], e["direction-baseline"]
 
 
 def test_the_digest_orphans_cite_their_writers_and_readers():
@@ -720,8 +775,8 @@ def test_the_digest_carries_the_live_only_name_sets(mini_repo):
     rt = out.split("## Runtime-created relations")[1].split("## Hand-created")[0]
     assert "| `strat_features_1m` | table | 3,105,422 | 4080 MB |" in rt and "`trades`" not in rt
     hc = out.split("## Hand-created live jobs")[1]
-    assert "| `gamma` | `gcp/helpers.py` | `trades` | — |" in hc
-    assert "| `delta` | `gcp/gone.py` (not in this checkout) | — | — |" in hc
+    assert "| `gamma` | `gcp/helpers.py` | `trades` | — | `trades`: `gcp/helpers.py:2` |" in hc, hc
+    assert "| `delta` | `gcp/gone.py` (not in this checkout) | — | — | — |" in hc
     assert "`alpha`" not in hc, "a declared job is not hand-created"
     # without a snapshot the sections say so, rather than silently listing nothing
     out = inv.render_markdown("refs_digest", repo, None)
@@ -752,4 +807,6 @@ def test_the_fixture_digest_names_every_runtime_relation_and_hand_created_job():
         assert f"| `{t}` |" in out, t
     for j in inv.reconcile(repo, live)["jobs_live_only"]:
         assert f"| `{j}` |" in out, j
-    assert len(out) < 40_000, len(out)
+    p2 = next(l for l in out.splitlines() if l.startswith("| `p2-build-gamma-levels` |"))
+    assert "`gamma_levels_eod` (runtime-created)" in p2, p2
+    assert len(out) < 60_000, len(out)

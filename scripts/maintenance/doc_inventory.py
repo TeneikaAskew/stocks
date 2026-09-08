@@ -745,7 +745,7 @@ def _diagnostic_lines(text: str) -> set[int]:
 # Parsed trees and import bindings, keyed by path plus size and mtime so a
 # file rewritten under the same path (tests do this) is re-read.
 _AST_CACHE: dict[tuple[pathlib.Path, int, int], "ast.Module | None"] = {}
-_BIND_CACHE: dict[tuple[pathlib.Path, int, int], dict[str, tuple[str, str | None]]] = {}
+_BIND_CACHE: dict[tuple[pathlib.Path, int, int], dict[str, list[tuple[str, str | None]]]] = {}
 
 
 def _sig(path: pathlib.Path) -> tuple[pathlib.Path, int, int] | None:
@@ -793,8 +793,12 @@ def _resolve_import(root: pathlib.Path, importer: str, module: str | None, level
     return parts if parts and parts[0] in ("gcp", "lib", "scripts") else None
 
 
-def _bindings(root: pathlib.Path, rel: str) -> dict[str, tuple[str, str | None]]:
-    """name bound in `rel` -> (repo file, symbol or None for a whole module).
+def _bindings(root: pathlib.Path, rel: str) -> dict[str, list[tuple[str, str | None]]]:
+    """name bound in `rel` -> every (repo file, symbol or None for a whole
+    module) it can be bound to. A list, because branches import different
+    functions under one local name (`walk_forward` in
+    direction_program/baseline_runner.py is one of three, by axis) and the
+    last one seen must not erase the others. (Codex, PR #1044.)
 
     `import gcp.a.b [as x]` binds `x` (or `gcp`, and the attribute chain is
     matched on use) to the module. `from gcp.a import n` binds `n` to the
@@ -807,16 +811,21 @@ def _bindings(root: pathlib.Path, rel: str) -> dict[str, tuple[str, str | None]]
     if key is not None and key in _BIND_CACHE:
         return _BIND_CACHE[key]
     tree = _parsed(root / rel)
-    out: dict[str, tuple[str, str | None]] = {}
+    out: dict[str, list[tuple[str, str | None]]] = {}
     if tree is None:
         return out
+
+    def bind(name: str, target: tuple[str, str | None]) -> None:
+        if target not in out.setdefault(name, []):
+            out[name].append(target)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
                 parts = _resolve_import(root, rel, a.name, 0)
                 f = _module_file(root, parts) if parts else None
                 if f:
-                    out[a.asname or a.name] = (f, None)
+                    bind(a.asname or a.name, (f, None))
         elif isinstance(node, ast.ImportFrom):
             parts = _resolve_import(root, rel, node.module, node.level)
             if not parts:
@@ -825,13 +834,13 @@ def _bindings(root: pathlib.Path, rel: str) -> dict[str, tuple[str, str | None]]
             for a in node.names:
                 if a.name == "*":
                     if base:
-                        out["*"] = (base, None)
+                        bind("*", (base, None))
                     continue
                 sub = _module_file(root, parts + [a.name])
                 if sub:
-                    out[a.asname or a.name] = (sub, None)
+                    bind(a.asname or a.name, (sub, None))
                 elif base:
-                    out[a.asname or a.name] = (base, a.name)
+                    bind(a.asname or a.name, (base, a.name))
     if key is not None:
         _BIND_CACHE[key] = out
     return out
@@ -839,7 +848,7 @@ def _bindings(root: pathlib.Path, rel: str) -> dict[str, tuple[str, str | None]]
 
 def _local_imports(root: pathlib.Path, rel: str) -> set[str]:
     """Repo modules `rel` imports, as file paths (relative imports resolved)."""
-    return {f for f, _sym in _bindings(root, rel).values()}
+    return {f for targets in _bindings(root, rel).values() for f, _sym in targets}
 
 
 def _top_defs(tree: ast.Module) -> dict[str, ast.AST]:
@@ -848,6 +857,16 @@ def _top_defs(tree: ast.Module) -> dict[str, ast.AST]:
 
 def _lines_of(node: ast.AST) -> set[int]:
     return set(range(node.lineno, (getattr(node, "end_lineno", None) or node.lineno) + 1))
+
+
+def _is_main_guard(node: ast.AST) -> bool:
+    """`if __name__ == "__main__":` -- false while a module is imported."""
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        return False
+    t = node.test
+    names = [x for x in [t.left] + list(t.comparators) if isinstance(x, ast.Name) and x.id == "__name__"]
+    consts = [x for x in [t.left] + list(t.comparators) if isinstance(x, ast.Constant) and x.value == "__main__"]
+    return bool(names and consts)
 
 
 def _dotted(node: ast.AST) -> str | None:
@@ -877,8 +896,12 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
     alias, or all of `m` when the alias is used bare; `from m import *` reaches
     all of `m`; a reached class reaches its whole body; a name that is neither
     a definition nor an import in its module (a module-level assignment) is
-    covered by the module-level lines. gcp/database.py writes job_runs for
-    every job and is excluded at any depth.
+    covered by the module-level lines; an imported module's
+    `if __name__ == "__main__":` block is dormant and is not reached (it made
+    earnings-reactions-brief a writer of every table premarket_brief.main()
+    writes, through one imported helper -- Codex, PR #1044); every binding a
+    name can have is followed. gcp/database.py writes job_runs for every job
+    and is excluded at any depth.
     """
     scope: dict[str, set[int] | None] = {}
     seen_syms: set[tuple[str, str]] = set()
@@ -912,33 +935,37 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
             if name in defs:
                 reach_symbol(f, name)
             elif name in binds:
-                target, sym = binds[name]
-                if sym is not None:
-                    reach_symbol(target, sym)
-                else:
-                    attrs = {c.split(".")[1] for c in chains if c.startswith(name + ".") and c.count(".") >= 1}
-                    if attrs:
-                        for a in attrs:
-                            reach_symbol(target, a)
+                for target, sym in binds[name]:
+                    if sym is not None:
+                        reach_symbol(target, sym)
                     else:
-                        reach_module(target, whole=True)
+                        attrs = {c.split(".")[1] for c in chains if c.startswith(name + ".") and c.count(".") >= 1}
+                        if attrs:
+                            for a in attrs:
+                                reach_symbol(target, a)
+                        else:
+                            reach_module(target, whole=True)
         # `import gcp.a.b` (no alias) is bound under its dotted name; the use
         # is the chain `gcp.a.b.attr`.
-        for alias, (target, sym) in binds.items():
-            if sym is not None or "." not in alias:
+        for alias, targets in binds.items():
+            if "." not in alias:
                 continue
-            attrs = {c[len(alias) + 1:].split(".")[0] for c in chains if c.startswith(alias + ".")}
-            if attrs:
-                for a in attrs:
-                    reach_symbol(target, a)
-            elif alias in chains:
-                reach_module(target, whole=True)
-        if "*" in binds:
-            reach_module(binds["*"][0], whole=True)
+            for target, sym in targets:
+                if sym is not None:
+                    continue
+                attrs = {c[len(alias) + 1:].split(".")[0] for c in chains if c.startswith(alias + ".")}
+                if attrs:
+                    for a in attrs:
+                        reach_symbol(target, a)
+                elif alias in chains:
+                    reach_module(target, whole=True)
+        for target, _sym in binds.get("*", []):
+            reach_module(target, whole=True)
         # An import executes the target's module-level statements whether or
         # not the bound name is ever used.
-        for target, _sym in binds.values():
-            reach_module(target)
+        for targets in binds.values():
+            for target, _sym in targets:
+                reach_module(target)
 
     def reach_module(f: str, whole: bool = False) -> None:
         if f == "gcp/database.py":
@@ -956,7 +983,8 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         if f in seen_mods:
             return
         seen_mods.add(f)
-        top = [n for n in tree.body if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        top = [n for n in tree.body
+               if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and not _is_main_guard(n)]
         lines: set[int] = set()
         for n in top:
             lines |= _lines_of(n)
@@ -976,9 +1004,7 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
             add_lines(f, _lines_of(defs[sym]))
             uses(f, [defs[sym]])
             return
-        binds = _bindings(root, f)
-        if sym in binds:                      # re-export: `from .sub import sym` in __init__
-            target, inner = binds[sym]
+        for target, inner in _bindings(root, f).get(sym, []):   # re-export: `from .sub import sym` in __init__
             if inner is not None:
                 reach_symbol(target, inner)
             else:
@@ -1031,10 +1057,27 @@ def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[st
     for j in (repo["jobs"] if jobs is None else jobs):
         mod_file = entry_module(j)
         scope = _import_scope(root, mod_file)
+        cites: dict[str, list[dict[str, Any]]] = {}
+        for t, v in refs.items():
+            hits = [x for x in v["writes"] + v["reads"] if _in_scope(scope, x)]
+            if hits:
+                cites[t] = hits
         w = sorted(t for t, v in refs.items() if any(_in_scope(scope, x) for x in v["writes"]))
         r = sorted(t for t, v in refs.items() if any(_in_scope(scope, x) for x in v["reads"]))
-        out.append({"job": j["name"], "module": mod_file, "writes": w, "reads": r})
+        out.append({"job": j["name"], "module": mod_file, "writes": w, "reads": r, "cites": cites})
     return out
+
+
+def _cite_cell(cites: dict[str, list[dict[str, Any]]]) -> str:
+    """`table: file:line[,line]` per reached table, for a digest row."""
+    parts = []
+    for t in sorted(cites):
+        by_file: dict[str, list[int]] = {}
+        for x in cites[t]:
+            by_file.setdefault(x["file"], []).append(x["line"])
+        parts.append(f"`{t}`: " + ", ".join(
+            f"`{f}:{','.join(str(l) for l in sorted(set(ls))[:4])}`" for f, ls in sorted(by_file.items())[:3]))
+    return "; ".join(parts) or "—"
 
 
 def hand_created_job_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, Any]]]],
@@ -1105,13 +1148,21 @@ def _render_refs_digest(repo: dict[str, Any], refs: dict[str, dict[str, list[dic
     from the same data the rendered blocks come from, so the prose agrees
     with the blocks."""
     root = _repo_root(repo)
+    # The rendered blocks name declared relations only. The digest also scans
+    # the runtime-created names, so a job that writes one (p2-build-gamma-
+    # levels -> gamma_levels_eod) shows it, marked. (Codex, PR #1044.)
+    runtime = runtime_relations(repo, live) if live is not None else []
+    refs_all = dict(refs)
+    if runtime:
+        refs_all.update(table_refs(root, tables=runtime))
+    mark = lambda t: f"`{t}`" + (" (runtime-created)" if t in runtime else "")
     out = ["## Multi-writer tables", "", _render_multiwriter(refs, with_lines=True), "",
            "## Orphan tables", "", _render_orphans(refs, root, _partition_map(repo), with_lines=True), "",
            "## Tables per job (code reachable from the entry module through the names it imports)", ""]
-    rows = [[f"`{e['job']}`", ", ".join(f"`{t}`" for t in e["writes"]) or "—",
-             ", ".join(f"`{t}`" for t in e["reads"]) or "—"]
-            for e in job_table_edges(repo, refs) if e["writes"] or e["reads"]]
-    out.append(_md_table(["Job", "Writes", "Reads"], rows) if rows else "_none_")
+    rows = [[f"`{e['job']}`", ", ".join(mark(t) for t in e["writes"]) or "—",
+             ", ".join(mark(t) for t in e["reads"]) or "—", _cite_cell(e["cites"])]
+            for e in job_table_edges(repo, refs_all) if e["writes"] or e["reads"]]
+    out.append(_md_table(["Job", "Writes", "Reads", "Where (file:line)"], rows) if rows else "_none_")
     out += ["", "## Runtime-created relations (live, not declared in gcp/schema.sql)", ""]
     if live is None:
         out.append("_no live snapshot supplied; not computable_")
@@ -1130,17 +1181,17 @@ def _render_refs_digest(repo: dict[str, Any], refs: dict[str, dict[str, list[dic
         out.append("_no live snapshot supplied; not computable_")
     else:
         rows = []
-        for e in hand_created_job_edges(repo, refs, live):
+        for e in hand_created_job_edges(repo, refs_all, live):
             mod = f"`{e['module']}`" if e["module"] else "—"
             if not e["in_repo"]:
                 mod += " (not in this checkout)"
             rows.append([f"`{e['job']}`", mod,
-                         ", ".join(f"`{t}`" for t in e["writes"]) or "—",
-                         ", ".join(f"`{t}`" for t in e["reads"]) or "—"])
-        out.append(_md_table(["Job", "Entry module", "Writes", "Reads"], rows) if rows else "_none_")
-        out += ["", "Writes and reads name declared relations only, as in every block above: a"
-                " runtime-created relation one of these jobs writes is listed in the previous"
-                " section and has no edge here."]
+                         ", ".join(mark(t) for t in e["writes"]) or "—",
+                         ", ".join(mark(t) for t in e["reads"]) or "—", _cite_cell(e["cites"])])
+        out.append(_md_table(["Job", "Entry module", "Writes", "Reads", "Where (file:line)"], rows) if rows else "_none_")
+        out += ["", "A relation marked (runtime-created) is in the previous section, not in"
+                " gcp/schema.sql; the rendered blocks name declared relations only, so those"
+                " edges appear here and nowhere else."]
     return "\n".join(out)
 
 
