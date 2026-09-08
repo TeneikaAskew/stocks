@@ -51,8 +51,21 @@ for arg in "$@"; do
   case "$arg" in
     --label-mode=*) label_mode="${arg#*=}" ;;
     --thresholds=*) thresholds="${arg#*=}" ;;
+    --with-checks)
+       # Documented in the header since the Phase-3 post-mortem but never
+       # implemented: before this parser existed, extra arguments were simply
+       # ignored and the phase still dispatched. Rejecting it here would turn
+       # a silently-ignored flag into a dispatch that does nothing at all, so
+       # it keeps dispatching and says what it is not doing.
+       echo "NOTE: --with-checks is not implemented (it never was; the flag" >&2
+       echo "      was ignored before this parser existed). Dispatching the" >&2
+       echo "      phase, then run gates 5 and 6 yourself against the run id:" >&2
+       echo "        python -m scripts.bootstrap_gate_fragility --run-id <exec> ..." >&2
+       echo "        python -m scripts.check_event_window_concentration --run-id <exec> ..." >&2
+       ;;
     *) echo "Unknown option: $arg" >&2
        echo "Valid: --label-mode=body|excursion|call|put  --thresholds=t0,t1,t2" >&2
+       echo "       --with-checks (accepted, not implemented)" >&2
        exit 64 ;;
   esac
 done
@@ -65,11 +78,15 @@ mag_args="-m,gcp.research.magnitude_engine.mag_walk_forward"
 # MAG_THRESHOLDS=0.35 and choke on the rest — a silently wrong label
 # definition, which is the failure this whole change exists to prevent. The
 # ^|^ custom-delimiter form is the documented escape (CLAUDE.md 3.5).
-if [ -n "$thresholds" ]; then
-  env_flag="--update-env-vars=^|^MAG_PLAN=${plan}|MAG_THRESHOLDS=${thresholds}"
-else
-  env_flag="--update-env-vars=MAG_PLAN=${plan}"
-fi
+# ALWAYS name MAG_THRESHOLDS, empty when this dispatch is canonical.
+# `gcloud run jobs execute --update-env-vars` MERGES: variables the override
+# does not name keep their job-level value. A job still carrying a
+# MAG_THRESHOLDS from an earlier experiment would therefore hand custom cut
+# points to a dispatch that believes it is canonical, and the run would be
+# written under _research/, kept out of the canonical SQL and refused
+# promotion — the recalibration silently not performed. An empty value reads
+# as absent in resolve_magnitude_thresholds(), so this clears it.
+env_flag="--update-env-vars=^|^MAG_PLAN=${plan}|MAG_THRESHOLDS=${thresholds}"
 if [ -n "$label_mode" ] || [ -n "$thresholds" ]; then
   echo "  label contract: label_mode=${label_mode:-body} thresholds=${thresholds:-default}"
   echo "  (non-default labels write under _research/<slug>/ and cannot be promoted)"

@@ -1269,7 +1269,8 @@ def test_dispatcher_can_launch_a_label_definition_experiment(tmp_path):
     dispatcher passed only MAG_PLAN — so neither label-definition experiment
     had a supported entrypoint, only a hand-written gcloud override."""
     canonical = _dispatch("phase0", tmp_path=tmp_path)
-    assert "--update-env-vars=MAG_PLAN=phase0" in canonical
+    # always NAMED, empty for a canonical dispatch — see the clearing test
+    assert "^|^MAG_PLAN=phase0|MAG_THRESHOLDS=" in canonical
     assert "--label-mode" not in canonical      # unchanged for a body run
 
     excursion = _dispatch("phase0", "--label-mode=excursion", tmp_path=tmp_path)
@@ -1303,3 +1304,27 @@ def test_directional_usage_examples_carry_their_namespace():
             assert "--research" in line or "--research" in usage, (
                 "a directional example must show the namespace that locates "
                 "the run")
+
+
+# ───────────── round 7: two regressions in the dispatcher I added ─────────────
+
+def test_with_checks_still_dispatches(tmp_path):
+    """--with-checks is documented in the header and was never implemented, so
+    before the option parser existed it was ignored and the phase dispatched.
+    Rejecting it turned a no-op flag into a dispatch that does nothing."""
+    out = _dispatch("phase0", "--with-checks", tmp_path=tmp_path)
+    assert "GCLOUD_CALL" in out, "the phase must still dispatch"
+    assert "not implemented" in out, "and say what it is not doing"
+
+
+def test_canonical_dispatch_clears_a_stale_threshold_override(tmp_path):
+    """`gcloud run jobs execute --update-env-vars` MERGES: a variable the
+    override does not name keeps its job-level value. A job still carrying
+    MAG_THRESHOLDS from an earlier experiment would hand custom cut points to
+    a dispatch that believes it is canonical, and the run would land under
+    _research/, out of the canonical SQL, refused promotion."""
+    out = _dispatch("phase0", tmp_path=tmp_path)
+    assert "MAG_THRESHOLDS=" in out, "the variable must be named to be cleared"
+    # named with an empty value, which resolve_magnitude_thresholds reads as absent
+    assert "|MAG_THRESHOLDS=" in out
+    assert "MAG_THRESHOLDS=0" not in out
