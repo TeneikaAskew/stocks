@@ -1135,6 +1135,79 @@ def test_a_propagated_name_is_followed_only_inside_its_own_function(mini_repo):
     assert inv.WRITE_RE.search("COPY trades FROM STDIN"), "a real COPY still counts"
 
 
+def test_a_declared_value_reaches_the_whole_call_chain(mini_repo):
+    """A constrained root was walked whole-module-first when no branch was
+    decidable, and that walk observes every call with NO caller context, so
+    each callee's parameters were set to unknown before the symbol walk could
+    pass a value down: `direction-baseline` fixes `--tf=5m` and its
+    `run_baseline -> run_axis -> leaf` chain still lost it. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse\n"
+           'TICKERS = ("IWM", "SPY")\n'
+           "\n"
+           "def leaf(engine, tf):\n"
+           '    return engine.execute(f"SELECT * FROM demo_{tf}")\n'
+           "\n"
+           "def run_axis(engine, axis, ticker, tf):\n"
+           "    return leaf(engine, tf)\n"
+           "\n"
+           "def run_baseline(engine, tf='1m'):\n"
+           '    return {tk: run_axis(engine, "direction", tk, tf) for tk in TICKERS}\n'
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--tf', default='1m')\n"
+           "    args = p.parse_args()\n"
+           "    run_baseline(None, tf=args.tf)\n"
+           "\n"
+           "main()\n")
+    obs: dict = {}
+    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, set(), obs)
+    got = {fn: cons.get("tf") for (f, fn), cons in obs.items() if "tf" in cons}
+    assert got == {"run_baseline": {"15m"}, "run_axis": {"15m"}, "leaf": {"15m"}}, got
+    # and with nothing declared, the chain carries no constraint
+    loose: dict = {}
+    inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, set(), loose)
+    assert loose[("gcp/research/alpha.py", "leaf")]["tf"] is None
+
+
+def test_a_branch_local_import_binds_only_its_own_branch(mini_repo):
+    """`_run_wf` imports a different `walk_forward` under each axis. The
+    four-argument magnitude call also fits the three-argument strat signature,
+    so merging the bindings put `ticker` into the strat function's `tf` and
+    blocked every narrowing behind it. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/mag.py",
+           "def go(engine, phase, ticker, tf):\n"
+           '    return engine.execute(f"SELECT * FROM demo_{tf}")\n')
+    _write(mini_repo, "gcp/strat.py",
+           "def go(engine, ticker, tf, folds=4):\n"
+           '    return engine.execute(f"SELECT * FROM demo_{tf}")\n')
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse\n"
+           "\n"
+           "def dispatch(engine, axis, ticker, tf):\n"
+           "    if axis == 'size':\n"
+           "        from gcp.mag import go\n"
+           "        return go(engine, 'phase0', ticker, tf)\n"
+           "    if axis == 'type':\n"
+           "        from gcp.strat import go\n"
+           "        return go(engine, ticker, tf)\n"
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--tf', default='1m')\n"
+           "    args = p.parse_args()\n"
+           "    for axis in ('size', 'type'):\n"
+           "        dispatch(None, axis, 'IWM', args.tf)\n"
+           "\n"
+           "main()\n")
+    obs: dict = {}
+    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, set(), obs)
+    assert obs[("gcp/mag.py", "go")]["tf"] == {"15m"}, obs.get(("gcp/mag.py", "go"))
+    assert obs[("gcp/strat.py", "go")]["tf"] == {"15m"}, \
+        "the 4-argument magnitude call must not reach the strat binding at all"
+
+
 def test_a_configured_subprocess_module_is_a_root_of_the_job(mini_repo):
     """audit-walkforward enters through gcp/audit_job_runner.py, which runs
     AUDIT_SCRIPT_MODULE in a subprocess; the digest showed the job as dashes."""

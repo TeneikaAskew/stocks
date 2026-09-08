@@ -864,6 +864,24 @@ _VALUE_CAP = 64
 _BOUNDS_CAP = 16
 
 
+_ENCLOSING_CACHE: dict[Any, list[tuple[int, int, str]]] = {}
+
+
+def _enclosing_funcs(root: pathlib.Path, rel: str, line: int) -> list[str]:
+    """The functions containing `line` in `rel`, innermost first."""
+    sig = _sig(root / rel)
+    if sig is None:
+        return []
+    if sig not in _ENCLOSING_CACHE:
+        tree = _parsed(root / rel)
+        _ENCLOSING_CACHE[sig] = sorted(
+            ((n.lineno, getattr(n, "end_lineno", None) or n.lineno, n.name)
+             for n in ast.walk(tree)
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))),
+            key=lambda s: s[1] - s[0]) if tree is not None else []
+    return [nm for lo, hi, nm in _ENCLOSING_CACHE[sig] if lo <= line <= hi]
+
+
 def _resolved_values(root: pathlib.Path, rel: str, want: set[str] | None = None,
                      _depth: int = 0) -> dict[str, list[tuple[set[str], tuple[int, int] | None]]]:
     """The names in a module that provably hold one of a known set of string
@@ -1973,10 +1991,36 @@ def _import_scope(root: pathlib.Path, mod_file: str,
                     chains.add(d)
         attr_names.update(new_attrs)
 
-        def resolve_callees(func: ast.AST) -> list[tuple[str, str]]:
-            """EVERY function a call's name can reach, not just the first."""
+        # A name imported inside ONE branch binds only the calls in that
+        # branch. `_run_wf` imports a different `walk_forward` under each
+        # `axis`, and the 4-argument magnitude call also fits the 3-argument
+        # strat signature, so merging the bindings put `ticker` into the strat
+        # function's `tf` and blocked every narrowing behind it.
+        # (Codex, PR #1044.)
+        branch_bind: dict[int, dict[str, list[tuple[str, str | None]]]] = {}
+        for blk_owner in walked:
+            for attr in ("body", "orelse", "finalbody"):
+                blk = getattr(blk_owner, attr, None)
+                if not isinstance(blk, list) or isinstance(blk_owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+                    continue
+                b = _bind_from(root, f, blk)
+                if not b:
+                    continue
+                for stmt in blk:
+                    for c in ast.walk(stmt):
+                        if isinstance(c, ast.Call):
+                            for k, v in b.items():
+                                branch_bind.setdefault(id(c), {}).setdefault(k, v)
+
+        def resolve_callees(func: ast.AST, call: ast.Call | None = None) -> list[tuple[str, str]]:
+            """EVERY function a call's name can reach, not just the first;
+            a name imported in the call's own branch wins over the merge."""
             out: list[tuple[str, str]] = []
             if isinstance(func, ast.Name):
+                if call is not None:
+                    local_b = branch_bind.get(id(call), {}).get(func.id)
+                    if local_b:
+                        return [(tg, sym) for tg, sym in local_b if sym is not None]
                 if func.id in defs:
                     out.append((f, func.id))
                 out += [(target, sym) for target, sym in binds.get(func.id, []) if sym is not None]
@@ -1995,7 +2039,7 @@ def _import_scope(root: pathlib.Path, mod_file: str,
         # literal arguments first, so a callee reached below is walked with them
         rewalk: set[tuple[str, str]] = set()
         for c in calls:
-            cands = resolve_callees(c.func)
+            cands = resolve_callees(c.func, c)
             fits = [t for t in cands if _accepts(callee_def(t), c)]
             # a call whose shape fits none of them stays ambiguous: observe it
             # against all, which can only loosen
@@ -2077,13 +2121,20 @@ def _import_scope(root: pathlib.Path, mod_file: str,
             # `elif args.mode == 'daily'` body is not reachable through it.
             # (Codex, PR #1044.)
             skip: set[int] = set()
-            if argv_of(f) or bools_of(f):
+            constrained = bool(argv_of(f) or bools_of(f))
+            if constrained:
                 for node in tree.body:
                     skip |= dormant(node, {}, f)
-            if not skip:
+            if not constrained:
                 add_lines(f, None)
                 uses(f, list(tree.body))
                 return
+            # Walking the whole module body at once observes every call with
+            # NO caller context, which sets each callee's parameters to
+            # unknown before the symbol walk can pass a value down: with the
+            # module walked first, `run_baseline`'s `--tf=5m` never reached
+            # `run_axis`. A constrained root is therefore always reached by
+            # symbol, even when no branch is decidable. (Codex, PR #1044.)
             # Constrained root: its module-level statements and its
             # `__main__` guard run, and its own functions join only where live
             # code names them. Keeping every definition would leave
@@ -2205,14 +2256,18 @@ def _import_scope(root: pathlib.Path, mod_file: str,
     if mod_file and (root / mod_file).exists():
         reach_module(mod_file, whole=True)
     if out_args is not None:
-        # every parameter name the walk saw a value for, unioned across the
-        # functions it reached; unknown anywhere makes it unknown
-        for cons in arg_lits.values():
+        # Per (file, function), NOT merged by parameter spelling. Flattening
+        # let one unrelated callee with an unknown parameter named `tf` set the
+        # shared entry to None and block every narrowing: `direction-baseline`
+        # fixes `--tf=5m` and still rendered all six timeframes.
+        # (Codex, PR #1044.)
+        for key, cons in arg_lits.items():
+            merged = out_args.setdefault(key, {})
             for prm, vals in cons.items():
-                if vals is None or out_args.get(prm, set()) is None:
-                    out_args[prm] = None
+                if vals is None or merged.get(prm, set()) is None:
+                    merged[prm] = None
                 else:
-                    out_args.setdefault(prm, set()).update(vals)
+                    merged.setdefault(prm, set()).update(vals)
     return scope
 
 
@@ -2443,18 +2498,28 @@ def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[st
     out = []
     for j in (repo["jobs"] if jobs is None else jobs):
         mod_file = entry_module(j)
-        observed: dict[str, set[str] | None] = {}
+        observed: dict[tuple[str, str], dict[str, set[str] | None]] = {}
         scope = _job_scope(root, j, repo.get("schedulers"), observed)
 
-        def fits(x: dict[str, Any], _obs: dict[str, set[str] | None] = observed) -> bool:
+        def fits(x: dict[str, Any], _obs=observed) -> bool:
             """A run-time-assembled name whose placeholder this job fixes is
             not a whole family. `direction-probe` is deployed with `--tf=15m`
             and passes `args.tf` down to the loader, so the only
             `strat_features_{tf}` relations it can name are the 15m ones.
-            (Codex, PR #1044.)"""
+
+            The constraint is read from the function that ENCLOSES this
+            reference, so an unrelated callee with a same-named parameter
+            cannot widen or block it. (Codex, PR #1044.)
+            """
             if x.get("resolved", True) or not x.get("vars") or not x.get("origins"):
                 return True
-            known = [_obs[o] for o in x["origins"] if _obs.get(o)]
+            cons: dict[str, set[str] | None] = {}
+            for fn in _enclosing_funcs(root, x["file"], x["line"]):
+                got = _obs.get((x["file"], fn))
+                if got:
+                    cons = got
+                    break
+            known = [cons[o] for o in x["origins"] if cons.get(o)]
             if not known:
                 return True
             allowed = set().union(*known)
