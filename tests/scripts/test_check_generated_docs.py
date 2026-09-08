@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import shutil
 
 import pytest
@@ -667,3 +668,29 @@ def test_an_elision_inside_a_blockquote_is_a_finding(tmp_path):
     out = gate.gate_elided_prose(tmp_path)
     assert len(out) == 3, out
     assert not any("Ad-hoc" in f for f in out), out
+
+
+def test_every_prose_line_shape_in_the_real_documents_can_be_caught():
+    """Derived from the corpus, not from the incident.
+
+    Four review rounds each found another shape the matcher missed -- ordered
+    lists, fenced diagrams, the em-dash bullet style, blockquotes -- because it
+    was written against the nine lines run 27 happened to damage rather than
+    against the shapes these documents actually use. This enumerates the
+    leading structure of every prose line in the four regenerated documents and
+    asserts an elision in each of them is caught, so a shape the corpus already
+    contains cannot slip past again. (Codex, PR #1061.)
+    """
+    root = pathlib.Path(__file__).resolve().parents[2]
+    shapes = set()
+    for doc in gate.DOCS:
+        for line in gate._prose_lines((root / doc).read_text()):
+            if not line.strip():
+                continue
+            m = re.match(r"^(\s*(?:>\s*)*)((?:[-*+]|\d+[.)])\s+)?(\*\*[^*]+\*\*\s*[—–:-]?\s*)?", line)
+            shapes.add((bool(m.group(1).strip()), bool(m.group(2)), bool(m.group(3))))
+    assert shapes, "no prose found — the marker matching is broken"
+    for bq, lst, label in sorted(shapes):
+        line = ("> " if bq else "") + ("- " if lst else "") + ("**x** — " if label else "") + "..."
+        assert gate._ELIDED.match(line), \
+            f"a shape the documents already use is not caught: {line!r}"
