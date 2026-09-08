@@ -561,13 +561,15 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   # reachable rather than fatal.
   phase2_consumers() {
     if ! type -t consumed >/dev/null 2>&1; then
-      if . "${HELPERS:-/tmp/resolve-issue-helpers.sh}" 2>/dev/null; then :; fi
+      # NO DEFAULT PATH — see the note at the loader in Phase 4.
+      if [ -n "${HELPERS:-}" ] && . "$HELPERS"; then :; fi
     fi
     type -t consumed >/dev/null 2>&1 || {
       echo "consumed() is not defined in this shell, and"
-      echo "${HELPERS:-/tmp/resolve-issue-helpers.sh} did not provide it."
-      echo "Load Phase 4's DEFINITIONS fence first — it writes that file — or"
-      echo "paste it here. NOT reporting a result: 127 is not one of the codes."
+      echo "\$HELPERS ${HELPERS:+(=$HELPERS) }did not provide it."
+      echo "Load Phase 4's DEFINITIONS fence — it prints the HELPERS=… line to"
+      echo "carry here — or paste it here. NOT reporting a result: 127 is not"
+      echo "one of the codes."
       return 2; }
     EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )     # required; consumed() returns 2 without it
     # CAPTURE THE STATUS. A bare call is a failed simple command under `set -e`
@@ -578,6 +580,12 @@ For each candidate cause, state the evidence and what would falsify it. Then:
     local c
     if consumed "<table|endpoint|function>"; then c=0; else c=$?; fi
     echo "consumed rc=$c"
+    # AND PROPAGATE rc=2. `echo` succeeds, so ending on it returned 0 for every
+    # outcome including "I could not measure" — and this function is called
+    # bare, so even an errexit shell walked on past the blast-radius
+    # measurement having asserted nothing. 1 and 3 are answers to READ and stay
+    # 0; only 2 is a refusal, and it leaves as one.
+    test "$c" -ne 2 || return 2
   }
   phase2_consumers      # BARE
   #   0  consumed — it PRINTS the hits, so read them before believing the code
@@ -1492,7 +1500,16 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       # retirement could certify with the module on disk. A leading `./` is
       # stripped; anything else non-canonical is refused rather than guessed at,
       # because "which path did you mean" is exactly what this argument exists
-      # to state.
+      # to state. `./` is redundant wherever it appears, not only in front —
+      # `scripts/./run_historical_signals.py` is the same file and passed the
+      # leading-prefix strip untouched, leaving `scripts/\./…` against an
+      # inventory that emits `scripts/…`. Duplicate slashes are the same kind of
+      # redundancy. All three are removed; `../` and an absolute path CHANGE
+      # which file is meant, so those are refused rather than guessed at.
+      while [ "${_i#./}" != "$_i" ]; do _i=${_i#./}; done
+      while case "$_i" in */./*|*//*) true;; *) false;; esac; do
+        _i=${_i//\/.\///}; _i=${_i//\/\///}
+      done
       while [ "${_i#./}" != "$_i" ]; do _i=${_i#./}; done
       case "$_i" in
         /*)      echo "'$_i' is absolute; implementation paths are repo-relative,"
@@ -1719,8 +1736,24 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # job goes, the module stays, which this file explicitly supports —
   # permanently unpassable. That is the unreachable-state class, and a false
   # BLOCK here is visible (the paths are printed) where a false PASS is not.
-  local pathsym=${sym//_/$'\x01'}; pathsym=${pathsym//-/$'\x01'}
-  pathsym=${pathsym//$'\x01'/[-_]}
+  # PER ALTERNATIVE, AND NOT INSIDE A BRACKET EXPRESSION THE CALLER WROTE.
+  # `$sym` is an ERE, so an alternative may already say `foo[-_]bar` — and a
+  # blind substitution rewrites the `-` and `_` INSIDE that class, yielding
+  # `foo[[-_][-_]]bar`, which matches neither spelling. Measured. An alternative
+  # carrying a `[` is left exactly as typed, because the caller has already
+  # written the separator rule themselves; one without is normalised as before.
+  local pathsym= _psa _psn _psi=$IFS
+  IFS='|'
+  for _psa in $sym; do
+    test -n "$_psa" || continue
+    case "$_psa" in
+      *'['*) _psn=$_psa;;
+      *)     _psn=${_psa//_/$'\x01'}; _psn=${_psn//-/$'\x01'}
+             _psn=${_psn//$'\x01'/[-_]};;
+    esac
+    pathsym="${pathsym:+$pathsym|}$_psn"
+  done
+  IFS=$_psi
   # `if` for errexit, as in consumed(): a clean miss is rc=1 and an untested
   # nonzero assignment kills the shell under `set -e` — measured.
   # Every implementation the caller named is scanned the same way as the symbol,
@@ -2255,26 +2288,50 @@ fully_retired() {   # $1 sym $2 job|none $3 impl|none $4 sched|none [$5 proj] [$
 # retired_everywhere) and `declare -p` the arrays — measured round-trip: a fresh
 # shell sourcing the result gives consumed rc=0/1 and the arity refusals
 # unchanged, against 127 without it.
-# `-ga`, not `-a`: `declare -a` inside a function creates a LOCAL, so a caller
-# that sources this file from within a function would get exclusion arrays that
-# vanish on return.
+# A PLAIN ASSIGNMENT, NOT `declare`. `declare -p` emits `declare -a NAME=(…)`,
+# and two things are wrong with sourcing that. `declare -a` inside a function
+# creates a LOCAL, so a caller sourcing from within one gets arrays that vanish
+# on return; and `declare -g`, the obvious repair, DOES NOT EXIST on bash 3.2 —
+# still /bin/bash on macOS, and the platform this fence explicitly supports two
+# hundred lines up. Every `declare -ga` line would fail there and the arrays
+# would simply be missing, while the loaders' function-only check waved the run
+# through. Stripping the `declare -a` prefix leaves `NAME=([0]="…" …)`, which is
+# a plain top-level assignment: global even inside a function, and valid on 3.2.
+# `declare -ax` for an exported array is stripped by the same pattern.
 persist_helpers() {
   declare -f _ere_literal _solyra_ok consumed absent_everywhere \
              retired_everywhere fully_retired > "$HELPERS" \
     || { echo "could not write $HELPERS"; return 1; }
   declare -p EXCLUDE_SHARED EXCLUDE_STOCKS EXCLUDE_SOLYRA PRESERVE_STOCKS \
-    | sed 's/^declare -a/declare -ga/' >> "$HELPERS" \
+    | sed 's/^declare -a[a-zA-Z]* //' >> "$HELPERS" \
     || { echo "wrote the functions but not the exclusion arrays — removing it,"
          echo "half a helper file is worse than none"
          rm -f "$HELPERS"; return 1; }
 }
-HELPERS=${HELPERS:-/tmp/resolve-issue-helpers.sh}
+# A PER-RUN, OWNER-ONLY FILE. `/tmp/resolve-issue-helpers.sh` was a fixed,
+# world-predictable path, and this command runs in sessions holding production
+# credentials: anyone on the host could create that file first, and both
+# loaders sourced it with stderr hidden — arbitrary code execution as the
+# operator, or a stale helper from an older checkout quietly answering
+# retirement questions. `mktemp` under `umask 077` creates it fresh and
+# unguessable, owned and readable only by this user, so there is nothing to
+# pre-create and nothing shared to go stale. The path is CARRIED, not
+# defaulted: this fence prints it and the assertion fence takes it from
+# $HELPERS, which is why the loader below refuses rather than falling back.
+if [ -z "${HELPERS:-}" ]; then
+  HELPERS=$(umask 077; mktemp) \
+    || { echo "could not create a helper file; paste this fence into the shell"
+         echo "that runs the gate instead"; HELPERS=; }
+fi
 # CONSUMED, NOT DROPPED. Sourcing this fence must not kill the caller's shell —
 # that was round 43's finding, and a `set -e` shell dies on a bare nonzero here
 # exactly as it did on the gate template that used to sit at this spot. So the
 # status is reported and the gate below refuses when the helpers are missing;
 # it is handled downstream, not swallowed.
-if persist_helpers; then echo "helpers written to $HELPERS"
+if [ -n "${HELPERS:-}" ] && persist_helpers; then
+  echo "helpers written to $HELPERS"
+  echo "run the assertion in this shell, or carry the path to another:"
+  printf '  HELPERS=%q\n' "$HELPERS"
 else
   echo "NOTE: paste this fence into the shell that runs the gate instead."
 fi
@@ -2324,13 +2381,16 @@ free and the acceptance call stays bare where it belongs.
 # reachable rather than fatal.
 run_gate() {
   if ! type -t fully_retired >/dev/null 2>&1; then
-    if . "${HELPERS:-/tmp/resolve-issue-helpers.sh}" 2>/dev/null; then :; fi
+    # NO DEFAULT PATH. An unset $HELPERS means "nobody told me where they are",
+    # and guessing a shared /tmp name is what let a file this run did not write
+    # be sourced with production credentials in hand.
+    if [ -n "${HELPERS:-}" ] && . "$HELPERS"; then :; fi
   fi
   type -t fully_retired >/dev/null 2>&1 || {
     echo "fully_retired is not defined in this shell, and"
-    echo "${HELPERS:-/tmp/resolve-issue-helpers.sh} did not provide it."
-    echo "Run the Phase 4 DEFINITIONS fence first — it writes that file — or"
-    echo "paste it into this shell. NOT reporting a result."
+    echo "\$HELPERS ${HELPERS:+(=$HELPERS) }did not provide it."
+    echo "Run the Phase 4 DEFINITIONS fence — it prints the HELPERS=… line to"
+    echo "carry here — or paste it into this shell. NOT reporting a result."
     return 2; }
   fully_retired "<symbol>" "<job>" "<implementation>" "<scheduler>"
 }

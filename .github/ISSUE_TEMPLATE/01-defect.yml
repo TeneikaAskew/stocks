@@ -171,7 +171,51 @@ body:
         forms quoting an example. Read the lines and say which. An agent or
         prompt hit is not ambiguous: both are consumers.
 
+        # AND SOLYRA, WITH COMMANDS. Every probe above is anchored to the
+        # stocks checkout and cannot see the frontend, so the line below was a
+        # claim with no search behind it — the same gap fixed in the
+        # dormant-surface form. It validates the ORIGIN as well as the path,
+        # because `rev-parse --git-dir` exits 0 for any repo and a stale SOLYRA
+        # then reports every symbol absent over there.
+        $ at_solyra() {
+            local s=${SOLYRA:-} o
+            if [ -z "$s" ]; then
+              s=$(git rev-parse --show-toplevel 2>/dev/null); s=${s:+$s/../solyra}
+            fi
+            git -C "${s:-/nonexistent}" rev-parse --git-dir >/dev/null 2>&1 \
+              || { echo "no solyra checkout at '${s:-<unresolved>}' — set" >&2
+                   echo "SOLYRA=<path>; this probe did not run" >&2
+                   return 2; }
+            o=$(git -C "$s" remote get-url origin 2>/dev/null); o=${o%/}; o=${o%.git}
+            case "$o" in
+              https://github.com/TeneikaAskew/solyra|\
+              ssh://git@github.com/TeneikaAskew/solyra|\
+              git://github.com/TeneikaAskew/solyra|\
+              git@github.com:TeneikaAskew/solyra) ;;
+              *) echo "'$s' is a checkout, but origin is '${o:-<none>}' — that is" >&2
+                 echo "not solyra; this probe did not run" >&2
+                 return 2;;
+            esac
+            git -C "$s" "$@"
+          }
+        $ at_solyra grep -nE "<symbol>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
+            ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!package-lock.json' \
+            ':!bun.lock' ':!package.json' ':!tests/fixtures/stocks-openapi.json'
+        # package.json separately, because that list excludes it and its
+        # `scripts` block and dependency entries are executable.
+        $ at_solyra grep -nE "<symbol>" -- package.json
+        # The executable markdown, self-excluded per scope, and one exclusion
+        # per alternative if <symbol> is the coupled `a|b` form. Solyra has no
+        # .github/prompts — three scopes, not four.
+        $ at_solyra grep -nE "<symbol>" -- .claude/agents ':!.claude/agents/<symbol>.md'
+        $ at_solyra grep -nE "<symbol>" -- .claude/commands ':!.claude/commands/<symbol>.md'
+        $ at_solyra grep -nE "<symbol>" -- CLAUDE.md
+        src/pages/DashboardPage.tsx:142:  const { data } = useQuery(['<symbol>', d])
+        src/pages/PlaybookPage.tsx:88:    fetch(`/api/<symbol>?date=${d}`)
+
         Live consumers in solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
+        # That is your WORKING TREE, not the revision anyone is serving. The
+        # resolver's Phase 4 gate re-asks against solyra's fetched origin/main.
     validations:
       required: true
 

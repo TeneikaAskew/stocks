@@ -150,6 +150,17 @@ body:
         # deploy. So run these two as well, and exclude the surface's OWN
         # definition file — an agent always matches itself, which would make
         # every agent look consumed:
+        # ONE EXCLUSION PER ALTERNATIVE. `<surface>` may be the documented
+        # coupled-retirement form, `code-reviewer|pine-script-reviewer`, and
+        # substituting that whole string builds ONE path named
+        # `code-reviewer|pine-script-reviewer.md`, which excludes neither real
+        # definition — so both report themselves as consumers and a dormant
+        # pair can never satisfy this field. Substituting per alternative:
+        #   $ at_root grep -nE "code-reviewer|pine-script-reviewer" -- .claude/agents \
+        #       ':!.claude/agents/code-reviewer.md' \
+        #       ':!.claude/agents/pine-script-reviewer.md'
+        # The resolver's helper splits the alternation itself; here the
+        # substitution is yours, so the splitting is too.
         $ at_root grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
         $ at_root grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
         $ at_root grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
@@ -211,6 +222,17 @@ body:
         $ at_solyra grep -nE "<surface>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
             ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!package-lock.json' \
             ':!bun.lock' ':!package.json' ':!tests/fixtures/stocks-openapi.json'
+        # AND package.json SEPARATELY, because the search above excludes it and
+        # it is EXECUTABLE. Its `scripts` block runs on every `npm run`, and a
+        # dependency entry is what an import resolves through — so a surface
+        # whose only remaining consumer is a script or a dependency reads as a
+        # clean miss above, and none of the Markdown probes brings it back. The
+        # resolver's consumed() parses those two sections for exactly this case;
+        # this field would otherwise recommend retiring on a strictly narrower
+        # search than the gate runs. An npm ALIAS hides the installed package
+        # inside the value (`"charts": "npm:d3@^7"`), so read the lines rather
+        # than counting them.
+        $ at_solyra grep -nE "<surface>" -- package.json
         # SELF-EXCLUDED PER SCOPE, exactly as the stocks probes above are. A
         # Solyra agent or slash command is a retirable surface too, and its own
         # definition always mentions its name — so a combined search returns
@@ -219,6 +241,8 @@ body:
         # code-reviewer: the combined form returns its own definition file.
         # Solyra has no .github/prompts, so there are three scopes here, not
         # four — checked, not assumed symmetric with stocks.
+        # One exclusion per alternative here too — see the note on the stocks
+        # probes above.
         $ at_solyra grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
         $ at_solyra grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
         $ at_solyra grep -nE "<surface>" -- CLAUDE.md
