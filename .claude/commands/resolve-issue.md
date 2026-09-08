@@ -699,45 +699,6 @@ assertion through one function that returns on the first failure:
 # an error message. So resolve the path first and say what to do if it is not
 # there; do NOT skip the solyra half, because "I could not look" and "nothing
 # uses it" are the two answers this whole phase exists to keep apart.
-SOLYRA=${SOLYRA:-../solyra}
-git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
-  echo "no solyra checkout at '$SOLYRA'. Set SOLYRA=<path>, or:"
-  echo "  git clone https://github.com/TeneikaAskew/solyra ../solyra"
-  echo "NOT asserting — a surface can be dead here and live in the frontend."
-  return 1 2>/dev/null || exit 1; }
-# AND CHECK IT IS THE RIGHT REPO. `rev-parse --git-dir` only says "a git
-# checkout" — measured, it exits 0 for an unrelated scratch repo with no remote
-# at all. A stale ambient SOLYRA or a mistyped path then makes every symbol
-# absent over there, which is the answer this half exists to distrust, arriving
-# with the confidence of a successful search.
-# FOUR LITERAL FORMS, no globs. A suffix pattern like `*[/:]TeneikaAskew/solyra`
-# checks the path and says nothing about the HOST — measured, it accepts
-# https://example.com/TeneikaAskew/solyra.git and
-# https://github.com.evil.invalid/TeneikaAskew/solyra.git alongside the real
-# thing, and any repo at those addresses answers "no consumers" for whatever
-# you ask. Normalising by stripping userinfo does not fix it either: `${o#*@}`
-# stops at the FIRST `@`, so https://evil.invalid/x@github.com/… normalises to
-# the canonical string. So enumerate instead of pattern-matching. A checkout
-# using some other remote shape is REFUSED rather than guessed at, which is the
-# safe direction: refusing prints what is expected, guessing certifies a
-# deletion from the wrong repository.
-_origin=$(git -C "$SOLYRA" remote get-url origin 2>/dev/null)
-_origin=${_origin%/}; _origin=${_origin%.git}
-case "$_origin" in
-  https://github.com/TeneikaAskew/solyra)   ;;
-  ssh://git@github.com/TeneikaAskew/solyra) ;;
-  git://github.com/TeneikaAskew/solyra)     ;;
-  git@github.com:TeneikaAskew/solyra)       ;;
-  *) echo "'$SOLYRA' is a git checkout, but origin is '${_origin:-<none>}'."
-     echo "Expected one of:"
-     echo "  https://github.com/TeneikaAskew/solyra"
-     echo "  ssh://git@github.com/TeneikaAskew/solyra"
-     echo "  git://github.com/TeneikaAskew/solyra"
-     echo "  git@github.com:TeneikaAskew/solyra"
-     echo "NOT asserting — searching the wrong repo reports 'no consumers'"
-     echo "for every symbol you ask about."
-     return 1 2>/dev/null || exit 1;;
-esac
 
 # Defined HERE, in the same fence as the assertion. Shell functions do not
 # survive between tool invocations — measured, calling `consumed` in a fresh
@@ -961,6 +922,52 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     ":!.claude/commands/$sym.md" "${reviewed[@]}"
   return 3; }
 
+# RESOLVED AND VALIDATED HERE, not at the top of the fence. Running this at the
+# top means a stocks-only session exits before ANY function is defined —
+# measured, `type retired_everywhere` comes back "not found" after sourcing the
+# block with SOLYRA pointing nowhere, so the resource-only retirement path this
+# phase explicitly supports cannot run at all. That path never needed solyra:
+# a scheduler retirement asks GCP, not the frontend. Only the code-retirement
+# half does, so the requirement lives there.
+_solyra_ok() {          # 0 usable, 1 refuse (and say why)
+  SOLYRA=${SOLYRA:-../solyra}
+  git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "no solyra checkout at '$SOLYRA'. Set SOLYRA=<path>, or:"
+    echo "  git clone https://github.com/TeneikaAskew/solyra ../solyra"
+    echo "NOT asserting — a surface can be dead here and live in the frontend."
+    return 1; }
+  # `rev-parse --git-dir` only says "a git checkout" — measured, it exits 0 for
+  # an unrelated scratch repo with no remote at all. A stale ambient SOLYRA or a
+  # mistyped path then makes every symbol absent over there, which is the answer
+  # this half exists to distrust, arriving with the confidence of a successful
+  # search.
+  #
+  # FOUR LITERAL FORMS, no globs. A suffix pattern like `*[/:]TeneikaAskew/solyra`
+  # checks the path and says nothing about the HOST — measured, it accepts
+  # https://example.com/TeneikaAskew/solyra.git and
+  # https://github.com.evil.invalid/TeneikaAskew/solyra.git alongside the real
+  # thing. Normalising does not fix it either: `${o#*@}` stops at the FIRST `@`,
+  # so https://evil.invalid/x@github.com/… normalises to the canonical string.
+  # A checkout on some other remote shape is REFUSED rather than guessed at.
+  local _origin
+  _origin=$(git -C "$SOLYRA" remote get-url origin 2>/dev/null)
+  _origin=${_origin%/}; _origin=${_origin%.git}
+  case "$_origin" in
+    https://github.com/TeneikaAskew/solyra)   ;;
+    ssh://git@github.com/TeneikaAskew/solyra) ;;
+    git://github.com/TeneikaAskew/solyra)     ;;
+    git@github.com:TeneikaAskew/solyra)       ;;
+    *) echo "'$SOLYRA' is a git checkout, but origin is '${_origin:-<none>}'."
+       echo "Expected one of:"
+       echo "  https://github.com/TeneikaAskew/solyra"
+       echo "  ssh://git@github.com/TeneikaAskew/solyra"
+       echo "  git://github.com/TeneikaAskew/solyra"
+       echo "  git@github.com:TeneikaAskew/solyra"
+       echo "NOT asserting — searching the wrong repo reports 'no consumers'"
+       echo "for every symbol you ask about."
+       return 1;;
+  esac; }
+
 absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # `local REV=` so an ambient REV in the caller's shell cannot pin the STOCKS
   # half to some other revision — the same ambient-state hazard as the project
@@ -1016,6 +1023,7 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # FETCH_HEAD unconditionally and both resolved to the same commit here. A
   # fetch failure REFUSES; falling back to the working tree would answer the
   # question the fetch was there to stop us answering.
+  _solyra_ok || return 1
   ( cd "$SOLYRA" || exit 2
     git fetch -q origin main \
       || { echo "solyra: fetch failed — no current revision to search"; exit 2; }
