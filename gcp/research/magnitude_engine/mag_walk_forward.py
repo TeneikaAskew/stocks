@@ -459,10 +459,64 @@ def promotion_verdict(y_pred: np.ndarray, y_true: np.ndarray | None = None) -> d
     }
 
 
+# The walk-forward gates a production candidate must clear before promotion.
+# promotion_verdict says the model is not STUCK on one bucket; these say it
+# LEARNED something: g1 that it beats the class-prior baseline on log-loss,
+# g2 that its probabilities sit within the per-timeframe ECE ceiling, g3 that
+# higher confidence means higher accuracy, g4 that it lifts EXPLOSIVE over its
+# base rate.
+_WALK_FORWARD_GATE_LABELS: tuple[tuple[str, str, str], ...] = (
+    ("g1_pass", "g1 log-loss beat", "g1_logloss_beat_folds"),
+    ("g2_pass", "g2 ECE within ceiling", "g2_ece_pass_folds"),
+    ("g3_pass", "g3 monotone decisive-hit", "g3_monotone_folds"),
+    ("g4_pass", "g4 EXPLOSIVE lift", "g4_lift_pass_folds"),
+)
+
+
+def walk_forward_gate_reason(gates: dict) -> str | None:
+    """Reason to refuse promotion on the cell's own walk-forward verdict.
+
+    `gates` is what _evaluate_phase_gate returned for this cell. Returns None
+    when gates 1-4 all passed, else a string naming each failing gate and the
+    fold count behind it.
+
+    Why this exists: until 2026-09-08 the promotion path judged the prediction
+    DISTRIBUTION only, so a candidate that never beat the class-prior baseline
+    could still become LATEST as long as it was not collapsed.
+    `magnitude-engine-slv7m` promoted three cells exactly that way -- SPY/15m
+    and QQQ/15m beat the baseline on 0 of 8 folds and cleared the ECE ceiling
+    on 2 of 8, then served the user-facing Expected-Move card. A bucket derived
+    from probabilities that never beat "always say TIGHT" is a fabricated
+    measurement under CLAUDE.md 3.7. See #1025.
+
+    Raises ValueError when `gates` does not carry the cell verdict: a caller
+    that cannot say whether the cell passed must not be able to promote by
+    omission. That failure is INTERNAL, so it fails loud rather than
+    defaulting to permit.
+    """
+    if not isinstance(gates, dict) or "cell_pass_gates_1_to_4" not in gates:
+        raise ValueError(
+            "gates must be the dict _evaluate_phase_gate returned for this "
+            "cell (no 'cell_pass_gates_1_to_4' key); promotion cannot be "
+            f"judged without it, got: {type(gates).__name__}")
+    if gates["cell_pass_gates_1_to_4"]:
+        return None
+    n_ok = gates.get("n_ok_folds", "?")
+    failed = [
+        f"{label} {gates.get(folds_key, '?')}/{n_ok} folds"
+        for pass_key, label, folds_key in _WALK_FORWARD_GATE_LABELS
+        if not gates.get(pass_key)
+    ]
+    if not failed:
+        return "cell verdict is FAIL on gates 1-4"
+    return "cell failed its walk-forward gates: " + "; ".join(failed)
+
+
 def _persist_production_model_artifact(
     ticker: str, tf: str, run_id: str,
     X_full: np.ndarray, y_full: np.ndarray,
     feature_cols: list[str],
+    gates: dict,
     calibration: str = DEFAULT_CALIBRATION,
     cv: int = DEFAULT_CV,
 ) -> str | None:
@@ -477,8 +531,13 @@ def _persist_production_model_artifact(
     --persist-production-model produces the artifact the inference job
     needs.
 
-    Returns the gs:// URI on success, None on failure OR when the promotion
-    gate blocks the candidate (both are logged but do NOT raise — walk_forward's
+    `gates` is this cell's walk-forward verdict (_evaluate_phase_gate). It is
+    required, not defaulted: promotion needs BOTH a sane prediction
+    distribution (promotion_verdict) and a cell that cleared gates 1-4, and a
+    caller that cannot supply the second must not promote by omission.
+
+    Returns the gs:// URI on success, None on failure OR when either promotion
+    criterion blocks the candidate (both are logged but do NOT raise — walk_forward's
     metric persistence is the primary output of the job; this is a side effect).
     A blocked promotion leaves LATEST pointing at the previous production model.
     """
@@ -520,10 +579,28 @@ def _persist_production_model_artifact(
     # the excess criterion compares against. See mag_config for the c49qf
     # and slv7m incidents.
     verdict = promotion_verdict(model.predict(X_full), y_true=y_full)
-    log.info("promotion gate %s:%s — %s (n=%d modal_share=%s true=%s "
-             "excess=%s distinct=%d)",
+    # Second criterion (#1025, 2026-09-08): the cell's own walk-forward
+    # verdict. Distribution sanity alone let three slv7m cells promote
+    # without ever beating the class-prior baseline.
+    gate_reason = walk_forward_gate_reason(gates)
+    verdict["walk_forward_gates"] = {
+        k: gates.get(k) for k in (
+            "n_ok_folds", "cell_pass_gates_1_to_4",
+            "g1_pass", "g1_logloss_beat_folds",
+            "g2_pass", "g2_ece_pass_folds",
+            "g3_pass", "g3_monotone_folds",
+            "g4_pass", "g4_lift_pass_folds",
+        )
+    }
+    if gate_reason:
+        verdict["reason"] = (gate_reason if verdict["ok"]
+                             else f"{verdict['reason']}; {gate_reason}")
+        verdict["ok"] = False
+    log.info("promotion gate %s:%s — %s (n=%d wf_gates=%s modal_share=%s "
+             "true=%s excess=%s distinct=%d)",
              ticker, tf, "PASS" if verdict["ok"] else "BLOCK",
              verdict["n"],
+             "PASS" if gates.get("cell_pass_gates_1_to_4") else "FAIL",
              "n/a" if verdict["modal_share"] is None
              else f"{verdict['modal_share']:.3f}",
              "n/a" if verdict["true_modal_share"] is None
@@ -821,7 +898,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         try:
             uri = _persist_production_model_artifact(
                 ticker, tf, run_id, X_full, y_full, feature_cols,
-                calibration=calibration, cv=cv,
+                gates=gates, calibration=calibration, cv=cv,
             )
             if uri:
                 summary["production_model_uri"] = uri

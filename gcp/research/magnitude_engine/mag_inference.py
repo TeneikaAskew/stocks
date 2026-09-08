@@ -63,14 +63,25 @@ log = logging.getLogger(__name__)
 # Default cells. Override via INFERENCE_CELLS env var as
 # "TICKER:TF,TICKER:TF,...".
 #
-# 15m is the VALIDATED timeframe (2026-07-11): the Direction-Predictability
-# Phase-2 work found magnitude is robustly predictable + calibrated at 15m with
-# isotonic calibration + pruned features (gate passes all 3 tickers across fold
-# placements; ECE ~0.04). The production 15m artifacts are persisted from a
-# `--features=prune --calibration=isotonic --persist-production-model` run — the
-# artifact's feature_cols.txt carries the pruned column set and model.joblib is
-# the isotonic-calibrated model, so inference aligns to them automatically. See
-# MAGNITUDE_ENGINE_RESULTS.md "ROBUSTNESS CONFIRMED".
+# 15m is the timeframe the Expected-Move surface should read: the
+# Direction-Predictability Phase-2 work (2026-07-11) found magnitude robustly
+# predictable and calibrated at 15m with isotonic calibration + pruned
+# features, gate passing all 3 tickers across fold placements with ECE ~0.04.
+# See MAGNITUDE_ENGINE_RESULTS.md "ROBUSTNESS CONFIRMED".
+#
+# CORRECTED 2026-09-08 (#1025): this block used to say the production 15m
+# artifacts ARE persisted from that `--features=prune --calibration=isotonic`
+# configuration. They are not, and never have been. Every artifact under
+# magnitude-models/production/ carries all 252 feature columns (measured on
+# each cell's live feature_cols.txt), so none was pruned, and the one isotonic
+# run that reached production, `magnitude-engine-c49qf`, is the model that
+# collapsed to 100% TIGHT — the incident mag_config's promotion-gate comment
+# describes. The job trains with mag_config.DEFAULT_CALIBRATION ("none") and
+# no feature families unless MAG_FEATURES says otherwise. Reproducing the
+# validated configuration in production is open work on #1025; until then do
+# not cite this comment as evidence that the serving model is that one.
+# Inference aligns to whatever the artifact's feature_cols.txt lists either
+# way, so this is a claim about provenance, not a loading bug.
 #
 # 5m is RETAINED but is NOT the validated timeframe (its walk-forward log-loss
 # beat is negative — see MAGNITUDE_ENGINE_RESULTS.md). It keeps flowing for any
