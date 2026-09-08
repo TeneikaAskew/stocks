@@ -130,11 +130,12 @@ body:
         $ git grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
         $ git grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
         That third one is the fourth executable-markdown scope found so far:
-        .github/workflows/refresh-architecture-docs.yml:486 passes
-        .github/prompts/*.md verbatim to Gemini, so a file named only there is
-        a live input to a scheduled job. Measured on verify_docs_against_live
+        scripts/maintenance/render_doc_prompts.py renders .github/prompts/*.md
+        and refresh-architecture-docs.yml:537 cats the result into Gemini, so a
+        symbol named only in a source template is a live input to a scheduled
+        job that ':!*.md' hides. Measured on verify_docs_against_live
         with its real consumers simulated away — code, agents and commands all
-        return "no matches" while .github/prompts/architecture.md:64 names
+        return "no matches" while .github/prompts/architecture.md:80 names
         scripts/verify_docs_against_live.py as the gate the refresh must pass.
         A hit in .claude/commands/ is AMBIGUOUS, not proof: it may be a real
         route (`/debug-workflow`) or one of these forms quoting an example.

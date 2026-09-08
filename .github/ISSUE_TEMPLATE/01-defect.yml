@@ -128,10 +128,12 @@ body:
         $ git grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
         $ git grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
         .github/prompts/*.md is the fourth executable-markdown scope:
-        .github/workflows/refresh-architecture-docs.yml:486 passes them
-        verbatim to Gemini. Measured on verify_docs_against_live with its real
-        consumers simulated away — code, agents and commands all return "no
-        matches" while .github/prompts/architecture.md:64 names
+        scripts/maintenance/render_doc_prompts.py renders them and
+        refresh-architecture-docs.yml:537 cats the result into Gemini, so the
+        source templates are markdown that ':!*.md' hides. Measured on
+        verify_docs_against_live with its real consumers simulated away — code,
+        agents and commands all return "no matches" while
+        .github/prompts/architecture.md:80 names
         scripts/verify_docs_against_live.py as the gate the refresh must pass.
         A .claude/commands/ hit is AMBIGUOUS — a real route, or one of these
         forms quoting an example. Read the lines and say which. An agent or

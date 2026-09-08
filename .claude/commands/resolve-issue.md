@@ -528,10 +528,19 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
            market_data_intraday etf_options_snapshots exit_config_overrides; do
     git grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
-      ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
+      ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
       ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'
   done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
   ```
+
+  **`':!*.md'` belongs in the probe because it belongs in `EXCLUDE_STOCKS`.** The
+  probe exists to derive the GENERATED-artifact exclusions, and executable
+  markdown is a different question that `consumed()` answers in its own scopes
+  (`.claude/agents`, `.claude/commands`, `.github/prompts`). Without the glob the
+  probe returns 15 paths — four executable `.claude/agents/*.md` and ten prose
+  files alongside the one below — measured today, and reading that list invites
+  exactly the wrong conclusion twice over: that live agent definitions are noise
+  to exclude, or that ten prose files need naming one by one.
 
   Measured: before the last two exclusions that printed `Architecture.drawio`,
   `Architecture-icons.drawio`, `ERD.drawio` and
@@ -710,6 +719,14 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # EXCLUDE must be set by the caller to the array for the repo you are in.
   local sym=$1; shift
   local a b c e rc reviewed=()
+  # REV pins the search to a COMMITTED revision instead of the working tree.
+  # Empty for this repo, where the deletion under test IS the working tree and a
+  # committed-only search would not see it. Set for solyra, where the question
+  # is "does the deployed frontend still call this" and the answer must not
+  # depend on which branch that checkout happens to be parked on — see
+  # absent_everywhere. A bad rev exits 128, which the numeric check below
+  # already refuses.
+  local rev=(); test -z "${REV:-}" || rev=( "$REV" )
   test ${#EXCLUDE[@]} -gt 0 \
     || { echo "EXCLUDE unset — set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA first;"
          echo "an empty exclusion set searches prose and generated files too."
@@ -722,47 +739,62 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # rc=1 "absent" for that pattern while -E returns 0 and names gcp/deploy.sh,
   # gcp/schema.sql, platform/api/openapi.json and the backtest router. A
   # coupled retirement would certify BOTH surfaces gone while both were live.
-  git grep -qE "$sym" -- . "${EXCLUDE[@]}"; a=$?
+  git grep -qE "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}"; a=$?
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
   # file as the only hit. Excluding a path that does not exist (the surface is
   # not an agent) is safe — measured rc=1, not 128.
-  git grep -qE "$sym" -- .claude/agents ":!.claude/agents/$sym.md"; b=$?
-  git grep -qE "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
+  git grep -qE "$sym" "${rev[@]}" -- .claude/agents ":!.claude/agents/$sym.md"; b=$?
+  git grep -qE "$sym" "${rev[@]}" -- .claude/commands ":!.claude/commands/$sym.md" \
     "${reviewed[@]}"; c=$?
-  # FOURTH executable-markdown scope. .github/prompts/*.md are passed verbatim
-  # to Gemini by .github/workflows/refresh-architecture-docs.yml:486 —
-  # `--prompt "$(cat .github/prompts/architecture.md)"` — so a file named only
-  # there is a live input to a scheduled job, and ':!*.md' hides it. Measured
-  # on verify_docs_against_live with its real consumers simulated away: code 1,
-  # agents 1, commands 1 — "absent, safe to delete" — while
-  # .github/prompts/architecture.md:64 names scripts/verify_docs_against_live.py
-  # as the gate the regenerated doc must pass. A hit here is a CONSUMER, not
+  # FOURTH executable-markdown scope. .github/prompts/*.md reach Gemini through
+  # .github/workflows/refresh-architecture-docs.yml: scripts/maintenance/
+  # render_doc_prompts.py renders them into $RUNNER_TEMP/prompts/ (`:425`) and
+  # the four model steps cat the rendered copy (`:537`, `:548`, `:559`, `:572`).
+  # Rendered or not, the SOURCE templates are markdown and ':!*.md' hides them,
+  # so a symbol named only in a prompt is a live input to a scheduled job that
+  # the search calls dead. Measured on verify_docs_against_live with its real
+  # consumers simulated away: code 1, agents 1, commands 1 — "absent, safe to
+  # delete" — while .github/prompts/architecture.md:80 names
+  # scripts/verify_docs_against_live.py as the gate the refresh must pass. Same
+  # before/after on doc_inventory, named at architecture.md:31 and readme.md:35.
+  # (Line numbers read from origin/main, which renders the prompts; the branch
+  # this text was first written against cat'ed them directly at :486.)
+  # A hit here is a CONSUMER, not
   # ambiguous like .claude/commands/: a prompt is an input to a job, never this
   # file's own worked example. Self-exclusion for symmetry with the agent scope,
   # and the whole scope is a safe no-op where the directory does not exist —
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
-  git grep -qE "$sym" -- .github/prompts ":!.github/prompts/$sym.md"; e=$?
+  git grep -qE "$sym" "${rev[@]}" -- .github/prompts ":!.github/prompts/$sym.md"; e=$?
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
   # `scripts` block is EXECUTABLE: `npm run contract:sync` invokes
   # scripts/sync-api-contract.mjs. Measured with the other consumers gone, the
   # excluded form returned rc=1 "dead" while npm still exposed a broken command.
   # So read the scripts block on its own, with jq rather than grepping the file.
-  local d=1 st
-  if [ -f package.json ]; then
+  local d=1 st pkg
+  # Read package.json from the SAME place as everything else. Reading the
+  # working-tree file while the greps read a pinned rev is how the two halves
+  # disagree without saying so.
+  if [ ${#rev[@]} -gt 0 ]; then pkg=$(git show "$REV:package.json" 2>/dev/null) || pkg=
+  elif [ -f package.json ];  then pkg=$(cat package.json)
+  else                            pkg=; fi
+  if [ -n "$pkg" ]; then
     command -v jq >/dev/null \
       || { echo "jq not found — cannot inspect package.json scripts"; return 2; }
-    jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"' package.json \
+    printf '%s' "$pkg" \
+      | jq -r '.scripts // {} | to_entries[] | "\(.key) \(.value)"' \
       | grep -qE -- "$sym"    # -E, not -F: same alternation, same false clear
     # CAPTURE THE WHOLE ARRAY FIRST. Measured: `d=$?` resets PIPESTATUS to (0),
     # the assignment's own status, and jq's real exit is gone. A jq failure is
     # otherwise invisible here — measured, malformed JSON gives jq rc=5 and grep
     # rc=1, and rc=1 reads as "not found", i.e. absent.
-    st=( "${PIPESTATUS[@]}" ); d=${st[1]}
-    test "${st[0]}" -eq 0 \
-      || { echo "jq failed on package.json (rc=${st[0]}) — asserting nothing"
+    # THREE stages now, so jq is [1] and grep is [2]. Getting these indices
+    # wrong is silent: st[1] would read jq's status as the match result.
+    st=( "${PIPESTATUS[@]}" ); d=${st[2]}
+    test "${st[1]}" -eq 0 \
+      || { echo "jq failed on package.json (rc=${st[1]}) — asserting nothing"
            return 2; }
   fi
   # NUMERIC, not a `*2*` string match on the concatenation. git grep is not
@@ -788,12 +820,15 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # and a NEW command that starts routing to the surface is not on your list, so
   # it drops back to 3 instead of riding an old approval.
   echo "only .claude/commands/ mentions it — a route, or this file's own example?"
-  git grep -nE "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
+  git grep -nE "$sym" "${rev[@]}" -- .claude/commands ":!.claude/commands/$sym.md" \
     "${reviewed[@]}"
   return 3; }
 
 absent_everywhere() {   # uses consumed() above — both scopes, both repos
-  local rc
+  # `local REV=` so an ambient REV in the caller's shell cannot pin the STOCKS
+  # half to some other revision — the same ambient-state hazard as the project
+  # id in retired_everywhere. The solyra subshell sets this local deliberately.
+  local rc REV=
   # Only rc=1 is "absent". 0 is consumed, 2 is "grep broke", 3 is "commands
   # mention it — go read those lines". All three fail, which is the right
   # default: this assertion may only pass when it actually looked and found
@@ -804,7 +839,22 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
   EXCLUDE=( "${EXCLUDE_STOCKS[@]}" )
   consumed "<symbol>" $REVIEWED; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
+  # PIN THE REVISION, and fetch it first. An existing checkout is not a current
+  # one: it can be parked on an old branch, or on a feature branch that already
+  # deleted the consumer, and searching its working tree answers "does THIS
+  # checkout use it" when the question is "does the deployed frontend use it".
+  # A stale tree returning rc=1 lets the backend retirement pass and breaks the
+  # frontend. FETCH_HEAD rather than origin/main, because a single-branch or
+  # shallow clone need not carry the +refs/heads/*:refs/remotes/origin/* refspec
+  # that keeps origin/main current — measured, `git fetch origin main` sets
+  # FETCH_HEAD unconditionally and both resolved to the same commit here. A
+  # fetch failure REFUSES; falling back to the working tree would answer the
+  # question the fetch was there to stop us answering.
   ( cd "$SOLYRA" || exit 2
+    git fetch -q origin main \
+      || { echo "solyra: fetch failed — no current revision to search"; exit 2; }
+    REV=$(git rev-parse FETCH_HEAD) || exit 2
+    echo "solyra: searching origin/main @ ${REV:0:12} (not the working tree)"
     EXCLUDE=( "${EXCLUDE_SOLYRA[@]}" )
     consumed "<symbol>" $REVIEWED_SOLYRA ); rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
@@ -823,7 +873,7 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
 # assume it is `<job>`, and do not assume it is `<job>-daily` either — the
 # suffixes in use include -daily, -weekly, -nightly, -sunday and more.
 # The two inventories take DIFFERENT projections, and this repo already knows
-# which. `gcp/deploy.sh:299` lists Run jobs with `value(metadata.name)`;
+# which. `gcp/deploy.sh:318` lists Run jobs with `value(metadata.name)`;
 # `scripts/cloud_shell/phase2_deploy.sh:156` lists Scheduler jobs with
 # `name.basename()`. Using `name.basename()` for BOTH is how the Run half
 # silently empties: a wrong projection still exits 0, `grep` then finds nothing
@@ -1712,12 +1762,12 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      2. **Compare the job's digest against the tag — and know what that does
         NOT prove.** `deploy.sh` records a job's deployed digest from its
         latest execution (`gcp/deploy.sh:112-119`), and `_resolve_image_ref`
-        (`:217`) turns a reference into `image@sha256:…`. Comparing them
+        (`:235`) turns a reference into `image@sha256:…`. Comparing them
         catches a job left on an older digest.
 
         It does **not** bind the deployment to YOUR build, and this is the
         trap: `_resolve_image_ref` resolves `${base}:${tag}` at the moment it
-        is called (`:229`), so if another build moved the tag between your
+        is called (`:238`), so if another build moved the tag between your
         build finishing and your capture, you capture *their* digest, the job
         update resolves the same tag to the same wrong digest, and the equality
         check passes. It is a self-consistency check wearing the clothes of a
@@ -1727,7 +1777,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
         Binding it properly means taking the digest from the build invocation
         itself rather than from the tag afterwards. **This repo cannot do that
         today**: `gcloud builds submit` is called bare at `gcp/deploy.sh:72`
-        and `:1399`, capturing no build id, and nothing anywhere reads a
+        and `:1418`, capturing no build id, and nothing anywhere reads a
         build's `results.images[].digest`. So it belongs to the same follow-up
         PR as the digest-pinning below, not to a resolution that happens to
         deploy. Until then, treat a matching digest as "nothing obviously
