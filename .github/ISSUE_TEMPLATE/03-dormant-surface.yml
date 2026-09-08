@@ -211,7 +211,17 @@ body:
         $ at_solyra grep -nE "<surface>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
             ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!package-lock.json' \
             ':!bun.lock' ':!package.json' ':!tests/fixtures/stocks-openapi.json'
-        $ at_solyra grep -nE "<surface>" -- .claude/agents .claude/commands CLAUDE.md
+        # SELF-EXCLUDED PER SCOPE, exactly as the stocks probes above are. A
+        # Solyra agent or slash command is a retirable surface too, and its own
+        # definition always mentions its name — so a combined search returns
+        # `.claude/agents/<surface>.md` as a "consumer" and a genuinely dormant
+        # Solyra surface can never reach the no-consumer state. Measured on
+        # code-reviewer: the combined form returns its own definition file.
+        # Solyra has no .github/prompts, so there are three scopes here, not
+        # four — checked, not assumed symmetric with stocks.
+        $ at_solyra grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ at_solyra grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ at_solyra grep -nE "<surface>" -- CLAUDE.md
         src/pages/DashboardPage.tsx:142:  const { data } = useQuery(['<surface>', d])
         src/pages/PlaybookPage.tsx:88:    fetch(`/api/<surface>?date=${d}`)
 

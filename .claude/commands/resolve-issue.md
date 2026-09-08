@@ -552,8 +552,17 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   # too, and `"${EXCLUDE_STOCKS[@]}"` on an unset array is NOT an error under
   # `set -u` on bash 5.2, so EXCLUDE arrives EMPTY rather than loudly missing —
   # which is the one state consumed() refuses by construction.
-  type -t consumed >/dev/null 2>&1 || . "${HELPERS:-/tmp/resolve-issue-helpers.sh}"
+  # THE LOAD GOES INSIDE, AND THROUGH AN `if`. `type … || . "$HELPERS"` at the
+  # top of the fence is a `||` list whose LAST command is the source, so under
+  # `set -e` a missing or unreadable helper file exits the shell right there —
+  # measured, before the function below is even defined, so the refusal it
+  # documents never runs and the operator sees only bash's "No such file".
+  # An `if` CONDITION is exempt from errexit, which is what makes the failure
+  # reachable rather than fatal.
   phase2_consumers() {
+    if ! type -t consumed >/dev/null 2>&1; then
+      if . "${HELPERS:-/tmp/resolve-issue-helpers.sh}" 2>/dev/null; then :; fi
+    fi
     type -t consumed >/dev/null 2>&1 || {
       echo "consumed() is not defined in this shell, and"
       echo "${HELPERS:-/tmp/resolve-issue-helpers.sh} did not provide it."
@@ -624,7 +633,7 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   # a probe in a pipeline the expansion kills only the first stage, so a
   # `| wc -l` still prints 0 and reads as a clean miss.
   scope_inventory() {
-    local root paths d
+    local root paths d hits
     root=$(git rev-parse --show-toplevel) \
       || { echo "not in a checkout — nothing below ran"; return 1; }
     test -n "$root" || { echo "empty top level — nothing below ran"; return 1; }
@@ -633,15 +642,22 @@ For each candidate cause, state the evidence and what would falsify it. Then:
     # grep's — a broken measurement wearing a clean miss's exit code.
     paths=$(git -C "$root" ls-files) \
       || { echo "could not list tracked files — asserting nothing"; return 1; }
-    # grep supplies each pipeline's status and a clean miss is 1, which under
-    # `set -o pipefail` would abort the function on its ordinary outcome —
-    # round 44's finding, one scope in. Accept 1, refuse >1.
-    if printf '%s\n' "$paths" | grep -oE '(^|/)(archive|_archive|deprecated|retired|quarantined?)/' | sort -u
+    # THE GREP'S STATUS, NOT SORT'S. A clean miss is 1 and is ordinary here, so
+    # only rc>1 refuses — but `sort -u` at the end of the pipe supplies the
+    # status in a shell without `pipefail`, which is what an operator pasting
+    # this into an interactive bash has. Measured with a grep stub exiting 2:
+    # d=0 under a plain shell against d=2 under pipefail, so a broken scan was
+    # accepted as a complete inventory. Sort what the grep returned instead,
+    # the way the artifact probe below collects its union first.
+    local hits
+    if hits=$(printf '%s\n' "$paths" | grep -oE '(^|/)(archive|_archive|deprecated|retired|quarantined?)/')
     then d=0; else d=$?; fi
     test "$d" -le 1 || { echo "the scope scan errored (rc=$d)"; return 1; }
-    if printf '%s\n' "$paths" | grep -oE '\.(disabled|retired)$' | sort -u
+    test -z "$hits" || printf '%s\n' "$hits" | sort -u
+    if hits=$(printf '%s\n' "$paths" | grep -oE '\.(disabled|retired)$')
     then d=0; else d=$?; fi
     test "$d" -le 1 || { echo "the marker scan errored (rc=$d)"; return 1; }
+    test -z "$hits" || printf '%s\n' "$hits" | sort -u
     # `git grep`, not `grep -rliE … $(git ls-files '*README*')`: the filesystem
     # form pastes an unquoted command substitution into an argument list, and
     # when it is EMPTY `grep -rliE <pattern>` has no file operand and reads
@@ -1467,6 +1483,26 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       test -n "$_i" || {
         echo "an empty implementation argument matches every path — refusing"
         return 1; }
+      # ROOT-RELATIVE, LIKE THE INVENTORIES. `git ls-files` and
+      # `git ls-tree --name-only` both emit `scripts/x.py`, never `./scripts/x.py`
+      # — measured, zero of this repo's tracked paths carry a `./` prefix. A
+      # caller typing the natural `./scripts/run_historical_signals.py` built
+      # `\./scripts/run[-_]historical[-_]signals\.py`, which matches neither
+      # inventory, so the named implementation vanished from both scans and a
+      # retirement could certify with the module on disk. A leading `./` is
+      # stripped; anything else non-canonical is refused rather than guessed at,
+      # because "which path did you mean" is exactly what this argument exists
+      # to state.
+      while [ "${_i#./}" != "$_i" ]; do _i=${_i#./}; done
+      case "$_i" in
+        /*)      echo "'$_i' is absolute; implementation paths are repo-relative,"
+                 echo "  as the inventories emit them. Did you mean ${_i#/} ?"
+                 return 1;;
+        ../*|*/../*)
+                 echo "'$_i' leaves the repo root — give the path as the"
+                 echo "  inventories emit it, e.g. scripts/run_historical_signals.py"
+                 return 1;;
+      esac
       # ESCAPED FIRST, NORMALISED SECOND — the order matters. Escaping turns
       # the path into a literal; the separator rewrite then inserts the one
       # bracket expression that is meant to be live. Doing it the other way
@@ -2279,8 +2315,17 @@ free and the acceptance call stays bare where it belongs.
 # in a fresh bash exits 127. A 127 here is indistinguishable from a failed
 # assertion at a glance, which is the worst way for this gate to be wrong, so
 # the wrapper checks before calling and refuses with 2 instead.
-type -t fully_retired >/dev/null 2>&1 || . "${HELPERS:-/tmp/resolve-issue-helpers.sh}"
+  # THE LOAD GOES INSIDE, AND THROUGH AN `if`. `type … || . "$HELPERS"` at the
+# top of the fence is a `||` list whose LAST command is the source, so under
+# `set -e` a missing or unreadable helper file exits the shell right there —
+# measured, before the function below is even defined, so the refusal it
+# documents never runs and the operator sees only bash's "No such file".
+# An `if` CONDITION is exempt from errexit, which is what makes the failure
+# reachable rather than fatal.
 run_gate() {
+  if ! type -t fully_retired >/dev/null 2>&1; then
+    if . "${HELPERS:-/tmp/resolve-issue-helpers.sh}" 2>/dev/null; then :; fi
+  fi
   type -t fully_retired >/dev/null 2>&1 || {
     echo "fully_retired is not defined in this shell, and"
     echo "${HELPERS:-/tmp/resolve-issue-helpers.sh} did not provide it."
@@ -2793,9 +2838,17 @@ git log --oneline -1             # confirm the commit exists before pushing
 # an untracked newfile.ts gives an EMPTY `--porcelain`, so this returned 0 and
 # certified a commit that did not contain it.
 nothing_left_behind() {
-  test -z "$(git status --porcelain --untracked-files=all)" \
-    || { git status --porcelain --untracked-files=all
-         echo "^ NOT in the commit — see below"; return 1; }
+  # THE STATUS FIRST, THEN THE EMPTINESS. A failed `git status` produces no
+  # stdout, so `test -z "$(…)"` reads it as a clean tree and certifies a commit
+  # nothing checked — measured with a git stub exiting 128, rc=0. Capturing it
+  # once also means the list printed is the list tested, rather than a second
+  # `git status` run after the first.
+  local st
+  st=$(git status --porcelain --untracked-files=all) \
+    || { echo "git status failed — NOT asserting the commit is complete"
+         return 1; }
+  test -z "$st" || { printf '%s\n' "$st"
+                     echo "^ NOT in the commit — see below"; return 1; }
 }
 nothing_left_behind              # BARE
 ```
@@ -3172,8 +3225,17 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          # `--untracked-files=all` for the reason Phase 7's check takes it: a
          # caller with `status.showUntrackedFiles=no` gets an empty
          # `--porcelain` from a tree that is not pristine.
-         [ -z "$(git status --porcelain --untracked-files=all)" ] \
-           || { git status --porcelain --untracked-files=all; exit 1; }
+         # AND ITS STATUS, CAPTURED FIRST. `[ -z "$(git status …)" ]` cannot
+         # tell a clean tree from a `git status` that FAILED: the substitution
+         # is empty either way, `-z` succeeds, and the recipe builds and
+         # deploys a tree it never established was pristine. `set -e` does not
+         # save it, because the enclosing `[` succeeded — measured with a git
+         # stub exiting 128 on `status`, which printed "unable to read index"
+         # and then reported the tree pristine.
+         st=$(git status --porcelain --untracked-files=all) \
+           || { echo "git status failed here — NOT asserting this tree is"
+                echo "pristine, and not deploying from it"; exit 1; }
+         [ -z "$st" ] || { printf '%s\n' "$st"; exit 1; }
          # Does this target run on the RESEARCH image? Derive it, do not trust
          # a list — 14 deploy functions select ${IMAGE}:research and only 4
          # dispatcher entries build it, and the inline annotations are
