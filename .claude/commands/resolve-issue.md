@@ -709,7 +709,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # blanket override, because a flag you can set without looking is not a review.
   # EXCLUDE must be set by the caller to the array for the repo you are in.
   local sym=$1; shift
-  local a b c rc reviewed=()
+  local a b c e rc reviewed=()
   test ${#EXCLUDE[@]} -gt 0 \
     || { echo "EXCLUDE unset — set it to EXCLUDE_STOCKS or EXCLUDE_SOLYRA first;"
          echo "an empty exclusion set searches prose and generated files too."
@@ -731,6 +731,19 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   git grep -qE "$sym" -- .claude/agents ":!.claude/agents/$sym.md"; b=$?
   git grep -qE "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
     "${reviewed[@]}"; c=$?
+  # FOURTH executable-markdown scope. .github/prompts/*.md are passed verbatim
+  # to Gemini by .github/workflows/refresh-architecture-docs.yml:486 —
+  # `--prompt "$(cat .github/prompts/architecture.md)"` — so a file named only
+  # there is a live input to a scheduled job, and ':!*.md' hides it. Measured
+  # on verify_docs_against_live with its real consumers simulated away: code 1,
+  # agents 1, commands 1 — "absent, safe to delete" — while
+  # .github/prompts/architecture.md:64 names scripts/verify_docs_against_live.py
+  # as the gate the regenerated doc must pass. A hit here is a CONSUMER, not
+  # ambiguous like .claude/commands/: a prompt is an input to a job, never this
+  # file's own worked example. Self-exclusion for symmetry with the agent scope,
+  # and the whole scope is a safe no-op where the directory does not exist —
+  # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
+  git grep -qE "$sym" -- .github/prompts ":!.github/prompts/$sym.md"; e=$?
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
   # `scripts` block is EXECUTABLE: `npm run contract:sync` invokes
@@ -757,13 +770,14 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # 141 (SIGPIPE), and measured, `1${b}1` for each of those contains no `2` at
   # all — the error fell through to the hit/miss logic and, with the other two
   # scopes at 1, certified the surface ABSENT. Anything above 1 is an error.
-  for rc in "$a" "$b" "$c" "$d"; do
+  for rc in "$a" "$b" "$c" "$d" "$e"; do
     test "$rc" -le 1 \
-      || { echo "git grep error: code=$a agents=$b commands=$c scripts=$d — asserting nothing"
+      || { echo "git grep error: code=$a agents=$b commands=$c scripts=$d prompts=$e — asserting nothing"
            return 2; }
   done
-  # code, an agent, or an npm script uses it
-  if [ "$a" -eq 0 ] || [ "$b" -eq 0 ] || [ "$d" -eq 0 ]; then return 0; fi
+  # code, an agent, an npm script, or a workflow prompt uses it
+  if [ "$a" -eq 0 ] || [ "$b" -eq 0 ] || [ "$d" -eq 0 ] || [ "$e" -eq 0 ]; then
+    return 0; fi
   test "$c" -eq 0 || return 1                  # nothing, anywhere
   # rc=3 is "a grep cannot tell" — and it has to be ESCAPABLE, or a symbol this
   # file names as an example can never be retired. TradingAlertSystem is exactly
@@ -833,22 +847,33 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
 # `none`, not an empty string: an unset or misspelled variable expands to empty,
 # and an empty argument that silently skipped its half is exactly how a live
 # resource passes a retirement check. Empty is refused; skipping is deliberate.
-retired_everywhere() {   # $1 = Cloud Run Job or 'none', $2 = Scheduler or 'none'
-  # PIN THE PROJECT. The active gcloud project is ambient state this function
-  # does not control, and the empty-inventory guard below cannot catch a wrong
-  # one: another project with jobs of its own returns a NON-empty list that
-  # simply lacks these names, which reads as "retired" while the production
-  # resources are untouched. gcp/deploy.sh and every recipe in CLAUDE.md pass
-  # --project explicitly for the same reason.
-  local proj=${GCP_PROJECT:-adept-mountain-474619-d4}
+retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
+  # PIN THE PROJECT, AND NOT FROM THE ENVIRONMENT. The active gcloud project is
+  # ambient state this function does not control, and the empty-inventory guard
+  # below cannot catch a wrong one: another project with jobs of its own returns
+  # a NON-empty list that simply lacks these names, which reads as "retired"
+  # while the production resources are untouched. gcp/deploy.sh and every recipe
+  # in CLAUDE.md pass --project explicitly for the same reason.
+  #
+  # `${GCP_PROJECT:-<prod>}` was the first version of this fix and it reopened
+  # the same hole one level along: GCP_PROJECT is a LIVE variable name in this
+  # repo — .github/workflows/deploy-staging.yml:179,
+  # refresh-architecture-docs.yml:69 and verify-docs-against-live.yml:33 all set
+  # it — so an ambient value silently redirects BOTH listings and the guard
+  # still passes. The default is now a literal, an override is a deliberate
+  # THIRD ARGUMENT, and the project queried is echoed, because a check whose
+  # target you cannot see in its output is a check you cannot audit.
+  local proj=${3:-adept-mountain-474619-d4}
   local job=$1 sched=$2 list
   test -n "$job" && test -n "$sched" || {
-    echo "usage: retired_everywhere <job|none> <scheduler|none>"
+    echo "usage: retired_everywhere <job|none> <scheduler|none> [project]"
     echo "pass 'none' EXPLICITLY for a resource this retirement does not touch;"
     echo "an empty argument is a typo, and a skipped check is a false pass."
     return 1; }
   test "$job$sched" != nonenone \
     || { echo "both 'none' — nothing to assert"; return 1; }
+  echo "retirement check against project: $proj"   # after the guards, so this
+  # never announces a query the function then refuses to run.
   if [ "$job" != none ]; then
     list=$(gcloud run jobs list --project="$proj" --region=us-east1 \
              --format='value(metadata.name)') \

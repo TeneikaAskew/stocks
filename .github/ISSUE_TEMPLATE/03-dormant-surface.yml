@@ -128,6 +128,14 @@ body:
         # every agent look consumed:
         $ git grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
         $ git grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ git grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        That third one is the fourth executable-markdown scope found so far:
+        .github/workflows/refresh-architecture-docs.yml:486 passes
+        .github/prompts/*.md verbatim to Gemini, so a file named only there is
+        a live input to a scheduled job. Measured on verify_docs_against_live
+        with its real consumers simulated away — code, agents and commands all
+        return "no matches" while .github/prompts/architecture.md:64 names
+        scripts/verify_docs_against_live.py as the gate the refresh must pass.
         A hit in .claude/commands/ is AMBIGUOUS, not proof: it may be a real
         route (`/debug-workflow`) or one of these forms quoting an example.
         Read the two or three lines and say which. The resolver's Phase 4
@@ -242,8 +250,9 @@ body:
         ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
         ':!.claude/commands/' ':!*.md' ':!*.drawio'
         ':!tests/fixtures/live_gcp_snapshot_*.json'` returns 1 — and separately
-        `.claude/agents/` and `.claude/commands/`, which are executable too: an
-        agent delegated to by name, or a command another command routes to, is a
+        `.claude/agents/`, `.claude/commands/` and `.github/prompts/`, which are
+        executable too: an agent delegated to by name, a command another command
+        routes to, or a prompt a workflow cats into Gemini, is a
         live consumer that a prose-shaped exclusion hides — the same exclusions as the
         consumer field above, and repo-wide because
         .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs
