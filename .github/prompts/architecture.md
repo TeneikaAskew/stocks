@@ -54,7 +54,12 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
    fails the run on either label. Leave every OTHER date alone — the dates in
    §4, §15 and §18 record when something was corrected, deleted or audited and
    are history, not as-of labels.
-6. Cite: every claim about code carries a `file:line` markdown link; every claim about live state says it was read live with the date. Never write "approximately N" where the inputs give N.
+6. When a sentence states a total and its parts — §5's `declares **N relations**
+   (N tables, N materialized views, N view)` — update every number in it, not just
+   the one the inputs contradict. Run 28 raised that total from 69 to 70 and left
+   the breakdown summing to 69. A gate now checks the total and each part against
+   `gcp/schema.sql`.
+7. Cite: every claim about code carries a `file:line` markdown link; every claim about live state says it was read live with the date. Never write "approximately N" where the inputs give N.
 
 ## Two facts to keep asserting
 

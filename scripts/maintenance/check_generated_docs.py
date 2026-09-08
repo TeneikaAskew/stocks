@@ -698,6 +698,14 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
     return out
 
 
+# The self-contained arithmetic in 05-a §5. Matched as a total plus a list of
+# parts rather than a fixed 3-tuple, so a schema that grows a second view or
+# loses its only one is still checked instead of silently unmatched. Longest
+# kind first: "materialized views" ends in "views".
+RELATION_BREAKDOWN = re.compile(r"declares \*\*(\d+) relations?\*\*\s*\(([^)]*)\)")
+RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
+
+
 def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
     """Prose figures that are DERIVED from the inventory must match it.
 
@@ -740,6 +748,27 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
         if int(claimed) != want:
             out.append(f"{ARCH}: claims {claimed} jobs at --max-retries {flag}; "
                        f"gcp/deploy.sh declares {want}")
+
+    # "declares **70 relations** (66 tables, 2 materialized views, 1 view)".
+    # Run 28 raised the total from 69 to 70 -- correctly, `gcp/schema.sql` had
+    # gained a table -- and left the breakdown at 66/2/1, which sums to 69. The
+    # sentence contradicted itself, and every gate passed it: the total was
+    # right, the churn was 12%, and no other document repeats the split. All
+    # four numbers are computable from the same parse the rendered table comes
+    # from, so none of them should be a prose claim anyone keeps in sync.
+    kinds = {"table": len(repo["tables"]), "materialized view": len(repo["materialized_views"]),
+             "view": len(repo["views"])}
+    total = sum(kinds.values())
+    breakdown = ", ".join(f"{v} {k}" + ("s" if v != 1 else "") for k, v in kinds.items())
+    for m in RELATION_BREAKDOWN.finditer(text):
+        if int(m.group(1)) != total:
+            out.append(f"{ARCH}: claims {m.group(1)} declared relations; "
+                       f"gcp/schema.sql declares {total} ({breakdown})")
+        for part in RELATION_PART.finditer(m.group(2)):
+            kind = part.group(2).rstrip("s")
+            if int(part.group(1)) != kinds[kind]:
+                out.append(f"{ARCH}: claims {part.group(1)} {part.group(2)} in gcp/schema.sql; "
+                           f"it declares {kinds[kind]} ({breakdown})")
 
     if live and live.get("db_tables"):
         declared, runtime = relation_counts(repo, live)

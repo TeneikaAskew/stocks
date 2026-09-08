@@ -138,7 +138,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 ## 5. Schema catalog
 
-`gcp/schema.sql` declares **69 relations** (66 tables, 2 materialized views, 1 view); the live database holds **95** because research and analytics jobs create 26 of their own at runtime (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). The declared set, with definition lines:
+`gcp/schema.sql` declares **70 relations** (67 tables, 2 materialized views, 1 view); the live database holds **95** because research and analytics jobs create 26 of their own at runtime (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). The declared set, with definition lines:
 
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |

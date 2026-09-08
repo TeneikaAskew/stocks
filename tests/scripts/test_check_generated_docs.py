@@ -927,3 +927,49 @@ def test_no_snapshot_means_no_asof_finding(tmp_path):
     doc.write_text("| Service | Role | Live 2020-01-01 |\n")
     assert gate.gate_stale_asof(tmp_path, None) == []
     assert gate.gate_stale_asof(tmp_path, {}) == []
+
+
+def test_the_relation_breakdown_must_sum_to_the_total(live, repo, tmp_path):
+    """05-a §5 says `declares **70 relations** (67 tables, 2 materialized
+    views, 1 view)`. Run 28 raised the total from 69 to 70 -- correctly,
+    `gcp/schema.sql` had gained a table -- and left the breakdown at 66/2/1,
+    which sums to 69. The sentence contradicted itself and every gate passed
+    it: the total was right, the churn was 12%, and no other document repeats
+    the split."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / gate.ARCH
+    a.write_text(a.read_text().replace(
+        "declares **70 relations** (67 tables,", "declares **70 relations** (66 tables,"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 66 tables" in f for f in findings), findings
+
+
+def test_a_wrong_relation_total_is_a_finding(live, repo, tmp_path):
+    """The other half: the parts can agree with each other and disagree with
+    the schema."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text().replace("declares **70 relations**", "declares **69 relations**"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 69 declared relations" in f for f in findings), findings
+
+
+def test_the_breakdown_is_matched_as_parts_not_a_fixed_triple(live, repo, tmp_path):
+    """A schema that grows a second view must still be checked. Matching a
+    literal `(N tables, N materialized views, N view)` shape would stop
+    matching entirely on a reword and fail open, which is the worse
+    direction for a gate."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text().replace(
+        "declares **70 relations** (67 tables, 2 materialized views, 1 view)",
+        "declares **70 relations** (1 view, 2 materialized views and 99 tables)"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 99 tables" in f for f in findings), findings
