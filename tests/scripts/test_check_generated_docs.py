@@ -999,23 +999,23 @@ def test_both_copies_of_the_relation_breakdown_are_checked(live, repo, tmp_path)
     assert any("claims 66 tables" in f for f in findings), findings
 
 
-def test_prose_about_materialized_views_is_not_mistaken_for_a_breakdown(live, repo, tmp_path):
-    """Two corpus lines mention materialized views while enumerating nothing:
-    05-a's "drops and recreates the two earnings materialized views" and 05-c's
-    reading of the orphan statuses. Neither is the schema breakdown, and a
-    gate that read them as one would fail an honest document.
+def test_a_subset_count_beside_a_view_count_is_not_a_breakdown(live, repo, tmp_path):
+    """Parts are read only from the clause a DECLARED TOTAL introduces, bounded
+    by the first `)` or `;` after it.
 
-    The scope is deliberately the breakdown SHAPE -- adjacent counts of two
-    named kinds -- and not every `N tables` in the prose. Both documents count
-    subsets in passing ("the twelve `strat_features_*` tables"), and those are
-    correct statements that a schema-total comparison would reject."""
+    An earlier version recognised the breakdown by shape alone -- a numbered
+    table count somewhere near a numbered materialized-view count -- and then
+    compared every number on that line against the whole-schema totals. Both
+    documents count subsets in passing, so a sentence like the one below would
+    have failed a refresh whose numbers were correct. Anchoring on the total
+    means such a sentence is never examined at all. (Codex, PR #1062.)"""
     root = tmp_path
     for d in DOCS:
         _copy(REPO / d, root / d)
     a = root / gate.ARCH
     a.write_text(a.read_text() +
-                 "\n`apply_schema.py` drops and recreates the two earnings materialized views.\n"
-                 "\nThe twelve `strat_features_*` tables are created at runtime.\n")
+                 "\n12 runtime tables feed 2 materialized views on the weekly refresh.\n"
+                 "\n`apply_schema.py` drops and recreates the two earnings materialized views.\n")
     assert gate.gate_derived_numbers(root, repo, live) == []
 
 

@@ -724,12 +724,6 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
 RELATION_TOTAL = re.compile(r"declares \*\*(\d+) relations?\*\*|"
                             r"\b(\d+) declared in `gcp/schema\.sql`")
 RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
-# The breakdown's fingerprint. Two prose lines mention materialized views
-# without enumerating the schema ("drops and recreates the two earnings
-# materialized views"); requiring a NUMBERED table count beside a NUMBERED
-# materialized-view count separates them.
-RELATION_BREAKDOWN = re.compile(r"\d+ tables?\b(?=.*?\b\d+ materialized views?\b)|"
-                                r"\d+ materialized views?\b(?=.*?\b\d+ tables?\b)")
 
 
 def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
@@ -793,13 +787,20 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                 if int(claimed) != total:
                     out.append(f"{doc}: claims {claimed} declared relations (prose line {i}); "
                                f"gcp/schema.sql declares {total} ({breakdown})")
-            if not RELATION_BREAKDOWN.search(line):
-                continue
-            for part in RELATION_PART.finditer(line):
-                kind = part.group(2).rstrip("s")
-                if int(part.group(1)) != kinds[kind]:
-                    out.append(f"{doc}: claims {part.group(1)} {part.group(2)} in gcp/schema.sql "
-                               f"(prose line {i}); it declares {kinds[kind]} ({breakdown})")
+                # Parts are read ONLY from the clause this total introduces,
+                # bounded by the first `)` or `;` after it. Scanning the whole
+                # line let any sentence that happened to count a table subset
+                # beside a materialized-view count -- "12 runtime tables feed
+                # 2 materialized views" -- be compared against the whole-schema
+                # totals and fail a refresh whose numbers were correct.
+                # (Codex, PR #1062.)
+                rest = line[m.end():]
+                clause = re.split(r"[);]", rest, maxsplit=1)[0]
+                for part in RELATION_PART.finditer(clause):
+                    kind = part.group(2).rstrip("s")
+                    if int(part.group(1)) != kinds[kind]:
+                        out.append(f"{doc}: claims {part.group(1)} {part.group(2)} in gcp/schema.sql "
+                                   f"(prose line {i}); it declares {kinds[kind]} ({breakdown})")
 
     if live and live.get("db_tables"):
         declared, runtime = relation_counts(repo, live)
