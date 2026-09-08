@@ -246,9 +246,26 @@ CHECKS: list[dict] = [
     # producing a false 87h/36h stale alert every run after a holiday or
     # weekend gap (run freshness-watchdog-n79mf, 2026-09-08T22:05Z: job
     # completed successfully and correctly inserted nothing for Labor Day).
+    #
+    # PR #1065 review (Codex): settle_lag_days models a *data*-time lag and
+    # is wrong applied to `inserted_at`, an *ingestion*-time column that
+    # lands same-day as every successful run. Combined with the -1-day
+    # anchor it silently downgrades a genuine 3-cron-cycle silent failure
+    # from "stale" (87h, alerts) to "warn" (63h, no issue opened —
+    # `--strict` only exits 1 on stale) — the exact F11 failure mode this
+    # check exists to catch. Fix: check `entry_time` instead, the table's
+    # own event-time column (schema.sql:2114, already the column the
+    # writer's MAX()+1min resume logic advances on, and indexed —
+    # idx_historical_signals_ticker_time — where inserted_at has no
+    # index). entry_time genuinely IS the previous session's data, so
+    # settle_lag_days=1 is the correct av-intraday-nightly pattern here,
+    # not a workaround: a real outage leaves entry_time frozen and lag
+    # grows at the true rate regardless of the anchor shift. Reproduced:
+    # with entry_time frozen at Monday's close, PR #1065's failure
+    # scenario now measures ~72h (stale) instead of 63h (warn).
     {
         "name": "historical_signals",
-        "ts_column": "inserted_at",
+        "ts_column": "entry_time",
         "ts_is_date": False,
         "expected_lag_hours": 36,           # cron fires 01:00 ET + buffer
         "per_ticker": False,
