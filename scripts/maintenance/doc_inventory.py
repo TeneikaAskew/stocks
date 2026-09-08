@@ -4080,9 +4080,16 @@ def restore_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str,
     return names
 
 
+# The one shape a runtime-relation count is written in, shared by the renderer
+# below and by check_generated_docs' gate, so a number the render fixes cannot
+# be re-flagged by a gate matching a different shape.
+RUNTIME_RELATION_COUNT = re.compile(r"(\d+)( runtime[- ](?:created )?relations)")
+
+
 def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
                   root: pathlib.Path = REPO) -> bool:
-    """Replace every marker block in doc_path with freshly rendered content.
+    """Replace every marker block in doc_path with freshly rendered content,
+    and render the runtime-relation count that appears in prose beside them.
 
     Returns True when the file changed. Idempotent: rendering the same inputs
     twice yields the same bytes. Links inside the blocks are rebased to the
@@ -4103,6 +4110,19 @@ def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, 
         body = _rebase_links(render_markdown(name, repo, live), depth)
         pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
         new = pattern.sub(lambda _m: f"{start}\n{body}\n{end}", new, count=1)
+    # The runtime-relation count is inventory, not a figure the model should
+    # derive. Runs 24 and 26 wrote 26, 28, 30 and again 26 against a true 27 --
+    # the last by carrying the previous version's number forward, which the
+    # prompt explicitly forbids and which no amount of prompt wording has
+    # stopped across four attempts. Rendering it HERE, before the model runs,
+    # means the document it edits already carries the right number and it has
+    # no reason to touch the line; the gate still checks the number afterwards,
+    # so a model that changes it anyway is still caught. Deliberately not done
+    # on the `--restore` path: that runs after the model, and silently
+    # rewriting its output would hide an edit rather than render an input.
+    if live and live.get("db_tables"):
+        n = len(runtime_relations(repo, live))
+        new = RUNTIME_RELATION_COUNT.sub(lambda m: f"{n}{m.group(2)}", new)
     if new != text:
         doc_path.write_text(new)
         return True

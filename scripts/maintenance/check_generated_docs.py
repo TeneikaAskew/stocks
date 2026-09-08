@@ -482,7 +482,10 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
         declared, runtime = relation_counts(repo, live)
         for doc in (ARCH, DEPS):
             body = (root / doc).read_text()
-            for m in re.finditer(r"(\d+) runtime[- ](?:created )?relations", body):
+            # The same compiled pattern the renderer rewrites, imported rather
+            # than repeated: a gate matching a different shape from the render
+            # would flag a number the render had already fixed.
+            for m in inv.RUNTIME_RELATION_COUNT.finditer(body):
                 if int(m.group(1)) != runtime:
                     out.append(f"{doc}: claims {m.group(1)} runtime relations; "
                                f"{len(live['db_tables'])} live minus {declared} declared is {runtime}")
