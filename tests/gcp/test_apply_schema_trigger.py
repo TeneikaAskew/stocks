@@ -595,3 +595,32 @@ def test_the_workflow_apply_passes_the_guard_and_waits_for_builds():
     for flag in ("--revision=", "--revision-time=", "--revision-ancestors="):
         assert flag in run, flag
     assert "git rev-list --max-count=100" in run
+
+
+def test_the_staging_preflight_reserves_time_for_its_own_image_build():
+    """The waiter's default reserve assumes the wait happens AFTER the
+    image build: its own header says so, and the apply-schema config calls
+    it in `serialize`, after build and push. The staging config calls it in
+    `preflight`, BEFORE them, so the build and push time is not covered and
+    the outer timeout can expire mid-apply (Codex on #1022).
+
+    Measured on live staging build 527e58c5 (2026-09-08): build 114.1 s,
+    push 52.5 s, deploy 42.9 s, pin 289.6 s. Apply 1800 s plus its ~90 s
+    preamble plus those four is 2389 s against a default reserve of 2400,
+    i.e. about ten seconds of margin. The preflight call site therefore
+    sets its own, larger reserve."""
+    import re
+
+    staging = (REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml").read_text()
+    block = staging[staging.index("id: preflight"):staging.index("id: build")]
+    m = re.search(r"RESERVE_SECONDS=(\d+)", block)
+    assert m, ("the staging preflight must set its own RESERVE_SECONDS: the "
+               "default is sized for a wait that happens after the image build")
+    assert int(m.group(1)) >= 2700, (
+        "the preflight reserve must cover the image build and push on top of "
+        "the apply and the deploy; got %s" % m.group(1))
+
+    # The apply-schema config waits after its build, so the default is right there.
+    apply_cfg = (REPO / "gcp/cloudbuild/apply-schema-cloudbuild.yaml").read_text()
+    assert apply_cfg.index("id: serialize") > apply_cfg.index("id: push"), \
+        "apply-schema waits after build/push, which is what the default reserve assumes"

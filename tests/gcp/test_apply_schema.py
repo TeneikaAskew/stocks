@@ -713,9 +713,11 @@ def _drive_main(tmp_path, monkeypatch, *, newest_digest, extra_args=(),
     monkeypatch.setattr(mod, "refresh_unpopulated_matviews", lambda engine: calls.append("sweep") or [])
     monkeypatch.setattr(mod, "guard_revision",
                         lambda engine, sha, t, anc, force=False: (True, "prev", newest_digest))
+    # The status is part of what main() decides (#1022: a 'partial' row is
+    # written before the first unit and promoted after), so it is recorded.
     monkeypatch.setattr(mod, "record_revision",
                         lambda engine, sha, t, anc, schema_digest, forced=False, status="ok":
-                        calls.append(("record", sha, schema_digest)))
+                        calls.append(("record", sha, schema_digest, status)))
     engine = _FakeEngine([], event_log=calls, lock_granted=lock_granted)
     monkeypatch.setattr("gcp.database.get_engine", lambda: engine)
     monkeypatch.setattr(mod, "_LOCK_POLL_SECONDS", 0)
@@ -732,28 +734,30 @@ def test_main_skips_the_apply_when_the_schema_content_is_unchanged(tmp_path, mon
     assert rc == 0 and d == digest
     # No unit ran; the mat-view sweep still did; the revision is recorded
     # as in force with the same digest so the guard's ancestry advances.
-    assert _applied(calls) == ["sweep", ("record", "abc", digest)]
+    assert _applied(calls) == ["sweep", ("record", "abc", digest, "ok")]
     assert "unchanged" in caplog.text and "prev" in caplog.text
 
 
 def test_main_applies_when_the_schema_content_differs_and_records_the_digest(tmp_path, monkeypatch):
     rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest="something-else")
     assert rc == 0
-    assert _applied(calls) == ["unit", "sweep", ("record", "abc", d)]
+    assert _applied(calls) == [("record", "abc", d, "partial"), "unit", "sweep", ("record", "abc", d, "ok")]
 
 
 def test_main_applies_when_no_digest_was_recorded_yet(tmp_path, monkeypatch):
     """Rows written before the column existed carry '' (the column default);
     an empty digest never matches, so the first apply after this change runs."""
     rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest="")
-    assert rc == 0 and _applied(calls)[0] == "unit"
+    # The pre-record comes first now (#1022), then the units.
+    assert rc == 0 and "unit" in _applied(calls)
+    assert _applied(calls)[0] == ("record", "abc", d, "partial")
 
 
 def test_reapply_unchanged_flag_forces_the_apply(tmp_path, monkeypatch):
     digest = __import__("hashlib").sha256(b"CREATE TABLE a (id INT);\n").hexdigest()
     rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest=digest,
                                extra_args=("--reapply-unchanged",))
-    assert rc == 0 and _applied(calls) == ["unit", "sweep", ("record", "abc", digest)]
+    assert rc == 0 and _applied(calls) == [("record", "abc", digest, "partial"), "unit", "sweep", ("record", "abc", digest, "ok")]
 
 
 def test_skipped_apply_still_fails_loud_when_the_sweep_fails(tmp_path, monkeypatch):
@@ -827,7 +831,11 @@ def test_partial_apply_is_recorded_as_partial_and_never_matches_the_digest(tmp_p
     monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
                                      "--revision", "abc", "--revision-time", "5"])
     assert mod.main() == 1
-    assert calls == [("abc", mod.schema_digest(schema.read_text()), False, "partial")]
+    # Two records: the pre-record before the first unit and the one after
+    # the failure. Both partial — record_revision never downgrades an 'ok',
+    # and a failed apply must never be promoted (#1022).
+    d = mod.schema_digest(schema.read_text())
+    assert calls == [("abc", d, False, "partial"), ("abc", d, False, "partial")]
     # The guard reports no in-force digest for a partial row.
     eng = _FakeEngine([[("abc", 5, "abc", "d-partial", "partial", False)]])
     assert guard_revision(eng, "def", 6) == (True, "abc", "")
@@ -1111,3 +1119,44 @@ def test_the_lock_is_released_when_a_unit_fails(tmp_path, monkeypatch):
                                run_unit=_boom)
     assert rc == 1
     assert calls[-1] == "unlock", calls
+
+
+def test_the_revision_is_recorded_partial_before_the_first_unit_runs(tmp_path, monkeypatch):
+    """A kill mid-apply left the database holding part of this revision
+    while schema_apply_history still named an OLDER one as in force
+    (Codex on #1022).
+
+    The `partial` record lives after the loop, so a Cloud Run task
+    timeout, an OOM or a cancellation never reaches it: singleton units
+    commit one at a time, so some are already applied. A delayed build of
+    an intermediate older commit then passes guard_revision against the
+    stale newest row and rolls the updated functions and views backward.
+
+    Recording partial BEFORE the first unit makes the incoming revision
+    the newest row for the whole window in which that can happen; the
+    complete apply promotes it to ok."""
+    rc, calls, digest = _drive_main(tmp_path, monkeypatch, newest_digest="other")
+    assert rc == 0, calls
+
+    statuses = [c for c in calls if isinstance(c, tuple) and c[0] == "record"]
+    assert len(statuses) >= 2, f"expected a partial then an ok record: {calls}"
+    first_unit = calls.index("unit")
+    first_record = next(i for i, c in enumerate(calls)
+                        if isinstance(c, tuple) and c[0] == "record")
+    assert first_record < first_unit, (
+        "the revision must be recorded before the first unit commits: %s" % calls)
+    assert statuses[0][3] == "partial", statuses[0]
+    assert statuses[-1][3] == "ok", statuses[-1]
+
+
+def test_a_failed_unit_leaves_the_revision_partial(tmp_path, monkeypatch):
+    """The pre-record must not be promoted when a unit failed."""
+    def _boom(unit):
+        raise RuntimeError("relation does not exist")
+
+    rc, calls, _ = _drive_main(tmp_path, monkeypatch, newest_digest="other",
+                               run_unit=_boom)
+    assert rc == 1
+    statuses = [c for c in calls if isinstance(c, tuple) and c[0] == "record"]
+    assert statuses, calls
+    assert all(st[3] == "partial" for st in statuses), statuses

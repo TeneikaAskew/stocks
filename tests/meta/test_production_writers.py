@@ -198,3 +198,21 @@ def test_the_freshness_watchdog_measures_live_alerts():
     block = src[src.index('"name": "signal_alerts"'):]
     block = block[:block.index("},")]
     assert "\"where\": \"run_kind = 'live'\"" in block, block
+
+
+def test_the_rvol_reconstruction_selects_live_rows_not_just_non_replay():
+    """`run_kind IS DISTINCT FROM 'replay'` keeps 'backfill' rows, so once
+    the 432 fabricated alerts are marked, this checked-in reconstruction
+    would still mix them into the win-rate and return numbers that support
+    the RVOL enforcement decision — and its cohort starts 2026-03-19,
+    exactly where the contamination starts (Codex on #1022)."""
+    from pathlib import Path as _P
+
+    repo = _P(__file__).resolve().parents[2]
+    sql = (repo / "gcp/queries/rvol_gate_analysis.sql").read_text()
+    bad = [l for l in sql.splitlines()
+           if "IS DISTINCT FROM 'replay'" in l and not l.lstrip().startswith("--")]
+    assert bad == [], (
+        "these predicates admit run_kind='backfill': %s" % bad)
+    assert sql.count("run_kind = 'live'") >= 3, (
+        "each cohort must select live rows explicitly")

@@ -424,19 +424,25 @@ def record_revision(engine, commit_sha: str, commit_time: int,
             f"SELECT commit_sha, applied_at, ancestors FROM {REVISION_TABLE} "
             "ORDER BY applied_at DESC LIMIT 1"
         )).fetchone()
-        if last is not None and last[0] == commit_sha and status == "ok":
+        # The same SHA merges whatever the incoming status: the applier now
+        # writes a 'partial' row before the first unit and promotes it after
+        # (Codex on #1022), so this has to update rather than insert a second
+        # row. Only 'ok' promotes; a later 'partial' leaves an 'ok' alone.
+        if last is not None and last[0] == commit_sha:
             merged = frozenset((last[2] or "").split()) | ancestors
             conn.execute(
                 sqlalchemy.text(
                     f"UPDATE {REVISION_TABLE} SET ancestors = :anc, schema_sha256 = :dg, "
-                    "status = 'ok', forced = (forced OR :forced) "
+                    "status = CASE WHEN :status = 'ok' THEN 'ok' ELSE status END, "
+                    "forced = (forced OR :forced) "
                     "WHERE commit_sha = :sha AND applied_at = :at"
                 ),
                 # forced is OR'd: once an operator bypassed the guard for this
                 # row, a later plain re-apply of the same SHA must not erase
                 # that evidence (Codex on #1022).
                 {"anc": " ".join(sorted(merged)), "dg": schema_digest,
-                 "forced": bool(forced), "sha": commit_sha, "at": last[1]},
+                 "status": status, "forced": bool(forced),
+                 "sha": commit_sha, "at": last[1]},
             )
             log.info("Revision %s was already the last applied row; merged its ancestry "
                      "(%d SHAs)", commit_sha, len(merged))
@@ -666,6 +672,22 @@ def main() -> int:
                          args.revision, args.revision_time)
                 return 0
 
+        # Recorded BEFORE the first unit commits, not after the loop. A
+        # Cloud Run task timeout, an OOM or a cancellation never reaches
+        # the `if failed` branch below, and singleton units commit one at
+        # a time, so a killed apply left the database holding part of this
+        # revision while schema_apply_history still named an older one as
+        # in force — and a delayed build of an intermediate commit then
+        # passed the guard and rolled the updated views back (Codex on
+        # #1022). With the row written first, the incoming revision is the
+        # newest for the whole window in which that can happen; a complete
+        # apply promotes it to 'ok' at the end.
+        if args.revision is not None:
+            record_revision(engine, args.revision, args.revision_time, ancestors,
+                            digest, forced=args.force_revision, status="partial")
+            log.info("Recorded revision %s as in-flight (partial) before applying",
+                     args.revision)
+
         failed = 0
         for i, unit in enumerate(units, 1):
             head = re.sub(r"\s+", " ", unit[0])[:80]
@@ -693,9 +715,10 @@ def main() -> int:
             log.error("Schema apply finished with %d failed units", failed)
             if args.revision is not None:
                 # The units that succeeded are committed, so the schema is
-                # partly this revision's. Record that so a delayed build for an
-                # OLDER revision is still refused; the 'partial' status keeps
-                # the digest from ever matching a later apply's.
+                # partly this revision's. The row is already there from the
+                # pre-record; this keeps it 'partial' (record_revision never
+                # downgrades an 'ok') so the digest never matches a later
+                # apply's and a delayed older build stays refused.
                 record_revision(engine, args.revision, args.revision_time, ancestors, digest,
                                 forced=args.force_revision, status="partial")
                 log.error("Recorded revision %s as PARTIAL (%d failed units); the next apply "

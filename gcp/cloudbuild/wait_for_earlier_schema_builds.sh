@@ -55,7 +55,15 @@ POLL_SECONDS="${POLL_SECONDS:-20}"
 # apply job 1800 s + ~90 s between the apply step starting and the Cloud
 # Run execution starting (image pull, digest describe, git deepen, jobs
 # update, provisioning; measured on build e4be0456, 2026-09-07) + deploy
-# and pin 300 s + margin.
+# and pin + margin. Deploy and pin measured 42.9 s and 289.6 s on staging
+# build 527e58c5 (2026-09-08), so the 300 s this once allotted for the
+# pair was already short; 2400 covers 1800 + 90 + 333 with ~175 s spare.
+#
+# This default assumes the wait happens AFTER the image build, which is
+# where apply-schema-cloudbuild.yaml calls it (its `serialize` step runs
+# after build and push). A caller that waits BEFORE building must reserve
+# the build and push too and pass its own value — the staging config does
+# (Codex on #1022).
 RESERVE_SECONDS="${RESERVE_SECONDS:-2400}"
 
 if [ -z "${SELF}" ]; then
