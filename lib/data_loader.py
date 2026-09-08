@@ -15,7 +15,6 @@ import logging
 import os
 import pandas as pd
 
-from lib.infra_errors import is_backend_outage
 import numpy as np
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -64,7 +63,7 @@ def _cloud_sql_active() -> bool:
 
 
 def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
-    """Run a SELECT against Cloud SQL; empty DataFrame on any error but an outage.
+    """Run a SELECT against Cloud SQL; log then return an empty DataFrame on error.
 
     Track D / G.P1.1: log the full traceback before swallowing the
     exception so production silent failures (e.g. Cloud SQL Connector
@@ -78,23 +77,22 @@ def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     fresh strat_levels data being available.
     """
     try:
-        # The STRICT helper, which raises. `query_to_dataframe` catches every
-        # exception and returns an empty frame BEFORE this function's guard
-        # can see it, so re-raising an outage here was dead code -- the outage
-        # was already swallowed one layer down, and the API's level-map builder
-        # still could not tell it from a real gap (Codex P1 on #999, twice).
-        # Reading strict and re-classifying here keeps the outage visible while
-        # preserving the logged-then-empty contract for every other failure.
+        # The STRICT helper, so a real failure raises HERE and the log below
+        # sees the traceback, rather than `query_to_dataframe` swallowing it to
+        # an empty frame one layer down. The result is still logged-then-empty
+        # on EVERY error, an outage included: this wrapper backs
+        # `load_intraday`, `load_daily`, `get_close_price`, `load_trades` and
+        # the options-chain read, each of which answers empty / None / a local
+        # Parquet fallback for an unreachable Cloud SQL, and re-raising an
+        # outage here broke every one of those contracts for the jobs and API
+        # consumers that never needed to distinguish it (Codex P2 on #999). A
+        # caller that DOES need to tell an outage from a gap -- the
+        # movement/prediction path -- reads `query_to_dataframe_strict`
+        # directly (see `lib/movement_statement._strict_query`), so nothing
+        # depends on this shared wrapper raising.
         from gcp.database import query_to_dataframe_strict
         return query_to_dataframe_strict(sql, params)
-    except Exception as exc:
-        # A backend OUTAGE propagates. An empty frame for an unreachable
-        # Cloud SQL is exactly the fabricated zero-row result the docstring
-        # warns every caller about. Anything else keeps the logged-then-empty
-        # contract below (a missing relation or a schema mismatch is not an
-        # outage; callers that read this empty must still treat it as such).
-        if is_backend_outage(exc):
-            raise
+    except Exception:
         log.exception(
             "_query_cloud_sql: query failed; returning empty DataFrame "
             "(callers must treat empty as a signal that the underlying "

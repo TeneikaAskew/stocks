@@ -202,15 +202,21 @@ def test_session_summary_includes_level_refresh_counters():
         )
 
 
-def test_query_cloud_sql_propagates_a_backend_outage():
-    """An unreachable Cloud SQL is not a zero-row result.
+def test_query_cloud_sql_is_logged_then_empty_on_a_backend_outage(caplog):
+    """An unreachable Cloud SQL is LOGGED and returns an EMPTY frame, so the
+    documented fallbacks hold.
 
-    The empty frame this wrapper answers for a failed query is the fabricated
-    result its own docstring warns about, and the API's level-map builder
-    could not tell it from a real gap (Codex P1 on #999). A backend outage
-    now propagates; the logged-then-empty contract above holds for anything
-    else.
+    `_query_cloud_sql` backs load_intraday / load_daily / get_close_price /
+    load_trades and the options-chain read, each of which answers empty / None
+    / a local-Parquet fallback for an unreachable Cloud SQL. Re-raising the
+    outage in this shared wrapper broke every one of those for the jobs and API
+    consumers that never needed to distinguish an outage from a gap (Codex P2
+    on #999). The movement/prediction path reads `query_to_dataframe_strict`
+    directly (`lib/movement_statement._strict_query`), so nothing depends on
+    this wrapper raising.
     """
+    import logging
+    import os
     import psycopg2
     import sqlalchemy
     from sqlalchemy.pool import NullPool
@@ -220,24 +226,29 @@ def test_query_cloud_sql_propagates_a_backend_outage():
     refused = 'connection to server at "127.0.0.1", port 5432 failed: Connection refused'
 
     # Injected where production fails: a lazy engine whose every connection is
-    # refused, so `query_to_dataframe_strict` genuinely raises. Patching
-    # `query_to_dataframe` (which swallows to an empty frame) would have hidden
-    # the real path -- the swallow is one layer down (Codex P1 on #999).
+    # refused, so `query_to_dataframe_strict` genuinely raises a SQLAlchemy
+    # OperationalError wrapping the psycopg2 one.
     def refuse():
         raise psycopg2.OperationalError(refused)
 
     lazy = sqlalchemy.create_engine("postgresql+psycopg2://", creator=refuse,
                                     poolclass=NullPool)
     with patch.object(database, "get_engine", return_value=lazy):
-        # A lazy connection failure reaches strict as a SQLAlchemy
-        # OperationalError wrapping the psycopg2 one; is_backend_outage walks
-        # `.orig`, so `_query_cloud_sql` re-raises rather than swallowing.
-        with pytest.raises(sqlalchemy.exc.OperationalError) as excinfo:
-            data_loader._query_cloud_sql("SELECT ticker FROM strat_levels", {})
-        assert isinstance(excinfo.value.orig, psycopg2.OperationalError)
+        with caplog.at_level(logging.ERROR):
+            df = data_loader._query_cloud_sql("SELECT ticker FROM strat_levels", {})
+        # Empty, not a raise -- and the traceback is logged so the failure is
+        # visible in Cloud Logging rather than silent.
+        assert df.empty
+        assert "_query_cloud_sql: query failed" in caplog.text
+        # get_close_price's explicit contract: None when Cloud SQL is
+        # unreachable, which the re-raise had turned into a propagated
+        # exception (Codex P2 on #999).
+        with patch.dict(os.environ, {"CLOUD_SQL_CONNECTION_NAME": "proj:reg:inst"}):
+            loader = data_loader.DataLoader(data_dir="/nonexistent")
+            assert loader.get_close_price("SPY", "2026-01-05") is None
 
     # A non-outage failure (a missing relation) still returns an empty frame
-    # per the logged-then-empty contract, not a raise.
+    # per the logged-then-empty contract -- unchanged.
     def bad_sql(*_a, **_k):
         raise psycopg2.errors.UndefinedTable("relation \"nope\" does not exist")
 
