@@ -976,7 +976,7 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
   # THIRD ARGUMENT, and the project queried is echoed, because a check whose
   # target you cannot see in its output is a check you cannot audit.
   local proj=${3:-adept-mountain-474619-d4}
-  local job=$1 sched=$2 list raw
+  local job=$1 sched=$2 list
   test -n "$job" && test -n "$sched" || {
     echo "usage: retired_everywhere <job|none> <scheduler|none> [project]"
     echo "pass 'none' EXPLICITLY for a resource this retirement does not touch;"
@@ -986,41 +986,68 @@ retired_everywhere() {   # $1 = job|none, $2 = scheduler|none, $3 = project
     || { echo "both 'none' — nothing to assert"; return 1; }
   echo "retirement check against project: $proj"   # after the guards, so this
   # never announces a query the function then refuses to run.
-  # VALIDATE THE PROJECTION, NOT THE INVENTORY. The first version refused any
-  # empty listing, on the grounds that ~35 jobs exist so empty means a broken
-  # query. That conflates two different states and makes the check unsatisfiable
-  # in cases this function itself advertises: a project passed as $3 that holds
-  # only the resource being retired, or a namespace legitimately emptied by the
-  # retirement, both return an empty list that is the CORRECT answer.
+  # ONE QUERY, VALIDATED AND PROJECTED FROM THE SAME RESPONSE. Two things had
+  # to be reconciled here and the obvious combination of them is wrong.
   #
-  # What the guard was actually for is a projection that silently empties a
-  # non-empty listing — `name.basename()` against Cloud Run, which prints
-  # nothing. So ask the same question twice, once with a field that always
-  # exists: non-empty raw plus empty projected is a broken projection; both
-  # empty is an empty namespace and a legitimate pass.
-  _inventory() {   # $1 = raw listing, $2 = projected listing, $3 = label
-    test -n "$1" && test -z "$2" || return 0
-    echo "$3: the listing returned rows but the projection printed nothing —"
-    echo "the --format is wrong for this resource type. Asserting nothing."
-    return 1; }
+  # (1) Refusing every empty listing — the first version, on the grounds that
+  # ~35 jobs exist so empty means a broken query — conflates two states and
+  # makes the check unsatisfiable in cases this function advertises: a project
+  # passed as $3 holding only the resource being retired, or a namespace the
+  # retirement legitimately emptied. Both return empty, correctly.
+  #
+  # (2) What the guard is actually for is a projection that silently empties a
+  # NON-empty listing. But validating that with a second `--format` means
+  # guessing a field gcloud populates, and the guess was wrong: `value(name)`
+  # is exactly the projection this file documents as empty for Cloud Run
+  # (`:938`), so BOTH queries came back empty, "both empty" read as a legitimate
+  # pass, and a live job certified as retired — the very failure being guarded
+  # against, rebuilt inside the guard. Unmeasurable here, too: gcloud is
+  # unauthenticated in this session, so the field could not be checked.
+  #
+  # So do not ask twice. Ask once for JSON and derive both answers from that one
+  # response, where they cannot disagree: rows counted from the array, names
+  # from whichever field the row actually carries. Cloud Run is Knative-shaped
+  # (`metadata.name`); Scheduler is flat and fully qualified
+  # (`projects/…/jobs/<name>`), hence the basename.
+  # EVERY DIAGNOSTIC GOES TO STDERR. This function's stdout IS its return value —
+  # the caller does `list=$(_names run)` — so an `echo` explaining why it gave up
+  # is captured into that variable and never reaches a human. Measured: the
+  # listing-failed message vanished entirely, leaving a bare nonzero with no
+  # reason. A message you cannot see is the same defect as no message.
+  _names() {   # $1 = run|scheduler ; prints bare names, nonzero when it cannot tell
+    local json n names
+    command -v jq >/dev/null \
+      || { echo "jq not found — cannot validate the $1 listing" >&2; return 1; }
+    # `case` returns the status of its matched branch, so this `||` really does
+    # see a failed gcloud — measured, `case x in x) false;; esac || echo` fires.
+    case $1 in
+      run)       json=$(gcloud run jobs list --project="$proj" \
+                          --region=us-east1 --format=json);;
+      scheduler) json=$(gcloud scheduler jobs list --project="$proj" \
+                          --location=us-east1 --format=json);;
+    esac || { echo "$1 listing FAILED — asserting nothing" >&2; return 1; }
+    n=$(jq 'length' <<<"$json" 2>/dev/null) \
+      || { echo "$1 listing is not a JSON array — asserting nothing" >&2
+           return 1; }
+    # `// empty` rather than letting `sub` hit a null: without it jq ABORTS on a
+    # row carrying neither field, and jq's own error text replaces the
+    # explanation below. Let the extraction come back empty and say so here.
+    names=$(jq -r '.[] | (.metadata.name // .name // empty) | sub(".*/";"")' \
+              <<<"$json" 2>/dev/null) \
+      || { echo "$1: name extraction failed — asserting nothing" >&2; return 1; }
+    # Rows but no names is the changed-shape case. Zero rows is an empty
+    # namespace, which is a legitimate answer and must be allowed to pass.
+    test "$n" -eq 0 || test -n "$names" \
+      || { echo "$1: $n rows but no name field on any of them — the response"  >&2
+           echo "shape changed. Asserting nothing." >&2
+           return 1; }
+    printf '%s' "$names"; }
   if [ "$job" != none ]; then
-    raw=$(gcloud run jobs list --project="$proj" --region=us-east1 \
-            --format='value(name)') \
-      || { echo "job listing FAILED — asserting nothing"; return 1; }
-    list=$(gcloud run jobs list --project="$proj" --region=us-east1 \
-             --format='value(metadata.name)') \
-      || { echo "job listing FAILED — asserting nothing"; return 1; }
-    _inventory "$raw" "$list" "Cloud Run jobs" || return 1
+    list=$(_names run) || return 1
     ! grep -qx "$job" <<<"$list" || { echo "$job still exists"; return 1; }
   fi
   if [ "$sched" != none ]; then
-    raw=$(gcloud scheduler jobs list --project="$proj" --location=us-east1 \
-            --format='value(name)') \
-      || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
-    list=$(gcloud scheduler jobs list --project="$proj" --location=us-east1 \
-             --format='value(name.basename())') \
-      || { echo "scheduler listing FAILED — asserting nothing"; return 1; }
-    _inventory "$raw" "$list" "Cloud Scheduler jobs" || return 1
+    list=$(_names scheduler) || return 1
     ! grep -qx "$sched" <<<"$list" || { echo "$sched trigger still exists"; return 1; }
   fi
 }
