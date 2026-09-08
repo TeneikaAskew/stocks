@@ -228,6 +228,62 @@ def _is_rth(bar: pd.DataFrame) -> bool:
     return time(9, 30) <= et.time() < time(16, 0)
 
 
+# The live monitor's first in-hours fetch is `outputsize=compact`, which is
+# the last 100 one-minute points (gcp/signal_monitor.py:331). That, and not
+# "everything since midnight", is the warm-up a session actually opens with.
+_LIVE_WARMUP_BARS = 100
+
+
+def trim_to_live_window_scope(bars: pd.DataFrame,
+                              warmup_bars: int = _LIVE_WARMUP_BARS) -> pd.DataFrame:
+    """Keep, per Eastern session, the bars the LIVE window would hold.
+
+    Feeding every bar since Eastern midnight warms the open with up to
+    `rolling_window_bars` (200) bars where live has at most 100, and
+    cumulative VWAP and the seeded EMA/MACD values differ enough to change
+    fires (Codex on #1022). Parity is the same warm-up SIZE, not merely a
+    non-empty one.
+
+    Post-close bars go too: `run_loop` stops fetching at the close, so
+    16:00-20:00 never enters the live window either. They were inert in
+    replay (nothing is evaluated after 16:00, and the rollover clears the
+    window) but "inert and different" is still different.
+    """
+    if bars.empty or 'Time' not in bars.columns:
+        return bars
+    ts = bars['Time']
+    et = ts.dt.tz_convert(_ET) if ts.dt.tz is not None \
+        else ts.dt.tz_localize('UTC').dt.tz_convert(_ET)
+    is_pre = et.dt.time < time(9, 30)
+    is_rth = (et.dt.time >= time(9, 30)) & (et.dt.time < time(16, 0))
+
+    keep = is_rth.copy()
+    for _day, idx in et.dt.date.groupby(et.dt.date).groups.items():
+        pre_idx = [i for i in idx if is_pre.loc[i]]
+        for i in pre_idx[-warmup_bars:]:
+            keep.loc[i] = True
+    return bars[keep].sort_values('Time').reset_index(drop=True)
+
+
+def limit_to_evaluated_bars(bars: pd.DataFrame,
+                            limit: Optional[int]) -> pd.DataFrame:
+    """Apply ``--limit`` to the bars that will be EVALUATED.
+
+    `bars.head(N)` selected from the Eastern-midnight query before the
+    RTH-only gate, so on a ticker with N or more premarket bars every
+    selected bar was warm-up and the replay evaluated nothing (Codex on
+    #1022). Truncating at the Nth RTH bar keeps the warm-up in front of it
+    and counts what the operator asked to see.
+    """
+    if not limit or bars.empty or 'Time' not in bars.columns:
+        return bars
+    rth = filter_to_rth(bars)
+    if len(rth) <= limit:
+        return bars
+    cutoff = pd.Timestamp(rth['Time'].iloc[limit - 1])
+    return bars[bars['Time'] <= cutoff].reset_index(drop=True)
+
+
 def filter_to_rth(bars: pd.DataFrame) -> pd.DataFrame:
     """Filter intraday bars to RTH only (09:30-16:00 ET).
 
@@ -575,11 +631,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 # evaluated. Dropping them left every session's 09:30-09:59
                 # unevaluated for want of min_bars_for_signals (Codex on
                 # #1022).
+                pre_n = len(bars)
+                bars = trim_to_live_window_scope(bars)
                 rth_n = int(len(filter_to_rth(bars)))
-                logger.info("ticker=%s persist mode: %d bars loaded, %d RTH "
-                            "bars will be evaluated; the rest are warm-up",
-                            ticker, len(bars), rth_n)
-            if args.limit:
+                logger.info("ticker=%s persist mode: %d bars loaded, trimmed to "
+                            "%d in the live window's scope, of which %d RTH bars "
+                            "are evaluated; the rest are warm-up",
+                            ticker, pre_n, len(bars), rth_n)
+                bars = limit_to_evaluated_bars(bars, args.limit)
+            elif args.limit:
                 bars = bars.head(args.limit)
             logger.info("ticker=%s loaded %d bars", ticker, len(bars))
             ticker_fires_before = len(captured_fires)

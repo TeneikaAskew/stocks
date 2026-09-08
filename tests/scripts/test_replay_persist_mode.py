@@ -337,3 +337,75 @@ def test_a_persisted_session_is_evaluated_with_its_own_premarket_warm_up():
     assert first_len >= 30, (
         "day 2's open was evaluated with %d bars in the window; live has that "
         "day's premarket behind it, so the open is not blind" % first_len)
+
+
+def _session_bars(day, pre_n, rth_n, post_n=0):
+    import pandas as pd
+    rows = []
+    if pre_n:
+        pre = pd.date_range(end=f"{day} 09:29", periods=pre_n, freq="1min",
+                            tz="America/New_York")
+        rows += list(pre)
+    if rth_n:
+        rows += list(pd.date_range(f"{day} 09:30", periods=rth_n, freq="1min",
+                                   tz="America/New_York"))
+    if post_n:
+        rows += list(pd.date_range(f"{day} 16:00", periods=post_n, freq="1min",
+                                   tz="America/New_York"))
+    return pd.DataFrame([{"Time": t.tz_convert("UTC"), "Open": 100.0, "High": 100.5,
+                          "Low": 99.5, "Close": 100.2, "Volume": 1000} for t in rows])
+
+
+def test_the_warm_up_is_capped_at_the_live_fetch_size():
+    """Feeding every bar since Eastern midnight warms the open with up to
+    `rolling_window_bars` (200) bars, but live's first in-hours fetch is
+    `outputsize=compact` — at most 100 points — so cumulative VWAP and the
+    seeded EMA/MACD values differ enough to change fires (Codex on #1022).
+
+    Parity means the same warm-up SIZE, not merely a non-empty one. Bars
+    after 16:00 are dropped for the same reason: run_loop stops fetching at
+    the close, so they never enter the live window either."""
+    import pandas as pd
+
+    from scripts.replay_signal_monitor import trim_to_live_window_scope
+
+    bars = pd.concat([
+        _session_bars("2026-09-02", pre_n=300, rth_n=20, post_n=15),
+        _session_bars("2026-09-03", pre_n=300, rth_n=20, post_n=15),
+    ], ignore_index=True)
+
+    out = trim_to_live_window_scope(bars, warmup_bars=100)
+    et = out["Time"].dt.tz_convert("America/New_York")
+    for day in ("2026-09-02", "2026-09-03"):
+        same = et[et.dt.date.astype(str) == day]
+        pre = same[same.dt.time < __import__("datetime").time(9, 30)]
+        rth = same[(same.dt.time >= __import__("datetime").time(9, 30))
+                   & (same.dt.time < __import__("datetime").time(16, 0))]
+        post = same[same.dt.time >= __import__("datetime").time(16, 0)]
+        assert len(pre) == 100, f"{day}: {len(pre)} warm-up bars, live has at most 100"
+        assert len(rth) == 20, f"{day}: RTH bars must not be trimmed"
+        assert len(post) == 0, f"{day}: post-close bars never enter the live window"
+    assert out["Time"].is_monotonic_increasing
+
+
+def test_the_limit_counts_bars_that_are_actually_evaluated():
+    """`--limit N` selected from the Eastern-midnight query before the
+    RTH-only gate, so on a ticker with N or more premarket bars every
+    selected bar was warm-up and the replay evaluated NOTHING (Codex on
+    #1022). Before the warm-up change, persist mode filtered to RTH first,
+    so the limit counted evaluated bars. It counts them again."""
+    from scripts.replay_signal_monitor import limit_to_evaluated_bars, filter_to_rth
+
+    bars = _session_bars("2026-09-02", pre_n=120, rth_n=50)
+    out = limit_to_evaluated_bars(bars, 10)
+    assert len(filter_to_rth(out)) == 10, (
+        "the limit must count RTH bars; got %d" % len(filter_to_rth(out)))
+    assert len(out) > 10, "the warm-up before those bars must be kept"
+
+
+def test_the_limit_is_a_no_op_when_there_are_fewer_rth_bars():
+    from scripts.replay_signal_monitor import limit_to_evaluated_bars
+
+    bars = _session_bars("2026-09-02", pre_n=10, rth_n=5)
+    assert len(limit_to_evaluated_bars(bars, 50)) == len(bars)
+    assert len(limit_to_evaluated_bars(bars, None)) == len(bars)
