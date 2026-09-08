@@ -140,6 +140,15 @@ def _tracked_files() -> frozenset:
     return frozenset(REPO / n for n in out.stdout.decode().split("\0") if n)
 
 
+#: What the repository-wide scan reads, by glob. `GNUmakefile` and lowercase
+#: `makefile` are the other two names Make loads without being told, and
+#: `_reads_as_make` already knew them while this list did not, so a newly
+#: tracked one would have bypassed both guards (Codex, PR #993 final review).
+SOURCE_PATTERNS = ("*.py", "*.sql", "*.sh", "*.yml", "*.yaml", "Dockerfile*",
+                   "Makefile", "GNUmakefile", "makefile", "*.mk", "*.ipynb",
+                   ".env.example", ".env.*.example", "*.env.example")
+
+
 def _source_files() -> list[pathlib.Path]:
     tracked = _tracked_files()
     out = []
@@ -161,9 +170,7 @@ def _source_files() -> list[pathlib.Path]:
     # every other archived path.
     # `Makefile` sits beside Dockerfile as tracked, executable configuration:
     # `export TZ = EST` there fixes the zone for every recipe (Codex, PR #993).
-    for pattern in ("*.py", "*.sql", "*.sh", "*.yml", "*.yaml", "Dockerfile*",
-                    "Makefile", "*.mk", "*.ipynb",
-                    ".env.example", ".env.*.example", "*.env.example"):
+    for pattern in SOURCE_PATTERNS:
         for p in REPO.rglob(pattern):
             if SKIP_DIRS & set(p.relative_to(REPO).parts):
                 continue
@@ -1175,14 +1182,37 @@ def _replaces_the_module_binding(tree: ast.AST, name: str, assignment=None) -> b
             continue
         if isinstance(node, ast.ClassDef):
             return True         # a class body runs when the class is defined
-        scope = node
-        while scope is not None and scope is not tree:
-            if (isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and not isinstance(parents.get(id(scope)), ast.ClassDef)
-                    and scope.name in invoked):
-                return True
-            scope = parents.get(id(scope))
+        if _function_runs(node, tree, parents, invoked):
+            return True
     return False
+
+
+def _function_runs(fn, tree, parents, module_invoked, seen=frozenset()) -> bool:
+    """Does `fn`'s body run at import, established from the inside out?
+
+    Invoked by name at module level; or invoked by name inside the body of a
+    function that itself runs. An invoked `init()` that merely DEFINES an
+    uncalled `inner()` runs nothing of inner's, and the earlier walk stopped
+    at the first invoked ancestor and said otherwise (Codex, PR #993 final
+    review). A method is never invoked by name at import.
+    """
+    if (not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            or id(fn) in seen):
+        return False
+    enclosing = parents.get(id(fn))
+    while (enclosing is not None and enclosing is not tree
+           and not isinstance(enclosing, _SCOPES)):
+        enclosing = parents.get(id(enclosing))
+    if enclosing is None or enclosing is tree:
+        return fn.name in module_invoked
+    if isinstance(enclosing, ast.ClassDef):
+        return False
+    called_inside = any(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == fn.name
+        for n in _reachable_scope_nodes(enclosing))
+    return called_inside and _function_runs(enclosing, tree, parents,
+                                            module_invoked, seen | {id(fn)})
 
 
 def _local_aliases(scope: ast.AST, nodes=None) -> dict[str, str]:
@@ -2249,6 +2279,18 @@ def _python_hits(path: pathlib.Path, text: str):
                         and id(node) in _module_level):
                     settings_exports.append((node, tgt, value, env))
 
+        # `if (TIME_ZONE := "EST"):` at module scope binds the same exported
+        # name as an assignment, and only `Assign`/`AnnAssign` were read
+        # (Codex, PR #993 final review). The statement the walrus sits in
+        # decides whether it is module level.
+        if (isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name)
+                and node.target.id.lower() in _TZ_KEYWORDS):
+            stmt = parents.get(id(node))
+            while stmt is not None and not isinstance(stmt, ast.stmt):
+                stmt = parents.get(id(stmt))
+            if stmt is not None and id(stmt) in _module_level:
+                settings_exports.append((stmt, node.target, node.value, env))
+
         # Every UNAMBIGUOUS legacy name, wherever it stands, with no call-name
         # whitelist in front of it. A whitelist is a list of the constructors
         # somebody thought of, and `dateutil.tz.gettz("US/Eastern")` was not
@@ -2400,9 +2442,13 @@ def _python_hits(path: pathlib.Path, text: str):
             # #993). `key`/`default` are `MutableMapping.setdefault`'s
             # names; `value` is accepted as well so the spelling in the
             # finding cannot walk past either.
-            kws = {k.arg: k.value for k in node.keywords if k.arg}
-            key = node.args[0] if node.args else kws.get("key")
-            value = (node.args[1] if len(node.args) >= 2
+            # Unpacked first, as the offset constructors are: `os.putenv(*("TZ",
+            # "EST"))` handed a single `Starred` here as the key, with no
+            # value to follow (Codex, PR #993 final review).
+            flat_args, flat_kwargs = _unpack_arguments(node, env)
+            kws = dict(flat_kwargs)
+            key = flat_args[0] if flat_args else kws.get("key")
+            value = (flat_args[1] if len(flat_args) >= 2
                      else kws.get("default", kws.get("value")))
             key_text = _const_string(key, env) if key is not None else None
             if (value is not None and key_text is not None
@@ -3226,7 +3272,54 @@ _PINE_STRING = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'")
 # was blind to the ordinary form (Codex, PR #993 final review).
 _PINE_CONST = re.compile(
     r"^[ \t]*(?:(?:var|varip|const)\s+)?(?:string\s+)?([A-Za-z_][A-Za-z0-9_]*)"
-    r"\s*(?::)?=\s*(?:\"([^\"\n]*)\"|'([^'\n]*)')[ \t]*$", re.M)
+    r"\s*(?::)?=\s*(.+?)[ \t]*$", re.M)
+# One fragment of a Pine string expression: a literal, or a name.
+_PINE_FRAG = re.compile(r"\s*(?:\"([^\"\n]*)\"|'([^'\n]*)'|([A-Za-z_][A-Za-z0-9_]*))\s*")
+
+
+def _split_top_level(text: str, sep: str) -> list:
+    """`(offset, piece)` for `text` split at `sep` outside parentheses and strings."""
+    out, depth, quote, start = [], 0, None, 0
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == sep and depth == 0:
+            out.append((start, text[start:i]))
+            start = i + 1
+    out.append((start, text[start:]))
+    return out
+
+
+def _pine_string_expr(expr: str, consts: dict, at: int, spans) -> "str | None":
+    """The string a Pine expression evaluates to, or None if not statically known.
+
+    Literals and bound names joined by `+`: `"E" + "ST"` hands `time(...)`
+    the frozen EST, and reading each fragment on its own found nothing
+    forbidden in either (Codex, PR #993 final review). A name resolves to the
+    binding in force at `at`, so a concatenation stored in a variable folds
+    the same way. Anything else -- a call, a number, an unbound name -- is
+    not a string this scan can know.
+    """
+    parts = []
+    for _off, piece in _split_top_level(expr, "+"):
+        m = _PINE_FRAG.fullmatch(piece)
+        if not m:
+            return None
+        if m.group(3) is not None:
+            value = _pine_constant_at(consts, m.group(3), at, spans)
+            if value is None:
+                return None
+            parts.append(value)
+        else:
+            parts.append(m.group(1) if m.group(1) is not None else m.group(2))
+    return "".join(parts)
 _PINE_IDENT = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_(])")
 
 
@@ -3245,8 +3338,12 @@ def _pine_constants(text: str) -> dict:
     spans = _pine_function_spans(text)
     out: dict = {}
     for m in _PINE_CONST.finditer(text):
-        value = m.group(2) if m.group(2) is not None else m.group(3)
         at = m.start(1)
+        # A string expression, folded against the bindings in force here;
+        # anything else is not a string constant and is not recorded.
+        value = _pine_string_expr(m.group(2), out, at, spans)
+        if value is None:
+            continue
         scope = next((k for k, (s, e) in enumerate(spans) if s <= at < e), None)
         out.setdefault(m.group(1), []).append((at, value, scope))
     return out
@@ -3270,24 +3367,40 @@ def _pine_call_hits(text: str) -> list:
     consts = _pine_constants(text)
     spans = _pine_function_spans(text)
     for start, head, args_start, args in _pine_tz_calls(text):
-        for m in _PINE_STRING.finditer(args):
-            value = m.group(1) if m.group(1) is not None else m.group(2)
-            is_offset = _bad_zone_value(value)
-            if is_offset is not None:
-                out.append((_TextHit(args_start + m.start(),
-                                     f"{head}(... {value!r} ...)"),
-                            value, is_offset))
-        # A bare identifier bound to a string constant is that string.
-        bare = _PINE_STRING.sub(lambda q: " " * len(q.group(0)), args)
-        for m in _PINE_IDENT.finditer(bare):
-            value = _pine_constant_at(consts, m.group(1), start, spans)
-            if value is None:
+        for off, arg in _split_top_level(args, ","):
+            lead = len(arg) - len(arg.lstrip())
+            # The whole argument as one string expression first: a literal,
+            # a bound name, or a `+` chain of them (Codex, PR #993 final
+            # review).
+            whole = _pine_string_expr(arg, consts, start, spans)
+            if whole is not None:
+                is_offset = _bad_zone_value(whole)
+                if is_offset is not None:
+                    text_ = arg.strip()
+                    shown = (repr(whole) if _PINE_STRING.fullmatch(text_)
+                             else f"{text_} (= {whole!r})")
+                    out.append((_TextHit(args_start + off + lead,
+                                         f"{head}(... {shown} ...)"),
+                                whole, is_offset))
                 continue
-            is_offset = _bad_zone_value(value)
-            if is_offset is not None:
-                out.append((_TextHit(args_start + m.start(),
-                                     f"{head}(... {m.group(1)} (= {value!r}) ...)"),
-                            value, is_offset))
+            # Otherwise its literals and bound names one by one, as before.
+            for m in _PINE_STRING.finditer(arg):
+                value = m.group(1) if m.group(1) is not None else m.group(2)
+                is_offset = _bad_zone_value(value)
+                if is_offset is not None:
+                    out.append((_TextHit(args_start + off + m.start(),
+                                         f"{head}(... {value!r} ...)"),
+                                value, is_offset))
+            bare = _PINE_STRING.sub(lambda q: " " * len(q.group(0)), arg)
+            for m in _PINE_IDENT.finditer(bare):
+                value = _pine_constant_at(consts, m.group(1), start, spans)
+                if value is None:
+                    continue
+                is_offset = _bad_zone_value(value)
+                if is_offset is not None:
+                    out.append((_TextHit(args_start + off + m.start(),
+                                         f"{head}(... {m.group(1)} (= {value!r}) ...)"),
+                                value, is_offset))
     return out
 
 
@@ -3840,7 +3953,7 @@ def _command_end(line: str, start: int) -> int:
 # `_reads_as_make` names.
 _MAKE_SCALAR = re.compile(
     r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.]*)[ \t]*"
-    r"(::=|:=|\?=|=)[ \t]*([^#\n]*?)[ \t]*$", re.M)
+    r"(::=|:=|\?=|\+=|=)[ \t]*([^#\n]*?)[ \t]*$", re.M)
 
 
 class _Deferred(str):
@@ -3909,6 +4022,23 @@ def _expand_make_vars(text: str) -> str:
             resolved = _resolve_make_value(value, scalars, at)
             if resolved is not None:
                 scalars.setdefault(name, []).append((at, resolved, False))
+            continue
+        if op == "+=":
+            # `A += EST` DEFINES an undefined `A`, recursively; otherwise it
+            # appends with a space, keeping the variable's flavour -- deferred
+            # stays deferred, immediate is expanded now (Codex, PR #993 final
+            # review).
+            prev = _scalar_in_force(scalars, name, at)
+            if prev is None:
+                scalars.setdefault(name, []).append((at, _Deferred(value), False))
+            elif isinstance(prev, _Deferred):
+                scalars.setdefault(name, []).append(
+                    (at, _Deferred(prev + " " + value), False))
+            else:
+                resolved = _resolve_make_value(value, scalars, at)
+                if resolved is not None:
+                    scalars.setdefault(name, []).append(
+                        (at, prev + " " + resolved, False))
             continue
         if op == "?=" and _scalar_in_force(scalars, name, at) is not None:
             continue
@@ -4160,9 +4290,11 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool,
 # separator as well as at end of line, and an assignment may start after one.
 # `{` and `(` open a command position too, so a one-line body,
 # `helper() { LEGACY=EST; }`, is collected like a multi-line one (Codex,
-# PR #993 final review).
+# PR #993 final review). So do the reserved words that precede a command --
+# `if true; then LEGACY=EST; fi` runs the assignment and it was never
+# collected -- and a case arm's `)` (Codex, PR #993 final review).
 _SHELL_SCALAR = re.compile(
-    r"(?:^|[;&|{(][ \t]*)[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
+    r"(?:^|[;&|{()][ \t]*|\b(?:then|do|else|elif|if|while|until)[ \t]+)[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*)?([A-Za-z_][A-Za-z0-9_]*)="
     r"(?:\"([^\"`\\\n]*)\"|'([^'\n]*)'|([^\s\"'`;|&\n]+))[ \t]*(?=$|[;&|)}])",
     re.M)
@@ -4170,7 +4302,7 @@ _SHELL_SCALAR = re.compile(
 
 # A declaring builtin with its options and ALL of its `NAME=value` operands.
 _SHELL_DECL_MULTI = re.compile(
-    r"(?:^|[;&|{(][ \t]*)[ \t]*(export|local|declare|typeset|readonly)[ \t]+"
+    r"(?:^|[;&|{()][ \t]*|\b(?:then|do|else|elif|if|while|until)[ \t]+)[ \t]*(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*((?:[A-Za-z_][A-Za-z0-9_]*="
     r"(?:\"[^\"`\\\n]*\"|'[^'\n]*'|[^\s\"'`;|&\n]+)[ \t]*)+)", re.M)
 _SHELL_DECL_OPERAND = re.compile(
@@ -9690,3 +9822,114 @@ def test_make_recursive_variables_expand_where_they_are_used():
     assert not _scanned_shell("A=America/New_York\nA?=EST\nexport TZ=$(A)\n", make=True)
     # A self-reference is not static and does not spin.
     assert not _scanned_shell("A=$(A)x\nexport TZ=$(A)\n", make=True)
+
+
+def test_a_nested_global_writer_must_itself_run(tmp_path):
+    """An invoked `init()` that only DEFINES `inner()` runs nothing of inner's.
+
+    The ancestor walk stopped at the first invoked enclosing function and
+    suppressed the exported EST (Codex, PR #993 final review).
+    """
+    inner = 'TIME_ZONE = "EST"\ndef init():\n    def inner():\n        global TIME_ZONE\n        TIME_ZONE = "UTC"\n{call}\ninit()\n'
+    assert _python_finds(tmp_path, inner.format(call=""))
+    assert not _python_finds(tmp_path, inner.format(call="    inner()"))
+    assert _python_finds(tmp_path, inner.format(call="    if False:\n        inner()"))
+    # Three levels: every link must run.
+    three = 'TIME_ZONE = "EST"\ndef init():\n    def mid():\n        def inner():\n            global TIME_ZONE\n            TIME_ZONE = "UTC"\n{a}\n{b}\ninit()\n'
+    assert not _python_finds(tmp_path, three.format(a="        inner()", b="    mid()"))
+    assert _python_finds(tmp_path, three.format(a="        pass", b="    mid()"))
+    assert _python_finds(tmp_path, three.format(a="        inner()", b="    pass"))
+    # A method is never invoked by name at import, even inside a called function.
+    assert _python_finds(tmp_path, 'TIME_ZONE = "EST"\ndef init():\n    class C:\n        def reset(self):\n            global TIME_ZONE\n            TIME_ZONE = "UTC"\n    reset()\ninit()\n')
+
+
+def test_a_shell_assignment_after_a_control_keyword_is_collected():
+    """`if true; then LEGACY=EST; fi; export TZ="$LEGACY"` exports EST.
+
+    The scalar pattern opened a command only at a line start or after
+    punctuation, so the assignment after `then` was never collected (Codex,
+    PR #993 final review).
+    """
+    for text in ('if true; then LEGACY=EST; fi; export TZ="$LEGACY"\n',
+                 'if false; then :; else LEGACY=EST; fi; export TZ="$LEGACY"\n',
+                 'for i in 1; do LEGACY=EST; done; export TZ="$LEGACY"\n',
+                 'case x in x) LEGACY=EST;; esac; export TZ="$LEGACY"\n',
+                 'while false; do :; done; if true; then export LEGACY=EST; fi; export TZ="$LEGACY"\n'):
+        assert _scanned_shell(text), text
+    assert not _scanned_shell('if true; then LEGACY=America/New_York; fi; export TZ="$LEGACY"\n')
+    assert _shell_scalars('if true; then LEGACY=EST; fi\n')["LEGACY"][0][1] == "EST"
+
+
+def test_make_append_defines_or_extends():
+    """`A += EST` defines an undefined `A`; otherwise it appends, keeping the flavour.
+
+    `_MAKE_SCALAR` did not know `+=`, so the binding was absent at expansion
+    (Codex, PR #993 final review).
+    """
+    assert _scanned_shell("A += EST\nexport TZ = $(A)\n", make=True)
+    assert _scanned_shell("A := EST\nA += x\nexport TZ = $(A)\n", make=True)
+    assert _scanned_shell("A = $(B)\nA += x\nB = EST\nexport TZ = $(A)\n", make=True)   # recursive stays recursive
+    assert not _scanned_shell("A = America/New_York\nA += EST\nexport TZ = $(A)\n", make=True)
+    assert not _scanned_shell("A += America/New_York\nexport TZ = $(A)\n", make=True)
+
+
+def test_pine_string_expressions_are_folded():
+    """`time(timeframe.period, session, "E" + "ST")` receives EST.
+
+    Each fragment was read on its own and neither is forbidden alone (Codex,
+    PR #993 final review). Bound names fold too, so a concatenation stored in
+    a variable is the same.
+    """
+    call = 't = time(timeframe.period, session, {arg})\n'
+    assert _pine_call_hits(call.format(arg='"E" + "ST"'))
+    assert _pine_call_hits(call.format(arg='"US/" + "Eastern"'))
+    assert _pine_call_hits('z = "E" + "ST"\n' + call.format(arg="z"))
+    assert _pine_call_hits('p = "US/"\n' + call.format(arg='p + "Eastern"'))
+    assert _pine_call_hits('a = "E"\nb = a + "ST"\n' + call.format(arg="b"))
+    assert not _pine_call_hits(call.format(arg='"America/" + "New_York"'))
+    assert not _pine_call_hits(call.format(arg='"E" + unknown'))
+    assert not _pine_call_hits(call.format(arg='"E" + f("ST")'))
+    src = call.format(arg='"E" + "ST"')
+    assert src[_pine_call_hits(src)[0][0].start():].startswith('"E" + "ST"')
+    assert _pine_string_expr('"a" + b + \'c\'', {"b": [(0, "B", None)]}, 10, []) == "aBc"
+    assert _pine_string_expr('"a" + f(x)', {}, 10, []) is None
+
+
+def test_every_conventional_makefile_name_is_collected():
+    """`GNUmakefile` and `makefile` are read by Make without being told.
+
+    The source collector listed only `Makefile` and `*.mk`, so a tracked
+    file under either other name bypassed both guards while `_reads_as_make`
+    already knew it (Codex, PR #993 final review).
+    """
+    for name in ("Makefile", "GNUmakefile", "makefile"):
+        assert name in SOURCE_PATTERNS, name
+        assert _reads_as_make(pathlib.Path(name)), name
+    assert "*.mk" in SOURCE_PATTERNS
+
+
+def test_a_module_setting_assigned_with_a_walrus_is_an_export(tmp_path):
+    """`if (TIME_ZONE := "EST"):` at module scope exports the name.
+
+    Only `Assign` and `AnnAssign` were read as configuration writes (Codex,
+    PR #993 final review).
+    """
+    assert _python_finds(tmp_path, 'if (TIME_ZONE := "EST"):\n    pass\n')
+    assert _python_finds(tmp_path, 'print(tz := "-05:00")\n')
+    assert not _python_finds(tmp_path, 'if (TIME_ZONE := "America/New_York"):\n    pass\n')
+    assert not _python_finds(tmp_path, 'def f():\n    if (TIME_ZONE := "EST"):\n        pass\n')
+    assert not _python_finds(tmp_path, 'if False:\n    if (TIME_ZONE := "EST"):\n        pass\n')
+
+
+def test_env_setter_arguments_are_unpacked(tmp_path):
+    """`os.putenv(*("TZ", "EST"))` installs the zone.
+
+    The setter branch read `node.args[0]` and saw a `Starred` (Codex, PR #993
+    final review).
+    """
+    assert _python_finds(tmp_path, 'import os\nos.putenv(*("TZ", "EST"))\n')
+    assert _python_finds(tmp_path, 'import os\nos.environ.setdefault(*("TZ", "-05:00"))\n')
+    assert _python_finds(tmp_path, 'import os\nARGS = ("TZ", "EST")\nos.putenv(*ARGS)\n')
+    assert _python_finds(tmp_path, 'import os\nos.putenv(*["TZ"], **{"value": "EST"})\n')
+    assert not _python_finds(tmp_path, 'import os\nos.putenv(*("PATH", "EST"))\n')
+    assert not _python_finds(tmp_path, 'import os\nos.putenv(*args)\n')
