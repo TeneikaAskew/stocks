@@ -1022,6 +1022,42 @@ def _scope_nodes(scope: ast.AST):
             stack.extend(list(ast.iter_child_nodes(node))[::-1])
 
 
+def _static_truth(test: ast.AST):
+    """True or False when `test` is a constant Python can decide, else None."""
+    if isinstance(test, ast.Constant):
+        return bool(test.value)
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        inner = _static_truth(test.operand)
+        return None if inner is None else not inner
+    return None
+
+
+def _reachable_scope_nodes(scope: ast.AST):
+    """`_scope_nodes`, minus the branches Python can never take.
+
+    `if False:` and the `else` of `if True:` never run, and neither does the
+    body of `while False:`. A call inside one is not an invocation and an
+    assignment inside one binds nothing: `if False: reset()` was read as
+    running the global writer, which suppressed the exported fixed zone the
+    dormant helper could never replace (Codex, PR #993 final review). A test
+    that is not a constant is not decided, and both branches are kept.
+    """
+    stack = list(ast.iter_child_nodes(scope))[::-1]
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, _SCOPES):
+            continue
+        children = list(ast.iter_child_nodes(node))
+        if isinstance(node, (ast.If, ast.While)):
+            truth = _static_truth(node.test)
+            if truth is False:
+                children = [node.test] + list(node.orelse)
+            elif truth is True and isinstance(node, ast.If):
+                children = [node.test] + list(node.body)
+        stack.extend(children[::-1])
+
+
 def _target_names(node: ast.AST) -> set[str]:
     """Every name an assignment target BINDS, through tuples and stars.
 
@@ -1125,7 +1161,9 @@ def _replaces_the_module_binding(tree: ast.AST, name: str, assignment=None) -> b
         for child in ast.iter_child_nodes(node):
             parents[id(child)] = node
     after = assignment.lineno if assignment is not None else -1
-    invoked = {n.func.id for n in _scope_nodes(tree)
+    # Reachable statements only: `if False: reset()` invokes nothing (Codex,
+    # PR #993 final review).
+    invoked = {n.func.id for n in _reachable_scope_nodes(tree)
                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                and n.lineno > after}
     for node in ast.walk(tree):
@@ -1486,17 +1524,19 @@ def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
         def survives(m):
             return {k: v for k, v in m.items() if k not in shadowed}
 
+        aliases = survives(inherited.aliases)
+        aliases.update(_local_aliases(scope, nodes))
+
         bindings = survives(inherited.bindings)
         bindings.update(defaults)
-        bindings.update(_collect_bindings(nodes, {}))
+        # With the aliases, so `from functools import partial as p` keeps
+        # `ET = p(ZoneInfo, "EST")` for `_partial_of` to expand.
+        bindings.update(_collect_bindings(nodes, {}, aliases))
         if scope is tree:
             for name, src in globals_.items():
                 _keep(bindings, name, src)
         for name, src in nonlocals.get(id(scope), {}).items():
             _keep(bindings, name, src)
-
-        aliases = survives(inherited.aliases)
-        aliases.update(_local_aliases(scope, nodes))
 
         modules = survives(inherited.modules)
         modules.update(_local_modules(scope, nodes))
@@ -1581,7 +1621,7 @@ def _keep(out: dict, name: str, v: ast.AST) -> None:
     out[name] = v
 
 
-def _collect_bindings(nodes, out: dict[str, ast.AST]):
+def _collect_bindings(nodes, out: dict[str, ast.AST], aliases=None):
     """`NAME = "..."` -> (value, node), over the nodes handed in.
 
     `EASTERN = "US/Eastern"` then `ZoneInfo(EASTERN)` is a routine way to share
@@ -1651,7 +1691,7 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
                 and _const_string(v) is None
                 and not _is_eastern_fixed_timedelta(v)
                 and not _is_offset_constructor_call(v)
-                and not _is_partial_call(v)
+                and not _is_partial_call(v, aliases=aliases)
                 and _const_number(v) is None
                 and not isinstance(v, (ast.Name, ast.Attribute, ast.Dict,
                                        ast.Tuple, ast.List, ast.Set))):
@@ -1676,15 +1716,35 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
     return out
 
 
-def _is_partial_call(node: ast.AST) -> bool:
+def _is_partial_call(node: ast.AST, env=None, aliases=None) -> bool:
     """`functools.partial(f, ...)` / `partial(f, ...)`, kept for `follow`.
 
     `ET = functools.partial(ZoneInfo, "EST")` then `ET()` constructs the
     fixed zone, and dropping the binding meant `_resolve_callable` had
     nothing to follow (Codex, PR #993 final review).
+
+    With an environment, the name must resolve to `functools`: through a
+    `from functools import partial` (aliased or not), or through the
+    `functools` module (aliased or not). A project's own `partial` that
+    returns a lambda was rebuilt as a real `ZoneInfo("EST")` and failed CI on
+    a call that constructs nothing (Codex, PR #993 final review). Without an
+    environment -- the collector, which is still building one -- the name
+    alone decides whether the binding is worth keeping; the use decides the
+    rest.
     """
-    return (isinstance(node, ast.Call) and node.args
-            and _call_name(node) == "partial")
+    if not (isinstance(node, ast.Call) and node.args):
+        return False
+    fn = node.func
+    if env is None:
+        written = _call_name(node)
+        return (aliases or {}).get(written, written) == "partial"
+    if isinstance(fn, ast.Name):
+        return (env.aliases.get(fn.id, fn.id) == "partial"
+                and env.modules.get(fn.id) == "functools")
+    if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+        owner = env.aliases.get(fn.value.id, fn.value.id)
+        return fn.attr == "partial" and owner == "functools"
+    return False
 
 
 def _partial_of(name: str, env):
@@ -1697,7 +1757,7 @@ def _partial_of(name: str, env):
         if isinstance(bound, ast.Name):
             name = bound.id
             continue
-        if isinstance(bound, ast.Call) and _is_partial_call(bound):
+        if isinstance(bound, ast.Call) and _is_partial_call(bound, env):
             target = bound.args[0]
             if isinstance(target, ast.Name):
                 cname, receiver = _resolve_callable(target.id, env)
@@ -1867,7 +1927,13 @@ def _python_hits(path: pathlib.Path, text: str):
             parents[id(_child)] = _parent
     # Statement ids at module scope, and every name this module ever reads --
     # both for the configuration-export check below.
-    _module_level = {id(n) for n in tree.body}
+    # Every statement in the module's LEXICAL scope, not only `tree.body`: a
+    # setting under a module-level `if`, `try`, loop or `with` still becomes
+    # a module attribute, and asking only whether it sat directly in the body
+    # exempted `if True: TIME_ZONE = "EST"` (Codex, PR #993 final review).
+    # Reachable ones only, so a dead branch binds nothing.
+    _module_level = {id(n) for n in _reachable_scope_nodes(tree)
+                     if isinstance(n, ast.stmt)}
     # A class body is a namespace read from OUTSIDE, as `Config.TIME_ZONE`,
     # exactly as a module's is read as `settings.TIME_ZONE`. Asking only
     # whether an assignment sits in `tree.body` exempted the class-based
@@ -1878,9 +1944,10 @@ def _python_hits(path: pathlib.Path, text: str):
     stack = [tree]
     while stack:
         scope = stack.pop()
-        for stmt in scope.body:
+        for stmt in _reachable_scope_nodes(scope):
             if isinstance(stmt, ast.ClassDef):
-                _module_level.update(id(n) for n in stmt.body)
+                _module_level.update(id(n) for n in _reachable_scope_nodes(stmt)
+                                     if isinstance(n, ast.stmt))
                 stack.append(stmt)
     # Value nodes this pass has actually REPORTED, and the module-level
     # settings assignments whose verdict has to wait for that answer.
@@ -2362,11 +2429,14 @@ def _python_hits(path: pathlib.Path, text: str):
                                 and len(element.elts) == 2):
                             pairs.append((element.elts[0], element.elts[1]))
                 for k, v in pairs:
-                    if (isinstance(k, ast.Constant)
-                            and isinstance(k.value, str)
-                            and k.value.lower() in _TZ_KEYWORDS):
+                    # Through the environment, like the dict and subscript
+                    # keys: `KEY = "TZ"; os.environ.update([(KEY, "EST")])`
+                    # installs the zone and a literal-only test walked past
+                    # it (Codex, PR #993 final review).
+                    key_text = _const_string(k, env)
+                    if key_text is not None and key_text.lower() in _TZ_KEYWORDS:
                         follow(legacy, offsets, node, v, env,
-                               lambda shown, kk=k.value, nn=name:
+                               lambda shown, kk=key_text, nn=name:
                                    f"{nn}({{{kk!r}: {shown}}})")
 
         # `make_zone = ZoneInfo; make_zone("EST")`. Round 13 resolved IMPORT
@@ -2991,6 +3061,39 @@ def _yaml_scalar(node) -> "str | None":
     return node.value if isinstance(node, yaml.ScalarNode) else None
 
 
+def _yaml_flattened(node, seen=None) -> dict:
+    """`{key: value node}` for a mapping, with its `<<` merges resolved.
+
+    A `<<` MERGE first, so an explicit key beside it wins. The composer leaves
+    the merge node unresolved -- `env: [{name: *key, <<: *base}]` holds a `<<`
+    entry whose value is the `base` mapping (or a sequence of mappings), not
+    the folded pairs -- so `value` inherited through it was never associated
+    with `name` (Codex, PR #993 final review). TRANSITIVELY: a merged mapping
+    may itself carry a `<<`, and `base: &base {value: EST}` / `mid: &mid {<<:
+    *base}` / `{name: TZ, <<: *mid}` copied `mid`'s unresolved `<<` entry
+    instead of `base`'s value (Codex, PR #993 final review). The inherited
+    scalar keeps its own mark, so the finding points at where it was written;
+    a mapping already on the path is not entered twice.
+    """
+    seen = seen or frozenset()
+    keys: dict = {}
+    if id(node) in seen:
+        return keys
+    seen = seen | {id(node)}
+    for k, v in node.value:
+        if _yaml_scalar(k) == "<<":
+            merged = v.value if isinstance(v, yaml.SequenceNode) else [v]
+            for mnode in merged:
+                if isinstance(mnode, yaml.MappingNode):
+                    for mk, mv in _yaml_flattened(mnode, seen).items():
+                        keys.setdefault(mk, mv)
+    for k, v in node.value:
+        ks = _yaml_scalar(k)
+        if ks is not None and ks != "<<":
+            keys[ks] = v
+    return keys
+
+
 def _yaml_env_pair_hits(text: str) -> list:
     """`(hit, value, is_offset)` for each structural manifest entry naming a bad zone.
 
@@ -3012,27 +3115,8 @@ def _yaml_env_pair_hits(text: str) -> list:
     while stack:
         node = stack.pop()
         if isinstance(node, yaml.MappingNode):
-            keys = {}
-            # A `<<` MERGE first, so an explicit key beside it wins. The
-            # composer leaves the merge node unresolved -- `env: [{name: *key,
-            # <<: *base}]` holds a `<<` entry whose value is the `base`
-            # mapping (or a sequence of mappings), not the folded pairs -- so
-            # `value` inherited through it was never associated with `name`
-            # (Codex, PR #993 final review). The inherited scalar keeps its
-            # own mark, so the finding points at where it was written.
-            for k, v in node.value:
-                if _yaml_scalar(k) == "<<":
-                    merged = v.value if isinstance(v, yaml.SequenceNode) else [v]
-                    for mnode in merged:
-                        if isinstance(mnode, yaml.MappingNode):
-                            for mk, mv in mnode.value:
-                                mks = _yaml_scalar(mk)
-                                if mks is not None:
-                                    keys.setdefault(mks, mv)
-            for k, v in node.value:
-                ks = _yaml_scalar(k)
-                if ks is not None and ks != "<<":
-                    keys[ks] = v
+            keys = _yaml_flattened(node)
+            for _k, v in node.value:
                 stack.append(v)
             name, value = _yaml_scalar(keys.get("name")), keys.get("value")
             if name is not None and name.upper() in _YAML_ENV_KEYS:
@@ -3059,8 +3143,82 @@ def _yaml_env_pair_hits(text: str) -> list:
 # No textual context sits next to the value, so `NONPY_AMBIGUOUS` had nothing
 # to anchor on and `time(timeframe.period, session, "EST")` was invisible in
 # the one collected language that writes it this way (Codex, PR #993).
-_PINE_TZ_CALL = re.compile(
-    r"\b(?:time|time_close|timestamp)\s*\(((?:[^()]|\([^()]*\))*)\)")
+_PINE_TZ_HEAD = re.compile(r"\b(time|time_close|timestamp)\s*\(")
+
+
+def _pine_tz_calls(text: str) -> list:
+    """`(start, name, args_start, args)` for each timezone-taking call.
+
+    Balanced parentheses, walked rather than matched: the regex this replaces
+    allowed ONE nested level, so `time(timeframe.period, outer(inner(session)),
+    "EST")` was not a call at all and its fixed zone -- a bare ambiguous
+    literal, ignored by design outside a call -- passed (Codex, PR #993 final
+    review). A parenthesis inside a string is data; an unterminated call is
+    not a call.
+    """
+    out = []
+    for m in _PINE_TZ_HEAD.finditer(text):
+        i, depth, quote = m.end(), 1, None
+        while i < len(text) and depth:
+            ch = text[i]
+            if quote:
+                if ch == "\\" and i + 1 < len(text):
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            i += 1
+        if depth:
+            continue
+        out.append((m.start(), m.group(1), m.end(), text[m.end():i - 1]))
+    return out
+
+
+# A Pine function header, `name(params) =>`, whose BODY is the indented block
+# beneath it. Assignments in that block are the function's own: a helper's
+# local `zone = "America/New_York"` shadowed nothing outside it in Pine, but
+# the file-wide binding list read it as the value in force for a top-level
+# `time(..., zone)` and missed the global `zone = "EST"` -- and, reversed,
+# failed CI on a canonical call (Codex, PR #993 final review).
+_PINE_FUNC_HEAD = re.compile(
+    r"^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)\s*\([^()\n]*\)\s*=>[ \t]*$")
+
+
+def _pine_function_spans(text: str) -> list:
+    """`(start, end)` character spans of each Pine function BODY."""
+    spans = []
+    lines = text.splitlines(keepends=True)
+    offsets, at = [], 0
+    for ln in lines:
+        offsets.append(at)
+        at += len(ln)
+    i = 0
+    while i < len(lines):
+        head = _PINE_FUNC_HEAD.match(lines[i])
+        if not head:
+            i += 1
+            continue
+        indent = len(head.group(1).expandtabs(4))
+        j, last = i + 1, i
+        while j < len(lines):
+            ln = lines[j]
+            if not ln.strip():
+                j += 1
+                continue
+            if len((ln[:len(ln) - len(ln.lstrip())]).expandtabs(4)) <= indent:
+                break
+            last = j
+            j += 1
+        if last > i:
+            spans.append((offsets[i + 1], offsets[last] + len(lines[last])))
+        i = last + 1 if last > i else i + 1
+    return spans
 _PINE_STRING = re.compile(r"\"([^\"\n]*)\"|'([^'\n]*)'")
 # `const string MARKET_ZONE = "EST"` -- a Pine constant, later passed by name.
 # The call then carries no literal to read, and the repository's own scripts
@@ -3081,19 +3239,27 @@ def _pine_constants(text: str) -> dict:
     canonical call as a violation (Codex, PR #993 final review). The same
     model `_shell_scalars` keeps, for the same reason.
     """
+    # Each entry also records which function BODY it sits in, if any, so a
+    # helper's local binding is visible to calls inside that helper and to
+    # nothing outside it (Codex, PR #993 final review).
+    spans = _pine_function_spans(text)
     out: dict = {}
     for m in _PINE_CONST.finditer(text):
         value = m.group(2) if m.group(2) is not None else m.group(3)
-        out.setdefault(m.group(1), []).append((m.start(1), value))
+        at = m.start(1)
+        scope = next((k for k, (s, e) in enumerate(spans) if s <= at < e), None)
+        out.setdefault(m.group(1), []).append((at, value, scope))
     return out
 
 
-def _pine_constant_at(consts: dict, name: str, at: int):
-    """The value bound to `name` by the last assignment before offset `at`."""
+def _pine_constant_at(consts: dict, name: str, at: int, spans=()):
+    """The value bound to `name` by the last VISIBLE assignment before `at`."""
     latest = None
-    for offset, value in consts.get(name, ()):
+    for offset, value, scope in consts.get(name, ()):
         if offset >= at:
             break
+        if scope is not None and not (spans[scope][0] <= at < spans[scope][1]):
+            continue                # a function's own binding, seen from outside
         latest = value
     return latest
 
@@ -3102,25 +3268,24 @@ def _pine_call_hits(text: str) -> list:
     """`(hit, value, is_offset)` for each quoted bad zone inside a Pine timezone call."""
     out = []
     consts = _pine_constants(text)
-    for call in _PINE_TZ_CALL.finditer(text):
-        args = call.group(1)
-        head = call.group(0)[:call.group(0).index('(')]
+    spans = _pine_function_spans(text)
+    for start, head, args_start, args in _pine_tz_calls(text):
         for m in _PINE_STRING.finditer(args):
             value = m.group(1) if m.group(1) is not None else m.group(2)
             is_offset = _bad_zone_value(value)
             if is_offset is not None:
-                out.append((_TextHit(call.start(1) + m.start(),
+                out.append((_TextHit(args_start + m.start(),
                                      f"{head}(... {value!r} ...)"),
                             value, is_offset))
         # A bare identifier bound to a string constant is that string.
         bare = _PINE_STRING.sub(lambda q: " " * len(q.group(0)), args)
         for m in _PINE_IDENT.finditer(bare):
-            value = _pine_constant_at(consts, m.group(1), call.start())
+            value = _pine_constant_at(consts, m.group(1), start, spans)
             if value is None:
                 continue
             is_offset = _bad_zone_value(value)
             if is_offset is not None:
-                out.append((_TextHit(call.start(1) + m.start(),
+                out.append((_TextHit(args_start + m.start(),
                                      f"{head}(... {m.group(1)} (= {value!r}) ...)"),
                             value, is_offset))
     return out
@@ -3561,7 +3726,8 @@ def _blank_shell_output(text: str) -> str:
                 break
             cut = _command_end(line, m.end())
             rest = line[m.end():cut]
-            if not _redirects_outside_quotes(rest):
+            if (not _redirects_outside_quotes(rest)
+                    and not _output_is_captured(line[:m.start()])):
                 rest = _SHELL_QUOTED.sub(
                     lambda q: (q.group(0)[0] + " " * (len(q.group(0)) - 2)
                                + q.group(0)[-1]),
@@ -3572,6 +3738,58 @@ def _blank_shell_output(text: str) -> str:
             pos = cut
         out.append(line)
     return "\n".join(out)
+
+
+# A command whose captured output is EXECUTED: `eval "$(...)"`, `source
+# <(...)`, `. <(...)`, `bash -c "$(...)"`. Matched against the text that
+# precedes the `$(` or backtick, up to an optional opening quote.
+_SHELL_CAPTURE_CONSUMER = re.compile(
+    r"(?:^|[;&|({!]\s*|\b(?:then|do|else|elif|if|while|until)\s+)"
+    r"(?:eval|source|\.|exec|bash|sh|zsh|ksh|dash)"
+    r"(?:\s+-[A-Za-z]+)*\s+[\"']?$")
+
+
+def _output_is_captured(prefix: str) -> bool:
+    """Does the command that starts after `prefix` feed its output to something that runs it?
+
+    `source <(printf 'TZ=EST')` executes the generated assignment, and so does
+    `eval "$(printf 'TZ=EST')"`; the output pass read `printf` as a
+    diagnostic and blanked the very text that becomes configuration (Codex,
+    PR #993 final review). Inside a process substitution the output is always
+    read back; inside a command substitution or backticks it counts when the
+    substitution is an argument of `eval`, `source`, `.`, `exec` or a shell.
+    `X=$(printf ...)` only stores text and is still a diagnostic here.
+    """
+    stack: list = []
+    single = False
+    i = 0
+    while i < len(prefix):
+        ch = prefix[i]
+        if single:
+            single = ch != "'"
+        elif ch == "\\":
+            i += 1
+        elif ch == "'":
+            single = True
+        elif ch == "`":
+            if stack and stack[-1][0] == "`":
+                stack.pop()
+            else:
+                stack.append(("`", i))
+        elif prefix.startswith(("$(", "<(", ">("), i):
+            stack.append((prefix[i:i + 2], i))
+            i += 1
+        elif ch == "(":
+            stack.append(("(", i))
+        elif ch == ")" and stack:
+            stack.pop()
+        i += 1
+    for opener, idx in reversed(stack):
+        if opener in ("<(", ">("):
+            return True
+        if opener in ("$(", "`"):
+            return bool(_SHELL_CAPTURE_CONSUMER.search(prefix[:idx]))
+    return False
 
 
 def _command_end(line: str, start: int) -> int:
@@ -3622,7 +3840,19 @@ def _command_end(line: str, start: int) -> int:
 # `_reads_as_make` names.
 _MAKE_SCALAR = re.compile(
     r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.]*)[ \t]*"
-    r"(?:::=|:=|\?=|=)[ \t]*([^#\n]*?)[ \t]*$", re.M)
+    r"(::=|:=|\?=|=)[ \t]*([^#\n]*?)[ \t]*$", re.M)
+
+
+class _Deferred(str):
+    """A Make value assigned with `=` or `?=`: expanded where it is USED.
+
+    GNU Make's `=` defines a recursively expanded variable, so with `A =
+    America/New_York`, `B = $(A)`, `A = EST`, `export TZ = $(B)`, `B` is EST
+    at the export. Folding every assignment at its definition froze `B` at
+    the canonical value and, reversed, failed CI on a canonical export
+    (Codex, PR #993 final review). `:=` and `::=` are immediate and stay
+    folded where they are written.
+    """
 _MAKE_TZ_VAR = re.compile(
     r"((?:" + _TZ_CONTEXT + r")\s*[\"']?\s*)\$[({]([A-Za-z_][A-Za-z0-9_.]*)[)}]",
     re.I)
@@ -3631,10 +3861,20 @@ _MAKE_TZ_VAR = re.compile(
 _MAKE_REF = re.compile(r"\$[({]([A-Za-z_][A-Za-z0-9_.]*)[)}]")
 
 
-def _resolve_make_value(value: str, scalars: dict, at: int):
-    """`value` with every `$(NAME)` folded, or None if any is not static."""
+def _resolve_make_value(value: str, scalars: dict, at: int, seen=frozenset()):
+    """`value` with every `$(NAME)` folded, or None if any is not static.
+
+    A deferred (`=`) value met on the way is expanded here, at THIS offset,
+    which is what makes the use site the point of expansion; a name already
+    being expanded is a self-reference and is not static.
+    """
     def one(m):
-        v = _scalar_in_force(scalars, m.group(1), at)
+        name = m.group(1)
+        if name in seen:
+            raise LookupError
+        v = _scalar_in_force(scalars, name, at)
+        if isinstance(v, _Deferred):
+            v = _resolve_make_value(v, scalars, at, seen | {name})
         if v is None:
             raise LookupError
         return v
@@ -3653,21 +3893,31 @@ def _expand_make_vars(text: str) -> str:
         # A recipe line (tab-indented) is shell, not a Make assignment.
         if text[m.start():m.start() + 1] == "\t":
             continue
-        if m.group(2):
-            raw.append((m.start(), m.group(1), m.group(2)))
+        if m.group(3):
+            raw.append((m.start(), m.group(1), m.group(2), m.group(3)))
     # CHAINS: `A := EST`, `B := $(A)`, `export TZ := $(B)`. GNU Make resolves
     # `B` to `EST`, and discarding every value that mentions `$` left `B`
     # unbound and the final reference unresolved (Codex, PR #993 final
     # review). Each value is resolved against the scalars in force at ITS OWN
     # offset, in source order, so a chain of any length folds and a reference
     # to something not statically known stays unresolved rather than guessed.
-    for at, name, value in raw:
-        resolved = _resolve_make_value(value, scalars, at)
-        if resolved is not None:
-            scalars.setdefault(name, []).append((at, resolved, False))
+    # ...for the IMMEDIATE operators. `=` and `?=` define recursively expanded
+    # variables, kept raw as `_Deferred` and expanded at each use; `?=` binds
+    # only a name not already in force (Codex, PR #993 final review).
+    for at, name, op, value in raw:
+        if op in (":=", "::="):
+            resolved = _resolve_make_value(value, scalars, at)
+            if resolved is not None:
+                scalars.setdefault(name, []).append((at, resolved, False))
+            continue
+        if op == "?=" and _scalar_in_force(scalars, name, at) is not None:
+            continue
+        scalars.setdefault(name, []).append((at, _Deferred(value), False))
 
     def one(m):
         value = _scalar_in_force(scalars, m.group(2), m.start())
+        if isinstance(value, _Deferred):
+            value = _resolve_make_value(value, scalars, m.start())
         return m.group(1) + value if value is not None else m.group(0)
 
     return _MAKE_TZ_VAR.sub(one, text)
@@ -3812,12 +4062,14 @@ def _strip_sql_comments(text: str) -> str:
     Only `E'...'` honours backslashes at PostgreSQL's default
     `standard_conforming_strings = on`, so an ordinary literal is unchanged.
     """
-    return _blank_comments(text, "--", escape_strings=True, dollar_quotes=True)
+    return _blank_comments(text, "--", escape_strings=True, dollar_quotes=True,
+                           nested_blocks=True)
 
 
 def _blank_comments(text: str, line_token: str, escape_strings: bool,
                     backslash_escapes: bool = False,
-                    dollar_quotes: bool = False) -> str:
+                    dollar_quotes: bool = False,
+                    nested_blocks: bool = False) -> str:
     """Blank line and `/* */` comments, honouring quotes.
 
     Shared by the SQL and Pine strippers: they differ only in the line-comment
@@ -3833,11 +4085,15 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool,
     `dollar_quotes`: PostgreSQL's `$$...$$` and `$tag$...$tag$`, inside which
     `--` is data; `SELECT $$ -- still data $$; SET TIME ZONE 'EST';` lost the
     SET the same way (Codex, PR #993 final review).
+    `nested_blocks`: PostgreSQL nests `/* */`, so `/* outer /* inner */ SET
+    TIME ZONE 'EST'; */` is one comment to the end; a single open/closed flag
+    closed at the inner `*/` and exposed the SET (Codex, PR #993 final
+    review). A depth, for SQL; Pine does not nest.
     """
     out = []
     quote = None
     escapes = False
-    block = False
+    block = 0
     i = 0
     while i < len(text):
         ch = text[i]
@@ -3852,7 +4108,10 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool,
                 continue
         if block:
             if ch == "*" and nxt == "/":
-                out.append("  "); i += 2; block = False
+                out.append("  "); i += 2; block -= 1
+                continue
+            if nested_blocks and ch == "/" and nxt == "*":
+                out.append("  "); i += 2; block += 1
                 continue
             out.append("\n" if ch == "\n" else " "); i += 1
             continue
@@ -3878,7 +4137,7 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool,
                 out.append(" "); i += 1
             continue
         if ch == "/" and nxt == "*":
-            out.append("  "); i += 2; block = True
+            out.append("  "); i += 2; block = 1
             continue
         out.append(ch); i += 1
     return "".join(out)
@@ -9179,7 +9438,7 @@ def test_a_pine_reassignment_is_the_binding_in_force():
     # reach it.
     assert _pine_call_hits('zone = "EST"\n' + call + 'zone := "America/New_York"\n')
     assert not _pine_call_hits('zone = "America/New_York"\n' + call + 'zone := "EST"\n')
-    assert _pine_constants('a = "x"\na := "y"\n')["a"] == [(0, "x"), (8, "y")]
+    assert _pine_constants('a = "x"\na := "y"\n')["a"] == [(0, "x", None), (8, "y", None)]
 
 
 def test_an_escaped_quote_does_not_end_a_shell_diagnostic():
@@ -9265,3 +9524,169 @@ def test_a_dict_key_bound_to_a_name_is_read(tmp_path):
     assert not _python_finds(tmp_path, 'KEY = "PATH"\ncfg = {KEY: "EST"}\n')
     assert not _python_finds(tmp_path, 'cfg = {key_from_call(): "EST"}\n')
     assert not _python_finds(tmp_path, 'KEY = "TZ"\ncfg = {KEY: "America/New_York"}\n')
+
+
+def test_a_statically_dead_call_does_not_run_a_global_writer(tmp_path):
+    """`if False: reset()` invokes nothing; the exported EST stands.
+
+    The module-level call inside a dead branch counted as an invocation and
+    suppressed the finding (Codex, PR #993 final review).
+    """
+    writer = 'TIME_ZONE = "EST"\ndef reset():\n    global TIME_ZONE\n    TIME_ZONE = "UTC"\n'
+    for dead in ("if False:\n    reset()\n", "if 0:\n    reset()\n",
+                 "if not True:\n    reset()\n", "while False:\n    reset()\n",
+                 "if True:\n    pass\nelse:\n    reset()\n"):
+        assert _python_finds(tmp_path, writer + dead), dead
+    for live in ("if True:\n    reset()\n", "reset()\n", "if flag:\n    reset()\n",
+                 "if False:\n    pass\nelse:\n    reset()\n", "while flag:\n    reset()\n"):
+        assert not _python_finds(tmp_path, writer + live), live
+
+
+def test_a_nested_yaml_merge_resolves_transitively():
+    """`{name: TZ, <<: *mid}` where `mid` itself merges `base` inherits base's value.
+
+    The merge loop copied `mid`'s unresolved `<<` entry instead of flattening
+    it (Codex, PR #993 final review).
+    """
+    assert _yaml_env_pair_hits('base: &base {value: EST}\nmid: &mid {<<: *base}\nenv: [{name: TZ, <<: *mid}]\n')
+    assert _yaml_env_pair_hits('base: &base {value: EST}\nmid: &mid {<<: *base}\ntop: &top {<<: *mid}\nenv: [{name: TZ, <<: *top}]\n')
+    assert _yaml_env_pair_hits('base: &base {name: TZ}\nmid: &mid {<<: [*base], value: "-05:00"}\nenv: [{<<: *mid}]\n')
+    # An explicit key beside the merge still wins, at every level.
+    assert not _yaml_env_pair_hits('base: &base {value: EST}\nmid: &mid {<<: *base, value: America/New_York}\nenv: [{name: TZ, <<: *mid}]\n')
+    assert not _yaml_env_pair_hits('base: &base {value: EST}\nmid: &mid {<<: *base}\nenv: [{name: TZ, <<: *mid, value: America/New_York}]\n')
+    hit = _yaml_env_pair_hits('base: &base {value: EST}\nmid: &mid {<<: *base}\nenv: [{name: TZ, <<: *mid}]\n')[0][0]
+    assert hit.start() == len("base: &base {value: ")      # the inherited scalar's own mark
+
+
+def test_a_partial_needs_functools_provenance(tmp_path):
+    """A project's own `partial` is not `functools.partial`.
+
+    A custom `partial(ZoneInfo, "EST")` returning a lambda was rebuilt as a
+    real `ZoneInfo("EST")` and failed CI (Codex, PR #993 final review).
+    """
+    body = 'ET = partial(ZoneInfo, "EST")\nz = ET()\n'
+    assert not _python_finds(tmp_path, "from zoneinfo import ZoneInfo\ndef partial(f, *a):\n    return lambda: None\n" + body)
+    assert not _python_finds(tmp_path, "from zoneinfo import ZoneInfo\nfrom toolz import partial\n" + body)
+    assert _python_finds(tmp_path, "from zoneinfo import ZoneInfo\nfrom functools import partial\n" + body)
+    assert _python_finds(tmp_path, "from zoneinfo import ZoneInfo\nfrom functools import partial as p\nET = p(ZoneInfo, 'EST')\nz = ET()\n")
+    assert _python_finds(tmp_path, "from zoneinfo import ZoneInfo\nimport functools\nET = functools.partial(ZoneInfo, 'EST')\nz = ET()\n")
+    assert _python_finds(tmp_path, "from zoneinfo import ZoneInfo\nimport functools as ft\nET = ft.partial(ZoneInfo, 'EST')\nz = ET()\n")
+
+
+def test_a_name_used_as_an_update_pair_key_is_read(tmp_path):
+    """`KEY = "TZ"; os.environ.update([(KEY, "EST")])` installs the zone.
+
+    The pair path accepted literal keys only, unlike the dict and subscript
+    paths beside it (Codex, PR #993 final review).
+    """
+    assert _python_finds(tmp_path, 'import os\nKEY = "TZ"\nos.environ.update([(KEY, "EST")])\n')
+    assert _python_finds(tmp_path, 'import os\nKEY = "timezone"\nos.environ.update([(KEY, "-05:00")])\n')
+    assert not _python_finds(tmp_path, 'import os\nKEY = "PATH"\nos.environ.update([(KEY, "EST")])\n')
+    assert not _python_finds(tmp_path, 'import os\nos.environ.update([(key(), "EST")])\n')
+
+
+def test_output_consumed_by_process_substitution_or_eval_is_configuration():
+    """`source <(printf 'TZ=EST')` runs the assignment it prints.
+
+    The output pass read `printf` as a diagnostic and blanked the text that
+    becomes configuration (Codex, PR #993 final review).
+    """
+    for text in ("source <(printf 'TZ=EST')\n", ". <(printf 'TZ=EST')\n",
+                 "eval \"$(printf 'TZ=EST')\"\n", "eval $(printf 'TZ=EST')\n",
+                 "eval \"`printf 'TZ=EST'`\"\n", "bash -c \"$(printf 'TZ=EST')\"\n",
+                 "if true; then eval \"$(echo 'TZ=EST')\"; fi\n"):
+        assert _scanned_shell(text), text
+    # Printed, shown, or merely stored: still a diagnostic.
+    for text in ("echo 'TZ=EST'\n", "echo \"$(printf 'TZ=EST')\"\n",
+                 "X=$(printf 'TZ=EST')\n", "printf 'TZ=EST' | cat\n" if False else "echo 'TZ=EST' >&2\n"):
+        assert not _scanned_shell(text), text
+    assert _output_is_captured("source <(")
+    assert _output_is_captured('eval "$(')
+    assert not _output_is_captured("X=$(")
+    assert not _output_is_captured("echo '$(' ; ")
+
+
+def test_a_pine_call_with_nested_parentheses_is_read():
+    """`time(timeframe.period, outer(inner(session)), "EST")` is a call.
+
+    The call regex allowed one nested level, so this was not matched at all
+    and its fixed zone passed (Codex, PR #993 final review).
+    """
+    assert _pine_call_hits('t = time(timeframe.period, outer(inner(session)), "EST")\n')
+    assert _pine_call_hits('t = time(timeframe.period, a(b(c(session))), "EST")\n')
+    assert _pine_call_hits('t = time(f("(", x), session, "EST")\n')          # a paren in a string is data
+    assert _pine_call_hits('zone = "EST"\nt = time(timeframe.period, outer(inner(session)), zone)\n')
+    assert not _pine_call_hits('t = time(timeframe.period, outer(inner(session)), "America/New_York")\n')
+    assert not _pine_call_hits('t = time(timeframe.period, outer(inner(session), "EST"\n')   # unterminated
+    assert [c[1] for c in _pine_tz_calls('time(a(b())) time_close(x) timestamp("EDT", 2024)')] == ["time", "time_close", "timestamp"]
+
+
+def test_a_nested_sql_block_comment_stays_a_comment():
+    """`/* outer /* inner */ SET TIME ZONE 'EST'; */` is one comment.
+
+    PostgreSQL nests block comments, and a single flag closed at the inner
+    `*/` and exposed the SET (Codex, PR #993 final review).
+    """
+    assert not NONPY_AMBIGUOUS.search(_strip_sql_comments("/* outer /* inner */ SET TIME ZONE 'EST'; */\n"))
+    assert not NONPY_AMBIGUOUS.search(_strip_sql_comments("/* a /* b /* c */ */ SET TIME ZONE 'EST'; */\n"))
+    assert NONPY_AMBIGUOUS.search(_strip_sql_comments("/* a */ SET TIME ZONE 'EST';\n"))
+    assert NONPY_AMBIGUOUS.search(_strip_sql_comments("/* a /* b */ */ SET TIME ZONE 'EST';\n"))
+    # A `/*` inside a string literal is data, and Pine does not nest.
+    assert NONPY_AMBIGUOUS.search(_strip_sql_comments("SELECT '/* x'; SET TIME ZONE 'EST';\n"))
+    assert "timezone" in _strip_pine_comments('/* a /* b */ timezone = "EST"\n')
+
+
+def test_a_setting_under_a_module_level_compound_statement_is_an_export(tmp_path):
+    """`if True: TIME_ZONE = "EST"` is a module attribute.
+
+    Only direct `tree.body` statements counted as module level (Codex,
+    PR #993 final review). Reachable ones count; a dead branch binds nothing.
+    """
+    for src in ('if True:\n    TIME_ZONE = "EST"\n',
+                'if flag:\n    TIME_ZONE = "EST"\n',
+                'try:\n    TIME_ZONE = "EST"\nexcept Exception:\n    pass\n',
+                'for _ in range(1):\n    TIME_ZONE = "EST"\n',
+                'with ctx():\n    TIME_ZONE = "EST"\n',
+                'if flag:\n    class Config:\n        TIME_ZONE = "EST"\n'):
+        assert _python_finds(tmp_path, src), src
+    for src in ('if False:\n    TIME_ZONE = "EST"\n',
+                'def f():\n    TIME_ZONE = "EST"\n',
+                'if True:\n    def f():\n        TIME_ZONE = "EST"\n'):
+        assert not _python_finds(tmp_path, src), src
+
+
+def test_pine_function_locals_do_not_shadow_globals():
+    """A helper's local `zone` is not the `zone` a top-level call reads.
+
+    The file-wide binding list read the helper's local as the value in force
+    and, reversed, failed CI on a canonical call (Codex, PR #993 final
+    review).
+    """
+    call = "t = time(timeframe.period, session, zone)\n"
+    helper = "helper() =>\n    zone = {local}\n    zone\n"
+    assert _pine_call_hits('zone = "EST"\n' + helper.format(local='"America/New_York"') + call)
+    assert not _pine_call_hits('zone = "America/New_York"\n' + helper.format(local='"EST"') + call)
+    # Inside the helper, its own binding is the one in force.
+    assert _pine_call_hits('zone = "America/New_York"\nhelper() =>\n    zone = "EST"\n    ' + call)
+    assert not _pine_call_hits('zone = "EST"\nhelper() =>\n    zone = "America/New_York"\n    ' + call)
+    # A global rebinding after the helper still reaches a later call.
+    assert _pine_call_hits('zone = "America/New_York"\n' + helper.format(local='"UTC"') + 'zone := "EST"\n' + call)
+    assert _pine_function_spans('f(x) =>\n    a = 1\n\n    b = 2\nc = 3\n') == [(8, 29)]
+
+
+def test_make_recursive_variables_expand_where_they_are_used():
+    """`B = $(A)` is GNU Make's recursive variable: `A` is read at the use.
+
+    Folding at the definition froze `B` at the earlier `A` and, reversed,
+    failed CI on a canonical export (Codex, PR #993 final review).
+    """
+    assert _scanned_shell("A=America/New_York\nB=$(A)\nA=EST\nexport TZ=$(B)\n", make=True)
+    assert not _scanned_shell("A=EST\nB=$(A)\nA=America/New_York\nexport TZ=$(B)\n", make=True)
+    # `:=` and `::=` are immediate and keep the value at their definition.
+    assert _scanned_shell("A=EST\nB:=$(A)\nA=America/New_York\nexport TZ=$(B)\n", make=True)
+    assert not _scanned_shell("A=America/New_York\nB::=$(A)\nA=EST\nexport TZ=$(B)\n", make=True)
+    # `?=` binds only a name not already set, and is recursive when it does.
+    assert _scanned_shell("A?=EST\nexport TZ=$(A)\n", make=True)
+    assert not _scanned_shell("A=America/New_York\nA?=EST\nexport TZ=$(A)\n", make=True)
+    # A self-reference is not static and does not spin.
+    assert not _scanned_shell("A=$(A)x\nexport TZ=$(A)\n", make=True)
