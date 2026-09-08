@@ -476,7 +476,7 @@ baselines() {
 # the same shape one level down. `return`, and the caller is bare with nothing
 # after it, exactly as every other acceptance call here is.
 run_baselines() {
-  local brc
+  local brc _brl
   # AN `if`, NOT A BARE CALL. Under the `set -e` this file documents, a bare
   # `baselines` returning nonzero kills the shell BEFORE `brc=$?`, so neither
   # the rc diagnostic nor the BASELINE_LEAK check below ever runs — measured
@@ -489,14 +489,26 @@ run_baselines() {
   if baselines; then brc=0; else brc=$?; fi
   # `$?` captured in the else branch: the tests below are commands and would
   # replace it.
+  # BOTH REPORTS, NOT THE FIRST ONE. The rc branch returned before the leak
+  # check, so a run that FAILED and also left a worktree printed only the
+  # generic line — and the comment above calls the leak guidance the half that
+  # matters, because a registered worktree breaks the next run. Round 60 made
+  # that check reachable by fixing the errexit exit; this returned past it one
+  # line later, in exactly the case where both things went wrong. Measured with
+  # a stub returning 7 after setting BASELINE_LEAK: before, one line and no
+  # cleanup path; after, both. The success-with-leak case already printed and
+  # is unchanged. Same shape as deploy_candidate's worktree removal, which
+  # reports the deploy status and the leak alongside rather than instead.
+  local _brl=0
   test "$brc" -eq 0 || {
-    echo "baselines FAILED rc=$brc — no baseline to compare against"; return 1; }
+    echo "baselines FAILED rc=$brc — no baseline to compare against"; _brl=1; }
   test -z "${BASELINE_LEAK:-}" || {
     echo "baselines left worktrees registered: $BASELINE_LEAK"
     echo "the next run's git worktree add will fail on them, and they hold"
     echo "the branch refs. Clean up before continuing:"
     echo "  git worktree remove --force <path> && git worktree prune"
-    return 1; }
+    _brl=1; }
+  return $_brl
 }
 run_baselines            # BARE, nothing after it
 ```
