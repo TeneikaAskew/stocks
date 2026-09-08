@@ -246,6 +246,24 @@ _LIVE_WARMUP_BARS = 99
 # hours early. Measured on SPY 2026-09-02 the 99-bar warm-up stops at 07:51
 # ET and never reaches them, but that margin only holds while a ticker-date
 # has enough genuine premarket bars, so the floor makes it unconditional.
+#
+# WHICH convention the conversion above assumes is not a guess. The dual
+# convention prompts a fair objection — if a raw 09:30 stamp meant 09:30 ET,
+# converting it to 05:30 would discard the opening bell and score the
+# afternoon instead (Codex on #1022, round 22). Volume settles it. SPY
+# 2026-09-02: raw 09:30 traded 606 shares, raw 13:30 traded 383,770, and raw
+# 20:00 (the close) 99,559. Across 2015-2026 the peak-volume minute of 9,731
+# SPY/IWM/QQQ ticker-days lands in the true-UTC open or close window on
+# essentially all of them and on the ET-as-UTC OPEN window on ZERO. The RTH
+# block is true UTC and converting it is correct.
+#
+# The ET-framed population is only the raw 04:00-07:59 band, and it is a
+# byte-identical DUPLICATE of the true-UTC premarket four hours later: on the
+# same day raw 04:00 and raw 08:00 both close 760.999 on 25,669 shares, as do
+# 04:30/08:30, 05:00/09:00, 06:00/10:00, 07:00/11:00, 07:59/11:59. So the
+# floor drops a duplicate, never a bar the session needs. Pinned by
+# tests/scripts/test_replay_persist_mode.py::
+# test_the_true_utc_session_is_kept_and_the_duplicate_block_dropped.
 _PREMARKET_FLOOR = time(4, 0)
 
 

@@ -57,17 +57,30 @@ _DF_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=8, ttl=3600))
 
 
 def _query_or_503(sql: str, params: dict) -> pd.DataFrame:
-    """Run a Cloud SQL query through the STRICT variant and turn a failure
+    """Run a Cloud SQL query through the STRICT variant and turn an OUTAGE
     into a 503. The swallowing query_to_dataframe returned an empty frame
     on failure, which this router served as "zero signals from Cloud SQL"
     (and get_signals then fell back to the legacy parquet, which no
-    consumer could tell apart: audit P1-#2, CLAUDE.md 3.7.1)."""
+    consumer could tell apart: audit P1-#2, CLAUDE.md 3.7.1).
+
+    A blanket ``except Exception -> 503`` would trade that swallow for a
+    smaller one: it conflates Cloud SQL being unreachable, which is EXTERNAL
+    and worth retrying, with a KeyError from a row we shaped wrong, which is
+    a defect. A 503 on the defect tells an operator to retry code that will
+    never succeed and hides the bug behind an outage that is not happening,
+    so only `lib.infra_errors.is_infrastructure_error` may answer 503 —
+    the same split the freshness handler makes (Codex on #1022, round 22).
+    Everything else keeps its traceback and surfaces as a 500."""
     from gcp.database import query_to_dataframe_strict  # lazy import
+    from lib.infra_errors import is_infrastructure_error  # noqa: PLC0415
     try:
         return query_to_dataframe_strict(sql, params)
-    except Exception:
+    except Exception as exc:
         log.exception("signals query failed")
-        raise HTTPException(status_code=503, detail="signals temporarily unavailable")
+        if is_infrastructure_error(exc):
+            raise HTTPException(
+                status_code=503, detail="signals temporarily unavailable") from exc
+        raise
 
 
 def _pattern(ticker_lower: str) -> str:

@@ -2056,13 +2056,26 @@ class TestSignalsAPIFailsLoud:
     never even reached that branch: it served zero rows from Cloud SQL."""
 
     def test_signals_is_503_when_the_cloud_sql_query_fails(self, client, monkeypatch):
+        import psycopg2
+        import sqlalchemy.exc
+
         from gcp import database
         from api.routers import signals as signals_module
 
         monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
 
+        # A real driver outage, not a bare RuntimeError: the router now asks
+        # lib.infra_errors which kind of failure this is, and only this kind
+        # earns the retryable 503.
+        outage = sqlalchemy.exc.OperationalError(
+            "SELECT 1", {},
+            psycopg2.OperationalError(
+                'connection to server at "127.0.0.1", port 5432 failed: '
+                "Connection refused"),
+        )
+
         def _boom(sql, params=None):
-            raise RuntimeError("connection lost")
+            raise outage
 
         monkeypatch.setattr(database, "query_to_dataframe_strict", _boom)
         monkeypatch.setattr(signals_module, "_load_ticker_df_parquet",
@@ -2072,17 +2085,62 @@ class TestSignalsAPIFailsLoud:
         assert "unavailable" in r.json()["detail"].lower()
 
     def test_similar_is_503_when_the_cloud_sql_query_fails(self, client, monkeypatch):
+        import psycopg2
+        import sqlalchemy.exc
+
         from gcp import database
         from api.routers import signals as signals_module
 
         monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
 
+        outage = sqlalchemy.exc.OperationalError(
+            "SELECT 1", {},
+            psycopg2.OperationalError(
+                'connection to server at "127.0.0.1", port 5432 failed: '
+                "Connection refused"),
+        )
+
         def _boom(sql, params=None):
-            raise RuntimeError("connection lost")
+            raise outage
 
         monkeypatch.setattr(database, "query_to_dataframe_strict", _boom)
         r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=50&ema9_diff=0&ema20_diff=0&score=3")
         assert r.status_code == 503, r.text
+
+    def test_signals_query_defect_is_500_not_a_fabricated_503(self, client, monkeypatch):
+        """`except Exception -> 503` conflates the two failure kinds the whole
+        of CLAUDE.md 3.7 exists to separate. Cloud SQL being unreachable is
+        EXTERNAL and retryable; a KeyError from a row we shaped wrong is a
+        defect, and answering 503 for it tells an operator to retry code that
+        will never succeed while hiding the bug behind an outage that is not
+        happening. `lib/infra_errors.is_infrastructure_error` tells them
+        apart, exactly as the freshness handler already does (Codex on #1022,
+        round 22)."""
+        from gcp import database
+        from api.routers import signals as signals_module
+
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
+
+        from starlette.testclient import TestClient
+
+        def _defect(sql, params=None):
+            raise KeyError("entry_time")
+
+        monkeypatch.setattr(database, "query_to_dataframe_strict", _defect)
+        monkeypatch.setattr(signals_module, "_load_ticker_df_parquet",
+                            lambda t: pytest.fail("must not fall back to parquet on a defect"))
+        # The shared fixture re-raises server exceptions, which is the
+        # TestClient's own behaviour and not a status code. Ask for the
+        # response the way uvicorn would render it.
+        loud = TestClient(client.app, raise_server_exceptions=False)
+        r = loud.get("/api/signals/IWM?limit=5")
+        assert r.status_code == 500, (
+            "an internal defect must stay a loud 500, not a retryable 503: %s" % r.text
+        )
+        # And the defect keeps its type on the way out: it is re-raised, not
+        # repackaged, so the traceback reaches the error handler intact.
+        with pytest.raises(KeyError):
+            client.get("/api/signals/IWM?limit=5")
 
     def test_router_reads_through_the_strict_query_only(self):
         from api.routers import signals as signals_module

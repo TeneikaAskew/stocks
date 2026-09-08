@@ -9,6 +9,7 @@ schema. These are config invariants, asserted by reading the file, in the
 same spirit as tests/gcp/test_staging_deploy_paths.py.
 """
 import pathlib
+import re
 
 import pytest
 
@@ -624,3 +625,143 @@ def test_the_staging_preflight_reserves_time_for_its_own_image_build():
     apply_cfg = (REPO / "gcp/cloudbuild/apply-schema-cloudbuild.yaml").read_text()
     assert apply_cfg.index("id: serialize") > apply_cfg.index("id: push"), \
         "apply-schema waits after build/push, which is what the default reserve assumes"
+
+
+def test_the_workflow_apply_shares_one_deadline_across_both_waits():
+    """The step waits twice: once for any schema-mutating Cloud Build in
+    flight, then again for the Postgres advisory lock inside
+    gcp.apply_schema. Sized independently they summed past the step's own
+    timeout — a 1200 s build scan followed by the applier's 900 s default
+    lock wait is 2100 s against a 30-minute step, before pip or the apply
+    itself — so a correctly serialized deploy could be cancelled mid-apply
+    while each wait stayed inside its own limit (Codex on #1022, round 22).
+
+    Both are therefore derived from ONE deadline: the step's start plus its
+    timeout, less a reserve for the apply. Whatever the first wait spends,
+    the second gets what is left and no more."""
+    wf = yaml.safe_load((REPO / ".github/workflows/deploy-staging.yml").read_text())
+    apply = next(st for st in wf["jobs"]["deploy"]["steps"] if st.get("id") == "apply")
+    run = apply["run"]
+
+    step_timeout = int(apply["timeout-minutes"]) * 60
+
+    declared = int(re.search(r"STEP_TIMEOUT_SECONDS=(\d+)", run).group(1))
+    assert declared == step_timeout, (
+        "STEP_TIMEOUT_SECONDS (%d) must track timeout-minutes (%d s), or the "
+        "budget it derives is not the budget the runner enforces"
+        % (declared, step_timeout))
+
+    reserve = int(re.search(r"APPLY_RESERVE_SECONDS=(\d+)", run).group(1))
+    assert reserve >= 300, (
+        "the reserve must cover the apply itself: a full apply measured 75 s "
+        "(execution apply-schema-migrations-8q6d5), and Rule 0.5 asks for 4x")
+
+    # Neither wait may be a literal: a fixed number cannot know what the
+    # other already spent.
+    assert not re.search(r"WAIT_BUDGET_SECONDS=\d", run), \
+        "the build scan's budget must be derived from the shared deadline"
+    assert not re.search(r"SCHEMA_APPLY_LOCK_WAIT=\d", run), \
+        "the lock wait must be derived from the shared deadline"
+    assert run.count("apply_deadline=") == 1, \
+        "one deadline, computed once, feeding both waits"
+    for var in ("WAIT_BUDGET_SECONDS", "SCHEMA_APPLY_LOCK_WAIT"):
+        assert var in run, var
+
+
+def _run_apply_step(tmp_path, *, age_seconds: int, scan_sleep: int = 0):
+    """Execute the deploy-staging apply step's REAL shell body in a sandbox.
+
+    Only the four external commands are stubbed (pip, the wait script,
+    python, git); every line of arithmetic and every guard is the
+    workflow's own. ``age_seconds`` back-dates the step start so the
+    shared deadline can be exhausted on demand, and ``scan_sleep`` makes
+    the build scan burn time the lock wait must then do without.
+    """
+    wf = yaml.safe_load((REPO / ".github/workflows/deploy-staging.yml").read_text())
+    apply = next(st for st in wf["jobs"]["deploy"]["steps"] if st.get("id") == "apply")
+    body = apply["run"]
+
+    # The block calls the waiter by relative path, so a stub at that path in
+    # the sandbox cwd replaces it without touching the real one.
+    waiter = tmp_path / "gcp/cloudbuild/wait_for_earlier_schema_builds.sh"
+    waiter.parent.mkdir(parents=True, exist_ok=True)
+    waiter.write_text(
+        "#!/usr/bin/env bash\n"
+        f"echo \"SCAN budget=${{WAIT_BUDGET_SECONDS}}\"\n"
+        f"sleep {scan_sleep}\n"
+    )
+
+    script = tmp_path / "step.sh"
+    script.write_text(
+        "pip() { :; }\n"
+        "git() { echo stub; }\n"
+        'python() { echo "APPLY lock=${SCHEMA_APPLY_LOCK_WAIT:-unset}"; }\n'
+        # Back-date the step start by overriding `date` for its FIRST call
+        # only, which is the `step_start=$(date -u +%s)` line. The marker is
+        # a FILE, not a variable: every `$(date ...)` runs in a subshell, so
+        # a counter would be incremented in the child and lost.
+        "date() {\n"
+        "  if [ ! -e .date_seen ]; then\n"
+        "    touch .date_seen\n"
+        f"    echo $(( $(command date -u +%s) - {age_seconds} ))\n"
+        "  else\n"
+        '    command date "$@"\n'
+        "  fi\n"
+        "}\n"
+        + body + "\n"
+    )
+    return subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+        capture_output=True, text=True, cwd=str(tmp_path),
+    )
+
+
+def test_the_workflow_apply_bounds_the_lock_wait_by_what_the_scan_left():
+    """The happy path: the applier is handed an explicit lock wait, and it
+    is what remains of the shared deadline rather than its own 900 s
+    default. Without this the two waits could sum to 2100 s inside a
+    1800 s step (Codex on #1022, round 22)."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        r = _run_apply_step(pathlib.Path(d), age_seconds=0, scan_sleep=0)
+    assert r.returncode == 0, r.stdout + r.stderr
+    scan = int(re.search(r"SCAN budget=(\d+)", r.stdout).group(1))
+    lock = int(re.search(r"APPLY lock=(\d+)", r.stdout).group(1))
+    assert 0 < lock <= scan, (
+        "the lock wait must be what the scan left, never more: %s" % r.stdout)
+    assert scan <= 1800 - 400, (
+        "the scan may not be handed the reserve the apply itself needs")
+
+
+def test_the_workflow_apply_lock_wait_shrinks_by_what_the_scan_spent():
+    """Not merely bounded — reduced. A scan that burns time must leave the
+    lock wait shorter, which is the whole point of one shared deadline."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        quick = _run_apply_step(pathlib.Path(d), age_seconds=0, scan_sleep=0)
+    with tempfile.TemporaryDirectory() as d:
+        slow = _run_apply_step(pathlib.Path(d), age_seconds=0, scan_sleep=3)
+    assert quick.returncode == 0 and slow.returncode == 0, quick.stderr + slow.stderr
+    q = int(re.search(r"APPLY lock=(\d+)", quick.stdout).group(1))
+    sl = int(re.search(r"APPLY lock=(\d+)", slow.stdout).group(1))
+    assert sl <= q - 3, (
+        "a 3 s scan must cost the lock wait 3 s (quick=%d slow=%d)" % (q, sl))
+
+
+def test_the_workflow_apply_refuses_rather_than_waiting_past_its_deadline():
+    """Deriving a budget is only half of it: when the deadline is already
+    past, the remainder is zero or negative and must STOP the step, not be
+    passed on as a wait of "0" (poll forever) or a negative the applier
+    would reject obscurely. The apply must never start."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        r = _run_apply_step(pathlib.Path(d), age_seconds=100000)
+    assert r.returncode != 0, (
+        "an exhausted budget must fail the step, not fall through to the apply:\n"
+        + r.stdout + r.stderr)
+    assert "APPLY lock=" not in r.stdout, r.stdout
+    assert "SCAN budget=" not in r.stdout, "the scan must not start either"
+    assert "no time left" in r.stderr.lower(), r.stderr

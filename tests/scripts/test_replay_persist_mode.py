@@ -520,3 +520,60 @@ def test_a_bar_with_no_time_is_not_evaluated():
     from scripts.replay_signal_monitor import _is_rth
 
     assert _is_rth(pd.DataFrame([{"Close": 1.0}])) is False
+
+
+def test_the_true_utc_session_is_kept_and_the_duplicate_block_dropped():
+    """The frame is raw stamps from `market_data_intraday`, not ET.
+
+    Codex read the ET conversion here as unsafe because that table holds two
+    write conventions (CLAUDE.md 3.9): if a raw 09:30 stamp meant 09:30 ET,
+    converting it would push the opening bell to 05:30 and drop it, and the
+    replay would score the afternoon instead. Production says otherwise —
+    the volume proves which stamp is the bell. SPY 2026-09-02:
+
+        raw 09:30  close 759.93   volume        606   <- premarket
+        raw 13:30  close 762.005  volume    383,770   <- the opening bell
+        raw 20:00  close 765.05   volume     99,559   <- the closing auction
+
+    and across 2015-2026, of 9,731 ticker-days on SPY/IWM/QQQ the
+    peak-volume minute lands in the true-UTC open or close window on
+    essentially all of them and on the ET-as-UTC OPEN window on **zero**.
+    The RTH block is true UTC, so converting it is right.
+
+    The one genuinely ET-framed population is the raw 04:00-07:59 block,
+    which under true UTC would be 00:00-03:59 ET where no US equity bar
+    exists. It is a byte-identical duplicate of the true-UTC premarket four
+    hours later — measured on the same day, raw 04:00 and raw 08:00 carry
+    the same close (760.999) and the same volume (25,669), as do 04:30/08:30,
+    05:00/09:00, 06:00/10:00, 07:00/11:00 and 07:59/11:59. `_PREMARKET_FLOOR`
+    is what excludes it, and this test pins both halves at once."""
+    import pandas as pd
+
+    from scripts.replay_signal_monitor import trim_to_live_window_scope
+
+    def raw(t, vol):
+        return {"Time": pd.Timestamp(f"2026-09-02 {t}", tz="UTC"), "Open": 1.0,
+                "High": 1.0, "Low": 1.0, "Close": 1.0, "Volume": vol}
+
+    rows = []
+    # The ET-as-UTC duplicate block, raw 04:00-07:59.
+    rows += [raw(f"{h:02d}:{m:02d}", 25669) for h in range(4, 8) for m in range(60)]
+    # The true-UTC extended session, raw 08:00-23:59 = 04:00-19:59 ET.
+    rows += [raw(f"{h:02d}:{m:02d}", 1000) for h in range(8, 24) for m in range(60)]
+    bars = pd.DataFrame(rows)
+
+    out = trim_to_live_window_scope(bars, warmup_bars=99)
+    kept = out["Time"].dt.strftime("%H:%M").tolist()
+
+    # The opening bell is raw 13:30 and it survives.
+    assert "13:30" in kept, "the true-UTC opening bell must be evaluated"
+    # The closing bar under `< 16:00 ET` is raw 19:59.
+    assert "19:59" in kept and "20:00" not in kept, kept[-3:]
+    # Not one bar of the duplicate block survives.
+    assert not [k for k in kept if k < "08:00"], (
+        "the ET-as-UTC duplicate block must be dropped whole: %s"
+        % [k for k in kept if k < "08:00"])
+    # 390 RTH bars (raw 13:30-19:59) plus the 99-bar warm-up in front.
+    assert len(out) == 390 + 99, len(out)
+    assert kept[0] == "11:51", (
+        "the warm-up must be the 99 bars immediately before the bell: %s" % kept[0])

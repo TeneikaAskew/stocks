@@ -344,6 +344,12 @@ def classify_revision(newest_sha: str | None, newest_time: int | None,
 
 _REFUSED = {"ancestor", "older", "tie"}
 
+# The subset of _REFUSED a forced newest row may admit: the two verdicts
+# that rest on COMMITTER TIME, which a forced row cannot supply. "ancestor"
+# is not among them — it is decided by the newest row's own recorded
+# ancestry, which orders the pair definitively however it was applied.
+_UNORDERABLE = {"older", "tie"}
+
 
 def guard_revision(engine, commit_sha: str, commit_time: int,
                    ancestors: frozenset[str] = frozenset(), force: bool = False,
@@ -382,7 +388,7 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
     log.info("Revision %s (commit time %d) vs newest applied %s (commit time %d): %s",
              commit_sha, commit_time, newest_sha, newest_time, verdict)
     newest_forced = bool(row[5]) if len(row) > 5 else False
-    if verdict in _REFUSED and newest_forced:
+    if verdict in _UNORDERABLE and newest_forced:
         # The newest row was applied out of band, over this very guard, by
         # an operator passing --force-revision — typically from a branch,
         # whose committer time has no relation to main's. A squash commit
@@ -392,6 +398,12 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
         # that the merge trigger restores main (Codex on #1022). A forced
         # row records that ordering was already bypassed; it cannot then
         # become a permanent barrier.
+        #
+        # Only the committer-time verdicts, though. 'ancestor' means THIS
+        # row's own recorded ancestry contains the incoming SHA, which
+        # orders the pair whoever applied it, so admitting it would be the
+        # rollback the guard exists to prevent (Codex on #1022, round 22).
+        # It stays refused and takes the explicit --force-revision below.
         log.error("Newest applied revision %s was FORCED (applied over the guard), so "
                   "its commit time %d cannot order revision %s (%s). Applying, and "
                   "recording this revision as the one in force.",

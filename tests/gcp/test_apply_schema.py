@@ -1234,3 +1234,29 @@ def test_an_unforced_newer_row_still_blocks():
     eng = _FakeEngine([[("newer", 9999, "newer", "d", "ok", False)]])
     ok, _, _ = guard_revision(eng, "older", 10, frozenset({"older"}))
     assert ok is False
+
+
+def test_a_forced_row_still_blocks_a_recorded_ancestor():
+    """The forced-row bypass covers verdicts that cannot be ORDERED, not
+    every refusal. 'older' and 'tie' both rest on committer time, which a
+    branch HEAD's row cannot supply — that is why the bypass exists. But
+    'ancestor' is decided by the newest row's own recorded ancestry: the
+    incoming SHA is genuinely behind it, whoever applied it and however it
+    was applied. Admitting that is exactly the rollback the guard exists to
+    prevent, so it stays refused and needs the explicit --force-revision
+    (Codex on #1022)."""
+    eng = _FakeEngine([[("head", 9999, "head oldsha", "d", "ok", True)]])
+    ok, newest, _ = guard_revision(eng, "oldsha", 10, frozenset({"oldsha"}))
+    assert ok is False, (
+        "a forced newest row must not admit a revision its own ancestry records "
+        "as behind it"
+    )
+    assert newest == "head"
+
+
+def test_force_revision_still_overrides_a_forced_rows_ancestor_refusal():
+    """The narrowing above must not remove the operator's escape hatch:
+    --force-revision still applies over an 'ancestor' refusal."""
+    eng = _FakeEngine([[("head", 9999, "head oldsha", "d", "ok", True)]])
+    ok, _, _ = guard_revision(eng, "oldsha", 10, frozenset({"oldsha"}), force=True)
+    assert ok is True
