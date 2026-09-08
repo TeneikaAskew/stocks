@@ -526,7 +526,8 @@ def test_the_digest_orphans_carry_the_same_partition_status_as_the_block():
     block = inv.render_markdown("orphans", repo, None)
     digest = inv.render_markdown("refs_digest", repo, None)
     section = digest.split("## Orphan tables")[1].split("## Tables per job")[0].strip()
-    assert section == block
+    first4 = lambda text: ["|".join(r.split("|")[:5]) for r in text.splitlines()[2:]]
+    assert first4(section) == first4(block), "same tables, counts and statuses as the block"
     spy = next(r for r in section.splitlines() if r.startswith("| `market_data_intraday_spy`"))
     assert "partition of `market_data_intraday`" in spy, spy
 
@@ -571,12 +572,13 @@ def test_job_table_edges_walks_the_selected_root_not_the_checkout(mini_repo):
     repo = inv.repo_inventory(mini_repo)
     assert repo["root"] == str(mini_repo)
     e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
-    assert e["alpha"]["writes"] == ["trades"] and e["alpha"]["reads"] == ["trades"], e["alpha"]
+    # save() is called and writes; load() is never called, so no read edge
+    assert e["alpha"]["writes"] == ["trades"] and e["alpha"]["reads"] == [], e["alpha"]
     blast = {b["job"]: b for b in inv.blast_radius(repo, repo["table_refs"])}
     assert blast["alpha"]["writes"] == ["trades"]
     # the graph and the digest rendered from this inventory see the same tree
     assert f"{inv._mermaid_id('J', 'alpha')} ==> {inv._mermaid_id('T', 'trades')}" in inv.render_markdown("graph", repo, None)
-    assert "| `alpha` | `trades` | `trades` |" in inv.render_markdown("refs_digest", repo, None)
+    assert "| `alpha` | `trades` | — |" in inv.render_markdown("refs_digest", repo, None)
 
 
 def test_job_edges_follow_imports_transitively(mini_repo):
@@ -584,15 +586,16 @@ def test_job_edges_follow_imports_transitively(mini_repo):
     lib/data_loader.py, which reads market_data_daily. A one-level scope
     stopped at run_backtest and the backtest job had no read edge at all."""
     (mini_repo / "gcp/research").mkdir()
-    (mini_repo / "gcp/research/alpha.py").write_text("from gcp import helpers\n")
-    (mini_repo / "gcp/helpers.py").write_text("from gcp import deep\n")
+    (mini_repo / "gcp/research/alpha.py").write_text("from gcp import helpers\n\ndef main():\n    helpers.go()\n")
+    (mini_repo / "gcp/helpers.py").write_text("from gcp import deep\n\ndef go():\n    return deep.load()\n")
     (mini_repo / "gcp/deep.py").write_text("def load(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n")
     # a cycle must terminate, and gcp/database.py stays excluded at any depth
     (mini_repo / "gcp/database.py").write_text("from gcp import deep\ndef log(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n")
     (mini_repo / "gcp/deep.py").write_text((mini_repo / "gcp/deep.py").read_text() + "from gcp import helpers\nfrom gcp import database\n")
     repo = inv.repo_inventory(mini_repo)
     scope = inv._import_scope(mini_repo, "gcp/research/alpha.py")
-    assert scope == {"gcp/research/alpha.py", "gcp/helpers.py", "gcp/deep.py"}, scope
+    assert set(scope) == {"gcp/research/alpha.py", "gcp/helpers.py", "gcp/deep.py"}, scope
+    assert scope["gcp/research/alpha.py"] is None, "the entry module is reachable in full"
     e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
     assert e["alpha"]["reads"] == ["trades"] and e["alpha"]["writes"] == [], e["alpha"]
     blast = {b["job"]: b for b in inv.blast_radius(repo, repo["table_refs"])}
@@ -603,6 +606,99 @@ def test_the_backtest_job_reads_through_run_backtest():
     repo, refs = _repo_and_refs()
     e = next(x for x in inv.job_table_edges(repo, refs) if x["job"] == "backtest")
     assert "market_data_daily" in e["reads"], e
+
+
+# ── Codex, PR #1044 round 3: symbol-level reachability and orphan evidence ──
+
+def _write(root, rel, text):
+    f = root / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text)
+
+
+def test_an_uncalled_writer_in_an_imported_module_is_not_an_edge(mini_repo):
+    """The magnitude jobs import only add_options_features from
+    lib/features/experimental/options_derived.py; build_materialized(), the
+    writer of options_daily_features in the same file, is never called by
+    them, and a file-level scope attributed its write to all three."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import add_features\n\ndef main():\n    add_features()\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def add_features(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n\n\n\n\n"
+           "def build_materialized(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["trades"] and e["alpha"]["writes"] == [], e["alpha"]
+    scope = inv._import_scope(mini_repo, "gcp/research/alpha.py")
+    assert 2 in scope["gcp/helpers.py"] and 8 not in scope["gcp/helpers.py"], scope
+
+
+def test_a_reached_function_reaches_what_it_calls_in_its_own_module(mini_repo):
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import entry\n\ndef main():\n    entry()\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def entry(conn):\n    return _inner(conn)\n\n\n\n\n"
+           "def _inner(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["writes"] == ["trades"], e["alpha"]
+
+
+def test_relative_and_package_imports_are_followed(mini_repo):
+    """lib/agents/orchestrator.py imports `from .summarizers import ...`; the
+    walk saw no repo import there and insight-pipeline lost every read
+    behind it. Also `from gcp.pkg import sub` (a submodule) and a package
+    __init__ re-export."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.agents import run\nfrom gcp.pkg import sub\n\ndef main():\n    run(); sub.go()\n")
+    _write(mini_repo, "gcp/agents/__init__.py", "from .orchestrator import run\n")
+    _write(mini_repo, "gcp/agents/orchestrator.py", "from .summarizers import build\n\ndef run():\n    build()\n")
+    _write(mini_repo, "gcp/agents/summarizers.py", "def build(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n")
+    _write(mini_repo, "gcp/pkg/__init__.py", "")
+    _write(mini_repo, "gcp/pkg/sub.py", "def go(conn):\n    conn.execute(\"INSERT INTO market_data_intraday VALUES (1)\")\n")
+    binds = inv._bindings(mini_repo, "gcp/agents/orchestrator.py")
+    assert binds == {"build": ("gcp/agents/summarizers.py", "build")}, binds
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["trades"], e["alpha"]
+    assert e["alpha"]["writes"] == ["market_data_intraday"], e["alpha"]
+
+
+def test_module_alias_reaches_only_the_attributes_used(mini_repo):
+    _write(mini_repo, "gcp/research/alpha.py", "import gcp.helpers as h\nimport gcp.other\n\ndef main():\n    h.read(); gcp.other.write()\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def read(conn):\n    return conn.execute(\"SELECT * FROM trades\")\n\n\n\n\n"
+           "def unused(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n")
+    _write(mini_repo, "gcp/other.py", "def write(conn):\n    conn.execute(\"INSERT INTO market_data_intraday VALUES (1)\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"] == {"job": "alpha", "module": "gcp/research/alpha.py", "writes": ["market_data_intraday"], "reads": ["trades"]}, e["alpha"]
+
+
+def test_an_unused_import_still_runs_the_module_level_code(mini_repo):
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp import helpers\n")
+    _write(mini_repo, "gcp/helpers.py", "import gcp.deep\nROWS = None\n")
+    _write(mini_repo, "gcp/deep.py", "CONN = object()\nCONN.execute(\"INSERT INTO trades VALUES (1)\")\n\ndef unused(conn):\n    conn.execute(\"SELECT * FROM trades\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"] == {"job": "alpha", "module": "gcp/research/alpha.py", "writes": ["trades"], "reads": []}, e["alpha"]
+
+
+def test_the_real_tree_symbol_scope():
+    """The three concrete cases from the review, on the committed tree."""
+    repo, refs = _repo_and_refs()
+    e = {x["job"]: x for x in inv.job_table_edges(repo, refs)}
+    assert "market_data_daily" in e["backtest"]["reads"]
+    assert {"market_data_daily", "economic_events", "earnings_calendar", "journal_entries"} <= set(e["insight-pipeline"]["reads"])
+    for j in ("magnitude-engine", "magnitude-inference", "magnitude-recal"):
+        assert "options_daily_features" not in e[j]["writes"], (j, e[j])
+
+
+def test_the_digest_orphans_cite_their_writers_and_readers():
+    repo, refs = _repo_and_refs()
+    section = inv.render_markdown("refs_digest", repo, None).split("## Orphan tables")[1].split("## Tables per job")[0]
+    assert "| Where (file:line) |" in section.splitlines()[2]
+    row = next(r for r in section.splitlines() if r.startswith("| `admin_refresh_leases`"))
+    import re
+    assert re.search(r"`[\w/.-]+\.py:\d+", row), row
+    assert "Where" not in inv.render_markdown("orphans", repo, None), "the §5 block is unchanged"
 
 
 def test_the_digest_carries_the_live_only_name_sets(mini_repo):
