@@ -392,6 +392,38 @@ REQUESTS: list[Req] = [
 
 # ── the harness ─────────────────────────────────────────────────────────────
 
+from unittest.mock import MagicMock as _MagicMock
+
+
+def _stub_missing_modules(mods):
+    """Stub a heavy optional dep only when it is genuinely absent.
+
+    The predict and structure-continuation handlers import `strat_pred_serve`
+    (lightgbm + scikit-learn) inside their infrastructure guard, so in the
+    lean CI job -- which omits those extras -- the import raises
+    `ModuleNotFoundError`, the classifier reads it as an optional-dependency
+    outage, and the endpoint answers 503 BEFORE `get_engine()` is reached. A
+    regression that leaves the real database call unguarded would stay green
+    (Codex P2 on #999). Stubbing the extras makes the import succeed so the
+    503 comes from the connection, which the outage tests below then prove was
+    attempted. `setdefault`-style guarding: never replace a real package.
+    """
+    for m in mods:
+        try:
+            __import__(m)
+        except Exception:
+            parts = m.split(".")
+            for i in range(1, len(parts) + 1):
+                key = ".".join(parts[:i])
+                sys.modules.setdefault(key, _MagicMock())
+
+
+_stub_missing_modules([
+    "lightgbm", "sklearn", "sklearn.calibration", "sklearn.metrics",
+    "joblib", "scipy",
+])
+
+
 class _BackendDown(ConnectionError):
     """Raised where a socket to Cloud SQL or GCS would be opened.
 
@@ -1164,7 +1196,16 @@ def test_the_feature_gated_handlers_survive_a_backend_outage(
     of what happened.
     """
     monkeypatch.setenv(flag, "1")
+    # Prove the request reaches the DATABASE, not just the flag check or the
+    # heavy-module import: a spy on `get_engine` that fails like the harness,
+    # asserted called after the response (Codex P2 on #999).
+    from gcp import database
+    spy = _MagicMock(side_effect=_BackendDown("down"))
+    monkeypatch.setattr(database, "get_engine", spy)
     resp = client.request(method, path, json=body) if body else client.get(path)
+    assert spy.called, (
+        f"{method} {path} answered {resp.status_code} without calling "
+        f"get_engine — the 503 came from the import guard, not the backend")
 
     assert resp.status_code != 500, (
         f"{method} {path} with {flag}=1 returned a bare 500 — an unhandled "
@@ -1220,8 +1261,14 @@ def test_a_valid_as_of_timestamp_still_reaches_the_backend(client, monkeypatch):
     have replaced one wrong answer with another.
     """
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "1")
+    from gcp import database
+    spy = _MagicMock(side_effect=_BackendDown("down"))
+    monkeypatch.setattr(database, "get_engine", spy)
     resp = client.post("/api/admin/strat-engine/structure-continuation", json={
         "ticker": T, "timeframe": "15m", "as_of_timestamp": "2026-09-04T14:30:00"})
+    assert spy.called, (
+        f"a valid timestamp answered {resp.status_code} without reaching "
+        f"get_engine — the guard was not exercised")
 
     assert resp.status_code == 503, (
         f"a valid timestamp answered {resp.status_code}; it should reach the "

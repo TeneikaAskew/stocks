@@ -78,15 +78,21 @@ def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     fresh strat_levels data being available.
     """
     try:
-        from gcp.database import query_to_dataframe
-        return query_to_dataframe(sql, params)
+        # The STRICT helper, which raises. `query_to_dataframe` catches every
+        # exception and returns an empty frame BEFORE this function's guard
+        # can see it, so re-raising an outage here was dead code -- the outage
+        # was already swallowed one layer down, and the API's level-map builder
+        # still could not tell it from a real gap (Codex P1 on #999, twice).
+        # Reading strict and re-classifying here keeps the outage visible while
+        # preserving the logged-then-empty contract for every other failure.
+        from gcp.database import query_to_dataframe_strict
+        return query_to_dataframe_strict(sql, params)
     except Exception as exc:
         # A backend OUTAGE propagates. An empty frame for an unreachable
         # Cloud SQL is exactly the fabricated zero-row result the docstring
-        # warns every caller about, and the API's level-map builder could
-        # not tell it from a real gap, so the 503 its route guard names
-        # could never fire (Codex P1 on #999). Anything else keeps the
-        # logged-then-empty contract below.
+        # warns every caller about. Anything else keeps the logged-then-empty
+        # contract below (a missing relation or a schema mismatch is not an
+        # outage; callers that read this empty must still treat it as such).
         if is_backend_outage(exc):
             raise
         log.exception(

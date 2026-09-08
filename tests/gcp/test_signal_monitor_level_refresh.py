@@ -212,11 +212,35 @@ def test_query_cloud_sql_propagates_a_backend_outage():
     else.
     """
     import psycopg2
+    import sqlalchemy
+    from sqlalchemy.pool import NullPool
+    from gcp import database
     from lib import data_loader
 
     refused = 'connection to server at "127.0.0.1", port 5432 failed: Connection refused'
-    with patch("gcp.database.query_to_dataframe",
-               side_effect=psycopg2.OperationalError(refused)):
-        with pytest.raises(psycopg2.OperationalError):
-            data_loader._query_cloud_sql("SELECT 1", {})
+
+    # Injected where production fails: a lazy engine whose every connection is
+    # refused, so `query_to_dataframe_strict` genuinely raises. Patching
+    # `query_to_dataframe` (which swallows to an empty frame) would have hidden
+    # the real path -- the swallow is one layer down (Codex P1 on #999).
+    def refuse():
+        raise psycopg2.OperationalError(refused)
+
+    lazy = sqlalchemy.create_engine("postgresql+psycopg2://", creator=refuse,
+                                    poolclass=NullPool)
+    with patch.object(database, "get_engine", return_value=lazy):
+        # A lazy connection failure reaches strict as a SQLAlchemy
+        # OperationalError wrapping the psycopg2 one; is_backend_outage walks
+        # `.orig`, so `_query_cloud_sql` re-raises rather than swallowing.
+        with pytest.raises(sqlalchemy.exc.OperationalError) as excinfo:
+            data_loader._query_cloud_sql("SELECT ticker FROM strat_levels", {})
+        assert isinstance(excinfo.value.orig, psycopg2.OperationalError)
+
+    # A non-outage failure (a missing relation) still returns an empty frame
+    # per the logged-then-empty contract, not a raise.
+    def bad_sql(*_a, **_k):
+        raise psycopg2.errors.UndefinedTable("relation \"nope\" does not exist")
+
+    with patch("gcp.database.query_to_dataframe_strict", side_effect=bad_sql):
+        assert data_loader._query_cloud_sql("SELECT 1 FROM nope", {}).empty
 
