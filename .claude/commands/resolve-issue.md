@@ -622,6 +622,13 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   # An `if` CONDITION is exempt from errexit, which is what makes the failure
   # reachable rather than fatal.
   phase2_consumers() {
+    # `local REV=`, for the same reason absent_everywhere carries it: an
+    # ambient REV left in a long-lived shell by an earlier phase silently
+    # switches every probe below from the PR WORKING TREE to that commit, and
+    # turns off `--untracked` with it. A stale commit that predates the
+    # consumer then answers rc=1 and the dormant/deletion decision is made
+    # against the wrong tree. Phase 2 measures what is here NOW, by definition.
+    local REV=
     # `= function`, for the reason the Phase 4 loader states: an executable
     # named `consumed` on PATH makes `type -t` print `file`, the helper file is
     # never loaded, and the blast-radius measurement runs an unrelated program.
@@ -2125,14 +2132,38 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # `"caf\303\251_module.py"` — and the quoted spelling is not a path that
   # exists, so the existence filter drops the tracked file and the scan below
   # matches a name nothing on disk has. Both inventories get the flag, since
-  # the two halves must frame paths identically. This closes the QUOTING; a
-  # pathname containing a literal newline is still outside what a
-  # newline-delimited inventory can represent, before this change and after,
-  # and the honest fix for that is a NUL-delimited rewrite of both scans and
-  # every filter between them, which is not this round's defect.
+  # the two halves must frame paths identically. The flag closes the NON-ASCII
+  # quoting and only that; what it leaves quoted is refused outright, below.
   files=$(git -C "$root" -c core.quotepath=false ls-files --cached --others --exclude-standard \
             -- . "${PRESERVE_STOCKS[@]}") \
     || { echo "could not list files — asserting nothing"; return 1; }
+  # AND REFUSE A QUOTED RECORD, AGAINST THE RAW LISTING AND NOT LATER.
+  # `core.quotepath=false` stops the non-ASCII quoting and NOT the rest:
+  # measured, a path containing a TAB comes back as `"foo\tbar.py"` with the
+  # flag set, exactly as without it. Round 64 said the remaining gap was an
+  # embedded newline; that was wrong, and a tab is the likelier character. A
+  # quoted record is not a path that exists, so the existence filter below
+  # DROPS it and the scan then certifies with the file on disk. The defect is
+  # that it CERTIFIES, so this refuses instead — and it has to sit HERE,
+  # because the filter it warns about is what destroys its own evidence.
+  # Measured on a tree holding only `foo<TAB>bar.py`: the raw listing is the
+  # single record `"foo\tbar.py"`, and after the existence filter it is empty,
+  # so the first placement of this guard — down beside the path scan, reading
+  # the filtered list — never fired at all. Every quoted record starts with a
+  # double quote, which is not a character git emits unquoted, so the test is
+  # exact. Supporting such names needs `-z` and NUL-delimited reads through
+  # both scans and every filter between them; that is a capability, and what a
+  # defect repair owes is not asserting from a measurement it cannot represent.
+  local _nl='
+'
+  case $files in
+    '"'*|*"$_nl"'"'*)
+      echo "the path inventory contains a QUOTED record — a pathname with a"
+      echo "tab, a newline or another character git quotes. This scan is"
+      echo "newline-delimited and cannot represent it, so it is NOT asserting"
+      echo "anything. Rename the file, or retire the surface by hand."
+      return 1;;
+  esac
   # `-e` is false for a broken symlink, which is still a path that exists, so
   # ask `-L` as well rather than silently dropping one. Nothing here can fail
   # in a way worth propagating — the listing above is the fallible step and it
@@ -2483,6 +2514,24 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
     shist=$(git log --oneline --full-history --diff-merges=separate --no-patch \
               --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
       || { echo "solyra: could not read history at ${REV:0:12}"; exit 2; }
+    # AND THE HISTORY OF EVERY IMPLEMENTATION NAMED. `-G"$sym"` finds commits
+    # whose DIFF mentions the symbol, which misses a consumer identifiable only
+    # by its path — a component that assembles the endpoint from fragments, so
+    # neither its name nor its source ever contains the symbol. That is exactly
+    # why the implementation argument exists, and this query ignored it:
+    # measured, a file with an add and a removal commit gives two entries by
+    # PATHNAME and zero under `-G<symbol>`, so `shist` was empty, the "never
+    # used" branch ran, and SOLYRA_ROLLED_OUT was skipped — old bundles keep
+    # calling a backend surface that is then removed. A path query, not another
+    # `-G`: the point is that the diff does not name the symbol.
+    if [ ${#impl[@]} -gt 0 ]; then
+      local _ihist
+      _ihist=$(git log --oneline --full-history --diff-merges=separate \
+                 --no-patch --no-renames "$REV" -- "${impl[@]}") \
+        || { echo "solyra: could not read the implementation history at ${REV:0:12}"
+             exit 2; }
+      shist="${shist}${shist:+${_ihist:+$_nl}}$_ihist"
+    fi
     local _shist_src=
     if [ ${#_sapp[@]} -gt 0 ]; then
       _shist_src=$(git log --oneline --full-history --diff-merges=separate \
@@ -2512,14 +2561,52 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
                --no-patch --no-renames -G"$sym" "$REV" -- . "${EXCLUDE[@]}") \
         || { echo "solyra: could not identify the removal commit"; exit 2; }
       _srm=${_srm%%$'\n'*}
+      # AND THE IMPLEMENTATION'S OWN LAST TOUCH, because $shist above is now the
+      # UNION of two queries and this one still read only the `-G` half. On the
+      # very shape that union was added for — a consumer identifiable only by
+      # pathname — the `-G` query returns nothing, so `$shist` was non-empty and
+      # `$_srm` empty, and the refusal below fired: measured on solyra's real
+      # pw.sandbox.config.ts, `absent_everywhere <sym> pw.sandbox.config.ts`
+      # went from rc=0 (certified, the finding) to rc=2 "no commit could be
+      # identified". That is not a certification, but it is an UNREACHABLE
+      # passing state — there is no SOLYRA_ROLLED_OUT value the operator could
+      # type — and this file treats an unclearable gate as a defect of the same
+      # family. The acknowledgement binds to the LATEST of the two, since the
+      # question it answers is whether the last removal has aged out of
+      # browsers. Ordered by ANCESTRY, not by date: `%ct` is a clock reading a
+      # rebase or an imported commit can put out of order, while
+      # `merge-base --is-ancestor` asks the DAG. Its status is captured rather
+      # than tested inline, for the reason every other status here is: 0 and 1
+      # are answers, and 128 (a bad rev) is not one to read as "not an
+      # ancestor".
+      if [ ${#impl[@]} -gt 0 ]; then
+        local _isrm _anc
+        _isrm=$(git log -1 --format=%h --full-history --diff-merges=separate \
+                  --no-patch --no-renames "$REV" -- "${impl[@]}") \
+          || { echo "solyra: could not identify the implementation's last commit"
+               exit 2; }
+        _isrm=${_isrm%%$'\n'*}
+        if [ -z "$_srm" ]; then _srm=$_isrm
+        elif [ -n "$_isrm" ] && [ "$_srm" != "$_isrm" ]; then
+          if git merge-base --is-ancestor "$_srm" "$_isrm"; then _anc=0
+          else _anc=$?; fi
+          test "$_anc" -le 1 \
+            || { echo "solyra: could not order $_srm against $_isrm (rc=$_anc)"
+                 echo "— asserting nothing"; exit 2; }
+          test "$_anc" -ne 0 || _srm=$_isrm
+        fi
+      fi
       test -n "$_srm" || { echo "solyra: history is non-empty but no commit"
                            echo "could be identified — asserting nothing"; exit 2; }
       test "${SOLYRA_ROLLED_OUT:-}" = "$sym@$_srm" || {
         echo "solyra: main no longer uses '$sym', but it once did:"
         printf '%s\n' "$shist" | head -5
-        echo "last touched: $(git log -1 --format='%h %cI %s' --full-history \
-                                --diff-merges=separate --no-patch --no-renames \
-                                -G"$sym" "$REV" -- . "${EXCLUDE[@]}")"
+        # READ OFF $_srm, not a third copy of the `-G` query. That copy answered
+        # a different question from the one the gate binds to the moment $_srm
+        # could come from the implementation half — measured, it printed an
+        # EMPTY "last touched:" line for exactly the case above, naming no
+        # commit while the line below names one to acknowledge.
+        echo "last touched: $(git show -s --format='%h %cI %s' "$_srm")"
         test -n "$_shist_src" || test ${#_sapp[@]} -eq 0 || {
           echo "NOTE: every one of those commits touches only files you"
           echo "approved as prose. That is a reason to READ them, not proof:"
@@ -3526,21 +3613,34 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    nothing wrong with it. Either of these satisfies this step:
    - `pull_request_read` `method: "get_reviews"` returning a review that is
      **authored by the review bot**, is not `CHANGES_REQUESTED`, whose
-     `commit_id` is the head SHA. **Only if step 0 actually undrafted the PR**,
-     the review must also carry a `submitted_at` **after** that transition:
-     marking a draft ready does not move the head, so a review of that same SHA
-     from an earlier `@codex review` would satisfy a SHA-only test while the
-     readiness-triggered run is still going. Note the transition time when you
-     undraft. **On a PR that was never a draft — which is every CASE B PR this
-     command opens — there is no transition and no cutoff**; the head SHA and
-     the author check carry the step on their own, and applying a cutoff to an
-     event that did not happen makes the gate unsatisfiable on the normal path.
+     `commit_id` is the head SHA, **and `submitted_at` after the most recent
+     REVIEW-TRIGGERING EVENT on this PR, whichever it was**. Undrafting is one
+     such event; an explicit `@codex review` comment is another, and neither
+     moves the head. The cutoff was written for the undraft alone, which left
+     the rerun case open: comment `@codex review` on an unchanged head and an
+     older review of that same SHA satisfies a SHA-only test while the new run
+     is still Running, so the comment snapshot below can be taken before the
+     rerun posts its finding and the merge can happen inside the review window.
+     So the cutoff is the LATEST of: the undraft transition if step 0 made one,
+     and the timestamp of the most recent `@codex review` comment on the PR —
+     read it from the issue comments rather than remembering it, since a
+     rerun may have been requested by someone else. **On a PR that was never
+     drafted and never re-triggered — the ordinary CASE B path — there is no
+     such event and no cutoff**; the head SHA and the author check carry the
+     step on their own, and applying a cutoff to an event that did not happen
+     would make the gate unsatisfiable on the normal path.
+     **When a cutoff applies and the only review predates it, the answer is
+     WAIT, not merge**: the running review is the one whose findings matter.
      **`get_reviews` returns oldest first, so the current
      review is on the LAST page**; reading page 1 and finding an older "no
      findings" is exactly how #991 merged two minutes after a review it never
      saw; or
    - the Codex summary comment showing **Completed** against the head SHA,
-     **authored by the review bot** — anyone who can comment can post a
+     **authored by the review bot** — and Completed for the CURRENT run: the
+     same summary comment is edited in place and flips to **Running** when a
+     rerun starts, so a summary read before the rerun began, or one showing
+     Running, does not satisfy this. Re-read it rather than trusting a value
+     carried from an earlier step — anyone who can comment can post a
      comment that says Completed and names the head, and the author check
      above is about review objects, so without this clause the cheaper of the
      two conditions is the forgeable one. And, **again only where step 0
@@ -3853,6 +3953,24 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          # new value. Anything placed AFTER the `)` becomes what `rc` captures
          # instead of the deploy, so a failed job deploy plus a successful
          # scheduler update would read as success — chain it INSIDE:
+         # MAIN MAY HAVE MOVED WHILE THE IMAGE BUILT. `$SRC` was resolved
+         # before the worktree, and `deploy.sh` publishes a WHOLE-TREE image,
+         # so a PR merging between the two leaves this deploying an ancestor —
+         # reverting that merge in production while every check above still
+         # passes, since ancestry and TIP_VALIDATED were both true when they
+         # ran. The concurrent-build probe does not cover it: it serialises
+         # Cloud Builds and has nothing to say about GitHub merges. So the tip
+         # is re-read at the promotion boundary and a move ABORTS rather than
+         # ships: re-running picks up the new tip, revalidates it, and deploys
+         # that. Refusing here costs one build; not refusing costs a silent
+         # revert of somebody else's merge.
+         git fetch origin main || exit 1
+         [ "$(git rev-parse FETCH_HEAD)" = "$SRC" ] || {
+           echo "main moved from $SRC to $(git rev-parse FETCH_HEAD) while this"
+           echo "image was building. Deploying now would publish a whole tree"
+           echo "that OMITS what landed since. NOT deploying — re-run"
+           echo "deploy_candidate, which will validate the new tip."
+           exit 1; }
          ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target> \
            && ./gcp/deploy.sh schedulers
          # (no research image, no schedule change: just `./gcp/deploy.sh <target>`)
