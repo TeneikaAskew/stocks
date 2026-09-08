@@ -2025,10 +2025,25 @@ def _import_scope(root: pathlib.Path, mod_file: str,
     # entrypoint counted as reachable for every job configuration.
     # (Codex, PR #1044.)
     _entry_tree = _parsed(root / mod_file) if mod_file and (root / mod_file).exists() else None
-    _ns_names, _dests, _bool_dests, _none_dests = _argparse_dests(_entry_tree) \
-        if _entry_tree is not None else (set(), set(), {}, set())
+    _ns_names, _dests, _bool_dests, _none_dests, _str_dests = _argparse_dests(_entry_tree) \
+        if _entry_tree is not None else (set(), set(), {}, set(), {})
     _sets = flag_sets if flag_sets is not None else [set()]
+    # An invocation that omits a scalar option sees its declared default, so
+    # the default is one of the values the job runs with -- an OBSERVATION --
+    # and it DECIDES a branch only when every invocation omits it, the same
+    # split the passed values already use. `fetch-market-data` is deployed
+    # without `--tickers` and declares default "ALL", so `args.tickers == 'ALL'`
+    # is settled and the arm that splits a caller-supplied list is not code
+    # that job runs; `signal-monitor` is scheduled twice with `--window` and
+    # deployed once without, so "15m" joins its observed values and decides
+    # nothing. (Codex, PR #1044.)
+    _seen_default = {d: {v} for d, v in _str_dests.items()
+                     if any(d not in fs for fs in _sets)} if _ns_names else {}
+    _defaulted = {d: v for d, v in _seen_default.items()
+                  if all(d not in fs for fs in _sets)}
     argv_cons = {k: v for k, v in (argv or {}).items() if k in _dests} if _ns_names else {}
+    for _d, _v in _seen_default.items():
+        argv_cons[_d] = argv_cons.get(_d, set()) | _v
     # Values for OBSERVATION are the union over every way the job is invoked;
     # values that DECIDE a branch must additionally be passed by every one of
     # them. `orb-15m` schedules `alpha` with `--window=15m` and the bare
@@ -2036,7 +2051,7 @@ def _import_scope(root: pathlib.Path, mod_file: str,
     # about the job -- and once a decided branch also prunes what follows it,
     # reading it as one would delete the bare invocation's whole tail.
     argv_sure = {k: v for k, v in argv_cons.items()
-                 if all(k in fs for fs in _sets)} if _ns_names else {}
+                 if k in _defaulted or all(k in fs for fs in _sets)} if _ns_names else {}
     # A boolean switch the deployment does not pass takes its declared default.
     # `backtest-pipeline` is deployed with no args, so `--walk-forward` is
     # false and the walk-forward subprocess under `if run_wf:` cannot run;
@@ -2916,9 +2931,11 @@ def _flag_names(src: str) -> set[str]:
     return {m.group(1).replace("-", "_") for m in _ARGV_ANY_FLAG.finditer(src)}
 
 
-def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str], dict[str, tuple[bool, bool]], set[str]]:
+def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str], dict[str, tuple[bool, bool]],
+                                                set[str], dict[str, str]]:
     """(names bound from `parse_args()`, the SCALAR dests the module declares,
-    the boolean switches, the dests that default to None).
+    the boolean switches, the dests that default to None, the literal string
+    each remaining scalar dest defaults to).
 
     Only a module that declares `--mode` may have its `args.mode` constrained
     by a deployed `--mode=weekly`, and only through a name that actually holds
@@ -3011,7 +3028,29 @@ def _argparse_dests(tree: ast.Module) -> tuple[set[str], set[str], dict[str, tup
         d = _dest_of(node, kw)
         if d and d not in reassigned:
             nones.add(d)
-    return ns, dests, bools, nones
+    # A scalar option no invocation passes takes its declared default, exactly
+    # as a `store_true` switch and a `None` default do. Without it
+    # `add_argument("--mode", default="weekly")` left the daily arm reachable
+    # for a job argparse always gives "weekly", so a table only that arm
+    # touches was published for it. Same exclusions as the None case: a
+    # `required=True` dest (argparse would refuse to run without it) and a dest
+    # the module assigns back onto the namespace. (Codex, PR #1044.)
+    str_defaults: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"):
+            continue
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+        req = kw.get("required")
+        if isinstance(req, ast.Constant) and req.value is True:
+            continue
+        dflt = kw.get("default")
+        if not (isinstance(dflt, ast.Constant) and isinstance(dflt.value, str)):
+            continue
+        d = _dest_of(node, kw)
+        if d and d in dests and d not in reassigned:
+            str_defaults[d] = dflt.value
+    return ns, dests, bools, nones, str_defaults
 
 
 def _job_scope(root: pathlib.Path, job: dict[str, Any],

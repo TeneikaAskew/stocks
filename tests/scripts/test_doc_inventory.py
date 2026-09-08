@@ -970,12 +970,15 @@ def test_only_an_unambiguous_scalar_string_flag_is_read_as_a_constraint(mini_rep
            "p.add_argument('--out-dir', dest='outdir')\n"
            "p.add_argument('--mode', default='full')\n"
            "args = p.parse_args()\n")
-    ns, dests, bools, _nones = inv._argparse_dests(ast.parse(src))
+    ns, dests, bools, _nones, strdef = inv._argparse_dests(ast.parse(src))
     assert ns == {"args"}
     assert dests == {"outdir", "mode"}, dests
     # a store_true is not a scalar constraint; it is a boolean whose value is
     # False when the deployment does not pass it
     assert bools == {"verbose": (True, False)}, bools
+    # `--mode` declares a literal default; `--out-dir` declares none, so there
+    # is no value to fall back to when the deployment omits it
+    assert strdef == {"mode": "full"}, strdef
 
 
 def test_a_scheduler_override_constrains_only_the_module_it_selects(mini_repo):
@@ -1058,6 +1061,48 @@ def test_a_boolean_flag_the_deployment_omits_prunes_its_branch(mini_repo):
                                "args": "--deep --mode=full"}, None) == {"deep", "mode"}
 
 
+def test_a_scalar_flag_the_deployment_omits_takes_its_declared_default(mini_repo):
+    """A scalar option no invocation passes carries its declared default, so a
+    branch that default rules out is not code the job runs. Only boolean and
+    None defaults were read, so `add_argument("--mode", default="weekly")` with
+    no deployed `--mode` left the daily arm reachable and published the table
+    only that arm touches. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse\n"
+           "\n"
+           "def weekly(conn):\n"
+           '    conn.execute("INSERT INTO trades VALUES (1)")\n'
+           "\n"
+           "def daily(conn):\n"
+           '    conn.execute("INSERT INTO market_data_intraday VALUES (1)")\n'
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--mode', default='full')\n"
+           "    p.add_argument('--scope', default='weekly')\n"
+           "    args = p.parse_args()\n"
+           "    if args.scope == 'weekly':\n"
+           "        weekly(None)\n"
+           "    else:\n"
+           "        daily(None)\n"
+           "\n"
+           "if __name__ == '__main__':\n"
+           "    main()\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["writes"] == ["trades"], e["alpha"]
+    assert "market_data_intraday" not in e["alpha"]["writes"], \
+        "argparse always supplies scope='weekly' for this deployment"
+    # the daily arm is not merely unattributed, it is out of scope entirely
+    assert "gcp/research/alpha.py" in inv._import_scope(
+        mini_repo, "gcp/research/alpha.py", {}, [set()])
+    # an invocation that DOES pass --scope is governed by the value passed, not
+    # by the default, so the daily arm is live for it
+    scoped = inv._import_scope(mini_repo, "gcp/research/alpha.py",
+                               {"scope": {"daily"}}, [{"scope"}])
+    assert "gcp/research/alpha.py" in scoped
+
+
 def test_a_fixed_cli_value_narrows_a_run_time_named_family(mini_repo):
     """`direction-probe` is deployed with `--tf=15m` and passes `args.tf` down
     to the loader, but the family grouping looked only at whether the scanner
@@ -1088,8 +1133,21 @@ def test_a_fixed_cli_value_narrows_a_run_time_named_family(mini_repo):
     got = {x["job"]: x for x in inv.job_table_edges(repo, refs, [fixed])}["probe"]
     assert got["reads"] == ["demo_15m"], got
     open_ = {x["job"]: x for x in inv.job_table_edges(repo, refs, [loose])}["probe"]
-    assert open_["reads"] == ["demo_15m", "demo_1m"], \
-        "with no declared value the whole family stands"
+    assert open_["reads"] == ["demo_1m"], \
+        "no --tf passed means argparse supplies '1m', which names one member"
+    # the family only stands open where the value is genuinely unknown: strip
+    # the default and there is nothing for argparse to supply
+    _write(mini_repo, "gcp/research/alpha.py",
+           (mini_repo / "gcp/research/alpha.py").read_text()
+           .replace("'--tf', default='1m'", "'--tf'"))
+    repo2 = inv.repo_inventory(mini_repo)
+    refs2 = inv.table_refs(mini_repo, names)
+    for k, v in inv.table_refs_dynamic(mini_repo, names).items():
+        for kind in ("writes", "reads", "mentions"):
+            refs2[k][kind].extend(v[kind])
+    undecl = {x["job"]: x for x in inv.job_table_edges(repo2, refs2, [loose])}["probe"]
+    assert undecl["reads"] == ["demo_15m", "demo_1m"], \
+        "with no value declared anywhere the whole family stands"
 
 
 def test_a_declared_relation_named_at_run_time_is_attributed(mini_repo):
@@ -1162,13 +1220,72 @@ def test_a_declared_value_reaches_the_whole_call_chain(mini_repo):
            "\n"
            "main()\n")
     obs: dict = {}
-    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, [set()], obs)
+    # argv and flag_sets both come from `declared_argv`/`declared_flag_sets`
+    # over the same job, so a dest present in argv is present in some flag
+    # set; pairing `--tf=15m` with an invocation that passes no flags is a
+    # combination production cannot produce, and it now reads as "this
+    # invocation omits --tf", which adds the declared default.
+    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, [{"tf"}], obs)
     got = {fn: cons.get("tf") for (f, fn), cons in obs.items() if "tf" in cons}
     assert got == {"run_baseline": {"15m"}, "run_axis": {"15m"}, "leaf": {"15m"}}, got
-    # and with nothing declared, the chain carries no constraint
+    # with no --tf on the command line the chain carries argparse's own default
+    # rather than nothing: the job runs with tf='1m' whether or not it says so
     loose: dict = {}
     inv._import_scope(mini_repo, "gcp/research/alpha.py", {}, [set()], loose)
-    assert loose[("gcp/research/alpha.py", "leaf")]["tf"] is None
+    assert loose[("gcp/research/alpha.py", "leaf")]["tf"] == {"1m"}, \
+        loose[("gcp/research/alpha.py", "leaf")]
+
+
+def test_a_default_only_some_invocations_see_is_observed_but_decides_nothing(mini_repo):
+    """`signal-monitor` is scheduled twice with `--window` and deployed once
+    without, so argparse hands that third invocation the declared default. The
+    default is therefore one of the values the job runs with and belongs in the
+    observed union, while settling no branch -- the same split the passed
+    values already use. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "import argparse\n"
+           "\n"
+           "def leaf(engine, tf):\n"
+           '    return engine.execute(f"SELECT * FROM demo_{tf}")\n'
+           "\n"
+           "def main():\n"
+           "    p = argparse.ArgumentParser()\n"
+           "    p.add_argument('--tf', default='1m')\n"
+           "    args = p.parse_args()\n"
+           "    leaf(None, args.tf)\n"
+           "\n"
+           "main()\n")
+    # one invocation passes --tf=5m, one does not: the omitting one sees '1m'
+    obs: dict = {}
+    inv._import_scope(mini_repo, "gcp/research/alpha.py",
+                      {"tf": {"5m"}}, [set(), {"tf"}], obs)
+    got = obs[("gcp/research/alpha.py", "leaf")]["tf"]
+    assert got == {"1m", "5m"}, got
+    # every invocation passes it: the default is never seen
+    both: dict = {}
+    inv._import_scope(mini_repo, "gcp/research/alpha.py",
+                      {"tf": {"5m"}}, [{"tf"}, {"tf"}], both)
+    assert both[("gcp/research/alpha.py", "leaf")]["tf"] == {"5m"}, \
+        both[("gcp/research/alpha.py", "leaf")]
+
+
+def test_every_declared_value_belongs_to_a_declared_invocation():
+    """`_import_scope` reads a dest ABSENT from every flag set as "this
+    invocation omits the flag", and gives it the declared default. That is only
+    sound because `declared_argv` and `declared_flag_sets` are built from the
+    same job and schedulers, so a dest carrying a value is always named by at
+    least one invocation. Asserted over the real deploy script rather than a
+    fixture, since it is the pairing in production that has to hold."""
+    jobs = inv.deploy_jobs(REPO)
+    scheds = inv.deploy_schedulers(REPO)
+    assert jobs, "the real deploy script must declare jobs"
+    orphaned = []
+    for j in jobs:
+        plain = [s for s in scheds if s.get("target_job") == j["name"] and s.get("args")]
+        sets = inv.declared_flag_sets(j, plain)
+        orphaned += [(j["name"], d) for d in inv.declared_argv(j, plain)
+                     if not any(d in fs for fs in sets)]
+    assert orphaned == [], orphaned
 
 
 def test_a_branch_local_import_binds_only_its_own_branch(mini_repo):
@@ -1202,7 +1319,12 @@ def test_a_branch_local_import_binds_only_its_own_branch(mini_repo):
            "\n"
            "main()\n")
     obs: dict = {}
-    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, [set()], obs)
+    # argv and flag_sets both come from `declared_argv`/`declared_flag_sets`
+    # over the same job, so a dest present in argv is present in some flag
+    # set; pairing `--tf=15m` with an invocation that passes no flags is a
+    # combination production cannot produce, and it now reads as "this
+    # invocation omits --tf", which adds the declared default.
+    inv._import_scope(mini_repo, "gcp/research/alpha.py", {"tf": {"15m"}}, [{"tf"}], obs)
     assert obs[("gcp/mag.py", "go")]["tf"] == {"15m"}, obs.get(("gcp/mag.py", "go"))
     assert obs[("gcp/strat.py", "go")]["tf"] == {"15m"}, \
         "the 4-argument magnitude call must not reach the strat binding at all"
