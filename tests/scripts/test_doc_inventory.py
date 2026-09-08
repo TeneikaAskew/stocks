@@ -901,6 +901,61 @@ def test_a_subprocess_target_in_reached_code_is_a_root(mini_repo):
     assert "gcp/other.py" not in scope
 
 
+def test_a_dynamic_name_returned_by_a_helper_is_followed_to_its_calls(mini_repo):
+    """strat_enrich_levels.levels_table() returns f"strat_features_levels_{tf}"
+    and its result goes straight into bulk_copy_upsert; the return line was a
+    mention and the relation had no writer."""
+    _write(mini_repo, "gcp/helpers.py",
+           "def levels_table(tf):\n    return f\"strat_features_levels_{tf}\"\n\n\n\n\n"
+           "def run(df, tf):\n    bulk_copy_upsert(df, levels_table(tf))\n\n\n\n\n"
+           "def check(conn, tf):\n    t = levels_table(tf)\n\n\n\n\n    return conn.execute(f\"SELECT count(*) FROM {t}\")\n")
+    dyn = inv.table_refs_dynamic(mini_repo, ["strat_features_levels_1m"])["strat_features_levels_1m"]
+    assert [r["line"] for r in dyn["writes"]] == [8], dyn
+    assert [r["line"] for r in dyn["reads"]] == [19], dyn
+    assert [r["line"] for r in dyn["mentions"]] == [2, 14], dyn
+
+
+def test_a_scheduler_override_module_is_a_root_of_its_target_job(mini_repo):
+    """strat-enrich-daily targets strat-engine with args overriding the
+    module to strat_enrich_levels; that module wrote nothing in the job's
+    row. The mini deploy.sh's enrich-daily targets alpha the same way."""
+    _write(mini_repo, "gcp/research/alpha.py", "def main():\n    return 1\n")
+    _write(mini_repo, "gcp/research/enrich.py", "def main(conn):\n    conn.execute(\"INSERT INTO trades VALUES (1)\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    assert inv._scheduler_modules(mini_repo, "alpha", repo["schedulers"]) == ["gcp/research/enrich.py"]
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["writes"] == ["trades"], e["alpha"]
+    blast = {b["job"]: b for b in inv.blast_radius(repo, repo["table_refs"])}
+    assert blast["alpha"]["writes"] == ["trades"]
+
+
+def test_a_literal_argument_rules_out_the_branches_it_cannot_take(mini_repo):
+    """feature_importance._load_axis() calls load_magnitude_dataset(..., "phase0");
+    the phase3-only economic_events reader behind `if phase == "phase3":`
+    was attributed to direction-importance."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.helpers import load\n\ndef main(engine):\n    return load(engine, \"phase0\")\n")
+    _write(mini_repo, "gcp/helpers.py",
+           "def load(engine, phase, mode=\"body\"):\n    if phase == \"phase3\":\n        return engine.execute(\"SELECT * FROM trades\")\n"
+           "    elif phase in (\"phase1\", \"phase2\"):\n        return engine.execute(\"SELECT * FROM market_data_intraday_spy\")\n"
+           "    if mode != \"body\":\n        return engine.execute(\"SELECT * FROM earnings_ticker_lean\")\n"
+           "    return engine.execute(\"SELECT * FROM market_data_intraday\")\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["market_data_intraday"], e["alpha"]
+    # a second call with an unknown argument reopens every branch
+    _write(mini_repo, "gcp/research/alpha.py",
+           "from gcp.helpers import load\n\ndef main(engine, p):\n    load(engine, \"phase0\")\n    return load(engine, p)\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["market_data_intraday", "market_data_intraday_spy", "trades"], e["alpha"]
+    # a bare reference (passed as a callback) is a call with anything
+    _write(mini_repo, "gcp/research/alpha.py",
+           "from gcp.helpers import load\n\ndef main(engine, run):\n    return run(load)\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert "trades" in e["alpha"]["reads"], e["alpha"]
+
+
 def test_a_prose_string_is_not_a_reference(mini_repo):
     """scripts/audit_data_freshness.py:796, `"rationale": "VEX derives from
     gamma_levels_eod ..."`, is config text; "from" in it made
@@ -948,9 +1003,13 @@ def test_the_real_tree_symbol_scope():
     assert "strat_features_1m" in e3["strat-engine"]["writes"], e3["strat-engine"]
     assert "gamma_levels_eod" not in e3["freshness-watchdog"]["reads"], e3["freshness-watchdog"]
     # round 9: a placeholder is one segment, and subprocess targets are roots
-    assert "strat_features_levels_1m" not in e3["strat-engine"]["writes"], e3["strat-engine"]
-    assert "strat_features_levels_1m" not in e3["strat-engine"]["reads"], e3["strat-engine"]
     assert {"backtest_trades", "backtest_reports"} <= set(e["backtest-pipeline"]["writes"]), e["backtest-pipeline"]
+    # round 10: the levels table reaches strat-engine only through the scheduler
+    # override (strat_enrich_levels) and the helper that returns its name;
+    # a literal "phase0" keeps the phase3-only reader away from direction-importance
+    cites = e3["strat-engine"]["cites"].get("strat_features_levels_1m", {"writes": []})["writes"]
+    assert cites and all(c["file"].endswith("strat_enrich_levels.py") for c in cites), cites
+    assert "economic_events" not in e["direction-importance"]["reads"], e["direction-importance"]
 
 
 def test_the_digest_orphans_cite_their_writers_and_readers():

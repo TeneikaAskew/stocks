@@ -197,7 +197,7 @@ def _configured_modules(root: pathlib.Path, job: dict[str, Any]) -> list[str]:
     out: list[str] = []
     for m in re.finditer(r"\b((?:gcp|lib|scripts)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b", text):
         f = _module_file(root, m.group(1).split("."))
-        if f and f not in out and f != entry_module(job):
+        if f and f not in out and f != entry_module(job) and f != "gcp/database.py":
             out.append(f)
     return out
 
@@ -816,11 +816,38 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
         diag = _diagnostic_lines(joined)
         ctx_lines = ["" if n + 1 in diag else ln for n, ln in enumerate(lines)]
         seen: dict[str, set[int]] = {t: set() for t in tables}
+        # line -> the innermost function that returns on that line, for
+        # `def levels_table(tf): return f"strat_features_levels_{tf}"`
+        returning_func: dict[int, str] = {}
+        tree = _parsed(f)
+        if tree is not None:
+            for fn in ast.walk(tree):
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for r in ast.walk(fn):
+                        if isinstance(r, ast.Return):
+                            returning_func[r.lineno] = fn.name
 
         def record(t: str, kind: str, k: int, text: str) -> None:
             if k + 1 not in seen[t]:
                 seen[t].add(k + 1)
                 out[t][kind].append({"file": rel, "line": k + 1, "text": text.strip()[:120], "dynamic": True})
+
+        def follow(t: str, name_re: re.Pattern, skip: int, depth: int = 0) -> None:
+            """Every non-diagnostic line using `name_re` is a use of the
+            table; an assignment there is followed one level further."""
+            for k, l2 in enumerate(lines):
+                if k == skip or k + 1 in diag or not name_re.search(l2) or l2.lstrip().startswith("#"):
+                    continue
+                ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
+                if WRITE_RE.search(ctx2):
+                    record(t, "writes", k, l2)
+                elif READ_RE.search(ctx2):
+                    record(t, "reads", k, l2)
+                else:
+                    record(t, "mentions", k, l2)
+                am = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*", l2)
+                if am and depth < 2:
+                    follow(t, re.compile(rf"\b{re.escape(am.group(1))}\b"), k, depth + 1)
 
         for i, line in enumerate(lines):
             if i + 1 in diag or line.lstrip().startswith("#"):
@@ -834,20 +861,18 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
             ctx = "\n".join(ctx_lines[max(0, i - 3): i + 1])
             kind = "writes" if WRITE_RE.search(ctx) else ("reads" if READ_RE.search(ctx) else "mentions")
             cm = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*", line)
+            fn = returning_func.get(i + 1) if re.match(r"\s*return\b", line) else None
             for t in hits:
                 record(t, kind, i, line)
                 # `table = f"strat_features_{tf_label}"` then `upsert_dataframe(feat, table, ...)`
                 # further down: follow the name to where it is used, as table_refs does.
                 if cm:
-                    const = re.compile(rf"\b{re.escape(cm.group(1))}\b")
-                    for k, l2 in enumerate(lines):
-                        if k == i or k + 1 in diag or not const.search(l2) or l2.lstrip().startswith("#"):
-                            continue
-                        ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
-                        if WRITE_RE.search(ctx2):
-                            record(t, "writes", k, l2)
-                        elif READ_RE.search(ctx2):
-                            record(t, "reads", k, l2)
+                    follow(t, re.compile(rf"\b{re.escape(cm.group(1))}\b"), i)
+                # `def levels_table(tf): return f"strat_features_levels_{tf}"` then
+                # `bulk_copy_upsert(df, levels_table(tf))`: follow the helper's calls.
+                # (Codex, PR #1044.)
+                if fn:
+                    follow(t, re.compile(rf"(?<![\w.])(?<!def ){re.escape(fn)}\s*\("), i)
     return out
 
 
@@ -1151,6 +1176,111 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
     reached_methods: set[tuple[str, str, str]] = set()
     reached_consts: set[tuple[str, str]] = set()
     ALWAYS = {"__init__", "__new__", "__post_init__"}
+    # Literal string arguments observed at every reached call of a function,
+    # per parameter: a set of values, or None once any call passes something
+    # else. A branch such as `if phase == "phase3":` inside the callee is
+    # dormant when every observed value says so, and the code behind it is
+    # not reached. feature_importance._load_axis() calls
+    # load_magnitude_dataset(..., "phase0"), and the phase3-only
+    # economic_events reader behind that gate had been attributed to
+    # direction-importance. (Codex, PR #1044.)
+    arg_lits: dict[tuple[str, str], dict[str, set[str] | None]] = {}
+    walked_with: dict[tuple[str, str], str] = {}
+
+    def observe_call(target: tuple[str, str], call: ast.Call | None) -> bool:
+        """Record the literal arguments of one call (None = a bare
+        reference, everything unknown). True when the constraint set
+        changed and the callee, if already walked, must be walked again."""
+        tf, sym = target
+        tree = _parsed(root / tf)
+        fn = _top_defs(tree).get(sym) if tree is not None else None
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return False
+        params = [a.arg for a in fn.args.args]
+        defaults = dict(zip(params[len(params) - len(fn.args.defaults):], fn.args.defaults))
+        cons = arg_lits.setdefault(target, {})
+        before = repr(sorted((k, sorted(v) if v else v) for k, v in cons.items()))
+        if call is None or any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg is None for k in call.keywords):
+            for pn in params:
+                cons[pn] = None
+        else:
+            supplied: dict[str, ast.AST] = {}
+            for pos, a in enumerate(call.args):
+                if pos < len(params):
+                    supplied[params[pos]] = a
+            for kw in call.keywords:
+                supplied[kw.arg] = kw.value
+            for pn in params:
+                val = supplied.get(pn, defaults.get(pn))
+                if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                    if cons.get(pn, set()) is not None:
+                        cons.setdefault(pn, set()).add(val.value)
+                else:
+                    cons[pn] = None
+        after = repr(sorted((k, sorted(v) if v else v) for k, v in cons.items()))
+        return before != after
+
+    def verdict(test: ast.AST, cons: dict[str, set[str] | None]) -> bool | None:
+        """True / False when `cons` decides the test, else None."""
+        if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            v = verdict(test.operand, cons)
+            return None if v is None else not v
+        if isinstance(test, ast.BoolOp):
+            vs = [verdict(x, cons) for x in test.values]
+            if isinstance(test.op, ast.And):
+                return False if False in vs else (True if all(v is True for v in vs) else None)
+            return True if True in vs else (False if all(v is False for v in vs) else None)
+        if isinstance(test, ast.Compare) and len(test.ops) == 1:
+            left, op, right = test.left, test.ops[0], test.comparators[0]
+            if isinstance(right, ast.Name) and isinstance(left, (ast.Constant, ast.Tuple, ast.List, ast.Set)):
+                left, right = right, left
+            if not isinstance(left, ast.Name) or left.id not in cons or cons[left.id] is None:
+                return None
+            values = cons[left.id]
+            if isinstance(op, (ast.Eq, ast.NotEq)) and isinstance(right, ast.Constant):
+                hits = {v == right.value for v in values}
+                if len(hits) != 1:
+                    return None
+                return hits.pop() if isinstance(op, ast.Eq) else not hits.pop()
+            if isinstance(op, (ast.In, ast.NotIn)) and isinstance(right, (ast.Tuple, ast.List, ast.Set)) \
+                    and all(isinstance(e, ast.Constant) for e in right.elts):
+                pool = {e.value for e in right.elts}
+                hits = {v in pool for v in values}
+                if len(hits) != 1:
+                    return None
+                return hits.pop() if isinstance(op, ast.In) else not hits.pop()
+        return None
+
+    def dormant(fn: ast.AST, cons: dict[str, set[str] | None]) -> set[int]:
+        """ids of the statements behind branches `cons` rules out."""
+        out: set[int] = set()
+        if not cons:
+            return out
+        for node in ast.walk(fn):
+            if isinstance(node, ast.If):
+                v = verdict(node.test, cons)
+                if v is True:
+                    out.update(id(x) for x in node.orelse)
+                elif v is False:
+                    out.update(id(x) for x in node.body)
+        return out
+
+    def live_nodes(nodes: list[ast.AST], skip: set[int]):
+        """ast.walk over `nodes`, not descending into skipped statements."""
+        stack = list(nodes)
+        while stack:
+            n = stack.pop()
+            if id(n) in skip:
+                continue
+            yield n
+            stack.extend(ast.iter_child_nodes(n))
+
+    def live_lines(fn: ast.AST, skip: set[int]) -> set[int]:
+        lines = _lines_of(fn)
+        for node in ast.walk(fn):
+            if id(node) in skip:
+                lines -= _lines_of(node)
+        return lines
 
     def reach_const(f: str, name: str, node: ast.AST) -> None:
         # the assignment names its own target, so guard before walking it
@@ -1168,8 +1298,10 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         else:
             scope.setdefault(f, set()).update(lines)
 
-    def uses(f: str, nodes: list[ast.AST]) -> None:
-        """Follow every name and attribute chain used in `nodes` (code in `f`)."""
+    def uses(f: str, nodes: list[ast.AST], skip: set[int] | None = None) -> None:
+        """Follow every name and attribute chain used in `nodes` (code in `f`),
+        not descending into the statements in `skip`."""
+        skip = skip or set()
         tree = _parsed(root / f)
         if tree is None:
             return
@@ -1185,17 +1317,53 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         names: set[str] = set()
         chains: set[str] = set()
         new_attrs: set[str] = set()
-        for n in nodes:
-            for sub in ast.walk(n):
-                if isinstance(sub, ast.Name):
-                    names.add(sub.id)
-                elif isinstance(sub, ast.Attribute):
-                    if sub.attr not in attr_names:
-                        new_attrs.add(sub.attr)
-                    d = _dotted(sub)
-                    if d:
-                        chains.add(d)
+        call_funcs: set[int] = set()
+        calls: list[ast.Call] = []
+        for sub in live_nodes(nodes, skip):
+            if isinstance(sub, ast.Call):
+                calls.append(sub)
+                call_funcs.add(id(sub.func))
+        walked = list(live_nodes(nodes, skip))
+        for sub in walked:
+            if isinstance(sub, ast.Name):
+                names.add(sub.id)
+            elif isinstance(sub, ast.Attribute):
+                if sub.attr not in attr_names:
+                    new_attrs.add(sub.attr)
+                d = _dotted(sub)
+                if d:
+                    chains.add(d)
         attr_names.update(new_attrs)
+
+        def resolve_callee(func: ast.AST) -> tuple[str, str] | None:
+            if isinstance(func, ast.Name):
+                if func.id in defs:
+                    return (f, func.id)
+                for target, sym in binds.get(func.id, []):
+                    if sym is not None:
+                        return (target, sym)
+                return None
+            d = _dotted(func)
+            if d and "." in d:
+                alias, attr = d.rsplit(".", 1)
+                for target, sym in binds.get(alias, []):
+                    if sym is None:
+                        return (target, attr)
+            return None
+
+        # literal arguments first, so a callee reached below is walked with them
+        rewalk: set[tuple[str, str]] = set()
+        for c in calls:
+            target = resolve_callee(c.func)
+            if target and observe_call(target, c) and target in seen_syms:
+                rewalk.add(target)
+        for sub in walked:
+            if isinstance(sub, ast.Name) and id(sub) not in call_funcs and sub.id in defs:
+                if observe_call((f, sub.id), None) and (f, sub.id) in seen_syms:
+                    rewalk.add((f, sub.id))
+        for target in rewalk:
+            seen_syms.discard(target)
+            reach_symbol(*target)
         for (cf, cname), cls in list(classes.items()):
             for m in cls.body:
                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name in new_attrs:
@@ -1283,8 +1451,9 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
             if isinstance(node, ast.ClassDef):
                 reach_class(f, node)
             else:
-                add_lines(f, _lines_of(node))
-                uses(f, [node])
+                skip = dormant(node, arg_lits.get((f, sym), {}))
+                add_lines(f, live_lines(node, skip))
+                uses(f, [node], skip)
             return
         consts = _top_consts(tree)
         if sym in consts:
@@ -1349,11 +1518,29 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
     return scope
 
 
-def _job_scope(root: pathlib.Path, job: dict[str, Any]) -> dict[str, set[int] | None]:
+def _scheduler_modules(root: pathlib.Path, job_name: str, schedulers: list[dict[str, Any]]) -> list[str]:
+    """Repo modules a scheduler's args override selects when it targets this
+    job: strat-enrich-daily targets strat-engine with
+    `-m gcp.research.strat_engine.strat_enrich_levels`, so that module is a
+    root of strat-engine's reachable code. (Codex, PR #1044.)"""
+    out: list[str] = []
+    for sch in schedulers:
+        if sch.get("target_job") != job_name or not sch.get("args"):
+            continue
+        for m in re.finditer(r"\b((?:gcp|lib|scripts)(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b", sch["args"]):
+            f = _module_file(root, m.group(1).split("."))
+            if f and f not in out and f != "gcp/database.py":
+                out.append(f)
+    return out
+
+
+def _job_scope(root: pathlib.Path, job: dict[str, Any],
+               schedulers: list[dict[str, Any]] | None = None) -> dict[str, set[int] | None]:
     """The entry module's scope plus, in full, every module the job's env or
-    args configure a wrapper to run (see _configured_modules)."""
+    args configure a wrapper to run (see _configured_modules) and every
+    module a scheduler's args override selects for it."""
     scope = _import_scope(root, entry_module(job))
-    for extra in _configured_modules(root, job):
+    for extra in _configured_modules(root, job) + _scheduler_modules(root, job["name"], schedulers or []):
         for f, lines in _import_scope(root, extra).items():
             if lines is None or scope.get(f, set()) is None:
                 scope[f] = None
@@ -1378,7 +1565,7 @@ def blast_radius(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[str, 
     root = _repo_root(repo)
     for j in repo["jobs"]:
         mod_file = entry_module(j)
-        scope = _job_scope(root, j)
+        scope = _job_scope(root, j, repo.get("schedulers"))
         written = sorted(t for t, v in refs.items() if any(_in_scope(scope, w) for w in v["writes"]))
         downstream = sorted({f for t in written for f in readers.get(t, set()) if f not in scope})
         out.append({"job": j["name"], "module": mod_file, "writes": written, "readers": downstream})
@@ -1403,7 +1590,7 @@ def job_table_edges(repo: dict[str, Any], refs: dict[str, dict[str, list[dict[st
     out = []
     for j in (repo["jobs"] if jobs is None else jobs):
         mod_file = entry_module(j)
-        scope = _job_scope(root, j)
+        scope = _job_scope(root, j, repo.get("schedulers"))
         cites: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for t, v in refs.items():
             hits = {k: [x for x in v[k] if _in_scope(scope, x)] for k in ("writes", "reads")}
