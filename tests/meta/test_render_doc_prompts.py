@@ -46,6 +46,12 @@ PROMPTS = ("architecture", "data-dependencies", "cost-analysis", "readme")
 LIVE = {
     "counts": {"jobs": 811, "schedulers": 822, "services": 833, "secrets": 844},
     "db_tables": {f"t{i}": {} for i in range(855)},
+    # keyed by service name, as doc_inventory's snapshot writes it. The NAMES
+    # are substituted as well as the count: run 28 wrote `solyra-api` where the
+    # live services are `solyra-api-prod` and `solyra-api-staging`, and the
+    # refresh failed on a service that does not exist.
+    "services": {"solyra-api-prod": {}, "solyra-api-staging": {},
+                 "discord-interactions": {}, "failure-notifier": {}},
 }
 REPO_INVENTORY = {"repo": {
     "counts": {"jobs": 866, "schedulers": 877, "tables": 690},
@@ -84,6 +90,39 @@ def test_the_cost_prompt_states_the_scheduler_count_as_a_substituted_value(value
     assert "**855** live, **700** declared, **155** runtime-created" in out
 
 
+def test_the_cost_prompt_names_every_live_service(values):
+    """Run 28 wrote `solyra-api` for `solyra-api-prod`, twice, and the run went
+    red on a service that does not exist. A count cannot prevent that -- the
+    count was right. The names are substituted too, so the model copies them.
+
+    Asserted as a SET so a renderer that drops, adds or shortens one fails:
+    `solyra-api` is a substring of `solyra-api-prod`, so a substring check
+    would pass on exactly the output that broke run 28.
+    """
+    out = rp.render((PROMPT_DIR / "cost-analysis.md").read_text(), values, "cost")
+    line = next(ln for ln in out.split("\n") if ln.startswith("- Cloud Run Services:"))
+    assert set(re.findall(r"`([^`]+)`", line)) == set(LIVE["services"])
+    assert "**833**" in line
+
+
+def test_a_service_snapshot_with_no_names_refuses_to_render():
+    """Rule 3.7: an empty list is not a fleet, and handing the model one would
+    invite it to derive the names it could not read."""
+    with pytest.raises(SystemExit) as e:
+        rp.counts({**LIVE, "services": {}}, REPO_INVENTORY, VERIFY_LIVE)
+    assert "LIVE_SERVICE_NAMES" in str(e.value)
+
+
+def test_the_service_names_are_a_placeholder_not_prose():
+    """The same defect one layer up: a name written into the template goes
+    stale on the next rename, and nothing fails."""
+    src = (PROMPT_DIR / "cost-analysis.md").read_text()
+    assert "{{LIVE_SERVICE_NAMES}}" in src
+    rendered = rp.render(src, rp.counts(LIVE, REPO_INVENTORY, VERIFY_LIVE), "cost")
+    for name in ("solyra-api-prod", "solyra-api-staging"):
+        assert src.count(name) < rendered.count(name), name
+
+
 def test_every_prompt_carries_the_authoritative_block(values):
     """A prompt that never states the counts cannot be expected to use them."""
     for name in PROMPTS:
@@ -106,11 +145,13 @@ def test_a_malformed_placeholder_never_reaches_the_model(values):
     assert "survived rendering" in str(e.value)
 
 
+# Derived from LIVE so each case is a complete snapshot broken in exactly one
+# place. Spelling them out in full let an earlier version omit a key that was
+# added later, so the case raised on the missing key and stopped exercising the
+# guard it was written for.
 @pytest.mark.parametrize("broken", [
-    {"counts": {"jobs": 0, "schedulers": 822, "services": 833, "secrets": 844},
-     "db_tables": {"x": {}}},
-    {"counts": {"jobs": 811, "schedulers": 822, "services": 833, "secrets": 844},
-     "db_tables": {}},
+    {**LIVE, "counts": {**LIVE["counts"], "jobs": 0}},
+    {**LIVE, "db_tables": {}},
 ])
 def test_an_empty_snapshot_refuses_to_render(broken):
     """Rule 3.7: a zero count is a broken dump, not a fact to hand the model."""

@@ -70,6 +70,18 @@ def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str
         "DECLARED_RELATIONS": declared_relations,
         "RUNTIME_RELATIONS": runtime_relations,
     }
+    # Values that are NAMES rather than counts, validated as names. Run 28 wrote
+    # `solyra-api` into 05-d twice; the live services are `solyra-api-prod` and
+    # `solyra-api-staging`, and verify_docs_against_live failed the run on a
+    # service that does not exist. The prompt already warned against inventing
+    # one -- it names `solyra-trader` from an earlier dry run -- and a warning
+    # was not enough, exactly as it was not enough for the runtime-relation
+    # count. Hand over the list and let the model copy it. Kept out of `raw` so
+    # the int guard below still means what it says for every count. (Run 28.)
+    names = {"LIVE_SERVICE_NAMES": sorted(live["services"])}
+    for name, value in names.items():
+        if not value or not all(isinstance(v, str) and v for v in value):
+            raise SystemExit(f"{name} is {value!r} — refusing to render a prompt from an empty snapshot")
     for name, value in raw.items():
         if not isinstance(value, int) or isinstance(value, bool):
             raise SystemExit(f"{name} is {value!r}, not an int — the inputs are broken")
@@ -84,7 +96,9 @@ def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str
                 f"{name} is {raw[name]} in live.json but the verifier's snapshot has "
                 f"{n} {key}. Handing the model either number would fail a gate; "
                 "the two snapshots disagree and that is the bug to fix.")
-    return {name: str(value) for name, value in raw.items()}
+    out = {name: str(value) for name, value in raw.items()}
+    out.update({name: ", ".join(f"`{v}`" for v in value) for name, value in names.items()})
+    return out
 
 
 def render(text: str, values: dict[str, str], where: str) -> str:

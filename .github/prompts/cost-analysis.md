@@ -8,17 +8,18 @@ You are an automated documentation agent. Regenerate `docs/product/infrastructur
 
 - Cloud Run Jobs: **{{LIVE_JOBS}}**
 - Cloud Scheduler jobs: **{{LIVE_SCHEDULERS}}**
-- Cloud Run Services: **{{LIVE_SERVICES}}**
+- Cloud Run Services: **{{LIVE_SERVICES}}** — {{LIVE_SERVICE_NAMES}}
 - Secret Manager secrets: **{{LIVE_SECRETS}}**
 - Cloud SQL relations: **{{LIVE_DB_TABLES}}** live, **{{DECLARED_RELATIONS}}** declared, **{{RUNTIME_RELATIONS}}** runtime-created
 
-These five numbers were read from `live.json` and written into this prompt by
-`scripts/maintenance/render_doc_prompts.py` before you were called. They are
-correct as of this run. **Use them verbatim wherever the document states a
-count.** Do not recount them from an input file, do not derive a count by
-counting entries you can see in a truncated read, and do not carry one forward
-from the previous version of this document. A 2026-09-07 run wrote a scheduler
-count under half the live figure and went red on that single line.
+These counts and the service names beside them were read from `live.json` and
+written into this prompt by `scripts/maintenance/render_doc_prompts.py` before
+you were called. They are correct as of this run. **Use them verbatim wherever
+the document states a count or names a service.** Do not recount them from an
+input file, do not derive a count by counting entries you can see in a
+truncated read, and do not carry one forward from the previous version of this
+document. A 2026-09-07 run wrote a scheduler count under half the live figure
+and went red on that single line.
 
 ## Inputs (under `refresh-inputs/`)
 
@@ -50,6 +51,13 @@ Three, ranked by $/month, each with the resource, the exact change (gcloud comma
 ## Rules
 
 - Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
+- **Every infrastructure name you write must be copied from the lists above,
+  character for character.** Do not shorten, singularise or reconstruct one.
+  Run 28 wrote `solyra-api` twice in this document, dropping the environment
+  suffix from a service listed above, and the run failed on a service that
+  does not exist. A truncated name is the same failure as an invented
+  one: `verify_docs_against_live.py` checks every name in this file against
+  live GCP and fails the refresh on any that has no match.
 - **The project is `adept-mountain-474619-d4`, region `us-east1`.** Every
   `gcloud` command you write must use that project id. A 2026-09-07 dry run of
   this prompt invented `solyra-trader` in a confirmation command, which makes
