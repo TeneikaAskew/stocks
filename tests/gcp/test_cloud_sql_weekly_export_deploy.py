@@ -69,7 +69,8 @@ def test_magnitude_engine_deploy_carries_the_persist_and_class_weight_env():
     set and the next execution (magnitude-engine-2wv9z) trained every cell
     and persisted nothing: no promotion gate, LATEST untouched."""
     body = _deploy_magnitude_engine_body()
-    env_lines = [ln for ln in body.splitlines() if "--set-env-vars" in ln]
+    env_lines = [ln for ln in body.splitlines()
+                 if "--set-env-vars" in ln and not ln.lstrip().startswith("#")]
     assert len(env_lines) == 2, env_lines
     for ln in env_lines:
         assert "${mag_env}" in ln, ln
