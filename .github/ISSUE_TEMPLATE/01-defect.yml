@@ -120,8 +120,27 @@ body:
         # rather than an error. Measured from gcp/: all five searches below
         # return rc=1 for debug-workflow — "no consumers, dormant" — while the
         # root .claude/commands/ really does route to it.
-        $ root=$(git rev-parse --show-toplevel)
-        $ git -C "$root" grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
+        # A FUNCTION, so a failed root resolution can `return` instead of
+        # leaving $root empty for the probes below. `git -C ""` does NOT fail:
+        # measured on git 2.43.0 it silently runs in the CURRENT directory,
+        # which is the CWD-relative search this comment exists to prevent.
+        # A `|| echo …` guard cannot stop it — the echo succeeds, so the guard
+        # reports and the probe runs anyway — and `${root:?…}` cannot either:
+        # inside a pipeline the expansion kills only the first stage, so a
+        # `| wc -l` still prints 0 and reads as a clean miss.
+        # rc=2 because the rule above is already "0 is a hit, 1 is a clean
+        # miss, anything else means the count is meaningless"; a root failure
+        # is the third case. The message goes to STDERR so a `| wc -l` cannot
+        # count it as a match.
+        $ at_root() {
+            local root
+            root=$(git rev-parse --show-toplevel) \
+              || { echo "not in a checkout — this probe did not run" >&2; return 2; }
+            test -n "$root" \
+              || { echo "empty top level — this probe did not run" >&2; return 2; }
+            git -C "$root" "$@"
+          }
+        $ at_root grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
         107
         grep rc=0
         # AND the executable Claude scopes, which the search above excludes as
@@ -130,10 +149,10 @@ body:
         # .claude/agents/pre-deploy-check.md:75 delegates to it on every deploy.
         # Exclude the surface's own definition file: an agent always matches
         # itself, which would make every agent look consumed.
-        $ git -C "$root" grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ git -C "$root" grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
-        $ git -C "$root" grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
-        $ git -C "$root" grep -nE "<surface>" -- CLAUDE.md
+        $ at_root grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ at_root grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ at_root grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        $ at_root grep -nE "<surface>" -- CLAUDE.md
         CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
         mistake for prose: Claude Code loads it automatically and it routes by
         name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and

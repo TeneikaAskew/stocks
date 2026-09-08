@@ -216,11 +216,17 @@ exclusive. Check out the existing head, or create a branch, never both:
 non-conflicting local edits, so uncommitted work from another task follows you
 onto the issue branch: Phase 5 then tests a mixed candidate, and Phase 7's
 file-level `git add` can commit hunks that have nothing to do with this issue.
-If `git status --porcelain` is not empty, stop and ask whether to stash or
-commit it. Never `checkout -f`, which discards it.
+If `git status --porcelain --untracked-files=all` is not empty, stop and ask
+whether to stash or commit it. Never `checkout -f`, which discards it.
 
 ```bash
-git status --porcelain           # must be empty before going further
+# `--untracked-files=all`, not a bare `--porcelain`. `status.showUntrackedFiles
+# =no` in the caller's git config hides every untracked file from `git status`,
+# so a tree carrying a new file reports CLEAN — measured on git 2.43.0, an
+# untracked newfile.ts gives an empty `--porcelain` under that setting and
+# `?? newfile.ts` with the flag. The invariant is this file's; the config is
+# the caller's, and a check that a config can switch off is not a check.
+git status --porcelain --untracked-files=all   # must be empty before continuing
 git rev-parse --abbrev-ref HEAD
 
 # Same shape as the survey above: one function per case, `return` for every
@@ -590,10 +596,41 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   # derivation probe below yields 0 non-source artifacts against the root's 1.
   # The filesystem `grep` needs the same treatment: its argument list comes
   # from the same subtree-limited listing.
-  root=$(git rev-parse --show-toplevel) || echo "not in a checkout"
-  git -C "$root" ls-files | grep -oE '(^|/)(archive|_archive|deprecated|retired|quarantined?)/' | sort -u
-  git -C "$root" ls-files | grep -oE '\.(disabled|retired)$' | sort -u
-  ( cd "$root" && grep -rliE 'quarantin|retired|not run in production' $(git ls-files '*README*') )
+  # A FUNCTION, so the guard can `return`. `root=$(…) || echo "not in a
+  # checkout"` ends with a successful echo: it REPORTED and carried on, and
+  # every probe then ran with $root empty — and `git -C ""` does not fail, it
+  # runs in the CWD (measured, git 2.43.0), which is the CWD-relative search
+  # this block exists to prevent. `${root:?…}` does not rescue it either: with
+  # a probe in a pipeline the expansion kills only the first stage, so a
+  # `| wc -l` still prints 0 and reads as a clean miss.
+  scope_inventory() {
+    local root paths d
+    root=$(git rev-parse --show-toplevel) \
+      || { echo "not in a checkout — nothing below ran"; return 1; }
+    test -n "$root" || { echo "empty top level — nothing below ran"; return 1; }
+    # The listing's OWN status, captured before the pipe. Under `pipefail` a
+    # failed `git ls-files` beside a grep that then finds nothing yields 1, the
+    # grep's — a broken measurement wearing a clean miss's exit code.
+    paths=$(git -C "$root" ls-files) \
+      || { echo "could not list tracked files — asserting nothing"; return 1; }
+    # grep supplies each pipeline's status and a clean miss is 1, which under
+    # `set -o pipefail` would abort the function on its ordinary outcome —
+    # round 44's finding, one scope in. Accept 1, refuse >1.
+    if printf '%s\n' "$paths" | grep -oE '(^|/)(archive|_archive|deprecated|retired|quarantined?)/' | sort -u
+    then d=0; else d=$?; fi
+    test "$d" -le 1 || { echo "the scope scan errored (rc=$d)"; return 1; }
+    if printf '%s\n' "$paths" | grep -oE '\.(disabled|retired)$' | sort -u
+    then d=0; else d=$?; fi
+    test "$d" -le 1 || { echo "the marker scan errored (rc=$d)"; return 1; }
+    # `git grep`, not `grep -rliE … $(git ls-files '*README*')`: the filesystem
+    # form pastes an unquoted command substitution into an argument list, and
+    # when it is EMPTY `grep -rliE <pattern>` has no file operand and reads
+    # STDIN — the probe hangs rather than answering.
+    if git -C "$root" grep -liE 'quarantin|retired|not run in production' -- '*README*'
+    then d=0; else d=$?; fi
+    test "$d" -le 1 || { echo "the README scan errored (rc=$d)"; return 1; }
+  }
+  scope_inventory        # BARE
   ```
 
   **`.claude/`, `.github/ISSUE_TEMPLATE/` and every `*.md` come out for a
@@ -663,14 +700,31 @@ For each candidate cause, state the evidence and what would falsify it. Then:
   # ANCHORED for the same reason as the scope enumeration above: from gcp/ this
   # loop returns 0 non-source artifacts where the root returns 1, so the derived
   # exclusion list would be empty and read as "nothing to exclude".
-  root=$(git rev-parse --show-toplevel) || echo "not in a checkout"
-  for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
-           market_data_intraday etf_options_snapshots exit_config_overrides; do
-    git -C "$root" grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
-      ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
-      ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
-      ':!.github/workflows/logs.txt'
-  done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
+  # A FUNCTION for the same reason as the enumeration above, and the same
+  # measurement: the `|| echo` guard reported and carried on, and the loop then
+  # searched the CWD.
+  artifact_probe() {
+    local root d s
+    root=$(git rev-parse --show-toplevel) \
+      || { echo "not in a checkout — nothing below ran"; return 1; }
+    test -n "$root" || { echo "empty top level — nothing below ran"; return 1; }
+    # A symbol with no hits is rc=1 and is ordinary here. Under `set -e` that
+    # kills the loop's SUBSHELL — the loop is a pipeline stage — and the union
+    # is silently truncated at whichever symbol missed first, with the pipeline
+    # still exiting 0. So a miss continues and only rc>1 leaves, loudly.
+    # The trailing `grep -v` returns 1 when every hit is source, which is the
+    # answer "no generated artifacts": accepted, not treated as an error.
+    if for s in playbook_cards refresh-earnings-views phase6-playbook signal_alerts \
+                market_data_intraday etf_options_snapshots exit_config_overrides; do
+         git -C "$root" grep -lE "$s" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+           ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
+           ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
+           ':!.github/workflows/logs.txt' || { test $? -eq 1 || exit 3; }
+       done | sort -u | grep -vE '\.(py|sh|sql|yml|yaml)$'
+    then d=0; else d=$?; fi
+    test "$d" -le 1 || { echo "the derivation probe errored (rc=$d)"; return 1; }
+  }
+  artifact_probe      # BARE
   ```
 
   **`':!*.md'` belongs in the probe because it belongs in `EXCLUDE_STOCKS`.** The
@@ -1328,6 +1382,26 @@ _solyra_ok() {          # 0 usable, 1 refuse (and say why)
        return 1;;
   esac; }
 
+# AN IMPLEMENTATION ARGUMENT IS A PATH, NOT A PATTERN. `$sym` is documented as
+# an ERE and the alternation form depends on that; the paths beside it are
+# concrete files the caller names — `scripts/run_historical_signals.py`,
+# `src/app/(dashboard)/Widget.tsx` — and interpolating one into an ERE unescaped
+# turns its own punctuation into syntax. Measured: with
+# `src/app/(dashboard)/Widget.tsx` surviving in the inventory, the unescaped
+# pattern matches `src/app/dashboard/Widget.tsx` and NOT the literal path that
+# is actually there, so the scan finds no leftover and the retirement certifies
+# with the module on disk.
+#
+# TWO EXPRESSIONS, NOT ONE BRACKET. Backslashes go first, so the second pass
+# cannot double-escape what the first added. And `[` must not be followed by
+# `.` inside a bracket expression — `[.` opens a COLLATING SYMBOL, so the
+# obvious `[][.^$…]` dies with sed's "unterminated `s' command" (measured; it
+# is why the set below reads `]^$*+?(){}|.[`, with `[` last).
+# `-` is not an ERE metacharacter outside a bracket expression and is left
+# alone deliberately: the separator normalisation below rewrites it, and the
+# `[-_]` it inserts must stay live.
+_ere_literal() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/[]^$*+?(){}|.[]/\\&/g'; }
+
 absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # `local REV=` so an ambient REV in the caller's shell cannot pin the STOCKS
   # half to some other revision — the same ambient-state hazard as the project
@@ -1360,9 +1434,14 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
       test -n "$_i" || {
         echo "an empty implementation argument matches every path — refusing"
         return 1; }
-      # Normalised the same way the symbol is, and built HERE rather than beside
-      # the path scan because the REVIEWED filter below has to consult it first.
-      _p=${_i//_/$'\x01'}; _p=${_p//-/$'\x01'}; _p=${_p//$'\x01'/[-_]}
+      # ESCAPED FIRST, NORMALISED SECOND — the order matters. Escaping turns
+      # the path into a literal; the separator rewrite then inserts the one
+      # bracket expression that is meant to be live. Doing it the other way
+      # round would escape the `[-_]` it had just inserted.
+      # Built HERE rather than beside the path scan because the REVIEWED filter
+      # below has to consult it first.
+      _p=$(_ere_literal "$_i")
+      _p=${_p//_/$'\x01'}; _p=${_p//-/$'\x01'}; _p=${_p//$'\x01'/[-_]}
       _impl_re="${_impl_re:+$_impl_re|}$_p"
     done
   fi
@@ -1527,8 +1606,14 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # path is not the surface" versus "this path IS the implementation" — and the
   # second is already on the record, made by the caller one argument earlier.
   local ap
+  # THE SAME ESCAPER as the implementation paths, rather than a second, shorter
+  # set. This one escaped `. [ \ * ^ $` and left `] ( ) { } | + ?` live, so a
+  # definition path carrying any of those was a pattern rather than a literal —
+  # the identical defect one variable over. Measured identical on the paths
+  # that exist today: `.claude/agents/code-reviewer.md` escapes to
+  # `\.claude/agents/code-reviewer\.md` under both.
   local _defs_re=; for _a in ${_defs[@]+"${_defs[@]}"}; do
-    _defs_re="${_defs_re:+$_defs_re|}$(printf '%s' "$_a" | sed 's/[.[\*^$]/\\&/g')"
+    _defs_re="${_defs_re:+$_defs_re|}$(_ere_literal "$_a")"
   done
   files=$(IMPL_RE=$_impl_re DEFS_RE=$_defs_re; printf '%s\n' "$files" | while IFS= read -r p; do
             test -n "$p" || continue
@@ -2609,7 +2694,7 @@ committing produces a PR containing none of the work you just did and tested,
 while every command above still reports success:
 
 ```bash
-git status --short               # confirm the candidate is actually here
+git status --short --untracked-files=all   # confirm the candidate is here
 git add <the files this issue's fix touches>   # never `git add -A` blindly
 git commit -F <message file>     # the body described above
 git log --oneline -1             # confirm the commit exists before pushing
@@ -2618,9 +2703,16 @@ git log --oneline -1             # confirm the commit exists before pushing
 # because nothing follows it; add one line below and it silently stops
 # stopping. Not hypothetical — round 22 of this PR put a command into exactly
 # such a gap, and a failed job deploy started reporting success.
+# `--untracked-files=all` at BOTH calls. `status.showUntrackedFiles=no` hides
+# untracked files from `git status`, and an untracked file is exactly what this
+# check exists to catch: the new module, test or migration the fix added and
+# the file-scoped `git add` missed. Measured on git 2.43.0 — with that setting
+# an untracked newfile.ts gives an EMPTY `--porcelain`, so this returned 0 and
+# certified a commit that did not contain it.
 nothing_left_behind() {
-  test -z "$(git status --porcelain)" \
-    || { git status --porcelain; echo "^ NOT in the commit — see below"; return 1; }
+  test -z "$(git status --porcelain --untracked-files=all)" \
+    || { git status --porcelain --untracked-files=all
+         echo "^ NOT in the commit — see below"; return 1; }
 }
 nothing_left_behind              # BARE
 ```
@@ -2878,8 +2970,51 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      guard below is one:
 
      ```bash
+     # THE CONCURRENCY CHECK RUNS BEFORE THE DEPLOY, NOT IN THE PROSE AFTER IT.
+     # `:latest` floats and any other build re-points it, so a build already in
+     # flight is the one condition under which this whole function's checks all
+     # pass and the wrong image ships. That was written as advice to the reader
+     # BELOW the bare `deploy_candidate` invocation, which is the wrong side of
+     # the thing it guards: an operator working the file in order deployed
+     # first and read the warning afterwards. It is a gate now.
+     # EXPORTED, not `local`. `./gcp/deploy.sh <target>` is a CHILD PROCESS, so
+     # an unexported value leaves `gcp/deploy.sh:25` falling back to the active
+     # gcloud configuration and the probe and the deploy watch different
+     # projects — round 41's P1, and the reason `export` is not decoration
+     # here. `local PROJECT_ID` would be round 40's, blanking a caller's
+     # explicit choice.
+     no_concurrent_build() {
+       export PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
+       case "${PROJECT_ID:-}" in
+         ''|'(unset)')
+           echo "no project resolved — refusing to deploy. Set PROJECT_ID or"
+           echo "select a configuration: gcloud config set project <id>"
+           return 1;;
+       esac
+       # `--format='value(id)'` so an empty inventory is an EMPTY STDOUT rather
+       # than a header or gcloud's "Listed 0 items." — the passing state has to
+       # be reachable, and it is: no ongoing build prints nothing.
+       # A FAILED probe is not an empty one. `! gcloud …` would collapse both
+       # into "clear to deploy", which is the `! grep` certification this file
+       # documents two hundred lines above the helper that did it anyway.
+       local ongoing brc
+       if ongoing=$(gcloud builds list --ongoing --project="$PROJECT_ID" \
+                      --format='value(id)'); then brc=0; else brc=$?; fi
+       test "$brc" -eq 0 || {
+         echo "could not list ongoing builds (gcloud rc=$brc) — asserting nothing."
+         echo "A failed probe is not an empty one; not deploying."
+         return 1; }
+       test -z "$ongoing" || {
+         echo "another build is in flight and will move :latest under this deploy:"
+         printf '  %s\n' $ongoing
+         echo "wait for it to finish, then re-run."
+         return 1; }
+     }
+
      deploy_candidate() {                  # <target> and MERGE_SHA are yours to fill
        local MERGE_SHA="<the merge commit the PR reports>" SRC rc wt wrc
+       # FIRST, before the fetch and the build: see no_concurrent_build above.
+       no_concurrent_build || return 1
        # FETCH_HEAD, NOT origin/main. `git fetch origin main` is guaranteed to
        # write FETCH_HEAD; whether it also updates the remote-tracking ref
        # depends on `remote.origin.fetch`, and a narrowed refspec leaves
@@ -2915,7 +3050,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
        if (
          cd "$wt" || exit 1
          [ "$(git rev-parse HEAD)" = "$SRC" ] || { echo "worktree HEAD != $SRC"; exit 1; }
-         [ -z "$(git status --porcelain)" ] || { git status --porcelain; exit 1; }
+         # `--untracked-files=all` for the reason Phase 7's check takes it: a
+         # caller with `status.showUntrackedFiles=no` gets an empty
+         # `--porcelain` from a tree that is not pristine.
+         [ -z "$(git status --porcelain --untracked-files=all)" ] \
+           || { git status --porcelain --untracked-files=all; exit 1; }
          # Does this target run on the RESEARCH image? Derive it, do not trust
          # a list — 14 deploy functions select ${IMAGE}:research and only 4
          # dispatcher entries build it, and the inline annotations are
@@ -2996,11 +3135,19 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
      Two things to do about it, neither of which is a fix:
 
-     1. **Do not run this concurrently with another deploy.** Check before
-        starting — resolve the project first, then probe:
+     1. **Do not run this concurrently with another deploy.** `deploy_candidate`
+        now checks this itself, as its first step, and refuses. It used to be
+        this paragraph — advice printed AFTER the bare invocation it applies
+        to, which an operator reads once the deploy has already run. The probe
+        it makes is:
 
             export PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
-            gcloud builds list --ongoing --project="$PROJECT_ID"
+            gcloud builds list --ongoing --project="$PROJECT_ID" --format='value(id)'
+
+        A snapshot is not a lock — it narrows the window between your build and
+        the job update without closing it, and §2 below says why nothing here
+        can close it today. What a gate adds over a paragraph is the one case
+        it CAN refuse: the window already open when you start.
 
         # EXPORT IT, or the probe and the deploy watch DIFFERENT PROJECTS.
         # `./gcp/deploy.sh <target>` below is a CHILD PROCESS and cannot see an
@@ -3027,8 +3174,8 @@ inside that window.** An empty review list at 60 seconds means "wait", not
         # halves looking at different projects. The line above is deploy.sh:25
         # verbatim, so both resolve the same value, and it is echoed by the
         # deploy itself.
-        say in the status comment that you did. **`--project` is not optional
-        here**: `gcp/deploy.sh:25` takes `PROJECT_ID` from the environment or
+        Say in the status comment that it ran clean. **`--project` is not
+        optional here**: `gcp/deploy.sh:25` takes `PROJECT_ID` from the environment or
         the active gcloud config, so a probe without it can list a different
         project's builds, report "none ongoing", and clear you to deploy while
         the tag you are about to ship is being moved. The retirement checks in

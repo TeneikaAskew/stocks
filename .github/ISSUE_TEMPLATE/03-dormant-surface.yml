@@ -116,8 +116,26 @@ body:
         # rather than an error. Measured from gcp/: all five searches below
         # return rc=1 for debug-workflow — "no consumers, dormant" — while the
         # root .claude/commands/ really does route to it.
-        $ root=$(git rev-parse --show-toplevel)
-        $ git -C "$root" grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
+        # A FUNCTION, so a failed root resolution can `return` instead of
+        # leaving $root empty for the probes below. `git -C ""` does NOT fail:
+        # measured on git 2.43.0 it silently runs in the CURRENT directory,
+        # which is the CWD-relative search this comment exists to prevent.
+        # A `|| echo …` guard cannot stop it — the echo succeeds, so the guard
+        # reports and the probe runs anyway — and `${root:?…}` cannot either:
+        # inside a pipeline the expansion kills only the first stage, so a
+        # counting probe still prints 0 and reads as a clean miss.
+        # rc=2, not 1: for these searches 0 is a hit and 1 is a clean miss, so
+        # a root failure needs a third code or it files as "no consumers". The
+        # message goes to STDERR so a counting pipe cannot count it as a match.
+        $ at_root() {
+            local root
+            root=$(git rev-parse --show-toplevel) \
+              || { echo "not in a checkout — this probe did not run" >&2; return 2; }
+            test -n "$root" \
+              || { echo "empty top level — this probe did not run" >&2; return 2; }
+            git -C "$root" "$@"
+          }
+        $ at_root grep -En "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
         (142 matching LINES across 13 files: router, writer, tests. Lines, not
         occurrences — `git grep -c`/`wc -l` count lines, and 7 of these carry
         both alternatives, so the pattern occurs 149 times. Use `git grep -Eo`
@@ -132,10 +150,10 @@ body:
         # deploy. So run these two as well, and exclude the surface's OWN
         # definition file — an agent always matches itself, which would make
         # every agent look consumed:
-        $ git -C "$root" grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
-        $ git -C "$root" grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
-        $ git -C "$root" grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
-        $ git -C "$root" grep -nE "<surface>" -- CLAUDE.md
+        $ at_root grep -nE "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ at_root grep -nE "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        $ at_root grep -nE "<surface>" -- .github/prompts ':!.github/prompts/<surface>.md'
+        $ at_root grep -nE "<surface>" -- CLAUDE.md
         CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
         mistake for prose: Claude Code loads it automatically and it routes by
         name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and
@@ -226,19 +244,28 @@ body:
         # measured from platform/, the first search below finds 2 commits where
         # the root finds 5, and from gcp/ the .claude scopes return ZERO with
         # rc=0 — a successful empty result that reads as "no history".
-        # RESOLVE $root HERE. This is a different issue-form field from the
-        # Consumers one, and form fields are independent placeholders — a filer
-        # working through this box in a fresh shell has no $root from up there.
+        # RESOLVE THE ROOT HERE, IN A FUNCTION OF THIS FIELD'S OWN. This is a
+        # different issue-form field from the Consumers one, and form fields are
+        # independent placeholders — a filer working through this box in a fresh
+        # shell has no $root, and no at_root, from up there.
         # `git -C ""` does NOT fail: measured on git 2.43.0 it silently runs in
-        # the CURRENT directory, so an unset $root turns every probe below back
+        # the CURRENT directory, so an empty root turns every probe below back
         # into the CWD-relative search this comment exists to prevent — 5
         # history lines from the root, 0 from gcp/, rc=0 both times. Under
-        # `set -u` it aborts instead, which is at least loud. Re-resolve and
-        # check it, rather than inheriting it.
-        $ root=$(git rev-parse --show-toplevel) \
-            || { echo "not inside a git checkout — cannot run the forensics"; }
-        $ test -n "$root" || echo "empty top level — do not run the probes below"
-        $ git -C "$root" log --oneline --all --full-history \
+        # `set -u` an UNSET name aborts, which is at least loud; an EMPTY one
+        # does not, which is why the guard tests the value.
+        # The two guards this replaced ended in a SUCCESSFUL ECHO, so they
+        # reported the failure and every probe below ran anyway. A function is
+        # what lets a guard stop the thing it guards.
+        $ at_root() {
+            local root
+            root=$(git rev-parse --show-toplevel) \
+              || { echo "not in a checkout — this probe did not run" >&2; return 2; }
+            test -n "$root" \
+              || { echo "empty top level — this probe did not run" >&2; return 2; }
+            git -C "$root" "$@"
+          }
+        $ at_root log --oneline --all --full-history \
             --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames \
             -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
@@ -252,7 +279,7 @@ body:
         # without them the top hit is c19ab32, a docs-refresh commit; restricted
         # to the snapshot fixture alone it still matches, and restricted to
         # everything else it does not appear at all.
-        $ git -C "$root" log --oneline --all --full-history \
+        $ at_root log --oneline --all --full-history \
             --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames -- .claude/agents .github/prompts CLAUDE.md
         <sha> (date) added it and wired it into <the caller>
@@ -261,7 +288,7 @@ body:
         # Then .claude/commands SEPARATELY. For a slash-command surface these ARE
         # its implementation history; for anything else they are this resolver's
         # own prose about the example. Read them knowing which you have.
-        $ git -C "$root" log --oneline --all --full-history \
+        $ at_root log --oneline --all --full-history \
             --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames -- .claude/commands
 
