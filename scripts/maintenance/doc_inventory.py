@@ -794,6 +794,11 @@ def _literal_assigns(tree: ast.Module) -> list[tuple[str, str | None, set[str], 
     # called with two different tables keeps both. (Codex, PR #1044.)
     defs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     seeded: dict[tuple[str, str], tuple[set[str], int, tuple[int, int]]] = {}
+    # A parameter any call site supplies with something other than a string
+    # literal is UNKNOWN, and a partial set of literals would resolve a
+    # template to names the other call paths never produce. Same rule the
+    # argument observer already applies: one non-literal reopens everything.
+    opaque: set[tuple[str, str]] = set()
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
             continue
@@ -806,14 +811,21 @@ def _literal_assigns(tree: ast.Module) -> list[tuple[str, str | None, set[str], 
         supplied: list[tuple[str, ast.AST]] = [
             (params[i], a) for i, a in enumerate(node.args) if i < len(params)]
         supplied += [(k.arg, k.value) for k in node.keywords]
+        named = {p for p, _v in supplied}
+        for pname in params:
+            if pname not in named:
+                opaque.add((fn.name, pname))     # left to its default, if any
         for pname, val in supplied:
-            if not (isinstance(val, ast.Constant) and isinstance(val.value, str)):
-                continue
             key = (fn.name, pname)
+            if not (isinstance(val, ast.Constant) and isinstance(val.value, str)):
+                opaque.add(key)
+                continue
             vals, _ln, _b = seeded.get(key, (set(), bounds[0], bounds))
             seeded[key] = (vals | {val.value}, bounds[0], bounds)
-    for (_fname, pname), (vals, ln, bounds) in seeded.items():
-        out.append((pname, None, vals, ln, bounds))
+    for key, (vals, ln, bounds) in seeded.items():
+        if key in opaque:
+            continue
+        out.append((key[1], None, vals, ln, bounds))
 
     def walk(node: ast.AST, bounds: tuple[int, int] | None) -> None:
         # a binding made inside a function holds only in that function; one at

@@ -1862,3 +1862,22 @@ def test_a_mapping_looked_up_by_a_run_time_key_offers_all_its_values(mini_repo):
         assert any(x["file"].endswith("beta.py") for x in dyn[n]["reads"]), (n, dyn[n])
     assert dyn["market_data_intraday_other"]["reads"] == [], \
         "the mapping has no value naming that partition"
+
+
+def test_a_parameter_one_caller_leaves_open_is_not_seeded_from_the_others(mini_repo):
+    """Seeding a callee parameter from the literals it IS passed is only sound
+    when every call site passes one. A partial set would resolve a template to
+    names the other call paths never produce, which is the rule the argument
+    observer already applies."""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           "def _load(conn, table):\n"
+           '    return conn.execute(f"SELECT ts FROM {table}")\n'
+           "\n"
+           "def fixed(conn):\n"
+           '    return _load(conn, table="trades")\n'
+           "\n"
+           "def loose(conn, whatever):\n"
+           "    return _load(conn, table=whatever)\n")
+    dyn = inv.table_refs_dynamic(mini_repo, ["trades", "market_data_intraday"])
+    assert dyn["trades"]["reads"] == [], \
+        "one opaque call site makes the parameter unknown at every use"
