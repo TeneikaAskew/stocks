@@ -956,6 +956,61 @@ def test_a_literal_argument_rules_out_the_branches_it_cannot_take(mini_repo):
     assert "trades" in e["alpha"]["reads"], e["alpha"]
 
 
+def test_a_call_is_attributed_only_to_the_bindings_whose_shape_it_fits(mini_repo):
+    """direction_program/baseline_runner.py imports two different
+    walk_forward functions under one name; the 3-argument strat call was
+    attributed to the 4-parameter magnitude function and blanked its
+    constraints, reopening the phase3-only earnings_ticker_lean reader."""
+    _write(mini_repo, "gcp/research/alpha.py",
+           "def run(engine, axis, ticker):\n"
+           "    if axis == 'size':\n        from gcp.mag import wf\n        return wf(engine, 'phase0', ticker)\n"
+           "    if axis == 'type':\n        from gcp.strat import wf\n        return wf(engine, ticker)\n")
+    _write(mini_repo, "gcp/mag.py",
+           "def wf(engine, phase, ticker):\n    if phase == 'phase3':\n        return engine.execute('SELECT * FROM earnings_ticker_lean')\n"
+           "    return engine.execute('SELECT * FROM market_data_intraday')\n")
+    _write(mini_repo, "gcp/strat.py", "def wf(engine, ticker):\n    return engine.execute('SELECT * FROM trades')\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["market_data_intraday", "trades"], e["alpha"]
+    # the arity test itself, both ways
+    import ast as _ast
+    mag = _ast.parse((mini_repo / "gcp/mag.py").read_text()).body[0]
+    three = _ast.parse("wf(a, 'phase0', c)").body[0].value
+    two = _ast.parse("wf(a, c)").body[0].value
+    assert inv._accepts(mag, three) and not inv._accepts(mag, two)
+    assert inv._accepts(mag, _ast.parse("wf(*args)").body[0].value), "an unknown shape stays ambiguous"
+
+
+def test_a_constrained_parameter_passes_its_values_to_the_callee(mini_repo):
+    """mag_walk_forward.walk_forward(engine, phase, ...) hands its own phase
+    to load_magnitude_dataset, so the constraint has to cross the parameter
+    boundary or the phase3 branch reopens one call deep."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.mid import outer\n\ndef main(engine):\n    return outer(engine, 'phase0')\n")
+    _write(mini_repo, "gcp/mid.py", "from gcp.inner import load\n\ndef outer(engine, phase):\n    return load(engine, phase)\n")
+    _write(mini_repo, "gcp/inner.py",
+           "def load(engine, phase):\n    if phase == 'phase3':\n        return engine.execute('SELECT * FROM earnings_ticker_lean')\n"
+           "    return engine.execute('SELECT * FROM trades')\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["trades"], e["alpha"]
+    # an unconstrained parameter passes nothing on, so both branches stay live
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.mid import outer\n\ndef main(engine, p):\n    return outer(engine, p)\n")
+    repo = inv.repo_inventory(mini_repo)
+    e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
+    assert e["alpha"]["reads"] == ["earnings_ticker_lean", "trades"], e["alpha"]
+
+
+def test_a_helper_returned_name_is_followed_into_importing_modules(mini_repo):
+    """strat_config.strat_features_table() is called from mag_inference.py;
+    follow() scanned only the defining file, so magnitude-inference showed
+    no reads of the strat_features_* relations it selects from."""
+    _write(mini_repo, "gcp/research/alpha.py", "from gcp.cfg import feat_table\n\ndef main(conn, tf):\n    t = feat_table(tf)\n\n\n\n\n    return conn.execute(f\"SELECT * FROM {t}\")\n")
+    _write(mini_repo, "gcp/cfg.py", "def feat_table(tf):\n    return f\"strat_features_{tf}\"\n")
+    dyn = inv.table_refs_dynamic(mini_repo, ["strat_features_1m"])["strat_features_1m"]
+    assert ("gcp/research/alpha.py", 9) in [(r["file"], r["line"]) for r in dyn["reads"]], dyn
+    assert ("gcp/cfg.py", 2) in [(r["file"], r["line"]) for r in dyn["mentions"]], dyn
+
+
 def test_a_prose_string_is_not_a_reference(mini_repo):
     """scripts/audit_data_freshness.py:796, `"rationale": "VEX derives from
     gamma_levels_eod ..."`, is config text; "from" in it made
@@ -979,7 +1034,12 @@ def test_the_real_tree_symbol_scope():
         assert "options_daily_features" not in e[j]["writes"], (j, e[j])
     # round 4: a dormant main guard, and every binding of a name
     assert "premarket_analysis" not in e["earnings-reactions-brief"]["writes"], e["earnings-reactions-brief"]
-    assert "economic_events" in e["direction-baseline"]["reads"], e["direction-baseline"]
+    # Round 3 reported this as a missing read and round 11 showed it is not one:
+    # baseline_runner calls the magnitude walk_forward with the literal "phase0",
+    # and mag_dataset.py:131 (economic_events) sits behind `phase in ("phase3",)`.
+    # magnitude-engine, which does run phase3, keeps the edge.
+    assert "economic_events" not in e["direction-baseline"]["reads"], e["direction-baseline"]
+    assert "economic_events" in e["magnitude-engine"]["reads"], e["magnitude-engine"]
     # round 5: a function-local import in an unreached function, and per-mode citations
     assert "etf_options_snapshots" not in e["backfill-daily-indicators"]["reads"], e["backfill-daily-indicators"]
     assert "writes `gcp/options_retention_job.py:79`" in inv._cite_cell(e["etf-options-retention"]["cites"])
@@ -1010,6 +1070,9 @@ def test_the_real_tree_symbol_scope():
     cites = e3["strat-engine"]["cites"].get("strat_features_levels_1m", {"writes": []})["writes"]
     assert cites and all(c["file"].endswith("strat_enrich_levels.py") for c in cites), cites
     assert "economic_events" not in e["direction-importance"]["reads"], e["direction-importance"]
+    # round 11: a helper-returned name crosses module boundaries
+    d11 = inv.table_refs_dynamic(REPO, ["strat_features_1m"])["strat_features_1m"]
+    assert any("mag_inference.py" in r["file"] for r in d11["reads"]), d11["reads"]
 
 
 def test_the_digest_orphans_cite_their_writers_and_readers():

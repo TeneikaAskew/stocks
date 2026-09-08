@@ -417,7 +417,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_top_movers.py`](../../../gcp/fetchers/fetch_top_movers.py) — line [261](../../../gcp/fetchers/fetch_top_movers.py#L261)
 
 ### `trades`
-- [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [716](../../../gcp/migrate_to_gcp.py#L716), [735](../../../gcp/migrate_to_gcp.py#L735)
+- [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [735](../../../gcp/migrate_to_gcp.py#L735)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2218](../../../gcp/signal_monitor.py#L2218)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [413](../../../gcp/signal_monitor_eod_resolver.py#L413)
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [68](../../../gcp/trade_logger.py#L68), [71](../../../gcp/trade_logger.py#L71)
@@ -635,10 +635,10 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `intraday_gex_15m`
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [198](../../../gcp/build_intraday_gex.py#L198)
-- [`lib/features/intraday_gex.py`](../../../lib/features/intraday_gex.py) — line [226](../../../lib/features/intraday_gex.py#L226), [231](../../../lib/features/intraday_gex.py#L231), [226](../../../lib/features/intraday_gex.py#L226)
+- [`lib/features/intraday_gex.py`](../../../lib/features/intraday_gex.py) — line [231](../../../lib/features/intraday_gex.py#L231)
 
 ### `job_runs`
-- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1172](../../../scripts/audit_data_freshness.py#L1172), [1184](../../../scripts/audit_data_freshness.py#L1184)
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1184](../../../scripts/audit_data_freshness.py#L1184)
 
 ### `journal_entries`
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1541](../../../lib/agents/summarizers.py#L1541)
@@ -760,10 +760,9 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `realtime_gex_15m`
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [146](../../../gcp/build_realtime_gex.py#L146)
-- [`lib/features/intraday_gex.py`](../../../lib/features/intraday_gex.py) — line [226](../../../lib/features/intraday_gex.py#L226)
 
 ### `regime_combo_results`
-- [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [51](../../../gcp/regime_combo_job.py#L51)
+- _no readr found in gcp/, lib/, scripts/, platform/api_
 
 ### `sec_filings`
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [116](../../../lib/agents/ranker/candidates.py#L116)
@@ -903,6 +902,7 @@ Notes on the ones that matter operationally:
 | `market_data_intraday_spy` | 0 | 0 | partition of `market_data_intraday` — routed by Postgres, never named in code; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
 | `playbook_cards_staging` | 1 | 0 | write-only (no reader in code) |
 | `ranker_runs` | 1 | 0 | write-only (no reader in code) |
+| `regime_combo_results` | 1 | 0 | write-only (no reader in code) |
 | `strat_combo_results` | 0 | 0 | no writer and no reader in code |
 | `strat_levels` | 1 | 0 | write-only (no reader in code) |
 | `user_style_results` | 1 | 0 | write-only (no reader in code) |
@@ -1222,16 +1222,13 @@ flowchart LR
     T_daily_rates --> J_compute_spx_greeks_backfill
     T_etf_options_snapshots --> J_compute_spx_greeks_backfill
     T_market_data_daily --> J_compute_spx_greeks_backfill
-    T_economic_events --> J_direction_baseline
     T_etf_options_snapshots --> J_direction_baseline
     T_options_daily_features --> J_direction_baseline
-    T_economic_events --> J_direction_phase2
     T_etf_options_snapshots --> J_direction_phase2
     T_options_daily_features --> J_direction_phase2
     T_etf_options_daily_greeks --> J_direction_probe
     T_intraday_flow_15m --> J_direction_probe
     T_intraday_gex_15m --> J_direction_probe
-    T_realtime_gex_15m --> J_direction_probe
     T_earnings_calendar --> J_earnings_long_watchlist
     T_earnings_options_strategy_winners --> J_earnings_long_watchlist
     T_earnings_options_snapshots --> J_earnings_options_backfill
@@ -1329,7 +1326,6 @@ flowchart LR
     T_earnings_ticker_lean --> J_refresh_earnings_views
     T_market_data_daily --> J_refresh_earnings_views
     T_market_data_intraday --> J_regime_combo
-    T_regime_combo_results --> J_regime_combo
     T_earnings_calendar --> J_signal_monitor
     T_economic_events --> J_signal_monitor
     T_exit_config_overrides --> J_signal_monitor

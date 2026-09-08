@@ -596,6 +596,11 @@ _SQL_HINT = re.compile(
     r"\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TRUNCATE|REFRESH|COPY|WHERE|JOIN|VALUES|INTO|"
     r"RETURNING|LIMIT|GROUP BY|ORDER BY|ON CONFLICT|WITH|FROM|SET|AND|OR|AS)\b"
     r"|(?i:\bselect\b.*\bfrom\b|\binsert\s+into\b|\bdelete\s+from\b|\bcreate\s+(?:table|index|view)\b|\bupdate\s+\w+\s+set\b)")
+# `from gcp.helpers import build` is a Python import, not a SQL FROM, and
+# READ_RE is case-insensitive: an import line in the three-line context window
+# classified the reference below it as a read. An import touches no table, so
+# it is neither a match source nor context. (Codex, PR #1044.)
+_IMPORT_LINE = re.compile(r"^\s*(?:from\s+[\w.]+\s+import\b|import\s+[\w.]+)")
 READ_RE = re.compile(r"\bFROM\b|(?<!\.)\bJOIN\b|SELECT|query_to_dataframe|read_sql|row_exists|pd\.read_sql", re.I)
 
 
@@ -706,7 +711,7 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
         # match source nor context: it executes no SQL, and recording it as a
         # reference made lib/backtest.py's `"""Convert trades to a
         # DataFrame."""` a read of the trades table. (Codex, PR #1044.)
-        diag = _diagnostic_lines(joined)
+        diag = _diagnostic_lines(joined) | {n + 1 for n, ln in enumerate(lines) if _IMPORT_LINE.match(ln)}
         ctx_lines = ["" if n + 1 in diag else ln for n, ln in enumerate(lines)]
         for t, pat in pats.items():
             if t not in joined:
@@ -736,6 +741,42 @@ def table_refs(root: pathlib.Path = REPO, tables: list[str] | None = None) -> di
 
 
 _PLACEHOLDER = r"[A-Za-z0-9]+"
+
+
+def _accepts(fn: ast.AST, call: ast.Call) -> bool:
+    """Whether `call`'s shape can be a call of `fn`.
+
+    Branch-local imports bind different functions to one name
+    (`walk_forward` in direction_program/baseline_runner.py is the magnitude
+    one under `axis == "size"` and the strat one under `"type"`), and
+    attributing every call to the first binding let a 3-argument call blank
+    the 4-parameter function's constraints. (Codex, PR #1044.) Unknown
+    shapes (a starred argument, `**kwargs`) count as accepted, so ambiguity
+    loosens rather than prunes.
+    """
+    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    a = fn.args
+    if any(isinstance(x, ast.Starred) for x in call.args) or any(k.arg is None for k in call.keywords):
+        return True
+    pos = list(a.posonlyargs) + list(a.args)
+    n_pos = len(call.args)
+    if n_pos > len(pos) and a.vararg is None:
+        return False
+    names = {x.arg for x in pos} | {x.arg for x in a.kwonlyargs}
+    kwargs = {k.arg for k in call.keywords}
+    if a.kwarg is None and not kwargs <= names:
+        return False
+    if len(kwargs & {x.arg for x in pos[:n_pos]}) and a.kwarg is None:
+        return False                      # a parameter filled twice
+    n_required = len(pos) - len(a.defaults)
+    for idx, prm in enumerate(pos[:n_required]):
+        if idx >= n_pos and prm.arg not in kwargs:
+            return False
+    for prm, dflt in zip(a.kwonlyargs, a.kw_defaults):
+        if dflt is None and prm.arg not in kwargs:
+            return False
+    return True
 
 
 def _dynamic_templates(line: str) -> list[str]:
@@ -788,6 +829,19 @@ def _dynamic_templates(line: str) -> list[str]:
     return out
 
 
+def _scan_files(root: pathlib.Path) -> list[str]:
+    """Production .py files, repo-relative: the set table_refs scans."""
+    out: list[str] = []
+    for d in SCAN_DIRS:
+        for f in (root / d).rglob("*.py"):
+            rel = str(f.relative_to(root))
+            if "/tests/" in rel or rel.startswith("tests/") or "/_archive/" in rel \
+                    or "/__pycache__/" in rel or rel in DOC_TOOLING:
+                continue
+            out.append(rel)
+    return sorted(out)
+
+
 def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[str, list[dict[str, Any]]]]:
     """References to tables whose names are assembled at run time.
 
@@ -795,60 +849,69 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
     literal scan cannot see it. Every string template on a non-diagnostic
     line (see _dynamic_templates) is matched in full against each live name;
     a hit is classified write / read / mention by the same context rule as
-    table_refs, and an assigned name is followed to its use site the way a
-    literal constant is. (Codex, PR #1044.)
+    table_refs. An assigned name is followed to its use sites, and a name
+    RETURNED by a helper is followed to that helper's calls -- in the
+    defining module and in every module that imports it, since
+    `strat_config.strat_features_table()` is called from
+    `mag_inference.py`. (Codex, PR #1044.)
     """
     out: dict[str, dict[str, list[dict[str, Any]]]] = {t: {"writes": [], "reads": [], "mentions": []} for t in tables}
-    files: list[pathlib.Path] = []
-    for d in SCAN_DIRS:
-        for f in (root / d).rglob("*.py"):
-            rel = str(f.relative_to(root))
-            if "/tests/" in rel or rel.startswith("tests/") or "/_archive/" in rel or "/__pycache__/" in rel or rel in DOC_TOOLING:
-                continue
-            files.append(f)
-    for f in sorted(files):
-        rel = str(f.relative_to(root))
+    # every file once: its lines, its diagnostic line numbers, and the
+    # context view with those lines blanked
+    src: dict[str, tuple[list[str], set[int], list[str]]] = {}
+    for rel in _scan_files(root):
         try:
-            lines = f.read_text().splitlines()
-        except UnicodeDecodeError:
+            lines = (root / rel).read_text().splitlines()
+        except (OSError, UnicodeDecodeError):
             continue
-        joined = "\n".join(lines)
-        diag = _diagnostic_lines(joined)
-        ctx_lines = ["" if n + 1 in diag else ln for n, ln in enumerate(lines)]
-        seen: dict[str, set[int]] = {t: set() for t in tables}
+        diag = _diagnostic_lines("\n".join(lines)) | {n + 1 for n, ln in enumerate(lines) if _IMPORT_LINE.match(ln)}
+        src[rel] = (lines, diag, ["" if n + 1 in diag else ln for n, ln in enumerate(lines)])
+    # (defining file, symbol) -> [(importing file, local name)]
+    importers: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for rel in src:
+        for local, targets in _bindings(root, rel).items():
+            for target, sym in targets:
+                if sym:
+                    importers.setdefault((target, sym), []).append((rel, local))
+    seen: dict[tuple[str, str], set[int]] = {}
+
+    def record(t: str, rel: str, kind: str, k: int, text: str) -> None:
+        marks = seen.setdefault((t, rel), set())
+        if k + 1 not in marks:
+            marks.add(k + 1)
+            out[t][kind].append({"file": rel, "line": k + 1, "text": text.strip()[:120], "dynamic": True})
+
+    def follow(t: str, rel: str, name_re: re.Pattern, skip: int, depth: int = 0) -> None:
+        """Every non-diagnostic line in `rel` using `name_re` is a use of the
+        table; an assignment there is followed one level further."""
+        if rel not in src:
+            return
+        lines, diag, ctx_lines = src[rel]
+        for k, l2 in enumerate(lines):
+            if k == skip or k + 1 in diag or not name_re.search(l2) or l2.lstrip().startswith("#"):
+                continue
+            ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
+            if WRITE_RE.search(ctx2):
+                record(t, rel, "writes", k, l2)
+            elif READ_RE.search(ctx2):
+                record(t, rel, "reads", k, l2)
+            else:
+                record(t, rel, "mentions", k, l2)
+            am = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*", l2)
+            if am and depth < 2:
+                follow(t, rel, re.compile(rf"\b{re.escape(am.group(1))}\b"), k, depth + 1)
+
+    for rel, (lines, diag, ctx_lines) in src.items():
         # line -> the innermost function that returns on that line, for
         # `def levels_table(tf): return f"strat_features_levels_{tf}"`
         returning_func: dict[int, str] = {}
-        tree = _parsed(f)
+        tree = _parsed(root / rel)
         if tree is not None:
-            for fn in ast.walk(tree):
-                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    for r in ast.walk(fn):
+            for fn_node in ast.walk(tree):
+                if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for r in ast.walk(fn_node):
                         if isinstance(r, ast.Return):
-                            returning_func[r.lineno] = fn.name
-
-        def record(t: str, kind: str, k: int, text: str) -> None:
-            if k + 1 not in seen[t]:
-                seen[t].add(k + 1)
-                out[t][kind].append({"file": rel, "line": k + 1, "text": text.strip()[:120], "dynamic": True})
-
-        def follow(t: str, name_re: re.Pattern, skip: int, depth: int = 0) -> None:
-            """Every non-diagnostic line using `name_re` is a use of the
-            table; an assignment there is followed one level further."""
-            for k, l2 in enumerate(lines):
-                if k == skip or k + 1 in diag or not name_re.search(l2) or l2.lstrip().startswith("#"):
-                    continue
-                ctx2 = "\n".join(ctx_lines[max(0, k - 3): k + 1])
-                if WRITE_RE.search(ctx2):
-                    record(t, "writes", k, l2)
-                elif READ_RE.search(ctx2):
-                    record(t, "reads", k, l2)
-                else:
-                    record(t, "mentions", k, l2)
-                am = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*", l2)
-                if am and depth < 2:
-                    follow(t, re.compile(rf"\b{re.escape(am.group(1))}\b"), k, depth + 1)
-
+                            returning_func[r.lineno] = fn_node.name
         for i, line in enumerate(lines):
             if i + 1 in diag or line.lstrip().startswith("#"):
                 continue
@@ -863,16 +926,18 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
             cm = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*\w+)?\s*=\s*", line)
             fn = returning_func.get(i + 1) if re.match(r"\s*return\b", line) else None
             for t in hits:
-                record(t, kind, i, line)
+                record(t, rel, kind, i, line)
                 # `table = f"strat_features_{tf_label}"` then `upsert_dataframe(feat, table, ...)`
                 # further down: follow the name to where it is used, as table_refs does.
                 if cm:
-                    follow(t, re.compile(rf"\b{re.escape(cm.group(1))}\b"), i)
+                    follow(t, rel, re.compile(rf"\b{re.escape(cm.group(1))}\b"), i)
                 # `def levels_table(tf): return f"strat_features_levels_{tf}"` then
-                # `bulk_copy_upsert(df, levels_table(tf))`: follow the helper's calls.
-                # (Codex, PR #1044.)
+                # `bulk_copy_upsert(df, levels_table(tf))`: follow the helper's calls,
+                # here and in every module that imports it.
                 if fn:
-                    follow(t, re.compile(rf"(?<![\w.])(?<!def ){re.escape(fn)}\s*\("), i)
+                    follow(t, rel, re.compile(rf"(?<![\w.])(?<!def ){re.escape(fn)}\s*\("), i)
+                    for other, local in importers.get((rel, fn), []):
+                        follow(t, other, re.compile(rf"(?<![\w.]){re.escape(local)}\s*\("), -1)
     return out
 
 
@@ -1187,7 +1252,8 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
     arg_lits: dict[tuple[str, str], dict[str, set[str] | None]] = {}
     walked_with: dict[tuple[str, str], str] = {}
 
-    def observe_call(target: tuple[str, str], call: ast.Call | None) -> bool:
+    def observe_call(target: tuple[str, str], call: ast.Call | None,
+                     caller: dict[str, set[str] | None] | None = None) -> bool:
         """Record the literal arguments of one call (None = a bare
         reference, everything unknown). True when the constraint set
         changed and the callee, if already walked, must be walked again."""
@@ -1196,10 +1262,13 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         fn = _top_defs(tree).get(sym) if tree is not None else None
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return False
+        if call is not None and not _accepts(fn, call):
+            return False
         params = [a.arg for a in fn.args.args]
         defaults = dict(zip(params[len(params) - len(fn.args.defaults):], fn.args.defaults))
         cons = arg_lits.setdefault(target, {})
         before = repr(sorted((k, sorted(v) if v else v) for k, v in cons.items()))
+        caller = caller or {}
         if call is None or any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg is None for k in call.keywords):
             for pn in params:
                 cons[pn] = None
@@ -1212,11 +1281,20 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
                 supplied[kw.arg] = kw.value
             for pn in params:
                 val = supplied.get(pn, defaults.get(pn))
+                # a literal, or a name the CALLER is itself constrained to:
+                # walk_forward(engine, phase, ...) inside a function reached
+                # only with phase="phase0" passes that constraint on, which
+                # is what keeps the phase3-only reader out of the graph.
+                # (Codex, PR #1044.)
+                vals: set[str] | None = None
                 if isinstance(val, ast.Constant) and isinstance(val.value, str):
-                    if cons.get(pn, set()) is not None:
-                        cons.setdefault(pn, set()).add(val.value)
-                else:
+                    vals = {val.value}
+                elif isinstance(val, ast.Name) and caller.get(val.id):
+                    vals = set(caller[val.id])
+                if vals is None:
                     cons[pn] = None
+                elif cons.get(pn, set()) is not None:
+                    cons.setdefault(pn, set()).update(vals)
         after = repr(sorted((k, sorted(v) if v else v) for k, v in cons.items()))
         return before != after
 
@@ -1298,10 +1376,14 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
         else:
             scope.setdefault(f, set()).update(lines)
 
-    def uses(f: str, nodes: list[ast.AST], skip: set[int] | None = None) -> None:
+    def uses(f: str, nodes: list[ast.AST], skip: set[int] | None = None,
+             cons: dict[str, set[str] | None] | None = None) -> None:
         """Follow every name and attribute chain used in `nodes` (code in `f`),
-        not descending into the statements in `skip`."""
+        not descending into the statements in `skip`. `cons` is the constraint
+        map of the function being walked, so a parameter passed straight on
+        carries its values to the callee."""
         skip = skip or set()
+        cons = cons or {}
         tree = _parsed(root / f)
         if tree is None:
             return
@@ -1335,32 +1417,44 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
                     chains.add(d)
         attr_names.update(new_attrs)
 
-        def resolve_callee(func: ast.AST) -> tuple[str, str] | None:
+        def resolve_callees(func: ast.AST) -> list[tuple[str, str]]:
+            """EVERY function a call's name can reach, not just the first."""
+            out: list[tuple[str, str]] = []
             if isinstance(func, ast.Name):
                 if func.id in defs:
-                    return (f, func.id)
-                for target, sym in binds.get(func.id, []):
-                    if sym is not None:
-                        return (target, sym)
-                return None
+                    out.append((f, func.id))
+                out += [(target, sym) for target, sym in binds.get(func.id, []) if sym is not None]
+                return out
             d = _dotted(func)
             if d and "." in d:
                 alias, attr = d.rsplit(".", 1)
-                for target, sym in binds.get(alias, []):
-                    if sym is None:
-                        return (target, attr)
-            return None
+                out += [(target, attr) for target, sym in binds.get(alias, []) if sym is None]
+            return out
+
+        def callee_def(target: tuple[str, str]) -> ast.AST | None:
+            tree2 = _parsed(root / target[0])
+            node = _top_defs(tree2).get(target[1]) if tree2 is not None else None
+            return node if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else None
 
         # literal arguments first, so a callee reached below is walked with them
         rewalk: set[tuple[str, str]] = set()
         for c in calls:
-            target = resolve_callee(c.func)
-            if target and observe_call(target, c) and target in seen_syms:
-                rewalk.add(target)
+            cands = resolve_callees(c.func)
+            fits = [t for t in cands if _accepts(callee_def(t), c)]
+            # a call whose shape fits none of them stays ambiguous: observe it
+            # against all, which can only loosen
+            for target in (fits or cands):
+                if observe_call(target, c, cons) and target in seen_syms:
+                    rewalk.add(target)
         for sub in walked:
-            if isinstance(sub, ast.Name) and id(sub) not in call_funcs and sub.id in defs:
-                if observe_call((f, sub.id), None) and (f, sub.id) in seen_syms:
-                    rewalk.add((f, sub.id))
+            if not isinstance(sub, ast.Name) or id(sub) in call_funcs:
+                continue
+            # a bare reference (a callback) is a call with anything
+            refs = ([(f, sub.id)] if sub.id in defs else []) \
+                + [(target, sym) for target, sym in binds.get(sub.id, []) if sym is not None]
+            for target in refs:
+                if observe_call(target, None) and target in seen_syms:
+                    rewalk.add(target)
         for target in rewalk:
             seen_syms.discard(target)
             reach_symbol(*target)
@@ -1451,9 +1545,10 @@ def _import_scope(root: pathlib.Path, mod_file: str) -> dict[str, set[int] | Non
             if isinstance(node, ast.ClassDef):
                 reach_class(f, node)
             else:
-                skip = dormant(node, arg_lits.get((f, sym), {}))
+                cons = arg_lits.get((f, sym), {})
+                skip = dormant(node, cons)
                 add_lines(f, live_lines(node, skip))
-                uses(f, [node], skip)
+                uses(f, [node], skip, cons)
             return
         consts = _top_consts(tree)
         if sym in consts:
