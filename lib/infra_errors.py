@@ -110,12 +110,24 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         from google.api_core import exceptions as gapi  # noqa: PLC0415
         found += [gapi.ServiceUnavailable, gapi.DeadlineExceeded,
                   gapi.TooManyRequests, gapi.InternalServerError,
-                  gapi.GatewayTimeout]
+                  # BadGateway (502) is a sibling of the 500/503/504 classes,
+                  # not a subclass, so it was not covered -- a transient GCS
+                  # 502 while loading a model still swallowed to None and
+                  # answered 200 (Codex P1 on #999).
+                  gapi.BadGateway, gapi.GatewayTimeout]
     except Exception:                       # pragma: no cover
         logger.debug("google.api_core not importable; not classified")
     try:
         from google.auth import exceptions as gauth     # noqa: PLC0415
-        found += [gauth.DefaultCredentialsError, gauth.TransportError]
+        # `DefaultCredentialsError` (no credentials at all) is always
+        # infrastructure. `TransportError` is NOT registered wholesale:
+        # `google.auth.transport.requests.Request` wraps EVERY
+        # `requests.exceptions.RequestException` in it, including a
+        # certificate-verification `SSLError`, and a bad CA chain during the
+        # connector's credential refresh must stay loud like the raw ssl and
+        # aiohttp certificate cases (Codex P2 on #999). `_auth_transport_outage`
+        # reads its cause.
+        found += [gauth.DefaultCredentialsError]
     except Exception:                       # pragma: no cover
         logger.debug("google.auth not importable; not classified")
     return tuple(found)
@@ -163,7 +175,12 @@ def _optional_dependency_missing(exc: BaseException) -> bool:
 #: stays out: a `FileNotFoundError` on a path we chose is our bug.
 _NETWORK_ERRNOS: frozenset[int] = frozenset(
     {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.ENETRESET,
-     errno.EHOSTDOWN, errno.EMFILE, errno.ENFILE, errno.ENOBUFS})
+     errno.EHOSTDOWN, errno.EMFILE, errno.ENFILE, errno.ENOBUFS,
+     # EADDRNOTAVAIL: the local ephemeral-port range is exhausted, so
+     # `socket.create_connection` cannot bind a source port -- a capacity
+     # outage, and the one the libpq text classifier already reads as
+     # "Cannot assign requested address" (Codex P2 on #999).
+     errno.EADDRNOTAVAIL})
 
 
 def _network_unreachable(exc: BaseException) -> bool:
@@ -498,6 +515,45 @@ def _retryable_http_response(exc: BaseException) -> bool:
 
 #: What cannot be decided by class alone. Each reads the one exception it is
 #: about and answers False for everything else.
+#: How OpenSSL and requests spell a certificate-verification failure in the
+#: text of the exception google-auth wraps.
+_CERT_FAILURE_TEXT = ("certificate verify failed", "certificate_verify_failed",
+                      "self-signed certificate", "self signed certificate",
+                      "unable to get local issuer certificate",
+                      "hostname mismatch", "certificate is not valid")
+
+
+def _is_certificate_failure(exc: BaseException) -> bool:
+    """A TLS certificate-verification failure, however it is wrapped."""
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return True
+    return any(t in str(exc).lower() for t in _CERT_FAILURE_TEXT)
+
+
+def _auth_transport_outage(exc: BaseException) -> bool:
+    """google-auth's `TransportError`, unless it wraps a certificate failure.
+
+    `google.auth.transport.requests.Request` catches every
+    `requests.exceptions.RequestException` -- a reset connection AND a
+    certificate-verification `SSLError` alike -- and re-raises it as a
+    `TransportError`. Registering the class wholesale answered a retryable
+    503 for a bad CA chain, even though the raw `ssl` and aiohttp certificate
+    failures are deliberately kept loud (Codex P2 on #999). So a transport
+    error is an outage unless its own message or its cause chain names a
+    certificate-verification failure.
+    """
+    if _gauth_exc is None or not isinstance(exc, _gauth_exc.TransportError):
+        return False
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if _is_certificate_failure(cur):
+            return False
+        cur = cur.__cause__ or cur.__context__
+    return True
+
+
 def _retryable_auth_refresh(exc: BaseException) -> bool:
     """google-auth's `RefreshError`, when google-auth itself marked it retryable.
 
@@ -526,6 +582,7 @@ _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
                               _psycopg2_server_gone,
                               _connector_transport_failure,
                               _retryable_http_response,
+                              _auth_transport_outage,
                               _retryable_auth_refresh)
 
 #: The same rules minus "a feature this image cannot serve": what a library

@@ -395,33 +395,34 @@ REQUESTS: list[Req] = [
 from unittest.mock import MagicMock as _MagicMock
 
 
-def _stub_missing_modules(mods):
-    """Stub a heavy optional dep only when it is genuinely absent.
+_HEAVY_ML_MODULES = ("lightgbm", "sklearn", "sklearn.calibration",
+                     "sklearn.metrics", "joblib", "scipy")
 
-    The predict and structure-continuation handlers import `strat_pred_serve`
-    (lightgbm + scikit-learn) inside their infrastructure guard, so in the
-    lean CI job -- which omits those extras -- the import raises
-    `ModuleNotFoundError`, the classifier reads it as an optional-dependency
-    outage, and the endpoint answers 503 BEFORE `get_engine()` is reached. A
-    regression that leaves the real database call unguarded would stay green
-    (Codex P2 on #999). Stubbing the extras makes the import succeed so the
-    503 comes from the connection, which the outage tests below then prove was
-    attempted. `setdefault`-style guarding: never replace a real package.
+
+def _reach_predict_backend(monkeypatch):
+    """Let the predict/structure-continuation handlers import `strat_pred_serve`
+    for THIS test only, so the request reaches `get_engine()` instead of 503ing
+    on the missing `lightgbm` import.
+
+    Scoped with `monkeypatch.setitem`, NOT a module-level stub: a permanent
+    `sys.modules["lightgbm"]` mock leaks into collection and makes another
+    module's `pytest.importorskip("lightgbm")` run against the fake instead of
+    skipping (Codex P2 on #999). The stubs are reverted at teardown. We do NOT
+    evict `strat_pred_serve` itself: `del sys.modules[name]` drops the entry but
+    leaves the parent package's `strat_pred_serve` attribute bound to the old
+    object, so the next `import ... as serve` and a callee's `from ... import`
+    resolve to two different module instances and a `setattr` patch on one is
+    invisible to the other (it silently un-mocked the movement-statement suite).
     """
-    for m in mods:
+    for m in _HEAVY_ML_MODULES:
         try:
             __import__(m)
         except Exception:
             parts = m.split(".")
             for i in range(1, len(parts) + 1):
                 key = ".".join(parts[:i])
-                sys.modules.setdefault(key, _MagicMock())
-
-
-_stub_missing_modules([
-    "lightgbm", "sklearn", "sklearn.calibration", "sklearn.metrics",
-    "joblib", "scipy",
-])
+                if key not in sys.modules:
+                    monkeypatch.setitem(sys.modules, key, _MagicMock())
 
 
 class _BackendDown(ConnectionError):
@@ -1199,6 +1200,7 @@ def test_the_feature_gated_handlers_survive_a_backend_outage(
     # Prove the request reaches the DATABASE, not just the flag check or the
     # heavy-module import: a spy on `get_engine` that fails like the harness,
     # asserted called after the response (Codex P2 on #999).
+    _reach_predict_backend(monkeypatch)
     from gcp import database
     spy = _MagicMock(side_effect=_BackendDown("down"))
     monkeypatch.setattr(database, "get_engine", spy)
@@ -1261,6 +1263,7 @@ def test_a_valid_as_of_timestamp_still_reaches_the_backend(client, monkeypatch):
     have replaced one wrong answer with another.
     """
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "1")
+    _reach_predict_backend(monkeypatch)
     from gcp import database
     spy = _MagicMock(side_effect=_BackendDown("down"))
     monkeypatch.setattr(database, "get_engine", spy)
@@ -1829,6 +1832,31 @@ def test_a_retryable_credential_refresh_is_an_outage_and_a_missing_package_is_no
     missing = ModuleNotFoundError("No module named 'lightgbm'", name="lightgbm")
     assert is_infrastructure_error(missing)
     assert not is_backend_outage(missing)
+
+    # google.api_core BadGateway (502) is a sibling of the 5xx classes, not a
+    # subclass, so it needed adding explicitly (Codex P1 on #999).
+    from google.api_core import exceptions as gapi
+    assert is_backend_outage(gapi.BadGateway("bad gateway"))
+    assert is_backend_outage(gapi.GatewayTimeout("timeout"))
+    assert not is_backend_outage(gapi.NotFound("absent"))
+
+    # EADDRNOTAVAIL: the local ephemeral-port range is exhausted (Codex P2).
+    import errno as _errno
+    assert is_backend_outage(
+        OSError(_errno.EADDRNOTAVAIL, "Cannot assign requested address"))
+    assert not is_backend_outage(OSError(_errno.ENOENT, "no such file"))
+
+    # google.auth TransportError is an outage UNLESS it wraps a certificate
+    # failure, which stays loud like the raw ssl and aiohttp cert cases
+    # (Codex P2 on #999).
+    import ssl as _ssl
+    assert is_infrastructure_error(gauth.TransportError("connection reset"))
+    cert = gauth.TransportError("SSL error")
+    cert.__cause__ = _ssl.SSLCertVerificationError("certificate verify failed")
+    assert not is_infrastructure_error(cert)
+    cert2 = gauth.TransportError(
+        "HTTPSConnectionPool: certificate verify failed: self-signed certificate")
+    assert not is_infrastructure_error(cert2)
     for exc in (psycopg2.OperationalError(_REFUSED),
                 gauth.RefreshError("server_error", retryable=True),
                 ConnectionRefusedError()):
