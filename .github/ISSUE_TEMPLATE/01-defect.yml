@@ -118,6 +118,17 @@ body:
         $ git grep -En "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
         107
         grep rc=0
+        # AND the executable Claude scopes, which the search above excludes as
+        # prose. .claude/agents/*.md and .claude/commands/*.md RUN — measured,
+        # gcp-config-reviewer returns no matches above while
+        # .claude/agents/pre-deploy-check.md:75 delegates to it on every deploy.
+        # Exclude the surface's own definition file: an agent always matches
+        # itself, which would make every agent look consumed.
+        $ git grep -n "<surface>" -- .claude/agents ':!.claude/agents/<surface>.md'
+        $ git grep -n "<surface>" -- .claude/commands ':!.claude/commands/<surface>.md'
+        A .claude/commands/ hit is AMBIGUOUS — a real route, or one of these
+        forms quoting an example. Read the lines and say which.
+
         Live consumers in solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
     validations:
       required: true

@@ -687,27 +687,48 @@ git -C "$SOLYRA" rev-parse --git-dir >/dev/null 2>&1 || {
 # deleted surface, so the before/after proof this phase demands could never
 # be produced. Phase 2 describes the search; this block is what runs.
 consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/commands
-  local a b c
-  git grep -q "$1" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+  # $1 = symbol. $2.. = command files you have READ and confirmed are prose,
+  # not routes — see the rc=3 note below. Naming them is the point; there is no
+  # blanket override, because a flag you can set without looking is not a review.
+  local sym=$1; shift
+  local a b c rc reviewed=()
+  for rc in "$@"; do reviewed+=(":!$rc"); done
+  git grep -q "$sym" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
     ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' \
     ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json'; a=$?
-  # ':!.claude/agents/$1.md' — an agent ALWAYS matches its own definition, so
+  # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
   # file as the only hit. Excluding a path that does not exist (the surface is
   # not an agent) is safe — measured rc=1, not 128.
-  git grep -q "$1" -- .claude/agents ":!.claude/agents/$1.md"; b=$?
-  git grep -q "$1" -- .claude/commands ":!.claude/commands/$1.md"; c=$?
-  case "$a$b$c" in
-    *2*) echo "git grep error: code=$a agents=$b commands=$c — asserting nothing"
-         return 2 ;;
-  esac
+  git grep -q "$sym" -- .claude/agents ":!.claude/agents/$sym.md"; b=$?
+  git grep -q "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
+    "${reviewed[@]}"; c=$?
+  # NUMERIC, not a `*2*` string match on the concatenation. git grep is not
+  # limited to 0/1/128: a signalled grep exits 130 (SIGINT), 137 (SIGKILL),
+  # 141 (SIGPIPE), and measured, `1${b}1` for each of those contains no `2` at
+  # all — the error fell through to the hit/miss logic and, with the other two
+  # scopes at 1, certified the surface ABSENT. Anything above 1 is an error.
+  for rc in "$a" "$b" "$c"; do
+    test "$rc" -le 1 \
+      || { echo "git grep error: code=$a agents=$b commands=$c — asserting nothing"
+           return 2; }
+  done
   case "$a$b" in
     00|01|10) return 0 ;;                      # real code or an agent uses it
   esac
   test "$c" -eq 0 || return 1                  # nothing, anywhere
+  # rc=3 is "a grep cannot tell" — and it has to be ESCAPABLE, or a symbol this
+  # file names as an example can never be retired. TradingAlertSystem is exactly
+  # that: a=1, b=1, c=0 from this file's own prose. Read the lines below; if
+  # they are prose rather than routes, re-run naming those files, e.g.
+  #   consumed TradingAlertSystem .claude/commands/resolve-issue.md
+  # and the check reaches 1. Naming the file is the record of the inspection,
+  # and a NEW command that starts routing to the surface is not on your list, so
+  # it drops back to 3 instead of riding an old approval.
   echo "only .claude/commands/ mentions it — a route, or this file's own example?"
-  git grep -n "$1" -- .claude/commands
+  git grep -n "$sym" -- .claude/commands ":!.claude/commands/$sym.md" \
+    "${reviewed[@]}"
   return 3; }
 
 absent_everywhere() {   # uses consumed() above — both scopes, both repos
@@ -716,9 +737,12 @@ absent_everywhere() {   # uses consumed() above — both scopes, both repos
   # mention it — go read those lines". All three fail, which is the right
   # default: this assertion may only pass when it actually looked and found
   # nothing.
-  consumed "<symbol>"; rc=$?
+  # Pass through any command files you inspected and confirmed are prose. Leave
+  # REVIEWED empty until consumed() has actually printed lines and you have read
+  # them; pre-filling it is how a route gets waved through as an example.
+  consumed "<symbol>" $REVIEWED; rc=$?
   test $rc -eq 1 || { echo "stocks: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
-  ( cd "$SOLYRA" && consumed "<symbol>" ); rc=$?
+  ( cd "$SOLYRA" && consumed "<symbol>" $REVIEWED_SOLYRA ); rc=$?
   test $rc -eq 1 || { echo "solyra: rc=$rc (0=consumed 2=grep error 3=see above)"; return 1; }
 }
 

@@ -175,9 +175,16 @@ body:
         # --no-patch as well, or this dumps a full diff against every merge
         # parent: measured on this repo, 12,981 lines for one symbol versus 9
         # with it. -G selection and the parent-qualified summaries are kept.
+        # .claude/ is IN and .github/ISSUE_TEMPLATE/ is OUT, for the same reasons
+        # the consumer field above gives. A Claude agent or command is a surface
+        # you can be retiring, and its whole history lives under .claude/ —
+        # measured, `code-reviewer` returns 0 commits without it and 2 with it.
+        # Meanwhile these forms name example symbols, so leaving ISSUE_TEMPLATE
+        # in returns commits that touched only this prose and none of the code.
         $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames \
-            -- lib gcp platform scripts .github tests
+            -- lib gcp platform scripts .github tests .claude \
+               ':!.github/ISSUE_TEMPLATE/'
         <sha> (date) added it and wired it into <the caller>
         <sha> (date) rewrote that caller, silently dropping the mount
 
