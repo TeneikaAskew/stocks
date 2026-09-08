@@ -736,6 +736,15 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # depend on which branch that checkout happens to be parked on — see
   # absent_everywhere. A bad rev exits 128, which the numeric check below
   # already refuses.
+  # ANCHOR EVERY PATH AT THE REPO ROOT. `.` and `.claude/…` are relative to the
+  # CWD, and a missing pathspec is a CLEAN MISS rather than an error — measured
+  # from gcp/: the commands scope returns rc=1 for debug-workflow whose live
+  # routes are in the root command files, `test -e .claude/agents/<x>.md` finds
+  # nothing, and `-- .` searches only gcp/. Every scope then reads 1 and the
+  # surface certifies as deleted from any subdirectory. Resolved once here so
+  # it is right in both repos: inside the solyra subshell this is solyra's root.
+  local root; root=$(git rev-parse --show-toplevel) \
+    || { echo "not inside a git repository — asserting nothing"; return 2; }
   local rev=(); test -z "${REV:-}" || rev=( "$REV" )
   # --untracked, but ONLY when searching the working tree. git grep skips
   # untracked files by default, so a Phase 5 file that is written but not yet
@@ -775,7 +784,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # Only when reading the working tree. Under a pinned REV the checkout need
     # not carry the file, and refusing on that would be the unreachable-state
     # defect again.
-    test ${#rev[@]} -gt 0 || test -f "$rc" \
+    test ${#rev[@]} -gt 0 || test -f "$root/$rc" \
       || { echo "REVIEWED entry '$rc' does not exist"; return 2; }
     # AND IT MUST ACTUALLY MENTION THE SYMBOL. Shape checks cannot stop a glob:
     # `REVIEWED=( .claude/commands/*.md )` is expanded by bash AT ASSIGNMENT, so
@@ -789,7 +798,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
     # does not mention the symbol is a no-op for an honest reviewer and is
     # precisely what a glob does — measured, `debug-workflow` matches exactly
     # one command file, so a six-entry glob drags in five that match nothing.
-    git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- "$rc" \
+    git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- "$rc" \
       || { echo "REVIEWED entry '$rc' does not mention '$sym'."
            echo "Name only the files the rc=3 report printed. An entry that"
            echo "matches nothing is either a typo or a glob that expanded."
@@ -803,15 +812,15 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # rc=1 "absent" for that pattern while -E returns 0 and names gcp/deploy.sh,
   # gcp/schema.sql, platform/api/openapi.json and the backtest router. A
   # coupled retirement would certify BOTH surfaces gone while both were live.
-  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}"; a=$?
+  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- . "${EXCLUDE[@]}"; a=$?
   # ':!.claude/agents/$sym.md' — an agent ALWAYS matches its own definition, so
   # without this every agent reads as consumed and none is ever found dormant.
   # Measured: code-reviewer and pine-script-reviewer returned 0 with their own
   # file as the only hit. Excluding a path that does not exist (the surface is
   # not an agent) is safe — measured rc=1, not 128.
-  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/agents \
+  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/agents \
     ":!.claude/agents/$sym.md"; b=$?
-  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
+  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
     ":!.claude/commands/$sym.md" "${reviewed[@]}"; c=$?
   # FOURTH executable-markdown scope. .github/prompts/*.md reach Gemini through
   # .github/workflows/refresh-architecture-docs.yml: scripts/maintenance/
@@ -831,7 +840,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # file's own worked example. Self-exclusion for symmetry with the agent scope,
   # and the whole scope is a safe no-op where the directory does not exist —
   # measured in solyra, `git grep -- .github/prompts` returns rc=1, not 128.
-  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .github/prompts \
+  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- .github/prompts \
     ":!.github/prompts/$sym.md"; e=$?
   # SIXTH executable-markdown scope, and the one that is easiest to read as
   # prose because it is called "documentation". CLAUDE.md is the project
@@ -842,7 +851,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # away: code 1, agents 1, prompts 1 — "absent, safe to delete" — while
   # CLAUDE.md still routes sessions to it. A hit here is a CONSUMER, like an
   # agent or a prompt. Only the root file: docs/*.md and the rest stay prose.
-  git grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- CLAUDE.md; f=$?
+  git -C "$root" grep -qE "${untr[@]}" "$sym" "${rev[@]}" -- CLAUDE.md; f=$?
   # package.json stays EXCLUDED from the pathspec above — it names every
   # dependency, so a dependency retirement would match it forever. But its
   # `scripts` block is EXECUTABLE: `npm run contract:sync` invokes
@@ -866,15 +875,15 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # failed. Check the status and the output as two different questions.
   if [ ${#rev[@]} -gt 0 ]; then
     local entry
-    entry=$(git ls-tree --name-only "$REV" -- package.json) \
+    entry=$(git -C "$root" ls-tree --name-only "$REV" -- package.json) \
       || { echo "could not read the tree at $REV — asserting nothing"; return 2; }
     if [ -n "$entry" ]; then
-      pkg=$(git show "$REV:package.json") \
+      pkg=$(git -C "$root" show "$REV:package.json") \
         || { echo "package.json exists at $REV but could not be read —"
              echo "asserting nothing rather than reading it as absent"; return 2; }
     else pkg=; fi
-  elif [ -f package.json ]; then
-    pkg=$(cat package.json) \
+  elif [ -f "$root/package.json" ]; then
+    pkg=$(cat "$root/package.json") \
       || { echo "package.json exists but could not be read — asserting nothing"
            return 2; }
   else pkg=; fi
@@ -918,7 +927,7 @@ consumed() {   # 0 consumed · 1 nothing · 2 grep errored · 3 only prose/comma
   # and a NEW command that starts routing to the surface is not on your list, so
   # it drops back to 3 instead of riding an old approval.
   echo "only .claude/commands/ mentions it — a route, or this file's own example?"
-  git grep -nE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
+  git -C "$root" grep -nE "${untr[@]}" "$sym" "${rev[@]}" -- .claude/commands \
     ":!.claude/commands/$sym.md" "${reviewed[@]}"
   return 3; }
 
@@ -1034,10 +1043,14 @@ absent_everywhere() {   # $1 = symbol. Uses consumed() above, both repos.
   # demands a check that FAILS before and PASSES after, and this one could not
   # fail. Self-exclusion is right for finding a dormant consumer and wrong for
   # asserting the retirement, so the two are now separate questions.
-  local d
+  # Root-anchored for the same reason consumed() is: from a subdirectory these
+  # relative paths find nothing and the definition reads as already deleted.
+  local d root
+  root=$(git rev-parse --show-toplevel) \
+    || { echo "not inside a git repository — asserting nothing"; return 1; }
   for d in ".claude/agents/$sym.md" ".claude/commands/$sym.md" \
            ".github/prompts/$sym.md"; do
-    test -e "$d" || continue
+    test -e "$root/$d" || continue
     echo "$d still exists — the surface's own definition has not been deleted."
     echo "consumed() excludes it so the surface does not match itself; that"
     echo "exclusion is not a licence to leave it behind."
