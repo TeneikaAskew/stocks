@@ -1742,12 +1742,38 @@ absent_everywhere() {   # $1 = symbol, $2.. = implementation paths/stems.
   # `foo[[-_][-_]]bar`, which matches neither spelling. Measured. An alternative
   # carrying a `[` is left exactly as typed, because the caller has already
   # written the separator rule themselves; one without is normalised as before.
-  local pathsym= _psa _psn _psi=$IFS
+  # THAT BYPASS COVERS THE CLASS, NOT THE WHOLE ALTERNATIVE. `foo[0-9]-bar`
+  # contains a `[`, so round 52 left the `-` after the class unnormalised too,
+  # and a surviving `foo1_bar.py` then did not match — measured, `foo1-bar.py`
+  # hits and `foo1_bar.py` does not, so the scan certifies with the file there.
+  # Rewriting only the separators OUTSIDE brackets needs a real bracket parser
+  # — `[]]`, `[^]]` and `[[:alpha:]]` all end in different places — so this
+  # refuses the mixed form instead and names the spelling that works. The test
+  # needs no parser: strip each `[…]` span, shortest first, and look at what is
+  # left. The passing state is reachable and is exactly what the message asks
+  # for, `foo[0-9][-_]bar`, which strips to `foobar` and is accepted verbatim.
+  local pathsym= _psa _psn _psp _pspre _pspost _psi=$IFS
   IFS='|'
   for _psa in $sym; do
     test -n "$_psa" || continue
     case "$_psa" in
-      *'['*) _psn=$_psa;;
+      *'['*)
+        _psp=$_psa
+        while case $_psp in *'['*']'*) true;; *) false;; esac; do
+          _pspre=${_psp%%[*}; _pspost=${_psp#*[}; _pspost=${_pspost#*]}
+          _psp="$_pspre$_pspost"
+        done
+        case $_psp in
+          *[-_]*)
+            echo "'$_psa' mixes a bracket expression with a literal '-' or '_'"
+            echo "  outside it. This does not rewrite inside a class it did not"
+            echo "  author, so that separator would match only the spelling you"
+            echo "  typed and a path using the other one would read as absent."
+            echo "  Write it explicitly, e.g.  foo[0-9][-_]bar"
+            IFS=$_psi
+            return 1;;
+        esac
+        _psn=$_psa;;
       *)     _psn=${_psa//_/$'\x01'}; _psn=${_psn//-/$'\x01'}
              _psn=${_psn//$'\x01'/[-_]};;
     esac
@@ -3342,8 +3368,24 @@ inside that window.** An empty review list at 60 seconds means "wait", not
        if git worktree remove "$wt"; then wrc=0; else wrc=$?; fi
        # The DEPLOY's status first — it is the more important failure, and the
        # leak is reported alongside rather than instead of it.
+       # NOT "prod is still on the old revision". The subshell CHAINS
+       # build-research && <target> && schedulers, so a nonzero rc says the
+       # chain stopped, not that nothing happened: `<target>` may already have
+       # updated the job with only `schedulers` failing, and a failure even
+       # before that can have moved `:latest`, since the tag floats and any
+       # build re-points it — the subject of the whole section below. Telling
+       # the operator production is unchanged sends them down a recovery path
+       # for a state they may not be in. What is known is the rc and that the
+       # chain did not finish; how far it got is not, and this says so rather
+       # than guessing. Distinct exit codes per stage would say more, and are
+       # a mechanism rather than a repair — see the scope note in the PR.
        test $rc -eq 0 || {
-         echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"
+         echo "DEPLOY FAILED rc=$rc — the chain stopped part way through"
+         echo "build-research -> <target> -> schedulers, so production is in an"
+         echo "UNKNOWN state, not an unchanged one: an earlier stage may have"
+         echo "completed, and any build in that window moves the floating"
+         echo ":latest tag. Read what is actually deployed before retrying —"
+         echo "the digest comparison in the notes below is that read."
          test $wrc -eq 0 || echo "and the worktree at $wt is still registered"
          return 1; }
        test $wrc -eq 0 || {
