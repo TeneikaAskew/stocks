@@ -4,7 +4,7 @@
 
 This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by domain) and §6 (jobs). Where ARCHITECTURE says "job X runs module Y", this doc answers "module Y writes table Z, and Z is read by A, B, C".
 
-> **Partition handling.** `market_data_intraday` is LIST-partitioned by ticker; the five children (`_spy`, `_iwm`, `_qqq`, `_spx`, `_other`) are routed by Postgres and never named in code, so they appear in §1 and §5 but have no entries of their own in §2/§3.
+> **Partition handling.** `market_data_intraday` is LIST-partitioned by ticker into five children (`_spy`, `_iwm`, `_qqq`, `_spx`, `_other`). Writes are routed by Postgres through the parent, so no child has a writer of its own. Four of them ARE read directly, by name assembled at run time: `scripts/analysis/per_ticker_calibration.py` builds the suffix for SPY / IWM / QQQ / SPX, and `gcp/research/p2_outcomes_grid.py`, `gcp/research/strat_engine/strat_data_builder.py`, `lib/options_exec_backtest/runner.py` and `gcp/research/p7_build_multi_tf_features.py` look one up in a per-ticker mapping. Those four therefore carry §3 reference sections; `_other` is named by no branch and appears only in §1 and §5.
 >
 > **Runtime tables.** The live database holds 28 relations that `gcp/schema.sql` does not declare (`strat_features_*`, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, `*_30m_predictions`, `market_data_indicators*`, `market_data_cross_asset`); they are created by research and analytics jobs at runtime. They are listed in §1b with row counts but have no write/read graph here because their names are built dynamically in code.
 >
@@ -322,7 +322,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [251](../../../gcp/fetchers/fetch_premarket_refresh.py#L251), [256](../../../gcp/fetchers/fetch_premarket_refresh.py#L256), [257](../../../gcp/fetchers/fetch_premarket_refresh.py#L257), [258](../../../gcp/fetchers/fetch_premarket_refresh.py#L258)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [187](../../../gcp/migrate_to_gcp.py#L187), [668](../../../gcp/migrate_to_gcp.py#L668)
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [257](../../../gcp/premarket_brief.py#L257)
-- [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [324](../../../scripts/backfill_and_replay.py#L324), [488](../../../scripts/backfill_and_replay.py#L488)
+- [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [324](../../../scripts/backfill_and_replay.py#L324), [488](../../../scripts/backfill_and_replay.py#L488), [149](../../../scripts/backfill_and_replay.py#L149), [152](../../../scripts/backfill_and_replay.py#L152), [156](../../../scripts/backfill_and_replay.py#L156)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [233](../../../scripts/backfill_watchlist_data.py#L233)
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [102](../../../scripts/deep_backfill_ticker.py#L102)
 
@@ -331,7 +331,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [308](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L308)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [465](../../../gcp/fetchers/fetch_market_data.py#L465)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [245](../../../gcp/migrate_to_gcp.py#L245), [248](../../../gcp/migrate_to_gcp.py#L248)
-- [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [351](../../../scripts/backfill_and_replay.py#L351)
+- [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [351](../../../scripts/backfill_and_replay.py#L351), [149](../../../scripts/backfill_and_replay.py#L149), [152](../../../scripts/backfill_and_replay.py#L152), [156](../../../scripts/backfill_and_replay.py#L156)
 
 ### `market_data_intraday_iwm`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -355,7 +355,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [538](../../../gcp/backfill_ticker.py#L538)
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [375](../../../gcp/fetchers/fetch_news_sentiment.py#L375)
 - [`gcp/fetchers/fetch_rss_news.py`](../../../gcp/fetchers/fetch_rss_news.py) — line [710](../../../gcp/fetchers/fetch_rss_news.py#L710)
-- [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [652](../../../scripts/backfill_and_replay.py#L652)
+- [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [652](../../../scripts/backfill_and_replay.py#L652), [149](../../../scripts/backfill_and_replay.py#L149), [152](../../../scripts/backfill_and_replay.py#L152), [156](../../../scripts/backfill_and_replay.py#L156)
 - [`scripts/backfill_news_sentiment.py`](../../../scripts/backfill_news_sentiment.py) — line [101](../../../scripts/backfill_news_sentiment.py#L101)
 
 ### `options_daily_features`
@@ -527,7 +527,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `earnings_options_snapshots`
 - [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py) — line [189](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py#L189)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [570](../../../lib/data_loader.py#L570)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [570](../../../lib/data_loader.py#L570), [571](../../../lib/data_loader.py#L571)
 - [`scripts/backtest_playability.py`](../../../scripts/backtest_playability.py) — line [551](../../../scripts/backtest_playability.py#L551)
 
 ### `earnings_options_strategy_insights`
@@ -577,7 +577,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/strat_data_builder.py`](../../../gcp/research/strat_engine/strat_data_builder.py) — line [248](../../../gcp/research/strat_engine/strat_data_builder.py#L248)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [113](../../../lib/agents/ranker/signals.py#L113), [117](../../../lib/agents/ranker/signals.py#L117)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [522](../../../lib/agents/summarizers.py#L522), [527](../../../lib/agents/summarizers.py#L527), [649](../../../lib/agents/summarizers.py#L649), [655](../../../lib/agents/summarizers.py#L655), [676](../../../lib/agents/summarizers.py#L676), [682](../../../lib/agents/summarizers.py#L682)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [570](../../../lib/data_loader.py#L570)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [570](../../../lib/data_loader.py#L570), [571](../../../lib/data_loader.py#L571)
 - [`lib/features/experimental/options_derived.py`](../../../lib/features/experimental/options_derived.py) — line [67](../../../lib/features/experimental/options_derived.py#L67), [115](../../../lib/features/experimental/options_derived.py#L115)
 - [`lib/features/flow_direction.py`](../../../lib/features/flow_direction.py) — line [408](../../../lib/features/flow_direction.py#L408), [445](../../../lib/features/flow_direction.py#L445)
 - [`lib/options_exec_backtest/iv_lookup.py`](../../../lib/options_exec_backtest/iv_lookup.py) — line [127](../../../lib/options_exec_backtest/iv_lookup.py#L127)
@@ -709,18 +709,30 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [247](../../../scripts/validation/validate_brief_accuracy.py#L247), [311](../../../scripts/validation/validate_brief_accuracy.py#L311), [538](../../../scripts/validation/validate_brief_accuracy.py#L538)
 
 ### `market_data_intraday_iwm`
+- [`gcp/research/p2_outcomes_grid.py`](../../../gcp/research/p2_outcomes_grid.py) — line [183](../../../gcp/research/p2_outcomes_grid.py#L183)
+- [`gcp/research/p7_build_multi_tf_features.py`](../../../gcp/research/p7_build_multi_tf_features.py) — line [95](../../../gcp/research/p7_build_multi_tf_features.py#L95)
+- [`gcp/research/strat_engine/strat_data_builder.py`](../../../gcp/research/strat_engine/strat_data_builder.py) — line [181](../../../gcp/research/strat_engine/strat_data_builder.py#L181)
+- [`lib/options_exec_backtest/runner.py`](../../../lib/options_exec_backtest/runner.py) — line [113](../../../lib/options_exec_backtest/runner.py#L113)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [205](../../../scripts/analysis/per_ticker_calibration.py#L205), [208](../../../scripts/analysis/per_ticker_calibration.py#L208)
 
 ### `market_data_intraday_other`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
 
 ### `market_data_intraday_qqq`
+- [`gcp/research/p2_outcomes_grid.py`](../../../gcp/research/p2_outcomes_grid.py) — line [183](../../../gcp/research/p2_outcomes_grid.py#L183)
+- [`gcp/research/p7_build_multi_tf_features.py`](../../../gcp/research/p7_build_multi_tf_features.py) — line [95](../../../gcp/research/p7_build_multi_tf_features.py#L95)
+- [`gcp/research/strat_engine/strat_data_builder.py`](../../../gcp/research/strat_engine/strat_data_builder.py) — line [181](../../../gcp/research/strat_engine/strat_data_builder.py#L181)
+- [`lib/options_exec_backtest/runner.py`](../../../lib/options_exec_backtest/runner.py) — line [113](../../../lib/options_exec_backtest/runner.py#L113)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [205](../../../scripts/analysis/per_ticker_calibration.py#L205), [208](../../../scripts/analysis/per_ticker_calibration.py#L208)
 
 ### `market_data_intraday_spx`
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [205](../../../scripts/analysis/per_ticker_calibration.py#L205), [208](../../../scripts/analysis/per_ticker_calibration.py#L208)
 
 ### `market_data_intraday_spy`
+- [`gcp/research/p2_outcomes_grid.py`](../../../gcp/research/p2_outcomes_grid.py) — line [183](../../../gcp/research/p2_outcomes_grid.py#L183)
+- [`gcp/research/p7_build_multi_tf_features.py`](../../../gcp/research/p7_build_multi_tf_features.py) — line [95](../../../gcp/research/p7_build_multi_tf_features.py#L95)
+- [`gcp/research/strat_engine/strat_data_builder.py`](../../../gcp/research/strat_engine/strat_data_builder.py) — line [181](../../../gcp/research/strat_engine/strat_data_builder.py#L181)
+- [`lib/options_exec_backtest/runner.py`](../../../lib/options_exec_backtest/runner.py) — line [113](../../../lib/options_exec_backtest/runner.py#L113)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [205](../../../scripts/analysis/per_ticker_calibration.py#L205), [208](../../../scripts/analysis/per_ticker_calibration.py#L208)
 
 ### `model_routing`
@@ -764,6 +776,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `realtime_gex_15m`
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [146](../../../gcp/build_realtime_gex.py#L146)
+- [`lib/features/intraday_gex.py`](../../../lib/features/intraday_gex.py) — line [231](../../../lib/features/intraday_gex.py#L231)
 
 ### `regime_combo_results`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
@@ -899,11 +912,11 @@ Notes on the ones that matter operationally:
 | `archive_yahoo_market_data_intraday` | 0 | 0 | no writer and no reader in code |
 | `backtest_reports` | 1 | 0 | write-only (no reader in code) |
 | `indicator_correlation` | 1 | 0 | write-only (no reader in code) |
-| `market_data_intraday_iwm` | 0 | 1 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
+| `market_data_intraday_iwm` | 0 | 5 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
 | `market_data_intraday_other` | 0 | 0 | partition of `market_data_intraday` — routed by Postgres, never named in code; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
-| `market_data_intraday_qqq` | 0 | 1 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
+| `market_data_intraday_qqq` | 0 | 5 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
 | `market_data_intraday_spx` | 0 | 1 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
-| `market_data_intraday_spy` | 0 | 1 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
+| `market_data_intraday_spy` | 0 | 5 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
 | `playbook_cards_staging` | 1 | 0 | write-only (no reader in code) |
 | `ranker_runs` | 1 | 0 | write-only (no reader in code) |
 | `regime_combo_results` | 1 | 0 | write-only (no reader in code) |
@@ -1098,6 +1111,9 @@ flowchart LR
         T_journal_entries[(journal_entries)]
         T_market_data_daily[(market_data_daily)]
         T_market_data_intraday[(market_data_intraday)]
+        T_market_data_intraday_iwm[(market_data_intraday_iwm)]
+        T_market_data_intraday_qqq[(market_data_intraday_qqq)]
+        T_market_data_intraday_spy[(market_data_intraday_spy)]
         T_model_routing[(model_routing)]
         T_news_sentiment[(news_sentiment)]
         T_options_daily_features[(options_daily_features)]
@@ -1308,6 +1324,9 @@ flowchart LR
     T_options_daily_features --> J_magnitude_recal
     T_daily_rates --> J_options_exec_backtest
     T_etf_options_snapshots --> J_options_exec_backtest
+    T_market_data_intraday_iwm --> J_options_exec_backtest
+    T_market_data_intraday_qqq --> J_options_exec_backtest
+    T_market_data_intraday_spy --> J_options_exec_backtest
     T_exit_config_overrides --> J_param_sweep
     T_market_data_daily --> J_param_sweep
     T_market_data_intraday --> J_param_sweep
@@ -1348,6 +1367,9 @@ flowchart LR
     T_signal_alerts --> J_signal_replay
     T_etf_options_snapshots --> J_strat_engine
     T_market_data_daily --> J_strat_engine
+    T_market_data_intraday_iwm --> J_strat_engine
+    T_market_data_intraday_qqq --> J_strat_engine
+    T_market_data_intraday_spy --> J_strat_engine
     T_insight_reports --> J_validate_brief
     T_market_data_intraday --> J_validate_brief
     T_premarket_analysis --> J_validate_brief
@@ -1357,7 +1379,7 @@ flowchart LR
     classDef job fill:#3B82F6,stroke:#1E40AF,color:#fff
     classDef tbl fill:#10B981,stroke:#065F46,color:#fff
     class J_audit_brief_bias,J_audit_walkforward,J_auto_refresh_top_n,J_backfill_daily_indicators,J_backfill_ticker,J_backtest,J_backtest_pipeline,J_build_options_daily_features,J_build_options_greeks,J_build_realtime_gex,J_calibrate_thresholds,J_compute_earnings_reactions,J_compute_spx_greeks_backfill,J_direction_baseline,J_direction_phase2,J_earnings_long_watchlist,J_earnings_options_backfill,J_earnings_reactions_brief,J_earnings_sweep,J_etf_options_retention,J_evaluate_ew_strikes,J_fetch_alphavantage_intraday,J_fetch_av_options_backfill,J_fetch_av_options_realtime,J_fetch_earnings_calendar,J_fetch_earnings_history,J_fetch_economic_events,J_fetch_fred_rates,J_fetch_insider_transactions,J_fetch_market_data,J_fetch_news_sentiment,J_fetch_news_sentiment_earnings,J_fetch_news_sentiment_topics,J_fetch_premarket_refresh,J_fetch_sec_filings,J_fetch_top_movers,J_freshness_watchdog,J_historical_signals_watchlist,J_indicator_correlation,J_insight_discord_push,J_insight_pipeline,J_intraday_bulk_backfill,J_magnitude_engine,J_magnitude_recal,J_options_exec_backtest,J_param_sweep,J_phase6_playbook,J_premarket_brief,J_premarket_playbook_resolver,J_refresh_earnings_views,J_regime_combo,J_signal_monitor,J_signal_monitor_eod_resolver,J_signal_quality_alarm,J_signal_quality_report,J_signal_replay,J_strat_engine,J_validate_brief,J_weekend_review job
-    class T_backtest_reports,T_backtest_sweeps,T_backtest_trades,T_backtest_walk_forward_folds,T_daily_rates,T_earnings_calendar,T_earnings_calibration,T_earnings_event_outcomes,T_earnings_history,T_earnings_options_snapshots,T_earnings_options_strategy_winners,T_earnings_reactions,T_earnings_ticker_lean,T_earnings_upcoming_with_history,T_economic_events,T_etf_options_daily_greeks,T_etf_options_snapshots,T_exit_config_overrides,T_historical_signals,T_indicator_correlation,T_insider_transactions,T_insight_reports,T_insight_reports_history,T_insight_runs,T_job_runs,T_journal_entries,T_market_data_daily,T_market_data_intraday,T_model_routing,T_news_sentiment,T_options_daily_features,T_playbook_cards,T_premarket_analysis,T_premarket_analysis_history,T_ranker_runs,T_realtime_gex_15m,T_regime_combo_results,T_sec_filings,T_signal_alerts,T_signal_metrics,T_strat_levels,T_ticker_calibration,T_top_movers_daily,T_top_movers_intraday,T_trades,T_walk_forward_results,T_watchlists tbl
+    class T_backtest_reports,T_backtest_sweeps,T_backtest_trades,T_backtest_walk_forward_folds,T_daily_rates,T_earnings_calendar,T_earnings_calibration,T_earnings_event_outcomes,T_earnings_history,T_earnings_options_snapshots,T_earnings_options_strategy_winners,T_earnings_reactions,T_earnings_ticker_lean,T_earnings_upcoming_with_history,T_economic_events,T_etf_options_daily_greeks,T_etf_options_snapshots,T_exit_config_overrides,T_historical_signals,T_indicator_correlation,T_insider_transactions,T_insight_reports,T_insight_reports_history,T_insight_runs,T_job_runs,T_journal_entries,T_market_data_daily,T_market_data_intraday,T_market_data_intraday_iwm,T_market_data_intraday_qqq,T_market_data_intraday_spy,T_model_routing,T_news_sentiment,T_options_daily_features,T_playbook_cards,T_premarket_analysis,T_premarket_analysis_history,T_ranker_runs,T_realtime_gex_15m,T_regime_combo_results,T_sec_filings,T_signal_alerts,T_signal_metrics,T_strat_levels,T_ticker_calibration,T_top_movers_daily,T_top_movers_intraday,T_trades,T_walk_forward_results,T_watchlists tbl
 ```
 <!-- inventory:graph:end -->
 

@@ -773,6 +773,47 @@ def _literal_assigns(tree: ast.Module) -> list[tuple[str, str | None, set[str], 
     the length of the function. (Codex, PR #1044.)
     """
     out: list[tuple[str, str | None, set[str], int, tuple[int, int] | None]] = []
+    # Module-level `NAME = {"SPY": "market_data_intraday_spy", ...}`: a
+    # subscript with a RUN-TIME key resolves to the union of the values, which
+    # is what `INTRADAY_TABLE_BY_TICKER[ticker]` in
+    # gcp/research/p2_outcomes_grid.py:179 needs to reach its three partition
+    # reads at :183. (Codex, PR #1044.)
+    const_dicts: dict[str, set[str]] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict) \
+                and node.value.values \
+                and all(isinstance(v, ast.Constant) and isinstance(v.value, str)
+                        for v in node.value.values):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    const_dicts[tgt.id] = {v.value for v in node.value.values}
+    # A literal passed to a same-module function binds that function's
+    # parameter: `_add_gex_block(df, ticker, engine, table="realtime_gex_15m")`
+    # at lib/features/intraday_gex.py:291 is what makes the `FROM {table}` at
+    # :231 a real read. Values are UNIONED over the call sites, so a helper
+    # called with two different tables keeps both. (Codex, PR #1044.)
+    defs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    seeded: dict[tuple[str, str], tuple[set[str], int, tuple[int, int]]] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        fn = defs.get(node.func.id)
+        if fn is None or any(isinstance(a, ast.Starred) for a in node.args) \
+                or any(k.arg is None for k in node.keywords):
+            continue
+        params = [a.arg for a in list(fn.args.posonlyargs) + list(fn.args.args)]
+        bounds = (fn.lineno, getattr(fn, "end_lineno", None) or fn.lineno)
+        supplied: list[tuple[str, ast.AST]] = [
+            (params[i], a) for i, a in enumerate(node.args) if i < len(params)]
+        supplied += [(k.arg, k.value) for k in node.keywords]
+        for pname, val in supplied:
+            if not (isinstance(val, ast.Constant) and isinstance(val.value, str)):
+                continue
+            key = (fn.name, pname)
+            vals, _ln, _b = seeded.get(key, (set(), bounds[0], bounds))
+            seeded[key] = (vals | {val.value}, bounds[0], bounds)
+    for (_fname, pname), (vals, ln, bounds) in seeded.items():
+        out.append((pname, None, vals, ln, bounds))
 
     def walk(node: ast.AST, bounds: tuple[int, int] | None) -> None:
         # a binding made inside a function holds only in that function; one at
@@ -789,6 +830,13 @@ def _literal_assigns(tree: ast.Module) -> list[tuple[str, str | None, set[str], 
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             value = node.value
+            if isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name) \
+                    and value.value.id in const_dicts \
+                    and not isinstance(value.slice, ast.Constant):
+                for tgt in targets:
+                    if isinstance(tgt, ast.Name):
+                        out.append((tgt.id, None, set(const_dicts[value.value.id]),
+                                    value.lineno, bounds))
             if value is not None:
                 for key, vals in _keyed_elems(value).items():
                     for tgt in targets:
@@ -1253,7 +1301,20 @@ def _dynamic_forms(line: str) -> list[dict[str, Any]]:
              pre: bool = False, post: bool = False,
              exprs: list[str] | None = None) -> None:
         static = "".join(parts)
-        if "_" not in static or not any(len(x) >= 2 for x in parts) or any(ch in static for ch in " ()\\"):
+        # `FROM {table}` has no static part at all, so as a pattern it matches
+        # every relation; it is emitted anyway, marked `bare`, and used ONLY
+        # where the placeholder resolves to literal values -- which is exactly
+        # the `realtime_gex_15m` case this analyzer could not see before.
+        # (Codex, PR #1044.)
+        bare = (static == "" and parts == ["", ""] and not pre and not post
+                # only a bare NAME can resolve, and only a line carrying a SQL
+                # clause keyword can be a relation reference: without both,
+                # every `{x}` in every f-string would enter the resolver
+                and len(holes) == 1 and holes[0] is not None
+                and _SQL_HINT.search(line) is not None)
+        if any(ch in static for ch in " ()\\"):
+            return
+        if not bare and ("_" not in static or not any(len(x) >= 2 for x in parts)):
             return
         pat = _PLACEHOLDER.join(re.escape(x) for x in parts)
         pat = (_PLACEHOLDER if pre else "") + pat + (_PLACEHOLDER if post else "")
@@ -1262,7 +1323,7 @@ def _dynamic_forms(line: str) -> list[dict[str, Any]]:
         cpat = (cap if pre else "") + cpat + (cap if post else "")
         if any(f["pat"] == pat for f in out):
             return
-        out.append({"pat": pat, "cpat": cpat, "parts": parts, "holes": holes,
+        out.append({"pat": pat, "cpat": cpat, "parts": parts, "holes": holes, "bare": bare,
                     # the placeholder's SOURCE text, kept beside `holes`
                     # because `holes` carries only bare names: `{t.lower()}`
                     # is not a name and reads as None there, which left the
@@ -1499,6 +1560,8 @@ def table_refs_dynamic(root: pathlib.Path, tables: list[str]) -> dict[str, dict[
                         if name in tableset and _conditional_ok(form, combo, cond):
                             form["vars"][name] = combo
                             hits.append((name, form))
+                elif form.get("bare"):
+                    continue        # a bare pattern matches every relation
                 else:
                     form["resolved"] = False
                     # the names that constrain this placeholder, so a job's

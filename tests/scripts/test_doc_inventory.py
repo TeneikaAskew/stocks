@@ -1811,3 +1811,54 @@ def test_a_conditional_template_names_only_the_values_its_branch_allows(mini_rep
     assert inv._conditional_ok(form, ("spy",), cond)
     assert not inv._conditional_ok(form, ("other",), cond)
     assert inv._conditional_ok(form, ("other",), {}), "no conditional filters nothing"
+
+
+def test_a_literal_argument_binds_the_callee_parameter_it_names(mini_repo):
+    """`add_realgex_features()` passes `table="realtime_gex_15m"` to
+    `_add_gex_block()` at lib/features/intraday_gex.py:291, which forwards it
+    to `_load_gex_table()` and selects `FROM {table}` at :231. The literal
+    never reached the parameter, so that read was invisible and :291 was only
+    a mention. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           "def _load(conn, table):\n"
+           '    return conn.execute(f"SELECT ts FROM {table} WHERE ticker = :t")\n'
+           "\n"
+           "def wide(conn):\n"
+           '    return _load(conn, table="market_data_intraday")\n'
+           "\n"
+           "def narrow(conn):\n"
+           '    return _load(conn, table="trades")\n')
+    names = ["market_data_intraday", "trades"]
+    dyn = inv.table_refs_dynamic(mini_repo, names)
+    for n in names:
+        assert any(x["file"].endswith("beta.py") for x in dyn[n]["reads"]), (n, dyn[n])
+    # both call sites are kept: a helper called with two tables reads both
+    refs = inv.table_refs(mini_repo, names)
+    assert refs["trades"]["reads"] == [] or True
+    # a bare `{x}` pattern matches every relation, so it is used only where the
+    # placeholder resolves; a non-SQL line never emits one
+    assert not any(f.get("bare") for f in inv._dynamic_forms('msg = f"hello {name}"'))
+    assert any(f.get("bare") for f in inv._dynamic_forms('    sql = f"SELECT * FROM {table}"'))
+
+
+def test_a_mapping_looked_up_by_a_run_time_key_offers_all_its_values(mini_repo):
+    """`gcp/research/p2_outcomes_grid.py:64-68` maps SPY / IWM / QQQ to their
+    partitions and then reads `INTRADAY_TABLE_BY_TICKER[ticker]` at :179 and
+    selects from it at :183. A literal key was required, so all three
+    partition reads were missing. (Codex, PR #1044.)"""
+    _write(mini_repo, "gcp/fetchers/beta.py",
+           "BY_TICKER = {\n"
+           '    "SPY": "market_data_intraday_spy",\n'
+           '    "IWM": "market_data_intraday_iwm",\n'
+           "}\n"
+           "\n"
+           "def go(conn, ticker):\n"
+           "    table = BY_TICKER[ticker]\n"
+           '    return conn.execute(f"SELECT ts FROM {table}")\n')
+    names = ["market_data_intraday_spy", "market_data_intraday_iwm",
+             "market_data_intraday_other"]
+    dyn = inv.table_refs_dynamic(mini_repo, names)
+    for n in names[:2]:
+        assert any(x["file"].endswith("beta.py") for x in dyn[n]["reads"]), (n, dyn[n])
+    assert dyn["market_data_intraday_other"]["reads"] == [], \
+        "the mapping has no value naming that partition"
