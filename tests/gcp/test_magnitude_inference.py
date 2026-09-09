@@ -614,9 +614,17 @@ def _contract_blobs(contract_text, *, contract_exists=True):
     return bucket
 
 
-def _load_with(contract_text, *, contract_exists=True):
+def _load_with(contract_text, *, contract_exists=True, download_raises=None):
     from gcp.research.magnitude_engine import mag_inference as mod
     bucket = _contract_blobs(contract_text, contract_exists=contract_exists)
+    if download_raises is not None:
+        real = bucket.blob.side_effect
+        def raising(name):
+            b = real(name)
+            if name.endswith("/CONTRACT.json"):
+                b.download_as_text.side_effect = download_raises
+            return b
+        bucket.blob.side_effect = raising
     client = MagicMock()
     client.bucket.return_value = bucket
     with patch("google.cloud.storage.Client", return_value=client), \
@@ -664,7 +672,11 @@ def test_a_missing_contract_is_not_assumed_to_be_the_default():
 def test_a_corrupt_contract_is_distinguishable_from_a_mismatched_one():
     """Two different failures: unparseable is not the same as disagreeing,
     and collapsing them would send the operator after the wrong thing."""
-    with pytest.raises(ValueError, match="not valid JSON"):
+    with pytest.raises(ValueError, match="could not be decoded"):
+        _load_with("{not json")
+    # and it names WHICH decoding failure, so the operator is not left
+    # guessing between bad syntax, bad bytes and an oversized literal
+    with pytest.raises(ValueError, match="JSONDecodeError"):
         _load_with("{not json")
 
 
@@ -893,3 +905,49 @@ def test_the_backfill_rereads_latest_in_the_final_pass():
     assert "LATEST vanished during the run" in verdict
     assert verdict.index("latest.download_as_text()") < verdict.index(
         f"{'{'}CONTRACT_BLOB{'}'}"), "LATEST must be re-read before the check"
+
+
+def test_every_decoding_failure_reaches_the_fatal_path():
+    """Only one of the three ways CONTRACT.json fails to decode is a
+    JSONDecodeError. The other two are ValueErrors that the narrower clause
+    let escape to the ordinary per-cell handler, and hence back under the
+    partial-success threshold. (Codex P2 on #1074.)"""
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMalformed, ContractRejection)
+
+    # 1. ordinary bad syntax
+    with pytest.raises(ContractMalformed):
+        _load_with("{not json")
+
+    # 2. an int literal over the 3.11 int_max_str_digits limit — raised by the
+    #    int conversion, NOT the parser, so it is a plain ValueError
+    huge = '{"label_mode":"body","thresholds":[' + "1" * 5000 + '],"classes":[]}'
+    with pytest.raises(ContractMalformed) as e2:
+        _load_with(huge)
+    assert isinstance(e2.value, ContractRejection)
+
+    # 3. non-UTF-8 bytes out of download_as_text — a ValueError subclass, but
+    #    not a JSON error
+    boom = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+    with pytest.raises(ContractMalformed) as e3:
+        _load_with("", download_raises=boom)
+    assert isinstance(e3.value, ContractRejection)
+
+
+def test_a_transport_failure_is_not_a_contract_rejection():
+    """The inverse, so the broadened clause does not overshoot: a GCS read
+    that fails for its own reasons is an ordinary transient cell failure and
+    must stay subject to the partial-success threshold, not be recast as
+    evidence the contract is malformed."""
+    from gcp.research.magnitude_engine.mag_config import ContractRejection
+
+    class TransportError(Exception):
+        pass
+
+    with pytest.raises(TransportError):
+        _load_with("", download_raises=TransportError("503 backend error"))
+    # and it is not a contract rejection
+    try:
+        _load_with("", download_raises=TransportError("503"))
+    except Exception as e:
+        assert not isinstance(e, ContractRejection)

@@ -244,10 +244,28 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             f"one.")
     try:
         contract = json.loads(contract_blob.download_as_text())
-    except json.JSONDecodeError as e:
+    except ValueError as e:
+        # ValueError rather than JSONDecodeError, because three different
+        # decoding failures live under it and only one of them is a
+        # JSONDecodeError (Codex P2 on #1074):
+        #   * JSONDecodeError      — ordinary bad syntax
+        #   * UnicodeDecodeError   — non-UTF-8 bytes out of download_as_text;
+        #                            a ValueError subclass, not a JSON error
+        #   * plain ValueError     — an integer literal over the 3.11
+        #                            int_max_str_digits limit, raised by the
+        #                            int conversion rather than the parser
+        # The narrower clause let the last two escape to the ordinary per-cell
+        # handler and back under the partial-success threshold.
+        #
+        # Deliberately NOT broader than ValueError: a GCS transport failure is
+        # a google.cloud exception and IS an ordinary transient cell failure,
+        # not evidence that the contract is malformed. Only the two operations
+        # in this block can raise ValueError, and from them it always means
+        # the bytes could not be decoded into a contract.
         raise ContractMalformed(
-            f"{ticker}:{tf} run={run_id}: {CONTRACT_BLOB} is not valid JSON "
-            f"at gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}: {e}") from e
+            f"{ticker}:{tf} run={run_id}: {CONTRACT_BLOB} could not be "
+            f"decoded at gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}: "
+            f"{type(e).__name__}: {e}") from e
     try:
         mismatch = contract_mismatch(contract)
     except ValueError as e:
