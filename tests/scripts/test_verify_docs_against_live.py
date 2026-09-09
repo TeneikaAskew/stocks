@@ -856,7 +856,12 @@ def test_a_subset_count_is_not_read_as_a_fleet_count(tmp_path):
 
 
 @pytest.mark.parametrize("line", [
-    "The top 10 Cloud Run jobs that dominate spend are listed below.",
+    # The phrasing quoted in the source comment. The first version of this
+    # test used "top 10 ... that dominate spend", which passed only because
+    # the bare `that` was wrongly accepted as a cue -- so the form actually
+    # cited was never covered. (Codex, PR #1072.)
+    "The top 10 Cloud Run jobs by cost are listed below.",
+    "The top 5 Cloud Run Jobs dominate spend.",
     "3 Cloud Run jobs failed overnight.",
     "12 Cloud Run jobs declared in `gcp/deploy.sh` have no scheduler.",
 ])
@@ -868,6 +873,10 @@ def test_other_subset_phrasings_are_not_fleet_counts(tmp_path, line):
     "The platform runs 42 Cloud Run Jobs today.",
     "| Cloud Run Jobs | 12 Cloud Run Jobs | x |",
     "All 68 Cloud Run Jobs are covered by this estimate.",
+    # A bare relative pronoun does not scope a count. Accepting `that` /
+    # `which` as cues silenced ordinary fleet claims. (Codex, PR #1072.)
+    "The fleet consists of 68 Cloud Run Jobs that are currently deployed.",
+    "There are 50 Cloud Run Jobs which run nightly.",
 ])
 def test_the_subset_rule_does_not_blind_the_fleet_check(tmp_path, line):
     """Over-suppressing here would make the check blind to the drift it exists
@@ -876,6 +885,15 @@ def test_the_subset_rule_does_not_blind_the_fleet_check(tmp_path, line):
     found = _count_findings(tmp_path, line + "\n")
     assert len(found) == 1, f"real drift was suppressed: {line!r}"
     assert "live count is 76" in found[0].detail
+
+
+def test_a_qualifier_in_the_next_paragraph_does_not_suppress(tmp_path):
+    """`check_counts` scans the WHOLE file, so a `\\s*` gap could reach across
+    blank lines and let unrelated content suppress a stale count. The gap is
+    horizontal whitespace only. (Codex, PR #1072.)"""
+    text = "## 68 Cloud Run Jobs\n\nCreated jobs run on demand.\n"
+    found = _count_findings(tmp_path, text)
+    assert len(found) == 1, "the next paragraph suppressed a stale fleet count"
 
 
 def test_a_correct_fleet_count_is_silent(tmp_path):

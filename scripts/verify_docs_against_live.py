@@ -883,19 +883,27 @@ _FMT = r"[\s*_`\]]*"
 # on 05-d line 78, "10 Cloud Run jobs identified in `05-a-ARCHITECTURE.md` as
 # being manually created" -- a true statement (05-a marks exactly 10 job rows
 # `(hand-created)`) reported as drift because the pattern read it as "there are
-# 10 Cloud Run Jobs" against a live 76. The same reading would fire on "the top
-# 10 Cloud Run jobs by cost" or "3 Cloud Run jobs failed overnight".
+# 10 Cloud Run Jobs" against a live 76.
 #
-# Kept deliberately TIGHT rather than suppressing anything that looks
-# qualified: over-suppression here makes the check blind to the real drift it
-# exists to catch, which is the failure mode the scheduler-vocabulary comment
-# below records. A restrictive word must follow IMMEDIATELY -- "All 76 Cloud
-# Run Jobs |" in a table cell is followed by nothing and stays checked.
-# (Run 34.)
-SUBSET_QUALIFIER = re.compile(
-    r"\s*(?:identified|marked|listed|flagged|declared|undeclared|created"
-    r"|defined|registered|missing|without|lacking|failing|failed|added"
-    r"|removed|retired|that\b|which\b|not\s+in)\b", re.I)
+# Three things this must NOT do, each caught on review of the first attempt:
+#
+#  * A bare relative pronoun is not a subset cue. "68 Cloud Run Jobs that are
+#    currently deployed" is an ordinary fleet claim, and accepting `that` /
+#    `which` silenced it. Only modifiers that genuinely restrict count.
+#  * The gap is HORIZONTAL whitespace. `\s*` spans newlines, so a stale
+#    heading "## 68 Cloud Run Jobs" was suppressed by the next paragraph
+#    happening to begin "Created jobs run on demand".
+#  * The subset may be marked BEFORE the number. "The top 10 Cloud Run jobs by
+#    cost" is scoped by "top", which no amount of looking rightwards finds.
+#
+# Over-suppression makes the check blind to the drift it exists to catch --
+# the failure mode the scheduler-vocabulary comment below records -- so both
+# lists are specific rather than generic. (Run 34; Codex, PR #1072.)
+SUBSET_BEFORE = re.compile(r"\b(?:top|first|last|only|remaining|next)\s+$", re.I)
+SUBSET_AFTER = re.compile(
+    r"[ \t]*(?:identified|marked|listed|flagged|declared|undeclared"
+    r"|hand-created|manually|orphaned|untracked|missing|without|lacking"
+    r"|failing|failed|retired|removed|not\s+in|by\s+\w+)\b", re.I)
 
 COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
     (re.compile(rf"\b{_NUM}\s+Cloud\s+Run\s+Jobs\b", re.I), "run_jobs", "Cloud Run Jobs"),
@@ -1016,9 +1024,14 @@ def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -
             # reader can see it.
             if i in skip:
                 continue
-            # A restrictive qualifier immediately after the noun makes this a
-            # claim about a SUBSET, not about the fleet. (Run 34.)
-            if SUBSET_QUALIFIER.match(text, m.end()):
+            # A restrictive modifier on either side makes this a claim about a
+            # SUBSET, not about the fleet. Both are same-line by construction:
+            # SUBSET_AFTER allows only horizontal whitespace, and SUBSET_BEFORE
+            # is anchored to the end of the text preceding the match on this
+            # line. (Run 34; Codex, PR #1072.)
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            if (SUBSET_AFTER.match(text, m.end())
+                    or SUBSET_BEFORE.search(text[line_start:m.start()])):
                 continue
             claimed = m.group(1)
             n = WORD_NUMBERS.get(claimed.lower())
