@@ -5,6 +5,7 @@ asserts the gate now turns it into a finding.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import pathlib
 import re
@@ -1975,23 +1976,31 @@ def test_the_asof_labels_are_rendered_not_asked_for(tmp_path, repo):
     doc.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(REPO / gate.ARCH, doc)
     live = json.loads(SNAPSHOT.read_text())
-    live["read_at"] = "2026-11-02T02:15:00Z"
-    # Render the marker blocks ALONE first, so the comparison below isolates
-    # the as-of substitution from the block content (which carries dates of
-    # its own and legitimately changes with the snapshot).
-    inv.insert_blocks(doc, repo, live, root=REPO, counts=False)
-    baseline = doc.read_text()
     # The date the committed document currently carries, READ FROM IT. Pinning
     # the literal `2026-09-07` here would break the moment a refresh commits a
     # newer label — the test failing on documents that are correct, which is
     # the exact defect Codex named on #1062 and I reproduced here.
-    day = gate.ASOF_LABELS[1].search(baseline).group(1)
+    day = gate.ASOF_LABELS[1].search(doc.read_text()).group(1)
+    # ...and the date we render TO must be derived from it too. A fixed target
+    # can collide with the baseline once a refresh happens to commit that same
+    # date, and `insert_blocks` is idempotent, so the three occurrences would
+    # not disappear and the assertion would fail on a correct document — the
+    # same defect one level along. (Codex, PR #1069.)
+    target = (datetime.date.fromisoformat(day) + datetime.timedelta(days=400)).isoformat()
+    assert target != day
+    live["read_at"] = f"{target}T02:15:00Z"
+    # Render the marker blocks ALONE first, with the SAME live, so the only
+    # difference between the two calls is the as-of substitution. Setting
+    # read_at between them made the second call re-render the blocks against a
+    # different snapshot date too, and the delta below counted both effects.
+    inv.insert_blocks(doc, repo, live, root=REPO, counts=False)
+    baseline = doc.read_text()
     historical = baseline.count(day)
     inv.insert_blocks(doc, repo, live, root=REPO)
     after = doc.read_text()
     for pat in gate.ASOF_LABELS:
         found = [m.group(1) for m in pat.finditer(after)]
-        assert found == ["2026-11-02"], (pat.pattern, found)
+        assert found == [target], (pat.pattern, found)
     assert gate.gate_stale_asof(tmp_path, live) == []
     # every OTHER occurrence of that date is history — when something was
     # corrected, deleted or audited — and must not move: exactly three changed
@@ -2021,8 +2030,10 @@ def test_restoring_blocks_does_not_rewrite_an_asof_label(tmp_path, repo):
     doc.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(REPO / gate.ARCH, doc)
     live = json.loads(SNAPSHOT.read_text())
-    live["read_at"] = "2026-11-02T02:15:00Z"
     original = gate.ASOF_LABELS[1].search(doc.read_text()).group(1)
+    target = (datetime.date.fromisoformat(original)
+              + datetime.timedelta(days=400)).isoformat()
+    live["read_at"] = f"{target}T02:15:00Z"
 
     # a model that corrupted a marker block AND moved an as-of label
     text = doc.read_text()
@@ -2037,6 +2048,7 @@ def test_restoring_blocks_does_not_rewrite_an_asof_label(tmp_path, repo):
     assert name in restored, (name, restored)
     assert "the model wrote this inside a block" not in body, "the block was not restored"
     # ...and the label the model moved is still moved, so the gate can report it
-    assert [m.group(1) for m in gate.ASOF_LABELS[1].finditer(body)] == ["1999-01-01"]
+    assert [m.group(1) for m in gate.ASOF_LABELS[1].finditer(body)] == ["1999-01-01"], \
+        f"restore_blocks corrected the model's edit back to {target}"
     assert any("as-of label says 1999-01-01" in f
                for f in gate.gate_stale_asof(tmp_path, live)), "the gate lost the edit"
