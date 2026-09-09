@@ -1962,3 +1962,54 @@ def test_an_inline_code_span_does_not_open_a_fence(tmp_path):
     # a real fence, with a plain info string, still suppresses
     doc.write_text("```python\n--- # production\n```\n")
     assert gate.gate_inline_rule(tmp_path) == []
+
+
+def test_the_asof_labels_are_rendered_not_asked_for(tmp_path, repo):
+    """Run 31 updated the header note and the closing line and left §3's table
+    column on the previous snapshot, failing on one stale label — the same
+    shape as run 28. The prompt already substituted the date and enumerated
+    all three locations; the model still had to find three places and got two.
+    They are rendered before the model runs now, like the marker blocks and
+    the runtime-relation count. (Run 31.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / gate.ARCH, doc)
+    live = json.loads(SNAPSHOT.read_text())
+    live["read_at"] = "2026-11-02T02:15:00Z"
+    # Render the marker blocks ALONE first, so the comparison below isolates
+    # the as-of substitution from the block content (which carries dates of
+    # its own and legitimately changes with the snapshot).
+    inv.insert_blocks(doc, repo, live, root=REPO, counts=False)
+    blocks_only = doc.read_text().count("2026-09-07")
+    inv.insert_blocks(doc, repo, live, root=REPO)
+    after = doc.read_text()
+    for pat in gate.ASOF_LABELS:
+        found = [m.group(1) for m in pat.finditer(after)]
+        assert found == ["2026-11-02"], (pat.pattern, found)
+    assert gate.gate_stale_asof(tmp_path, live) == []
+    # every OTHER date is history — when something was corrected, deleted or
+    # audited — and must not move: exactly the three labels changed
+    assert after.count("2026-09-07") == blocks_only - 3, \
+        "rendering the as-of labels moved a historical date"
+
+
+def test_the_gate_and_the_renderer_share_the_asof_patterns(tmp_path):
+    """The same discipline `RUNTIME_RELATION_COUNT` follows: a render that
+    fixed a label the gate then matched differently would report a finding the
+    pipeline had already corrected."""
+    assert gate.ASOF_LABELS is inv.ASOF_LABELS
+
+
+def test_restoring_blocks_does_not_rewrite_an_asof_label(tmp_path, repo):
+    """`restore_blocks` runs AFTER the model and passes counts=False. Without
+    that, this substitution would silently correct a label the model had
+    changed, hiding the edit the gate exists to report — the defect found in
+    the runtime-relation count on #1058, one field over."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / gate.ARCH, doc)
+    live = json.loads(SNAPSHOT.read_text())
+    live["read_at"] = "2026-11-02T02:15:00Z"
+    inv.insert_blocks(doc, repo, live, root=REPO, counts=False)
+    found = [m.group(1) for m in gate.ASOF_LABELS[1].finditer(doc.read_text())]
+    assert found == ["2026-09-07"], found
