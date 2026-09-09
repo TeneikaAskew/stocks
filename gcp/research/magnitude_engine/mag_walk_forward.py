@@ -46,6 +46,7 @@ from gcp.research.magnitude_engine.mag_config import (
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
     SUCCESS_BAR_MIN_FOLDS_LIFT,
     GCS_BUCKET_DEFAULT, gcs_run_prefix, research_namespace,
+    CONTRACT_BLOB, contract_payload,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.mag_pred_train import (
@@ -673,6 +674,16 @@ def _persist_production_model_artifact(
             "\n".join(feature_cols), content_type="text/plain")
         bucket.blob(f"{run_prefix}/VERSION").upload_from_string(
             run_id, content_type="text/plain")
+        # What these numbers MEAN, stated by the artifact itself. Uploaded
+        # with the others and before the LATEST flip, so a pointer can never
+        # reference a model whose contract is unknown. serving_contract_
+        # reason() above already refuses to get here under anything but the
+        # default, which makes this constant today -- it is written anyway
+        # because mag_inference verifies it, and a reader that can only
+        # check a value the writer never wrote is not a check at all.
+        bucket.blob(f"{run_prefix}/{CONTRACT_BLOB}").upload_from_string(
+            json.dumps(contract_payload(label_mode, thresholds), indent=2),
+            content_type="application/json")
         # Artifacts are uploaded even when the gate blocks: the run-scoped
         # path is write-only forensics (nothing reads it without LATEST), and
         # keeping the blocked candidate lets an operator diagnose WHY it

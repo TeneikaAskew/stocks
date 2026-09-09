@@ -377,6 +377,84 @@ def research_namespace(label_mode: str | None,
     return "__".join(parts) if parts else None
 
 
+# The blob that records what a promoted model's numbers MEAN. Written
+# beside model.joblib / feature_cols.txt / VERSION, read by mag_inference
+# before it scores anything.
+#
+# Why it exists: the artifact used to carry no statement of its own label
+# contract, so `LATEST` was an unqualified promise that whatever it pointed
+# at predicted `body` magnitude at MAGNITUDE_THRESHOLDS. serving_contract_
+# reason() defends the WRITER (#1055), but a reader that trusts LATEST
+# blindly has no defense of its own against an artifact that arrived some
+# other way -- a hand-copied blob, a restored WITHDRAWN pointer, a future
+# code path. Buckets are 0-3 under every contract and a wrong one looks
+# entirely plausible, so the mismatch has to be checked, not eyeballed.
+CONTRACT_BLOB = "CONTRACT.json"
+
+
+def contract_payload(label_mode: str,
+                     thresholds: tuple[float, ...]) -> dict:
+    """The label contract a model artifact was trained under.
+
+    `classes` is recorded even though it is currently a constant: a future
+    change to LABEL_CLASSES would silently re-map every stored prediction,
+    and an artifact that states its own class list makes that detectable
+    rather than archaeological.
+    """
+    return {
+        "label_mode": label_mode,
+        "thresholds": [float(t) for t in thresholds],
+        "classes": list(LABEL_CLASSES),
+    }
+
+
+def contract_mismatch(payload: dict,
+                      label_mode: str = DEFAULT_LABEL_MODE,
+                      thresholds: tuple[float, ...] = MAGNITUDE_THRESHOLDS
+                      ) -> str | None:
+    """Why `payload` may not be served under the given contract, or None.
+
+    Malformed input RAISES rather than counting as a mismatch: a payload
+    that cannot be parsed is a different failure from one that parses and
+    disagrees, and collapsing the two would let a corrupt blob read as a
+    tidy "contract mismatch" and send whoever is on call after the wrong
+    thing entirely.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"{CONTRACT_BLOB} must contain a JSON object, got "
+            f"{type(payload).__name__}")
+    missing = [k for k in ("label_mode", "thresholds") if k not in payload]
+    if missing:
+        raise ValueError(
+            f"{CONTRACT_BLOB} is missing required key(s) {missing}; "
+            f"got keys {sorted(payload)}")
+    got_mode = payload["label_mode"]
+    try:
+        got_thresholds = tuple(float(t) for t in payload["thresholds"])
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"{CONTRACT_BLOB} thresholds={payload['thresholds']!r} is not a "
+            f"list of numbers: {e}") from e
+
+    mismatches = []
+    if got_mode != label_mode:
+        mismatches.append(
+            f"label_mode={got_mode!r} (serving contract is {label_mode!r})")
+    if got_thresholds != tuple(thresholds):
+        mismatches.append(
+            f"thresholds={got_thresholds} (serving contract is "
+            f"{tuple(thresholds)})")
+    classes = payload.get("classes")
+    if classes is not None and list(classes) != list(LABEL_CLASSES):
+        mismatches.append(
+            f"classes={list(classes)} (serving contract is "
+            f"{list(LABEL_CLASSES)})")
+    if not mismatches:
+        return None
+    return "; ".join(mismatches)
+
+
 def parse_research_namespace(slug: str) -> tuple[str, tuple[float, ...]]:
     """Inverse of research_namespace: the label contract a slug stands for.
 

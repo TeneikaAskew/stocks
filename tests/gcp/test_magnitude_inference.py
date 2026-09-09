@@ -32,6 +32,16 @@ import pytest
 _STUBBED_BY_THIS_MODULE: list[str] = []
 
 
+# The loader returns the artifact's label contract as a fourth value
+# (mag_inference verifies it before scoring), so stubs must supply one.
+from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
+    contract_payload, MAGNITUDE_THRESHOLDS, DEFAULT_LABEL_MODE,
+)
+
+_SERVING_CONTRACT = contract_payload(DEFAULT_LABEL_MODE,
+                                     MAGNITUDE_THRESHOLDS)
+
+
 def _stub_missing_modules(mods: list[str]) -> None:
     for m in mods:
         try:
@@ -272,7 +282,7 @@ def test_main_exits_1_when_total_written_is_zero(monkeypatch):
     with patch("sys.argv", ["mag_inference"]), \
          patch.object(mod, "get_engine", return_value=fake_engine), \
          patch.object(mod, "_load_model_and_version",
-                       return_value=(MagicMock(), ["rsi_14"], "v1")), \
+                       return_value=(MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)), \
          patch.object(mod, "_load_recent_features",
                        return_value=pd.DataFrame()), \
          patch.object(mod, "_score_and_persist", return_value=0):
@@ -288,7 +298,7 @@ def test_main_exits_0_when_some_predictions_written(monkeypatch):
     with patch("sys.argv", ["mag_inference"]), \
          patch.object(mod, "get_engine", return_value=MagicMock()), \
          patch.object(mod, "_load_model_and_version",
-                       return_value=(MagicMock(), ["rsi_14"], "v1")), \
+                       return_value=(MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)), \
          patch.object(mod, "_load_recent_features",
                        return_value=pd.DataFrame()), \
          patch.object(mod, "_score_and_persist", side_effect=[5, 7]):
@@ -305,7 +315,7 @@ def test_main_exits_1_when_majority_cells_fail(monkeypatch):
     def fake_load(ticker, tf):
         if ticker in ("IWM", "SPY"):
             raise FileNotFoundError(f"missing model for {ticker}:{tf}")
-        return (MagicMock(), ["rsi_14"], "v1")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
 
     with patch("sys.argv", ["mag_inference"]), \
          patch.object(mod, "get_engine", return_value=MagicMock()), \
@@ -564,3 +574,106 @@ def test_load_recent_features_falls_back_to_now_when_no_prior_bars(monkeypatch):
     if cutoff.tzinfo is None:
         cutoff = cutoff.tz_localize("UTC")
     assert (before - pd.Timedelta(hours=24)) <= cutoff <= (after - pd.Timedelta(hours=24))
+
+
+# ─── the artifact must state what its numbers mean, and the reader checks ───
+#
+# serving_contract_reason() (#1055) defends the WRITER: a walk-forward run
+# under non-default labels cannot flip LATEST. That leaves the reader with no
+# defense of its own, and the reader is where the damage lands -- every label
+# contract emits classes 0-3 with a plausible spread, so a model that arrived
+# by some other route (hand-copied blob, restored WITHDRAWN pointer, a future
+# code path) would score silently and put confidently wrong numbers on the
+# Expected-Move card. These cover the reader half.
+
+def _contract_blobs(contract_text, *, contract_exists=True):
+    """A stub GCS bucket whose blobs satisfy _load_model_and_version."""
+    def make(name):
+        b = MagicMock()
+        if name.endswith("/LATEST"):
+            b.exists.return_value = True
+            b.download_as_text.return_value = "run-abc"
+        elif name.endswith("/CONTRACT.json"):
+            b.exists.return_value = contract_exists
+            b.download_as_text.return_value = contract_text
+        elif name.endswith("/model.joblib"):
+            b.exists.return_value = True
+            b.download_to_filename.side_effect = lambda p: None
+        elif name.endswith("/VERSION"):
+            b.exists.return_value = True
+            b.download_as_text.return_value = "v9"
+        elif name.endswith("/feature_cols.txt"):
+            b.exists.return_value = True
+            b.download_as_text.return_value = "rsi_14\natr_14"
+        else:
+            b.exists.return_value = False
+        return b
+    bucket = MagicMock()
+    bucket.blob.side_effect = make
+    return bucket
+
+
+def _load_with(contract_text, *, contract_exists=True):
+    from gcp.research.magnitude_engine import mag_inference as mod
+    bucket = _contract_blobs(contract_text, contract_exists=contract_exists)
+    client = MagicMock()
+    client.bucket.return_value = bucket
+    with patch("google.cloud.storage.Client", return_value=client), \
+         patch("joblib.load", return_value=MagicMock()):
+        return mod._load_model_and_version("IWM", "5m")
+
+
+def test_a_matching_contract_loads_and_is_returned():
+    import json as _json
+    model, cols, version, contract = _load_with(_json.dumps(_SERVING_CONTRACT))
+    assert cols == ["rsi_14", "atr_14"]
+    assert version == "v9"
+    assert contract["label_mode"] == "body"
+    assert contract["thresholds"] == [0.5, 1.0, 1.5]
+
+
+def test_a_research_label_model_is_refused_not_served():
+    """The case #1055 blocks at the writer, arriving at the reader anyway."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import contract_payload
+    bad = contract_payload("excursion", (0.5, 1.0, 1.5))
+    with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
+        _load_with(_json.dumps(bad))
+    assert "excursion" in str(e.value)
+
+
+def test_rebucketed_thresholds_are_refused():
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import contract_payload
+    bad = contract_payload("body", (0.35, 0.75, 1.25))
+    with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
+        _load_with(_json.dumps(bad))
+    assert "0.35" in str(e.value)
+
+
+def test_a_missing_contract_is_not_assumed_to_be_the_default():
+    """The silent fallback this exists to prevent. An artifact that never
+    stated its contract is unverifiable, not presumed innocent -- and the
+    error names the backfill rather than leaving it to be inferred."""
+    with pytest.raises(FileNotFoundError, match="carries no CONTRACT.json") as e:
+        _load_with("", contract_exists=False)
+    assert "backfill_model_contracts" in str(e.value)
+
+
+def test_a_corrupt_contract_is_distinguishable_from_a_mismatched_one():
+    """Two different failures: unparseable is not the same as disagreeing,
+    and collapsing them would send the operator after the wrong thing."""
+    with pytest.raises(ValueError, match="not valid JSON"):
+        _load_with("{not json")
+
+
+def test_the_contract_is_checked_before_the_model_is_downloaded():
+    """Ordering matters for the same reason it did in the writer (#1055
+    round 9): a refused artifact should cost nothing. joblib.load must not
+    run for a model that will be rejected."""
+    import json as _json, inspect
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import contract_payload
+    src = inspect.getsource(mod._load_model_and_version)
+    assert src.index("contract_mismatch(") < src.index("joblib.load("), (
+        "the contract check must precede the model download")

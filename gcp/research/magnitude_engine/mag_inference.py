@@ -36,6 +36,7 @@ docs/MAGNITUDE_ENGINE_RESULTS.md for the verdict context.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -51,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from gcp.database import get_engine, query_to_dataframe  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     LABEL_CLASSES, LABEL_TO_IDX,
+    CONTRACT_BLOB, contract_mismatch,
 )
 from gcp.research.magnitude_engine.mag_walk_forward import (  # noqa: E402
     PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX,
@@ -169,7 +171,7 @@ def _gcs_model_path(ticker: str, tf: str) -> str:
     return f"gs://{bucket}/magnitude-models/production/{ticker}/{tf}"
 
 
-def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], str]:
+def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], str, dict]:
     """Load (model, feature_cols, model_version) for the given cell.
 
     Returns the model with a `.predict_proba` interface (joblib-pickled
@@ -215,6 +217,44 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             f"gs://{bucket_name}/{prefix}/model.joblib"
         )
 
+    # The contract check, before anything is scored. A model whose numbers
+    # mean something else is the failure this cannot afford to miss: every
+    # contract emits classes 0-3 with a plausible-looking spread, so a
+    # mismatch is invisible downstream and would surface as an Expected-Move
+    # card that is confidently wrong rather than obviously broken.
+    #
+    # Absent is NOT treated as the default contract. Guessing is exactly the
+    # silent fallback this exists to prevent, and the message names the
+    # backfill rather than leaving the operator to infer it. Every artifact
+    # promoted before CONTRACT.json existed is provably body at
+    # MAGNITUDE_THRESHOLDS -- pre-#1055 `--label-mode` reached only the
+    # single-cell path while production ran the task-parallel one, and the
+    # thresholds were a module constant -- so the backfill is a statement of
+    # fact, not an assumption, and belongs in the artifact rather than here.
+    contract_blob = bucket.blob(f"{prefix}/{CONTRACT_BLOB}")
+    if not contract_blob.exists():
+        raise FileNotFoundError(
+            f"{ticker}:{tf} model at run={run_id} carries no {CONTRACT_BLOB}, "
+            f"so what its buckets mean is unverifiable. Expected "
+            f"gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}. Backfill it for a "
+            f"legacy artifact with scripts/backfill_model_contracts.py, or "
+            f"re-run walk_forward with --persist-production-model to publish "
+            f"one.")
+    try:
+        contract = json.loads(contract_blob.download_as_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"{ticker}:{tf} run={run_id}: {CONTRACT_BLOB} is not valid JSON "
+            f"at gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}: {e}") from e
+    mismatch = contract_mismatch(contract)
+    if mismatch:
+        raise RuntimeError(
+            f"REFUSING to serve {ticker}:{tf} run={run_id}: the model was "
+            f"trained on labels the serving path does not read -- {mismatch}. "
+            f"Its predictions are 0-3 like any other and would look normal on "
+            f"the Expected-Move card while meaning something different. Point "
+            f"LATEST at a model trained under the serving contract.")
+
     # Download to a temp file (joblib.load can't take a stream cleanly
     # for sklearn models). Tempfile cleanup happens by GC.
     import tempfile
@@ -232,7 +272,7 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             " inference features with training schema"
         )
 
-    return model, feature_cols, version
+    return model, feature_cols, version, contract
 
 
 def _last_settled_ts(engine, ticker: str, tf: str) -> Optional[pd.Timestamp]:
@@ -515,7 +555,11 @@ def main() -> int:
     failures: list[tuple[str, str, str]] = []
     for ticker, tf in cells:
         try:
-            model, feature_cols, version = _load_model_and_version(ticker, tf)
+            model, feature_cols, version, contract = \
+                _load_model_and_version(ticker, tf)
+            log.info("%s:%s — serving contract verified: label_mode=%s "
+                     "thresholds=%s", ticker, tf, contract.get("label_mode"),
+                     contract.get("thresholds"))
             features = _load_recent_features(ticker, tf, args.lookback_hours)
             n = _score_and_persist(engine, ticker, tf,
                                     model, feature_cols, version, features)
