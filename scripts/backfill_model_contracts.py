@@ -178,10 +178,29 @@ def main() -> int:
     # difference between "upload_from_string returned" and "the blob is
     # there", and it is the same check done by hand before the first backfill.
     unverified = []
-    for (ticker, tf), run_id in sorted(latest_of.items()):
-        blob = bucket.blob(
-            f"magnitude-models/production/{ticker}/{tf}/{run_id}/"
-            f"{CONTRACT_BLOB}")
+    for (ticker, tf), scanned_run in sorted(latest_of.items()):
+        base = f"magnitude-models/production/{ticker}/{tf}"
+        # Re-read LATEST rather than trusting the run id cached at scan time.
+        # A promotion running concurrently -- entirely possible during the
+        # pre-deploy backfill, since it still uses the old writer -- flips the
+        # pointer between the scan and here, and validating the stale run
+        # would print "safe to deploy" about an artifact that is no longer the
+        # one serving (Codex P2 on #1074). The verdict has to describe the
+        # world at the moment it is issued.
+        latest = bucket.blob(f"{base}/LATEST")
+        if not latest.exists():
+            unverified.append(
+                f"{ticker}:{tf} — LATEST vanished during the run "
+                f"(was {scanned_run}); re-run once promotions have settled")
+            continue
+        run_id = latest.download_as_text().strip()
+        if run_id != scanned_run:
+            unverified.append(
+                f"{ticker}:{tf} — LATEST moved during the run "
+                f"({scanned_run} -> {run_id}); re-run once promotions have "
+                f"settled")
+            continue
+        blob = bucket.blob(f"{base}/{run_id}/{CONTRACT_BLOB}")
         where = f"{ticker}:{tf} (run={run_id})"
         if not blob.exists():
             unverified.append(f"{where} — no {CONTRACT_BLOB}")

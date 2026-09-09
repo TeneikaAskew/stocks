@@ -464,7 +464,23 @@ def contract_mismatch(payload: dict,
         raise ValueError(
             f"{CONTRACT_BLOB} is missing or null for required key(s) {missing}; "
             f"got keys {sorted(payload)}")
+    # Type-check before comparing. A scalar `classes` used to reach
+    # list() and raise TypeError, which is NOT the ValueError the reader
+    # translates into ContractMalformed -- so it fell through to the ordinary
+    # per-cell handler and back under the partial-success threshold the
+    # previous round had just closed. Worse, a STRING silently char-split:
+    # "TIGHT" became ['T','I','G','H','T'] and reported a mismatch that
+    # misdescribed the payload rather than naming it malformed (Codex P2 on
+    # #1074). Malformed and mismatched must not blur into one another.
     got_mode = payload["label_mode"]
+    if not isinstance(got_mode, str):
+        raise ValueError(
+            f"{CONTRACT_BLOB} label_mode={got_mode!r} is not a string")
+    for key in ("thresholds", "classes"):
+        val = payload[key]
+        if isinstance(val, (str, bytes)) or not isinstance(val, (list, tuple)):
+            raise ValueError(
+                f"{CONTRACT_BLOB} {key}={val!r} is not a JSON array")
     try:
         got_thresholds = tuple(float(t) for t in payload["thresholds"])
     except (TypeError, ValueError) as e:

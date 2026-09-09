@@ -839,3 +839,57 @@ def test_the_three_contract_outcomes_stay_distinguishable():
     assert issubclass(ContractMismatch, RuntimeError)
     for cls in (ContractMissing, ContractMalformed, ContractMismatch):
         assert issubclass(cls, ContractRejection)
+
+
+@pytest.mark.parametrize("bad", [3, True, "TIGHT", {"a": 1}])
+def test_a_scalar_classes_is_malformed_not_an_ordinary_failure(bad):
+    """`list(3)` raises TypeError, which is NOT the ValueError the reader
+    turns into ContractMalformed -- so it fell through to the ordinary
+    per-cell handler and back under the partial-success threshold the
+    previous round had just closed. A string was worse: "TIGHT" char-split
+    into ['T','I','G','H','T'] and reported a mismatch that misdescribed the
+    payload rather than naming it malformed. (Codex P2 on #1074.)"""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="is not a JSON array"):
+        contract_mismatch({"label_mode": "body",
+                           "thresholds": [0.5, 1.0, 1.5], "classes": bad})
+
+
+def test_a_non_string_label_mode_is_malformed_not_merely_mismatched():
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="is not a string"):
+        contract_mismatch({"label_mode": 3, "thresholds": [0.5, 1.0, 1.5],
+                           "classes": ["TIGHT", "NORMAL", "EXPANDED",
+                                       "EXPLOSIVE"]})
+
+
+def test_every_malformed_shape_reaches_the_fatal_path():
+    """The property that matters: each of these must surface as
+    ContractMalformed from the real loader, since only ContractRejection
+    bypasses the partial-success threshold."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractRejection, ContractMalformed)
+    for payload in ({"label_mode": "body", "thresholds": [0.5, 1.0, 1.5],
+                     "classes": 3},
+                    {"label_mode": "body", "thresholds": [0.5, 1.0, 1.5],
+                     "classes": "TIGHT"},
+                    {"label_mode": 3, "thresholds": [0.5, 1.0, 1.5],
+                     "classes": ["TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE"]}):
+        with pytest.raises(ContractMalformed) as e:
+            _load_with(_json.dumps(payload))
+        assert isinstance(e.value, ContractRejection)
+
+
+def test_the_backfill_rereads_latest_in_the_final_pass():
+    """A promotion running concurrently flips LATEST between the scan and the
+    verification, and validating the stale run would print "safe to deploy"
+    about an artifact that is no longer serving. The verdict has to describe
+    the world at the moment it is issued. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    assert "scanned_run" in verdict, "the scan-time run id must be compared"
+    assert "LATEST moved during the run" in verdict
+    assert "LATEST vanished during the run" in verdict
+    assert verdict.index("latest.download_as_text()") < verdict.index(
+        f"{'{'}CONTRACT_BLOB{'}'}"), "LATEST must be re-read before the check"
