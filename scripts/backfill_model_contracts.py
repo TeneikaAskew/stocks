@@ -50,9 +50,32 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
-    TICKERS, TIMEFRAMES, CONTRACT_BLOB, contract_payload,
-    DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS, GCS_BUCKET_DEFAULT,
+    TICKERS, TIMEFRAMES, CONTRACT_BLOB, contract_mismatch,
+    GCS_BUCKET_DEFAULT,
 )
+
+
+# The contract in force when the legacy artifacts were trained, written out
+# as literals ON PURPOSE rather than derived from the live constants (Codex
+# P2 on #1074).
+#
+# Deriving it would mean that after any future change to MAGNITUDE_THRESHOLDS
+# or LABEL_CLASSES this script stamps an OLD model with the NEW constants,
+# and mag_inference would then accept an artifact whose probability columns
+# mean something else -- which is the precise evolution CONTRACT.json exists
+# to catch. A backfill that re-derives its own answer cannot detect drift; it
+# moves with it.
+#
+# So this states history, and the verification pass below checks history
+# against what inference will actually accept. If the two ever disagree, the
+# script writes the truth and then FAILS, telling the operator these legacy
+# artifacts cannot be served under the new contract. That is the correct
+# outcome, and it is only reachable because these values do not move.
+_AUDITED_LEGACY_CONTRACT = {
+    "label_mode": "body",
+    "thresholds": [0.5, 1.0, 1.5],
+    "classes": ["TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE"],
+}
 
 
 def main() -> int:
@@ -74,8 +97,7 @@ def main() -> int:
 
     from google.cloud import storage as gcs
     bucket = gcs.Client().bucket(args.bucket)
-    payload = json.dumps(
-        contract_payload(DEFAULT_LABEL_MODE, MAGNITUDE_THRESHOLDS), indent=2)
+    payload = json.dumps(_AUDITED_LEGACY_CONTRACT, indent=2)
 
     # How many cells each run wrote. The task-parallel path fans out across
     # cells; the single-cell path writes exactly one. That is the signal
@@ -160,8 +182,27 @@ def main() -> int:
         blob = bucket.blob(
             f"magnitude-models/production/{ticker}/{tf}/{run_id}/"
             f"{CONTRACT_BLOB}")
+        where = f"{ticker}:{tf} (run={run_id})"
         if not blob.exists():
-            unverified.append(f"{ticker}:{tf} (run={run_id})")
+            unverified.append(f"{where} — no {CONTRACT_BLOB}")
+            continue
+        # Existence is not validity, the same distinction as exit-0 not being
+        # success. A corrupt or mismatched blob -- hand-created, restored, or
+        # left by an older writer -- would sail through a presence check and
+        # then be rejected by mag_inference at load. Run the SAME parse and
+        # the SAME contract_mismatch the reader runs, so "safe to deploy"
+        # means the reader will accept it rather than merely that a file is
+        # there (Codex P2 on #1074).
+        try:
+            mismatch = contract_mismatch(json.loads(blob.download_as_text()))
+        except json.JSONDecodeError as e:
+            unverified.append(f"{where} — {CONTRACT_BLOB} is not valid JSON: {e}")
+            continue
+        except ValueError as e:
+            unverified.append(f"{where} — {CONTRACT_BLOB} malformed: {e}")
+            continue
+        if mismatch:
+            unverified.append(f"{where} — contract mismatch: {mismatch}")
     if unverified:
         print(f"\nUNVERIFIED serving artifacts, {len(unverified)}:")
         for cell in unverified:

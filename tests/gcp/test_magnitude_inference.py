@@ -746,3 +746,35 @@ def test_the_backfill_exits_nonzero_while_any_serving_artifact_is_unverified():
     assert "blob.exists()" in verdict
     assert verdict.index("return 1") < verdict.index("return 0"), (
         "the failure path must precede the success path")
+
+
+def test_the_backfill_states_history_rather_than_rederiving_it():
+    """A backfill that derives its payload from the live constants cannot
+    detect drift; it moves with it. After a future change to
+    MAGNITUDE_THRESHOLDS or LABEL_CLASSES it would stamp an OLD model with
+    the NEW contract and mag_inference would accept probability columns that
+    mean something else -- the precise evolution CONTRACT.json exists to
+    catch. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    literal = src[src.index("_AUDITED_LEGACY_CONTRACT = {"):src.index("def main(")]
+    assert '"label_mode": "body"' in literal
+    assert "[0.5, 1.0, 1.5]" in literal
+    for derived in ("MAGNITUDE_THRESHOLDS", "LABEL_CLASSES",
+                    "DEFAULT_LABEL_MODE", "contract_payload"):
+        assert derived not in literal, (
+            f"the audited contract must not be derived from {derived}")
+    # and it is what gets written
+    assert "json.dumps(_AUDITED_LEGACY_CONTRACT" in src
+
+
+def test_the_backfill_validates_rather_than_checking_existence():
+    """Existence is not validity, the same distinction as exit-0 not being
+    success. A corrupt or mismatched blob would pass a presence check and
+    then be rejected by mag_inference at load, so the pre-deploy verdict has
+    to run the reader's own parse and contract_mismatch."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    assert "contract_mismatch(json.loads" in verdict, (
+        "must run the same validation the reader runs")
+    assert "JSONDecodeError" in verdict, "a corrupt blob must be reported"
+    assert "contract mismatch:" in verdict, "a mismatch must be reported"
