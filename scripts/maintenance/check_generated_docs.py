@@ -617,14 +617,15 @@ REQUIRED_ASOF = {ARCH: (
 
 
 def _leading_blockquote(lines: list[str]) -> list[str]:
-    """The blockquote in the document's HEAD: the one before any content.
+    """The blockquote in the document's PREAMBLE: before any content or section.
 
     "First blockquote in the file" is not the same thing. Delete the real
     header note and a quoted aside three sections down becomes the first, so
     the requirement is satisfied by a line that is not the header note at all.
-    The scan stops at the first line that is neither blank, a heading, nor a
-    blockquote, so only a blockquote in the document's opening block counts.
-    (Codex, PR #1064.)
+    The scan stops at the first line that is neither blank, the H1 title, nor a
+    blockquote -- and at the first `##`, since a quote under a later section
+    heading is not the preamble either, and skipping every heading level let
+    one stand in for the header note. (Codex, PR #1064.)
     """
     out: list[str] = []
     for line in lines:
@@ -633,6 +634,8 @@ def _leading_blockquote(lines: list[str]) -> list[str]:
             out.append(line)
         elif out:
             break
+        elif st.startswith("##"):
+            break          # a section has begun; the preamble is over
         elif st and not st.startswith("#"):
             break          # substantive content reached before any blockquote
     return out
@@ -811,7 +814,14 @@ COST_FIGURE = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?\b")
 # contribute 2 + 8 = 10 amounts, under a floor of 15, so a report whose §3 is
 # prose could have been rejected for its formatting. Cells are split, not
 # looked around. (Codex, PR #1064.)
-COST_BARE = re.compile(r"^\d[\d,]*\.\d{2}$")
+# One or two decimals, because that is what the pipeline produces. The workflow
+# writes `round(c, 2)` through csv.writer, so a value ending in zero is emitted
+# as `1.2` or `0.0`, and the cost prompt tells the model to copy the CSV value
+# without rounding. Requiring exactly two decimals rejected every such amount,
+# and a complete report could have undercounted its way under the floor.
+# Integers stay excluded: a rank, a year or a row index is not an amount.
+# (Codex, PR #1064.)
+COST_BARE = re.compile(r"^\d[\d,]*\.\d{1,2}$")
 # A cell's RENDERED text. `| Cloud SQL | **222.71** |` is an emphasised amount,
 # and matching the raw markdown missed it -- a complete report whose costs are
 # bolded would have fallen under the floor. (Codex, PR #1064.)

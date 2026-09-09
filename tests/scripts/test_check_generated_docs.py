@@ -1848,3 +1848,62 @@ def test_a_count_first_claim_names_its_own_schema(tmp_path, repo):
     (tmp_path / gate.ARCH).write_text(line.format(n=total + 1, bd=bd))
     out = gate.gate_derived_numbers(tmp_path, repo, None)
     assert any(f"claims {total + 1} declared relations" in f for f in out), out
+
+
+def test_the_bare_amount_pattern_accepts_what_the_csv_emits(tmp_path):
+    """The workflow writes `round(c, 2)` through csv.writer, so a value ending
+    in zero is emitted as `1.2` or `0.0`, and the cost prompt tells the model to
+    copy the CSV value without rounding. Requiring exactly two decimals rejected
+    every such amount. (Codex, PR #1064.)"""
+    for good in ("1.2", "0.0", "100.0", "1234.5", "222.71", "1,234.50"):
+        assert gate.COST_BARE.fullmatch(good), good
+    for bad in ("12", "2026", "1", "1.234"):
+        assert not gate.COST_BARE.fullmatch(bad), bad
+    # this is what csv.writer actually produces for those values
+    import csv, io
+    out = io.StringIO()
+    csv.writer(out).writerows([["svc", round(c, 2)] for c in (1.2, 0.0, 222.71, 100.0)])
+    for row in out.getvalue().splitlines():
+        assert gate.COST_BARE.fullmatch(row.split(",")[1].strip()), row
+
+
+def test_a_quote_under_a_section_heading_is_not_the_header_note(tmp_path, live):
+    """Skipping every heading level let a blockquote under a later `##` stand in
+    for the preamble's header note. The preamble ends where the first section
+    begins. (Codex, PR #1064.)"""
+    day = live["read_at"][:10]
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(f"# A\n\n## 1. Section\n\n> quoted aside, read on **{day}**\n\n"
+                   f"| Service | Role | Live {day} |\n\n"
+                   f"Generated {day} from the {day} live snapshot.\n")
+    out = gate.gate_stale_asof(tmp_path, live)
+    assert len(out) == 1 and "the header note" in out[0], out
+    # the real preamble, with the H1 title above it, still counts
+    doc.write_text(f"# A\n\n> Live state below was read on **{day}**\n\n## 1. Section\n\n"
+                   f"| Service | Role | Live {day} |\n\n"
+                   f"Generated {day} from the {day} live snapshot.\n")
+    assert gate.gate_stale_asof(tmp_path, live) == []
+
+
+def test_the_provenance_citations_carry_file_line_links(tmp_path):
+    """`.github/prompts/architecture.md:74` requires every claim about code to
+    carry a `file:line` markdown link, and I wrote the creation-path inventory
+    with bare code spans — a document breaking the rule its own prompt states,
+    which the next refresh would read as an example. `gate_links` cannot see the
+    omission because it only validates links that exist. (Codex, PR #1064.)"""
+    body = (REPO / gate.ARCH).read_text()
+    for path, line in (("gcp/research/p2_build_gamma_levels.py", 81),
+                       ("gcp/research/p2_outcomes_grid.py", 72),
+                       ("gcp/research/magnitude_engine/mag_walk_forward.py", 75),
+                       ("gcp/research/strat_engine/strat_data_builder.py", 94),
+                       ("gcp/queries/p7_schema.sql", 7),
+                       ("gcp/queries/magnitude_engine_schema.sql", 3),
+                       ("gcp/queries/p7_vex_cache.sql", 9),
+                       ("gcp/research/_archive/p7a_iwm_30m_pipeline.py", 80)):
+        anchor = f"../../../{path}#L{line}"
+        assert anchor in body, f"05-a does not link {path}:{line}"
+        assert (REPO / path).exists(), path
+        # the cited line must still be the one that matters
+        text = (REPO / path).read_text().split("\n")[line - 1]
+        assert ("CREATE TABLE" in text or "Apply via" in text), f"{path}:{line} is now {text!r}"
