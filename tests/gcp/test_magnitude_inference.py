@@ -12,6 +12,7 @@ Tests use the same import-stub pattern as Phase A.
 """
 from __future__ import annotations
 
+import pathlib
 import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -677,3 +678,52 @@ def test_the_contract_is_checked_before_the_model_is_downloaded():
     src = inspect.getsource(mod._load_model_and_version)
     assert src.index("contract_mismatch(") < src.index("joblib.load("), (
         "the contract check must precede the model download")
+
+
+# ─── Codex P2 review, #1074 ───
+
+def test_classes_is_required_not_optional():
+    """`classes` exists to catch a LABEL_CLASSES reorder. Treating it as
+    optional defeats exactly that: the reorder would arrive in an artifact
+    that simply omits the field, and a hand-created or restored contract
+    with matching label_mode and thresholds would be served without ever
+    proving how its probability columns map to buckets."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    for payload in ({"label_mode": "body", "thresholds": [0.5, 1.0, 1.5]},
+                    {"label_mode": "body", "thresholds": [0.5, 1.0, 1.5],
+                     "classes": None}):
+        with pytest.raises(ValueError, match="classes"):
+            contract_mismatch(payload)
+
+
+def test_a_reordered_class_list_is_still_caught():
+    """The case the field is for: same buckets, different order."""
+    from gcp.research.magnitude_engine.mag_config import (
+        contract_mismatch, LABEL_CLASSES)
+    reordered = list(LABEL_CLASSES)[::-1]
+    got = contract_mismatch({"label_mode": "body",
+                             "thresholds": [0.5, 1.0, 1.5],
+                             "classes": reordered})
+    assert got and "classes=" in got
+
+
+def test_the_backfill_refuses_an_unaudited_run():
+    """Before #1055 the single-cell dispatch path DID forward --label-mode
+    while the persist path checked nothing, so `old` does not imply `body`.
+    The script must name the runs it is allowed to stamp rather than
+    stamping whatever LATEST points at."""
+    import subprocess, sys as _sys
+    out = subprocess.run(
+        [_sys.executable, "-m", "scripts.backfill_model_contracts"],
+        capture_output=True, text=True)
+    assert out.returncode != 0
+    assert "--audited-run-id" in (out.stderr + out.stdout)
+
+
+def test_the_backfill_guards_the_single_cell_path_explicitly():
+    """A one-cell run is the single-cell dispatch path -- the one that could
+    carry a non-default label -- so it needs a deliberate override rather
+    than passing on the strength of being named."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    assert "--allow-single-cell-run" in src
+    assert "span" in src and "REFUSED" in src

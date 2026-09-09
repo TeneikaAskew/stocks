@@ -399,7 +399,10 @@ def contract_payload(label_mode: str,
     `classes` is recorded even though it is currently a constant: a future
     change to LABEL_CLASSES would silently re-map every stored prediction,
     and an artifact that states its own class list makes that detectable
-    rather than archaeological.
+    rather than archaeological. contract_mismatch() REQUIRES it for that
+    reason -- a field that may be omitted cannot detect anything, since the
+    reorder it exists to catch would arrive in an artifact that simply
+    leaves it out (Codex P2 on #1074).
     """
     return {
         "label_mode": label_mode,
@@ -424,10 +427,11 @@ def contract_mismatch(payload: dict,
         raise ValueError(
             f"{CONTRACT_BLOB} must contain a JSON object, got "
             f"{type(payload).__name__}")
-    missing = [k for k in ("label_mode", "thresholds") if k not in payload]
+    missing = [k for k in ("label_mode", "thresholds", "classes")
+               if payload.get(k) is None]
     if missing:
         raise ValueError(
-            f"{CONTRACT_BLOB} is missing required key(s) {missing}; "
+            f"{CONTRACT_BLOB} is missing or null for required key(s) {missing}; "
             f"got keys {sorted(payload)}")
     got_mode = payload["label_mode"]
     try:
@@ -445,8 +449,8 @@ def contract_mismatch(payload: dict,
         mismatches.append(
             f"thresholds={got_thresholds} (serving contract is "
             f"{tuple(thresholds)})")
-    classes = payload.get("classes")
-    if classes is not None and list(classes) != list(LABEL_CLASSES):
+    classes = payload["classes"]
+    if list(classes) != list(LABEL_CLASSES):
         mismatches.append(
             f"classes={list(classes)} (serving contract is "
             f"{list(LABEL_CLASSES)})")
