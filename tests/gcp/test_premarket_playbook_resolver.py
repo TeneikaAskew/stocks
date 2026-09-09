@@ -310,3 +310,20 @@ def test_classify_past_date_all_skipped_is_failed():
     # A past date can never be a pre-ingestion race, whatever the hour.
     now = datetime(2026, 8, 25, 16, 30, tzinfo=_ET_TZ)
     assert classify_date_outcome(_date(2026, 8, 24), 0, 3, now) == 'failed'
+
+
+def test_classify_past_holiday_all_skipped_is_benign_holiday():
+    # Reproduces #1068: 2026-09-07 is Labor Day (a weekday brief row with
+    # no session — market_data_intraday will never have bars for it).
+    # The 09-08 sweep found it all-skipped and classified it 'failed',
+    # and would have kept re-firing 'failed' every day through 09-21
+    # (the end of the 14-day lookback window) without this case.
+    now = datetime(2026, 9, 8, 21, 15, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2026, 9, 7), 0, 3, now) == 'benign_holiday'
+
+
+def test_classify_past_non_holiday_all_skipped_still_fails_next_to_a_holiday():
+    # The holiday exception must not swallow a real gap on an adjacent
+    # ordinary trading day — only the exact holiday date is benign.
+    now = datetime(2026, 9, 9, 21, 15, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2026, 9, 8), 0, 3, now) == 'failed'
