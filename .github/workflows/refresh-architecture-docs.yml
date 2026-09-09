@@ -788,7 +788,11 @@ jobs:
           # hand-written list here was `(README|ARCHITECTURE|...)\.md` and went
           # silently inert the moment those files moved under
           # docs/product/infrastructure/ — a gate that matches nothing passes.
-          REGEN_RE=$(python -c 'import sys; sys.path.insert(0, "scripts/maintenance"); import re, check_generated_docs as g; print("|".join(re.escape(d) for d in g.DOCS))')
+          # MODEL_DOCS, not DOCS: README's prose is hand-written now, so drift in
+          # one of its claims cannot be fixed by rerunning the refresh. Blocking on
+          # it would fail a run that has no way to succeed; it goes to the warning
+          # path with the other hand-maintained docs instead. (Codex, PR #1070.)
+          REGEN_RE=$(python -c 'import sys; sys.path.insert(0, "scripts/maintenance"); import re, check_generated_docs as g; print("|".join(re.escape(d) for d in g.MODEL_DOCS))')
           echo "regenerated-doc pattern: $REGEN_RE"
 
           set +e
@@ -886,6 +890,7 @@ jobs:
         run: |
           set +e
           MEANINGFUL=0
+          TIMESTAMP_ONLY=""
           for FILE in docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md docs/product/infrastructure/05-d-COST_ANALYSIS.md README.md docs/product/infrastructure/05-e-API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio; do
             if [ ! -f "$FILE" ]; then continue; fi
             # Mangle slashes so files in subdirs (e.g. docs/X.md) don't
@@ -928,10 +933,27 @@ jobs:
               echo "::notice::$FILE has meaningful changes ($CHANGED_LINES lines)"
               MEANINGFUL=1
             else
-              echo "$FILE: no meaningful changes (timestamp-only) — reverting"
-              git checkout -- "$FILE"
+              echo "$FILE: no meaningful changes (timestamp-only)"
+              TIMESTAMP_ONLY="$TIMESTAMP_ONLY $FILE"
             fi
           done
+          # Revert the timestamp-only files ONLY when the whole refresh is
+          # empty. Reverting each one as it was found meant that a run
+          # publishing a real change to one document also reverted README --
+          # whose entire diff is now its rendered badges and closing date --
+          # so the PR shipped the audit with the PREVIOUS docs_verified date on
+          # it. If anything is being published, every file's date belongs with
+          # it. (Codex, PR #1070.)
+          if [ "$MEANINGFUL" = "1" ]; then
+            for F in $TIMESTAMP_ONLY; do
+              echo "$F: timestamp-only, kept — this refresh publishes other changes"
+            done
+          else
+            for F in $TIMESTAMP_ONLY; do
+              echo "$F: timestamp-only and nothing else changed — reverting"
+              git checkout -- "$F"
+            done
+          fi
           echo "meaningful=$MEANINGFUL" >> "$GITHUB_OUTPUT"
 
       # ── Open PR if meaningful ─────────────────────────────────────────────

@@ -14,6 +14,7 @@ silently for two months with no issue/PR trail.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -338,6 +339,11 @@ def test_the_regenerated_doc_filter_is_derived_not_retyped():
     downgraded to a warning and the run would have gone green. A gate that
     matches nothing passes. Derive the pattern from the gate module instead,
     and prove here that no literal doc-name alternation is left.
+
+    The set to derive from is `MODEL_DOCS`, not `DOCS`. Blocking means "a
+    rerun can fix this", which is true only of what a model writes. README's
+    prose is hand-written, so failing the refresh on a drifted README claim
+    would demand a rerun that cannot change it. (Codex, PR #1070.)
     """
     import re as _re
     import subprocess
@@ -347,7 +353,7 @@ def test_the_regenerated_doc_filter_is_derived_not_retyped():
     assert "REGEN_RE=$(python -c" in verify, \
         "the regenerated-doc pattern is not computed from the gate module"
     assert 'check_generated_docs as g' in verify
-    assert '"|".join(re.escape(d) for d in g.DOCS)' in verify
+    assert '"|".join(re.escape(d) for d in g.MODEL_DOCS)' in verify
     # Both uses -- the blocking test and the "everything else" inversion --
     # must consume the variable, and neither may re-list the names.
     uses = _re.findall(r'grep -[qv]E "\^\\\[\[a-z-\]\+\\\] \(\$\{REGEN_RE\}\):"', verify)
@@ -356,14 +362,18 @@ def test_the_regenerated_doc_filter_is_derived_not_retyped():
         assert name not in verify, f"a literal doc-name alternation survives: {name}"
 
     # The command really produces an ERE that matches a finding on each of the
-    # four docs and none on a doc outside the set.
+    # model-written docs, and none on README or on a doc outside the set.
     cmd = _re.search(r"REGEN_RE=\$\(python -c '([^']+)'\)", verify).group(1)
     pattern = subprocess.run(["python", "-c", cmd], cwd=REPO,
                              capture_output=True, text=True, check=True).stdout.strip()
-    findings = [f"[schedule] {d}:1: x" for d in gate.DOCS]
+    findings = [f"[schedule] {d}:1: x" for d in gate.MODEL_DOCS]
+    findings.append(f"[service] {gate.README}:5: y")
     findings.append("[count] docs/product/10-OPERATIONS-RELIABILITY.md:5: y")
     blocking = _re.compile(rf"^\[[a-z-]+\] ({pattern}):")
-    assert [bool(blocking.match(f)) for f in findings] == [True] * len(gate.DOCS) + [False]
+    assert [bool(blocking.match(f)) for f in findings] == \
+        [True] * len(gate.MODEL_DOCS) + [False, False]
+    assert gate.README in gate.DOCS, \
+        "README is still gated -- only its BLOCKING classification changed"
 
 
 def test_a_second_run_in_the_same_month_updates_the_existing_pr_body():
@@ -698,3 +708,76 @@ def test_a_failed_gate_uploads_the_documents_it_judged():
     names = [s.get("name") for s in steps]
     assert names.index("Upload the regenerated documents when a gate fails") > \
         names.index("Verify regenerated docs"), "the upload must come after the gates"
+
+
+def _run_detect(tmp_path, edits):
+    """Execute the real `Detect meaningful changes` script body in a throwaway
+    git repo seeded with the documents it inspects, applying `edits`
+    (path -> new content) on top of the committed baseline.
+
+    Returns (stdout, {path: content_on_disk_afterwards}).
+    """
+    import subprocess
+
+    detect = {s.get("name"): s.get("run") or "" for s in _steps()}["Detect meaningful changes"]
+    files = re.search(r"for FILE in (.+?); do", detect).group(1).split()
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True,
+                       capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    for f in files:
+        p = tmp_path / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"# {f}\n\nbody line\n\nGenerated 2026-08-01\n")
+    git("add", "-A")
+    git("commit", "-qm", "baseline")
+    for f, content in edits.items():
+        (tmp_path / f).write_text(content)
+
+    out = tmp_path / "gh_output"
+    out.write_text("")
+    proc = subprocess.run(["bash", "-c", detect], cwd=tmp_path, text=True,
+                          capture_output=True,
+                          env={"PATH": os.environ["PATH"],
+                               "HOME": str(tmp_path),
+                               "GITHUB_OUTPUT": str(out)})
+    assert proc.returncode == 0, proc.stderr
+    disk = {f: (tmp_path / f).read_text() for f in files}
+    return proc.stdout + out.read_text(), disk
+
+
+def test_a_timestamp_only_file_is_kept_when_the_refresh_publishes_something_else(tmp_path):
+    """Reverting each timestamp-only file as it was found meant a run that
+    published a real change to one document ALSO reverted README -- whose whole
+    diff is now its rendered badges and closing date -- so the PR shipped with
+    the previous run's date stamped on it. The revert is deferred until the
+    whole refresh is known to be empty. (Codex, PR #1070.)
+    """
+    stamp_only = "# README.md\n\nbody line\n\nGenerated 2026-09-09\n"
+    real = "# arch\n\nbody line\n\na genuinely new sentence\n\nGenerated 2026-09-09\n"
+    log, disk = _run_detect(tmp_path, {
+        gate.README: stamp_only,
+        gate.ARCH: real,
+    })
+
+    assert "meaningful=1" in log
+    assert disk[gate.README] == stamp_only, \
+        "the timestamp-only file was reverted even though the refresh publishes other changes"
+    assert disk[gate.ARCH] == real
+    assert "timestamp-only, kept" in log
+
+
+def test_a_timestamp_only_file_is_reverted_when_nothing_else_changed(tmp_path):
+    """The deferral must not become a licence to publish a date-only PR."""
+    baseline = f"# {gate.README}\n\nbody line\n\nGenerated 2026-08-01\n"
+    log, disk = _run_detect(tmp_path, {
+        gate.README: f"# {gate.README}\n\nbody line\n\nGenerated 2026-09-09\n",
+    })
+
+    assert "meaningful=0" in log
+    assert disk[gate.README] == baseline, "the date-only change was published"
+    assert "reverting" in log
