@@ -43,12 +43,43 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
 
 ## What to do
 
-1. Read `previous/docs/product/infrastructure/05-a-ARCHITECTURE.md` and the current `docs/product/infrastructure/05-a-ARCHITECTURE.md`. They differ inside the marker blocks, and in one line of prose outside them: the workflow renders the **runtime-relation count** into the current file before you run, from live minus declared. The current file's number is the correct one and is already the number in the **Live fleet counts** block above. Never take that count from the previous version, which carries the figure from the last refresh and is stale by construction whenever a relation has been created live since.
+1. Read `previous/docs/product/infrastructure/05-a-ARCHITECTURE.md` and the current `docs/product/infrastructure/05-a-ARCHITECTURE.md`. They differ inside the marker blocks, and in three KINDS of prose line outside them, which the workflow rewrites in the current file before you run. All are rewritten at **every occurrence**, so do not assume there is only one of each:
+   - **every** `N runtime relations` / `N runtime-created relations`, from live minus declared. It is already the number in the **Live fleet counts** block above. (There are four such lines today.)
+   - **every** declared relation breakdown, written as `(N tables, N materialized views, N views)`, counted from `gcp/schema.sql`. The last run kept the correct total and rewrote the parenthetical beside it, corrupting a line that was already right; it is now rendered, so leave it exactly as you find it.
+   - the **three live-snapshot as-of labels**: the header note's `read on **DATE**`, §3's `| Service | Role | Live DATE |` column, and the `from the DATE live snapshot` half of the closing line, all set to this run's snapshot date.
+   **In both kinds the current file is right and `previous/` is stale by construction.** Never carry one back from the previous version, and do not "restore" a difference you find in a line of either kind — it is the workflow's edit, not drift. Everything else outside the blocks should match, and a difference there is yours to reconcile.
 2. Update every prose claim that the inputs contradict: counts in the header note, §1, §2 diagram labels, §3, §4 (tier, disk, IP config, backups, latest dump), §6 intro (live vs declared counts, hand-created jobs, retry split), §7.1 (services, auth modes, domain mappings, images, triggers), §8 intro and the daily-rhythm table (from `schedulers.md`), §9 (model names from `gcp/schema.sql` `model_routing` seed and `gcp/brief_explanations.py`), §14 (workflows and triggers from `repo_inventory.json`), §15 interpretation, §17 open questions.
 3. If a job, scheduler, service, table, route, workflow or trigger appeared since the previous version, make sure the prose that groups or explains it mentions it (§6 groups, §8 rhythm, §10 flows, §14). If one disappeared, remove it from the prose and add a dated bullet under "§18 Removed since last refresh" naming it and why.
 4. Keep every existing H2/H3 heading. If a section genuinely no longer applies, keep the heading, replace the body with one sentence saying so, and record it under §18.
-5. Update the read date in the header note and the final `Generated YYYY-MM-DD …` line to today.
-6. Cite: every claim about code carries a `file:line` markdown link; every claim about live state says it was read live with the date. Never write "approximately N" where the inputs give N.
+5. As-of dates. There are two kinds, and only one of them is yours:
+   - The three labels describing the **live snapshot** are **already correct
+     when you receive the document** — the header note's
+     `read on **YYYY-MM-DD**`, the `| Service | Role | Live YYYY-MM-DD |`
+     column header in §3, and the `from the YYYY-MM-DD live snapshot` half of
+     the final line. All three are rendered to **{{LIVE_READ_DATE}}** before
+     you run, like the `<!-- inventory:*:start -->` blocks. **Leave them
+     exactly as they are.** Run 31 updated two of the three by hand and left
+     §3's column on the previous month, which failed the run; you no longer
+     have to find them, and editing one can only break it.
+   - The `Generated YYYY-MM-DD` half of the final line is yours, and takes
+     **today**, the day you are running. It is usually the same as the
+     snapshot date and differs on a run that crosses UTC midnight, so write it
+     from today rather than copying the label beside it.
+   **A date inside a filename, path or link is never an as-of date.** Run 30
+   bumped `docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md` to `...-09-08.md`
+   in a link, inventing a file that does not exist and failing the run on a
+   dead link. Never change a date that is part of a path. This is not a rule
+   against updating links: if a module has moved or been renamed, retarget the
+   link to where the code now lives, as step 7 requires — just never by
+   editing a date in place. Run 28 updated the header and left §3 a day
+   behind, so a table of the current fleet announced itself as stale; a gate
+   now fails the run on any of the three snapshot labels. Leave every OTHER date alone. The dates in §4, §15 and §18 record when something was corrected, deleted or audited and are history. So is the date inside a `<!-- verify-docs-ok: ... -->` marker: it records when a human checked that claim against live GCP, and moving it asserts a check nobody performed. A gate fails the run on any change to a marker, date included.
+6. When a sentence states a total and its parts — §5's `declares **N relations**
+   (N tables, N materialized views, N view)` — update every number in it, not just
+   the one the inputs contradict. Run 28 raised that total from 69 to 70 and left
+   the breakdown summing to 69. A gate now checks the total and each part against
+   `gcp/schema.sql`.
+7. Cite: every claim about code carries a `file:line` markdown link; every claim about live state says it was read live with the date. Never write "approximately N" where the inputs give N.
 
 ## Two facts to keep asserting
 
@@ -69,6 +100,8 @@ survive (carried forward from PR #990):
 ## Rules
 
 - **Never write `...` or `…` as a stand-in for text you are not changing.** A `replace` call rewrites exactly the span you give it, so an elision marker does not mean "the rest is unchanged" — it deletes the paragraph and leaves three dots in the document. Run 27 did this to five section introductions and four bullets in this file at once, destroying 4,035 characters while every other gate stayed green. If a paragraph needs no change, do not call `replace` on it at all. A gate now fails the run on any line that is only an ellipsis.
+- **A horizontal rule (`---`) stays alone on its line.** Run 30 replaced the closing line of this file and welded the rule, a stray backslash and the new text into one paragraph: `--- \\Generated 2026-09-08 ...`. The rule stopped being a rule and the reader was shown `--- \\`. When you replace a paragraph that follows a rule, do not include the rule or the blank line after it in the span you replace. A gate now fails the run on this.
+- **A `replace` rewrites exactly the span you give it, including its end.** After every call, re-read the region you changed and check that no fragment of the old text survives as its own line. Run 28 finished this file with `pshot. The monthly refresh updates this line.` sitting under the closing line — the tail of the `...live snapshot.` it had just rewritten, starting mid-word. Every other gate passed it. A gate now fails the run on any line that is the tail of the line above it.
 
 - Never read or write anything under `docs/product/infrastructure/manual/`: it holds the hand-maintained copies of these documents and is outside the write policy; a change there fails the run.
 - **Update in place; never regenerate from scratch.** The previous version is the baseline, not a style reference.

@@ -39,13 +39,14 @@ Counts are read live by `python -m scripts.maintenance.doc_inventory --live`; th
 
 ## Maintenance
 
-Eight files are written by [`.github/workflows/refresh-architecture-docs.yml`](.github/workflows/refresh-architecture-docs.yml) on the 1st of each month and must not be hand-edited outside the rules below. The `05-*` files live under `docs/product/infrastructure/`:
+Nine files are written by [`.github/workflows/refresh-architecture-docs.yml`](.github/workflows/refresh-architecture-docs.yml) on the 1st of each month and must not be hand-edited outside the rules below. The `05-*` files live under `docs/product/infrastructure/`:
 
 | Generated file | What the workflow does to it |
 |---|---|
 | `05-a-ARCHITECTURE.md`, `05-c-DATA_DEPENDENCIES.md` | inventory tables re-rendered inside the `<!-- inventory:* -->` markers from a live GCP snapshot; the prose around them updated in place by Gemini |
 | `05-e-API.md` | entirely rendered from the router files — every line inside its two marker blocks is overwritten |
-| `05-d-COST_ANALYSIS.md`, `README.md` | rewritten in place by Gemini from the billing digests and the other three docs |
+| `05-d-COST_ANALYSIS.md` | rewritten in place by Gemini from the billing digests and the other docs |
+| `README.md` | badges and the closing date rendered from the live inventory; the prose and the documentation map are hand-written and no model touches them |
 | `Architecture.drawio`, `Architecture-icons.drawio` | counts, scheduler labels, the add-on job grid and the icon reconciliation notes regenerated from the same snapshot |
 | `docs/INVESTMENT_MODELS_SUMMARY.md` | resolved-values table re-rendered from `ticker_calibration` |
 
@@ -60,4 +61,4 @@ Prose outside a marker block survives the refresh and is yours to edit; anything
 
 No explicit license has been added to this repo. Treat as **all rights reserved** until that changes. Contact: see git log / GitHub repo owner.
 
-Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md). The monthly refresh updates this line.
+Generated 2026-09-07 by the monthly documentation refresh. The audits behind these documents are in [`docs/audits/`](docs/audits). The monthly refresh updates this line.

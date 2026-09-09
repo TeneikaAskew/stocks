@@ -18,7 +18,9 @@ The observed cost for August is significantly higher than in previous months, bu
 
 ---
 
-## 2. Top 10 cost line items by SKU (Partial August data)
+## 2. Top 10 cost line items by SKU
+
+August 2026 is a partial month in this window.
 
 | Rank | Service | SKU | 90-day cost | Aug 2026 | Maps to (ARCHITECTURE.md) |
 |---:|---|---|---:|---:|---:|
@@ -35,7 +37,9 @@ The observed cost for August is significantly higher than in previous months, bu
 
 ---
 
-## 3. Per-component cost estimate (Partial August data)
+## 3. Per-component cost estimate
+
+August 2026 is a partial month in this window.
 
 ### Cloud Run (Jobs & Services) — $94.26
 - **Services (CPU + Memory):** $50.55

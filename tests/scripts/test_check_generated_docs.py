@@ -5,10 +5,12 @@ asserts the gate now turns it into a finding.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import pathlib
 import re
 import shutil
+import sys
 
 import pytest
 
@@ -30,8 +32,11 @@ def live():
     return json.loads(SNAPSHOT.read_text())
 
 
-@pytest.fixture()
+@pytest.fixture(scope="session")
 def repo():
+    """Session-scoped: `repo_inventory` walks the whole repository, and every
+    test that uses it only reads the result. Rebuilding it per test added
+    minutes to this file as the suite grew. (Codex, PR #1064.)"""
     return inv.repo_inventory(REPO)
 
 
@@ -237,23 +242,24 @@ def test_stale_reference_outside_history_context_is_a_finding(tmp_path):
     assert not any("db-query.yml" in f for f in gate.gate_stale(root)), "history context is allowed"
 
 
-def test_every_prompt_mandated_map_target_is_gated(tmp_path):
-    """The README prompt and the gate must name the same set.
+def test_every_required_map_row_is_actually_in_the_readme(tmp_path):
+    """The gate's required set and the committed README must agree.
 
     Dropping a map row leaves no dead link, keeps the headings, and README is
     exempt from the size floor -- so an ungated target could vanish silently.
     (Codex, PR #1009.)
-    """
-    import re
-    prompt = (REPO / ".github/prompts/readme.md").read_text()
-    line = next(ln for ln in prompt.splitlines() if "Documentation map" in ln)
-    # Only the "Must link ..." clause names required targets; the sentence
-    # after it ("Add a row for any new top-level or `docs/` reference
-    # document") is guidance, and its bare `docs/` is not a map row.
-    clause = line.split("Must link", 1)[1].split("Add a row", 1)[0]
-    mandated = {m for m in re.findall(r"`([^`]+)`", clause) if "/" in m or m.endswith(".md")}
-    missing = sorted(mandated - set(gate.README_REQUIRED_LINKS))
-    assert not missing, f"prompt mandates rows the gate does not check: {missing}"
+
+    This used to compare the gate against the README PROMPT. There is no
+    README prompt any more: run 31 showed the model's entire contribution was
+    three badge lines and a date, run 32 showed it rewriting the map into
+    generic text with two falsehoods, so the badges and stamp are rendered and
+    the map is hand-written. The set to agree with is the file itself.
+    (Run 32.)"""
+    assert not (REPO / ".github/prompts/readme.md").exists(), \
+        "a README prompt is back; this test and the workflow assume there is none"
+    body = (REPO / "README.md").read_text()
+    missing = [t for t in gate.README_REQUIRED_LINKS if t not in body]
+    assert not missing, f"README is missing required map rows: {missing}"
 
 
 def test_dropping_a_map_row_is_a_finding(tmp_path):
@@ -440,9 +446,14 @@ def _cost_pair(tmp_path):
 def test_a_regenerated_cost_report_may_change_its_data_bearing_headings(tmp_path):
     """Run 17 failed COST_ANALYSIS.md on twelve "lost" headings, every one of
     which embeds that month's data — `Cloud Run (Jobs & Services) — $94.26`,
-    `2. Top 10 cost line items by SKU (Partial August data)`. Its prompt says
+    `A. Month-over-month comparison not possible`. Its prompt says
     "Regenerate", not "update in place". Demanding those persist demands this
-    month's report keep last month's numbers."""
+    month's report keep last month's numbers.
+
+    The count is derived from the committed document, not pinned: the report
+    is regenerated monthly and its headings move every time, so a literal
+    number here would go stale on the next refresh and fail the refresh's own
+    pull request."""
     root, prev = _cost_pair(tmp_path)
     findings = gate.gate_headings_and_size(root, prev)
     assert [f for f in findings if gate.COST in f] == [], findings
@@ -450,8 +461,10 @@ def test_a_regenerated_cost_report_may_change_its_data_bearing_headings(tmp_path
     saved = gate.REGENERATED
     try:
         gate.REGENERATED = ()
-        assert len([f for f in gate.gate_headings_and_size(root, prev)
-                    if gate.COST in f]) >= 12
+        lost = [f for f in gate.gate_headings_and_size(root, prev) if gate.COST in f]
+        subheads = [h for h in gate._headings((prev / gate.COST).read_text())
+                    if not re.match(r"^\d+\.", h.strip())]
+        assert len(lost) >= len(subheads) > 5, (len(lost), len(subheads))
     finally:
         gate.REGENERATED = saved
 
@@ -476,7 +489,7 @@ def test_a_regenerated_doc_must_carry_every_section_its_prompt_promises(tmp_path
     c = root / gate.COST
     c.write_text(c.read_text().replace("## 4. Anomalies", "## Anomalies of note"))
     findings = gate.gate_regenerated_structure(root)
-    assert any("missing the section its prompt promises: 4. 'Anomalies'" in f for f in findings), findings
+    assert any("must be exactly '4. Anomalies'" in f for f in findings), findings
 
 
 def test_the_other_documents_keep_heading_persistence(tmp_path):
@@ -819,3 +832,1514 @@ def test_a_dotted_label_is_still_a_label(tmp_path):
     out = gate.gate_elided_prose(tmp_path)
     assert len(out) == 3, out
     assert not any("complete sentence" in f for f in out), out
+
+
+def test_a_line_that_is_the_tail_of_the_one_above_is_a_finding(tmp_path):
+    """Run 28's 05-a ended with the last line's own tail, starting mid-word:
+
+        ... from the 2026-09-08 live snapshot. The monthly refresh updates this line.
+        pshot. The monthly refresh updates this line.
+
+    A `replace` rewrote the trailing span and left the end of the old text
+    behind. The elision gate does not see it, the churn was 12%, the headings
+    were intact, and it names no infrastructure, so the live verifier had
+    nothing to check either. It reached the artifact with 0 findings.
+    """
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "Generated 2026-09-08; inventory blocks rendered by `doc_inventory.py` "
+        "from the 2026-09-08 live snapshot. The monthly refresh updates this line.\n"
+        "pshot. The monthly refresh updates this line.\n")
+    out = gate.gate_duplicated_tail(tmp_path)
+    assert len(out) == 1, out
+    assert "tail of the one above" in out[0]
+
+
+def test_the_committed_documents_carry_no_duplicated_tail(tmp_path):
+    """Calibration, not decoration. The threshold and the single direction were
+    chosen by measuring every markdown file under `docs/` plus README against
+    all four shapes: this one fires once, on the real defect. A future
+    loosening that starts flagging honest prose fails here."""
+    assert gate.gate_duplicated_tail(gate.REPO) == []
+
+
+def test_a_repeated_command_prefix_is_not_a_duplicated_tail(tmp_path):
+    """Both lines below are lifted from the committed corpus, because an
+    invented example proves nothing about it -- a first draft of this test
+    hand-wrote a `gcloud` continuation that WAS a duplicated tail, which the
+    real file at `COST_AUDIT_2026-09-06.md:260` is not.
+
+    `docs/alpha-vantage-quickstart.md:26` shows the same command twice with an
+    extra flag, so each line is a PREFIX of the next; `COST_AUDIT` wraps a
+    `gcloud` invocation so the following line ENDS WITH the one before it.
+    Gating on either shape would fail an honest document, so neither is gated.
+    """
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "python scripts/fetch_alphavantage_intraday.py --symbol IWM --show\n"
+        "python scripts/fetch_alphavantage_intraday.py --symbol IWM --show --rows 200\n"
+        "    trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com \\\n"
+        "    --member=serviceAccount:trading-runner@adept-mountain-474619-d4.iam"
+        ".gserviceaccount.com \\\n")
+    assert gate.gate_duplicated_tail(tmp_path) == []
+
+
+def test_a_short_repeated_ending_is_not_a_duplicated_tail(tmp_path):
+    """Two rows ending in the same short cell are a table, not a botched
+    replace. The 20-character floor is what separates them."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("| `signal-monitor` | main |\n| main |\n")
+    assert gate.gate_duplicated_tail(tmp_path) == []
+
+
+def _asof_stub(root, header="2026-09-08", column="2026-09-08", snapshot="2026-09-08",
+               extra=""):
+    """A minimal 05-a carrying all three as-of labels, one date each.
+
+    All three, because the gate also requires each label to be PRESENT: a stub
+    that states one of them would fail for the reason under test plus two it
+    was not written to exercise.
+    """
+    doc = root / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    # `extra` goes BEFORE the provenance line, because that line has to be the
+    # document's last non-blank one -- the gate now requires the closing label
+    # to be in the actual closing position, not merely present somewhere.
+    doc.write_text(f"> Live state below was read on **{header}** with `gcloud`.\n"
+                   f"\n| Service | Role | Live {column} |\n{extra}"
+                   f"\nGenerated 2026-09-08 by the refresh; blocks rendered "
+                   f"from the {snapshot} live snapshot.\n")
+    return doc
+
+
+def test_an_asof_label_naming_an_older_snapshot_is_a_finding(tmp_path):
+    """Run 28 updated 05-a's header to `read on **2026-09-08**` and left §3's
+    table header at `Live 2026-09-07`, so a table of the current fleet
+    announced itself as a day old. On the monthly cadence the label is a month
+    out. The dates inside the marker blocks are rendered and were right; these
+    three are prose."""
+    _asof_stub(tmp_path, column="2026-09-07")
+    out = gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"})
+    assert len(out) == 1, out
+    assert "Live 2026-09-07" in out[0]
+
+
+def test_a_historical_date_is_not_an_asof_label(tmp_path):
+    """05-a carries 33 occurrences of `2026-09-07`, and all but two record when
+    something was corrected, deleted or audited. A gate that moved those would
+    rewrite the document's history, so only the two literal label shapes are
+    matched."""
+    _asof_stub(tmp_path, extra=(
+        "\nStorage corrected 2026-09-07 in this doc, which had said 55 GB.\n"
+        "`signal-quality-report-hourly` deleted 2026-09-07.\n"
+        "See [the audit](../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md).\n"))
+    assert gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"}) == []
+
+
+def test_the_committed_asof_labels_match_their_own_snapshot():
+    """Calibration against the real corpus, in both directions: the committed
+    document is clean as of the date it carries, and all three labels are
+    caught the moment the snapshot moves. A gate that fired on neither, or on
+    everything, would pass the constructed cases above just as well.
+
+    The baseline date is READ from the document, never pinned. The monthly
+    refresh rewrites these labels to the new snapshot date and does not touch
+    this file, so a hard-coded date would make the refresh's own pull request
+    fail CI -- the gate breaking the loop it exists to protect.
+    (Codex, PR #1062.)"""
+    text = (gate.REPO / gate.ARCH).read_text()
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", text).group(1)
+    assert gate.gate_stale_asof(gate.REPO, {"read_at": f"{day}T04:35:16Z"}) == []
+    # Three labels: the header note, §3's table column, and the snapshot date
+    # in the closing line.
+    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "1999-01-01T00:00:00Z"})) == 3
+
+
+def test_no_snapshot_means_no_asof_finding(tmp_path):
+    """A local run without `--snapshot` has nothing to compare against, and
+    guessing today's date would fail every document written yesterday."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("| Service | Role | Live 2020-01-01 |\n")
+    assert gate.gate_stale_asof(tmp_path, None) == []
+    assert gate.gate_stale_asof(tmp_path, {}) == []
+
+
+def test_the_relation_breakdown_must_sum_to_the_total(live, repo, tmp_path):
+    """05-a §5 says `declares **70 relations** (67 tables, 2 materialized
+    views, 1 view)`. Run 28 raised the total from 69 to 70 -- correctly,
+    `gcp/schema.sql` had gained a table -- and left the breakdown at 66/2/1,
+    which sums to 69. The sentence contradicted itself and every gate passed
+    it: the total was right, the churn was 12%, and no other document repeats
+    the split."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / gate.ARCH
+    tables = len(repo["tables"])
+    a.write_text(a.read_text().replace(f"({tables} tables,", f"({tables - 1} tables,"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {tables - 1} tables" in f for f in findings), findings
+
+
+def test_a_wrong_relation_total_is_a_finding(live, repo, tmp_path):
+    """The other half: the parts can agree with each other and disagree with
+    the schema."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    a.write_text(a.read_text().replace(f"declares **{total} relations**",
+                                       f"declares **{total - 1} relations**"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {total - 1} declared relations" in f for f in findings), findings
+
+
+def test_the_breakdown_is_matched_as_parts_not_a_fixed_triple(live, repo, tmp_path):
+    """A schema that grows a second view must still be checked. Matching a
+    literal `(N tables, N materialized views, N view)` shape would stop
+    matching entirely on a reword and fail open, which is the worse
+    direction for a gate."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    a.write_text(re.sub(
+        rf"declares \*\*{total} relations\*\* \([^)]*\)",
+        f"declares **{total} relations** "
+        f"({len(repo['views'])} view, {len(repo['materialized_views'])} materialized views "
+        "and 99 tables)",
+        a.read_text()))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 99 tables" in f for f in findings), findings
+
+
+def test_both_copies_of_the_relation_breakdown_are_checked(live, repo, tmp_path):
+    """05-a states the schema arithmetic twice, in two shapes: §5's `declares
+    **70 relations** (67 tables, ...)` and §3's table cell `95 relations (70
+    declared in `gcp/schema.sql` — 67 tables, ...)`.
+
+    A gate anchored on §5's phrasing alone left §3 unchecked, and I proved the
+    point by hand: I corrected §5 to 70/67 and left §3 at 69/66 -- the same
+    reading-instead-of-deriving mistake Codex named on #1009, made while
+    fixing that exact sentence."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / gate.ARCH
+    total = len(repo["tables"]) + len(repo["views"]) + len(repo["materialized_views"])
+    tables = len(repo["tables"])
+    before = f"that file declares {total} ({tables} tables,"
+    assert before in a.read_text(), "the §3 row no longer has the shape this test breaks"
+    assert "`gcp/schema.sql`" in [l for l in a.read_text().split("\n") if before in l][0], \
+        "the §3 row no longer names gcp/schema.sql, so RELATION_ANCHOR would skip it"
+    a.write_text(a.read_text().replace(
+        before, f"that file declares {total - 1} ({tables - 1} tables,"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {total - 1} declared relations" in f for f in findings), findings
+    assert any(f"claims {tables - 1} tables" in f for f in findings), findings
+
+
+def test_the_parts_run_ends_where_the_list_ends(live, repo, tmp_path):
+    """Delimiting the parts on the first `)` or `;` was still too generous:
+    §3's breakdown ends at an EM DASH inside the outer parenthetical, so the
+    scan ran on through the sentence's tail. It happens not to match today
+    ("plus 26 created at runtime"), but the rephrase below would compare that
+    26 against the 67 declared tables and abort a refresh whose numbers were
+    correct. Consuming the comma-separated run itself has no boundary to get
+    wrong. (Codex, PR #1062.)"""
+    assert gate.declared_parts(
+        " — 67 tables, 2 materialized views, 1 view — plus 26 tables created at runtime; §5)"
+    ) == [(67, "tables"), (2, "materialized views"), (1, "view")]
+    # both real shapes, and the natural rephrase that joins the last part with
+    # "and" rather than a comma -- dropping it would weaken the check silently
+    assert gate.declared_parts(" (67 tables, 2 materialized views, 1 view); the rest") == \
+        [(67, "tables"), (2, "materialized views"), (1, "view")]
+    assert gate.declared_parts(" (67 tables, 2 materialized views and 1 view)") == \
+        [(67, "tables"), (2, "materialized views"), (1, "view")]
+    assert gate.declared_parts(" is the number of relations declared.") == []
+
+
+def test_a_subset_count_beside_a_view_count_is_not_a_breakdown(live, repo, tmp_path):
+    """Parts are read only from the clause a DECLARED TOTAL introduces, bounded
+    by the first `)` or `;` after it.
+
+    An earlier version recognised the breakdown by shape alone -- a numbered
+    table count somewhere near a numbered materialized-view count -- and then
+    compared every number on that line against the whole-schema totals. Both
+    documents count subsets in passing, so a sentence like the one below would
+    have failed a refresh whose numbers were correct. Anchoring on the total
+    means such a sentence is never examined at all. (Codex, PR #1062.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text() +
+                 "\n12 runtime tables feed 2 materialized views on the weekly refresh.\n"
+                 "\n`apply_schema.py` drops and recreates the two earnings materialized views.\n")
+    assert gate.gate_derived_numbers(root, repo, live) == []
+
+
+def test_the_snapshot_date_in_the_closing_line_is_an_asof_label(tmp_path):
+    """05-a's closing line carries two dates: `Generated <date> ... from the
+    <date> live snapshot`. A refresh that updated one and not the other would
+    leave the line contradicting itself.
+
+    Only the second is gated here. The first is already required to equal
+    today by the workflow's own step 1, which greps all four documents for
+    `Generated ${TODAY}` before this script runs, and gating it here would
+    fail an honest tree: the committed 05-d carries `Generated 2026-09-02`,
+    the last run that regenerated it. (Codex, PR #1062.)"""
+    _asof_stub(tmp_path, snapshot="2026-09-07")
+    out = gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"})
+    assert len(out) == 1, out
+    assert "2026-09-07 live snapshot" in out[0]
+    _asof_stub(tmp_path)
+    assert gate.gate_stale_asof(tmp_path, {"read_at": "2026-09-08T17:48:56Z"}) == []
+
+
+def test_a_breakdown_that_drops_a_kind_is_a_finding(live, repo, tmp_path):
+    """Every part being individually right does not make the list complete.
+    `70 relations (67 tables, 2 materialized views)` passes each comparison
+    while the parts shown sum to 69 -- the same self-contradiction this gate
+    was added for, recreated by dropping a category rather than mistyping one.
+    (Codex, PR #1062.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    views, mviews = len(repo["views"]), len(repo["materialized_views"])
+    before = f", {mviews} materialized views, {views} view)"
+    assert before in a.read_text(), "the breakdown no longer has the shape this test breaks"
+    a.write_text(a.read_text().replace(before, f", {mviews} materialized views)", 1))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("every kind belongs in the list exactly once" in f for f in findings), findings
+
+
+def test_a_breakdown_that_repeats_a_kind_is_a_finding(live, repo, tmp_path):
+    """A set comparison alone erases multiplicity: `(67 tables, 2 materialized
+    views, 1 view, 1 view)` has every part matching the schema, collapses the
+    repeat, and sums to 71. Kinds are compared WITH multiplicity, and the
+    parts' own sum against the total. (Codex, PR #1064.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    views, mviews = len(repo["views"]), len(repo["materialized_views"])
+    before = f", {mviews} materialized views, {views} view)"
+    assert before in a.read_text(), "the breakdown no longer has the shape this test breaks"
+    a.write_text(a.read_text().replace(
+        before, f", {mviews} materialized views, {views} view, {views} view)", 1))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("exactly once" in f for f in findings), findings
+
+
+def test_an_asof_label_reworded_away_is_a_finding(live, repo, tmp_path):
+    """A date gate that only compares dates fails OPEN on a reword: change
+    §3's column header to `| Service | Role | Current |` and no pattern
+    matches, so the document loses its freshness provenance and the gate
+    reports clean. 05-a is required to carry all three labels.
+    (Codex, PR #1062.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", a.read_text()).group(1)
+    assert gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"}) == []
+    a.write_text(re.sub(r"\| Service \| Role \| Live \d{4}-\d{2}-\d{2} \|",
+                        "| Service | Role | Current |", a.read_text()))
+    findings = gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"})
+    assert any("no as-of label" in f for f in findings), findings
+
+
+def test_the_other_documents_are_not_required_to_carry_asof_labels(live, repo, tmp_path):
+    """Only 05-a states when the live state below it was read. Requiring the
+    labels everywhere would fail README and the cost report for not making a
+    claim they never make."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*",
+                    (root / gate.ARCH).read_text()).group(1)
+    assert gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"}) == []
+    assert set(gate.REQUIRED_ASOF) == {gate.ARCH}
+
+
+def test_the_cost_report_is_exempt_from_the_churn_ceiling(tmp_path):
+    """Its prompt says "Regenerate ... with write_file", so a full rewrite is
+    the specified behaviour and churn answers "did this month's billing differ
+    from last month's" -- which it always does. Run 28 measured 81% and run 29
+    96%, so a 0.85 ceiling sat inside the normal range and fired at random on
+    good output, which is worse than no ceiling: it teaches the operator to
+    disregard a red run. (Run 29.)"""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    old = (prev / gate.COST).read_text().splitlines()
+    (root / gate.COST).write_text(
+        "\n".join(f"Every line rewritten, number {i}." for i in range(len(old))) + "\n")
+    stats = {st["doc"]: st for st in gate.diff_stats(root, prev)}
+    assert stats[gate.COST]["churn"] == 1.0, stats[gate.COST]["churn"]
+    assert gate.gate_diff_budget(list(stats.values())) == []
+
+
+def test_every_other_document_still_has_a_churn_ceiling(tmp_path):
+    """The exemption is one document wide. 05-a and 05-c are updated in place,
+    so a rewrite there is the 2026-09-02 failure mode and must still stop the
+    run."""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    for doc in (gate.ARCH, gate.DEPS, "README.md"):
+        old = (prev / doc).read_text().splitlines()
+        (root / doc).write_text(
+            "\n".join(f"Every line rewritten, number {i}." for i in range(len(old))) + "\n")
+    findings = gate.gate_diff_budget(gate.diff_stats(root, prev))
+    for doc in (gate.ARCH, gate.DEPS, "README.md"):
+        assert any(doc in f and "rewrite" in f for f in findings), (doc, findings)
+    assert gate.CHURN_EXEMPT == (gate.COST,)
+
+
+def test_an_emptied_cost_report_is_still_caught_without_the_ceiling(tmp_path):
+    """What replaces churn for that document. Removing a gate is only safe if
+    the degradation it was meant to catch is still caught: the byte floor stops
+    a rewrite that loses mass, and the structure gate stops one that drops a
+    section the prompt promises."""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    (root / gate.COST).write_text("# Cost Analysis\n\nSpend was $1.00.\n")
+    assert any("bytes" in f or "%" in f for f in gate.gate_headings_and_size(root, prev))
+    assert len(gate.gate_regenerated_structure(root)) == 5
+
+
+def test_the_whole_heading_must_match_not_a_prefix_of_it(tmp_path):
+    """A prefix test tolerated an appended qualifier, so `2. ... by SKU
+    (90-day trailing)` passed while the prompt said to copy the heading
+    exactly -- a rule stated and not enforced, which is how the drift it
+    exists to prevent gets in. Run 29 retitled all five headings; only the one
+    that changed a word INSIDE the title was caught. (Codex, PR #1063.)
+
+    Case is folded, because GitHub lowercases heading anchors: Title Case
+    breaks no link, adding or rewording a word does."""
+    root = tmp_path
+    _copy(REPO / gate.COST, root / gate.COST)
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    body = (root / gate.COST).read_text()
+    for bad in ("## 2. Top 10 Cost Line Items (90-Day Trailing)",
+                "## 2. Top 10 cost line items by SKU (90-day trailing)",
+                "## 2. Top 10 cost line items"):
+        (root / gate.COST).write_text(body.replace("## 2. Top 10 cost line items by SKU", bad))
+        findings = gate.gate_regenerated_structure(root)
+        assert any("must be exactly '2. Top 10 cost line items by SKU'" in f
+                   for f in findings), (bad, findings)
+    # capitalisation alone is accepted
+    (root / gate.COST).write_text(body.replace(
+        "## 2. Top 10 cost line items by SKU", "## 2. TOP 10 COST LINE ITEMS BY SKU"))
+    assert gate.gate_regenerated_structure(root) == []
+
+
+def test_prose_shaped_like_a_cost_report_is_a_finding(tmp_path):
+    """Dropping the churn ceiling removed the only check that noticed a
+    wholesale replacement, and nothing that remained looked at what is IN the
+    document. This is the exact scenario: generic prose carrying the five
+    headings, one dollar figure and plenty of bytes. (Codex, PR #1063.)"""
+    root = tmp_path
+    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    body = ["# Cost Analysis (Trailing 90 days)", "", "Total spend was $222.71.", ""]
+    for num, title in gate._promised_sections(REPO, "cost-analysis.md"):
+        body += [f"## {num}. {title}", "",
+                 "This section discusses the relevant costs at length without stating any.",
+                 "Further discussion follows here.", ""]
+    (root / gate.COST).write_text("\n".join(body) + "\n")
+    assert gate.gate_regenerated_structure(root) == [], "it keeps every promised heading"
+    findings = gate.gate_cost_content(root)
+    assert any("monetary values" in f for f in findings), findings
+    assert any("§1 has 0 table row" in f for f in findings), findings
+    assert any("§2 has 0 table row" in f for f in findings), findings
+    assert any("§5 lists 0 recommendation" in f for f in findings), findings
+
+
+def test_every_real_version_of_the_cost_report_passes_the_content_floors(tmp_path):
+    """Calibration, not invention. Every floor was measured against the three
+    real versions -- the copy on main, run 28's and run 29's -- and set below
+    the minimum observed. A floor that failed an honest report would be worse
+    than no floor at all, so the committed document is checked here."""
+    assert gate.gate_cost_content(REPO) == []
+
+
+def test_a_heading_with_nothing_under_it_is_a_finding(tmp_path):
+    root = tmp_path
+    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
+    _copy(REPO / gate.COST, root / gate.COST)
+    text = (root / gate.COST).read_text()
+    head = "## 4. Anomalies"
+    body, _, tail = text.partition(head)
+    (root / gate.COST).write_text(body + head + "\n\n" + tail.split("\n## ", 1)[-1].join(["## ", ""]))
+    assert any("nothing beneath it" in f for f in gate.gate_cost_content(root)), \
+        gate.gate_cost_content(root)
+
+
+def test_a_rule_with_text_welded_onto_it_is_a_finding(tmp_path):
+    r"""Run 30 ended 05-a with
+
+        --- \\Generated 2026-09-08 from the ground truth in [...]
+
+    merging the closing rule, a stray backslash and the provenance line into
+    one paragraph. The rule stopped being a rule and the reader was shown
+    `--- \\`. Same cause as the duplicated tail, different shape: a `replace`
+    that swallowed the break between a rule and the paragraph below it."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Some prose.\n\n--- \\Generated 2026-09-08 from the ground truth.\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1, out
+    assert "horizontal rule has text on the same line" in out[0]
+
+
+def test_a_rule_with_no_space_before_the_text_is_a_finding(tmp_path):
+    """A replacement that drops the newline without adding one produces
+    `---Generated 2026-09-08 ...` — the same malformed footer with no space,
+    which a `\\s+` between the rule and the text let through.
+    (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Some prose.\n\n---Generated 2026-09-08 from the ground truth.\n")
+    assert len(gate.gate_inline_rule(tmp_path)) == 1, gate.gate_inline_rule(tmp_path)
+
+
+def test_a_longer_rule_does_not_match_itself(tmp_path):
+    """`--------` is a thematic break too, and a pattern that allows no space
+    between the rule and the text can satisfy itself by backtracking onto the
+    run's own last dash. Emphasis at the start of a line (`***text***`,
+    `___text___`) is excluded for the same reason: all 16 breaks in these four
+    documents are written `---`, so treating `*` and `_` as rule characters
+    would fail honest prose to catch a shape this corpus never uses."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("---\n\n--------\n\n***bold lead-in*** and prose.\n\n___emphasis___ here.\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+
+
+def test_a_rule_welded_onto_a_dash_prefixed_line_is_a_finding(tmp_path):
+    """The no-backtrack guard has to sit inside the dash run, not after the
+    whitespace. Excluding dash-prefixed content after `\\s*` stopped
+    `--------` matching itself but also let through a rule welded onto a
+    bullet or a CLI flag, which is the same defect. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    for bad in ("--- - a bullet swallowed the rule", "--- --flag=value", "---Generated 2026-09-08"):
+        doc.write_text(f"Some prose.\n\n{bad}\n")
+        assert len(gate.gate_inline_rule(tmp_path)) == 1, (bad, gate.gate_inline_rule(tmp_path))
+
+
+def test_a_rule_on_its_own_line_is_not_a_finding(tmp_path):
+    """Every document in the corpus separates its sections this way, so the
+    gate has to leave a real rule alone -- including the setext-style `---`
+    underline that turns the line above it into a heading."""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Some prose.\n\n---\n\nMore prose.\n\nA heading\n---\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+    assert gate.gate_inline_rule(REPO) == [], "the committed documents must pass"
+
+
+def test_moving_the_date_inside_an_exemption_is_a_finding(tmp_path):
+    """05-a's Cloud Build exemption reads "... read live with gcloud builds
+    triggers list 2026-09-07". Run 30 advanced it to `-08` and the gate caught
+    it; I read that as a false positive and normalised dates out of the
+    comparison, which was wrong in the dangerous direction.
+
+    The prompt enumerates three as-of labels and says to leave every other
+    date alone, so a marker's date is not the model's to move — and the date
+    records WHEN A HUMAN CHECKED the claim the marker silences. Advancing it
+    turns an old approval into current provenance for a check nobody
+    performed, while the verifier goes on skipping the line.
+    (Codex, PR #1064.)"""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text().replace("gcloud builds triggers list 2026-09-07",
+                                       "gcloud builds triggers list 2026-09-08"))
+    findings = gate.gate_new_suppressions(root, prev)
+    assert any("2026-09-08" in f for f in findings), findings
+
+
+def test_an_exemption_with_a_new_subject_is_still_a_finding(tmp_path):
+    """The gate's real job: a marker the model wrote to silence a claim no
+    human approved. Normalising the date must not weaken that."""
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    a = root / gate.ARCH
+    a.write_text(a.read_text() + "\nA stale claim <!-- verify-docs-ok: I decided this is fine -->\n")
+    findings = gate.gate_new_suppressions(root, prev)
+    assert any("I decided this is fine" in f for f in findings), findings
+
+
+def test_no_generated_document_cites_a_dated_filename_in_its_closing_line(tmp_path):
+    """The trap that produced run 30's dead link. The closing line said
+    "Generated <date> by hand from the audit in [ARCHITECTURE_DOCS_AUDIT_<date>.md]",
+    the prompt says to update the date, and the model updated both -- inventing
+    an audit file that does not exist. The hazard is removed rather than
+    documented: the citation now points at the audits directory.
+
+    Scoped to the four documents the model writes. 05-e-API.md is rendered
+    from the router files and never passes through a prompt, so no instruction
+    can make it bump a date."""
+    for doc in gate.DOCS:
+        text = (REPO / doc).read_text()
+        closing = [l for l in text.split("\n") if l.startswith("Generated 2")]
+        assert closing, doc
+        assert not re.search(r"\]\([^)]*\d{4}-\d{2}-\d{2}[^)]*\)", closing[-1]), \
+            f"{doc}: closing line links a path carrying a date, which the model will bump"
+
+
+def test_a_recommendation_heading_stays_inside_section_five(tmp_path):
+    """A report that ranks its recommendations as `### 1. Reduce ...` is
+    valid — the prompt does not prescribe the `#### #1` spelling — but
+    accepting `###` as a section delimiter read those three headings as new
+    top-level sections, leaving §5 empty and its recommendation count zero.
+    Only `## N.` delimits a section. (Codex, PR #1064.)"""
+    root = tmp_path
+    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    body = ["# Cost Analysis", "", "Total spend was $222.71.", ""]
+    for num, title in gate._promised_sections(REPO, "cost-analysis.md"):
+        body += [f"## {num}. {title}", ""]
+        if num == "1":
+            body += ["Month | Spend (USD) | Notes", "--- | --- | ---",
+                     "2026-07 | $4.77 | partial", "2026-08 | $211.00 | full", ""]
+        elif num == "2":
+            body += ["Rank | Service | SKU | Cost", "--- | --- | --- | ---"] + \
+                    [f"{i} | Cloud Run | SKU {i} | ${i}.00" for i in range(1, 11)] + [""]
+        elif num == "5":
+            for i in (1, 2, 3):
+                body += [f"### {i}. Reduce something {i}", "", f"Saves ~${i}0/month.", ""]
+        else:
+            body += ["Some substance here.", "And another line.", ""]
+    (root / gate.COST).write_text("\n".join(body) + "\n")
+    assert gate.gate_cost_content(root) == [], gate.gate_cost_content(root)
+    assert sorted(gate._numbered_sections((root / gate.COST).read_text())) == list("12345")
+
+
+def test_a_table_without_outer_pipes_still_counts(tmp_path):
+    """`Rank | Service | SKU` with no leading or trailing pipe is a valid
+    markdown table. Requiring the outer pipes rejected an otherwise compliant
+    report for its formatting. (Codex, PR #1064.)"""
+    # four lines: the separator is skipped and the header is not a data row
+    assert gate._table_rows(["Month | Spend | Notes", "--- | --- | ---",
+                             "2026-07 | $4.77 | partial", "2026-08 | $211.00 | full"]) == 2
+    assert gate._table_rows(["| Month | Spend |", "|---|---|", "| 2026-07 | $4.77 |"]) == 1
+    # prose carrying a single pipe is not a table
+    assert gate._table_rows(["Run `a | b` to pipe one into the other."]) == 0
+
+
+def test_only_monetary_values_count_toward_the_cost_floor(tmp_path):
+    """The optional `$` let any decimal satisfy the floor, so the workflow's
+    one required dollar figure plus eleven percentages scored twelve.
+    (Codex, PR #1064.)"""
+    assert gate.COST_FIGURE.findall("spend was $222.71 and $4.77") == ["$222.71", "$4.77"]
+    assert gate.COST_FIGURE.findall("utilisation 50.00%, latency 1.25s") == []
+    # every real version stays above the floor
+    for doc in (REPO / gate.COST,):
+        assert len(gate.COST_FIGURE.findall(doc.read_text())) >= gate.COST_MIN_FIGURES
+
+
+def test_each_asof_label_is_required_in_its_own_location(tmp_path):
+    """Counting a pattern anywhere let §3's table header be reworded away
+    while another sentence carrying `Live <date>` kept the count non-zero, so
+    the table lost its provenance and the gate stayed clean.
+    (Codex, PR #1064.)"""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", a.read_text()).group(1)
+    a.write_text(re.sub(r"\| Service \| Role \| Live \d{4}-\d{2}-\d{2} \|",
+                        "| Service | Role | Current |", a.read_text())
+                 + f"\n\nA new note: Live {day} state was read for the diagram.\n")
+    findings = gate.gate_stale_asof(root, {"read_at": f"{day}T00:00:00Z"})
+    assert any("§3's table header carries no as-of label" in f for f in findings), findings
+
+
+def test_a_rule_inside_a_fence_is_code_not_a_rule(tmp_path):
+    """Three dashes at the start of a fenced line is a YAML document marker, a
+    unified-diff header or an ASCII border — all rendered as code, none of them
+    a thematic break. `_prose_lines` deliberately KEEPS fences so an elided
+    Mermaid diagram is still visible to the elision gate, so this gate has to
+    track fence state itself. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Prose.\n\n```yaml\n--- # production\n```\n\n```diff\n--- a/gcp/deploy.sh\n```\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+    # the fence has to CLOSE the exemption, not open one for the rest of the file
+    doc.write_text("```yaml\n--- # production\n```\n\n--- welded onto prose\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1, out
+    assert "welded onto prose" in out[0]
+
+
+def test_a_subsystem_schema_count_is_not_measured_against_the_whole_repo(tmp_path, repo):
+    """`relations?` is optional in the total pattern, so a sentence about a
+    SUBSYSTEM's DDL — `p7_schema.sql declares 3 (2 tables, 1 view)` — matched
+    and was compared against the repository-wide totals, failing a refresh
+    whose numbers were right. The claim only counts on a line naming the
+    canonical file. (Codex, PR #1064.)"""
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    total = len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"])
+    breakdown = (f"{len(repo['tables'])} tables, "
+                 f"{len(repo['materialized_views'])} materialized views, "
+                 f"{len(repo['views'])} view")
+    (tmp_path / gate.DEPS).write_text("no relation claim here\n")
+    (tmp_path / gate.ARCH).write_text(
+        "`gcp/queries/p7_schema.sql` declares 3 (2 tables, 1 view) for the strat engine.\n\n"
+        f"`gcp/schema.sql` declares **{total} relations** ({breakdown}).\n")
+    assert gate.gate_derived_numbers(tmp_path, repo, None) == []
+    # and the anchored sentence is still measured
+    (tmp_path / gate.ARCH).write_text(
+        f"`gcp/schema.sql` declares **{total + 1} relations** ({breakdown}).\n")
+    out = gate.gate_derived_numbers(tmp_path, repo, None)
+    assert len(out) == 1, out
+    assert f"claims {total + 1} declared relations" in out[0]
+
+
+def test_dropping_the_schema_filename_fails_loudly_rather_than_open(tmp_path, repo):
+    """Narrowing the scan to lines naming `gcp/schema.sql` gives a reword a way
+    to fail OPEN. 05-a has stated this total in every version it has had, so
+    its absence is itself the finding. (Codex, PR #1064.)"""
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / gate.DEPS).write_text("no relation claim here\n")
+    (tmp_path / gate.ARCH).write_text(
+        "The schema declares **70 relations** (67 tables, 2 materialized views, 1 view).\n")
+    out = gate.gate_derived_numbers(tmp_path, repo, None)
+    assert len(out) == 1, out
+    assert "no sentence states how many relations" in out[0]
+    # 05-c states it in no version, so it is not required there
+    assert gate.DEPS not in "".join(out)
+
+
+def test_the_runtime_relations_are_not_claimed_to_have_no_schema_file(tmp_path):
+    """Several of the relations 05-a lists as runtime-created DO carry DDL, in
+    dedicated files under `gcp/queries/`; they are absent from `gcp/schema.sql`,
+    which is a narrower claim. Saying they appear in no schema file gave the
+    reader wrong provenance. (Codex, PR #1064.)"""
+    body = (REPO / gate.ARCH).read_text()
+    assert "in no schema file" not in body, \
+        "05-a claims a runtime relation has no schema file; several have one under gcp/queries/"
+    for name, path in (("market_data_cross_asset", "gcp/queries/magnitude_engine_schema.sql"),
+                       ("strat_features", "gcp/queries/p7_schema.sql"),
+                       ("daily_vex", "gcp/queries/p7_vex_cache.sql")):
+        assert f"CREATE TABLE" in (REPO / path).read_text(), path
+        assert name in (REPO / path).read_text(), f"{name} is not declared in {path}"
+    assert "gcp/queries/" in body, "05-a should say where the runtime relations' DDL does live"
+
+
+def test_a_pipe_table_separator_is_not_a_welded_rule(tmp_path):
+    """`--- | --- | ---` is the separator of a table written without outer
+    pipes, which `_table_rows` accepts. Reading it as a rule with text welded
+    on failed a document for the formatting this module had just started
+    allowing. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Prose.\n\nMonth | Spend | Notes\n--- | --- | ---\n2026-07 | 4.77 | partial\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+    # a bare rule run is still not a finding, and a real weld still is
+    doc.write_text("Prose.\n\n--------\n\n--- welded onto prose\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1, out
+
+
+def test_every_fence_delimiter_is_tracked(tmp_path):
+    """A fence is three or more backticks OR tildes, closed only by a run of
+    the same character at least as long. `startswith("```")` missed `~~~yaml`
+    and let a ``` inside a ```` block close it early, either of which puts the
+    scan back inside code. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("p\n\n~~~yaml\n--- # production\n~~~\n")
+    assert gate.gate_inline_rule(tmp_path) == [], "a tilde fence is a fence"
+    doc.write_text("p\n\n````md\n```\n--- # inner\n```\n--- # still inside\n````\n")
+    assert gate.gate_inline_rule(tmp_path) == [], "a shorter run must not close a longer fence"
+    doc.write_text("p\n\n~~~yaml\nx: 1\n~~~\n\n--- welded onto prose\n")
+    assert len(gate.gate_inline_rule(tmp_path)) == 1, "and the fence must still close"
+
+
+def test_a_relation_count_binds_to_the_file_it_names(tmp_path, repo):
+    """The anchor being somewhere on the line is not enough: a line contrasting
+    the two schemas carries `gcp/schema.sql` while the count belongs to the
+    other file. (Codex, PR #1064.)"""
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / gate.DEPS).write_text("nothing\n")
+    total = len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"])
+    breakdown = (f"{len(repo['tables'])} tables, {len(repo['materialized_views'])} "
+                 f"materialized views, {len(repo['views'])} view")
+    (tmp_path / gate.ARCH).write_text(
+        "Unlike `gcp/schema.sql`, `gcp/queries/p7_schema.sql` declares 3 (2 tables, 1 view).\n"
+        f"`gcp/schema.sql` declares **{total} relations** ({breakdown}).\n")
+    assert gate.gate_derived_numbers(tmp_path, repo, None) == []
+    (tmp_path / gate.ARCH).write_text(
+        f"`gcp/schema.sql` declares **{total + 1} relations** ({breakdown}).\n")
+    assert any("declared relations" in f for f in gate.gate_derived_numbers(tmp_path, repo, None))
+
+
+def test_a_bare_decimal_in_a_money_cell_counts_as_a_cost_figure(tmp_path):
+    """Requiring `$` counted the wrong population: under headers named
+    `Spend (USD)` the model writes `222.71`. Measured over the four real
+    documents, $-prefixed / bare: main 43/0, run 28 15/13, run 29 14/22,
+    run 30 11/22. (Codex, PR #1064.)"""
+    rows = "".join(f"| svc-{i} | {100 + i}.00 |\n" for i in range(20))
+    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n" + rows) == 20
+    # a percentage in a cell is not an amount, and neither is prose
+    assert gate.cost_figures("| a | b |\n|---|---|\n" + "| x | 50.00% |\n" * 11 + "cost $1.00\n") == 1
+    for doc in (REPO / gate.COST,):
+        assert gate.cost_figures(doc.read_text()) >= gate.COST_MIN_FIGURES
+
+
+def test_pipe_shaped_prose_is_not_a_table(tmp_path):
+    """Counting every two-pipe line and subtracting a header let nine lines of
+    `1 | Cloud Run | $1.00` -- no header, no separator -- clear §2's floor of 8
+    exactly, so the floor that exists to catch a report with no tables was
+    failing open. A table is a separator with rows attached. (Codex, PR #1064.)"""
+    assert gate._table_rows([f"{i} | Cloud Run | $1.00" for i in range(1, 10)]) == 0
+    assert gate._table_rows(["Run `a | b` to pipe one into the other."]) == 0
+    # both real styles still parse, including two columns without outer pipes
+    assert gate._table_rows(["Month | Spend", "--- | ---", "a | 1.00", "b | 2.00"]) == 2
+    assert gate._table_rows(["| M | S | N |", "|---|---|---|", "| a | 1 | x |"]) == 1
+
+
+def test_the_header_note_is_located_by_shape_not_by_its_sentence(tmp_path, live):
+    """`Live state below was read on` rejected `Infrastructure state below was
+    read on **DATE**`. The prompt specifies the location and the
+    `read on **DATE**` form, never that literal prefix. (Codex, PR #1064.)"""
+    day = live["read_at"][:10]
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    for note in (f"> Live state below was read on **{day}**",
+                 f"> Infrastructure state below was read on **{day}**",
+                 f"> The live state below was read on **{day}**"):
+        doc.write_text(f"# A\n\n{note}\n\n| Service | Role | Live {day} |\n\n"
+                       f"Generated {day} from the {day} live snapshot.\n")
+        assert gate.gate_stale_asof(tmp_path, live) == [], note
+
+
+def test_the_runtime_relation_ddl_provenance_matches_the_files(tmp_path):
+    """05-a said the dedicated DDL files are applied by the job that owns them.
+    They are not: each header says to apply it by hand, and the strat builder
+    applies only its own embedded 4h DDL. A wrong provenance replaced with a
+    different wrong provenance. (Codex, PR #1064.)"""
+    body = (REPO / gate.ARCH).read_text()
+    assert "applied by the job that owns them" not in body
+    for path in ("gcp/queries/p7_schema.sql", "gcp/queries/magnitude_engine_schema.sql"):
+        assert "Apply via" in (REPO / path).read_text(), f"{path} no longer says how it is applied"
+    assert not (REPO / ".github/workflows/db-query.yml").exists(), \
+        "db-query.yml is back; 05-a says it was deleted"
+    assert "strat_data_builder.py" in body, "the one just-in-time exception should be named"
+
+
+def test_a_delimiter_row_needs_hyphens_in_every_cell(tmp_path):
+    """`: | :` and `| | |` satisfy the old character class while containing no
+    hyphen, and anchoring the row count on one let nine lines of prose beneath
+    a pseudo-separator clear §2's floor of 8. A delimiter cell is `-`, `:-`,
+    `-:` or `:-:`. (Codex, PR #1064.)"""
+    for good in ("--- | ---", ":--- | ---:", "|---|---|", "-|-", "| :-: |"):
+        assert gate._is_table_sep(good), good
+    for bad in (": | :", "| | |", "a | b", "   |   ", ""):
+        assert not gate._is_table_sep(bad), bad
+    rows = ["Rank | Cost", ": | :"] + [f"{i} | 1.00" for i in range(9)]
+    assert gate._table_rows(rows) == 0, "a pseudo-separator does not make prose a table"
+    rows[1] = "--- | ---"
+    assert gate._table_rows(rows) == 9
+
+
+def test_a_fence_closes_only_on_a_bare_delimiter(tmp_path):
+    """A closing fence carries nothing but whitespace after its run. Accepting
+    a run with content after it meant a content line inside a fence -- a
+    ```python quoted in a code sample -- closed the block and inverted the
+    state for everything below. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("```python\nsample = '```python'\n--- # production\n```\n")
+    assert gate.gate_inline_rule(tmp_path) == [], "the quoted delimiter must not close the fence"
+    doc.write_text("```python\nsample = '```python'\n```\n\n--- welded onto prose\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1 and "welded onto prose" in out[0], out
+
+
+def test_a_bare_amount_counts_in_any_cell_and_in_the_usd_form(tmp_path):
+    """Requiring a pipe on both sides saw only cells in the MIDDLE of a row, so
+    the first and last column of a table written without outer pipes were
+    invisible, and so was `222.71 USD` in prose. At their floors the two
+    required tables contribute 2 + 8 = 10 amounts against a floor of 15, so a
+    report whose §3 is prose could have been rejected. (Codex, PR #1064.)"""
+    # An outer-pipe-free table, whose first and last columns a pipe-on-both-sides
+    # lookaround could not see. The header is what marks the money column, so
+    # these are written as real tables rather than bare fragments.
+    assert gate.cost_figures("Spend (USD) | SKU\n--- | ---\n222.71 | svc") == 1, "first column"
+    assert gate.cost_figures("SKU | Spend (USD)\n--- | ---\nsvc | 222.71") == 1, "last column"
+    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n| svc | 222.71 |") == 1
+    assert gate.cost_figures("Cloud SQL: 222.71 USD") == 1
+    # a unit means it is not an amount, and a decimal in a sentence is not a cell
+    assert gate.cost_figures("| a | Spend |\n|---|---|\n| a | 50.00% |") == 0
+    assert gate.cost_figures("| a | Spend |\n|---|---|\n| a | 1.5 GiB |") == 0
+    assert gate.cost_figures("we saw 222.71 in prose") == 0
+    # the two floors together must be reachable by the required tables alone
+    minimum = gate.COST_MIN_ROWS["1"] + gate.COST_MIN_ROWS["2"]
+    table = ("| SKU | Spend (USD) |\n|---|---|\n"
+             + "".join(f"| svc-{i} | {100 + i}.00 |\n" for i in range(minimum)))
+    assert gate.cost_figures(table) == minimum
+
+
+def test_a_row_may_omit_its_trailing_cells(tmp_path):
+    """Markdown pads a row that omits trailing cells, so `| 2026-08 | 211.00 |`
+    under a three-column header is a valid row with an empty Notes cell.
+    Requiring an identical pipe count stopped the scan there and could report
+    0 rows against a floor of 2. (Codex, PR #1064.)"""
+    assert gate._table_rows(["Month | Spend | Notes", "--- | --- | ---",
+                             "| 2026-07 | 4.77 | partial |", "| 2026-08 | 211.00 |"]) == 2
+    # and a row cannot claim MORE cells than the table has
+    assert gate._table_rows(["A | B", "--- | ---", "1 | 2", "1 | 2 | 3"]) == 1
+
+
+def test_a_linked_schema_path_still_binds_its_count(tmp_path, repo):
+    r"""A linked reference put the link DESTINATION last before the count, so the
+    claim bound to a path that was the same file and the check silently skipped
+    it — a stale count passing because it was written as a link.
+    (Codex, PR #1064.)"""
+    assert gate._norm_sql_path("../../../gcp/schema.sql") == "gcp/schema.sql"
+    assert gate._norm_sql_path("./gcp/schema.sql") == "gcp/schema.sql"
+    assert gate._norm_sql_path("gcp/queries/p7_schema.sql") == "gcp/queries/p7_schema.sql"
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / gate.DEPS).write_text("nothing\n")
+    total = len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"])
+    breakdown = (f"{len(repo['tables'])} tables, {len(repo['materialized_views'])} "
+                 f"materialized views, {len(repo['views'])} view")
+    (tmp_path / gate.ARCH).write_text(
+        f"[`gcp/schema.sql`](../../../gcp/schema.sql) declares **{total + 1} relations** "
+        f"({breakdown}).\n")
+    out = gate.gate_derived_numbers(tmp_path, repo, None)
+    assert any(f"claims {total + 1} declared relations" in f for f in out), out
+
+
+def test_a_bare_decimal_counts_only_under_a_money_column(tmp_path):
+    """Counting every decimal cell let a `Duration (s)` or utilisation column
+    feed a floor named for money: one dollar amount plus eleven non-cost
+    decimals cleared it while the billing tables held no usable costs.
+    (Codex, PR #1064.)"""
+    rows = "".join(f"| step-{i} | {10 + i}.00 |\n" for i in range(11))
+    assert gate.cost_figures("| Step | Duration (s) |\n|---|---|\n" + rows + "cost $1.00\n") == 1
+    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n" + rows) == 11
+    assert gate.cost_figures("| SKU | 90-day cost |\n|---|---|\n" + rows) == 11
+    # the four real documents are unaffected
+    assert gate.cost_figures((REPO / gate.COST).read_text()) >= gate.COST_MIN_FIGURES
+
+
+def test_the_asof_locations_must_be_the_real_header_and_footer(tmp_path, live):
+    """A shape check alone was satisfied by any blockquote later in the file,
+    or any `Generated` line with prose after it, so moving or deleting the
+    header note and footer passed as long as a matching line existed somewhere.
+    (Codex, PR #1064.)"""
+    day = live["read_at"][:10]
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    good = (f"# A\n\n> Live state below was read on **{day}**\n\n"
+            f"| Service | Role | Live {day} |\n\nbody\n\n"
+            f"Generated {day} from the {day} live snapshot.\n")
+    doc.write_text(good)
+    assert gate.gate_stale_asof(tmp_path, live) == []
+    # the header note deleted and a quoted aside further down standing in for it
+    doc.write_text(good.replace(f"> Live state below was read on **{day}**\n\n", "")
+                       .replace("body", f"> quoted aside, read on **{day}**"))
+    out = gate.gate_stale_asof(tmp_path, live)
+    assert len(out) == 1 and "the header note" in out[0], out
+    # the provenance line no longer last
+    doc.write_text(good + "\nA trailing paragraph.\n")
+    out = gate.gate_stale_asof(tmp_path, live)
+    assert len(out) == 1 and "the closing line" in out[0], out
+
+
+def test_the_runtime_relations_have_three_distinct_creation_paths(tmp_path):
+    """Saying all 26 are "created by research and analytics jobs" contradicted
+    the same paragraph's account of hand-applied DDL. There are three
+    mechanisms and each example is checked against the tree. (Codex, PR #1064.)"""
+    body = (REPO / gate.ARCH).read_text()
+    assert "created by research and analytics jobs for themselves" not in body
+    # 1. embedded in the owning job
+    for name, path in (("gamma_levels_eod", "gcp/research/p2_build_gamma_levels.py"),
+                       ("gamma_events", "gcp/research/p2_outcomes_grid.py"),
+                       ("magnitude_walk_forward_results",
+                        "gcp/research/magnitude_engine/mag_walk_forward.py")):
+        src = (REPO / path).read_text()
+        assert f"CREATE TABLE IF NOT EXISTS {name}" in src, f"{name} not created in {path}"
+        assert path in body, f"05-a should cite {path}"
+    # 2. a dedicated file, applied by hand
+    for path in ("gcp/queries/p7_schema.sql", "gcp/queries/magnitude_engine_schema.sql",
+                 "gcp/queries/p7_vex_cache.sql"):
+        assert (REPO / path).exists(), path
+    # 3. DDL exists but its job is archived, so there is no active creation
+    #    path. Asserted against the DDL itself: I first claimed there was no
+    #    DDL at all, because I grepped for the literal table name and it is
+    #    built from an f-string. (Codex, PR #1064.)
+    archived = REPO / "gcp/research/_archive/p7a_iwm_30m_pipeline.py"
+    src = archived.read_text()
+    assert "CREATE TABLE IF NOT EXISTS {PREDICTIONS_TABLE}" in src, \
+        "the archived DDL moved; 05-a cites it by line"
+    assert 'PREDICTIONS_TABLE = f"{TICKER.lower()}_{TF}_predictions"' in src
+    assert "_archive/p7a_iwm_30m_pipeline.py" in body
+    assert "no DDL in the repository at all" not in body, \
+        "05-a claimed these tables have no DDL; the archived job defines it"
+
+
+def test_one_amount_written_two_ways_counts_once(tmp_path):
+    """`$1.00 USD` matches both the symbol form and the spelled-out form, and
+    counting it twice let six values satisfy a floor of twelve.
+    (Codex, PR #1064.)"""
+    assert gate.cost_figures("the charge was $1.00 USD today") == 1
+    assert gate.cost_figures("$1.00 and 2.00 USD are different amounts") == 2
+
+
+def test_an_emphasised_amount_still_counts(tmp_path):
+    """`| Cloud SQL | **222.71** |` is an amount with emphasis, and matching the
+    raw markdown missed it, so a complete report whose costs are bolded would
+    have fallen under the floor. Two of the real documents do bold amounts:
+    counting them moved run 29 from 36 to 37 and run 30 from 33 to 35.
+    (Codex, PR #1064.)"""
+    head = "| SKU | Spend (USD) |\n|---|---|\n"
+    assert gate.cost_figures(head + "| Cloud SQL | **222.71** |") == 1
+    assert gate.cost_figures(head + "| Cloud SQL | `222.71` |") == 1
+    assert gate.cost_figures(head + "| Cloud SQL | 222.71 |") == 1
+    assert gate.cost_figures(head + "| Cloud SQL | **50.00%** |") == 0
+
+
+def test_a_count_first_claim_names_its_own_schema(tmp_path, repo):
+    """`N declared in \u0060gcp/schema.sql\u0060` carries the path INSIDE the match, so it
+    needs no neighbouring anchor. Applying one rejected it whenever another
+    schema was named earlier on the line. (Codex, PR #1064.)"""
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / gate.DEPS).write_text("nothing\n")
+    total = len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"])
+    bd = (f"{len(repo['tables'])} tables, {len(repo['materialized_views'])} "
+          f"materialized views, {len(repo['views'])} view")
+    line = "`p7_schema.sql` declares 3 (2 tables, 1 view); {n} declared in `gcp/schema.sql` ({bd}).\n"
+    (tmp_path / gate.ARCH).write_text(line.format(n=total, bd=bd))
+    assert gate.gate_derived_numbers(tmp_path, repo, None) == []
+    (tmp_path / gate.ARCH).write_text(line.format(n=total + 1, bd=bd))
+    out = gate.gate_derived_numbers(tmp_path, repo, None)
+    assert any(f"claims {total + 1} declared relations" in f for f in out), out
+
+
+def test_the_bare_amount_pattern_accepts_what_the_csv_emits(tmp_path):
+    """The workflow writes `round(c, 2)` through csv.writer, so a value ending
+    in zero is emitted as `1.2` or `0.0`, and the cost prompt tells the model to
+    copy the CSV value without rounding. Requiring exactly two decimals rejected
+    every such amount. (Codex, PR #1064.)"""
+    for good in ("1.2", "0.0", "100.0", "1234.5", "222.71", "1,234.50"):
+        assert gate.COST_BARE.fullmatch(good), good
+    for bad in ("12", "2026", "1", "1.234"):
+        assert not gate.COST_BARE.fullmatch(bad), bad
+    # this is what csv.writer actually produces for those values
+    import csv, io
+    out = io.StringIO()
+    csv.writer(out).writerows([["svc", round(c, 2)] for c in (1.2, 0.0, 222.71, 100.0)])
+    for row in out.getvalue().splitlines():
+        assert gate.COST_BARE.fullmatch(row.split(",")[1].strip()), row
+
+
+def test_a_quote_under_a_section_heading_is_not_the_header_note(tmp_path, live):
+    """Skipping every heading level let a blockquote under a later `##` stand in
+    for the preamble's header note. The preamble ends where the first section
+    begins. (Codex, PR #1064.)"""
+    day = live["read_at"][:10]
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(f"# A\n\n## 1. Section\n\n> quoted aside, read on **{day}**\n\n"
+                   f"| Service | Role | Live {day} |\n\n"
+                   f"Generated {day} from the {day} live snapshot.\n")
+    out = gate.gate_stale_asof(tmp_path, live)
+    assert len(out) == 1 and "the header note" in out[0], out
+    # the real preamble, with the H1 title above it, still counts
+    doc.write_text(f"# A\n\n> Live state below was read on **{day}**\n\n## 1. Section\n\n"
+                   f"| Service | Role | Live {day} |\n\n"
+                   f"Generated {day} from the {day} live snapshot.\n")
+    assert gate.gate_stale_asof(tmp_path, live) == []
+
+
+def test_the_provenance_citations_carry_file_line_links(tmp_path):
+    """`.github/prompts/architecture.md:74` requires every claim about code to
+    carry a `file:line` markdown link, and I wrote the creation-path inventory
+    with bare code spans — a document breaking the rule its own prompt states,
+    which the next refresh would read as an example. `gate_links` cannot see the
+    omission because it only validates links that exist. (Codex, PR #1064.)"""
+    body = (REPO / gate.ARCH).read_text()
+    for path, line in (("gcp/research/p2_build_gamma_levels.py", 81),
+                       ("gcp/research/p2_outcomes_grid.py", 72),
+                       ("gcp/research/magnitude_engine/mag_walk_forward.py", 75),
+                       ("gcp/research/strat_engine/strat_data_builder.py", 94),
+                       ("gcp/queries/p7_schema.sql", 7),
+                       ("gcp/queries/magnitude_engine_schema.sql", 3),
+                       ("gcp/queries/p7_vex_cache.sql", 9),
+                       ("gcp/research/_archive/p7a_iwm_30m_pipeline.py", 80)):
+        anchor = f"../../../{path}#L{line}"
+        assert anchor in body, f"05-a does not link {path}:{line}"
+        assert (REPO / path).exists(), path
+        # the cited line must still be the one that matters
+        text = (REPO / path).read_text().split("\n")[line - 1]
+        assert ("CREATE TABLE" in text or "Apply via" in text), f"{path}:{line} is now {text!r}"
+
+
+def test_the_levels_tables_are_attributed_to_their_real_creator(tmp_path):
+    """`p7_schema.sql` declares five tables, all `strat_features_<tf>`. The six
+    `strat_features_levels_*` relations are created dynamically by
+    `strat_enrich_levels.py`, with a column list discovered at runtime, so
+    saying "the other strat_features_* timeframes" swept them under a file that
+    never mentions them. (Codex, PR #1064.)"""
+    schema = (REPO / "gcp/queries/p7_schema.sql").read_text()
+    declared = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", schema))
+    assert declared == {"strat_features_1m", "strat_features_5m", "strat_features_15m",
+                        "strat_features_30m", "strat_features_60m"}, declared
+    assert not any("levels" in d for d in declared), \
+        "p7_schema.sql now declares a levels table; 05-a says it declares none"
+    enrich = (REPO / "gcp/research/strat_engine/strat_enrich_levels.py").read_text()
+    assert "CREATE TABLE IF NOT EXISTS {levels_table(tf)}" in enrich
+    body = (REPO / gate.ARCH).read_text()
+    assert "strat_enrich_levels.py#L130" in body and "strat_enrich_levels.py#L138" in body
+    assert "for the other `strat_features_*` timeframes" not in body
+
+
+def test_a_generic_total_header_is_not_a_money_column(tmp_path):
+    """`Total duration (s)` and `Total utilization` are headers a cost report
+    legitimately carries, and eleven decimal cells under one fed the monetary
+    floor. (Codex, PR #1064.)"""
+    for not_money in ("Total duration (s)", "Total utilization", "Total requests"):
+        assert not gate.MONEY_HEADER.search(not_money), not_money
+    for money in ("Total cost (USD)", "Spend (USD)", "90-day cost", "Amount", "$"):
+        assert gate.MONEY_HEADER.search(money), money
+    rows = "".join(f"| step-{i} | {10 + i}.00 |\n" for i in range(11))
+    assert gate.cost_figures("| Step | Total duration (s) |\n|---|---|\n" + rows) == 0
+
+
+def test_an_escaped_pipe_is_content_not_a_column(tmp_path):
+    r"""`\|` inside a cell is a literal pipe, and splitting on it invented a
+    column, changing the row's width so it could drop out of the count.
+    (Codex, PR #1064.)"""
+    assert gate._table_cells(r"| a \| b | 222.71 |") == ["a | b", "222.71"]
+    assert gate._table_rows([r"SKU | Spend", "--- | ---",
+                             r"a \| b | 1.00", "c | 2.00"]) == 2
+
+
+def test_an_inline_code_span_does_not_open_a_fence(tmp_path):
+    """A backtick fence opener's info string may not contain a backtick, so
+    ```code``` alone on a line is an inline code span. Treating it as a fence
+    put every following line inside a block that never opened.
+    (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Prose.\n\n```code```\n\n--- welded onto prose\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1 and "welded onto prose" in out[0], out
+    # a real fence, with a plain info string, still suppresses
+    doc.write_text("```python\n--- # production\n```\n")
+    assert gate.gate_inline_rule(tmp_path) == []
+
+
+def test_the_asof_labels_are_rendered_not_asked_for(tmp_path, repo):
+    """Run 31 updated the header note and the closing line and left §3's table
+    column on the previous snapshot, failing on one stale label — the same
+    shape as run 28. The prompt already substituted the date and enumerated
+    all three locations; the model still had to find three places and got two.
+    They are rendered before the model runs now, like the marker blocks and
+    the runtime-relation count. (Run 31.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / gate.ARCH, doc)
+    live = json.loads(SNAPSHOT.read_text())
+    # The date the committed document currently carries, READ FROM IT. Pinning
+    # the literal `2026-09-07` here would break the moment a refresh commits a
+    # newer label — the test failing on documents that are correct, which is
+    # the exact defect Codex named on #1062 and I reproduced here.
+    day = gate.ASOF_LABELS[1].search(doc.read_text()).group(1)
+    # ...and the date we render TO must be derived from it too. A fixed target
+    # can collide with the baseline once a refresh happens to commit that same
+    # date, and `insert_blocks` is idempotent, so the three occurrences would
+    # not disappear and the assertion would fail on a correct document — the
+    # same defect one level along. (Codex, PR #1069.)
+    target = (datetime.date.fromisoformat(day) + datetime.timedelta(days=400)).isoformat()
+    assert target != day
+    live["read_at"] = f"{target}T02:15:00Z"
+    # Render the marker blocks ALONE first, with the SAME live, so the only
+    # difference between the two calls is the as-of substitution. Setting
+    # read_at between them made the second call re-render the blocks against a
+    # different snapshot date too, and the delta below counted both effects.
+    inv.insert_blocks(doc, repo, live, root=REPO, counts=False)
+    baseline = doc.read_text()
+    historical = baseline.count(day)
+    inv.insert_blocks(doc, repo, live, root=REPO)
+    after = doc.read_text()
+    for pat in gate.ASOF_LABELS:
+        found = [m.group(1) for m in pat.finditer(after)]
+        assert found == [target], (pat.pattern, found)
+    assert gate.gate_stale_asof(tmp_path, live) == []
+    # every OTHER occurrence of that date is history — when something was
+    # corrected, deleted or audited — and must not move: exactly three changed
+    assert after.count(day) == historical - 3, \
+        f"rendering the as-of labels moved a historical {day}"
+
+
+def test_the_gate_and_the_renderer_share_the_asof_patterns(tmp_path):
+    """The same discipline `RUNTIME_RELATION_COUNT` follows: a render that
+    fixed a label the gate then matched differently would report a finding the
+    pipeline had already corrected."""
+    assert gate.ASOF_LABELS is inv.ASOF_LABELS
+
+
+def test_restoring_blocks_does_not_rewrite_an_asof_label(tmp_path, repo):
+    """`restore_blocks` runs AFTER the model and passes counts=False. Without
+    that, this substitution would silently correct a label the model had
+    changed, hiding the edit the gate exists to report — the defect found in
+    the runtime-relation count on #1058, one field over.
+
+    Calls `restore_blocks` itself. An earlier version called
+    `insert_blocks(counts=False)` directly, which tests the behaviour the
+    restore path is supposed to SELECT rather than the selection: drop the
+    `counts=False` from `restore_blocks` and that version still passed.
+    (Codex, PR #1069.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / gate.ARCH, doc)
+    live = json.loads(SNAPSHOT.read_text())
+    original = gate.ASOF_LABELS[1].search(doc.read_text()).group(1)
+    target = (datetime.date.fromisoformat(original)
+              + datetime.timedelta(days=400)).isoformat()
+    live["read_at"] = f"{target}T02:15:00Z"
+
+    # a model that corrupted a marker block AND moved an as-of label
+    text = doc.read_text()
+    name = next(n for n in inv.SECTIONS
+                if inv.MARKER_START.format(name=n) in text)
+    start = inv.MARKER_START.format(name=name)
+    text = text.replace(start, start + "\nthe model wrote this inside a block", 1)
+    doc.write_text(text.replace(f"read on **{original}**", "read on **1999-01-01**", 1))
+
+    restored = inv.restore_blocks(doc, repo, live, root=REPO)
+    body = doc.read_text()
+    assert name in restored, (name, restored)
+    assert "the model wrote this inside a block" not in body, "the block was not restored"
+    # ...and the label the model moved is still moved, so the gate can report it
+    assert [m.group(1) for m in gate.ASOF_LABELS[1].finditer(body)] == ["1999-01-01"], \
+        f"restore_blocks corrected the model's edit back to {target}"
+    assert any("as-of label says 1999-01-01" in f
+               for f in gate.gate_stale_asof(tmp_path, live)), "the gate lost the edit"
+
+
+def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
+    """Run 32's model rewrote README's badge block and pointed the workflow
+    badge at `refresh-documentation.yml`, a file that does not exist, failing
+    the run on a dead link. The prompt already said to edit README in place
+    with `replace` and never regenerate it; it regenerated anyway (52% churn).
+    The badges are a date and four counts — inventory in a picture. (Run 32.)"""
+    readme = tmp_path / "README.md"
+    shutil.copy(REPO / "README.md", readme)
+    changed = inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert changed
+    body = readme.read_text()
+    declared, _ = gate.relation_counts(repo, live)
+    assert "docs_verified-2026--11--02-blue" in body
+    assert f"cloud_run_jobs-{live['counts']['jobs']}_live_%2F_{len(repo['jobs'])}_declared" in body
+    assert f"schedulers-{live['counts']['schedulers']}_live" in body
+    assert f"schema_relations-{declared}_declared_%2F_{len(live['db_tables'])}_live" in body
+    # the workflow badge names the workflow that actually exists
+    assert "refresh-architecture-docs.yml/badge.svg" in body
+    assert (REPO / ".github/workflows/refresh-architecture-docs.yml").exists()
+    assert "refresh-documentation.yml" not in body
+    # idempotent, and it leaves the rest of the file alone
+    assert not inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert "## Documentation map" in body or "Read this" in body
+
+
+def _readme_with(*extra_lines, day="2020-01-01") -> str:
+    """README carrying the five owned badges plus whatever else is given."""
+    owned = [
+        f"![Last audit](https://img.shields.io/badge/docs_verified-{day.replace('-', '--')}-blue)",
+        "![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-1_live_%2F_1_declared-blue)",
+        "![Cloud Scheduler](https://img.shields.io/badge/schedulers-1_live-blue)",
+        "![Cloud SQL relations](https://img.shields.io/badge/schema_relations-1_declared_%2F_1_live-blue)",
+        ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+         "workflows/refresh-architecture-docs.yml/badge.svg)"),
+    ]
+    return ("# T\n\n" + "\n".join(owned) + "\n"
+            + "".join(l + "\n" for l in extra_lines)
+            + f"\nGenerated {day} by the monthly documentation refresh.\n")
+
+
+def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, live):
+    """A shields.io link further down the document is content, not a badge to
+    overwrite."""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with(
+        "", "prose", "", "![elsewhere](https://img.shields.io/badge/keep--me-9-red)"))
+    inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    body = readme.read_text()
+    assert "keep--me-9-red" in body, "a later shields link was swallowed"
+    assert "docs_verified-2026--11--02-blue" in body
+    assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+
+
+def test_a_maintainer_badge_beside_the_block_survives(tmp_path, repo, live):
+    """Selecting the whitespace-contiguous run that contained `docs_verified`
+    still swallowed a badge a maintainer put directly beside ours, blank line
+    or not: adjacency says nothing about ownership. The span now runs from the
+    first OWNED badge to the last, so anything above or below survives.
+    (Codex, PR #1070.)
+    """
+    build = "![build](https://img.shields.io/badge/build-passing-green)"
+    for placement in ("above", "below", "below_blank"):
+        readme = tmp_path / f"README_{placement}.md"
+        if placement == "above":
+            readme.write_text(_readme_with().replace("# T\n\n", f"# T\n\n{build}\n"))
+        elif placement == "below":
+            readme.write_text(_readme_with(build))
+        else:
+            readme.write_text(_readme_with("", build))
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+        body = readme.read_text()
+        assert "build-passing-green" in body, \
+            f"a maintainer's badge {placement} the block was deleted"
+        assert "docs_verified-2026--11--02-blue" in body
+        assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+
+
+def test_a_foreign_line_inside_the_block_is_an_error_not_a_deletion(tmp_path, repo, live):
+    """No single-span replacement can preserve a line sitting BETWEEN owned
+    badges, so it is named rather than silently dropped."""
+    readme = tmp_path / "README.md"
+    body = _readme_with()
+    readme.write_text(body.replace(
+        "![Cloud Scheduler]",
+        "![build](https://img.shields.io/badge/build-passing-green)\n![Cloud Scheduler]"))
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="between its badges"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before
+
+
+def test_the_block_is_identified_by_identity_not_by_being_first(tmp_path, repo, live):
+    """Taking the first run of badge lines meant that if the inventory badges
+    were ever removed while an unrelated badge remained further down, the
+    monthly refresh would DELETE that unrelated badge and insert the inventory
+    ones in its place -- a wrong answer indistinguishable from a right one,
+    written unattended. (Codex, PR #1070.)
+    """
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# T\n\nthe inventory badges were removed by hand\n\n"
+        "![build](https://img.shields.io/badge/build-passing-green)\n"
+        "\nGenerated 2020-01-01 by the monthly documentation refresh.\n")
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="no badge block found"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before, "the unrelated badge was rewritten anyway"
+
+
+def test_the_relation_badge_says_relations_because_that_is_what_it_counts(repo, live):
+    """The badge summed tables + materialized views + views and published the
+    total as `schema_tables`, stating a count of tables that do not exist: 70
+    declared against 67 real tables. (Codex, PR #1070.)"""
+    rendered = inv.readme_badges(repo, live, "2026-11-02")
+    assert "schema_tables" not in rendered, \
+        "a relation count is still published as a table count"
+    assert "schema_relations-" in rendered
+    assert "Cloud SQL relations" in rendered
+    declared = (len(repo["tables"]) + len(repo["materialized_views"])
+                + len(repo["views"]))
+    assert f"schema_relations-{declared}_declared_" in rendered
+    assert declared > len(repo["tables"]), \
+        "fixture has no views, so this test could not detect the mislabel"
+
+
+def test_a_readme_with_no_badges_fails_loudly(tmp_path, repo, live):
+    """Silently doing nothing would let a rewrite that dropped the block pass
+    the render and reach the model unrendered."""
+    readme = tmp_path / "README.md"
+    readme.write_text("# T\n\nno badges here\n")
+    with pytest.raises(ValueError, match="no badge block"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+
+
+def test_badges_refuse_to_render_without_a_live_snapshot(tmp_path, repo, live):
+    """`--readme-badges` with no `--snapshot` left `live` as None and the counts
+    fell back to 0: the badges read "0_live" jobs and "0_live" schedulers while
+    the date said verified today. A zero indistinguishable from a real count,
+    published as fact, is the silent fallback CLAUDE.md 3.7 forbids — and the
+    point of rendering these is that they cannot be wrong. (Codex, PR #1070.)"""
+    for bad in (None,
+                {"db_tables": ["x"]},                                  # no counts
+                {"counts": {"jobs": 5, "schedulers": 5}},              # no db_tables
+                {"counts": {"jobs": 0, "schedulers": 5}, "db_tables": ["x"]}):
+        with pytest.raises(ValueError, match="snapshot|missing"):
+            inv.readme_badges(repo, bad, "2026-11-02")
+    # and a real snapshot still renders, with no zero in any count
+    rendered = inv.readme_badges(repo, live, "2026-11-02")
+    assert "0_live" not in rendered and "_%2F_0_" not in rendered
+    assert str(live["counts"]["jobs"]) in rendered
+
+
+def test_the_badge_day_defaults_to_utc_not_local(monkeypatch):
+    """`date.today()` is the runner's LOCAL date. The workflow's verifier uses
+    `date -u`, so on any runner not set to UTC the two disagreed by a day
+    before a midnight crossing was even involved. (Codex, PR #1070.)"""
+    import datetime as _dt
+    import inspect
+    src = inspect.getsource(inv.main) if hasattr(inv, "main") else ""
+    if not src:
+        src = (pathlib.Path(inv.__file__).read_text())
+    assert "datetime.date.today()" not in src, \
+        "the badge date is read from the local clock again"
+    assert "datetime.datetime.now(datetime.timezone.utc).date()" in src
+
+
+def test_an_explicit_day_overrides_the_clock(tmp_path, repo, live):
+    """The workflow pins one date and passes it in, so the renderer and the
+    verifier cannot disagree across a midnight boundary."""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with())
+    inv.insert_readme_badges(readme, repo, live, "2026-12-25")
+    body = readme.read_text()
+    assert "docs_verified-2026--12--25-blue" in body
+    assert "Generated 2026-12-25" in body
+
+
+def test_the_day_flag_reaches_the_renderer_through_the_cli(tmp_path):
+    """Calling `insert_readme_badges` directly proves the function's contract
+    and says NOTHING about whether `--day` is wired to it. The first attempt at
+    this fix left the flag parsed and unread, and a direct-call test passed
+    anyway. This drives the CLI the workflow actually invokes."""
+    import subprocess
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with())
+    snapshot = REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.maintenance.doc_inventory",
+         "--snapshot", str(snapshot), "--readme-badges", str(readme),
+         "--day", "2026-12-25"],
+        cwd=REPO, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    body = readme.read_text()
+    assert "docs_verified-2026--12--25-blue" in body, \
+        "--day is parsed but never reaches the renderer"
+    assert "Generated 2026-12-25" in body
+
+
+@pytest.mark.parametrize("line,owned,why", [
+    ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-architecture-docs.yml/badge.svg)", True, "canonical"),
+    ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-documentation.yml/badge.svg)", True,
+     "the malformation run 32 actually produced: a workflow that does not exist"),
+    ("![Docs refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-architecture-docs.yml/badge.svg)", True,
+     "right workflow, alt text edited"),
+    ("![CI](https://github.com/TeneikaAskew/stocks/actions/workflows/ci.yml/badge.svg)",
+     False, "a maintainer's own workflow badge must never be claimed"),
+    ("![build](https://img.shields.io/badge/build-passing-green)", False,
+     "an unrelated shields badge"),
+])
+def test_which_workflow_badges_this_renderer_owns(line, owned, why):
+    """Requiring the correct filename meant the one malformation actually seen
+    was not recognised as ours, so a render inserted a correct badge and left
+    the dead one beside it -- and `gate_links` skips HTTPS targets, so nothing
+    downstream would catch the duplicate. Broadening to ANY workflow badge
+    would have been worse: it would silently delete a maintainer's CI badge.
+    The alt text this renderer writes is what makes a badge ours.
+    (Codex, PR #1070.)
+    """
+    assert bool(inv.OWNED_BADGE.fullmatch(line)) is owned, why
+
+
+def test_a_dead_workflow_badge_is_replaced_not_duplicated(tmp_path, repo, live):
+    """End to end: the render must leave exactly one workflow badge."""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with().replace(
+        "workflows/refresh-architecture-docs.yml/badge.svg",
+        "workflows/refresh-documentation.yml/badge.svg"))
+    inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    body = readme.read_text()
+    assert "refresh-documentation.yml" not in body, "the dead badge survived"
+    assert body.count("/actions/workflows/") == 1, "the workflow badge was duplicated"
+
+
+def test_a_second_generated_line_is_refused_not_restamped(tmp_path, repo, live):
+    """`subn` rewrote EVERY beginning-of-line `Generated <date>`. A second one --
+    provenance for an archived artifact, say -- would have had its historical
+    date silently moved to today, and a refresh publishing anything else keeps
+    README's date-only edits, so the wrong date would be committed.
+    (Codex, PR #1070.)"""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with()
+                      + "\nGenerated 2019-03-04 by the retired report builder.\n")
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="'Generated <date>' lines"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before, "the historical date was rewritten anyway"
+    assert "Generated 2019-03-04" in readme.read_text()
+
+
+def test_the_declared_relation_breakdown_is_rendered_not_asked_for(tmp_path, repo, live):
+    """Run 33 failed on this exact line. The model kept the correct total, 70
+    relations, and rewrote the parenthetical from "67 tables, 2 materialized
+    views" to "66 tables, 3 materialized views" -- corrupting a line that was
+    already right on main. Same class as the runtime count and the as-of
+    labels, so the same answer: render it before the model runs. (Run 33.)
+    """
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("# x\n\n`gcp/schema.sql` declares **70 relations** "
+                   "(66 tables, 3 materialized views, 1 view); live holds 96.\n")
+    inv.insert_blocks(doc, repo, live, root=REPO, counts=True)
+    t, m, v = (len(repo["tables"]), len(repo["materialized_views"]),
+               len(repo["views"]))
+    assert f"({t} tables, {m} materialized views, {v} view)" in doc.read_text()
+
+
+def test_the_restore_path_leaves_a_wrong_breakdown_for_the_gate(tmp_path, repo, live):
+    """`restore_blocks` runs AFTER the model. If it corrected the breakdown too,
+    a model that rewrote the line would be silently repaired and the gate would
+    never report it -- the same trap documented for the runtime count."""
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("# x\n\n`gcp/schema.sql` declares **70 relations** "
+                   "(66 tables, 3 materialized views, 1 view).\n")
+    inv.restore_blocks(doc, repo, live, root=REPO)
+    assert "(66 tables, 3 materialized views, 1 view)" in doc.read_text(), \
+        "the restore path silently corrected the model's error"
+
+
+@pytest.mark.parametrize("text,ok", [
+    ("(67 tables, 2 materialized views, 1 view)", True),
+    ("(1 table, 1 materialized view, 2 views)", True),
+    ("(67 tables and 2 materialized views)", False),
+])
+def test_which_breakdowns_the_renderer_recognises(text, ok):
+    assert bool(inv.RELATION_BREAKDOWN.fullmatch(text)) is ok
