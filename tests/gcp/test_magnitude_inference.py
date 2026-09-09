@@ -614,7 +614,8 @@ def _contract_blobs(contract_text, *, contract_exists=True):
     return bucket
 
 
-def _load_with(contract_text, *, contract_exists=True, download_raises=None):
+def _load_with(contract_text, *, contract_exists=True, download_raises=None,
+               model=None):
     from gcp.research.magnitude_engine import mag_inference as mod
     bucket = _contract_blobs(contract_text, contract_exists=contract_exists)
     if download_raises is not None:
@@ -625,10 +626,16 @@ def _load_with(contract_text, *, contract_exists=True, download_raises=None):
                 b.download_as_text.side_effect = download_raises
             return b
         bucket.blob.side_effect = raising
+    if model is None:
+        # An estimator ordered the way our own training produces: labels are
+        # mapped through LABEL_TO_IDX to ints 0..n-1, so classes_ is range(n).
+        from gcp.research.magnitude_engine.mag_config import LABEL_CLASSES
+        model = MagicMock()
+        model.classes_ = list(range(len(LABEL_CLASSES)))
     client = MagicMock()
     client.bucket.return_value = bucket
     with patch("google.cloud.storage.Client", return_value=client), \
-         patch("joblib.load", return_value=MagicMock()):
+         patch("joblib.load", return_value=model):
         return mod._load_model_and_version("IWM", "5m")
 
 
@@ -951,3 +958,60 @@ def test_a_transport_failure_is_not_a_contract_rejection():
         _load_with("", download_raises=TransportError("503"))
     except Exception as e:
         assert not isinstance(e, ContractRejection)
+
+
+def test_a_wrongly_ordered_estimator_is_refused():
+    """_score_and_persist reads probability columns positionally via the
+    global LABEL_TO_IDX and checks only that there are four of them. An
+    estimator whose classes_ are ordered differently -- a model fitted on
+    string labels sorts alphabetically -- would pass the shape check and
+    persist every probability under the wrong bucket name while looking
+    entirely normal. (Codex P2 on #1074.)"""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMismatch, ContractRejection)
+    wrong = MagicMock()
+    wrong.classes_ = ["EXPANDED", "EXPLOSIVE", "NORMAL", "TIGHT"]
+    with pytest.raises(ContractMismatch) as e:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=wrong)
+    assert "classes_" in str(e.value)
+    assert isinstance(e.value, ContractRejection), "must reach the fatal path"
+
+
+def test_an_estimator_without_classes_is_refused_not_assumed():
+    """A wrapper exposing no classes_ cannot be checked, and the order is not
+    guessed about -- guessing is what the whole change exists to stop."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import ContractMismatch
+    bare = MagicMock(spec=[])           # no classes_ attribute at all
+    with pytest.raises(ContractMismatch, match="no classes_"):
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=bare)
+
+
+def test_our_own_integer_ordered_estimator_passes():
+    """The inverse: training maps labels through LABEL_TO_IDX to ints 0..n-1,
+    so classes_ is exactly range(n). This check must be a no-op for anything
+    we produced, or it would refuse the whole live fleet."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import LABEL_CLASSES
+    ok = MagicMock()
+    ok.classes_ = list(range(len(LABEL_CLASSES)))
+    model, cols, version, contract = _load_with(
+        _json.dumps(_SERVING_CONTRACT), model=ok)
+    assert contract["label_mode"] == "body"
+
+
+def test_the_backfill_rescans_cells_that_were_idle_at_scan_time():
+    """A cell idle during the scan can gain a LATEST before the verdict --
+    the old writer is still promoting during the pre-deploy backfill -- and
+    iterating the scan's keys would omit it, leaving a freshly promoted
+    artifact with no CONTRACT.json behind a "safe to deploy". The loop taught
+    itself that a pointer can MOVE and VANISH; this is the third case, that
+    one can APPEAR. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    assert "for ticker, tf in [(t, f) for t in TICKERS for f in TIMEFRAMES]" \
+        in verdict, "the verdict must rescan every cell, not the scan's keys"
+    assert "LATEST appeared during the run" in verdict
+    # and the success line reports what THIS pass verified
+    assert "len(latest_of)" not in verdict

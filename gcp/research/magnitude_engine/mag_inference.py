@@ -286,6 +286,47 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
         model_blob.download_to_filename(tf_file.name)
         model = joblib.load(tf_file.name)
 
+    # The contract says what the buckets MEAN; this says the columns are in
+    # the order the reader assumes. _score_and_persist assigns p_tight ..
+    # p_explosive by the global LABEL_TO_IDX and checks only that there are
+    # four columns, so an estimator whose classes_ are ordered differently --
+    # a model fitted on string labels sorts alphabetically, for instance --
+    # would pass the shape check and persist all four probabilities under the
+    # wrong bucket names (Codex P2 on #1074).
+    #
+    # Our own training maps labels through LABEL_TO_IDX to ints 0..n-1, so
+    # classes_ is exactly range(n) and this is a no-op for anything we
+    # produced. It is not a no-op for an artifact that arrived some other
+    # way, which is the threat this PR exists for.
+    #
+    # Checked against the FITTED OBJECT rather than recorded in the contract:
+    # a stated claim about column order is one more thing that can be wrong,
+    # and the estimator is the authority. A model without classes_ (some
+    # wrappers) cannot be checked and is not guessed about -- it is refused.
+    expected_classes = list(range(len(LABEL_CLASSES)))
+    actual_classes = getattr(model, "classes_", None)
+    if actual_classes is None:
+        raise ContractMismatch(
+            f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator "
+            f"exposes no classes_, so the order of its probability columns "
+            f"cannot be verified against {LABEL_CLASSES}.")
+    # Coerce defensively. `int(c)` on a string class raises a bare ValueError,
+    # which is NOT a ContractRejection -- so the very case this check is for,
+    # an estimator fitted on string labels, would have escaped the fatal path
+    # through the check written to catch it. Anything that will not coerce is
+    # by definition not range(n) and belongs in the mismatch message as-is.
+    try:
+        normalised = [int(c) for c in actual_classes]
+    except (TypeError, ValueError):
+        normalised = list(actual_classes)
+    if normalised != expected_classes:
+        raise ContractMismatch(
+            f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator's "
+            f"classes_ are {list(actual_classes)}, not {expected_classes}. "
+            f"Probability columns are read positionally as {LABEL_CLASSES}, "
+            f"so every probability would be persisted under the wrong bucket "
+            f"name while looking entirely normal.")
+
     version = (version_blob.download_as_text().strip()
                if version_blob.exists() else "unknown")
     feature_cols = (features_blob.download_as_text().strip().split("\n")

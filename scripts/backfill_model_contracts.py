@@ -177,8 +177,18 @@ def main() -> int:
     # Read back rather than trusting the writes: in commit mode this is the
     # difference between "upload_from_string returned" and "the blob is
     # there", and it is the same check done by hand before the first backfill.
+    # Rescan EVERY cell, not just the ones that were serving at scan time. A
+    # cell idle during the scan can gain a LATEST before the verdict -- the
+    # old writer is still promoting during the pre-deploy backfill -- and
+    # iterating over the scan's keys would omit it entirely, so a freshly
+    # promoted artifact with no CONTRACT.json would sit behind a "safe to
+    # deploy" (Codex P2 on #1074). The previous round taught the loop that a
+    # pointer can MOVE or VANISH; this one is the third case, that one can
+    # APPEAR. The verdict covers the whole fleet or it is not a verdict.
     unverified = []
-    for (ticker, tf), scanned_run in sorted(latest_of.items()):
+    verified = 0
+    for ticker, tf in [(t, f) for t in TICKERS for f in TIMEFRAMES]:
+        scanned_run = latest_of.get((ticker, tf))
         base = f"magnitude-models/production/{ticker}/{tf}"
         # Re-read LATEST rather than trusting the run id cached at scan time.
         # A promotion running concurrently -- entirely possible during the
@@ -189,11 +199,19 @@ def main() -> int:
         # world at the moment it is issued.
         latest = bucket.blob(f"{base}/LATEST")
         if not latest.exists():
+            if scanned_run is None:
+                continue          # idle at the scan and still idle; nothing serving
             unverified.append(
                 f"{ticker}:{tf} — LATEST vanished during the run "
                 f"(was {scanned_run}); re-run once promotions have settled")
             continue
         run_id = latest.download_as_text().strip()
+        if scanned_run is None:
+            unverified.append(
+                f"{ticker}:{tf} — LATEST appeared during the run "
+                f"(now {run_id}); it was idle at scan time so this run never "
+                f"audited it; re-run once promotions have settled")
+            continue
         if run_id != scanned_run:
             unverified.append(
                 f"{ticker}:{tf} — LATEST moved during the run "
@@ -222,6 +240,8 @@ def main() -> int:
             continue
         if mismatch:
             unverified.append(f"{where} — contract mismatch: {mismatch}")
+            continue
+        verified += 1
     if unverified:
         print(f"\nUNVERIFIED serving artifacts, {len(unverified)}:")
         for cell in unverified:
@@ -230,8 +250,9 @@ def main() -> int:
               "contract check until every one carries a CONTRACT.json — "
               "audit each run and re-run with it named by --audited-run-id.")
         return 1
-    print(f"\nall {len(latest_of)} serving artifact(s) carry "
-          f"{CONTRACT_BLOB}; safe to deploy the contract check")
+    # Report what was actually verified in THIS pass, not what the scan saw.
+    print(f"\nall {verified} serving artifact(s) carry a {CONTRACT_BLOB} the "
+          f"reader accepts; safe to deploy the contract check")
     return 0
 
 
