@@ -326,9 +326,33 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
     # bool, which is an int subclass) or a float/numpy value that survives a
     # round trip unchanged. Anything else, including anything that will not
     # coerce at all, is reported as-is in the mismatch.
+    # A value that cannot compare equal to anything but itself, so a
+    # rejected class can never coincidentally match the expected index.
+    # Returning the offending value itself was NOT enough for bools: Python
+    # has False == 0 and True == 1, so classes_ of [False, True, 2, 3]
+    # compared EQUAL to [0, 1, 2, 3] and was accepted, while the comment here
+    # claimed it was rejected. The test that was supposed to cover it used
+    # [True, False, 2, 3], which fails on ORDER rather than on the bool rule,
+    # so it passed for the wrong reason and gave false assurance (Codex P2 on
+    # #1074).
+    class _NotAnIndex:
+        __slots__ = ("value",)
+
+        def __init__(self, value):
+            self.value = value
+
+        def __eq__(self, other):
+            return self is other
+
+        def __hash__(self):
+            return id(self)
+
+        def __repr__(self):
+            return repr(self.value)
+
     def _as_index(c):
         if isinstance(c, bool):
-            return c                      # not an index; compares unequal
+            return _NotAnIndex(c)         # never equal to 0 or 1
         if isinstance(c, int):
             return c
         try:
@@ -341,12 +365,13 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             # ContractMismatch entirely and landed back under the
             # partial-success threshold (Codex P2 on #1074).
             #
-            # Seventh escape of this shape across the PR. Returning the value
-            # unchanged is always right regardless of why it would not
-            # convert: it is then not the integer index, so it compares
-            # unequal and is reported as-is in the mismatch.
-            return c
-        return i if i == c else c         # 0.5 -> 0.5, not 0
+            # Seventh escape of this shape across the PR. Rejecting is right
+            # regardless of WHY the value would not convert -- it is then not
+            # the integer index. It is wrapped rather than returned raw so it
+            # cannot compare equal to one, which is the trap the bool branch
+            # above fell into.
+            return _NotAnIndex(c)
+        return i if i == c else _NotAnIndex(c)   # 0.5 is not 0
     if [_as_index(c) for c in actual_classes] != expected_classes:
         raise ContractMismatch(
             f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator's "

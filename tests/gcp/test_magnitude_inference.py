@@ -1049,7 +1049,12 @@ def test_deeply_nested_json_is_malformed_not_an_ordinary_failure():
     ([0.0, 1.0, 2.0, 3.0], True),         # floats that round-trip unchanged
     ([0.5, 1.5, 2.5, 3.5], False),        # int() truncated these to 0,1,2,3
     (["EXPANDED", "EXPLOSIVE", "NORMAL", "TIGHT"], False),
-    ([True, False, 2, 3], False),         # bool is an int subclass
+    # BOTH orderings. [True, False, ...] fails on order alone, so it passed
+    # even while the bool rule was a no-op and gave false assurance; the
+    # IN-ORDER case is the one that actually tests the rule, because
+    # False == 0 and True == 1 make it compare equal to range(4).
+    ([False, True, 2, 3], False),
+    ([True, False, 2, 3], False),
 ])
 def test_estimator_classes_are_compared_losslessly(classes, accepted):
     """int() truncates, so [0.5,1.5,2.5,3.5] passed as range(4) and the check
@@ -1198,6 +1203,32 @@ def test_every_site_that_interprets_untrusted_values_fails_closed():
     coerce = cfg[cfg.index("got_thresholds = tuple(float(t)"):]
     assert "except Exception" in coerce[:coerce.index("raise ValueError")]
     # 3. normalising the estimator classes
-    norm = inf[inf.index("def _as_index(c):"):]
-    assert "except Exception" in norm[:norm.index("return c\n", norm.index(
-        "except Exception"))]
+    norm = inf[inf.index("def _as_index(c):"):inf.index("if [_as_index(c)")]
+    assert "except Exception" in norm
+
+
+def test_a_rejected_class_can_never_coincidentally_match():
+    """The bool hole was not a missing case, it was a no-op guard: returning
+    the offending value meant False == 0 and True == 1, so an in-order
+    boolean class list compared EQUAL to range(n) and was accepted while the
+    comment claimed otherwise. Rejected values now become a sentinel that is
+    equal only to itself, so no rejected class can coincide with an expected
+    index for any reason. (Codex P2 on #1074.)"""
+    src = pathlib.Path(
+        "gcp/research/magnitude_engine/mag_inference.py").read_text()
+    fn = src[src.index("class _NotAnIndex"):src.index("if [_as_index(c)")]
+    assert "def __eq__" in fn and "return self is other" in fn, (
+        "the sentinel must be equal only to itself")
+    # every rejecting return path yields the sentinel, not the raw value
+    body = src[src.index("def _as_index(c):"):src.index("if [_as_index(c)")]
+    # Three rejecting paths — bool, non-convertible, and a value that does
+    # not round-trip — and every one wraps. The single bare `return c` is the
+    # ACCEPTING path for a real int, where returning it is the point.
+    # Two `return _NotAnIndex(c)` (bool, non-convertible) plus the ternary
+    # for a value that does not round-trip: three rejecting paths, three
+    # wraps. Counted from the code rather than assumed — an earlier version
+    # of this assertion guessed 3 and 4 and was wrong about both.
+    assert body.count("return _NotAnIndex(c)") == 2, body
+    assert body.count("_NotAnIndex(c)") == 3, "including the non-round-trip"
+    assert body.count("return c\n") == 1, (
+        "only the accepting int path may return the raw value")
