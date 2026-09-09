@@ -481,12 +481,21 @@ def contract_mismatch(payload: dict,
         if isinstance(val, (str, bytes)) or not isinstance(val, (list, tuple)):
             raise ValueError(
                 f"{CONTRACT_BLOB} {key}={val!r} is not a JSON array")
+    # Fail CLOSED, like the decode guard in mag_inference and for the same
+    # reason. This clause was (TypeError, ValueError) and a JSON integer of
+    # 400 digits -- valid JSON, under the 3.11 int-digit limit -- makes
+    # float() raise OverflowError, which is neither, so it escaped
+    # ContractMalformed and put the artifact back under the partial-success
+    # threshold (Codex P2 on #1074). That is the sixth such escape found by
+    # enumeration across this PR; the payload is already parsed and
+    # type-checked here, so ANY failure to turn it into numbers means the
+    # same thing: this is not a readable contract.
     try:
         got_thresholds = tuple(float(t) for t in payload["thresholds"])
-    except (TypeError, ValueError) as e:
+    except Exception as e:                              # noqa: BLE001
         raise ValueError(
             f"{CONTRACT_BLOB} thresholds={payload['thresholds']!r} is not a "
-            f"list of numbers: {e}") from e
+            f"list of numbers: {type(e).__name__}: {e}") from e
 
     mismatches = []
     if got_mode != label_mode:

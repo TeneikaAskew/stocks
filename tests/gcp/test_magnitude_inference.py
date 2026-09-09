@@ -1115,3 +1115,47 @@ def test_an_arbitrary_interpretation_failure_is_still_fatal():
     with pytest.raises(ContractMalformed) as e:
         _load_with(b"\x00\x01\x02\x03")          # not text, not JSON
     assert isinstance(e.value, ContractRejection)
+
+
+def test_threshold_coercion_fails_closed():
+    """A 400-digit JSON integer is valid JSON and under the 3.11 int-digit
+    limit, but float() raises OverflowError -- neither TypeError nor
+    ValueError, so it escaped ContractMalformed and put the artifact back
+    under the partial-success threshold. Sixth enumeration escape in this PR.
+    The payload is already parsed and type-checked by this point, so ANY
+    failure to turn it into numbers means the same thing. (Codex P2 on
+    #1074.)"""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="not a list of numbers"):
+        contract_mismatch({"label_mode": "body",
+                           "thresholds": [10 ** 400, 1.0, 1.5],
+                           "classes": ["TIGHT", "NORMAL", "EXPANDED",
+                                       "EXPLOSIVE"]})
+
+
+def test_an_overflowing_threshold_reaches_the_fatal_path():
+    """End to end: the ValueError above must surface from the real loader as
+    ContractMalformed, which is what makes it fatal."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMalformed, ContractRejection)
+    payload = ('{"label_mode":"body","thresholds":[' + "1" * 400
+               + ',1.0,1.5],"classes":["TIGHT","NORMAL","EXPANDED",'
+                 '"EXPLOSIVE"]}')
+    with pytest.raises(ContractMalformed) as e:
+        _load_with(payload)
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_the_backfill_verifies_the_bucket_it_was_pointed_at():
+    """The verdict delegates to the reader, which picks its bucket from
+    GCS_BUCKET. A run against a non-default --bucket would otherwise scan and
+    write one bucket while verifying another. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    body = src[src.index("def main("):]
+    assert 'os.environ["GCS_BUCKET"] = args.bucket' in body
+    # Match the CALL, not the symbol: the surrounding comment names it too,
+    # and an index() on the bare name finds the comment first.
+    call = "mag_inference._load_model_and_version(ticker, tf)"
+    assert body.index('os.environ["GCS_BUCKET"] = args.bucket') < body.index(
+        call), "the bucket must be pinned before the reader is called"

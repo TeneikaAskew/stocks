@@ -97,6 +97,15 @@ def main() -> int:
     args = ap.parse_args()
 
     from google.cloud import storage as gcs
+    # The verdict below delegates to mag_inference._load_model_and_version,
+    # which picks its own bucket from GCS_BUCKET. Without this, a run against
+    # a non-default --bucket would scan and write one bucket while VERIFYING
+    # another -- reporting the requested bucket safe on the strength of
+    # unrelated artifacts, or failing despite a successful backfill (Codex P2
+    # on #1074). Delegating to the reader is what removed the drift between
+    # two implementations; this is what stops it reintroducing drift between
+    # two BUCKETS.
+    os.environ["GCS_BUCKET"] = args.bucket
     bucket = gcs.Client().bucket(args.bucket)
     payload = json.dumps(_AUDITED_LEGACY_CONTRACT, indent=2)
 
