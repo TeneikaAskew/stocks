@@ -2070,7 +2070,7 @@ def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
     assert "docs_verified-2026--11--02-blue" in body
     assert f"cloud_run_jobs-{live['counts']['jobs']}_live_%2F_{len(repo['jobs'])}_declared" in body
     assert f"schedulers-{live['counts']['schedulers']}_live" in body
-    assert f"schema_tables-{declared}_declared_%2F_{len(live['db_tables'])}_live" in body
+    assert f"schema_relations-{declared}_declared_%2F_{len(live['db_tables'])}_live" in body
     # the workflow badge names the workflow that actually exists
     assert "refresh-architecture-docs.yml/badge.svg" in body
     assert (REPO / ".github/workflows/refresh-architecture-docs.yml").exists()
@@ -2080,17 +2080,27 @@ def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
     assert "## Documentation map" in body or "Read this" in body
 
 
+def _readme_with(*extra_lines, day="2020-01-01") -> str:
+    """README carrying the five owned badges plus whatever else is given."""
+    owned = [
+        f"![Last audit](https://img.shields.io/badge/docs_verified-{day.replace('-', '--')}-blue)",
+        "![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-1_live_%2F_1_declared-blue)",
+        "![Cloud Scheduler](https://img.shields.io/badge/schedulers-1_live-blue)",
+        "![Cloud SQL relations](https://img.shields.io/badge/schema_relations-1_declared_%2F_1_live-blue)",
+        ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+         "workflows/refresh-architecture-docs.yml/badge.svg)"),
+    ]
+    return ("# T\n\n" + "\n".join(owned) + "\n"
+            + "".join(l + "\n" for l in extra_lines)
+            + f"\nGenerated {day} by the monthly documentation refresh.\n")
+
+
 def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, live):
     """A shields.io link further down the document is content, not a badge to
     overwrite."""
     readme = tmp_path / "README.md"
-    readme.write_text(
-        "# T\n\n"
-        "![Last audit](https://img.shields.io/badge/docs_verified-2020--01--01-blue)\n"
-        "![b](https://img.shields.io/badge/y-2-blue)\n"
-        "\nprose\n\n"
-        "![elsewhere](https://img.shields.io/badge/keep--me-9-red)\n"
-        "\nGenerated 2020-01-01 by the monthly documentation refresh.\n")
+    readme.write_text(_readme_with(
+        "", "prose", "", "![elsewhere](https://img.shields.io/badge/keep--me-9-red)"))
     inv.insert_readme_badges(readme, repo, live, "2026-11-02")
     body = readme.read_text()
     assert "keep--me-9-red" in body, "a later shields link was swallowed"
@@ -2098,13 +2108,50 @@ def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, li
     assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
 
 
+def test_a_maintainer_badge_beside_the_block_survives(tmp_path, repo, live):
+    """Selecting the whitespace-contiguous run that contained `docs_verified`
+    still swallowed a badge a maintainer put directly beside ours, blank line
+    or not: adjacency says nothing about ownership. The span now runs from the
+    first OWNED badge to the last, so anything above or below survives.
+    (Codex, PR #1070.)
+    """
+    build = "![build](https://img.shields.io/badge/build-passing-green)"
+    for placement in ("above", "below", "below_blank"):
+        readme = tmp_path / f"README_{placement}.md"
+        if placement == "above":
+            readme.write_text(_readme_with().replace("# T\n\n", f"# T\n\n{build}\n"))
+        elif placement == "below":
+            readme.write_text(_readme_with(build))
+        else:
+            readme.write_text(_readme_with("", build))
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+        body = readme.read_text()
+        assert "build-passing-green" in body, \
+            f"a maintainer's badge {placement} the block was deleted"
+        assert "docs_verified-2026--11--02-blue" in body
+        assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+
+
+def test_a_foreign_line_inside_the_block_is_an_error_not_a_deletion(tmp_path, repo, live):
+    """No single-span replacement can preserve a line sitting BETWEEN owned
+    badges, so it is named rather than silently dropped."""
+    readme = tmp_path / "README.md"
+    body = _readme_with()
+    readme.write_text(body.replace(
+        "![Cloud Scheduler]",
+        "![build](https://img.shields.io/badge/build-passing-green)\n![Cloud Scheduler]"))
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="between its badges"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before
+
+
 def test_the_block_is_identified_by_identity_not_by_being_first(tmp_path, repo, live):
     """Taking the first run of badge lines meant that if the inventory badges
     were ever removed while an unrelated badge remained further down, the
     monthly refresh would DELETE that unrelated badge and insert the inventory
     ones in its place -- a wrong answer indistinguishable from a right one,
-    written unattended. The block is identified by the `docs_verified` badge it
-    carries; not finding it is an error. (Codex, PR #1070.)
+    written unattended. (Codex, PR #1070.)
     """
     readme = tmp_path / "README.md"
     readme.write_text(
@@ -2112,22 +2159,25 @@ def test_the_block_is_identified_by_identity_not_by_being_first(tmp_path, repo, 
         "![build](https://img.shields.io/badge/build-passing-green)\n"
         "\nGenerated 2020-01-01 by the monthly documentation refresh.\n")
     before = readme.read_text()
-    with pytest.raises(ValueError, match="none containing the 'docs_verified' badge"):
+    with pytest.raises(ValueError, match="no badge block found"):
         inv.insert_readme_badges(readme, repo, live, "2026-11-02")
     assert readme.read_text() == before, "the unrelated badge was rewritten anyway"
 
 
-def test_two_blocks_both_claiming_to_be_ours_is_an_error(tmp_path, repo, live):
-    """Ambiguity is not resolved by picking one."""
-    readme = tmp_path / "README.md"
-    readme.write_text(
-        "# T\n\n"
-        "![Last audit](https://img.shields.io/badge/docs_verified-2020--01--01-blue)\n"
-        "\nprose\n\n"
-        "![Last audit](https://img.shields.io/badge/docs_verified-2019--01--01-blue)\n"
-        "\nGenerated 2020-01-01 by the monthly documentation refresh.\n")
-    with pytest.raises(ValueError, match="cannot tell which one"):
-        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+def test_the_relation_badge_says_relations_because_that_is_what_it_counts(repo, live):
+    """The badge summed tables + materialized views + views and published the
+    total as `schema_tables`, stating a count of tables that do not exist: 70
+    declared against 67 real tables. (Codex, PR #1070.)"""
+    rendered = inv.readme_badges(repo, live, "2026-11-02")
+    assert "schema_tables" not in rendered, \
+        "a relation count is still published as a table count"
+    assert "schema_relations-" in rendered
+    assert "Cloud SQL relations" in rendered
+    declared = (len(repo["tables"]) + len(repo["materialized_views"])
+                + len(repo["views"]))
+    assert f"schema_relations-{declared}_declared_" in rendered
+    assert declared > len(repo["tables"]), \
+        "fixture has no views, so this test could not detect the mislabel"
 
 
 def test_a_readme_with_no_badges_fails_loudly(tmp_path, repo, live):

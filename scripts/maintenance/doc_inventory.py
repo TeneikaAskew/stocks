@@ -4137,11 +4137,18 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
 # with `replace` and never to regenerate it; the model regenerated it anyway
 # (52% churn). Same conclusion as the as-of labels and the runtime-relation
 # count: render what is inventory and stop asking. (Run 32.)
-# What makes a badge block OURS. The audit badge is rendered on every run
-# and appears nowhere else, so it is the block's identity.
-BADGE_ANCHOR = re.compile(r"img\.shields\.io/badge/docs_verified-")
-README_BADGE = re.compile(r"^!\[[^\]]*\]\((?:https://img\.shields\.io|https://github\.com/[^)]*badge\.svg)[^)]*\)$",
-                          re.M)
+# The five badges this renderer owns, by identity. Anything else in README
+# belongs to a maintainer and is never rewritten. Anchoring on "the first
+# contiguous run of badge-shaped lines" was wrong twice over: it could pick a
+# run that is not ours at all, and -- once that was fixed by looking for the
+# audit badge -- it still swallowed an unrelated badge a maintainer put
+# beside ours, because whitespace-contiguity says nothing about ownership.
+# (Codex, PR #1070.)
+OWNED_BADGE = re.compile(
+    r"^!\[[^\]]*\]\(https://img\.shields\.io/badge/"
+    r"(?:docs_verified|cloud_run_jobs|schedulers|schema_relations|schema_tables)-[^)]*\)$"
+    r"|^!\[[^\]]*\]\(https://github\.com/[^)]*"
+    r"workflows/refresh-architecture-docs\.yml/badge\.svg\)$", re.M)
 
 
 def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -> str:
@@ -4176,7 +4183,12 @@ def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -
         f"![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-"
         f"{lc.get('jobs', 0)}_live_%2F_{len(repo['jobs'])}_declared-blue)",
         f"![Cloud Scheduler](https://img.shields.io/badge/schedulers-{lc.get('schedulers', 0)}_live-blue)",
-        f"![Cloud SQL tables](https://img.shields.io/badge/schema_tables-"
+        # "relations", not "tables": the declared number is tables plus
+        # materialized views plus views (67 + 2 + 1 = 70 today) and the live
+        # number counts every relation in the database. Publishing that as
+        # "schema_tables" stated a count of 70 tables that do not exist.
+        # (Codex, PR #1070.)
+        f"![Cloud SQL relations](https://img.shields.io/badge/schema_relations-"
         f"{declared_relations}_declared_%2F_{live_relations}_live-blue)",
         "![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
         "workflows/refresh-architecture-docs.yml/badge.svg)",
@@ -4194,36 +4206,26 @@ def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
                          live: dict[str, Any] | None, day: str) -> bool:
     """Replace README's badge block, and its closing date stamp, from inventory."""
     text = doc_path.read_text()
-    spans = [m.span() for m in README_BADGE.finditer(text)]
-    if not spans:
-        raise ValueError(f"{doc_path}: no badge block found to render")
-    # Group into contiguous runs: consecutive matches separated only by
-    # newlines. A run is a badge BLOCK; separate blocks are separate runs.
-    runs: list[list[tuple[int, int]]] = [[spans[0]]]
-    for start, stop in spans[1:]:
-        if text[runs[-1][-1][1]:start].strip():
-            runs.append([(start, stop)])
-        else:
-            runs[-1].append((start, stop))
-    # Identify the inventory block by what it CONTAINS, not by being first.
-    # Taking the first run meant that if the inventory badges were ever
-    # removed while an unrelated shields.io badge remained further down,
-    # the refresh would delete that unrelated badge and insert the
-    # inventory ones in its place -- a wrong answer indistinguishable from
-    # a right one, written unattended every month. Not finding the block
-    # is now an error, not a silent relocation. (Codex, PR #1070.)
-    owned = [r for r in runs if BADGE_ANCHOR.search(text[r[0][0]:r[-1][1]])]
+    # Select by OWNERSHIP, not by position or adjacency: the span runs from the
+    # first badge this renderer owns to the last. A badge a maintainer adds
+    # above or below ours therefore falls outside the span and survives. One
+    # placed BETWEEN ours cannot be preserved by any replacement of a single
+    # span, so that is an error naming the line rather than a silent deletion.
+    owned = [m.span() for m in OWNED_BADGE.finditer(text)]
     if not owned:
         raise ValueError(
-            f"{doc_path}: found {len(runs)} badge block(s), none containing the "
-            f"'docs_verified' badge that identifies the rendered inventory block. "
-            f"Refusing to overwrite a block this renderer does not own.")
-    if len(owned) > 1:
+            f"{doc_path}: no badge block found to render. Expected at least one of "
+            f"the badges this renderer owns (docs_verified, cloud_run_jobs, "
+            f"schedulers, schema_relations, the refresh workflow badge).")
+    lo, hi = owned[0][0], owned[-1][1]
+    foreign = [ln for ln in text[lo:hi].split("\n")
+               if ln.strip() and not OWNED_BADGE.fullmatch(ln)]
+    if foreign:
         raise ValueError(
-            f"{doc_path}: {len(owned)} badge blocks carry a 'docs_verified' badge; "
-            f"cannot tell which one to render.")
-    block = owned[0]
-    new = text[:block[0][0]] + readme_badges(repo, live, day) + text[block[-1][1]:]
+            f"{doc_path}: {len(foreign)} line(s) that this renderer does not own sit "
+            f"between its badges, so replacing the block would delete them; move them "
+            f"above or below the block. First: {foreign[0][:80]!r}")
+    new = text[:lo] + readme_badges(repo, live, day) + text[hi:]
     stamped, n = README_STAMP.subn(lambda m: f"{m.group(1)}{day}", new)
     if not n:
         raise ValueError(f"{doc_path}: no 'Generated <date>' line found to stamp")
