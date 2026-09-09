@@ -242,33 +242,35 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             f"legacy artifact with scripts/backfill_model_contracts.py, or "
             f"re-run walk_forward with --persist-production-model to publish "
             f"one.")
+    # Fetch and interpret are separated ON PURPOSE, because they fail for
+    # different reasons and must be classified differently.
+    #
+    # FETCH is transport. A GCS read that fails is an ordinary transient cell
+    # failure and stays subject to the partial-success threshold; recasting it
+    # as a contract rejection would page on every flaky read and let a blip
+    # block a deploy. So it is outside the guard and propagates as itself.
+    raw_bytes = contract_blob.download_as_bytes()
+    # INTERPRET is a claim about the bytes. Every way that can fail means the
+    # same thing -- these bytes are not a readable contract -- so it fails
+    # CLOSED by construction rather than by an exception list.
+    #
+    # The list is why: over five review rounds this clause was JSONDecodeError,
+    # then ValueError, then (ValueError, RecursionError), and each round found
+    # another escape (UnicodeDecodeError; a plain ValueError from the 3.11
+    # int_max_str_digits limit; RecursionError from deep nesting). Enumerating
+    # decoder failure modes is unwinnable -- the next one is always one
+    # interpreter detail away, and every miss lands the artifact back under the
+    # partial-success threshold. Catching everything HERE is safe precisely
+    # because the transport half was lifted out above, so the only thing this
+    # block can be wrong about is the bytes.
     try:
-        contract = json.loads(contract_blob.download_as_text())
-    except (ValueError, RecursionError) as e:
-        # ValueError rather than JSONDecodeError, because three different
-        # decoding failures live under it and only one of them is a
-        # JSONDecodeError (Codex P2 on #1074):
-        #   * JSONDecodeError      — ordinary bad syntax
-        #   * UnicodeDecodeError   — non-UTF-8 bytes out of download_as_text;
-        #                            a ValueError subclass, not a JSON error
-        #   * plain ValueError     — an integer literal over the 3.11
-        #                            int_max_str_digits limit, raised by the
-        #                            int conversion rather than the parser
-        #   * RecursionError       — deep nesting blows the decoder's stack.
-        #                            NOT a ValueError at all; measured, a
-        #                            10,000-deep array reproduces it here.
-        # The narrower clause let the last two escape to the ordinary per-cell
-        # handler and back under the partial-success threshold.
-        #
-        # Deliberately NOT broader than ValueError: a GCS transport failure is
-        # a google.cloud exception and IS an ordinary transient cell failure,
-        # not evidence that the contract is malformed. Only the two operations
-        # in this block can raise ValueError, and from them it always means
-        # the bytes could not be decoded into a contract.
+        contract = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:                              # noqa: BLE001
         raise ContractMalformed(
             f"{ticker}:{tf} run={run_id}: {CONTRACT_BLOB} could not be "
             f"decoded at gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}: "
             f"{type(e).__name__}: {e}") from e
+
     try:
         mismatch = contract_mismatch(contract)
     except ValueError as e:

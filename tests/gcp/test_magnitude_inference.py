@@ -597,6 +597,9 @@ def _contract_blobs(contract_text, *, contract_exists=True):
         elif name.endswith("/CONTRACT.json"):
             b.exists.return_value = contract_exists
             b.download_as_text.return_value = contract_text
+            b.download_as_bytes.return_value = (
+                contract_text.encode("utf-8")
+                if isinstance(contract_text, str) else contract_text)
         elif name.endswith("/model.joblib"):
             b.exists.return_value = True
             b.download_to_filename.side_effect = lambda p: None
@@ -624,6 +627,7 @@ def _load_with(contract_text, *, contract_exists=True, download_raises=None,
             b = real(name)
             if name.endswith("/CONTRACT.json"):
                 b.download_as_text.side_effect = download_raises
+                b.download_as_bytes.side_effect = download_raises
             return b
         bucket.blob.side_effect = raising
     if model is None:
@@ -941,12 +945,15 @@ def test_every_decoding_failure_reaches_the_fatal_path():
         _load_with(huge)
     assert isinstance(e2.value, ContractRejection)
 
-    # 3. non-UTF-8 bytes out of download_as_text — a ValueError subclass, but
-    #    not a JSON error
-    boom = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+    # 3. non-UTF-8 bytes — real payload, decoded in the guarded block rather
+    #    than injected, so this exercises the actual decode path
     with pytest.raises(ContractMalformed) as e3:
-        _load_with("", download_raises=boom)
+        _load_with(b"\xff\xfe not utf-8")
     assert isinstance(e3.value, ContractRejection)
+
+    # 4. deep nesting: RecursionError, not a ValueError at all
+    with pytest.raises(ContractMalformed):
+        _load_with("[" * 10000 + "]" * 10000)
 
 
 def test_a_transport_failure_is_not_a_contract_rejection():
@@ -1073,3 +1080,38 @@ def test_the_backfill_verdict_calls_the_reader_rather_than_reimplementing_it():
     # and it no longer re-implements the reader's parsing
     assert "contract_mismatch(" not in verdict, (
         "the verdict must not re-implement the reader's checks")
+
+
+def test_contract_interpretation_fails_closed_by_construction():
+    """Five rounds of review each found another way past this clause:
+    JSONDecodeError -> ValueError -> (ValueError, RecursionError), defeated in
+    turn by UnicodeDecodeError, a plain ValueError from the 3.11
+    int_max_str_digits limit, and RecursionError from deep nesting. Every miss
+    lands the artifact back under the partial-success threshold.
+
+    Enumerating decoder failure modes is unwinnable, so interpretation now
+    fails CLOSED: anything that goes wrong turning the bytes into a contract
+    is a malformed contract. That is only safe because the FETCH was lifted
+    out of the guard, which the companion test pins."""
+    src = pathlib.Path("gcp/research/magnitude_engine/mag_inference.py").read_text()
+    fn = src[src.index("def _load_model_and_version"):src.index("def _last_settled_ts")]
+    # the fetch is outside the guard
+    assert "raw_bytes = contract_blob.download_as_bytes()" in fn
+    fetch = fn.index("raw_bytes = contract_blob.download_as_bytes()")
+    guard = fn.index("contract = json.loads(raw_bytes.decode")
+    assert fetch < guard, "the fetch must precede, and sit outside, the guard"
+    # and the guard is not an exception list
+    block = fn[guard:fn.index("raise ContractMalformed", guard)]
+    assert "except Exception" in block, (
+        "interpretation must fail closed, not by enumerating decoder errors")
+
+
+def test_an_arbitrary_interpretation_failure_is_still_fatal():
+    """The property the construction buys: a decoder failure nobody
+    enumerated is still a contract rejection. Simulated with a payload that
+    json.loads rejects for a reason none of the five rounds named."""
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMalformed, ContractRejection)
+    with pytest.raises(ContractMalformed) as e:
+        _load_with(b"\x00\x01\x02\x03")          # not text, not JSON
+    assert isinstance(e.value, ContractRejection)
