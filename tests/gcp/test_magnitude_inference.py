@@ -1307,7 +1307,7 @@ def test_the_backfill_rechecks_latest_after_loading_the_artifact():
     load = verdict.index("_load_model_and_version")
     tail = verdict[load:]
     recheck = tail.index("_read_latest(bucket, base)")
-    assert recheck < tail.index("verified += 1"), (
+    assert recheck < tail.index("verified_gen[(ticker, tf)] = generation"), (
         "LATEST must be re-read AFTER the load and BEFORE the cell counts "
         "as verified")
     assert "verified, so the reader may have resolved a different run" in tail
@@ -1328,3 +1328,46 @@ def test_the_latest_reader_pins_its_read_to_one_version():
     assert "raise _PointerMoved" in fn
     assert fn.count("return None") == 1, (
         "None must mean 'no LATEST', not 'the read failed'")
+
+
+def test_the_backfill_resweeps_every_verdict_before_declaring_the_fleet_safe():
+    """The per-cell recheck covers only that cell's own load. The loop is
+    sequential and each iteration downloads a model, so by the last cell the
+    first cell's verdict is many downloads old and nothing revisits it -- a
+    promotion landing on an already-passed cell still reached "safe to
+    deploy". (Codex P2 on #1074.)
+
+    The sweep bounds the staleness of every verdict to the sweep itself. It
+    does not close the race -- nothing in this script can, since a promotion
+    is always possible after the last check -- so the message still points at
+    the durable mitigation."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    loop_end = verdict.index("verified_gen[(ticker, tf)] = generation")
+    after_loop = verdict[loop_end:]
+    sweep = after_loop.index("for (ticker, tf), generation in sorted(")
+    # the sweep runs after the per-cell loop and BEFORE the verdict is issued
+    assert sweep < after_loop.index("if unverified:"), (
+        "the fleet sweep must precede the pass/fail decision")
+    assert "LATEST changed after this run verified it" in after_loop
+    # a demoted cell leaves the verified set, so the success line cannot
+    # report a count that includes it
+    assert "del verified_gen[(ticker, tf)]" in after_loop
+    assert "len(verified_gen)" in after_loop
+    assert "{verified}" not in after_loop, (
+        "a standalone counter would not survive the sweep")
+
+
+def test_the_fleet_sweep_iterates_a_materialised_copy():
+    """The sweep deletes from verified_gen inside its own loop. Iterating the
+    dict view directly would raise RuntimeError on the first demotion, which
+    would turn a detected race into a crash instead of a verdict."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    sweep = src[src.index("for (ticker, tf), generation in sorted("):]
+    assert "sorted(verified_gen.items())" in sweep.split("\n")[0]
+    # prove the pattern itself is sound rather than asserting it looks right
+    d = {("a", "1"): 1, ("b", "2"): 2}
+    for k, v in sorted(d.items()):
+        if v == 1:
+            del d[k]
+    assert d == {("b", "2"): 2}

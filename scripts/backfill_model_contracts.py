@@ -227,7 +227,10 @@ def main() -> int:
     # pointer can MOVE or VANISH; this one is the third case, that one can
     # APPEAR. The verdict covers the whole fleet or it is not a verdict.
     unverified = []
-    verified = 0
+    # The generation each verified cell was serving AT the moment it passed.
+    # A count would not survive the fleet-wide sweep below, which has to know
+    # WHICH version each verdict was about.
+    verified_gen: dict[tuple[str, str], int] = {}
     for ticker, tf in [(t, f) for t in TICKERS for f in TIMEFRAMES]:
         scanned_run = latest_of.get((ticker, tf))
         base = f"magnitude-models/production/{ticker}/{tf}"
@@ -297,11 +300,16 @@ def main() -> int:
         # writer, carrying no CONTRACT.json (Codex P2 on #1074). Re-read after
         # the load and compare the exact VERSION, not just the run id.
         #
-        # This narrows the window to the load itself. It does not close it,
-        # and no number of checks can -- a flip is always possible after the
-        # last one, including after this line. The durable mitigation is not
-        # running this backfill concurrently with promotions, which is what
-        # the message tells the operator to do.
+        # This narrows the window to the load itself; the fleet sweep after
+        # the loop bounds everything AFTER it. Neither closes the race, and no
+        # number of checks can -- a flip is always possible after the last
+        # one. The durable mitigation is not running this backfill
+        # concurrently with promotions, which is what the message says.
+        #
+        # It is also not made redundant by that sweep: the sweep compares
+        # against the generation read BEFORE the load, so an A -> B -> A flip
+        # spanning the load alone leaves the sweep's comparison equal. Only
+        # this check sees it.
         try:
             after = _read_latest(bucket, base)
             moved = after is None or after[1] != generation
@@ -313,7 +321,42 @@ def main() -> int:
                 f"verified, so the reader may have resolved a different run; "
                 f"re-run with promotions paused")
             continue
-        verified += 1
+        verified_gen[(ticker, tf)] = generation
+
+    # A per-cell check only covers that cell's own load. The loop is
+    # SEQUENTIAL and each iteration downloads a model, so by the time the last
+    # cell is verified the first one's verdict is many downloads old -- and
+    # nothing revisits it. A promotion landing on an already-passed cell
+    # therefore still reached "safe to deploy" (Codex P2 on #1074). Sweep every
+    # verdict once more, immediately before issuing the fleet one, so no
+    # verdict in the summary is older than this sweep.
+    #
+    # Generations again, not run ids, for the A -> B -> A case. Each check is
+    # one metadata read, so the sweep costs a handful of round-trips against
+    # the model downloads it re-validates.
+    #
+    # This still does not CLOSE the race and nothing inside this script can:
+    # a promotion is always possible after the last check, including after
+    # this sweep. What it does is bound the staleness of every verdict to the
+    # sweep rather than to whenever that cell happened to be loaded. The
+    # durable mitigation remains pausing promotions, which is what the failure
+    # messages tell the operator to do.
+    # sorted() materialises the items before the loop body deletes
+    # from the dict; iterating the view directly would raise.
+    for (ticker, tf), generation in sorted(verified_gen.items()):
+        base = f"magnitude-models/production/{ticker}/{tf}"
+        try:
+            after = _read_latest(bucket, base)
+            moved = after is None or after[1] != generation
+        except _PointerMoved:
+            moved = True
+        if moved:
+            del verified_gen[(ticker, tf)]
+            unverified.append(
+                f"{ticker}:{tf} — LATEST changed after this run verified it, "
+                f"while later cells were still loading; re-run with "
+                f"promotions paused")
+
     if unverified:
         print(f"\nUNVERIFIED serving artifacts, {len(unverified)}:")
         for cell in unverified:
@@ -323,7 +366,8 @@ def main() -> int:
               "audit each run and re-run with it named by --audited-run-id.")
         return 1
     # Report what was actually verified in THIS pass, not what the scan saw.
-    print(f"\nall {verified} serving artifact(s) carry a {CONTRACT_BLOB} the "
+    print(f"\nall {len(verified_gen)} serving artifact(s) carry a "
+          f"{CONTRACT_BLOB} the "
           f"reader accepts; safe to deploy the contract check")
     return 0
 
