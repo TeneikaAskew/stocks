@@ -125,9 +125,37 @@ def test_every_checkbox_option_is_required(path: Path):
     `required: true` can be left unticked and the issue still submits, which
     turns the attestation into decoration.
     """
-    for el in _load(path)["body"]:
-        if el.get("type") != "checkboxes":
-            continue
+    body = _load(path)["body"]
+
+    # Guard the guard, the same way test_there_are_forms_to_check does for the
+    # glob. The loop below is a no-op for a form with no checkboxes element at
+    # all, so removing a form's whole attestation used to pass CI: the
+    # body-budget test stayed green because the body only got SHORTER.
+    # Measured on 04-follow-up.yml with the element deleted — 14 passed.
+    # By ID, not "any checkboxes element". A form that grew an unrelated
+    # checkbox group could otherwise lose `id: attestation` and still pass,
+    # which is the invariant this test claims to enforce rather than the one
+    # it would actually be checking.
+    #
+    # And by POSITION, not presence. The sentence this assertion is written to
+    # defend is "every form ENDS in an evidence attestation", and `any()` does
+    # not check that: measured on 01-defect.yml with `attestation` and
+    # `acceptance` swapped — element count unchanged, so the body-budget test
+    # stayed green too — 14 passed with the attestation sitting eighth. An
+    # attestation that is not last asks the filer to swear to evidence they
+    # have not written yet, which is the failure mode, not a cosmetic one.
+    boxes = [el for el in body if el.get("type") == "checkboxes"]
+    last = body[-1]
+    assert last.get("type") == "checkboxes" and last.get("id") == "attestation", (
+        f"{path.name}: the LAST body element is not the `id: attestation` "
+        "checkboxes group. Every form ends in an evidence attestation, and "
+        "presence alone is not that — a form that keeps the element but adds "
+        "fields after it collects the claim before the evidence exists. Last "
+        f"element: type={last.get('type')!r} id={last.get('id')!r}; checkboxes "
+        f"found: {[el.get('id') for el in boxes]}"
+    )
+
+    for el in boxes:
         options = (el.get("attributes") or {}).get("options") or []
         assert options, f"{path.name}: checkboxes `{el.get('id')}` has no options"
         for opt in options:
