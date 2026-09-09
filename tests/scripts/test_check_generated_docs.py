@@ -1649,3 +1649,53 @@ def test_the_runtime_relation_ddl_provenance_matches_the_files(tmp_path):
     assert not (REPO / ".github/workflows/db-query.yml").exists(), \
         "db-query.yml is back; 05-a says it was deleted"
     assert "strat_data_builder.py" in body, "the one just-in-time exception should be named"
+
+
+def test_a_delimiter_row_needs_hyphens_in_every_cell(tmp_path):
+    """`: | :` and `| | |` satisfy the old character class while containing no
+    hyphen, and anchoring the row count on one let nine lines of prose beneath
+    a pseudo-separator clear §2's floor of 8. A delimiter cell is `-`, `:-`,
+    `-:` or `:-:`. (Codex, PR #1064.)"""
+    for good in ("--- | ---", ":--- | ---:", "|---|---|", "-|-", "| :-: |"):
+        assert gate._is_table_sep(good), good
+    for bad in (": | :", "| | |", "a | b", "   |   ", ""):
+        assert not gate._is_table_sep(bad), bad
+    rows = ["Rank | Cost", ": | :"] + [f"{i} | 1.00" for i in range(9)]
+    assert gate._table_rows(rows) == 0, "a pseudo-separator does not make prose a table"
+    rows[1] = "--- | ---"
+    assert gate._table_rows(rows) == 9
+
+
+def test_a_fence_closes_only_on_a_bare_delimiter(tmp_path):
+    """A closing fence carries nothing but whitespace after its run. Accepting
+    a run with content after it meant a content line inside a fence -- a
+    ```python quoted in a code sample -- closed the block and inverted the
+    state for everything below. (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("```python\nsample = '```python'\n--- # production\n```\n")
+    assert gate.gate_inline_rule(tmp_path) == [], "the quoted delimiter must not close the fence"
+    doc.write_text("```python\nsample = '```python'\n```\n\n--- welded onto prose\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1 and "welded onto prose" in out[0], out
+
+
+def test_a_bare_amount_counts_in_any_cell_and_in_the_usd_form(tmp_path):
+    """Requiring a pipe on both sides saw only cells in the MIDDLE of a row, so
+    the first and last column of a table written without outer pipes were
+    invisible, and so was `222.71 USD` in prose. At their floors the two
+    required tables contribute 2 + 8 = 10 amounts against a floor of 15, so a
+    report whose §3 is prose could have been rejected. (Codex, PR #1064.)"""
+    assert gate.cost_figures("svc | 222.71") == 1, "last column of an outer-pipe-free table"
+    assert gate.cost_figures("222.71 | svc") == 1, "first column"
+    assert gate.cost_figures("| SKU | 222.71 |") == 1
+    assert gate.cost_figures("Cloud SQL: 222.71 USD") == 1
+    # a unit means it is not an amount, and a decimal in a sentence is not a cell
+    assert gate.cost_figures("| a | 50.00% |") == 0
+    assert gate.cost_figures("| a | 1.5 GiB |") == 0
+    assert gate.cost_figures("we saw 222.71 in prose") == 0
+    # the two floors together must be reachable by the required tables alone
+    minimum = gate.COST_MIN_ROWS["1"] + gate.COST_MIN_ROWS["2"]
+    table = ("| SKU | Spend (USD) |\n|---|---|\n"
+             + "".join(f"| svc-{i} | {100 + i}.00 |\n" for i in range(minimum)))
+    assert gate.cost_figures(table) == minimum

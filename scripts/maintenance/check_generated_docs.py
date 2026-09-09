@@ -543,10 +543,17 @@ def gate_inline_rule(root: pathlib.Path) -> list[str]:
                 run = m.group(1)
                 if fence is None:
                     fence = run
-                elif run[0] == fence[0] and len(run) >= len(fence):
+                    continue
+                # A CLOSING fence carries nothing but whitespace after its
+                # delimiter run. Accepting a run with content after it meant a
+                # content line inside a fence -- ```python quoted in a code
+                # sample -- closed the block, inverting the state for
+                # everything below. (Codex, PR #1064.)
+                if (run[0] == fence[0] and len(run) >= len(fence)
+                        and not line[m.end():].strip()):
                     fence = None
                 continue
-            if TABLE_SEP.fullmatch(line.strip()) and "|" in line:
+            if _is_table_sep(line) and "|" in line:
                 # `--- | --- | ---` is the separator of a table written without
                 # outer pipes, which `_table_rows` accepts. Reading it as a rule
                 # with text welded on would fail a document for the very
@@ -762,14 +769,40 @@ def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
 # floor sits at 15: half the smallest real document, fifteen times the
 # degraded one. (Codex, PR #1064.)
 COST_FIGURE = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?\b")
-COST_MONEY_CELL = re.compile(r"(?<=\|)\s*\d[\d,]*\.\d{2}\s*(?=\|)")
+# A cell whose whole content is an amount, and the spelled-out currency form.
+# The first version required a pipe on BOTH sides, which is only true of a
+# cell in the MIDDLE of a row: the first and last column of a table written
+# without outer pipes were invisible, and so was `Cloud SQL: 222.71 USD` in
+# prose, which no prompt forbids. At their floors the two required tables
+# contribute 2 + 8 = 10 amounts, under a floor of 15, so a report whose §3 is
+# prose could have been rejected for its formatting. Cells are split, not
+# looked around. (Codex, PR #1064.)
+COST_BARE = re.compile(r"^\d[\d,]*\.\d{2}$")
+COST_USD_PROSE = re.compile(r"\b\d[\d,]*(?:\.\d{2})?\s?USD\b")
 
 
 def cost_figures(text: str) -> int:
-    """Monetary values, whether or not they carry a currency symbol."""
-    return len(COST_FIGURE.findall(text)) + len(COST_MONEY_CELL.findall(text))
+    """Monetary values, whether or not they carry a currency symbol.
+
+    Three forms, because the prompt requires none of them in particular:
+    `$222.71` anywhere, `222.71 USD` in prose, and a table cell whose entire
+    content is an amount. A percentage, a duration or a size carries a unit, so
+    it is not a bare cell; a decimal inside a sentence is not a cell at all.
+    """
+    n = len(COST_FIGURE.findall(text)) + len(COST_USD_PROSE.findall(text))
+    for line in text.split("\n"):
+        if "|" not in line or _is_table_sep(line):
+            continue
+        n += sum(1 for c in _table_cells(line) if COST_BARE.fullmatch(c))
+    return n
 COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
-COST_MIN_FIGURES = 15
+# 12, not 15: the floor must be reachable from what the prompt REQUIRES, not
+# only from what the real documents happen to contain. Section 1 carries at
+# least 2 rows and section 2 is "Top 10 ... by SKU", so the mandated tables
+# alone supply 12 amounts; anything above that would reject a compliant report
+# whose section 3 is prose. Still twelve times the degraded case, which scores
+# 1, and every real document clears it three-fold (28 to 43).
+COST_MIN_FIGURES = 12
 COST_MIN_SECTION_LINES = 2
 COST_MIN_ROWS = {"1": 2, "2": 8}
 COST_MIN_RECOMMENDATIONS = 3
@@ -798,6 +831,28 @@ def _numbered_sections(text: str) -> dict[str, list[str]]:
 # (Codex, PR #1064); requiring two pipes when there are none on the outside
 # keeps ordinary prose containing a single `|` out.
 TABLE_SEP = re.compile(r"^\|?[\s|:-]+\|?$")
+# ...but matching the punctuation is not the same as being a delimiter row.
+# `: | :` and `| | |` satisfy the character class while containing no hyphen at
+# all, and anchoring the row count on one let nine lines of prose beneath a
+# pseudo-separator clear section 2's floor of 8. A delimiter CELL is
+# `-`, `:-`, `-:` or `:-:` with at least one hyphen; a delimiter ROW is one or
+# more of them. Parsed rather than pattern-matched. (Codex, PR #1064.)
+TABLE_SEP_CELL = re.compile(r"^:?-+:?$")
+
+
+def _table_cells(line: str) -> list[str]:
+    """The cells of a pipe row, with the optional outer pipes discarded."""
+    parts = [c.strip() for c in line.strip().split("|")]
+    if parts and not parts[0]:
+        parts = parts[1:]
+    if parts and not parts[-1]:
+        parts = parts[:-1]
+    return parts
+
+
+def _is_table_sep(line: str) -> bool:
+    cells = _table_cells(line)
+    return bool(cells) and all(TABLE_SEP_CELL.fullmatch(c) for c in cells)
 
 
 def _table_rows(body: list[str]) -> int:
@@ -813,7 +868,7 @@ def _table_rows(body: list[str]) -> int:
     """
     lines = [l.strip() for l in body]
     for i, st in enumerate(lines):
-        if not (TABLE_SEP.fullmatch(st) and "|" in st):
+        if not (_is_table_sep(st) and "|" in st):
             continue
         # The separator defines the table's shape, so a row is a line with the
         # same pipe count. Testing "two or more pipes" instead rejected a
