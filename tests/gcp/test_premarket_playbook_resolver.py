@@ -276,7 +276,7 @@ def test_pnl_dollar_scales_with_notional():
 from datetime import date as _date
 from zoneinfo import ZoneInfo as _ZoneInfo
 
-from gcp.premarket_playbook_resolver import classify_date_outcome
+from gcp.premarket_playbook_resolver import classify_date_outcome, pending_dates
 
 _ET_TZ = _ZoneInfo('America/New_York')
 
@@ -327,6 +327,29 @@ def test_classify_past_non_holiday_all_skipped_still_fails_next_to_a_holiday():
     # ordinary trading day — only the exact holiday date is benign.
     now = datetime(2026, 9, 9, 21, 15, tzinfo=_ET_TZ)
     assert classify_date_outcome(_date(2026, 9, 8), 0, 3, now) == 'failed'
+
+
+def test_pending_dates_normalizes_postgres_timestamps_to_plain_date(monkeypatch):
+    # Codex review on #1075 (P1): pd.read_sql returns pandas.Timestamp for a
+    # Postgres DATE column, and Timestamp is a datetime which is a date, so
+    # the old `d if isinstance(d, date) else d.date()` check never converted
+    # it. A Timestamp compares unequal to every plain `date` (different
+    # classes never compare equal in Python), so classify_date_outcome's
+    # `analysis_date == now_et.date()` and `analysis_date in
+    # NYSE_FULL_CLOSURES` checks were both silently unreachable against
+    # pending_dates()'s real output — the holiday fix in this same PR would
+    # not have actually fired in production without this.
+    import gcp.premarket_playbook_resolver as mod
+
+    def _fake_read_sql(sql, engine, params=None):
+        return pd.DataFrame({'analysis_date': [pd.Timestamp('2026-09-07')]})
+
+    monkeypatch.setattr(mod.pd, 'read_sql', _fake_read_sql)
+
+    result = pending_dates(engine=object(), today_et=_date(2026, 9, 9), lookback_days=14)
+
+    assert result == [_date(2026, 9, 7)]
+    assert type(result[0]) is _date, f"expected plain date, got {type(result[0])!r}"
 
 
 def test_classify_black_friday_all_skipped_still_fails():

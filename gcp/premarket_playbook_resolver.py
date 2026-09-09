@@ -526,7 +526,19 @@ def pending_dates(engine, today_et: date, lookback_days: int) -> list[date]:
         ),
         engine, params={'today': str(today_et), 'floor': str(floor)},
     )
-    return [d if isinstance(d, date) else d.date() for d in df['analysis_date']]
+    # pd.read_sql returns a pandas.Timestamp for a Postgres DATE column, and
+    # Timestamp subclasses datetime.datetime which subclasses date, so the
+    # naive `isinstance(d, date)` check this used to have is true for BOTH
+    # and never normalizes the Timestamp. A Timestamp then compares unequal
+    # to every plain `date` it's checked against downstream — `analysis_date
+    # == now_et.date()` and `analysis_date in NYSE_FULL_CLOSURES` are both
+    # always False for it (Python: comparing a date/datetime across classes
+    # is never equal), so classify_date_outcome's benign_pending AND
+    # benign_holiday cases were both unreachable from this sweep in
+    # production. Check datetime first so a Timestamp gets .date()'d; a
+    # genuine plain date (not expected from this query, but harmless if it
+    # ever occurs) passes through unchanged.
+    return [d.date() if isinstance(d, datetime) else d for d in df['analysis_date']]
 
 
 def classify_date_outcome(analysis_date: date, n_resolved: int, n_skipped: int,
