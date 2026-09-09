@@ -60,4 +60,4 @@ Prose outside a marker block survives the refresh and is yours to edit; anything
 
 No explicit license has been added to this repo. Treat as **all rights reserved** until that changes. Contact: see git log / GitHub repo owner.
 
-Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md). The monthly refresh updates this line.
+Generated 2026-09-07 by the monthly documentation refresh. The audits behind these documents are in [`docs/audits/`](docs/audits). The monthly refresh updates this line.

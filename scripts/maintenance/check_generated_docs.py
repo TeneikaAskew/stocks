@@ -30,6 +30,8 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
 * prose floor   prose outside the marker blocks keeps 80% of its characters
 * tail          no line is the tail of the line above it: a `replace` that
                 rewrote a span and left the end of the old text (run 28)
+* inline rule   no `---` has text welded onto it: a `replace` that swallowed
+                the break between a rule and the paragraph below (run 30)
 * as-of         the "Live <date>" and "read on <date>" labels in prose name
                 the snapshot this run actually read (run 28)
 * stale         no retired name or phrase appears outside history context
@@ -486,6 +488,104 @@ def gate_duplicated_tail(root: pathlib.Path) -> list[str]:
     return out
 
 
+# A thematic break is `---` alone on its line. Run 30 wrote
+#
+#     --- \Generated 2026-09-08 from the ground truth in [...]
+#
+# merging the closing rule, a stray backslash and the provenance line into one
+# paragraph: the rule stopped being a rule and the document ended in literal
+# `--- \`. Measured over every markdown file under docs/ plus README.md plus
+# runs 28, 29 and 30: zero hits in the corpus, one hit, the real defect.
+#
+# The space is optional: a replacement that drops the newline without adding
+# one produces `---Generated 2026-09-08 ...`, the same malformed footer, and
+# requiring `\s+` let it through (Codex, PR #1064).
+#
+# Only `-` is treated as a rule character. All 16 thematic breaks in these four
+# documents are written `---`; at the start of a line `***text***` and
+# `___text___` are emphasis far more often than a break, so including them
+# would fail honest prose to catch a shape this corpus never uses.
+# The no-backtrack guard sits INSIDE the dash run, not after the whitespace:
+# `(?!-)` immediately after `-{3,}` forces the run to swallow every dash, so
+# `--------` cannot satisfy the pattern with its own last dash. Putting the
+# exclusion after `\s*` instead would have let `--- - item` and `--- --flag`
+# through -- a rule welded onto a bullet or a CLI flag, the same defect with
+# dash-prefixed content. (Codex, PR #1064.)
+INLINE_RULE = re.compile(r"^\s{0,3}-{3,}(?!-)\s*\S")
+# A code fence: three or more backticks or tildes. Captured whole so the
+# closing run can be required to match the opener in character and length.
+FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+
+def gate_inline_rule(root: pathlib.Path) -> list[str]:
+    r"""A horizontal rule with text welded onto it — another botched `replace`.
+
+    The companion to `gate_duplicated_tail`: same cause, different shape. A
+    `replace` that spans the blank line between a rule and the paragraph after
+    it collapses both into one line, and every other gate passes -- the text
+    is all still there, the churn is a line, and the document merely stops
+    rendering a rule and starts showing `--- \` to the reader.
+    """
+    out = []
+    for doc in DOCS:
+        f = root / doc
+        if not f.exists():
+            continue
+        fence: str | None = None   # the OPENING delimiter, verbatim
+        for i, line in enumerate(_prose_lines(f.read_text()), 1):
+            # A fence is three or more backticks OR tildes, and only a run of
+            # the same character at least as long closes it. `startswith("```")`
+            # missed `~~~yaml` entirely and let a ``` inside a ```` block close
+            # it early, either of which puts the scan back inside code.
+            # (Codex, PR #1064.)
+            m = FENCE.match(line)
+            if m:
+                run = m.group(1)
+                if fence is None:
+                    # A backtick-fence opener's info string may not contain a
+                    # backtick, so ```` ```code``` ```` on its own line is an
+                    # inline code span, not the start of a block. Treating it as
+                    # one put every following line inside a fence that never
+                    # opened. (Codex, PR #1064.)
+                    if run[0] == "`" and "`" in line[m.end():]:
+                        continue
+                    fence = run
+                    continue
+                # A CLOSING fence carries nothing but whitespace after its
+                # delimiter run. Accepting a run with content after it meant a
+                # content line inside a fence -- ```python quoted in a code
+                # sample -- closed the block, inverting the state for
+                # everything below. (Codex, PR #1064.)
+                if (run[0] == fence[0] and len(run) >= len(fence)
+                        and not line[m.end():].strip()):
+                    fence = None
+                continue
+            if _is_table_sep(line) and "|" in line:
+                # `--- | --- | ---` is the separator of a table written without
+                # outer pipes, which `_table_rows` accepts. Reading it as a rule
+                # with text welded on would fail a document for the very
+                # formatting this module just started allowing -- a gate
+                # contradicting its own sibling. Requiring a `|` keeps a bare
+                # `-----` (which TABLE_SEP also matches) out of the exemption.
+                # (Codex, PR #1064.)
+                continue
+            if fence is not None:
+                # Inside a fence `---` is not a thematic rule and never was:
+                # a YAML document marker (`--- # production`), a unified diff
+                # header (`--- a/gcp/deploy.sh`) and an ASCII table border all
+                # begin a line with three dashes and all render as code. The
+                # other two gates deliberately KEEP fences -- an elided Mermaid
+                # diagram is damage -- but this one is asking a question about
+                # markdown rendering, which does not apply in there.
+                # (Codex, PR #1064.)
+                continue
+            if INLINE_RULE.match(line):
+                out.append(f"{doc}: a horizontal rule has text on the same line "
+                           f"(prose line {i}): {line.strip()[:80]!r} — a `replace` swallowed "
+                           "the break between the rule and the paragraph below it")
+    return out
+
+
 # The three "as of" labels a human wrote into the prose, every one of which has
 # to track the snapshot the run was taken from. Deliberately literal: a looser
 # pattern would sweep up the historical dates beside them -- 05-a carries 33
@@ -504,10 +604,48 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
                # (the last run that regenerated it), so gating the first would
                # fail an honest tree outside the workflow. (Codex, PR #1062.)
                re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
-# 05-a must carry all three: they are the header note, §3's table column and
-# the closing line, and the architecture prompt names each one. The other
-# documents state no live as-of label, so nothing is required of them.
-REQUIRED_ASOF = {ARCH: ASOF_LABELS}
+# 05-a must carry all three, each IN ITS OWN PLACE. Counting a pattern
+# anywhere in the document let §3's table header be reworded away while some
+# other sentence carrying `Live <date>` kept the count non-zero, so the table
+# lost its provenance and the gate stayed clean. Each label is now paired with
+# the line that must carry it. (Codex, PR #1064.)
+REQUIRED_ASOF = {ARCH: (
+    # Located by SHAPE, not by its exact sentence. `Live state below was read
+    # on` rejected `Infrastructure state below was read on **DATE**` and even
+    # `The live state below was read on ...`; the prompt specifies the location
+    # and the `read on **DATE**` form, never that literal prefix, so a one-word
+    # rewrite was reported as the label being missing. The header note is the
+    # blockquote at the top of the document, which nothing else in 05-a is.
+    # (Codex, PR #1064.)
+    (ASOF_LABELS[1], re.compile(r"^>.*\bread on \*\*\d{4}-\d{2}-\d{2}\*\*"), "the header note", "header"),
+    (ASOF_LABELS[0], re.compile(r"^\|\s*Service\s*\|\s*Role\s*\|"), "§3's table header", "anywhere"),
+    (ASOF_LABELS[2], re.compile(r"^Generated\b"), "the closing line", "closing"),
+)}
+
+
+def _leading_blockquote(lines: list[str]) -> list[str]:
+    """The blockquote in the document's PREAMBLE: before any content or section.
+
+    "First blockquote in the file" is not the same thing. Delete the real
+    header note and a quoted aside three sections down becomes the first, so
+    the requirement is satisfied by a line that is not the header note at all.
+    The scan stops at the first line that is neither blank, the H1 title, nor a
+    blockquote -- and at the first `##`, since a quote under a later section
+    heading is not the preamble either, and skipping every heading level let
+    one stand in for the header note. (Codex, PR #1064.)
+    """
+    out: list[str] = []
+    for line in lines:
+        st = line.strip()
+        if st.startswith(">"):
+            out.append(line)
+        elif out:
+            break
+        elif st.startswith("##"):
+            break          # a section has begun; the preamble is over
+        elif st and not st.startswith("#"):
+            break          # substantive content reached before any blockquote
+    return out
 
 
 def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
@@ -533,11 +671,10 @@ def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
         f = root / doc
         if not f.exists():
             continue
-        matched = {pat: 0 for pat in ASOF_LABELS}
-        for i, line in enumerate(_prose_lines(f.read_text()), 1):
+        lines = _prose_lines(f.read_text())
+        for i, line in enumerate(lines, 1):
             for pat in ASOF_LABELS:
                 for m in pat.finditer(line):
-                    matched[pat] += 1
                     if m.group(1) != day:
                         out.append(f"{doc}: as-of label says {m.group(1)} but this run read "
                                    f"live state on {day} (prose line {i}): {m.group(0)!r}")
@@ -545,11 +682,24 @@ def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
         # §3's column header to `| Service | Role | Current |` and no pattern
         # matches, so the document loses its freshness provenance and the gate
         # reports clean. 05-a is required to carry all three. (Codex, #1062.)
-        for pat in REQUIRED_ASOF.get(doc, ()):  # noqa: SIM118 -- keys are patterns
-            if not matched[pat]:
-                out.append(f"{doc}: no as-of label matching {pat.pattern!r}. That location "
-                           "states when the live state below it was read; rewording it away "
-                           "leaves the reader no way to tell how fresh the table is")
+        # ...and the LOCATION has to be the real one. A shape check alone is
+        # satisfied by any blockquote later in the file, or by any `Generated`
+        # line with prose after it, so moving or deleting the header note and
+        # footer passed as long as a matching line existed elsewhere. Each
+        # requirement is scoped to the lines it is allowed to match.
+        # (Codex, PR #1064.)
+        scopes = {
+            # the leading blockquote: the first contiguous run of `>` lines
+            "header": _leading_blockquote(lines),
+            "anywhere": lines,
+            "closing": [l for l in lines if l.strip()][-1:],
+        }
+        for pat, where, name, scope in REQUIRED_ASOF.get(doc, ()):
+            if not any(where.search(l) and pat.search(l) for l in scopes[scope]):
+                out.append(f"{doc}: {name} carries no as-of label matching {pat.pattern!r}. "
+                           "That line states when the live state around it was read; "
+                           "rewording it away leaves the reader no way to tell how fresh "
+                           "the section is")
     return out
 
 
@@ -633,7 +783,7 @@ def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
 # and run 29's.
 #
 #   metric                     main  run28  run29   floor
-#   cost figures (whole doc)     37     18     33     12
+#   monetary values (whole doc)  43     28     36     15
 #   §1 table data rows            2      3      3      2
 #   §2 table data rows           10     10     10      8
 #   §5 recommendation entries     3      5      6      3
@@ -643,8 +793,106 @@ def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
 # list in two versions and a table in the third, and run 28 carried only two
 # lines with a cost figure in it, so any threshold worth having would fail an
 # honest document.
-COST_FIGURE = re.compile(r"\$?\b\d+\.\d{2}\b")
+# Only MONETARY values count -- but requiring a `$` counted the wrong
+# population. An optional `$` let any decimal in (eleven percentages scored
+# eleven); requiring one missed the amounts the model actually writes, because
+# under headers named `Spend (USD)` and `90-day cost (USD)` it writes `222.71`,
+# not `$222.71`. Measured over the four real documents: main 43/0, run 28
+# 15/13, run 29 14/22, run 30 11/22 ($-prefixed / bare). A floor set on the
+# $-count alone would have failed a correct report on its currency formatting;
+# run 30 cleared 8 by three.
+#
+# So: a `$` amount anywhere, OR a table cell whose ENTIRE content is a decimal
+# amount. A cell is the unit that makes a bare number unambiguous -- `50.00%`
+# and `1.5 GiB` are not decimal cells, and prose decimals are not cells at all.
+#
+#   counted   main 43   run 28 28   run 29 36   run 30 33
+#   degraded report: one $ figure + eleven percentages -> 1
+#
+# The two populations separate by more than an order of magnitude, so the
+# floor sits at 15: half the smallest real document, fifteen times the
+# degraded one. (Codex, PR #1064.)
+COST_FIGURE = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?\b")
+# A cell whose whole content is an amount, and the spelled-out currency form.
+# The first version required a pipe on BOTH sides, which is only true of a
+# cell in the MIDDLE of a row: the first and last column of a table written
+# without outer pipes were invisible, and so was `Cloud SQL: 222.71 USD` in
+# prose, which no prompt forbids. At their floors the two required tables
+# contribute 2 + 8 = 10 amounts, under a floor of 15, so a report whose §3 is
+# prose could have been rejected for its formatting. Cells are split, not
+# looked around. (Codex, PR #1064.)
+# One or two decimals, because that is what the pipeline produces. The workflow
+# writes `round(c, 2)` through csv.writer, so a value ending in zero is emitted
+# as `1.2` or `0.0`, and the cost prompt tells the model to copy the CSV value
+# without rounding. Requiring exactly two decimals rejected every such amount,
+# and a complete report could have undercounted its way under the floor.
+# Integers stay excluded: a rank, a year or a row index is not an amount.
+# (Codex, PR #1064.)
+COST_BARE = re.compile(r"^\d[\d,]*\.\d{1,2}$")
+# A cell's RENDERED text. `| Cloud SQL | **222.71** |` is an emphasised amount,
+# and matching the raw markdown missed it -- a complete report whose costs are
+# bolded would have fallen under the floor. (Codex, PR #1064.)
+_STYLE = re.compile(r"^[*_`~]+|[*_`~]+$")
+
+
+def _unstyle(cell: str) -> str:
+    return _STYLE.sub("", cell.strip()).strip()
+COST_USD_PROSE = re.compile(r"\b\d[\d,]*(?:\.\d{2})?\s?USD\b")
+# Counting EVERY decimal cell let a `Duration (s)` or utilisation column feed a
+# floor named for money: one dollar amount plus eleven non-cost decimals cleared
+# it while the billing tables held no usable costs. A bare number is an amount
+# only under a column that says so. (Codex, PR #1064.)
+# `total` alone is not a money word: `Total duration (s)` and `Total utilization`
+# are headers a cost report legitimately carries, and eleven decimal duration
+# cells under one would have fed the monetary floor. It counts only when paired
+# with a money word, which the other alternatives already cover.
+# (Codex, PR #1064.)
+MONEY_HEADER = re.compile(r"(?i)\b(spend|cost|usd|amount|charge|price|billed)\b|\$")
+
+
+def cost_figures(text: str) -> int:
+    """Monetary values, whether or not they carry a currency symbol.
+
+    Three forms, because the prompt requires none of them in particular:
+    `$222.71` anywhere, `222.71 USD` in prose, and a table cell whose entire
+    content is an amount. A percentage, a duration or a size carries a unit, so
+    it is not a bare cell; a decimal inside a sentence is not a cell at all.
+    """
+    # Spans, not counts: `$1.00 USD` is one amount matching BOTH patterns, and
+    # counting it twice let six values satisfy a floor of twelve.
+    # (Codex, PR #1064.)
+    spans: list[tuple[int, int]] = sorted(
+        [m.span() for m in COST_FIGURE.finditer(text)]
+        + [m.span() for m in COST_USD_PROSE.finditer(text)])
+    n, last_end = 0, -1
+    for start, end in spans:
+        if start >= last_end:
+            n += 1
+            last_end = end
+    lines = text.split("\n")
+    money_cols: set[int] | None = None
+    for i, line in enumerate(lines):
+        if "|" not in line:
+            money_cols = None
+            continue
+        if _is_table_sep(line):
+            # the row above is this table's header; it decides which columns
+            # hold money and which hold durations, counts or utilisation
+            header = _table_cells(lines[i - 1]) if i else []
+            money_cols = {j for j, h in enumerate(header) if MONEY_HEADER.search(h)}
+            continue
+        if money_cols:
+            cells = _table_cells(line)
+            n += sum(1 for j in money_cols
+                     if j < len(cells) and COST_BARE.fullmatch(_unstyle(cells[j])))
+    return n
 COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
+# 12, not 15: the floor must be reachable from what the prompt REQUIRES, not
+# only from what the real documents happen to contain. Section 1 carries at
+# least 2 rows and section 2 is "Top 10 ... by SKU", so the mandated tables
+# alone supply 12 amounts; anything above that would reject a compliant report
+# whose section 3 is prose. Still twelve times the degraded case, which scores
+# 1, and every real document clears it three-fold (28 to 43).
 COST_MIN_FIGURES = 12
 COST_MIN_SECTION_LINES = 2
 COST_MIN_ROWS = {"1": 2, "2": 8}
@@ -655,7 +903,12 @@ def _numbered_sections(text: str) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     cur = None
     for line in text.split("\n"):
-        m = re.match(r"^#{2,4}\s+(\d+)\.", line)
+        # H2 only. Accepting `###` too meant a report that ranks its
+        # recommendations as `### 1. Reduce ...` inside §5 read as three new
+        # top-level sections, leaving §5 empty and its recommendation count
+        # zero -- rejecting a valid report. The prompt delimits sections with
+        # `## N.`; nothing below that level does. (Codex, PR #1064.)
+        m = re.match(r"^##\s+(\d+)\.", line)
         if m:
             cur = m.group(1)
             out.setdefault(cur, [])
@@ -664,12 +917,75 @@ def _numbered_sections(text: str) -> dict[str, list[str]]:
     return out
 
 
+# A table row in either style: `| a | b |` or the outer pipes omitted,
+# `a | b`. Requiring a leading `|` rejected a valid table for its formatting
+# (Codex, PR #1064); requiring two pipes when there are none on the outside
+# keeps ordinary prose containing a single `|` out.
+TABLE_SEP = re.compile(r"^\|?[\s|:-]+\|?$")
+# ...but matching the punctuation is not the same as being a delimiter row.
+# `: | :` and `| | |` satisfy the character class while containing no hyphen at
+# all, and anchoring the row count on one let nine lines of prose beneath a
+# pseudo-separator clear section 2's floor of 8. A delimiter CELL is
+# `-`, `:-`, `-:` or `:-:` with at least one hyphen; a delimiter ROW is one or
+# more of them. Parsed rather than pattern-matched. (Codex, PR #1064.)
+TABLE_SEP_CELL = re.compile(r"^:?-+:?$")
+
+
+def _table_cells(line: str) -> list[str]:
+    """The cells of a pipe row, with the optional outer pipes discarded."""
+    # `\|` inside a cell is a literal pipe, not a boundary -- a SKU or a
+    # "maps to" description can carry one, and splitting on it invented a
+    # column, which changed the row's width and could drop it from the count.
+    # (Codex, PR #1064.)
+    parts = [c.replace("\x00", "|").strip()
+             for c in line.strip().replace("\\|", "\x00").split("|")]
+    if parts and not parts[0]:
+        parts = parts[1:]
+    if parts and not parts[-1]:
+        parts = parts[:-1]
+    return parts
+
+
+def _is_table_sep(line: str) -> bool:
+    cells = _table_cells(line)
+    return bool(cells) and all(TABLE_SEP_CELL.fullmatch(c) for c in cells)
+
+
 def _table_rows(body: list[str]) -> int:
-    """Data rows of the first markdown table in a section: pipe lines, minus
-    the header, minus the `|---|` separator."""
-    rows = [l for l in body if l.strip().startswith("|")
-            and not re.fullmatch(r"\|[\s|:-]+\|", l.strip())]
-    return max(len(rows) - 1, 0)
+    """Data rows of the first markdown table in a section.
+
+    A table is a separator row with rows attached to it, not any run of lines
+    carrying pipes. Counting every two-pipe line and subtracting one for a
+    header let nine lines of `1 | Cloud Run | $1.00` -- no header, no
+    separator, not a table at all -- clear the section-2 floor of 8 exactly.
+    That is the prose-shaped-like-a-report case this floor exists to reject,
+    so the floor was failing open. Anchoring on the separator means a section
+    with no table counts zero rather than counting its prose. (Codex, PR #1064.)
+    """
+    lines = [l.strip() for l in body]
+    for i, st in enumerate(lines):
+        if not (_is_table_sep(st) and "|" in st):
+            continue
+        # The separator defines the table's shape, so a row is a line with the
+        # same pipe count. Testing "two or more pipes" instead rejected a
+        # two-column table written without outer pipes, which carries exactly
+        # one -- the formatting this module set out to accept.
+        width = len(_table_cells(st))
+        if i == 0 or len(_table_cells(lines[i - 1])) != width:
+            continue          # a separator with no header above it is not a table
+        n = 0
+        for st2 in lines[i + 1:]:
+            # Markdown pads a row that omits its trailing cells, so
+            # `| 2026-08 | 211.00 |` under a three-column header is a valid row
+            # with an empty Notes cell. Requiring an identical count stopped the
+            # scan there and could report 0 rows against a floor of 2.
+            # (Codex, PR #1064.)
+            cells = _table_cells(st2)
+            if not st2 or "|" not in st2 or not (1 <= len(cells) <= width):
+                break
+            n += 1
+        return n
+    return 0
 
 
 def gate_cost_content(root: pathlib.Path) -> list[str]:
@@ -687,10 +1003,10 @@ def gate_cost_content(root: pathlib.Path) -> list[str]:
         return []
     text = f.read_text()
     out = []
-    figures = len(COST_FIGURE.findall(text))
+    figures = cost_figures(text)
     if figures < COST_MIN_FIGURES:
-        out.append(f"{COST}: only {figures} cost figures in the whole document "
-                   f"(floor {COST_MIN_FIGURES}); the three real versions carry 18 to 37. "
+        out.append(f"{COST}: only {figures} monetary values in the whole document "
+                   f"(floor {COST_MIN_FIGURES}); the four real versions carry 28 to 43. "
                    "This is prose where a billing report should be")
     secs = _numbered_sections(text)
     for num, floor in sorted(COST_MIN_ROWS.items()):
@@ -805,6 +1121,15 @@ def render_report(stats: list[dict]) -> str:
 
 
 SUPPRESS_RE = re.compile(r"<!--\s*verify-docs-ok:\s*(.+?)\s*-->")
+# Dates are NOT normalised out of an exemption's text, and the first version of
+# this change was wrong to do so. Run 30 moved the date in "Cloud Build trigger
+# names, read live with gcloud builds triggers list 2026-09-07" and I read the
+# resulting finding as a false positive. It was not: the architecture prompt
+# enumerates exactly three as-of labels and says to leave every other date
+# alone, so that date was never the model's to move. Erasing dates from the
+# identity would have let a model advance the provenance on a human-approved
+# marker -- turning an old approval into false current provenance while the
+# verifier still skips the line it silences. (Codex, PR #1064.)
 
 
 def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[str]:
@@ -814,8 +1139,16 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
     every regeneration can edit the four generated documents. A model that
     wrote one above a stale schedule, service or count claim would have removed
     that claim from the verifier and published a run reporting clean, with no
-    human having approved the exemption. So a marker text that was not in the
-    previous version of the file fails the run. (Codex, PR #1009.)
+    human having approved the exemption. So a marker whose SUBJECT was not in
+    the previous version of the file fails the run. (Codex, PR #1009.)
+
+    That includes the dates inside a marker. Run 30 advanced "read live with
+    gcloud builds triggers list 2026-09-07" to `-08` and this gate caught it;
+    I mistook that for a false positive and normalised dates out of the
+    comparison, which would have let a model refresh the provenance on an
+    approval no one had re-made. The prompt names three as-of labels and says
+    to leave every other date alone, so a marker's date is not the model's to
+    move. (Codex, PR #1064.)
     """
     if previous_dir is None:
         return []
@@ -828,7 +1161,10 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
         now = set(SUPPRESS_RE.findall((root / doc).read_text()))
         for added in sorted(now - was):
             out.append(f"{doc}: a new verify-docs-ok exemption appeared in a generated doc "
-                       f"({added!r}) — an exemption is a human decision, not a model's")
+                       f"({added!r}) — an exemption is a human decision, not a model's. "
+                       "A date inside a marker is part of it: it records when a human "
+                       "checked the claim, so moving it is not an update, it is a new "
+                       "assertion no one has approved")
     return out
 
 
@@ -844,8 +1180,36 @@ def gate_new_suppressions(root: pathlib.Path, previous_dir: pathlib.Path | None)
 # grows a second view or loses its only one is still checked instead of
 # silently unmatched -- a gate that stops matching on a reword fails open.
 # Longest kind first: "materialized views" ends in "views".
-RELATION_TOTAL = re.compile(r"declares \*\*(\d+) relations?\*\*|"
+# Both phrasings 05-a uses, and the "N declared in" form it used before, so a
+# reword of one copy cannot quietly drop it from the check:
+#   §5  `gcp/schema.sql` declares **70 relations** (67 tables, ...)
+#   §3  `gcp/schema.sql` declares 70 (67 tables, ...)
+RELATION_TOTAL = re.compile(r"declares \*{0,2}(\d+)(?: relations?)?\*{0,2}\s*(?=\()|"
                             r"\b(\d+) declared in `gcp/schema\.sql`")
+# ... but only on a line that is talking about that file. `relations?` is
+# optional in the first alternative, so a sentence describing a SUBSYSTEM's
+# schema -- "`p7_schema.sql` declares 3 (2 tables, 1 view)" -- matched and was
+# then compared against the repository-wide totals, failing a refresh whose
+# numbers were right. Both sentences 05-a writes name the canonical file on
+# their own line, so requiring it costs nothing and removes the whole class.
+# (Codex, PR #1064.)
+RELATION_ANCHOR = re.compile(r"`gcp/schema\.sql`")
+# Every `.sql` path named on a line, in order, so a count can be bound to
+# the file it is actually about rather than to any mention on the line.
+SQL_PATH = re.compile(r"([\w./-]+\.sql)")
+
+
+def _norm_sql_path(path: str) -> str:
+    r"""A repo-relative `.sql` path, with any link-relative prefix removed.
+
+    `[\`gcp/schema.sql\`](../../../gcp/schema.sql) declares **71 relations**`
+    put `../../../gcp/schema.sql` last before the count, so the claim bound to
+    a path that was the SAME FILE and the check silently skipped it -- a stale
+    count passing because it was written as a link. (Codex, PR #1064.)
+    """
+    while path.startswith(("../", "./")):
+        path = path.split("/", 1)[1]
+    return path
 RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
 # What may sit between a declared total and the first of its parts: an opening
 # bracket, a dash, a colon.
@@ -940,8 +1304,28 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
     total = sum(kinds.values())
     breakdown = ", ".join(f"{v} {k}" + ("s" if v != 1 else "") for k, v in kinds.items())
     for doc in (ARCH, DEPS):
+        matched = 0
         for i, line in enumerate(_prose_lines((root / doc).read_text()), 1):
+            if not RELATION_ANCHOR.search(line):
+                continue
             for m in RELATION_TOTAL.finditer(line):
+                # The anchor being SOMEWHERE on the line is not enough: a line
+                # contrasting the two schemas ("Unlike `gcp/schema.sql`,
+                # `p7_schema.sql` declares 3 (2 tables, 1 view)") carries it and
+                # the count belongs to the other file. The count binds to the
+                # nearest `.sql` named before it, which must be the canonical
+                # one. (Codex, PR #1064.)
+                # The second alternative, `N declared in \`gcp/schema.sql\``,
+                # carries the path INSIDE the match, so it needs no
+                # neighbouring anchor -- and applying one rejected it whenever
+                # another schema was named earlier in the line.
+                # (Codex, PR #1064.)
+                if m.group(2) is None:
+                    before = [_norm_sql_path(x)
+                              for x in SQL_PATH.findall(line[:m.start()])]
+                    if before and before[-1] != "gcp/schema.sql":
+                        continue
+                matched += 1
                 claimed = m.group(1) or m.group(2)
                 if int(claimed) != total:
                     out.append(f"{doc}: claims {claimed} declared relations (prose line {i}); "
@@ -957,13 +1341,33 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                 # passes each comparison while the parts shown sum to 69 -- the
                 # same self-contradiction this gate was added for, recreated by
                 # dropping a category instead of mistyping one. (Codex, #1062.)
-                seen = {k.rstrip("s") for _, k in parts}
-                want = {k for k, v in kinds.items() if v}
-                if parts and seen != want:
-                    missing = ", ".join(sorted(want - seen)) or "-"
-                    out.append(f"{doc}: the breakdown beside {claimed} relations omits "
-                               f"{missing} (prose line {i}); gcp/schema.sql declares "
-                               f"{total} ({breakdown}) and every kind belongs in the list")
+                # Kinds present, WITH multiplicity, and the parts' own sum.
+                # A set comparison alone accepts "(67 tables, 2 materialized
+                # views, 1 view, 1 view)": every part matches the schema, the
+                # set collapses the repeat, and the list sums to 71.
+                # (Codex, PR #1064.)
+                if parts:
+                    listed = [k.rstrip("s") for _, k in parts]
+                    want = sorted(k for k, v in kinds.items() if v)
+                    if sorted(listed) != want:
+                        out.append(f"{doc}: the breakdown beside {claimed} relations lists "
+                                   f"{', '.join(listed)} (prose line {i}); gcp/schema.sql "
+                                   f"declares {total} ({breakdown}) and every kind belongs "
+                                   "in the list exactly once")
+                    elif sum(n for n, _ in parts) != total:
+                        out.append(f"{doc}: the breakdown beside {claimed} relations sums to "
+                                   f"{sum(n for n, _ in parts)} (prose line {i}); "
+                                   f"gcp/schema.sql declares {total} ({breakdown})")
+        # Narrowing the scan to lines naming `gcp/schema.sql` gives a reword a
+        # way to fail OPEN: drop the filename from the sentence and 05-a's
+        # declared count stops being checked at all, silently. 05-a has stated
+        # this total in every version it has ever had, so its absence is
+        # itself the finding. Not required of 05-c, which states it in none.
+        if doc == ARCH and not matched:
+            out.append(f"{doc}: no sentence states how many relations "
+                       "`gcp/schema.sql` declares — the document has carried that "
+                       "claim in every version, so a rewrite that drops it has "
+                       "removed it from the gate rather than satisfied it")
 
     if live and live.get("db_tables"):
         declared, runtime = relation_counts(repo, live)
@@ -1069,6 +1473,7 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_headings_and_size(root, previous_dir)
     findings += gate_elided_prose(root)
     findings += gate_duplicated_tail(root)
+    findings += gate_inline_rule(root)
     findings += gate_stale_asof(root, live)
     findings += gate_prose_floor(root, previous_dir)
     findings += gate_regenerated_structure(root)
