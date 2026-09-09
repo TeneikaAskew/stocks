@@ -478,3 +478,23 @@ def test_a_snapshot_without_a_read_date_refuses_to_render():
         with pytest.raises(SystemExit) as e:
             rp.counts(broken, REPO_INVENTORY, VERIFY_LIVE)
         assert "LIVE_READ_DATE" in str(e.value)
+
+
+def test_the_workflow_validates_exactly_the_prompts_that_exist():
+    """Removing a prompt and leaving its name in the workflow's validation loop
+    makes EVERY run exit there under `set -e`, before anything else happens.
+    That is what deleting `.github/prompts/readme.md` did: the loop still ran
+    `test -s "$RUNNER_TEMP/prompts/readme.md"`, so the refresh would have died
+    at the render step on every dispatch. Both sides are derived here so they
+    cannot drift apart again. (Codex, PR #1070.)"""
+    import re
+    wf = (REPO / ".github/workflows/refresh-architecture-docs.yml").read_text()
+    loop = re.search(r"for P in ([a-z0-9\- ]+); do\n\s*test -s \"\$RUNNER_TEMP/prompts/\$\{P\}\.md\"",
+                     wf)
+    assert loop, "the prompt-validation loop is gone or reshaped; this test cannot see it"
+    validated = set(loop.group(1).split())
+    on_disk = {p.stem for p in (REPO / ".github/prompts").glob("*.md")}
+    assert validated == on_disk, (
+        f"the workflow validates {sorted(validated)} but {sorted(on_disk)} exist; "
+        "a name here with no file fails every run at the render step")
+    assert validated == set(PROMPTS), f"{sorted(validated)} != {sorted(PROMPTS)}"
