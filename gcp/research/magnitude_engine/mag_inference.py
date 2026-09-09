@@ -244,7 +244,7 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             f"one.")
     try:
         contract = json.loads(contract_blob.download_as_text())
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         # ValueError rather than JSONDecodeError, because three different
         # decoding failures live under it and only one of them is a
         # JSONDecodeError (Codex P2 on #1074):
@@ -254,6 +254,9 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
         #   * plain ValueError     — an integer literal over the 3.11
         #                            int_max_str_digits limit, raised by the
         #                            int conversion rather than the parser
+        #   * RecursionError       — deep nesting blows the decoder's stack.
+        #                            NOT a ValueError at all; measured, a
+        #                            10,000-deep array reproduces it here.
         # The narrower clause let the last two escape to the ordinary per-cell
         # handler and back under the partial-success threshold.
         #
@@ -310,16 +313,28 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator "
             f"exposes no classes_, so the order of its probability columns "
             f"cannot be verified against {LABEL_CLASSES}.")
-    # Coerce defensively. `int(c)` on a string class raises a bare ValueError,
-    # which is NOT a ContractRejection -- so the very case this check is for,
-    # an estimator fitted on string labels, would have escaped the fatal path
-    # through the check written to catch it. Anything that will not coerce is
-    # by definition not range(n) and belongs in the mismatch message as-is.
-    try:
-        normalised = [int(c) for c in actual_classes]
-    except (TypeError, ValueError):
-        normalised = list(actual_classes)
-    if normalised != expected_classes:
+    # Compare LOSSLESSLY. The previous version coerced with int(), which
+    # truncates: classes_ of [0.5, 1.5, 2.5, 3.5] became [0, 1, 2, 3] and the
+    # check accepted a mapping it had not proved, which is the same
+    # accept-without-evidence failure the whole PR is about -- introduced by
+    # the fix for it (Codex P2 on #1074). int() on a string class also raised
+    # a bare ValueError, escaping the fatal path entirely.
+    #
+    # A class is acceptable only if it IS the integer index: an int (never a
+    # bool, which is an int subclass) or a float/numpy value that survives a
+    # round trip unchanged. Anything else, including anything that will not
+    # coerce at all, is reported as-is in the mismatch.
+    def _as_index(c):
+        if isinstance(c, bool):
+            return c                      # not an index; compares unequal
+        if isinstance(c, int):
+            return c
+        try:
+            i = int(c)
+        except (TypeError, ValueError):
+            return c
+        return i if i == c else c         # 0.5 -> 0.5, not 0
+    if [_as_index(c) for c in actual_classes] != expected_classes:
         raise ContractMismatch(
             f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator's "
             f"classes_ are {list(actual_classes)}, not {expected_classes}. "

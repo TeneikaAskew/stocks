@@ -760,9 +760,11 @@ def test_the_backfill_exits_nonzero_while_any_serving_artifact_is_unverified():
     src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
     body = src[src.index("def main("):]
     assert "return 1" in body, "refused/unverified artifacts must fail the run"
-    # the verdict is a read-back over serving cells, not a counter
+    # the verdict is an actual check over serving cells, not a counter. It
+    # now delegates to the reader rather than re-checking blob presence
+    # itself; the property is that something real is consulted per cell.
     verdict = body[body.index("unverified = []"):]
-    assert "blob.exists()" in verdict
+    assert "mag_inference._load_model_and_version" in verdict
     assert verdict.index("return 1") < verdict.index("return 0"), (
         "the failure path must precede the success path")
 
@@ -793,10 +795,16 @@ def test_the_backfill_validates_rather_than_checking_existence():
     to run the reader's own parse and contract_mismatch."""
     src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
     verdict = src[src.index("unverified = []"):]
-    assert "contract_mismatch(json.loads" in verdict, (
-        "must run the same validation the reader runs")
-    assert "JSONDecodeError" in verdict, "a corrupt blob must be reported"
-    assert "contract mismatch:" in verdict, "a mismatch must be reported"
+    # Stronger than the original form of this test, which asserted the
+    # verdict re-implemented the reader's parse. It now runs the reader
+    # itself, so every validation the reader performs — parse, required
+    # keys, types, mismatch, estimator class order — is covered by
+    # construction and cannot drift out of sync.
+    assert "mag_inference._load_model_and_version" in verdict, (
+        "must run the reader's own validation, not a copy of part of it")
+    assert "ContractRejection" in verdict, "a rejected contract must be reported"
+    assert "could not be loaded to verify" in verdict, (
+        "a cell that cannot even be loaded is not verified")
 
 
 def test_a_contract_rejection_is_fatal_regardless_of_the_threshold(monkeypatch):
@@ -1015,3 +1023,53 @@ def test_the_backfill_rescans_cells_that_were_idle_at_scan_time():
     assert "LATEST appeared during the run" in verdict
     # and the success line reports what THIS pass verified
     assert "len(latest_of)" not in verdict
+
+
+def test_deeply_nested_json_is_malformed_not_an_ordinary_failure():
+    """RecursionError is not a ValueError at all, so the previous clause let
+    it reach the ordinary per-cell handler. Measured: a 10,000-deep array
+    reproduces it on this interpreter. (Codex P2 on #1074.)"""
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMalformed, ContractRejection)
+    deep = "[" * 10000 + "]" * 10000
+    with pytest.raises(ContractMalformed) as e:
+        _load_with(deep)
+    assert isinstance(e.value, ContractRejection)
+
+
+@pytest.mark.parametrize("classes,accepted", [
+    ([0, 1, 2, 3], True),                 # what our training produces
+    ([0.0, 1.0, 2.0, 3.0], True),         # floats that round-trip unchanged
+    ([0.5, 1.5, 2.5, 3.5], False),        # int() truncated these to 0,1,2,3
+    (["EXPANDED", "EXPLOSIVE", "NORMAL", "TIGHT"], False),
+    ([True, False, 2, 3], False),         # bool is an int subclass
+])
+def test_estimator_classes_are_compared_losslessly(classes, accepted):
+    """int() truncates, so [0.5,1.5,2.5,3.5] passed as range(4) and the check
+    accepted a mapping it had not proved -- the same accept-without-evidence
+    failure the PR is about, introduced by the fix for it. (Codex P2 on
+    #1074.)"""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import ContractMismatch
+    est = MagicMock()
+    est.classes_ = classes
+    if accepted:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+    else:
+        with pytest.raises(ContractMismatch):
+            _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+
+
+def test_the_backfill_verdict_calls_the_reader_rather_than_reimplementing_it():
+    """The verdict claimed "the reader accepts" while running its own subset
+    of the reader's checks, and stopped being true the moment the reader grew
+    a check it lacked -- which happened one commit later. Adding the missing
+    check would not fix the class; the next check re-opens it. Calling the
+    reader is the only version that cannot drift. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    assert "mag_inference._load_model_and_version(ticker, tf)" in verdict
+    assert "ContractRejection" in verdict
+    # and it no longer re-implements the reader's parsing
+    assert "contract_mismatch(" not in verdict, (
+        "the verdict must not re-implement the reader's checks")

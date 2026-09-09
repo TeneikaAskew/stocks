@@ -50,9 +50,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
-    TICKERS, TIMEFRAMES, CONTRACT_BLOB, contract_mismatch,
+    TICKERS, TIMEFRAMES, CONTRACT_BLOB, ContractRejection,
     GCS_BUCKET_DEFAULT,
 )
+from gcp.research.magnitude_engine import mag_inference  # noqa: E402
 
 
 # The contract in force when the legacy artifacts were trained, written out
@@ -218,28 +219,30 @@ def main() -> int:
                 f"({scanned_run} -> {run_id}); re-run once promotions have "
                 f"settled")
             continue
-        blob = bucket.blob(f"{base}/{run_id}/{CONTRACT_BLOB}")
         where = f"{ticker}:{tf} (run={run_id})"
-        if not blob.exists():
-            unverified.append(f"{where} — no {CONTRACT_BLOB}")
-            continue
-        # Existence is not validity, the same distinction as exit-0 not being
-        # success. A corrupt or mismatched blob -- hand-created, restored, or
-        # left by an older writer -- would sail through a presence check and
-        # then be rejected by mag_inference at load. Run the SAME parse and
-        # the SAME contract_mismatch the reader runs, so "safe to deploy"
-        # means the reader will accept it rather than merely that a file is
-        # there (Codex P2 on #1074).
+        # Ask the READER rather than re-implementing its checks. The previous
+        # version parsed the contract itself and claimed "the reader accepts",
+        # which stopped being true the moment the reader grew a check this
+        # loop did not have -- it gained an estimator class-order check one
+        # commit ago and this verdict kept saying "safe to deploy" for an
+        # artifact the reader would reject (Codex P2 on #1074).
+        #
+        # Adding the missing check would not fix the class, because the next
+        # check added to the reader re-opens it. Calling the reader is the
+        # only version that cannot drift: if _load_model_and_version returns,
+        # the reader accepts this artifact, which is exactly the claim the
+        # exit code makes. It costs a model download per serving cell, which
+        # for a one-time pre-deploy gate over at most nine cells is the right
+        # trade.
         try:
-            mismatch = contract_mismatch(json.loads(blob.download_as_text()))
-        except json.JSONDecodeError as e:
-            unverified.append(f"{where} — {CONTRACT_BLOB} is not valid JSON: {e}")
+            mag_inference._load_model_and_version(ticker, tf)
+        except ContractRejection as e:
+            unverified.append(f"{where} — {type(e).__name__}: {e}")
             continue
-        except ValueError as e:
-            unverified.append(f"{where} — {CONTRACT_BLOB} malformed: {e}")
-            continue
-        if mismatch:
-            unverified.append(f"{where} — contract mismatch: {mismatch}")
+        except Exception as e:                      # noqa: BLE001
+            unverified.append(
+                f"{where} — could not be loaded to verify "
+                f"({type(e).__name__}: {e})")
             continue
         verified += 1
     if unverified:
