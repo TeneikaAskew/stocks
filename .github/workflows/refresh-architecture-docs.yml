@@ -464,11 +464,16 @@ jobs:
       - name: Render inventory blocks
         run: |
           python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --insert docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md docs/product/infrastructure/05-e-API.md
+          # README's badges are inventory in a picture: a date and four counts.
+          # Run 32's model rewrote the block and pointed the workflow badge at
+          # `refresh-documentation.yml`, which does not exist, failing the run on
+          # a dead link. Rendered here so it has nothing to get wrong.
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --readme-badges README.md
           # The drawio companions are regenerated from the same snapshot:
           # counts, scheduler labels, the add-on job grid and the icon page.
           jq '[.repo.jobs[].name]' refresh-inputs/repo_inventory.json > refresh-inputs/repo_jobs.json
           python scripts/maintenance/refresh_architecture_drawio.py --snapshot refresh-inputs/live.json --repo-jobs refresh-inputs/repo_jobs.json
-          git --no-pager diff --stat -- docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md docs/product/infrastructure/05-e-API.md Architecture.drawio Architecture-icons.drawio
+          git --no-pager diff --stat -- docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md docs/product/infrastructure/05-e-API.md README.md Architecture.drawio Architecture-icons.drawio
 
       # A. Gemini gets write_file/replace on the whole checkout. Everything
       # the gates run on is copied aside here and put back, unchanged, right

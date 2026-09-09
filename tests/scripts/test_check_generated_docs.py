@@ -2052,3 +2052,54 @@ def test_restoring_blocks_does_not_rewrite_an_asof_label(tmp_path, repo):
         f"restore_blocks corrected the model's edit back to {target}"
     assert any("as-of label says 1999-01-01" in f
                for f in gate.gate_stale_asof(tmp_path, live)), "the gate lost the edit"
+
+
+def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
+    """Run 32's model rewrote README's badge block and pointed the workflow
+    badge at `refresh-documentation.yml`, a file that does not exist, failing
+    the run on a dead link. The prompt already said to edit README in place
+    with `replace` and never regenerate it; it regenerated anyway (52% churn).
+    The badges are a date and four counts — inventory in a picture. (Run 32.)"""
+    readme = tmp_path / "README.md"
+    shutil.copy(REPO / "README.md", readme)
+    changed = inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert changed
+    body = readme.read_text()
+    declared, _ = gate.relation_counts(repo, live)
+    assert "docs_verified-2026--11--02-blue" in body
+    assert f"cloud_run_jobs-{live['counts']['jobs']}_live_%2F_{len(repo['jobs'])}_declared" in body
+    assert f"schedulers-{live['counts']['schedulers']}_live" in body
+    assert f"schema_tables-{declared}_declared_%2F_{len(live['db_tables'])}_live" in body
+    # the workflow badge names the workflow that actually exists
+    assert "refresh-architecture-docs.yml/badge.svg" in body
+    assert (REPO / ".github/workflows/refresh-architecture-docs.yml").exists()
+    assert "refresh-documentation.yml" not in body
+    # idempotent, and it leaves the rest of the file alone
+    assert not inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert "## Documentation map" in body or "Read this" in body
+
+
+def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, live):
+    """Only the FIRST contiguous run of badge lines is the block. A shields.io
+    link further down the document is content, not a badge to overwrite."""
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# T\n\n"
+        "![a](https://img.shields.io/badge/x-1-blue)\n"
+        "![b](https://img.shields.io/badge/y-2-blue)\n"
+        "\nprose\n\n"
+        "![elsewhere](https://img.shields.io/badge/keep--me-9-red)\n")
+    inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    body = readme.read_text()
+    assert "keep--me-9-red" in body, "a later shields link was swallowed"
+    assert "docs_verified-2026--11--02-blue" in body
+    assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+
+
+def test_a_readme_with_no_badges_fails_loudly(tmp_path, repo, live):
+    """Silently doing nothing would let a rewrite that dropped the block pass
+    the render and reach the model unrendered."""
+    readme = tmp_path / "README.md"
+    readme.write_text("# T\n\nno badges here\n")
+    with pytest.raises(ValueError, match="no badge block"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")

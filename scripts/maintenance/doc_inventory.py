@@ -38,6 +38,7 @@ import argparse
 import ast
 import copy
 import itertools
+import datetime
 import json
 import os
 import pathlib
@@ -4129,6 +4130,59 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
                re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
 
 
+# README's badge block is inventory in a picture: a date and four counts. Run
+# 32's model rewrote the block wholesale and pointed the workflow badge at
+# `refresh-documentation.yml`, a file that does not exist, which the dead-link
+# gate then failed the run on. The prompt already said to edit README in place
+# with `replace` and never to regenerate it; the model regenerated it anyway
+# (52% churn). Same conclusion as the as-of labels and the runtime-relation
+# count: render what is inventory and stop asking. (Run 32.)
+README_BADGE = re.compile(r"^!\[[^\]]*\]\((?:https://img\.shields\.io|https://github\.com/[^)]*badge\.svg)[^)]*\)$",
+                          re.M)
+
+
+def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -> str:
+    """The five badge lines, rendered from the same inventory as everything else."""
+    lc = (live or {}).get("counts", {})
+    # Computed here rather than imported: check_generated_docs imports THIS
+    # module, so the dependency only runs one way. Same three keys its
+    # `relation_counts` sums.
+    declared_relations = (len(repo["tables"]) + len(repo["materialized_views"])
+                          + len(repo["views"]))
+    live_relations = len((live or {}).get("db_tables", []) or [])
+    dash = day.replace("-", "--")
+    return "\n".join([
+        f"![Last audit](https://img.shields.io/badge/docs_verified-{dash}-blue)",
+        f"![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-"
+        f"{lc.get('jobs', 0)}_live_%2F_{len(repo['jobs'])}_declared-blue)",
+        f"![Cloud Scheduler](https://img.shields.io/badge/schedulers-{lc.get('schedulers', 0)}_live-blue)",
+        f"![Cloud SQL tables](https://img.shields.io/badge/schema_tables-"
+        f"{declared_relations}_declared_%2F_{live_relations}_live-blue)",
+        "![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+        "workflows/refresh-architecture-docs.yml/badge.svg)",
+    ])
+
+
+def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
+                         live: dict[str, Any] | None, day: str) -> bool:
+    """Replace README's contiguous badge block with a freshly rendered one."""
+    text = doc_path.read_text()
+    spans = [m.span() for m in README_BADGE.finditer(text)]
+    if not spans:
+        raise ValueError(f"{doc_path}: no badge block found to render")
+    # the first contiguous run: consecutive matches separated only by newlines
+    end = spans[0][1]
+    for start, stop in spans[1:]:
+        if text[end:start].strip():
+            break
+        end = stop
+    new = text[:spans[0][0]] + readme_badges(repo, live, day) + text[end:]
+    if new != text:
+        doc_path.write_text(new)
+        return True
+    return False
+
+
 def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
                   root: pathlib.Path = REPO, counts: bool = True) -> bool:
     """Replace every marker block in doc_path with freshly rendered content,
@@ -4208,6 +4262,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--markdown", choices=SECTIONS, help="print one rendered section")
     ap.add_argument("--insert", nargs="*", help="rewrite marker blocks in these docs")
     ap.add_argument("--restore", nargs="*", help="rewrite only the marker blocks that differ from a fresh render, and name each one")
+    ap.add_argument("--readme-badges", metavar="README",
+                    help="rewrite README's badge block from the inventory (date, counts, "
+                         "workflow badge). The badges are inventory in a picture; run 32's "
+                         "model rewrote them and invented a workflow filename.")
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root)
@@ -4238,6 +4296,16 @@ def main(argv: list[str] | None = None) -> int:
         for doc in (args.insert or default_docs):
             changed = insert_blocks(root / doc, repo, live, root=root)
             print(f"{doc}: {'updated' if changed else 'unchanged'}", file=sys.stderr)
+    if args.readme_badges:
+        # `today`, not the snapshot's read_at: the badge says when the docs were
+        # verified, which is this run. The three as-of labels in 05-a describe
+        # the SNAPSHOT and are rendered from read_at instead -- two different
+        # dates that coincide on almost every run and differ on one that
+        # crosses UTC midnight.
+        day = datetime.date.today().isoformat()
+        changed = insert_readme_badges(root / args.readme_badges, repo, live, day)
+        print(f"{args.readme_badges}: badges {'updated' if changed else 'unchanged'}",
+              file=sys.stderr)
     if args.json:
         out = {"repo": repo}
         if live:
