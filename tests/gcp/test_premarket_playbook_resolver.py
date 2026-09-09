@@ -327,3 +327,15 @@ def test_classify_past_non_holiday_all_skipped_still_fails_next_to_a_holiday():
     # ordinary trading day — only the exact holiday date is benign.
     now = datetime(2026, 9, 9, 21, 15, tzinfo=_ET_TZ)
     assert classify_date_outcome(_date(2026, 9, 8), 0, 3, now) == 'failed'
+
+
+def test_classify_black_friday_all_skipped_still_fails():
+    # Codex review on #1075: audit_data_freshness.py's MARKET_HOLIDAYS_2026
+    # marks 2026-11-27 (Black Friday) "early close, treated as closed" for
+    # its OWN staleness-tolerance purposes, but NYSE trades an abbreviated
+    # session that day — bars do land. Blindly reusing that set here would
+    # have given a real ingestion gap on Black Friday a free pass all the
+    # way through the lookback window, the exact false-negative this
+    # resolver's sweep design exists to prevent.
+    now = datetime(2026, 11, 30, 21, 15, tzinfo=_ET_TZ)  # next weekday sweep
+    assert classify_date_outcome(_date(2026, 11, 27), 0, 3, now) == 'failed'

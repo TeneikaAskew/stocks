@@ -67,7 +67,16 @@ from sqlalchemy import text
 # with no session, per pending_dates()'s docstring) doesn't get
 # classified as a resolver failure. One source of truth for the
 # calendar rather than a second hardcoded list drifting from it.
+#
+# NYSE_FULL_CLOSURES excludes Black Friday: audit_data_freshness.py's own
+# comment says it's "early close, treated as closed" — a deliberate
+# leniency for ITS staleness check, not a real closure. NYSE trades an
+# abbreviated session that day, so intraday bars do land, and zero
+# resolved rows on it is a real gap this resolver must still flag red,
+# not the never-any-bars case the rest of the set represents.
 from scripts.audit_data_freshness import MARKET_HOLIDAYS_2026
+
+NYSE_FULL_CLOSURES = MARKET_HOLIDAYS_2026 - {date(2026, 11, 27)}
 
 logger = logging.getLogger(__name__)
 
@@ -560,7 +569,7 @@ def classify_date_outcome(analysis_date: date, n_resolved: int, n_skipped: int,
         return 'ok'
     if analysis_date == now_et.date():
         return 'benign_pending'
-    if analysis_date in MARKET_HOLIDAYS_2026:
+    if analysis_date in NYSE_FULL_CLOSURES:
         return 'benign_holiday'
     return 'failed'
 
