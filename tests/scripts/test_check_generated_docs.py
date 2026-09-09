@@ -1797,6 +1797,54 @@ def test_the_runtime_relations_have_three_distinct_creation_paths(tmp_path):
     for path in ("gcp/queries/p7_schema.sql", "gcp/queries/magnitude_engine_schema.sql",
                  "gcp/queries/p7_vex_cache.sql"):
         assert (REPO / path).exists(), path
-    # 3. no DDL at all, writer archived
-    assert (REPO / "gcp/research/_archive/p7a_iwm_30m_pipeline.py").exists()
+    # 3. DDL exists but its job is archived, so there is no active creation
+    #    path. Asserted against the DDL itself: I first claimed there was no
+    #    DDL at all, because I grepped for the literal table name and it is
+    #    built from an f-string. (Codex, PR #1064.)
+    archived = REPO / "gcp/research/_archive/p7a_iwm_30m_pipeline.py"
+    src = archived.read_text()
+    assert "CREATE TABLE IF NOT EXISTS {PREDICTIONS_TABLE}" in src, \
+        "the archived DDL moved; 05-a cites it by line"
+    assert 'PREDICTIONS_TABLE = f"{TICKER.lower()}_{TF}_predictions"' in src
     assert "_archive/p7a_iwm_30m_pipeline.py" in body
+    assert "no DDL in the repository at all" not in body, \
+        "05-a claimed these tables have no DDL; the archived job defines it"
+
+
+def test_one_amount_written_two_ways_counts_once(tmp_path):
+    """`$1.00 USD` matches both the symbol form and the spelled-out form, and
+    counting it twice let six values satisfy a floor of twelve.
+    (Codex, PR #1064.)"""
+    assert gate.cost_figures("the charge was $1.00 USD today") == 1
+    assert gate.cost_figures("$1.00 and 2.00 USD are different amounts") == 2
+
+
+def test_an_emphasised_amount_still_counts(tmp_path):
+    """`| Cloud SQL | **222.71** |` is an amount with emphasis, and matching the
+    raw markdown missed it, so a complete report whose costs are bolded would
+    have fallen under the floor. Two of the real documents do bold amounts:
+    counting them moved run 29 from 36 to 37 and run 30 from 33 to 35.
+    (Codex, PR #1064.)"""
+    head = "| SKU | Spend (USD) |\n|---|---|\n"
+    assert gate.cost_figures(head + "| Cloud SQL | **222.71** |") == 1
+    assert gate.cost_figures(head + "| Cloud SQL | `222.71` |") == 1
+    assert gate.cost_figures(head + "| Cloud SQL | 222.71 |") == 1
+    assert gate.cost_figures(head + "| Cloud SQL | **50.00%** |") == 0
+
+
+def test_a_count_first_claim_names_its_own_schema(tmp_path, repo):
+    """`N declared in \u0060gcp/schema.sql\u0060` carries the path INSIDE the match, so it
+    needs no neighbouring anchor. Applying one rejected it whenever another
+    schema was named earlier on the line. (Codex, PR #1064.)"""
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / gate.DEPS).write_text("nothing\n")
+    total = len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"])
+    bd = (f"{len(repo['tables'])} tables, {len(repo['materialized_views'])} "
+          f"materialized views, {len(repo['views'])} view")
+    line = "`p7_schema.sql` declares 3 (2 tables, 1 view); {n} declared in `gcp/schema.sql` ({bd}).\n"
+    (tmp_path / gate.ARCH).write_text(line.format(n=total, bd=bd))
+    assert gate.gate_derived_numbers(tmp_path, repo, None) == []
+    (tmp_path / gate.ARCH).write_text(line.format(n=total + 1, bd=bd))
+    out = gate.gate_derived_numbers(tmp_path, repo, None)
+    assert any(f"claims {total + 1} declared relations" in f for f in out), out

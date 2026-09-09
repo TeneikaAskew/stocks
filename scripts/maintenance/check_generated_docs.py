@@ -812,6 +812,14 @@ COST_FIGURE = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?\b")
 # prose could have been rejected for its formatting. Cells are split, not
 # looked around. (Codex, PR #1064.)
 COST_BARE = re.compile(r"^\d[\d,]*\.\d{2}$")
+# A cell's RENDERED text. `| Cloud SQL | **222.71** |` is an emphasised amount,
+# and matching the raw markdown missed it -- a complete report whose costs are
+# bolded would have fallen under the floor. (Codex, PR #1064.)
+_STYLE = re.compile(r"^[*_`~]+|[*_`~]+$")
+
+
+def _unstyle(cell: str) -> str:
+    return _STYLE.sub("", cell.strip()).strip()
 COST_USD_PROSE = re.compile(r"\b\d[\d,]*(?:\.\d{2})?\s?USD\b")
 # Counting EVERY decimal cell let a `Duration (s)` or utilisation column feed a
 # floor named for money: one dollar amount plus eleven non-cost decimals cleared
@@ -828,7 +836,17 @@ def cost_figures(text: str) -> int:
     content is an amount. A percentage, a duration or a size carries a unit, so
     it is not a bare cell; a decimal inside a sentence is not a cell at all.
     """
-    n = len(COST_FIGURE.findall(text)) + len(COST_USD_PROSE.findall(text))
+    # Spans, not counts: `$1.00 USD` is one amount matching BOTH patterns, and
+    # counting it twice let six values satisfy a floor of twelve.
+    # (Codex, PR #1064.)
+    spans: list[tuple[int, int]] = sorted(
+        [m.span() for m in COST_FIGURE.finditer(text)]
+        + [m.span() for m in COST_USD_PROSE.finditer(text)])
+    n, last_end = 0, -1
+    for start, end in spans:
+        if start >= last_end:
+            n += 1
+            last_end = end
     lines = text.split("\n")
     money_cols: set[int] | None = None
     for i, line in enumerate(lines):
@@ -844,7 +862,7 @@ def cost_figures(text: str) -> int:
         if money_cols:
             cells = _table_cells(line)
             n += sum(1 for j in money_cols
-                     if j < len(cells) and COST_BARE.fullmatch(cells[j]))
+                     if j < len(cells) and COST_BARE.fullmatch(_unstyle(cells[j])))
     return n
 COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
 # 12, not 15: the floor must be reachable from what the prompt REQUIRES, not
@@ -1155,7 +1173,7 @@ SQL_PATH = re.compile(r"([\w./-]+\.sql)")
 
 
 def _norm_sql_path(path: str) -> str:
-    """A repo-relative `.sql` path, with any link-relative prefix removed.
+    r"""A repo-relative `.sql` path, with any link-relative prefix removed.
 
     `[\`gcp/schema.sql\`](../../../gcp/schema.sql) declares **71 relations**`
     put `../../../gcp/schema.sql` last before the count, so the claim bound to
@@ -1270,9 +1288,16 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                 # the count belongs to the other file. The count binds to the
                 # nearest `.sql` named before it, which must be the canonical
                 # one. (Codex, PR #1064.)
-                before = [_norm_sql_path(x) for x in SQL_PATH.findall(line[:m.start()])]
-                if before and before[-1] != "gcp/schema.sql":
-                    continue
+                # The second alternative, `N declared in \`gcp/schema.sql\``,
+                # carries the path INSIDE the match, so it needs no
+                # neighbouring anchor -- and applying one rejected it whenever
+                # another schema was named earlier in the line.
+                # (Codex, PR #1064.)
+                if m.group(2) is None:
+                    before = [_norm_sql_path(x)
+                              for x in SQL_PATH.findall(line[:m.start()])]
+                    if before and before[-1] != "gcp/schema.sql":
+                        continue
                 matched += 1
                 claimed = m.group(1) or m.group(2)
                 if int(claimed) != total:
