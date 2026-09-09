@@ -1186,12 +1186,15 @@ def test_non_finite_estimator_classes_reach_the_fatal_path(bad_class):
 
 
 def test_every_site_that_interprets_untrusted_values_fails_closed():
-    """The generalisation seven rounds took to reach: this change interprets
-    values it did not produce in exactly three places, and each one was
-    separately bitten by an exception type not on its list. All three now
-    catch broadly, which is safe only because each sits AFTER the transport
-    or parse boundary -- so the only thing they can be wrong about is a
-    value, never a network."""
+    """The generalisation this PR took seven rounds to reach and then had to
+    extend: it interprets values it did not produce in FOUR places, not
+    three, and each was separately bitten by an exception type not on its
+    list. The fourth (reading classes_ at all) was found a round after the
+    invariant was written for the first three, which is the point of
+    asserting the invariant rather than the instances. All four catch
+    broadly, safe only because each sits AFTER the transport or parse
+    boundary -- so the only thing they can be wrong about is a value, never
+    a network."""
     inf = pathlib.Path(
         "gcp/research/magnitude_engine/mag_inference.py").read_text()
     cfg = pathlib.Path(
@@ -1203,8 +1206,13 @@ def test_every_site_that_interprets_untrusted_values_fails_closed():
     coerce = cfg[cfg.index("got_thresholds = tuple(float(t)"):]
     assert "except Exception" in coerce[:coerce.index("raise ValueError")]
     # 3. normalising the estimator classes
-    norm = inf[inf.index("def _as_index(c):"):inf.index("if [_as_index(c)")]
+    norm = inf[inf.index("def _as_index(c):"):
+               inf.index("if normalised != expected_classes")]
     assert "except Exception" in norm
+    # 4. reading classes_ at all — a scalar is not iterable
+    assert "normalised = [_as_index(c) for c in actual_classes]" in norm
+    read = norm[norm.index("normalised = [_as_index(c)"):]
+    assert "except Exception" in read[:read.index("raise ContractMismatch")]
 
 
 def test_a_rejected_class_can_never_coincidentally_match():
@@ -1216,11 +1224,13 @@ def test_a_rejected_class_can_never_coincidentally_match():
     index for any reason. (Codex P2 on #1074.)"""
     src = pathlib.Path(
         "gcp/research/magnitude_engine/mag_inference.py").read_text()
-    fn = src[src.index("class _NotAnIndex"):src.index("if [_as_index(c)")]
+    fn = src[src.index("class _NotAnIndex"):
+             src.index("if normalised != expected_classes")]
     assert "def __eq__" in fn and "return self is other" in fn, (
         "the sentinel must be equal only to itself")
     # every rejecting return path yields the sentinel, not the raw value
-    body = src[src.index("def _as_index(c):"):src.index("if [_as_index(c)")]
+    body = src[src.index("def _as_index(c):"):
+               src.index("normalised = [_as_index(c)")]
     # Three rejecting paths — bool, non-convertible, and a value that does
     # not round-trip — and every one wraps. The single bare `return c` is the
     # ACCEPTING path for a real int, where returning it is the point.
@@ -1232,3 +1242,50 @@ def test_a_rejected_class_can_never_coincidentally_match():
     assert body.count("_NotAnIndex(c)") == 3, "including the non-round-trip"
     assert body.count("return c\n") == 1, (
         "only the accepting int path may return the raw value")
+
+
+def test_numpy_booleans_are_rejected_like_builtin_ones():
+    """isinstance(np.bool_(False), bool) is False while np.bool_(False) == 0
+    is True, so a numpy boolean walked past the builtin check and normalised
+    to a valid index. sklearn hands back numpy scalars, so this is the
+    realistic form of the bug the builtin fix only half-closed. (Codex P2 on
+    #1074.)"""
+    import numpy as _np
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMismatch, ContractRejection)
+    est = MagicMock()
+    est.classes_ = _np.array([_np.bool_(False), _np.bool_(True), 2, 3],
+                             dtype=object)
+    with pytest.raises(ContractMismatch) as e:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_a_non_iterable_classes_attribute_is_rejected():
+    """A scalar classes_ is not iterable and raised a bare TypeError, which
+    is not a ContractRejection and escaped the fatal path. Reading classes_
+    is itself an interpretation of a value we did not produce, so it fails
+    closed like the other three sites. (Codex P2 on #1074.)"""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMismatch, ContractRejection)
+    est = MagicMock()
+    est.classes_ = 3
+    with pytest.raises(ContractMismatch) as e:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+    assert "could not be read" in str(e.value)
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_a_real_sklearn_class_array_is_still_accepted():
+    """The inverse that matters most: sklearn's classes_ is a numpy int64
+    array, and isinstance(np.int64(0), int) is False. If the tightening had
+    caught that, every live cell would refuse to serve."""
+    import numpy as _np
+    import json as _json
+    est = MagicMock()
+    est.classes_ = _np.array([0, 1, 2, 3])
+    model, cols, version, contract = _load_with(
+        _json.dumps(_SERVING_CONTRACT), model=est)
+    assert contract["label_mode"] == "body"

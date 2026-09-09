@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 # Add project root for gcp.* / lib.* imports
@@ -351,7 +352,12 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             return repr(self.value)
 
     def _as_index(c):
-        if isinstance(c, bool):
+        # np.bool_ is NOT a bool: isinstance(np.bool_(False), bool) is False,
+        # while np.bool_(False) == 0 is True -- so a numpy boolean walked
+        # straight past the builtin check and normalised to a valid index
+        # (Codex P2 on #1074). sklearn hands back numpy scalars, so this is
+        # the realistic form, not the exotic one.
+        if isinstance(c, (bool, np.bool_)):
             return _NotAnIndex(c)         # never equal to 0 or 1
         if isinstance(c, int):
             return c
@@ -372,7 +378,21 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             # above fell into.
             return _NotAnIndex(c)
         return i if i == c else _NotAnIndex(c)   # 0.5 is not 0
-    if [_as_index(c) for c in actual_classes] != expected_classes:
+    # Reading classes_ is itself an interpretation of a value we did not
+    # produce, so it fails CLOSED like the other three sites. A scalar
+    # classes_ (say 3) is not iterable and raised a bare TypeError, which is
+    # not a ContractRejection and so escaped the fatal path entirely (Codex
+    # P2 on #1074). Anything that goes wrong reading or normalising the class
+    # list means the same thing: its column order cannot be verified.
+    try:
+        normalised = [_as_index(c) for c in actual_classes]
+    except Exception as e:                              # noqa: BLE001
+        raise ContractMismatch(
+            f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator's "
+            f"classes_ could not be read as a list of class labels "
+            f"({type(e).__name__}: {e}), so the order of its probability "
+            f"columns cannot be verified against {LABEL_CLASSES}.") from e
+    if normalised != expected_classes:
         raise ContractMismatch(
             f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator's "
             f"classes_ are {list(actual_classes)}, not {expected_classes}. "
