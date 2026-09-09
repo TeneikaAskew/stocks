@@ -1907,3 +1907,58 @@ def test_the_provenance_citations_carry_file_line_links(tmp_path):
         # the cited line must still be the one that matters
         text = (REPO / path).read_text().split("\n")[line - 1]
         assert ("CREATE TABLE" in text or "Apply via" in text), f"{path}:{line} is now {text!r}"
+
+
+def test_the_levels_tables_are_attributed_to_their_real_creator(tmp_path):
+    """`p7_schema.sql` declares five tables, all `strat_features_<tf>`. The six
+    `strat_features_levels_*` relations are created dynamically by
+    `strat_enrich_levels.py`, with a column list discovered at runtime, so
+    saying "the other strat_features_* timeframes" swept them under a file that
+    never mentions them. (Codex, PR #1064.)"""
+    schema = (REPO / "gcp/queries/p7_schema.sql").read_text()
+    declared = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", schema))
+    assert declared == {"strat_features_1m", "strat_features_5m", "strat_features_15m",
+                        "strat_features_30m", "strat_features_60m"}, declared
+    assert not any("levels" in d for d in declared), \
+        "p7_schema.sql now declares a levels table; 05-a says it declares none"
+    enrich = (REPO / "gcp/research/strat_engine/strat_enrich_levels.py").read_text()
+    assert "CREATE TABLE IF NOT EXISTS {levels_table(tf)}" in enrich
+    body = (REPO / gate.ARCH).read_text()
+    assert "strat_enrich_levels.py#L130" in body and "strat_enrich_levels.py#L138" in body
+    assert "for the other `strat_features_*` timeframes" not in body
+
+
+def test_a_generic_total_header_is_not_a_money_column(tmp_path):
+    """`Total duration (s)` and `Total utilization` are headers a cost report
+    legitimately carries, and eleven decimal cells under one fed the monetary
+    floor. (Codex, PR #1064.)"""
+    for not_money in ("Total duration (s)", "Total utilization", "Total requests"):
+        assert not gate.MONEY_HEADER.search(not_money), not_money
+    for money in ("Total cost (USD)", "Spend (USD)", "90-day cost", "Amount", "$"):
+        assert gate.MONEY_HEADER.search(money), money
+    rows = "".join(f"| step-{i} | {10 + i}.00 |\n" for i in range(11))
+    assert gate.cost_figures("| Step | Total duration (s) |\n|---|---|\n" + rows) == 0
+
+
+def test_an_escaped_pipe_is_content_not_a_column(tmp_path):
+    r"""`\|` inside a cell is a literal pipe, and splitting on it invented a
+    column, changing the row's width so it could drop out of the count.
+    (Codex, PR #1064.)"""
+    assert gate._table_cells(r"| a \| b | 222.71 |") == ["a | b", "222.71"]
+    assert gate._table_rows([r"SKU | Spend", "--- | ---",
+                             r"a \| b | 1.00", "c | 2.00"]) == 2
+
+
+def test_an_inline_code_span_does_not_open_a_fence(tmp_path):
+    """A backtick fence opener's info string may not contain a backtick, so
+    ```code``` alone on a line is an inline code span. Treating it as a fence
+    put every following line inside a block that never opened.
+    (Codex, PR #1064.)"""
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("Prose.\n\n```code```\n\n--- welded onto prose\n")
+    out = gate.gate_inline_rule(tmp_path)
+    assert len(out) == 1 and "welded onto prose" in out[0], out
+    # a real fence, with a plain info string, still suppresses
+    doc.write_text("```python\n--- # production\n```\n")
+    assert gate.gate_inline_rule(tmp_path) == []

@@ -542,6 +542,13 @@ def gate_inline_rule(root: pathlib.Path) -> list[str]:
             if m:
                 run = m.group(1)
                 if fence is None:
+                    # A backtick-fence opener's info string may not contain a
+                    # backtick, so ```` ```code``` ```` on its own line is an
+                    # inline code span, not the start of a block. Treating it as
+                    # one put every following line inside a fence that never
+                    # opened. (Codex, PR #1064.)
+                    if run[0] == "`" and "`" in line[m.end():]:
+                        continue
                     fence = run
                     continue
                 # A CLOSING fence carries nothing but whitespace after its
@@ -835,7 +842,12 @@ COST_USD_PROSE = re.compile(r"\b\d[\d,]*(?:\.\d{2})?\s?USD\b")
 # floor named for money: one dollar amount plus eleven non-cost decimals cleared
 # it while the billing tables held no usable costs. A bare number is an amount
 # only under a column that says so. (Codex, PR #1064.)
-MONEY_HEADER = re.compile(r"(?i)\b(spend|cost|usd|amount|charge|price|billed|total)\b|\$")
+# `total` alone is not a money word: `Total duration (s)` and `Total utilization`
+# are headers a cost report legitimately carries, and eleven decimal duration
+# cells under one would have fed the monetary floor. It counts only when paired
+# with a money word, which the other alternatives already cover.
+# (Codex, PR #1064.)
+MONEY_HEADER = re.compile(r"(?i)\b(spend|cost|usd|amount|charge|price|billed)\b|\$")
 
 
 def cost_figures(text: str) -> int:
@@ -921,7 +933,12 @@ TABLE_SEP_CELL = re.compile(r"^:?-+:?$")
 
 def _table_cells(line: str) -> list[str]:
     """The cells of a pipe row, with the optional outer pipes discarded."""
-    parts = [c.strip() for c in line.strip().split("|")]
+    # `\|` inside a cell is a literal pipe, not a boundary -- a SKU or a
+    # "maps to" description can carry one, and splitting on it invented a
+    # column, which changed the row's width and could drop it from the count.
+    # (Codex, PR #1064.)
+    parts = [c.replace("\x00", "|").strip()
+             for c in line.strip().replace("\\|", "\x00").split("|")]
     if parts and not parts[0]:
         parts = parts[1:]
     if parts and not parts[-1]:
