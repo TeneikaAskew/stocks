@@ -4137,6 +4137,9 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
 # with `replace` and never to regenerate it; the model regenerated it anyway
 # (52% churn). Same conclusion as the as-of labels and the runtime-relation
 # count: render what is inventory and stop asking. (Run 32.)
+# What makes a badge block OURS. The audit badge is rendered on every run
+# and appears nowhere else, so it is the block's identity.
+BADGE_ANCHOR = re.compile(r"img\.shields\.io/badge/docs_verified-")
 README_BADGE = re.compile(r"^!\[[^\]]*\]\((?:https://img\.shields\.io|https://github\.com/[^)]*badge\.svg)[^)]*\)$",
                           re.M)
 
@@ -4194,13 +4197,33 @@ def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
     spans = [m.span() for m in README_BADGE.finditer(text)]
     if not spans:
         raise ValueError(f"{doc_path}: no badge block found to render")
-    # the first contiguous run: consecutive matches separated only by newlines
-    end = spans[0][1]
+    # Group into contiguous runs: consecutive matches separated only by
+    # newlines. A run is a badge BLOCK; separate blocks are separate runs.
+    runs: list[list[tuple[int, int]]] = [[spans[0]]]
     for start, stop in spans[1:]:
-        if text[end:start].strip():
-            break
-        end = stop
-    new = text[:spans[0][0]] + readme_badges(repo, live, day) + text[end:]
+        if text[runs[-1][-1][1]:start].strip():
+            runs.append([(start, stop)])
+        else:
+            runs[-1].append((start, stop))
+    # Identify the inventory block by what it CONTAINS, not by being first.
+    # Taking the first run meant that if the inventory badges were ever
+    # removed while an unrelated shields.io badge remained further down,
+    # the refresh would delete that unrelated badge and insert the
+    # inventory ones in its place -- a wrong answer indistinguishable from
+    # a right one, written unattended every month. Not finding the block
+    # is now an error, not a silent relocation. (Codex, PR #1070.)
+    owned = [r for r in runs if BADGE_ANCHOR.search(text[r[0][0]:r[-1][1]])]
+    if not owned:
+        raise ValueError(
+            f"{doc_path}: found {len(runs)} badge block(s), none containing the "
+            f"'docs_verified' badge that identifies the rendered inventory block. "
+            f"Refusing to overwrite a block this renderer does not own.")
+    if len(owned) > 1:
+        raise ValueError(
+            f"{doc_path}: {len(owned)} badge blocks carry a 'docs_verified' badge; "
+            f"cannot tell which one to render.")
+    block = owned[0]
+    new = text[:block[0][0]] + readme_badges(repo, live, day) + text[block[-1][1]:]
     stamped, n = README_STAMP.subn(lambda m: f"{m.group(1)}{day}", new)
     if not n:
         raise ValueError(f"{doc_path}: no 'Generated <date>' line found to stamp")

@@ -2081,12 +2081,12 @@ def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
 
 
 def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, live):
-    """Only the FIRST contiguous run of badge lines is the block. A shields.io
-    link further down the document is content, not a badge to overwrite."""
+    """A shields.io link further down the document is content, not a badge to
+    overwrite."""
     readme = tmp_path / "README.md"
     readme.write_text(
         "# T\n\n"
-        "![a](https://img.shields.io/badge/x-1-blue)\n"
+        "![Last audit](https://img.shields.io/badge/docs_verified-2020--01--01-blue)\n"
         "![b](https://img.shields.io/badge/y-2-blue)\n"
         "\nprose\n\n"
         "![elsewhere](https://img.shields.io/badge/keep--me-9-red)\n"
@@ -2096,6 +2096,38 @@ def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, li
     assert "keep--me-9-red" in body, "a later shields link was swallowed"
     assert "docs_verified-2026--11--02-blue" in body
     assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+
+
+def test_the_block_is_identified_by_identity_not_by_being_first(tmp_path, repo, live):
+    """Taking the first run of badge lines meant that if the inventory badges
+    were ever removed while an unrelated badge remained further down, the
+    monthly refresh would DELETE that unrelated badge and insert the inventory
+    ones in its place -- a wrong answer indistinguishable from a right one,
+    written unattended. The block is identified by the `docs_verified` badge it
+    carries; not finding it is an error. (Codex, PR #1070.)
+    """
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# T\n\nthe inventory badges were removed by hand\n\n"
+        "![build](https://img.shields.io/badge/build-passing-green)\n"
+        "\nGenerated 2020-01-01 by the monthly documentation refresh.\n")
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="none containing the 'docs_verified' badge"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before, "the unrelated badge was rewritten anyway"
+
+
+def test_two_blocks_both_claiming_to_be_ours_is_an_error(tmp_path, repo, live):
+    """Ambiguity is not resolved by picking one."""
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# T\n\n"
+        "![Last audit](https://img.shields.io/badge/docs_verified-2020--01--01-blue)\n"
+        "\nprose\n\n"
+        "![Last audit](https://img.shields.io/badge/docs_verified-2019--01--01-blue)\n"
+        "\nGenerated 2020-01-01 by the monthly documentation refresh.\n")
+    with pytest.raises(ValueError, match="cannot tell which one"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
 
 
 def test_a_readme_with_no_badges_fails_loudly(tmp_path, repo, live):
