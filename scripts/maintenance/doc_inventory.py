@@ -4142,14 +4142,31 @@ README_BADGE = re.compile(r"^!\[[^\]]*\]\((?:https://img\.shields\.io|https://gi
 
 
 def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -> str:
-    """The five badge lines, rendered from the same inventory as everything else."""
-    lc = (live or {}).get("counts", {})
+    """The five badge lines, rendered from the same inventory as everything else.
+
+    Refuses without a live snapshot. `--readme-badges` with no `--snapshot` or
+    `--live` left `live` as None, and the counts fell back to 0: the badges
+    read "0_live" jobs and "0_live" schedulers while the date said verified
+    today. A zero indistinguishable from a real count, published as fact, is
+    the silent fallback CLAUDE.md 3.7 forbids -- and the whole point of
+    rendering these is that they cannot be wrong. (Codex, PR #1070.)
+    """
+    if not live:
+        raise ValueError("README badges need a live snapshot: pass --snapshot or --live. "
+                         "Rendering them without one publishes zero counts as fact.")
+    missing = [k for k in ("jobs", "schedulers") if not live.get("counts", {}).get(k)]
+    if missing or not live.get("db_tables"):
+        raise ValueError(
+            "the live snapshot is missing "
+            f"{', '.join(missing + ([] if live.get('db_tables') else ['db_tables']))}; "
+            "refusing to render badges that would read 0")
+    lc = live["counts"]
     # Computed here rather than imported: check_generated_docs imports THIS
     # module, so the dependency only runs one way. Same three keys its
     # `relation_counts` sums.
     declared_relations = (len(repo["tables"]) + len(repo["materialized_views"])
                           + len(repo["views"]))
-    live_relations = len((live or {}).get("db_tables", []) or [])
+    live_relations = len(live["db_tables"])
     dash = day.replace("-", "--")
     return "\n".join([
         f"![Last audit](https://img.shields.io/badge/docs_verified-{dash}-blue)",

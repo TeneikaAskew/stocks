@@ -2105,3 +2105,21 @@ def test_a_readme_with_no_badges_fails_loudly(tmp_path, repo, live):
     readme.write_text("# T\n\nno badges here\n")
     with pytest.raises(ValueError, match="no badge block"):
         inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+
+
+def test_badges_refuse_to_render_without_a_live_snapshot(tmp_path, repo, live):
+    """`--readme-badges` with no `--snapshot` left `live` as None and the counts
+    fell back to 0: the badges read "0_live" jobs and "0_live" schedulers while
+    the date said verified today. A zero indistinguishable from a real count,
+    published as fact, is the silent fallback CLAUDE.md 3.7 forbids — and the
+    point of rendering these is that they cannot be wrong. (Codex, PR #1070.)"""
+    for bad in (None,
+                {"db_tables": ["x"]},                                  # no counts
+                {"counts": {"jobs": 5, "schedulers": 5}},              # no db_tables
+                {"counts": {"jobs": 0, "schedulers": 5}, "db_tables": ["x"]}):
+        with pytest.raises(ValueError, match="snapshot|missing"):
+            inv.readme_badges(repo, bad, "2026-11-02")
+    # and a real snapshot still renders, with no zero in any count
+    rendered = inv.readme_badges(repo, live, "2026-11-02")
+    assert "0_live" not in rendered and "_%2F_0_" not in rendered
+    assert str(live["counts"]["jobs"]) in rendered
