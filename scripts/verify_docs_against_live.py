@@ -903,7 +903,10 @@ _FMT = r"[\s*_`\]]*"
 # total, it does not select from it. (Codex, PR #1072.)
 SUBSET_BEFORE = re.compile(r"\b(?:top|first|last|remaining|next)\s+$", re.I)
 SUBSET_AFTER = re.compile(
-    r"[ \t]*(?:identified|marked|listed|flagged|declared|undeclared"
+# `listed` is NOT here: "68 Cloud Run Jobs listed alphabetically below"
+# describes presentation, not a subset, and accepting it suppressed a real
+# fleet total. (Codex, PR #1072.)
+    r"[ \t]*(?:identified|marked|flagged|declared|undeclared"
     r"|hand-created|manually|orphaned|untracked|missing|without|lacking"
     r"|failing|failed|retired|removed|not\s+in|by\s+\w+)\b", re.I)
 

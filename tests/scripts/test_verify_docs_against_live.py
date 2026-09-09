@@ -946,3 +946,12 @@ def test_a_leading_qualifier_inside_the_match_is_still_seen(tmp_path):
     vd.check_counts(p, "d.md", live, out)
     assert len([f for f in out if f.check == "count-drift"]) == 1, \
         "removing the qualifier must restore the drift finding"
+
+
+def test_listed_alone_does_not_suppress_a_fleet_total(tmp_path):
+    """`listed` describes presentation, not a subset. "68 Cloud Run Jobs listed
+    alphabetically below" is the inventory's total, and accepting the participle
+    as a cue suppressed a real fleet count. (Codex, PR #1072.)"""
+    found = _count_findings(
+        tmp_path, "The inventory contains 68 Cloud Run Jobs listed alphabetically below.\n")
+    assert len(found) == 1, "'listed' suppressed a fleet total"
