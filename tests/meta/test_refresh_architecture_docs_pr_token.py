@@ -18,6 +18,7 @@ import os
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.maintenance import check_generated_docs as gate
@@ -822,3 +823,57 @@ def test_the_escaped_badge_date_does_not_mask_a_real_badge_change(tmp_path):
                             seed={gate.README: before})
     assert "meaningful=1" in log, "a changed job count was masked away as a date"
     assert disk[gate.README] == after
+
+
+@pytest.mark.parametrize("before,after", [
+    # the reconcile block's read instant
+    ("2026-09-07T04:35:16Z", "2026-10-01T05:12:03Z"),
+    # the same instant as 05-a's prose writes it: space, no seconds
+    ("2026-09-07 04:28Z", "2026-10-01 05:12Z"),
+])
+def test_the_live_read_instant_is_masked_whole(tmp_path, before, after):
+    """Masking only the date left the time-of-day differing, so 05-a was
+    classified meaningful on a month where nothing whatsoever had changed --
+    the same defect as the escaped badge date, one line along. Both shapes the
+    documents actually contain are masked as a unit.
+    (Found while fixing the badge; Codex, PR #1070.)
+    """
+    def arch(instant):
+        return (f"# arch\n\nbody line\n\n"
+                f"Live read {instant}. Repo declares 68 jobs / 65 schedulers; "
+                f"live has 76 / 65.\n\nGenerated {instant[:10]}\n")
+
+    log, disk = _run_detect(tmp_path, {gate.ARCH: arch(after)},
+                            seed={gate.ARCH: arch(before)})
+    assert "meaningful=0" in log, \
+        "a new read instant alone was published as a meaningful refresh"
+    assert disk[gate.ARCH] == arch(before)
+
+
+def test_a_scheduled_local_time_is_content_not_noise(tmp_path):
+    """The trailing Z is what separates a UTC read instant from a scheduled
+    local time. `calibrate-thresholds-quarterly` next fires at
+    "2026-10-01 02:00 ET"; that slot moving is a real change and must not be
+    masked away with the read timestamps."""
+    def arch(slot):
+        return (f"# arch\n\nbody line\n\n"
+                f"`calibrate-thresholds-quarterly` next fires {slot}.\n"
+                f"\nGenerated 2026-09-09\n")
+
+    before, after = arch("2026-10-01 02:00 ET"), arch("2026-10-01 06:30 ET")
+    log, disk = _run_detect(tmp_path, {gate.ARCH: after}, seed={gate.ARCH: before})
+    assert "meaningful=1" in log, "a schedule moving was masked away as a timestamp"
+    assert disk[gate.ARCH] == after
+
+
+def test_a_count_moving_beside_the_read_instant_is_still_meaningful(tmp_path):
+    """The instant mask must not swallow the counts on the same line."""
+    def arch(instant, jobs):
+        return (f"# arch\n\nbody line\n\n"
+                f"Live read {instant}. Repo declares 68 jobs / 65 schedulers; "
+                f"live has {jobs} / 65.\n\nGenerated {instant[:10]}\n")
+
+    before, after = arch("2026-09-07T04:35:16Z", 76), arch("2026-10-01T05:12:03Z", 77)
+    log, disk = _run_detect(tmp_path, {gate.ARCH: after}, seed={gate.ARCH: before})
+    assert "meaningful=1" in log, "a changed live job count was masked away"
+    assert disk[gate.ARCH] == after
