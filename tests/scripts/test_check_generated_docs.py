@@ -2252,3 +2252,41 @@ def test_the_day_flag_reaches_the_renderer_through_the_cli(tmp_path):
     assert "docs_verified-2026--12--25-blue" in body, \
         "--day is parsed but never reaches the renderer"
     assert "Generated 2026-12-25" in body
+
+
+@pytest.mark.parametrize("line,owned,why", [
+    ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-architecture-docs.yml/badge.svg)", True, "canonical"),
+    ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-documentation.yml/badge.svg)", True,
+     "the malformation run 32 actually produced: a workflow that does not exist"),
+    ("![Docs refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-architecture-docs.yml/badge.svg)", True,
+     "right workflow, alt text edited"),
+    ("![CI](https://github.com/TeneikaAskew/stocks/actions/workflows/ci.yml/badge.svg)",
+     False, "a maintainer's own workflow badge must never be claimed"),
+    ("![build](https://img.shields.io/badge/build-passing-green)", False,
+     "an unrelated shields badge"),
+])
+def test_which_workflow_badges_this_renderer_owns(line, owned, why):
+    """Requiring the correct filename meant the one malformation actually seen
+    was not recognised as ours, so a render inserted a correct badge and left
+    the dead one beside it -- and `gate_links` skips HTTPS targets, so nothing
+    downstream would catch the duplicate. Broadening to ANY workflow badge
+    would have been worse: it would silently delete a maintainer's CI badge.
+    The alt text this renderer writes is what makes a badge ours.
+    (Codex, PR #1070.)
+    """
+    assert bool(inv.OWNED_BADGE.fullmatch(line)) is owned, why
+
+
+def test_a_dead_workflow_badge_is_replaced_not_duplicated(tmp_path, repo, live):
+    """End to end: the render must leave exactly one workflow badge."""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with().replace(
+        "workflows/refresh-architecture-docs.yml/badge.svg",
+        "workflows/refresh-documentation.yml/badge.svg"))
+    inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    body = readme.read_text()
+    assert "refresh-documentation.yml" not in body, "the dead badge survived"
+    assert body.count("/actions/workflows/") == 1, "the workflow badge was duplicated"

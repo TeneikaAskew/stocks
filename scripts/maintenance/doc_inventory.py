@@ -4147,6 +4147,18 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
 OWNED_BADGE = re.compile(
     r"^!\[[^\]]*\]\(https://img\.shields\.io/badge/"
     r"(?:docs_verified|cloud_run_jobs|schedulers|schema_relations|schema_tables)-[^)]*\)$"
+    # The workflow badge, by EITHER the workflow it names or the alt text this
+    # renderer writes. Requiring the correct filename meant the one malformation
+    # actually observed -- run 32 pointed it at `refresh-documentation.yml`,
+    # which does not exist -- was not recognised as ours, so the render inserted
+    # a correct badge and left the dead one beside it. `gate_links` skips HTTPS
+    # targets, so nothing downstream would have caught the duplicate.
+    #
+    # Deliberately NOT "any workflow badge": a maintainer's own CI badge must
+    # not be claimed and deleted. The alt text is what makes it ours.
+    # (Codex, PR #1070.)
+    r"|^!\[Architecture refresh\]\(https://github\.com/[^)]*"
+    r"/actions/workflows/[^)]*badge\.svg\)$"
     r"|^!\[[^\]]*\]\(https://github\.com/[^)]*"
     r"workflows/refresh-architecture-docs\.yml/badge\.svg\)$", re.M)
 
