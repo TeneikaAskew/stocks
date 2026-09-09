@@ -1159,3 +1159,45 @@ def test_the_backfill_verifies_the_bucket_it_was_pointed_at():
     call = "mag_inference._load_model_and_version(ticker, tf)"
     assert body.index('os.environ["GCS_BUCKET"] = args.bucket') < body.index(
         call), "the bucket must be pinned before the reader is called"
+
+
+@pytest.mark.parametrize("bad_class", [float("inf"), float("-inf"),
+                                       float("nan")])
+def test_non_finite_estimator_classes_reach_the_fatal_path(bad_class):
+    """int(float("inf")) raises OverflowError, which the clause did not catch,
+    so a non-finite class escaped ContractMismatch and landed back under the
+    partial-success threshold. Seventh escape of this shape in the PR, and the
+    third distinct place that interprets a value it did not produce -- the
+    previous two were fixed to fail closed and this one was missed. (Codex P2
+    on #1074.)"""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMismatch, ContractRejection)
+    est = MagicMock()
+    est.classes_ = [bad_class, 1, 2, 3]
+    with pytest.raises(ContractMismatch) as e:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_every_site_that_interprets_untrusted_values_fails_closed():
+    """The generalisation seven rounds took to reach: this change interprets
+    values it did not produce in exactly three places, and each one was
+    separately bitten by an exception type not on its list. All three now
+    catch broadly, which is safe only because each sits AFTER the transport
+    or parse boundary -- so the only thing they can be wrong about is a
+    value, never a network."""
+    inf = pathlib.Path(
+        "gcp/research/magnitude_engine/mag_inference.py").read_text()
+    cfg = pathlib.Path(
+        "gcp/research/magnitude_engine/mag_config.py").read_text()
+    # 1. decoding the contract bytes
+    decode = inf[inf.index("raw_bytes = contract_blob.download_as_bytes()"):]
+    assert "except Exception" in decode[:decode.index("raise ContractMalformed")]
+    # 2. coercing the thresholds
+    coerce = cfg[cfg.index("got_thresholds = tuple(float(t)"):]
+    assert "except Exception" in coerce[:coerce.index("raise ValueError")]
+    # 3. normalising the estimator classes
+    norm = inf[inf.index("def _as_index(c):"):]
+    assert "except Exception" in norm[:norm.index("return c\n", norm.index(
+        "except Exception"))]

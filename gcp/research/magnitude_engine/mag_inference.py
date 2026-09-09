@@ -333,7 +333,18 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             return c
         try:
             i = int(c)
-        except (TypeError, ValueError):
+        except Exception:                 # noqa: BLE001
+            # Fail CLOSED, the third and last place in this change that
+            # interprets a value it did not produce. This clause was
+            # (TypeError, ValueError) and int(float("inf")) raises
+            # OverflowError, which is neither, so a non-finite class escaped
+            # ContractMismatch entirely and landed back under the
+            # partial-success threshold (Codex P2 on #1074).
+            #
+            # Seventh escape of this shape across the PR. Returning the value
+            # unchanged is always right regardless of why it would not
+            # convert: it is then not the integer index, so it compares
+            # unequal and is reported as-is in the mismatch.
             return c
         return i if i == c else c         # 0.5 -> 0.5, not 0
     if [_as_index(c) for c in actual_classes] != expected_classes:
