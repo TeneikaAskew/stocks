@@ -2,10 +2,10 @@
 
 A private stocks and options trading intelligence platform on GCP: Cloud Run Jobs pull market, options, earnings, macro, filings and news data into Cloud SQL, compute Strat, gamma and signal analytics with one shared `lib/` engine, and deliver briefs and alerts to Discord. A FastAPI service (`solyra-api-prod` behind IAP, `solyra-api-staging` public with Firebase login) serves the [solyra](https://github.com/TeneikaAskew/solyra) React UI. This repository is the backend; the frontend moved to solyra in #957.
 
-![Last audit](https://img.shields.io/badge/docs_verified-2026--09--07-blue)
-![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76_live_%2F_67_declared-blue)
+![Last audit](https://img.shields.io/badge/docs_verified-2026--09--09-blue)
+![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76_live_%2F_68_declared-blue)
 ![Cloud Scheduler](https://img.shields.io/badge/schedulers-65_live-blue)
-![Cloud SQL tables](https://img.shields.io/badge/schema_tables-66_declared_%2F_94_live-blue)
+![Cloud SQL relations](https://img.shields.io/badge/schema_relations-70_declared_%2F_96_live-blue)
 ![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/workflows/refresh-architecture-docs.yml/badge.svg)
 
 Counts are read live by `python -m scripts.maintenance.doc_inventory --live`; the badges are updated by the monthly refresh.
@@ -61,4 +61,4 @@ Prose outside a marker block survives the refresh and is yours to edit; anything
 
 No explicit license has been added to this repo. Treat as **all rights reserved** until that changes. Contact: see git log / GitHub repo owner.
 
-Generated 2026-09-07 by the monthly documentation refresh. The audits behind these documents are in [`docs/audits/`](docs/audits). The monthly refresh updates this line.
+Generated 2026-09-09 by the monthly documentation refresh. The audits behind these documents are in [`docs/audits/`](docs/audits). The monthly refresh updates this line.
