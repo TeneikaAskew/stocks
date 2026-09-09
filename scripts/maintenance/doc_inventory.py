@@ -4109,6 +4109,14 @@ def restore_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str,
 # be re-flagged by a gate matching a different shape.
 RUNTIME_RELATION_COUNT = re.compile(r"(\d+)( runtime[- ](?:created )?relations)")
 
+# The declared breakdown beside it: "(67 tables, 2 materialized views, 1 view)".
+# Run 33's model kept the correct total, 70 relations, and rewrote the
+# parenthetical to "66 tables, 3 materialized views" -- a line that was already
+# right on main. Same class as the runtime count and the as-of labels, so the
+# same answer: render it, do not ask for it. (Run 33.)
+RELATION_BREAKDOWN = re.compile(
+    r"\((\d+) tables?, (\d+) materialized views?, (\d+) views?\)")
+
 
 # The three "as of" labels a human wrote into the prose, every one of which has
 # to track the snapshot the run was taken from. Deliberately literal: a looser
@@ -4300,6 +4308,15 @@ def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, 
     if counts and live and live.get("db_tables"):
         n = len(runtime_relations(repo, live))
         new = RUNTIME_RELATION_COUNT.sub(lambda m: f"{n}{m.group(2)}", new)
+    # The declared breakdown does not depend on the live snapshot, so it is
+    # rendered whether or not one was supplied.
+    if counts:
+        t, m_, v = (len(repo["tables"]), len(repo["materialized_views"]),
+                    len(repo["views"]))
+        new = RELATION_BREAKDOWN.sub(
+            lambda _m: f"({t} table{'' if t == 1 else 's'}, "
+                       f"{m_} materialized view{'' if m_ == 1 else 's'}, "
+                       f"{v} view{'' if v == 1 else 's'})", new)
     # The as-of labels are inventory too, for exactly the same reason. Run 31
     # updated the header note and the closing line and left §3's table column
     # at the previous snapshot's date, failing the run on one stale label --

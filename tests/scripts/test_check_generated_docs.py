@@ -2306,3 +2306,40 @@ def test_a_second_generated_line_is_refused_not_restamped(tmp_path, repo, live):
         inv.insert_readme_badges(readme, repo, live, "2026-11-02")
     assert readme.read_text() == before, "the historical date was rewritten anyway"
     assert "Generated 2019-03-04" in readme.read_text()
+
+
+def test_the_declared_relation_breakdown_is_rendered_not_asked_for(tmp_path, repo, live):
+    """Run 33 failed on this exact line. The model kept the correct total, 70
+    relations, and rewrote the parenthetical from "67 tables, 2 materialized
+    views" to "66 tables, 3 materialized views" -- corrupting a line that was
+    already right on main. Same class as the runtime count and the as-of
+    labels, so the same answer: render it before the model runs. (Run 33.)
+    """
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("# x\n\n`gcp/schema.sql` declares **70 relations** "
+                   "(66 tables, 3 materialized views, 1 view); live holds 96.\n")
+    inv.insert_blocks(doc, repo, live, root=REPO, counts=True)
+    t, m, v = (len(repo["tables"]), len(repo["materialized_views"]),
+               len(repo["views"]))
+    assert f"({t} tables, {m} materialized views, {v} view)" in doc.read_text()
+
+
+def test_the_restore_path_leaves_a_wrong_breakdown_for_the_gate(tmp_path, repo, live):
+    """`restore_blocks` runs AFTER the model. If it corrected the breakdown too,
+    a model that rewrote the line would be silently repaired and the gate would
+    never report it -- the same trap documented for the runtime count."""
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("# x\n\n`gcp/schema.sql` declares **70 relations** "
+                   "(66 tables, 3 materialized views, 1 view).\n")
+    inv.restore_blocks(doc, repo, live, root=REPO)
+    assert "(66 tables, 3 materialized views, 1 view)" in doc.read_text(), \
+        "the restore path silently corrected the model's error"
+
+
+@pytest.mark.parametrize("text,ok", [
+    ("(67 tables, 2 materialized views, 1 view)", True),
+    ("(1 table, 1 materialized view, 2 views)", True),
+    ("(67 tables and 2 materialized views)", False),
+])
+def test_which_breakdowns_the_renderer_recognises(text, ok):
+    assert bool(inv.RELATION_BREAKDOWN.fullmatch(text)) is ok
