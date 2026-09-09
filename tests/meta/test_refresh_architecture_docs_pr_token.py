@@ -710,10 +710,11 @@ def test_a_failed_gate_uploads_the_documents_it_judged():
         names.index("Verify regenerated docs"), "the upload must come after the gates"
 
 
-def _run_detect(tmp_path, edits):
+def _run_detect(tmp_path, edits, seed=None):
     """Execute the real `Detect meaningful changes` script body in a throwaway
     git repo seeded with the documents it inspects, applying `edits`
-    (path -> new content) on top of the committed baseline.
+    (path -> new content) on top of the committed baseline. `seed` overrides
+    the committed baseline for named files.
 
     Returns (stdout, {path: content_on_disk_afterwards}).
     """
@@ -732,7 +733,7 @@ def _run_detect(tmp_path, edits):
     for f in files:
         p = tmp_path / f
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(f"# {f}\n\nbody line\n\nGenerated 2026-08-01\n")
+        p.write_text((seed or {}).get(f, f"# {f}\n\nbody line\n\nGenerated 2026-08-01\n"))
     git("add", "-A")
     git("commit", "-qm", "baseline")
     for f, content in edits.items():
@@ -781,3 +782,43 @@ def test_a_timestamp_only_file_is_reverted_when_nothing_else_changed(tmp_path):
     assert "meaningful=0" in log
     assert disk[gate.README] == baseline, "the date-only change was published"
     assert "reverting" in log
+
+
+def _readme(day: str) -> str:
+    """README as the badge renderer writes it, with shields.io's escaped date."""
+    import sys
+    sys.path.insert(0, str(REPO / "scripts/maintenance"))
+    import doc_inventory as inv
+    dash = day.replace("-", "--")
+    return (f"# stocks\n\n"
+            f"![Last audit](https://img.shields.io/badge/docs_verified-{dash}-blue)\n"
+            f"![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76_live_%2F_68_declared-blue)\n"
+            f"\nbody line\n\nGenerated {day} by the monthly documentation refresh.\n")
+
+
+def test_the_escaped_badge_date_is_masked_like_any_other_date(tmp_path):
+    """shields.io escapes a hyphen by doubling it, so the audit badge reads
+    `docs_verified-2026--09--09`. The mask only recognised the single-hyphen
+    form, so on a month where nothing else moved the badge line stayed
+    different after normalisation, set MEANINGFUL=1, and opened a
+    date-only PR -- exactly the empty refresh the step exists to suppress.
+    (Codex, PR #1070.)
+    """
+    log, disk = _run_detect(
+        tmp_path,
+        {gate.README: _readme("2026-09-09")},
+        seed={gate.README: _readme("2026-08-01")},
+    )
+    assert "meaningful=0" in log, \
+        "a date-only badge change was published as a meaningful refresh"
+    assert disk[gate.README] == _readme("2026-08-01")
+
+
+def test_the_escaped_badge_date_does_not_mask_a_real_badge_change(tmp_path):
+    """The mask must not be so broad it hides a count moving."""
+    before = _readme("2026-08-01")
+    after = _readme("2026-09-09").replace("76_live", "77_live")
+    log, disk = _run_detect(tmp_path, {gate.README: after},
+                            seed={gate.README: before})
+    assert "meaningful=1" in log, "a changed job count was masked away as a date"
+    assert disk[gate.README] == after

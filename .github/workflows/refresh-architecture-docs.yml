@@ -911,7 +911,13 @@ jobs:
             # identical once dates are masked, which is a comparison rather
             # than a filter and cannot silently discard content.
             git diff --no-color "$FILE" | grep -E '^[-+][^-+]' > "/tmp/${DIFF_NAME}.raw" || true
-            sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}/<DATE>/g; s/(\*\*)?Generated(\*\*)? 20[0-9]{2}/Generated <DATE>/g' \
+            # The escaped form first: shields.io writes a literal hyphen as
+            # two, so README's audit badge reads "docs_verified-2026--09--09".
+            # Masking only the single-hyphen form left that line different
+            # after normalisation, so a month where nothing but the dates
+            # moved opened a date-only PR -- the exact case this step exists
+            # to suppress. (Codex, PR #1070.)
+            sed -E 's/20[0-9]{2}--[0-9]{2}--[0-9]{2}/<DATE>/g; s/20[0-9]{2}-[0-9]{2}-[0-9]{2}/<DATE>/g; s/(\*\*)?Generated(\*\*)? 20[0-9]{2}/Generated <DATE>/g' \
               "/tmp/${DIFF_NAME}.raw" > "/tmp/${DIFF_NAME}.norm"
             sed -n 's/^-//p' "/tmp/${DIFF_NAME}.norm" > "/tmp/${DIFF_NAME}.old"
             sed -n 's/^+//p' "/tmp/${DIFF_NAME}.norm" > "/tmp/${DIFF_NAME}.new"
