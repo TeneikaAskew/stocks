@@ -898,3 +898,51 @@ def test_a_qualifier_in_the_next_paragraph_does_not_suppress(tmp_path):
 
 def test_a_correct_fleet_count_is_silent(tmp_path):
     assert _count_findings(tmp_path, "All 76 Cloud Run Jobs are in scope.\n") == []
+
+
+def test_only_emphasises_a_total_it_does_not_select_a_subset(tmp_path):
+    """`only` was in the leading-qualifier list. "The project has only 68 Cloud
+    Run Jobs" emphasises the total; it does not select from it, so the count is
+    still a fleet claim. (Codex, PR #1072.)"""
+    found = _count_findings(tmp_path, "The project has only 68 Cloud Run Jobs.\n")
+    assert len(found) == 1, "an 'only N' fleet total was suppressed"
+
+
+def test_a_subset_sentence_may_wrap_after_the_noun(tmp_path):
+    """Requiring the qualifier on the same PHYSICAL line reported a wrapped
+    subset sentence as fleet drift -- the blind spot the whole-file scan exists
+    to remove. One soft wrap is the same sentence. (Codex, PR #1072.)"""
+    text = ("*   **Resource**: 10 Cloud Run jobs\n"
+            "identified as hand-created in `05-a-ARCHITECTURE.md`.\n")
+    assert _count_findings(tmp_path, text) == []
+
+
+@pytest.mark.parametrize("text", [
+    # a blank line is a paragraph break, not a wrap
+    "## 68 Cloud Run Jobs\n\nCreated jobs run on demand.\n",
+    # a heading's text ends at the newline, so the line after it is new content
+    "## 68 Cloud Run Jobs\nCreated jobs run on demand.\n",
+])
+def test_the_soft_wrap_does_not_reach_into_unrelated_content(tmp_path, text):
+    found = _count_findings(tmp_path, text)
+    assert len(found) == 1, "unrelated following content suppressed a stale count"
+
+
+def test_a_leading_qualifier_inside_the_match_is_still_seen(tmp_path):
+    """Several patterns start well before the number -- "Cloud Scheduler
+    (10 jobs)" by 17 characters, "Secret Manager ... 10 secrets" by 31 -- so
+    slicing the prefix from the MATCH hid any qualifier between the two.
+    (Codex, PR #1072.)"""
+    live = dict(LIVE)
+    live["secrets"] = {f"s{i}": {} for i in range(22)}
+    p = tmp_path / "d.md"
+    p.write_text("Secret Manager lists the first 10 secrets used by this service.\n")
+    out: list[vd.Finding] = []
+    vd.check_counts(p, "d.md", live, out)
+    assert [f for f in out if f.check == "count-drift"] == []
+
+    p.write_text("Secret Manager lists the 10 secrets used by this service.\n")
+    out = []
+    vd.check_counts(p, "d.md", live, out)
+    assert len([f for f in out if f.check == "count-drift"]) == 1, \
+        "removing the qualifier must restore the drift finding"

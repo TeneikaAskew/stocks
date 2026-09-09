@@ -899,11 +899,33 @@ _FMT = r"[\s*_`\]]*"
 # Over-suppression makes the check blind to the drift it exists to catch --
 # the failure mode the scheduler-vocabulary comment below records -- so both
 # lists are specific rather than generic. (Run 34; Codex, PR #1072.)
-SUBSET_BEFORE = re.compile(r"\b(?:top|first|last|only|remaining|next)\s+$", re.I)
+# `only` is NOT here: "the project has only 68 Cloud Run Jobs" emphasises the
+# total, it does not select from it. (Codex, PR #1072.)
+SUBSET_BEFORE = re.compile(r"\b(?:top|first|last|remaining|next)\s+$", re.I)
 SUBSET_AFTER = re.compile(
     r"[ \t]*(?:identified|marked|listed|flagged|declared|undeclared"
     r"|hand-created|manually|orphaned|untracked|missing|without|lacking"
     r"|failing|failed|retired|removed|not\s+in|by\s+\w+)\b", re.I)
+
+# Prose wraps, and a subset sentence wraps with it: "10 Cloud Run jobs\nidentified
+# as hand-created" is one sentence over two lines. Requiring the qualifier on the
+# same PHYSICAL line reported it as fleet drift -- the same blind spot the
+# whole-file scan was introduced to remove. One soft wrap is allowed; a BLANK
+# line is a paragraph break and still blocks, which is what stops an unrelated
+# next paragraph from suppressing a stale heading. (Codex, PR #1072.)
+_SOFT_WRAP = re.compile(r"[ \t]*\r?\n(?![ \t]*\r?\n)")
+
+
+def _subset_follows(text: str, pos: int, on_heading: bool) -> bool:
+    """Is the count at `pos` scoped by a qualifier on this line or the next?"""
+    if SUBSET_AFTER.match(text, pos):
+        return True
+    if on_heading:
+        # A heading's text ends at the newline; the line after it is new
+        # content, not a continuation of the same sentence.
+        return False
+    w = _SOFT_WRAP.match(text, pos)
+    return bool(w and SUBSET_AFTER.match(text, w.end()))
 
 COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
     (re.compile(rf"\b{_NUM}\s+Cloud\s+Run\s+Jobs\b", re.I), "run_jobs", "Cloud Run Jobs"),
@@ -1029,9 +1051,17 @@ def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -
             # SUBSET_AFTER allows only horizontal whitespace, and SUBSET_BEFORE
             # is anchored to the end of the text preceding the match on this
             # line. (Run 34; Codex, PR #1072.)
-            line_start = text.rfind("\n", 0, m.start()) + 1
-            if (SUBSET_AFTER.match(text, m.end())
-                    or SUBSET_BEFORE.search(text[line_start:m.start()])):
+            # Anchor to the captured NUMBER, not to the match: several
+            # patterns start well before it -- "Cloud Scheduler (10 jobs)"
+            # by 17 characters, "Secret Manager ... 10 secrets" by 31 -- so
+            # slicing from m.start() hid any qualifier sitting between the
+            # two, e.g. "Secret Manager lists the first 10 secrets".
+            # (Codex, PR #1072.)
+            num_start = m.start(1)
+            line_start = text.rfind("\n", 0, num_start) + 1
+            on_heading = text[line_start:num_start].lstrip().startswith("#")
+            if (_subset_follows(text, m.end(), on_heading)
+                    or SUBSET_BEFORE.search(text[line_start:num_start])):
                 continue
             claimed = m.group(1)
             n = WORD_NUMBERS.get(claimed.lower())
