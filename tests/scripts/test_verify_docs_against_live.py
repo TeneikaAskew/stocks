@@ -827,3 +827,56 @@ def test_the_hand_maintained_copies_are_not_enrolled():
     enrolled = {str(p.relative_to(root)) for pattern in v.LIVE_STATE_GLOBS for p in root.glob(pattern)}
     assert "docs/product/infrastructure/05-a-ARCHITECTURE.md" in enrolled
     assert not any("/manual/" in e for e in enrolled), sorted(e for e in enrolled if "/manual/" in e)
+
+
+def _count_findings(tmp_path, text, n_jobs=76):
+    live = dict(LIVE)
+    live["run_jobs"] = {f"j{i}": {} for i in range(n_jobs)}
+    p = tmp_path / "docs/product/infrastructure/05-d-COST_ANALYSIS.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+    out: list[vd.Finding] = []
+    vd.check_counts(p, "05-d-COST_ANALYSIS.md", live, out)
+    return [f for f in out if f.check == "count-drift"]
+
+
+def test_a_subset_count_is_not_read_as_a_fleet_count(tmp_path):
+    """Run 34 failed on 05-d line 78:
+
+        [count-drift] claims 10 Cloud Run Jobs; live count is 76
+
+    The sentence was TRUE -- "10 Cloud Run jobs identified in
+    `05-a-ARCHITECTURE.md` as being manually created", and 05-a marks exactly
+    ten job rows `(hand-created)`. The pattern read any "N Cloud Run jobs" as a
+    claim about the whole fleet. (Run 34.)
+    """
+    text = ("*   **Resource**: 10 Cloud Run jobs identified in "
+            "`05-a-ARCHITECTURE.md` as being manually created.\n")
+    assert _count_findings(tmp_path, text) == []
+
+
+@pytest.mark.parametrize("line", [
+    "The top 10 Cloud Run jobs that dominate spend are listed below.",
+    "3 Cloud Run jobs failed overnight.",
+    "12 Cloud Run jobs declared in `gcp/deploy.sh` have no scheduler.",
+])
+def test_other_subset_phrasings_are_not_fleet_counts(tmp_path, line):
+    assert _count_findings(tmp_path, line + "\n") == []
+
+
+@pytest.mark.parametrize("line", [
+    "The platform runs 42 Cloud Run Jobs today.",
+    "| Cloud Run Jobs | 12 Cloud Run Jobs | x |",
+    "All 68 Cloud Run Jobs are covered by this estimate.",
+])
+def test_the_subset_rule_does_not_blind_the_fleet_check(tmp_path, line):
+    """Over-suppressing here would make the check blind to the drift it exists
+    to catch, which is the failure mode the scheduler-vocabulary comment
+    records. A wrong fleet count must still be reported."""
+    found = _count_findings(tmp_path, line + "\n")
+    assert len(found) == 1, f"real drift was suppressed: {line!r}"
+    assert "live count is 76" in found[0].detail
+
+
+def test_a_correct_fleet_count_is_silent(tmp_path):
+    assert _count_findings(tmp_path, "All 76 Cloud Run Jobs are in scope.\n") == []

@@ -879,6 +879,24 @@ _NUM = r"(\d{1,3}|" + "|".join(WORD_NUMBERS) + r")"
 # content, so they are stepped over rather than treated as a word boundary.
 _FMT = r"[\s*_`\]]*"
 
+# A count is a claim about the FLEET only when nothing scopes it. Run 34 failed
+# on 05-d line 78, "10 Cloud Run jobs identified in `05-a-ARCHITECTURE.md` as
+# being manually created" -- a true statement (05-a marks exactly 10 job rows
+# `(hand-created)`) reported as drift because the pattern read it as "there are
+# 10 Cloud Run Jobs" against a live 76. The same reading would fire on "the top
+# 10 Cloud Run jobs by cost" or "3 Cloud Run jobs failed overnight".
+#
+# Kept deliberately TIGHT rather than suppressing anything that looks
+# qualified: over-suppression here makes the check blind to the real drift it
+# exists to catch, which is the failure mode the scheduler-vocabulary comment
+# below records. A restrictive word must follow IMMEDIATELY -- "All 76 Cloud
+# Run Jobs |" in a table cell is followed by nothing and stays checked.
+# (Run 34.)
+SUBSET_QUALIFIER = re.compile(
+    r"\s*(?:identified|marked|listed|flagged|declared|undeclared|created"
+    r"|defined|registered|missing|without|lacking|failing|failed|added"
+    r"|removed|retired|that\b|which\b|not\s+in)\b", re.I)
+
 COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
     (re.compile(rf"\b{_NUM}\s+Cloud\s+Run\s+Jobs\b", re.I), "run_jobs", "Cloud Run Jobs"),
     # Qualified deliberately: a bare "N services" in operational prose is as
@@ -997,6 +1015,10 @@ def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -
             # count takes a `verify-docs-ok` marker, which says so where a
             # reader can see it.
             if i in skip:
+                continue
+            # A restrictive qualifier immediately after the noun makes this a
+            # claim about a SUBSET, not about the fleet. (Run 34.)
+            if SUBSET_QUALIFIER.match(text, m.end()):
                 continue
             claimed = m.group(1)
             n = WORD_NUMBERS.get(claimed.lower())
