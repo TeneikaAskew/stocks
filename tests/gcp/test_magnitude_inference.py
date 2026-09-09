@@ -922,8 +922,8 @@ def test_the_backfill_rereads_latest_in_the_final_pass():
     assert "scanned_run" in verdict, "the scan-time run id must be compared"
     assert "LATEST moved during the run" in verdict
     assert "LATEST vanished during the run" in verdict
-    assert verdict.index("latest.download_as_text()") < verdict.index(
-        f"{'{'}CONTRACT_BLOB{'}'}"), "LATEST must be re-read before the check"
+    assert verdict.index("_read_latest(bucket, base)") < verdict.index(
+        "_load_model_and_version"), "LATEST must be re-read before the check"
 
 
 def test_every_decoding_failure_reaches_the_fatal_path():
@@ -1289,3 +1289,42 @@ def test_a_real_sklearn_class_array_is_still_accepted():
     model, cols, version, contract = _load_with(
         _json.dumps(_SERVING_CONTRACT), model=est)
     assert contract["label_mode"] == "body"
+
+
+def test_the_backfill_rechecks_latest_after_loading_the_artifact():
+    """The re-read before the load closes the scan-to-verdict window but not
+    the load-to-reader one: LATEST can flip after this loop reads its pointer
+    and before _load_model_and_version resolves its OWN, so the reader
+    verifies run A while run B -- freshly promoted by the old writer, with no
+    CONTRACT.json -- is what now serves, and the loop still counts it verified.
+    (Codex P2 on #1074.)
+
+    The check narrows that window; it cannot close it, since a flip is always
+    possible after the last check. The message therefore tells the operator
+    the durable mitigation: pause promotions."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    load = verdict.index("_load_model_and_version")
+    tail = verdict[load:]
+    recheck = tail.index("_read_latest(bucket, base)")
+    assert recheck < tail.index("verified += 1"), (
+        "LATEST must be re-read AFTER the load and BEFORE the cell counts "
+        "as verified")
+    assert "verified, so the reader may have resolved a different run" in tail
+    # generation, not just the run id: an A -> B -> A flip leaves the run id
+    # identical and only the version number records that it moved at all.
+    assert "after[1] != generation" in tail
+
+
+def test_the_latest_reader_pins_its_read_to_one_version():
+    """Reading the generation and the text as two unpinned calls would let the
+    pointer move between them, producing a run id from one version paired with
+    the generation of another -- a pair describing no state that ever existed,
+    which the post-load comparison would then read as "unchanged"."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    fn = src[src.index("def _read_latest"):src.index("def main()")]
+    assert "if_generation_match=blob.generation" in fn
+    # and a failed pinned read is raised, never returned as "no pointer"
+    assert "raise _PointerMoved" in fn
+    assert fn.count("return None") == 1, (
+        "None must mean 'no LATEST', not 'the read failed'")

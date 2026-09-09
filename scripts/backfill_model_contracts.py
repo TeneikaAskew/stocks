@@ -79,6 +79,37 @@ _AUDITED_LEGACY_CONTRACT = {
 }
 
 
+class _PointerMoved(RuntimeError):
+    """LATEST changed underneath a read that had pinned itself to one version.
+
+    Raised rather than returned so it cannot be mistaken for "no pointer".
+    """
+
+
+def _read_latest(bucket, base) -> tuple[str, int] | None:
+    """A cell's LATEST as (run_id, generation), or None if it has none.
+
+    The read is PINNED to the generation `reload()` saw, so the pair always
+    describes ONE version of the pointer instead of a run id from one version
+    and a generation from another. Carrying the generation is what makes an
+    A -> B -> A flip detectable at all: comparing run ids alone would call
+    that sequence unchanged.
+    """
+    from google.api_core import exceptions as gapi   # noqa: PLC0415
+    blob = bucket.blob(f"{base}/LATEST")
+    try:
+        blob.reload()
+    except gapi.NotFound:
+        return None
+    try:
+        text = blob.download_as_text(if_generation_match=blob.generation)
+    except gapi.PreconditionFailed as e:
+        raise _PointerMoved(f"{base}/LATEST moved mid-read") from e
+    except gapi.NotFound as e:
+        raise _PointerMoved(f"{base}/LATEST deleted mid-read") from e
+    return text.strip(), blob.generation
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--commit", action="store_true",
@@ -207,15 +238,21 @@ def main() -> int:
         # would print "safe to deploy" about an artifact that is no longer the
         # one serving (Codex P2 on #1074). The verdict has to describe the
         # world at the moment it is issued.
-        latest = bucket.blob(f"{base}/LATEST")
-        if not latest.exists():
+        try:
+            current = _read_latest(bucket, base)
+        except _PointerMoved:
+            unverified.append(
+                f"{ticker}:{tf} — LATEST changed while it was being read; "
+                f"re-run once promotions have settled")
+            continue
+        if current is None:
             if scanned_run is None:
                 continue          # idle at the scan and still idle; nothing serving
             unverified.append(
                 f"{ticker}:{tf} — LATEST vanished during the run "
                 f"(was {scanned_run}); re-run once promotions have settled")
             continue
-        run_id = latest.download_as_text().strip()
+        run_id, generation = current
         if scanned_run is None:
             unverified.append(
                 f"{ticker}:{tf} — LATEST appeared during the run "
@@ -252,6 +289,29 @@ def main() -> int:
             unverified.append(
                 f"{where} — could not be loaded to verify "
                 f"({type(e).__name__}: {e})")
+            continue
+        # LATEST can flip AGAIN between the re-read above and the moment the
+        # reader resolves its OWN pointer. The reader would then have verified
+        # run A while run B is the one now serving, and B is exactly the kind
+        # of artifact this gate exists to catch: freshly promoted by the old
+        # writer, carrying no CONTRACT.json (Codex P2 on #1074). Re-read after
+        # the load and compare the exact VERSION, not just the run id.
+        #
+        # This narrows the window to the load itself. It does not close it,
+        # and no number of checks can -- a flip is always possible after the
+        # last one, including after this line. The durable mitigation is not
+        # running this backfill concurrently with promotions, which is what
+        # the message tells the operator to do.
+        try:
+            after = _read_latest(bucket, base)
+            moved = after is None or after[1] != generation
+        except _PointerMoved:
+            moved = True
+        if moved:
+            unverified.append(
+                f"{where} — LATEST changed while the artifact was being "
+                f"verified, so the reader may have resolved a different run; "
+                f"re-run with promotions paused")
             continue
         verified += 1
     if unverified:
