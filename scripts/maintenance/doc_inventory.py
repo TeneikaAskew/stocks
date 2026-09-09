@@ -38,6 +38,7 @@ import argparse
 import ast
 import copy
 import itertools
+import datetime
 import json
 import os
 import pathlib
@@ -4129,6 +4130,134 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
                re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
 
 
+# README's badge block is inventory in a picture: a date and four counts. Run
+# 32's model rewrote the block wholesale and pointed the workflow badge at
+# `refresh-documentation.yml`, a file that does not exist, which the dead-link
+# gate then failed the run on. The prompt already said to edit README in place
+# with `replace` and never to regenerate it; the model regenerated it anyway
+# (52% churn). Same conclusion as the as-of labels and the runtime-relation
+# count: render what is inventory and stop asking. (Run 32.)
+# The five badges this renderer owns, by identity. Anything else in README
+# belongs to a maintainer and is never rewritten. Anchoring on "the first
+# contiguous run of badge-shaped lines" was wrong twice over: it could pick a
+# run that is not ours at all, and -- once that was fixed by looking for the
+# audit badge -- it still swallowed an unrelated badge a maintainer put
+# beside ours, because whitespace-contiguity says nothing about ownership.
+# (Codex, PR #1070.)
+OWNED_BADGE = re.compile(
+    r"^!\[[^\]]*\]\(https://img\.shields\.io/badge/"
+    r"(?:docs_verified|cloud_run_jobs|schedulers|schema_relations|schema_tables)-[^)]*\)$"
+    # The workflow badge, by EITHER the workflow it names or the alt text this
+    # renderer writes. Requiring the correct filename meant the one malformation
+    # actually observed -- run 32 pointed it at `refresh-documentation.yml`,
+    # which does not exist -- was not recognised as ours, so the render inserted
+    # a correct badge and left the dead one beside it. `gate_links` skips HTTPS
+    # targets, so nothing downstream would have caught the duplicate.
+    #
+    # Deliberately NOT "any workflow badge": a maintainer's own CI badge must
+    # not be claimed and deleted. The alt text is what makes it ours.
+    # (Codex, PR #1070.)
+    r"|^!\[Architecture refresh\]\(https://github\.com/[^)]*"
+    r"/actions/workflows/[^)]*badge\.svg\)$"
+    r"|^!\[[^\]]*\]\(https://github\.com/[^)]*"
+    r"workflows/refresh-architecture-docs\.yml/badge\.svg\)$", re.M)
+
+
+def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -> str:
+    """The five badge lines, rendered from the same inventory as everything else.
+
+    Refuses without a live snapshot. `--readme-badges` with no `--snapshot` or
+    `--live` left `live` as None, and the counts fell back to 0: the badges
+    read "0_live" jobs and "0_live" schedulers while the date said verified
+    today. A zero indistinguishable from a real count, published as fact, is
+    the silent fallback CLAUDE.md 3.7 forbids -- and the whole point of
+    rendering these is that they cannot be wrong. (Codex, PR #1070.)
+    """
+    if not live:
+        raise ValueError("README badges need a live snapshot: pass --snapshot or --live. "
+                         "Rendering them without one publishes zero counts as fact.")
+    missing = [k for k in ("jobs", "schedulers") if not live.get("counts", {}).get(k)]
+    if missing or not live.get("db_tables"):
+        raise ValueError(
+            "the live snapshot is missing "
+            f"{', '.join(missing + ([] if live.get('db_tables') else ['db_tables']))}; "
+            "refusing to render badges that would read 0")
+    lc = live["counts"]
+    # Computed here rather than imported: check_generated_docs imports THIS
+    # module, so the dependency only runs one way. Same three keys its
+    # `relation_counts` sums.
+    declared_relations = (len(repo["tables"]) + len(repo["materialized_views"])
+                          + len(repo["views"]))
+    live_relations = len(live["db_tables"])
+    dash = day.replace("-", "--")
+    return "\n".join([
+        f"![Last audit](https://img.shields.io/badge/docs_verified-{dash}-blue)",
+        f"![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-"
+        f"{lc.get('jobs', 0)}_live_%2F_{len(repo['jobs'])}_declared-blue)",
+        f"![Cloud Scheduler](https://img.shields.io/badge/schedulers-{lc.get('schedulers', 0)}_live-blue)",
+        # "relations", not "tables": the declared number is tables plus
+        # materialized views plus views (67 + 2 + 1 = 70 today) and the live
+        # number counts every relation in the database. Publishing that as
+        # "schema_tables" stated a count of 70 tables that do not exist.
+        # (Codex, PR #1070.)
+        f"![Cloud SQL relations](https://img.shields.io/badge/schema_relations-"
+        f"{declared_relations}_declared_%2F_{live_relations}_live-blue)",
+        "![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+        "workflows/refresh-architecture-docs.yml/badge.svg)",
+    ])
+
+
+# README's closing stamp. For the three model-written documents this line is a
+# COMPLETION SIGNAL -- run 32 reported "05-c does not carry today's stamp, the
+# model did not complete an update of it" -- so it is never rendered for them.
+# README has no model call any more, so nothing else would move it.
+README_STAMP = re.compile(r"^(Generated )\d{4}-\d{2}-\d{2}\b", re.M)
+
+
+def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
+                         live: dict[str, Any] | None, day: str) -> bool:
+    """Replace README's badge block, and its closing date stamp, from inventory."""
+    text = doc_path.read_text()
+    # Select by OWNERSHIP, not by position or adjacency: the span runs from the
+    # first badge this renderer owns to the last. A badge a maintainer adds
+    # above or below ours therefore falls outside the span and survives. One
+    # placed BETWEEN ours cannot be preserved by any replacement of a single
+    # span, so that is an error naming the line rather than a silent deletion.
+    owned = [m.span() for m in OWNED_BADGE.finditer(text)]
+    if not owned:
+        raise ValueError(
+            f"{doc_path}: no badge block found to render. Expected at least one of "
+            f"the badges this renderer owns (docs_verified, cloud_run_jobs, "
+            f"schedulers, schema_relations, the refresh workflow badge).")
+    lo, hi = owned[0][0], owned[-1][1]
+    foreign = [ln for ln in text[lo:hi].split("\n")
+               if ln.strip() and not OWNED_BADGE.fullmatch(ln)]
+    if foreign:
+        raise ValueError(
+            f"{doc_path}: {len(foreign)} line(s) that this renderer does not own sit "
+            f"between its badges, so replacing the block would delete them; move them "
+            f"above or below the block. First: {foreign[0][:80]!r}")
+    new = text[:lo] + readme_badges(repo, live, day) + text[hi:]
+    stamped, n = README_STAMP.subn(lambda m: f"{m.group(1)}{day}", new)
+    if not n:
+        raise ValueError(f"{doc_path}: no 'Generated <date>' line found to stamp")
+    if n > 1:
+        # `subn` rewrote EVERY such line. A second one -- provenance for an
+        # archived artifact, say -- would have had its historical date silently
+        # moved to today, and since a refresh publishing anything else keeps
+        # README's date-only edits, that wrong date would be committed. The
+        # closing stamp is meant to be unique; if it is not, say so rather than
+        # guess which one is the footer. (Codex, PR #1070.)
+        raise ValueError(
+            f"{doc_path}: {n} 'Generated <date>' lines; the closing stamp must be "
+            f"unique or the others get restamped with today's date too.")
+    new = stamped
+    if new != text:
+        doc_path.write_text(new)
+        return True
+    return False
+
+
 def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
                   root: pathlib.Path = REPO, counts: bool = True) -> bool:
     """Replace every marker block in doc_path with freshly rendered content,
@@ -4201,6 +4330,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=str(REPO))
     ap.add_argument("--live", action="store_true", help="read live GCP state via gcloud")
     ap.add_argument("--snapshot", help="use a saved live snapshot instead of gcloud")
+    ap.add_argument("--day", metavar="YYYY-MM-DD",
+                    help="the run date stamped on README's badges and closing line. "
+                         "Defaults to today in UTC. The refresh workflow pins one "
+                         "date at job start and passes it here so the renderer and "
+                         "the verifier cannot disagree across a midnight boundary.")
     ap.add_argument("--write-snapshot", help="write the live snapshot to this path")
     ap.add_argument("--db-tables", help="CSV of relname,n_live_tup,size (from scripts/db_query_cr.sh) to merge as live db_tables")
     ap.add_argument("--db-live", action="store_true", help="read live table stats via gcp.database (needs Cloud SQL env)")
@@ -4208,6 +4342,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--markdown", choices=SECTIONS, help="print one rendered section")
     ap.add_argument("--insert", nargs="*", help="rewrite marker blocks in these docs")
     ap.add_argument("--restore", nargs="*", help="rewrite only the marker blocks that differ from a fresh render, and name each one")
+    ap.add_argument("--readme-badges", metavar="README",
+                    help="rewrite README's badge block from the inventory (date, counts, "
+                         "workflow badge). The badges are inventory in a picture; run 32's "
+                         "model rewrote them and invented a workflow filename.")
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root)
@@ -4238,6 +4376,21 @@ def main(argv: list[str] | None = None) -> int:
         for doc in (args.insert or default_docs):
             changed = insert_blocks(root / doc, repo, live, root=root)
             print(f"{doc}: {'updated' if changed else 'unchanged'}", file=sys.stderr)
+    if args.readme_badges:
+        # `today`, not the snapshot's read_at: the badge says when the docs were
+        # verified, which is this run. The three as-of labels in 05-a describe
+        # the SNAPSHOT and are rendered from read_at instead -- two different
+        # dates that coincide on almost every run and differ on one that
+        # crosses UTC midnight.
+        # UTC, and overridable, so the whole workflow shares ONE date.
+        # `date.today()` is the runner's LOCAL date, and this was read at
+        # render time while the verifier read its own later: a run crossing
+        # midnight stamped README with one day and demanded another of the
+        # model-written documents. (Codex, PR #1070.)
+        day = args.day or datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        changed = insert_readme_badges(root / args.readme_badges, repo, live, day)
+        print(f"{args.readme_badges}: badges {'updated' if changed else 'unchanged'}",
+              file=sys.stderr)
     if args.json:
         out = {"repo": repo}
         if live:

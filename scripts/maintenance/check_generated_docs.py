@@ -68,7 +68,15 @@ DEPS = f"{INFRA}/05-c-DATA_DEPENDENCIES.md"
 COST = f"{INFRA}/05-d-COST_ANALYSIS.md"
 API = f"{INFRA}/05-e-API.md"
 
-DOCS = (ARCH, DEPS, COST, "README.md")
+README = "README.md"
+# Every document these gates judge.
+DOCS = (ARCH, DEPS, COST, README)
+# ...of which these three are written by a model. README is not: its badges and
+# closing date are rendered from the inventory and its prose is hand-written, so
+# a model edit to it is a stray write rather than the point of the run. Run 31
+# showed the model's whole contribution to README was three badge lines and a
+# date; run 32 showed the cost of asking anyway. (Run 32.)
+MODEL_DOCS = (ARCH, DEPS, COST)
 MARKER_DOCS = (ARCH, DEPS, API)
 # Every block each document must carry. A balanced-pairs check alone lets a
 # block vanish when both its markers are deleted together (Codex, PR #1009).

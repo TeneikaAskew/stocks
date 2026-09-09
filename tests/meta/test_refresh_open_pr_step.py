@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -38,6 +37,14 @@ case "$1 $2" in
   "pr edit")   printf '%s' "$*" > "$GH_OUT/edit.txt" ;;
 esac
 """
+
+
+# The workflow pins ONE run date at job start and every later step reads it,
+# so the step under test no longer computes the month itself. Passing a fixed
+# date here also removes the harness's own midnight race: it used to compare
+# the branch against `time.gmtime()` read a second later. (Codex, PR #1070.)
+RUN_DATE = "2026-11-02"
+RUN_MONTH = RUN_DATE[:7]
 
 
 def _run_step(tmp_path: Path, *, existing_pr: str = "", touch: list[str] | None = None):
@@ -70,7 +77,7 @@ def _run_step(tmp_path: Path, *, existing_pr: str = "", touch: list[str] | None 
     env.update(PATH=f"{bin_dir}:{env['PATH']}", PR_BRANCH_PREFIX="bot/arch-refresh",
                GEMINI_MODEL="gemini-2.5-pro", GH_TOKEN="stub",
                GH_OUT=str(out), GH_CALLS=str(out / "calls.txt"),
-               GH_EXISTING_PR=existing_pr)
+               GH_EXISTING_PR=existing_pr, RUN_DATE=RUN_DATE)
     proc = subprocess.run(["bash", "-c", OPEN_PR["run"]], cwd=work, env=env,
                           capture_output=True, text=True)
     return proc, work, remote / "origin.git", out
@@ -80,7 +87,7 @@ def test_the_step_branches_commits_pushes_and_opens_one_pr(tmp_path):
     proc, work, remote, out = _run_step(tmp_path)
     assert proc.returncode == 0, proc.stderr
 
-    month = time.strftime("%Y-%m", time.gmtime())
+    month = RUN_MONTH
     branch = f"bot/arch-refresh-{month}"
     head = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=work,
                           capture_output=True, text=True).stdout.strip()
@@ -213,7 +220,8 @@ def test_a_missing_drift_report_is_named_not_blanked(tmp_path):
     env = dict(os.environ)
     env.update(PATH=f"{tmp_path / 'bin'}:{env['PATH']}", PR_BRANCH_PREFIX="bot/arch-refresh",
                GEMINI_MODEL="gemini-2.5-pro", GH_TOKEN="stub", GH_OUT=str(out),
-               GH_CALLS=str(out / "calls.txt"), GH_EXISTING_PR="123")
+               GH_CALLS=str(out / "calls.txt"), GH_EXISTING_PR="123",
+               RUN_DATE=RUN_DATE)
     (work / STAGED[0]).write_text("regenerated again\n")
     proc = subprocess.run(["bash", "-c", OPEN_PR["run"]], cwd=work, env=env,
                           capture_output=True, text=True)

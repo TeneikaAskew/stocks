@@ -10,6 +10,7 @@ import json
 import pathlib
 import re
 import shutil
+import sys
 
 import pytest
 
@@ -241,23 +242,24 @@ def test_stale_reference_outside_history_context_is_a_finding(tmp_path):
     assert not any("db-query.yml" in f for f in gate.gate_stale(root)), "history context is allowed"
 
 
-def test_every_prompt_mandated_map_target_is_gated(tmp_path):
-    """The README prompt and the gate must name the same set.
+def test_every_required_map_row_is_actually_in_the_readme(tmp_path):
+    """The gate's required set and the committed README must agree.
 
     Dropping a map row leaves no dead link, keeps the headings, and README is
     exempt from the size floor -- so an ungated target could vanish silently.
     (Codex, PR #1009.)
-    """
-    import re
-    prompt = (REPO / ".github/prompts/readme.md").read_text()
-    line = next(ln for ln in prompt.splitlines() if "Documentation map" in ln)
-    # Only the "Must link ..." clause names required targets; the sentence
-    # after it ("Add a row for any new top-level or `docs/` reference
-    # document") is guidance, and its bare `docs/` is not a map row.
-    clause = line.split("Must link", 1)[1].split("Add a row", 1)[0]
-    mandated = {m for m in re.findall(r"`([^`]+)`", clause) if "/" in m or m.endswith(".md")}
-    missing = sorted(mandated - set(gate.README_REQUIRED_LINKS))
-    assert not missing, f"prompt mandates rows the gate does not check: {missing}"
+
+    This used to compare the gate against the README PROMPT. There is no
+    README prompt any more: run 31 showed the model's entire contribution was
+    three badge lines and a date, run 32 showed it rewriting the map into
+    generic text with two falsehoods, so the badges and stamp are rendered and
+    the map is hand-written. The set to agree with is the file itself.
+    (Run 32.)"""
+    assert not (REPO / ".github/prompts/readme.md").exists(), \
+        "a README prompt is back; this test and the workflow assume there is none"
+    body = (REPO / "README.md").read_text()
+    missing = [t for t in gate.README_REQUIRED_LINKS if t not in body]
+    assert not missing, f"README is missing required map rows: {missing}"
 
 
 def test_dropping_a_map_row_is_a_finding(tmp_path):
@@ -2052,3 +2054,255 @@ def test_restoring_blocks_does_not_rewrite_an_asof_label(tmp_path, repo):
         f"restore_blocks corrected the model's edit back to {target}"
     assert any("as-of label says 1999-01-01" in f
                for f in gate.gate_stale_asof(tmp_path, live)), "the gate lost the edit"
+
+
+def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
+    """Run 32's model rewrote README's badge block and pointed the workflow
+    badge at `refresh-documentation.yml`, a file that does not exist, failing
+    the run on a dead link. The prompt already said to edit README in place
+    with `replace` and never regenerate it; it regenerated anyway (52% churn).
+    The badges are a date and four counts — inventory in a picture. (Run 32.)"""
+    readme = tmp_path / "README.md"
+    shutil.copy(REPO / "README.md", readme)
+    changed = inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert changed
+    body = readme.read_text()
+    declared, _ = gate.relation_counts(repo, live)
+    assert "docs_verified-2026--11--02-blue" in body
+    assert f"cloud_run_jobs-{live['counts']['jobs']}_live_%2F_{len(repo['jobs'])}_declared" in body
+    assert f"schedulers-{live['counts']['schedulers']}_live" in body
+    assert f"schema_relations-{declared}_declared_%2F_{len(live['db_tables'])}_live" in body
+    # the workflow badge names the workflow that actually exists
+    assert "refresh-architecture-docs.yml/badge.svg" in body
+    assert (REPO / ".github/workflows/refresh-architecture-docs.yml").exists()
+    assert "refresh-documentation.yml" not in body
+    # idempotent, and it leaves the rest of the file alone
+    assert not inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert "## Documentation map" in body or "Read this" in body
+
+
+def _readme_with(*extra_lines, day="2020-01-01") -> str:
+    """README carrying the five owned badges plus whatever else is given."""
+    owned = [
+        f"![Last audit](https://img.shields.io/badge/docs_verified-{day.replace('-', '--')}-blue)",
+        "![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-1_live_%2F_1_declared-blue)",
+        "![Cloud Scheduler](https://img.shields.io/badge/schedulers-1_live-blue)",
+        "![Cloud SQL relations](https://img.shields.io/badge/schema_relations-1_declared_%2F_1_live-blue)",
+        ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+         "workflows/refresh-architecture-docs.yml/badge.svg)"),
+    ]
+    return ("# T\n\n" + "\n".join(owned) + "\n"
+            + "".join(l + "\n" for l in extra_lines)
+            + f"\nGenerated {day} by the monthly documentation refresh.\n")
+
+
+def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, live):
+    """A shields.io link further down the document is content, not a badge to
+    overwrite."""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with(
+        "", "prose", "", "![elsewhere](https://img.shields.io/badge/keep--me-9-red)"))
+    inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    body = readme.read_text()
+    assert "keep--me-9-red" in body, "a later shields link was swallowed"
+    assert "docs_verified-2026--11--02-blue" in body
+    assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+
+
+def test_a_maintainer_badge_beside_the_block_survives(tmp_path, repo, live):
+    """Selecting the whitespace-contiguous run that contained `docs_verified`
+    still swallowed a badge a maintainer put directly beside ours, blank line
+    or not: adjacency says nothing about ownership. The span now runs from the
+    first OWNED badge to the last, so anything above or below survives.
+    (Codex, PR #1070.)
+    """
+    build = "![build](https://img.shields.io/badge/build-passing-green)"
+    for placement in ("above", "below", "below_blank"):
+        readme = tmp_path / f"README_{placement}.md"
+        if placement == "above":
+            readme.write_text(_readme_with().replace("# T\n\n", f"# T\n\n{build}\n"))
+        elif placement == "below":
+            readme.write_text(_readme_with(build))
+        else:
+            readme.write_text(_readme_with("", build))
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+        body = readme.read_text()
+        assert "build-passing-green" in body, \
+            f"a maintainer's badge {placement} the block was deleted"
+        assert "docs_verified-2026--11--02-blue" in body
+        assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+
+
+def test_a_foreign_line_inside_the_block_is_an_error_not_a_deletion(tmp_path, repo, live):
+    """No single-span replacement can preserve a line sitting BETWEEN owned
+    badges, so it is named rather than silently dropped."""
+    readme = tmp_path / "README.md"
+    body = _readme_with()
+    readme.write_text(body.replace(
+        "![Cloud Scheduler]",
+        "![build](https://img.shields.io/badge/build-passing-green)\n![Cloud Scheduler]"))
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="between its badges"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before
+
+
+def test_the_block_is_identified_by_identity_not_by_being_first(tmp_path, repo, live):
+    """Taking the first run of badge lines meant that if the inventory badges
+    were ever removed while an unrelated badge remained further down, the
+    monthly refresh would DELETE that unrelated badge and insert the inventory
+    ones in its place -- a wrong answer indistinguishable from a right one,
+    written unattended. (Codex, PR #1070.)
+    """
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# T\n\nthe inventory badges were removed by hand\n\n"
+        "![build](https://img.shields.io/badge/build-passing-green)\n"
+        "\nGenerated 2020-01-01 by the monthly documentation refresh.\n")
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="no badge block found"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before, "the unrelated badge was rewritten anyway"
+
+
+def test_the_relation_badge_says_relations_because_that_is_what_it_counts(repo, live):
+    """The badge summed tables + materialized views + views and published the
+    total as `schema_tables`, stating a count of tables that do not exist: 70
+    declared against 67 real tables. (Codex, PR #1070.)"""
+    rendered = inv.readme_badges(repo, live, "2026-11-02")
+    assert "schema_tables" not in rendered, \
+        "a relation count is still published as a table count"
+    assert "schema_relations-" in rendered
+    assert "Cloud SQL relations" in rendered
+    declared = (len(repo["tables"]) + len(repo["materialized_views"])
+                + len(repo["views"]))
+    assert f"schema_relations-{declared}_declared_" in rendered
+    assert declared > len(repo["tables"]), \
+        "fixture has no views, so this test could not detect the mislabel"
+
+
+def test_a_readme_with_no_badges_fails_loudly(tmp_path, repo, live):
+    """Silently doing nothing would let a rewrite that dropped the block pass
+    the render and reach the model unrendered."""
+    readme = tmp_path / "README.md"
+    readme.write_text("# T\n\nno badges here\n")
+    with pytest.raises(ValueError, match="no badge block"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+
+
+def test_badges_refuse_to_render_without_a_live_snapshot(tmp_path, repo, live):
+    """`--readme-badges` with no `--snapshot` left `live` as None and the counts
+    fell back to 0: the badges read "0_live" jobs and "0_live" schedulers while
+    the date said verified today. A zero indistinguishable from a real count,
+    published as fact, is the silent fallback CLAUDE.md 3.7 forbids — and the
+    point of rendering these is that they cannot be wrong. (Codex, PR #1070.)"""
+    for bad in (None,
+                {"db_tables": ["x"]},                                  # no counts
+                {"counts": {"jobs": 5, "schedulers": 5}},              # no db_tables
+                {"counts": {"jobs": 0, "schedulers": 5}, "db_tables": ["x"]}):
+        with pytest.raises(ValueError, match="snapshot|missing"):
+            inv.readme_badges(repo, bad, "2026-11-02")
+    # and a real snapshot still renders, with no zero in any count
+    rendered = inv.readme_badges(repo, live, "2026-11-02")
+    assert "0_live" not in rendered and "_%2F_0_" not in rendered
+    assert str(live["counts"]["jobs"]) in rendered
+
+
+def test_the_badge_day_defaults_to_utc_not_local(monkeypatch):
+    """`date.today()` is the runner's LOCAL date. The workflow's verifier uses
+    `date -u`, so on any runner not set to UTC the two disagreed by a day
+    before a midnight crossing was even involved. (Codex, PR #1070.)"""
+    import datetime as _dt
+    import inspect
+    src = inspect.getsource(inv.main) if hasattr(inv, "main") else ""
+    if not src:
+        src = (pathlib.Path(inv.__file__).read_text())
+    assert "datetime.date.today()" not in src, \
+        "the badge date is read from the local clock again"
+    assert "datetime.datetime.now(datetime.timezone.utc).date()" in src
+
+
+def test_an_explicit_day_overrides_the_clock(tmp_path, repo, live):
+    """The workflow pins one date and passes it in, so the renderer and the
+    verifier cannot disagree across a midnight boundary."""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with())
+    inv.insert_readme_badges(readme, repo, live, "2026-12-25")
+    body = readme.read_text()
+    assert "docs_verified-2026--12--25-blue" in body
+    assert "Generated 2026-12-25" in body
+
+
+def test_the_day_flag_reaches_the_renderer_through_the_cli(tmp_path):
+    """Calling `insert_readme_badges` directly proves the function's contract
+    and says NOTHING about whether `--day` is wired to it. The first attempt at
+    this fix left the flag parsed and unread, and a direct-call test passed
+    anyway. This drives the CLI the workflow actually invokes."""
+    import subprocess
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with())
+    snapshot = REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.maintenance.doc_inventory",
+         "--snapshot", str(snapshot), "--readme-badges", str(readme),
+         "--day", "2026-12-25"],
+        cwd=REPO, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    body = readme.read_text()
+    assert "docs_verified-2026--12--25-blue" in body, \
+        "--day is parsed but never reaches the renderer"
+    assert "Generated 2026-12-25" in body
+
+
+@pytest.mark.parametrize("line,owned,why", [
+    ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-architecture-docs.yml/badge.svg)", True, "canonical"),
+    ("![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-documentation.yml/badge.svg)", True,
+     "the malformation run 32 actually produced: a workflow that does not exist"),
+    ("![Docs refresh](https://github.com/TeneikaAskew/stocks/actions/"
+     "workflows/refresh-architecture-docs.yml/badge.svg)", True,
+     "right workflow, alt text edited"),
+    ("![CI](https://github.com/TeneikaAskew/stocks/actions/workflows/ci.yml/badge.svg)",
+     False, "a maintainer's own workflow badge must never be claimed"),
+    ("![build](https://img.shields.io/badge/build-passing-green)", False,
+     "an unrelated shields badge"),
+])
+def test_which_workflow_badges_this_renderer_owns(line, owned, why):
+    """Requiring the correct filename meant the one malformation actually seen
+    was not recognised as ours, so a render inserted a correct badge and left
+    the dead one beside it -- and `gate_links` skips HTTPS targets, so nothing
+    downstream would catch the duplicate. Broadening to ANY workflow badge
+    would have been worse: it would silently delete a maintainer's CI badge.
+    The alt text this renderer writes is what makes a badge ours.
+    (Codex, PR #1070.)
+    """
+    assert bool(inv.OWNED_BADGE.fullmatch(line)) is owned, why
+
+
+def test_a_dead_workflow_badge_is_replaced_not_duplicated(tmp_path, repo, live):
+    """End to end: the render must leave exactly one workflow badge."""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with().replace(
+        "workflows/refresh-architecture-docs.yml/badge.svg",
+        "workflows/refresh-documentation.yml/badge.svg"))
+    inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    body = readme.read_text()
+    assert "refresh-documentation.yml" not in body, "the dead badge survived"
+    assert body.count("/actions/workflows/") == 1, "the workflow badge was duplicated"
+
+
+def test_a_second_generated_line_is_refused_not_restamped(tmp_path, repo, live):
+    """`subn` rewrote EVERY beginning-of-line `Generated <date>`. A second one --
+    provenance for an archived artifact, say -- would have had its historical
+    date silently moved to today, and a refresh publishing anything else keeps
+    README's date-only edits, so the wrong date would be committed.
+    (Codex, PR #1070.)"""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with()
+                      + "\nGenerated 2019-03-04 by the retired report builder.\n")
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="'Generated <date>' lines"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before, "the historical date was rewritten anyway"
+    assert "Generated 2019-03-04" in readme.read_text()

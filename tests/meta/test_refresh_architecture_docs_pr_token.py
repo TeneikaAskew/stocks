@@ -14,9 +14,11 @@ silently for two months with no issue/PR trail.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.maintenance import check_generated_docs as gate
@@ -176,12 +178,12 @@ def test_verify_step_runs_the_structural_gates_and_the_live_verifier():
 
 def test_prompts_update_in_place_and_never_touch_marker_blocks():
     prompts = REPO / ".github/prompts"
-    for name in ("architecture.md", "data-dependencies.md", "readme.md"):
+    for name in ("architecture.md", "data-dependencies.md"):
         text = (prompts / name).read_text()
         assert "in place" in text.lower(), name
         assert "never regenerate from scratch" in text.lower(), name
         assert "marker" in text.lower(), name
-    for name in ("architecture.md", "data-dependencies.md", "readme.md", "cost-analysis.md"):
+    for name in ("architecture.md", "data-dependencies.md", "cost-analysis.md"):
         text = (prompts / name).read_text()
         assert "hard stop" in text.lower(), name
         for stale in ("React + FastAPI dashboard", "no public auth, no per-user", "Vite 5173", "`/watch`", "all 27 jobs"):
@@ -338,6 +340,11 @@ def test_the_regenerated_doc_filter_is_derived_not_retyped():
     downgraded to a warning and the run would have gone green. A gate that
     matches nothing passes. Derive the pattern from the gate module instead,
     and prove here that no literal doc-name alternation is left.
+
+    The set to derive from is `MODEL_DOCS`, not `DOCS`. Blocking means "a
+    rerun can fix this", which is true only of what a model writes. README's
+    prose is hand-written, so failing the refresh on a drifted README claim
+    would demand a rerun that cannot change it. (Codex, PR #1070.)
     """
     import re as _re
     import subprocess
@@ -347,7 +354,7 @@ def test_the_regenerated_doc_filter_is_derived_not_retyped():
     assert "REGEN_RE=$(python -c" in verify, \
         "the regenerated-doc pattern is not computed from the gate module"
     assert 'check_generated_docs as g' in verify
-    assert '"|".join(re.escape(d) for d in g.DOCS)' in verify
+    assert '"|".join(re.escape(d) for d in g.MODEL_DOCS)' in verify
     # Both uses -- the blocking test and the "everything else" inversion --
     # must consume the variable, and neither may re-list the names.
     uses = _re.findall(r'grep -[qv]E "\^\\\[\[a-z-\]\+\\\] \(\$\{REGEN_RE\}\):"', verify)
@@ -356,14 +363,18 @@ def test_the_regenerated_doc_filter_is_derived_not_retyped():
         assert name not in verify, f"a literal doc-name alternation survives: {name}"
 
     # The command really produces an ERE that matches a finding on each of the
-    # four docs and none on a doc outside the set.
+    # model-written docs, and none on README or on a doc outside the set.
     cmd = _re.search(r"REGEN_RE=\$\(python -c '([^']+)'\)", verify).group(1)
     pattern = subprocess.run(["python", "-c", cmd], cwd=REPO,
                              capture_output=True, text=True, check=True).stdout.strip()
-    findings = [f"[schedule] {d}:1: x" for d in gate.DOCS]
+    findings = [f"[schedule] {d}:1: x" for d in gate.MODEL_DOCS]
+    findings.append(f"[service] {gate.README}:5: y")
     findings.append("[count] docs/product/10-OPERATIONS-RELIABILITY.md:5: y")
     blocking = _re.compile(rf"^\[[a-z-]+\] ({pattern}):")
-    assert [bool(blocking.match(f)) for f in findings] == [True] * len(gate.DOCS) + [False]
+    assert [bool(blocking.match(f)) for f in findings] == \
+        [True] * len(gate.MODEL_DOCS) + [False, False]
+    assert gate.README in gate.DOCS, \
+        "README is still gated -- only its BLOCKING classification changed"
 
 
 def test_a_second_run_in_the_same_month_updates_the_existing_pr_body():
@@ -396,14 +407,16 @@ def test_the_deterministic_docs_are_frozen_not_allowlisted():
     """No prompt writes 05-e-API.md or docs/INVESTMENT_MODELS_SUMMARY.md, so a
     model edit to either is a stray write. (Codex, PR #1009.)"""
     prompts = (WORKFLOW_PATH.parent.parent / "prompts")
-    written = set(gate.DOCS)
+    # MODEL_DOCS, not DOCS: README is gated but not model-written, so it is
+    # frozen and restored like the other deterministic files. (Run 32.)
+    written = set(gate.MODEL_DOCS)
     steps = {s.get("name"): s.get("run") or "" for s in _steps()}
     restore = next(v for k, v in steps.items() if k and k.startswith("Restore gate inputs"))
     allowed = set(re.search(r'ALLOWED="([^"]+)"', restore).group(1).split())
     assert allowed == written, f"allowlist must be exactly the prompt-written docs, got {allowed}"
 
     freeze = next(v for k, v in steps.items() if k and k.startswith("Freeze gate inputs"))
-    for f in (gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md"):
+    for f in (gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md", gate.README):
         assert f in freeze, f"{f} is not frozen"
         assert f'cp "$RUNNER_TEMP/frozen/{f}" {f}' in restore, f"{f} is not restored"
     # the calibration renderer is the legitimate writer of the summary, and it
@@ -440,8 +453,12 @@ def test_a_legitimate_render_change_is_not_a_stray_write():
     restore = next(v for k, v in steps.items() if k and k.startswith("Restore gate inputs"))
     assert "DETERMINISTIC=" in restore
     det = set(re.search(r'DETERMINISTIC="([^"]+)"', restore).group(1).split())
+    # README joined this set when its model call was removed: it is rendered
+    # before the model like the others, so its diff against HEAD is the
+    # render's work and only a difference from the FROZEN copy is a model
+    # write. (Run 32.)
     assert det == {"Architecture.drawio", "Architecture-icons.drawio",
-                   gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md"}, det
+                   gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md", gate.README}, det
     # each is judged against the frozen copy, not against HEAD
     assert 'cmp -s "$F" "$RUNNER_TEMP/frozen/$F"' in restore
     # and they are still not simply allowed
@@ -567,7 +584,8 @@ def test_every_prompt_pins_its_output_to_the_repository_root():
     explicit file_path and landed correctly. Every prompt states one now.
     (Run 15, 2026-09-07.)"""
     prompts = sorted((REPO / ".github/prompts").glob("*.md"))
-    assert len(prompts) == 4, [p.name for p in prompts]
+    # three, not four: README has no model call, so it has no prompt. (Run 32.)
+    assert len(prompts) == 3, [p.name for p in prompts]
     targets = _prompt_targets()
     assert set(targets) == {p.name for p in prompts}, \
         f"prompt without an explicit file_path: {sorted({p.name for p in prompts} - set(targets))}"
@@ -617,8 +635,10 @@ def test_a_generated_doc_in_the_wrong_directory_says_so():
     docname = _re.search(r'^\s*(_docname\(\) \{.*\})', restore, _re.M).group(1)
     want = _re.search(r'(WANT=""\n(?:.*\n)*?\s*fi\n)', restore).group(1)
     # Every generated doc must be reachable as a target of the matcher.
-    for d in gate.DOCS:
+    for d in gate.MODEL_DOCS:
         assert d in allowed, f"{d} is not in the ALLOWED list the matcher searches"
+    assert gate.README not in allowed, \
+        "README is rendered, not model-written; allowing it would let a model edit it"
 
     def stray_for(path):
         script = "\n".join([
@@ -689,3 +709,206 @@ def test_a_failed_gate_uploads_the_documents_it_judged():
     names = [s.get("name") for s in steps]
     assert names.index("Upload the regenerated documents when a gate fails") > \
         names.index("Verify regenerated docs"), "the upload must come after the gates"
+
+
+def _run_detect(tmp_path, edits, seed=None):
+    """Execute the real `Detect meaningful changes` script body in a throwaway
+    git repo seeded with the documents it inspects, applying `edits`
+    (path -> new content) on top of the committed baseline. `seed` overrides
+    the committed baseline for named files.
+
+    Returns (stdout, {path: content_on_disk_afterwards}).
+    """
+    import subprocess
+
+    detect = {s.get("name"): s.get("run") or "" for s in _steps()}["Detect meaningful changes"]
+    files = re.search(r"for FILE in (.+?); do", detect).group(1).split()
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True,
+                       capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    for f in files:
+        p = tmp_path / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text((seed or {}).get(f, f"# {f}\n\nbody line\n\nGenerated 2026-08-01\n"))
+    git("add", "-A")
+    git("commit", "-qm", "baseline")
+    for f, content in edits.items():
+        (tmp_path / f).write_text(content)
+
+    out = tmp_path / "gh_output"
+    out.write_text("")
+    proc = subprocess.run(["bash", "-c", detect], cwd=tmp_path, text=True,
+                          capture_output=True,
+                          env={"PATH": os.environ["PATH"],
+                               "HOME": str(tmp_path),
+                               "GITHUB_OUTPUT": str(out)})
+    assert proc.returncode == 0, proc.stderr
+    disk = {f: (tmp_path / f).read_text() for f in files}
+    return proc.stdout + out.read_text(), disk
+
+
+def test_a_timestamp_only_file_is_kept_when_the_refresh_publishes_something_else(tmp_path):
+    """Reverting each timestamp-only file as it was found meant a run that
+    published a real change to one document ALSO reverted README -- whose whole
+    diff is now its rendered badges and closing date -- so the PR shipped with
+    the previous run's date stamped on it. The revert is deferred until the
+    whole refresh is known to be empty. (Codex, PR #1070.)
+    """
+    stamp_only = "# README.md\n\nbody line\n\nGenerated 2026-09-09\n"
+    real = "# arch\n\nbody line\n\na genuinely new sentence\n\nGenerated 2026-09-09\n"
+    log, disk = _run_detect(tmp_path, {
+        gate.README: stamp_only,
+        gate.ARCH: real,
+    })
+
+    assert "meaningful=1" in log
+    assert disk[gate.README] == stamp_only, \
+        "the timestamp-only file was reverted even though the refresh publishes other changes"
+    assert disk[gate.ARCH] == real
+    assert "timestamp-only, kept" in log
+
+
+def test_a_timestamp_only_file_is_reverted_when_nothing_else_changed(tmp_path):
+    """The deferral must not become a licence to publish a date-only PR."""
+    baseline = f"# {gate.README}\n\nbody line\n\nGenerated 2026-08-01\n"
+    log, disk = _run_detect(tmp_path, {
+        gate.README: f"# {gate.README}\n\nbody line\n\nGenerated 2026-09-09\n",
+    })
+
+    assert "meaningful=0" in log
+    assert disk[gate.README] == baseline, "the date-only change was published"
+    assert "reverting" in log
+
+
+def _readme(day: str) -> str:
+    """README as the badge renderer writes it, with shields.io's escaped date."""
+    import sys
+    sys.path.insert(0, str(REPO / "scripts/maintenance"))
+    import doc_inventory as inv
+    dash = day.replace("-", "--")
+    return (f"# stocks\n\n"
+            f"![Last audit](https://img.shields.io/badge/docs_verified-{dash}-blue)\n"
+            f"![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76_live_%2F_68_declared-blue)\n"
+            f"\nbody line\n\nGenerated {day} by the monthly documentation refresh.\n")
+
+
+def test_the_escaped_badge_date_is_masked_like_any_other_date(tmp_path):
+    """shields.io escapes a hyphen by doubling it, so the audit badge reads
+    `docs_verified-2026--09--09`. The mask only recognised the single-hyphen
+    form, so on a month where nothing else moved the badge line stayed
+    different after normalisation, set MEANINGFUL=1, and opened a
+    date-only PR -- exactly the empty refresh the step exists to suppress.
+    (Codex, PR #1070.)
+    """
+    log, disk = _run_detect(
+        tmp_path,
+        {gate.README: _readme("2026-09-09")},
+        seed={gate.README: _readme("2026-08-01")},
+    )
+    assert "meaningful=0" in log, \
+        "a date-only badge change was published as a meaningful refresh"
+    assert disk[gate.README] == _readme("2026-08-01")
+
+
+def test_the_escaped_badge_date_does_not_mask_a_real_badge_change(tmp_path):
+    """The mask must not be so broad it hides a count moving."""
+    before = _readme("2026-08-01")
+    after = _readme("2026-09-09").replace("76_live", "77_live")
+    log, disk = _run_detect(tmp_path, {gate.README: after},
+                            seed={gate.README: before})
+    assert "meaningful=1" in log, "a changed job count was masked away as a date"
+    assert disk[gate.README] == after
+
+
+@pytest.mark.parametrize("before,after", [
+    # the reconcile block's read instant
+    ("2026-09-07T04:35:16Z", "2026-10-01T05:12:03Z"),
+    # the same instant as 05-a's prose writes it: space, no seconds
+    ("2026-09-07 04:28Z", "2026-10-01 05:12Z"),
+])
+def test_the_live_read_instant_is_masked_whole(tmp_path, before, after):
+    """Masking only the date left the time-of-day differing, so 05-a was
+    classified meaningful on a month where nothing whatsoever had changed --
+    the same defect as the escaped badge date, one line along. Both shapes the
+    documents actually contain are masked as a unit.
+    (Found while fixing the badge; Codex, PR #1070.)
+    """
+    def arch(instant):
+        return (f"# arch\n\nbody line\n\n"
+                f"Live read {instant}. Repo declares 68 jobs / 65 schedulers; "
+                f"live has 76 / 65.\n\nGenerated {instant[:10]}\n")
+
+    log, disk = _run_detect(tmp_path, {gate.ARCH: arch(after)},
+                            seed={gate.ARCH: arch(before)})
+    assert "meaningful=0" in log, \
+        "a new read instant alone was published as a meaningful refresh"
+    assert disk[gate.ARCH] == arch(before)
+
+
+def test_a_scheduled_local_time_is_content_not_noise(tmp_path):
+    """The trailing Z is what separates a UTC read instant from a scheduled
+    local time. `calibrate-thresholds-quarterly` next fires at
+    "2026-10-01 02:00 ET"; that slot moving is a real change and must not be
+    masked away with the read timestamps."""
+    def arch(slot):
+        return (f"# arch\n\nbody line\n\n"
+                f"`calibrate-thresholds-quarterly` next fires {slot}.\n"
+                f"\nGenerated 2026-09-09\n")
+
+    before, after = arch("2026-10-01 02:00 ET"), arch("2026-10-01 06:30 ET")
+    log, disk = _run_detect(tmp_path, {gate.ARCH: after}, seed={gate.ARCH: before})
+    assert "meaningful=1" in log, "a schedule moving was masked away as a timestamp"
+    assert disk[gate.ARCH] == after
+
+
+def test_a_count_moving_beside_the_read_instant_is_still_meaningful(tmp_path):
+    """The instant mask must not swallow the counts on the same line."""
+    def arch(instant, jobs):
+        return (f"# arch\n\nbody line\n\n"
+                f"Live read {instant}. Repo declares 68 jobs / 65 schedulers; "
+                f"live has {jobs} / 65.\n\nGenerated {instant[:10]}\n")
+
+    before, after = arch("2026-09-07T04:35:16Z", 76), arch("2026-10-01T05:12:03Z", 77)
+    log, disk = _run_detect(tmp_path, {gate.ARCH: after}, seed={gate.ARCH: before})
+    assert "meaningful=1" in log, "a changed live job count was masked away"
+    assert disk[gate.ARCH] == after
+
+
+def test_the_run_date_is_computed_once_and_shared():
+    """Three places asked the clock independently: the badge renderer at render
+    time, the verifier at gate time, and the PR branch's month. A dispatch
+    crossing UTC midnight between them stamped README with one date and
+    demanded another of the model-written documents -- and README is
+    deliberately excluded from that check, so the run could publish an old
+    `docs_verified` badge beside documents dated the next day.
+    (Codex, PR #1070.)
+    """
+    steps = _steps()
+    names = [s.get("name") for s in steps]
+    runs = {s.get("name"): s.get("run") or "" for s in steps}
+
+    pin = next(i for i, n in enumerate(names) if n == "Pin the run date")
+    assert 'RUN_DATE=$(date -u +%Y-%m-%d)' in runs["Pin the run date"]
+    assert '>> "$GITHUB_ENV"' in runs["Pin the run date"], \
+        "the pinned date is not exported, so no later step can read it"
+
+    # every consumer reads RUN_DATE and none re-reads the clock
+    for name in ("Render inventory blocks", "Verify regenerated docs"):
+        i = next(idx for idx, n in enumerate(names) if n == name)
+        assert i > pin, f"{name} runs before the date is pinned"
+    assert '--day "$RUN_DATE"' in runs["Render inventory blocks"], \
+        "the badge renderer still picks its own date"
+    assert 'TODAY="$RUN_DATE"' in runs["Verify regenerated docs"]
+
+    for name, body in runs.items():
+        if name == "Pin the run date":
+            continue
+        assert "date -u +%Y-%m-%d" not in body, \
+            f"{name} re-reads the clock instead of using RUN_DATE"
+        assert "date -u +%Y-%m" not in body, \
+            f"{name} re-reads the clock for the month instead of using RUN_DATE"
