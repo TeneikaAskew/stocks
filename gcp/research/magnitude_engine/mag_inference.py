@@ -53,6 +53,8 @@ from gcp.database import get_engine, query_to_dataframe  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     LABEL_CLASSES, LABEL_TO_IDX,
     CONTRACT_BLOB, contract_mismatch,
+    ContractRejection, ContractMissing, ContractMalformed,
+    ContractMismatch,
 )
 from gcp.research.magnitude_engine.mag_walk_forward import (  # noqa: E402
     PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX,
@@ -233,7 +235,7 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
     # fact, not an assumption, and belongs in the artifact rather than here.
     contract_blob = bucket.blob(f"{prefix}/{CONTRACT_BLOB}")
     if not contract_blob.exists():
-        raise FileNotFoundError(
+        raise ContractMissing(
             f"{ticker}:{tf} model at run={run_id} carries no {CONTRACT_BLOB}, "
             f"so what its buckets mean is unverifiable. Expected "
             f"gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}. Backfill it for a "
@@ -243,12 +245,16 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
     try:
         contract = json.loads(contract_blob.download_as_text())
     except json.JSONDecodeError as e:
-        raise ValueError(
+        raise ContractMalformed(
             f"{ticker}:{tf} run={run_id}: {CONTRACT_BLOB} is not valid JSON "
             f"at gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}: {e}") from e
-    mismatch = contract_mismatch(contract)
+    try:
+        mismatch = contract_mismatch(contract)
+    except ValueError as e:
+        raise ContractMalformed(
+            f"{ticker}:{tf} run={run_id}: {e}") from e
     if mismatch:
-        raise RuntimeError(
+        raise ContractMismatch(
             f"REFUSING to serve {ticker}:{tf} run={run_id}: the model was "
             f"trained on labels the serving path does not read -- {mismatch}. "
             f"Its predictions are 0-3 like any other and would look normal on "
@@ -553,6 +559,7 @@ def main() -> int:
 
     total_written = 0
     failures: list[tuple[str, str, str]] = []
+    contract_failures: list[tuple[str, str, str]] = []
     for ticker, tf in cells:
         try:
             model, feature_cols, version, contract = \
@@ -566,6 +573,12 @@ def main() -> int:
             log.info("%s:%s — %d predictions written (model_version=%s)",
                      ticker, tf, n, version)
             total_written += n
+        except ContractRejection as e:
+            # Never partial-success material: this cell is serving numbers
+            # whose meaning cannot be verified. See ContractRejection.
+            log.exception("%s:%s CONTRACT REJECTED: %s", ticker, tf, e)
+            failures.append((ticker, tf, str(e)))
+            contract_failures.append((ticker, tf, str(e)))
         except Exception as e:
             log.exception("%s:%s failed: %s", ticker, tf, e)
             failures.append((ticker, tf, str(e)))
@@ -585,6 +598,20 @@ def main() -> int:
     if total_written == 0:
         log.error("ZERO-OUTPUT — no predictions written across any cell; "
                   "treating as failure (data outage or universal NaN filter)")
+        return 1
+
+    # A contract rejection is fatal on its own. The majority threshold below
+    # exists for cells that failed for their own reasons; applying it here
+    # would let one to three of six cells serve unverifiable semantics -- or
+    # go unscored behind stale data -- while the job exits 0 and the failure
+    # notifier never fires. That is the scenario this whole change exists to
+    # catch, so it cannot be the scenario that slips under a threshold
+    # (Codex P2 on #1074).
+    if contract_failures:
+        log.error("CONTRACT-REJECTED — %d/%d cell(s) could not have their "
+                  "label contract verified: %s. Not subject to the "
+                  "partial-success threshold.",
+                  len(contract_failures), len(cells), contract_failures)
         return 1
 
     # No silent fallback: any cell failure is a real production issue.

@@ -778,3 +778,64 @@ def test_the_backfill_validates_rather_than_checking_existence():
         "must run the same validation the reader runs")
     assert "JSONDecodeError" in verdict, "a corrupt blob must be reported"
     assert "contract mismatch:" in verdict, "a mismatch must be reported"
+
+
+def test_a_contract_rejection_is_fatal_regardless_of_the_threshold(monkeypatch):
+    """The majority threshold (`len(failures) > len(cells)//2`) exists for
+    cells that failed for their own reasons. Applying it to a contract
+    rejection would let one to three of six cells serve unverifiable
+    semantics -- or go unscored behind stale data -- while the job exits 0
+    and the failure notifier never fires. That is the scenario this change
+    exists to catch, so it must not be the one that slips under a threshold.
+    (Codex P2 on #1074.)"""
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:5m,QQQ:5m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ContractMismatch
+
+    def fake_load(ticker, tf):
+        if ticker == "IWM":                       # 1 of 3 — a clear minority
+            raise ContractMismatch("label_mode='excursion'")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    assert rc == 1, "one contract rejection out of three cells must exit 1"
+
+
+def test_an_ordinary_cell_failure_still_uses_the_threshold(monkeypatch):
+    """The inverse, so the fix does not quietly turn every transient
+    per-cell failure fatal: a missing MODEL is legitimately partial."""
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:5m,QQQ:5m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    def fake_load(ticker, tf):
+        if ticker == "IWM":
+            raise FileNotFoundError("no production model deployed")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    assert rc == 0, "1/3 ordinary failures stays under the threshold"
+
+
+def test_the_three_contract_outcomes_stay_distinguishable():
+    """Each subclass keeps the builtin a caller would expect, so the
+    separate handling established earlier in this PR still holds."""
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractRejection, ContractMissing, ContractMalformed,
+        ContractMismatch)
+    assert issubclass(ContractMissing, FileNotFoundError)
+    assert issubclass(ContractMalformed, ValueError)
+    assert issubclass(ContractMismatch, RuntimeError)
+    for cls in (ContractMissing, ContractMalformed, ContractMismatch):
+        assert issubclass(cls, ContractRejection)

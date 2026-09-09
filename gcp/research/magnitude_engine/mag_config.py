@@ -389,6 +389,37 @@ def research_namespace(label_mode: str | None,
 # other way -- a hand-copied blob, a restored WITHDRAWN pointer, a future
 # code path. Buckets are 0-3 under every contract and a wrong one looks
 # entirely plausible, so the mismatch has to be checked, not eyeballed.
+class ContractRejection(Exception):
+    """A serving artifact's label contract could not be verified.
+
+    Categorically different from a cell that failed for its own reasons (no
+    model deployed, a bad feature window, a transient read). Those are
+    partial-success material; this is not. A rejected contract means a model
+    whose numbers may mean something other than what the Expected-Move card
+    reads, and one such cell is a production defect however many others
+    succeeded -- so mag_inference exits non-zero on ANY of these regardless of
+    its majority-failure threshold (Codex P2 on #1074).
+
+    The three subclasses keep the outcomes distinguishable, because they need
+    different responses: an artifact that never stated its contract, one whose
+    statement cannot be parsed, and one that parses and disagrees. Each also
+    inherits the builtin a caller would naturally expect, so existing
+    except-clauses keep working.
+    """
+
+
+class ContractMissing(ContractRejection, FileNotFoundError):
+    """No CONTRACT.json beside the model. Needs the backfill."""
+
+
+class ContractMalformed(ContractRejection, ValueError):
+    """CONTRACT.json is unparseable or missing a required key."""
+
+
+class ContractMismatch(ContractRejection, RuntimeError):
+    """CONTRACT.json parses and disagrees with the serving contract."""
+
+
 CONTRACT_BLOB = "CONTRACT.json"
 
 
