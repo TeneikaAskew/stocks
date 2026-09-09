@@ -10,6 +10,7 @@ import json
 import pathlib
 import re
 import shutil
+import sys
 
 import pytest
 
@@ -2205,3 +2206,49 @@ def test_badges_refuse_to_render_without_a_live_snapshot(tmp_path, repo, live):
     rendered = inv.readme_badges(repo, live, "2026-11-02")
     assert "0_live" not in rendered and "_%2F_0_" not in rendered
     assert str(live["counts"]["jobs"]) in rendered
+
+
+def test_the_badge_day_defaults_to_utc_not_local(monkeypatch):
+    """`date.today()` is the runner's LOCAL date. The workflow's verifier uses
+    `date -u`, so on any runner not set to UTC the two disagreed by a day
+    before a midnight crossing was even involved. (Codex, PR #1070.)"""
+    import datetime as _dt
+    import inspect
+    src = inspect.getsource(inv.main) if hasattr(inv, "main") else ""
+    if not src:
+        src = (pathlib.Path(inv.__file__).read_text())
+    assert "datetime.date.today()" not in src, \
+        "the badge date is read from the local clock again"
+    assert "datetime.datetime.now(datetime.timezone.utc).date()" in src
+
+
+def test_an_explicit_day_overrides_the_clock(tmp_path, repo, live):
+    """The workflow pins one date and passes it in, so the renderer and the
+    verifier cannot disagree across a midnight boundary."""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with())
+    inv.insert_readme_badges(readme, repo, live, "2026-12-25")
+    body = readme.read_text()
+    assert "docs_verified-2026--12--25-blue" in body
+    assert "Generated 2026-12-25" in body
+
+
+def test_the_day_flag_reaches_the_renderer_through_the_cli(tmp_path):
+    """Calling `insert_readme_badges` directly proves the function's contract
+    and says NOTHING about whether `--day` is wired to it. The first attempt at
+    this fix left the flag parsed and unread, and a direct-call test passed
+    anyway. This drives the CLI the workflow actually invokes."""
+    import subprocess
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with())
+    snapshot = REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.maintenance.doc_inventory",
+         "--snapshot", str(snapshot), "--readme-badges", str(readme),
+         "--day", "2026-12-25"],
+        cwd=REPO, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    body = readme.read_text()
+    assert "docs_verified-2026--12--25-blue" in body, \
+        "--day is parsed but never reaches the renderer"
+    assert "Generated 2026-12-25" in body

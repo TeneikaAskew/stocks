@@ -118,6 +118,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ── One run date, computed once ───────────────────────────────────────
+      # Three places asked the clock independently: the badge renderer at
+      # render time, the verifier at gate time, and the PR branch name. A
+      # dispatch that crossed UTC midnight between them stamped README with
+      # one date and demanded another of the model-written documents, and
+      # since README is deliberately excluded from that check, the run could
+      # publish an old docs_verified badge beside documents dated the next
+      # day. Everything downstream reads RUN_DATE. A run that crosses
+      # midnight now fails the stamp gate loudly instead of publishing two
+      # different answers. (Codex, PR #1070.)
+      - name: Pin the run date
+        run: echo "RUN_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
       # ── Tooling ───────────────────────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -471,7 +484,7 @@ jobs:
           # Run 32's model rewrote the block and pointed the workflow badge at
           # `refresh-documentation.yml`, which does not exist, failing the run on
           # a dead link. Rendered here so it has nothing to get wrong.
-          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --readme-badges README.md
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --readme-badges README.md --day "$RUN_DATE"
           # The drawio companions are regenerated from the same snapshot:
           # counts, scheduler labels, the add-on job grid and the icon page.
           jq '[.repo.jobs[].name]' refresh-inputs/repo_inventory.json > refresh-inputs/repo_jobs.json
@@ -721,7 +734,7 @@ jobs:
       - name: Verify regenerated docs
         run: |
           set -e
-          TODAY=$(date -u +%Y-%m-%d)
+          TODAY="$RUN_DATE"   # pinned at job start, not re-read here
           FAIL=0
 
           # 1. Every doc must carry TODAY's Generated stamp. All four prompts
@@ -986,7 +999,7 @@ jobs:
           # blast-radius isolation".
           GH_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
         run: |
-          MONTH=$(date -u +%Y-%m)
+          MONTH="${RUN_DATE%-*}"
           BRANCH="${PR_BRANCH_PREFIX}-${MONTH}"
 
           git config user.name  "arch-refresh-bot"

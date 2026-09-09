@@ -877,3 +877,38 @@ def test_a_count_moving_beside_the_read_instant_is_still_meaningful(tmp_path):
     log, disk = _run_detect(tmp_path, {gate.ARCH: after}, seed={gate.ARCH: before})
     assert "meaningful=1" in log, "a changed live job count was masked away"
     assert disk[gate.ARCH] == after
+
+
+def test_the_run_date_is_computed_once_and_shared():
+    """Three places asked the clock independently: the badge renderer at render
+    time, the verifier at gate time, and the PR branch's month. A dispatch
+    crossing UTC midnight between them stamped README with one date and
+    demanded another of the model-written documents -- and README is
+    deliberately excluded from that check, so the run could publish an old
+    `docs_verified` badge beside documents dated the next day.
+    (Codex, PR #1070.)
+    """
+    steps = _steps()
+    names = [s.get("name") for s in steps]
+    runs = {s.get("name"): s.get("run") or "" for s in steps}
+
+    pin = next(i for i, n in enumerate(names) if n == "Pin the run date")
+    assert 'RUN_DATE=$(date -u +%Y-%m-%d)' in runs["Pin the run date"]
+    assert '>> "$GITHUB_ENV"' in runs["Pin the run date"], \
+        "the pinned date is not exported, so no later step can read it"
+
+    # every consumer reads RUN_DATE and none re-reads the clock
+    for name in ("Render inventory blocks", "Verify regenerated docs"):
+        i = next(idx for idx, n in enumerate(names) if n == name)
+        assert i > pin, f"{name} runs before the date is pinned"
+    assert '--day "$RUN_DATE"' in runs["Render inventory blocks"], \
+        "the badge renderer still picks its own date"
+    assert 'TODAY="$RUN_DATE"' in runs["Verify regenerated docs"]
+
+    for name, body in runs.items():
+        if name == "Pin the run date":
+            continue
+        assert "date -u +%Y-%m-%d" not in body, \
+            f"{name} re-reads the clock instead of using RUN_DATE"
+        assert "date -u +%Y-%m" not in body, \
+            f"{name} re-reads the clock for the month instead of using RUN_DATE"

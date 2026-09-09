@@ -4308,6 +4308,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=str(REPO))
     ap.add_argument("--live", action="store_true", help="read live GCP state via gcloud")
     ap.add_argument("--snapshot", help="use a saved live snapshot instead of gcloud")
+    ap.add_argument("--day", metavar="YYYY-MM-DD",
+                    help="the run date stamped on README's badges and closing line. "
+                         "Defaults to today in UTC. The refresh workflow pins one "
+                         "date at job start and passes it here so the renderer and "
+                         "the verifier cannot disagree across a midnight boundary.")
     ap.add_argument("--write-snapshot", help="write the live snapshot to this path")
     ap.add_argument("--db-tables", help="CSV of relname,n_live_tup,size (from scripts/db_query_cr.sh) to merge as live db_tables")
     ap.add_argument("--db-live", action="store_true", help="read live table stats via gcp.database (needs Cloud SQL env)")
@@ -4355,7 +4360,12 @@ def main(argv: list[str] | None = None) -> int:
         # the SNAPSHOT and are rendered from read_at instead -- two different
         # dates that coincide on almost every run and differ on one that
         # crosses UTC midnight.
-        day = datetime.date.today().isoformat()
+        # UTC, and overridable, so the whole workflow shares ONE date.
+        # `date.today()` is the runner's LOCAL date, and this was read at
+        # render time while the verifier read its own later: a run crossing
+        # midnight stamped README with one day and demanded another of the
+        # model-written documents. (Codex, PR #1070.)
+        day = args.day or datetime.datetime.now(datetime.timezone.utc).date().isoformat()
         changed = insert_readme_badges(root / args.readme_badges, repo, live, day)
         print(f"{args.readme_badges}: badges {'updated' if changed else 'unchanged'}",
               file=sys.stderr)
