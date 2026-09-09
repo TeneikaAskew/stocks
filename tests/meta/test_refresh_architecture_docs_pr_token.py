@@ -176,12 +176,12 @@ def test_verify_step_runs_the_structural_gates_and_the_live_verifier():
 
 def test_prompts_update_in_place_and_never_touch_marker_blocks():
     prompts = REPO / ".github/prompts"
-    for name in ("architecture.md", "data-dependencies.md", "readme.md"):
+    for name in ("architecture.md", "data-dependencies.md"):
         text = (prompts / name).read_text()
         assert "in place" in text.lower(), name
         assert "never regenerate from scratch" in text.lower(), name
         assert "marker" in text.lower(), name
-    for name in ("architecture.md", "data-dependencies.md", "readme.md", "cost-analysis.md"):
+    for name in ("architecture.md", "data-dependencies.md", "cost-analysis.md"):
         text = (prompts / name).read_text()
         assert "hard stop" in text.lower(), name
         for stale in ("React + FastAPI dashboard", "no public auth, no per-user", "Vite 5173", "`/watch`", "all 27 jobs"):
@@ -396,14 +396,16 @@ def test_the_deterministic_docs_are_frozen_not_allowlisted():
     """No prompt writes 05-e-API.md or docs/INVESTMENT_MODELS_SUMMARY.md, so a
     model edit to either is a stray write. (Codex, PR #1009.)"""
     prompts = (WORKFLOW_PATH.parent.parent / "prompts")
-    written = set(gate.DOCS)
+    # MODEL_DOCS, not DOCS: README is gated but not model-written, so it is
+    # frozen and restored like the other deterministic files. (Run 32.)
+    written = set(gate.MODEL_DOCS)
     steps = {s.get("name"): s.get("run") or "" for s in _steps()}
     restore = next(v for k, v in steps.items() if k and k.startswith("Restore gate inputs"))
     allowed = set(re.search(r'ALLOWED="([^"]+)"', restore).group(1).split())
     assert allowed == written, f"allowlist must be exactly the prompt-written docs, got {allowed}"
 
     freeze = next(v for k, v in steps.items() if k and k.startswith("Freeze gate inputs"))
-    for f in (gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md"):
+    for f in (gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md", gate.README):
         assert f in freeze, f"{f} is not frozen"
         assert f'cp "$RUNNER_TEMP/frozen/{f}" {f}' in restore, f"{f} is not restored"
     # the calibration renderer is the legitimate writer of the summary, and it
@@ -440,8 +442,12 @@ def test_a_legitimate_render_change_is_not_a_stray_write():
     restore = next(v for k, v in steps.items() if k and k.startswith("Restore gate inputs"))
     assert "DETERMINISTIC=" in restore
     det = set(re.search(r'DETERMINISTIC="([^"]+)"', restore).group(1).split())
+    # README joined this set when its model call was removed: it is rendered
+    # before the model like the others, so its diff against HEAD is the
+    # render's work and only a difference from the FROZEN copy is a model
+    # write. (Run 32.)
     assert det == {"Architecture.drawio", "Architecture-icons.drawio",
-                   gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md"}, det
+                   gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md", gate.README}, det
     # each is judged against the frozen copy, not against HEAD
     assert 'cmp -s "$F" "$RUNNER_TEMP/frozen/$F"' in restore
     # and they are still not simply allowed
@@ -567,7 +573,8 @@ def test_every_prompt_pins_its_output_to_the_repository_root():
     explicit file_path and landed correctly. Every prompt states one now.
     (Run 15, 2026-09-07.)"""
     prompts = sorted((REPO / ".github/prompts").glob("*.md"))
-    assert len(prompts) == 4, [p.name for p in prompts]
+    # three, not four: README has no model call, so it has no prompt. (Run 32.)
+    assert len(prompts) == 3, [p.name for p in prompts]
     targets = _prompt_targets()
     assert set(targets) == {p.name for p in prompts}, \
         f"prompt without an explicit file_path: {sorted({p.name for p in prompts} - set(targets))}"
@@ -617,8 +624,10 @@ def test_a_generated_doc_in_the_wrong_directory_says_so():
     docname = _re.search(r'^\s*(_docname\(\) \{.*\})', restore, _re.M).group(1)
     want = _re.search(r'(WANT=""\n(?:.*\n)*?\s*fi\n)', restore).group(1)
     # Every generated doc must be reachable as a target of the matcher.
-    for d in gate.DOCS:
+    for d in gate.MODEL_DOCS:
         assert d in allowed, f"{d} is not in the ALLOWED list the matcher searches"
+    assert gate.README not in allowed, \
+        "README is rendered, not model-written; allowing it would let a model edit it"
 
     def stray_for(path):
         script = "\n".join([

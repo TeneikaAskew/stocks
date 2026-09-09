@@ -4163,9 +4163,16 @@ def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -
     ])
 
 
+# README's closing stamp. For the three model-written documents this line is a
+# COMPLETION SIGNAL -- run 32 reported "05-c does not carry today's stamp, the
+# model did not complete an update of it" -- so it is never rendered for them.
+# README has no model call any more, so nothing else would move it.
+README_STAMP = re.compile(r"^(Generated )\d{4}-\d{2}-\d{2}\b", re.M)
+
+
 def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
                          live: dict[str, Any] | None, day: str) -> bool:
-    """Replace README's contiguous badge block with a freshly rendered one."""
+    """Replace README's badge block, and its closing date stamp, from inventory."""
     text = doc_path.read_text()
     spans = [m.span() for m in README_BADGE.finditer(text)]
     if not spans:
@@ -4177,6 +4184,10 @@ def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
             break
         end = stop
     new = text[:spans[0][0]] + readme_badges(repo, live, day) + text[end:]
+    stamped, n = README_STAMP.subn(lambda m: f"{m.group(1)}{day}", new)
+    if not n:
+        raise ValueError(f"{doc_path}: no 'Generated <date>' line found to stamp")
+    new = stamped
     if new != text:
         doc_path.write_text(new)
         return True

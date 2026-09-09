@@ -241,23 +241,24 @@ def test_stale_reference_outside_history_context_is_a_finding(tmp_path):
     assert not any("db-query.yml" in f for f in gate.gate_stale(root)), "history context is allowed"
 
 
-def test_every_prompt_mandated_map_target_is_gated(tmp_path):
-    """The README prompt and the gate must name the same set.
+def test_every_required_map_row_is_actually_in_the_readme(tmp_path):
+    """The gate's required set and the committed README must agree.
 
     Dropping a map row leaves no dead link, keeps the headings, and README is
     exempt from the size floor -- so an ungated target could vanish silently.
     (Codex, PR #1009.)
-    """
-    import re
-    prompt = (REPO / ".github/prompts/readme.md").read_text()
-    line = next(ln for ln in prompt.splitlines() if "Documentation map" in ln)
-    # Only the "Must link ..." clause names required targets; the sentence
-    # after it ("Add a row for any new top-level or `docs/` reference
-    # document") is guidance, and its bare `docs/` is not a map row.
-    clause = line.split("Must link", 1)[1].split("Add a row", 1)[0]
-    mandated = {m for m in re.findall(r"`([^`]+)`", clause) if "/" in m or m.endswith(".md")}
-    missing = sorted(mandated - set(gate.README_REQUIRED_LINKS))
-    assert not missing, f"prompt mandates rows the gate does not check: {missing}"
+
+    This used to compare the gate against the README PROMPT. There is no
+    README prompt any more: run 31 showed the model's entire contribution was
+    three badge lines and a date, run 32 showed it rewriting the map into
+    generic text with two falsehoods, so the badges and stamp are rendered and
+    the map is hand-written. The set to agree with is the file itself.
+    (Run 32.)"""
+    assert not (REPO / ".github/prompts/readme.md").exists(), \
+        "a README prompt is back; this test and the workflow assume there is none"
+    body = (REPO / "README.md").read_text()
+    missing = [t for t in gate.README_REQUIRED_LINKS if t not in body]
+    assert not missing, f"README is missing required map rows: {missing}"
 
 
 def test_dropping_a_map_row_is_a_finding(tmp_path):
@@ -2088,7 +2089,8 @@ def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, li
         "![a](https://img.shields.io/badge/x-1-blue)\n"
         "![b](https://img.shields.io/badge/y-2-blue)\n"
         "\nprose\n\n"
-        "![elsewhere](https://img.shields.io/badge/keep--me-9-red)\n")
+        "![elsewhere](https://img.shields.io/badge/keep--me-9-red)\n"
+        "\nGenerated 2020-01-01 by the monthly documentation refresh.\n")
     inv.insert_readme_badges(readme, repo, live, "2026-11-02")
     body = readme.read_text()
     assert "keep--me-9-red" in body, "a later shields link was swallowed"

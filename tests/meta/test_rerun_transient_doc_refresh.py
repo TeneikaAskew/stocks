@@ -451,7 +451,8 @@ def test_the_refresh_workflow_does_not_retry_in_job():
     refresh = yaml.safe_load(REFRESH.read_text())
     runs = [s.get("run") or "" for s in refresh["jobs"]["refresh"]["steps"]]
     gemini_steps = [r for r in runs if "gemini --model" in r]
-    assert len(gemini_steps) == 4, f"expected 4 inline prompt steps, found {len(gemini_steps)}"
+    # three: 05-a, 05-c and 05-d. README is rendered, not regenerated. (Run 32.)
+    assert len(gemini_steps) == 3, f"expected 3 inline prompt steps, found {len(gemini_steps)}"
     for r in gemini_steps:
         assert "for ATTEMPT" not in r and "MAX_ATTEMPTS" not in r, \
             "an in-job retry loop is back in the refresh workflow"

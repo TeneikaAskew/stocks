@@ -37,7 +37,11 @@ import scripts.maintenance.render_doc_prompts as rp
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PROMPT_DIR = REPO / ".github/prompts"
 WORKFLOW = REPO / ".github/workflows/refresh-architecture-docs.yml"
-PROMPTS = ("architecture", "data-dependencies", "cost-analysis", "readme")
+# README is deliberately absent: run 31 showed the model's entire contribution
+# to it was three badge lines and a date, both now rendered, and run 32 showed
+# the cost of asking anyway (a rewritten intro, four falsified map rows and an
+# invented workflow filename). The call and its prompt are gone. (Run 32.)
+PROMPTS = ("architecture", "data-dependencies", "cost-analysis")
 
 # Distinct from every count in the committed fixture and from every number
 # written into the prompt prose.
@@ -377,7 +381,7 @@ def test_every_prompt_forbids_the_hand_maintained_folder():
     """docs/product/infrastructure/manual/ holds the hand-edited copies of
     the four refreshed documents; the workflow's write policy and stray-write
     scan already fail a change there, and the prompts say so up front."""
-    for name in ("architecture.md", "data-dependencies.md", "cost-analysis.md", "readme.md"):
+    for name in ("architecture.md", "data-dependencies.md", "cost-analysis.md"):
         text = (REPO / ".github/prompts" / name).read_text()
         assert "docs/product/infrastructure/manual/" in text, name
         assert "Never read or write anything under `docs/product/infrastructure/manual/`" in text, name
