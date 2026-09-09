@@ -4241,6 +4241,16 @@ def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
     stamped, n = README_STAMP.subn(lambda m: f"{m.group(1)}{day}", new)
     if not n:
         raise ValueError(f"{doc_path}: no 'Generated <date>' line found to stamp")
+    if n > 1:
+        # `subn` rewrote EVERY such line. A second one -- provenance for an
+        # archived artifact, say -- would have had its historical date silently
+        # moved to today, and since a refresh publishing anything else keeps
+        # README's date-only edits, that wrong date would be committed. The
+        # closing stamp is meant to be unique; if it is not, say so rather than
+        # guess which one is the footer. (Codex, PR #1070.)
+        raise ValueError(
+            f"{doc_path}: {n} 'Generated <date>' lines; the closing stamp must be "
+            f"unique or the others get restamped with today's date too.")
     new = stamped
     if new != text:
         doc_path.write_text(new)

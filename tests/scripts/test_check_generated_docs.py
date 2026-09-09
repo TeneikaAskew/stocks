@@ -2290,3 +2290,19 @@ def test_a_dead_workflow_badge_is_replaced_not_duplicated(tmp_path, repo, live):
     body = readme.read_text()
     assert "refresh-documentation.yml" not in body, "the dead badge survived"
     assert body.count("/actions/workflows/") == 1, "the workflow badge was duplicated"
+
+
+def test_a_second_generated_line_is_refused_not_restamped(tmp_path, repo, live):
+    """`subn` rewrote EVERY beginning-of-line `Generated <date>`. A second one --
+    provenance for an archived artifact, say -- would have had its historical
+    date silently moved to today, and a refresh publishing anything else keeps
+    README's date-only edits, so the wrong date would be committed.
+    (Codex, PR #1070.)"""
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with()
+                      + "\nGenerated 2019-03-04 by the retired report builder.\n")
+    before = readme.read_text()
+    with pytest.raises(ValueError, match="'Generated <date>' lines"):
+        inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert readme.read_text() == before, "the historical date was rewritten anyway"
+    assert "Generated 2019-03-04" in readme.read_text()
