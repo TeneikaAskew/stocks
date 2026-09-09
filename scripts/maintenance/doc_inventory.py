@@ -4109,6 +4109,26 @@ def restore_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str,
 RUNTIME_RELATION_COUNT = re.compile(r"(\d+)( runtime[- ](?:created )?relations)")
 
 
+# The three "as of" labels a human wrote into the prose, every one of which has
+# to track the snapshot the run was taken from. Deliberately literal: a looser
+# pattern would sweep up the historical dates beside them -- 05-a carries 33
+# occurrences of `2026-09-07`, and all but these are records of when something
+# was corrected, deleted or audited and must NOT move.
+ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
+               re.compile(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*"),
+               # 05-a's closing line carries TWO dates: "Generated <date> ...
+               # from the <date> live snapshot". The first is already required
+               # to be today by the workflow's own step 1, which greps every
+               # one of the four documents for `Generated ${TODAY}` before
+               # this script runs; the second is checked nowhere else, and a
+               # refresh that updated only one of the pair would leave the
+               # line self-contradicting. Only the second is added here: the
+               # committed 05-d legitimately carries `Generated 2026-09-02`
+               # (the last run that regenerated it), so gating the first would
+               # fail an honest tree outside the workflow. (Codex, PR #1062.)
+               re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
+
+
 def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, Any] | None,
                   root: pathlib.Path = REPO, counts: bool = True) -> bool:
     """Replace every marker block in doc_path with freshly rendered content,
@@ -4151,6 +4171,21 @@ def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, 
     if counts and live and live.get("db_tables"):
         n = len(runtime_relations(repo, live))
         new = RUNTIME_RELATION_COUNT.sub(lambda m: f"{n}{m.group(2)}", new)
+    # The as-of labels are inventory too, for exactly the same reason. Run 31
+    # updated the header note and the closing line and left §3's table column
+    # at the previous snapshot's date, failing the run on one stale label --
+    # the same shape as run 28. The prompt already substitutes the date as a
+    # literal and enumerates all three locations; that was not enough, because
+    # the model still has to FIND three places and edit each one, and two out
+    # of three is a failing run. Rendering them here removes the third
+    # opportunity to miss one. The gate still checks afterwards, and
+    # `restore_blocks` passes counts=False, so a model that edits a label
+    # anyway is still reported rather than silently corrected. (Run 31.)
+    if counts and live and live.get("read_at"):
+        day = str(live["read_at"])[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            for pat in ASOF_LABELS:
+                new = pat.sub(lambda m: m.group(0).replace(m.group(1), day), new)
     if new != text:
         doc_path.write_text(new)
         return True

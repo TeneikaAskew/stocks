@@ -43,20 +43,27 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
 
 ## What to do
 
-1. Read `previous/docs/product/infrastructure/05-a-ARCHITECTURE.md` and the current `docs/product/infrastructure/05-a-ARCHITECTURE.md`. They differ inside the marker blocks, and in one line of prose outside them: the workflow renders the **runtime-relation count** into the current file before you run, from live minus declared. The current file's number is the correct one and is already the number in the **Live fleet counts** block above. Never take that count from the previous version, which carries the figure from the last refresh and is stale by construction whenever a relation has been created live since.
+1. Read `previous/docs/product/infrastructure/05-a-ARCHITECTURE.md` and the current `docs/product/infrastructure/05-a-ARCHITECTURE.md`. They differ inside the marker blocks, and in two KINDS of prose line outside them, which the workflow rewrites in the current file before you run. Both are rewritten at **every occurrence**, so do not assume there is only one of each:
+   - **every** `N runtime relations` / `N runtime-created relations`, from live minus declared. It is already the number in the **Live fleet counts** block above. (There are four such lines today.)
+   - the **three live-snapshot as-of labels**: the header note's `read on **DATE**`, §3's `| Service | Role | Live DATE |` column, and the `from the DATE live snapshot` half of the closing line, all set to this run's snapshot date.
+   **In both kinds the current file is right and `previous/` is stale by construction.** Never carry one back from the previous version, and do not "restore" a difference you find in a line of either kind — it is the workflow's edit, not drift. Everything else outside the blocks should match, and a difference there is yours to reconcile.
 2. Update every prose claim that the inputs contradict: counts in the header note, §1, §2 diagram labels, §3, §4 (tier, disk, IP config, backups, latest dump), §6 intro (live vs declared counts, hand-created jobs, retry split), §7.1 (services, auth modes, domain mappings, images, triggers), §8 intro and the daily-rhythm table (from `schedulers.md`), §9 (model names from `gcp/schema.sql` `model_routing` seed and `gcp/brief_explanations.py`), §14 (workflows and triggers from `repo_inventory.json`), §15 interpretation, §17 open questions.
 3. If a job, scheduler, service, table, route, workflow or trigger appeared since the previous version, make sure the prose that groups or explains it mentions it (§6 groups, §8 rhythm, §10 flows, §14). If one disappeared, remove it from the prose and add a dated bullet under "§18 Removed since last refresh" naming it and why.
 4. Keep every existing H2/H3 heading. If a section genuinely no longer applies, keep the heading, replace the body with one sentence saying so, and record it under §18.
-5. Update **every** as-of date. There are two kinds and they can differ:
-   - The three labels that describe the **live snapshot** take
-     **{{LIVE_READ_DATE}}** — the header note's `read on **YYYY-MM-DD**`, the
-     `| Service | Role | Live YYYY-MM-DD |` column header in §3, and the
-     `from the YYYY-MM-DD live snapshot` half of the final line.
-   - The `Generated YYYY-MM-DD` half of that final line takes **today**, the
-     day you are running.
-   These are the same date on almost every run and different on a run that
-   crosses UTC midnight between the snapshot and you; write each from its own
-   source rather than assuming.
+5. As-of dates. There are two kinds, and only one of them is yours:
+   - The three labels describing the **live snapshot** are **already correct
+     when you receive the document** — the header note's
+     `read on **YYYY-MM-DD**`, the `| Service | Role | Live YYYY-MM-DD |`
+     column header in §3, and the `from the YYYY-MM-DD live snapshot` half of
+     the final line. All three are rendered to **{{LIVE_READ_DATE}}** before
+     you run, like the `<!-- inventory:*:start -->` blocks. **Leave them
+     exactly as they are.** Run 31 updated two of the three by hand and left
+     §3's column on the previous month, which failed the run; you no longer
+     have to find them, and editing one can only break it.
+   - The `Generated YYYY-MM-DD` half of the final line is yours, and takes
+     **today**, the day you are running. It is usually the same as the
+     snapshot date and differs on a run that crosses UTC midnight, so write it
+     from today rather than copying the label beside it.
    **A date inside a filename, path or link is never an as-of date.** Run 30
    bumped `docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md` to `...-09-08.md`
    in a link, inventing a file that does not exist and failing the run on a

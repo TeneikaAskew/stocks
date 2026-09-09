@@ -586,24 +586,10 @@ def gate_inline_rule(root: pathlib.Path) -> list[str]:
     return out
 
 
-# The three "as of" labels a human wrote into the prose, every one of which has
-# to track the snapshot the run was taken from. Deliberately literal: a looser
-# pattern would sweep up the historical dates beside them -- 05-a carries 33
-# occurrences of `2026-09-07`, and all but these are records of when something
-# was corrected, deleted or audited and must NOT move.
-ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
-               re.compile(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*"),
-               # 05-a's closing line carries TWO dates: "Generated <date> ...
-               # from the <date> live snapshot". The first is already required
-               # to be today by the workflow's own step 1, which greps every
-               # one of the four documents for `Generated ${TODAY}` before
-               # this script runs; the second is checked nowhere else, and a
-               # refresh that updated only one of the pair would leave the
-               # line self-contradicting. Only the second is added here: the
-               # committed 05-d legitimately carries `Generated 2026-09-02`
-               # (the last run that regenerated it), so gating the first would
-               # fail an honest tree outside the workflow. (Codex, PR #1062.)
-               re.compile(r"from the (\d{4}-\d{2}-\d{2}) live snapshot"))
+# The three as-of labels, defined in doc_inventory beside the renderer that
+# rewrites them, and imported here so the render and this gate cannot match
+# different shapes -- the same discipline RUNTIME_RELATION_COUNT follows.
+ASOF_LABELS = inv.ASOF_LABELS
 # 05-a must carry all three, each IN ITS OWN PLACE. Counting a pattern
 # anywhere in the document let §3's table header be reworded away while some
 # other sentence carrying `Live <date>` kept the count non-zero, so the table
