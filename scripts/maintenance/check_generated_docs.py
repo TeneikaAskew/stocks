@@ -610,10 +610,32 @@ REQUIRED_ASOF = {ARCH: (
     # rewrite was reported as the label being missing. The header note is the
     # blockquote at the top of the document, which nothing else in 05-a is.
     # (Codex, PR #1064.)
-    (ASOF_LABELS[1], re.compile(r"^>.*\bread on \*\*\d{4}-\d{2}-\d{2}\*\*"), "the header note"),
-    (ASOF_LABELS[0], re.compile(r"^\|\s*Service\s*\|\s*Role\s*\|"), "§3's table header"),
-    (ASOF_LABELS[2], re.compile(r"^Generated\b"), "the closing line"),
+    (ASOF_LABELS[1], re.compile(r"^>.*\bread on \*\*\d{4}-\d{2}-\d{2}\*\*"), "the header note", "header"),
+    (ASOF_LABELS[0], re.compile(r"^\|\s*Service\s*\|\s*Role\s*\|"), "§3's table header", "anywhere"),
+    (ASOF_LABELS[2], re.compile(r"^Generated\b"), "the closing line", "closing"),
 )}
+
+
+def _leading_blockquote(lines: list[str]) -> list[str]:
+    """The blockquote in the document's HEAD: the one before any content.
+
+    "First blockquote in the file" is not the same thing. Delete the real
+    header note and a quoted aside three sections down becomes the first, so
+    the requirement is satisfied by a line that is not the header note at all.
+    The scan stops at the first line that is neither blank, a heading, nor a
+    blockquote, so only a blockquote in the document's opening block counts.
+    (Codex, PR #1064.)
+    """
+    out: list[str] = []
+    for line in lines:
+        st = line.strip()
+        if st.startswith(">"):
+            out.append(line)
+        elif out:
+            break
+        elif st and not st.startswith("#"):
+            break          # substantive content reached before any blockquote
+    return out
 
 
 def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
@@ -650,8 +672,20 @@ def gate_stale_asof(root: pathlib.Path, live: dict | None) -> list[str]:
         # §3's column header to `| Service | Role | Current |` and no pattern
         # matches, so the document loses its freshness provenance and the gate
         # reports clean. 05-a is required to carry all three. (Codex, #1062.)
-        for pat, where, name in REQUIRED_ASOF.get(doc, ()):
-            if not any(where.search(l) and pat.search(l) for l in lines):
+        # ...and the LOCATION has to be the real one. A shape check alone is
+        # satisfied by any blockquote later in the file, or by any `Generated`
+        # line with prose after it, so moving or deleting the header note and
+        # footer passed as long as a matching line existed elsewhere. Each
+        # requirement is scoped to the lines it is allowed to match.
+        # (Codex, PR #1064.)
+        scopes = {
+            # the leading blockquote: the first contiguous run of `>` lines
+            "header": _leading_blockquote(lines),
+            "anywhere": lines,
+            "closing": [l for l in lines if l.strip()][-1:],
+        }
+        for pat, where, name, scope in REQUIRED_ASOF.get(doc, ()):
+            if not any(where.search(l) and pat.search(l) for l in scopes[scope]):
                 out.append(f"{doc}: {name} carries no as-of label matching {pat.pattern!r}. "
                            "That line states when the live state around it was read; "
                            "rewording it away leaves the reader no way to tell how fresh "
@@ -779,6 +813,11 @@ COST_FIGURE = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?\b")
 # looked around. (Codex, PR #1064.)
 COST_BARE = re.compile(r"^\d[\d,]*\.\d{2}$")
 COST_USD_PROSE = re.compile(r"\b\d[\d,]*(?:\.\d{2})?\s?USD\b")
+# Counting EVERY decimal cell let a `Duration (s)` or utilisation column feed a
+# floor named for money: one dollar amount plus eleven non-cost decimals cleared
+# it while the billing tables held no usable costs. A bare number is an amount
+# only under a column that says so. (Codex, PR #1064.)
+MONEY_HEADER = re.compile(r"(?i)\b(spend|cost|usd|amount|charge|price|billed|total)\b|\$")
 
 
 def cost_figures(text: str) -> int:
@@ -790,10 +829,22 @@ def cost_figures(text: str) -> int:
     it is not a bare cell; a decimal inside a sentence is not a cell at all.
     """
     n = len(COST_FIGURE.findall(text)) + len(COST_USD_PROSE.findall(text))
-    for line in text.split("\n"):
-        if "|" not in line or _is_table_sep(line):
+    lines = text.split("\n")
+    money_cols: set[int] | None = None
+    for i, line in enumerate(lines):
+        if "|" not in line:
+            money_cols = None
             continue
-        n += sum(1 for c in _table_cells(line) if COST_BARE.fullmatch(c))
+        if _is_table_sep(line):
+            # the row above is this table's header; it decides which columns
+            # hold money and which hold durations, counts or utilisation
+            header = _table_cells(lines[i - 1]) if i else []
+            money_cols = {j for j, h in enumerate(header) if MONEY_HEADER.search(h)}
+            continue
+        if money_cols:
+            cells = _table_cells(line)
+            n += sum(1 for j in money_cols
+                     if j < len(cells) and COST_BARE.fullmatch(cells[j]))
     return n
 COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
 # 12, not 15: the floor must be reachable from what the prompt REQUIRES, not
@@ -874,12 +925,18 @@ def _table_rows(body: list[str]) -> int:
         # same pipe count. Testing "two or more pipes" instead rejected a
         # two-column table written without outer pipes, which carries exactly
         # one -- the formatting this module set out to accept.
-        width = st.count("|")
-        if i == 0 or lines[i - 1].count("|") != width:
+        width = len(_table_cells(st))
+        if i == 0 or len(_table_cells(lines[i - 1])) != width:
             continue          # a separator with no header above it is not a table
         n = 0
         for st2 in lines[i + 1:]:
-            if not st2 or st2.count("|") != width:
+            # Markdown pads a row that omits its trailing cells, so
+            # `| 2026-08 | 211.00 |` under a three-column header is a valid row
+            # with an empty Notes cell. Requiring an identical count stopped the
+            # scan there and could report 0 rows against a floor of 2.
+            # (Codex, PR #1064.)
+            cells = _table_cells(st2)
+            if not st2 or "|" not in st2 or not (1 <= len(cells) <= width):
                 break
             n += 1
         return n
@@ -1095,6 +1152,19 @@ RELATION_ANCHOR = re.compile(r"`gcp/schema\.sql`")
 # Every `.sql` path named on a line, in order, so a count can be bound to
 # the file it is actually about rather than to any mention on the line.
 SQL_PATH = re.compile(r"([\w./-]+\.sql)")
+
+
+def _norm_sql_path(path: str) -> str:
+    """A repo-relative `.sql` path, with any link-relative prefix removed.
+
+    `[\`gcp/schema.sql\`](../../../gcp/schema.sql) declares **71 relations**`
+    put `../../../gcp/schema.sql` last before the count, so the claim bound to
+    a path that was the SAME FILE and the check silently skipped it -- a stale
+    count passing because it was written as a link. (Codex, PR #1064.)
+    """
+    while path.startswith(("../", "./")):
+        path = path.split("/", 1)[1]
+    return path
 RELATION_PART = re.compile(r"(\d+)\s+(materialized views?|tables?|views?)")
 # What may sit between a declared total and the first of its parts: an opening
 # bracket, a dash, a colon.
@@ -1200,7 +1270,7 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                 # the count belongs to the other file. The count binds to the
                 # nearest `.sql` named before it, which must be the canonical
                 # one. (Codex, PR #1064.)
-                before = SQL_PATH.findall(line[:m.start()])
+                before = [_norm_sql_path(x) for x in SQL_PATH.findall(line[:m.start()])]
                 if before and before[-1] != "gcp/schema.sql":
                     continue
                 matched += 1

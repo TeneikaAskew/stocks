@@ -30,8 +30,11 @@ def live():
     return json.loads(SNAPSHOT.read_text())
 
 
-@pytest.fixture()
+@pytest.fixture(scope="session")
 def repo():
+    """Session-scoped: `repo_inventory` walks the whole repository, and every
+    test that uses it only reads the result. Rebuilding it per test added
+    minutes to this file as the suite grew. (Codex, PR #1064.)"""
     return inv.repo_inventory(REPO)
 
 
@@ -899,10 +902,13 @@ def _asof_stub(root, header="2026-09-08", column="2026-09-08", snapshot="2026-09
     """
     doc = root / gate.ARCH
     doc.parent.mkdir(parents=True, exist_ok=True)
+    # `extra` goes BEFORE the provenance line, because that line has to be the
+    # document's last non-blank one -- the gate now requires the closing label
+    # to be in the actual closing position, not merely present somewhere.
     doc.write_text(f"> Live state below was read on **{header}** with `gcloud`.\n"
-                   f"\n| Service | Role | Live {column} |\n"
+                   f"\n| Service | Role | Live {column} |\n{extra}"
                    f"\nGenerated 2026-09-08 by the refresh; blocks rendered "
-                   f"from the {snapshot} live snapshot.\n{extra}")
+                   f"from the {snapshot} live snapshot.\n")
     return doc
 
 
@@ -1686,16 +1692,111 @@ def test_a_bare_amount_counts_in_any_cell_and_in_the_usd_form(tmp_path):
     invisible, and so was `222.71 USD` in prose. At their floors the two
     required tables contribute 2 + 8 = 10 amounts against a floor of 15, so a
     report whose §3 is prose could have been rejected. (Codex, PR #1064.)"""
-    assert gate.cost_figures("svc | 222.71") == 1, "last column of an outer-pipe-free table"
-    assert gate.cost_figures("222.71 | svc") == 1, "first column"
-    assert gate.cost_figures("| SKU | 222.71 |") == 1
+    # An outer-pipe-free table, whose first and last columns a pipe-on-both-sides
+    # lookaround could not see. The header is what marks the money column, so
+    # these are written as real tables rather than bare fragments.
+    assert gate.cost_figures("Spend (USD) | SKU\n--- | ---\n222.71 | svc") == 1, "first column"
+    assert gate.cost_figures("SKU | Spend (USD)\n--- | ---\nsvc | 222.71") == 1, "last column"
+    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n| svc | 222.71 |") == 1
     assert gate.cost_figures("Cloud SQL: 222.71 USD") == 1
     # a unit means it is not an amount, and a decimal in a sentence is not a cell
-    assert gate.cost_figures("| a | 50.00% |") == 0
-    assert gate.cost_figures("| a | 1.5 GiB |") == 0
+    assert gate.cost_figures("| a | Spend |\n|---|---|\n| a | 50.00% |") == 0
+    assert gate.cost_figures("| a | Spend |\n|---|---|\n| a | 1.5 GiB |") == 0
     assert gate.cost_figures("we saw 222.71 in prose") == 0
     # the two floors together must be reachable by the required tables alone
     minimum = gate.COST_MIN_ROWS["1"] + gate.COST_MIN_ROWS["2"]
     table = ("| SKU | Spend (USD) |\n|---|---|\n"
              + "".join(f"| svc-{i} | {100 + i}.00 |\n" for i in range(minimum)))
     assert gate.cost_figures(table) == minimum
+
+
+def test_a_row_may_omit_its_trailing_cells(tmp_path):
+    """Markdown pads a row that omits trailing cells, so `| 2026-08 | 211.00 |`
+    under a three-column header is a valid row with an empty Notes cell.
+    Requiring an identical pipe count stopped the scan there and could report
+    0 rows against a floor of 2. (Codex, PR #1064.)"""
+    assert gate._table_rows(["Month | Spend | Notes", "--- | --- | ---",
+                             "| 2026-07 | 4.77 | partial |", "| 2026-08 | 211.00 |"]) == 2
+    # and a row cannot claim MORE cells than the table has
+    assert gate._table_rows(["A | B", "--- | ---", "1 | 2", "1 | 2 | 3"]) == 1
+
+
+def test_a_linked_schema_path_still_binds_its_count(tmp_path, repo):
+    r"""A linked reference put the link DESTINATION last before the count, so the
+    claim bound to a path that was the same file and the check silently skipped
+    it — a stale count passing because it was written as a link.
+    (Codex, PR #1064.)"""
+    assert gate._norm_sql_path("../../../gcp/schema.sql") == "gcp/schema.sql"
+    assert gate._norm_sql_path("./gcp/schema.sql") == "gcp/schema.sql"
+    assert gate._norm_sql_path("gcp/queries/p7_schema.sql") == "gcp/queries/p7_schema.sql"
+    for d in (gate.ARCH, gate.DEPS):
+        (tmp_path / d).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / gate.DEPS).write_text("nothing\n")
+    total = len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"])
+    breakdown = (f"{len(repo['tables'])} tables, {len(repo['materialized_views'])} "
+                 f"materialized views, {len(repo['views'])} view")
+    (tmp_path / gate.ARCH).write_text(
+        f"[`gcp/schema.sql`](../../../gcp/schema.sql) declares **{total + 1} relations** "
+        f"({breakdown}).\n")
+    out = gate.gate_derived_numbers(tmp_path, repo, None)
+    assert any(f"claims {total + 1} declared relations" in f for f in out), out
+
+
+def test_a_bare_decimal_counts_only_under_a_money_column(tmp_path):
+    """Counting every decimal cell let a `Duration (s)` or utilisation column
+    feed a floor named for money: one dollar amount plus eleven non-cost
+    decimals cleared it while the billing tables held no usable costs.
+    (Codex, PR #1064.)"""
+    rows = "".join(f"| step-{i} | {10 + i}.00 |\n" for i in range(11))
+    assert gate.cost_figures("| Step | Duration (s) |\n|---|---|\n" + rows + "cost $1.00\n") == 1
+    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n" + rows) == 11
+    assert gate.cost_figures("| SKU | 90-day cost |\n|---|---|\n" + rows) == 11
+    # the four real documents are unaffected
+    assert gate.cost_figures((REPO / gate.COST).read_text()) >= gate.COST_MIN_FIGURES
+
+
+def test_the_asof_locations_must_be_the_real_header_and_footer(tmp_path, live):
+    """A shape check alone was satisfied by any blockquote later in the file,
+    or any `Generated` line with prose after it, so moving or deleting the
+    header note and footer passed as long as a matching line existed somewhere.
+    (Codex, PR #1064.)"""
+    day = live["read_at"][:10]
+    doc = tmp_path / gate.ARCH
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    good = (f"# A\n\n> Live state below was read on **{day}**\n\n"
+            f"| Service | Role | Live {day} |\n\nbody\n\n"
+            f"Generated {day} from the {day} live snapshot.\n")
+    doc.write_text(good)
+    assert gate.gate_stale_asof(tmp_path, live) == []
+    # the header note deleted and a quoted aside further down standing in for it
+    doc.write_text(good.replace(f"> Live state below was read on **{day}**\n\n", "")
+                       .replace("body", f"> quoted aside, read on **{day}**"))
+    out = gate.gate_stale_asof(tmp_path, live)
+    assert len(out) == 1 and "the header note" in out[0], out
+    # the provenance line no longer last
+    doc.write_text(good + "\nA trailing paragraph.\n")
+    out = gate.gate_stale_asof(tmp_path, live)
+    assert len(out) == 1 and "the closing line" in out[0], out
+
+
+def test_the_runtime_relations_have_three_distinct_creation_paths(tmp_path):
+    """Saying all 26 are "created by research and analytics jobs" contradicted
+    the same paragraph's account of hand-applied DDL. There are three
+    mechanisms and each example is checked against the tree. (Codex, PR #1064.)"""
+    body = (REPO / gate.ARCH).read_text()
+    assert "created by research and analytics jobs for themselves" not in body
+    # 1. embedded in the owning job
+    for name, path in (("gamma_levels_eod", "gcp/research/p2_build_gamma_levels.py"),
+                       ("gamma_events", "gcp/research/p2_outcomes_grid.py"),
+                       ("magnitude_walk_forward_results",
+                        "gcp/research/magnitude_engine/mag_walk_forward.py")):
+        src = (REPO / path).read_text()
+        assert f"CREATE TABLE IF NOT EXISTS {name}" in src, f"{name} not created in {path}"
+        assert path in body, f"05-a should cite {path}"
+    # 2. a dedicated file, applied by hand
+    for path in ("gcp/queries/p7_schema.sql", "gcp/queries/magnitude_engine_schema.sql",
+                 "gcp/queries/p7_vex_cache.sql"):
+        assert (REPO / path).exists(), path
+    # 3. no DDL at all, writer archived
+    assert (REPO / "gcp/research/_archive/p7a_iwm_30m_pipeline.py").exists()
+    assert "_archive/p7a_iwm_30m_pipeline.py" in body
