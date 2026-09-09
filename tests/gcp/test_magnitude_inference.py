@@ -727,3 +727,22 @@ def test_the_backfill_guards_the_single_cell_path_explicitly():
     src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
     assert "--allow-single-cell-run" in src
     assert "span" in src and "REFUSED" in src
+
+
+def test_the_backfill_exits_nonzero_while_any_serving_artifact_is_unverified():
+    """A backfill that refuses an artifact and still exits 0 is a fabricated
+    success in the tool whose whole job is to prevent one. It gates a deploy:
+    mag_inference refuses a cell with no CONTRACT.json, and its majority-
+    failure threshold means a minority of unstamped cells leaves the job
+    exiting 0 while those cells serve nothing. (Codex P1 on #1074.)
+
+    The exit code answers "is every SERVING artifact verifiable", checked by
+    reading the blobs back rather than trusting that the writes returned."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    body = src[src.index("def main("):]
+    assert "return 1" in body, "refused/unverified artifacts must fail the run"
+    # the verdict is a read-back over serving cells, not a counter
+    verdict = body[body.index("unverified = []"):]
+    assert "blob.exists()" in verdict
+    assert verdict.index("return 1") < verdict.index("return 0"), (
+        "the failure path must precede the success path")

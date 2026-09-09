@@ -142,6 +142,36 @@ def main() -> int:
           f"{refused} refused as unverified; {missing} cells not serving")
     if not args.commit and written:
         print("dry run — re-run with --commit to apply")
+
+    # The exit code answers one question: is every SERVING artifact now
+    # verifiable? Nothing less, because this gates a deploy -- mag_inference
+    # refuses a cell with no CONTRACT.json, and its own majority-failure
+    # threshold means a minority of unstamped cells can leave the job exiting
+    # 0 while those cells serve nothing. A backfill that refused an artifact
+    # and still reported success would be the fabricated success this whole
+    # change exists to prevent, in the tool meant to prevent it (Codex P1 on
+    # #1074).
+    #
+    # Read back rather than trusting the writes: in commit mode this is the
+    # difference between "upload_from_string returned" and "the blob is
+    # there", and it is the same check done by hand before the first backfill.
+    unverified = []
+    for (ticker, tf), run_id in sorted(latest_of.items()):
+        blob = bucket.blob(
+            f"magnitude-models/production/{ticker}/{tf}/{run_id}/"
+            f"{CONTRACT_BLOB}")
+        if not blob.exists():
+            unverified.append(f"{ticker}:{tf} (run={run_id})")
+    if unverified:
+        print(f"\nUNVERIFIED serving artifacts, {len(unverified)}:")
+        for cell in unverified:
+            print(f"  {cell}")
+        print("mag_inference will REFUSE these cells. Do not deploy the "
+              "contract check until every one carries a CONTRACT.json — "
+              "audit each run and re-run with it named by --audited-run-id.")
+        return 1
+    print(f"\nall {len(latest_of)} serving artifact(s) carry "
+          f"{CONTRACT_BLOB}; safe to deploy the contract check")
     return 0
 
 
