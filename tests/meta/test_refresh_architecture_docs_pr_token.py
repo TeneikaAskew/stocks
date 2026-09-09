@@ -93,23 +93,26 @@ def test_bot_branch_push_is_forced_not_plain():
 
 
 def test_existing_pr_for_branch_is_detected_before_create():
-    """Companion to the force-push fix: after a force-push, `gh pr create`
+    """Companion to the force-push fix: after a force-push, creating the PR
     still errors loudly if a PR from an earlier run this month is already
     open for the branch. That's not a failure — the force-push already
     delivered fresh content to it — so the step must check for an existing
-    open PR and exit clean instead of calling `gh pr create` again.
+    open PR and exit clean instead of creating one again.
+
+    The calls are REST rather than `gh pr ...`: the GraphQL path those
+    subcommands use demands `read:org`, which failed run 35. (Run 35.)
     """
     script = _open_pr_run_script()
-    assert "gh pr list --state open --head \"$BRANCH\"" in script
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=' in script
     assert re.search(r"if \[ -n \"\$EXISTING_PR\" \]; then", script)
-    # The existing-PR branch must exit before reaching the actual `gh pr
-    # create` invocation (a start-of-line command, not just a mention of
-    # the phrase in a comment).
+    # The existing-PR branch must exit before reaching the actual create
+    # invocation (a start-of-line command, not just a mention in a comment).
     exists_idx = script.index("EXISTING_PR=")
-    create_match = re.search(r"^\s*gh pr create \\", script, re.MULTILINE)
-    assert create_match, "expected a `gh pr create \\` command invocation"
+    create_match = re.search(
+        r'^\s*gh api -X POST "repos/\$\{GITHUB_REPOSITORY\}/pulls" \\', script, re.MULTILINE)
+    assert create_match, "expected a REST create invocation"
     assert exists_idx < create_match.start(), (
-        "the existing-open-PR check must run before gh pr create, not after"
+        "the existing-open-PR check must run before the create call, not after"
     )
 
 
@@ -383,13 +386,13 @@ def test_a_second_run_in_the_same_month_updates_the_existing_pr_body():
     steps = {s.get("name"): s.get("run") or "" for s in _steps()}
     pr = next(v for k, v in steps.items() if k and k.startswith("Open refresh PR"))
     assert "BODY=$(cat <<EOF" in pr, "the body must be built once for both paths"
-    assert 'gh pr edit "$EXISTING_PR" --body "$BODY"' in pr
-    assert '--body "$BODY"' in pr, "gh pr create must use the same body"
+    assert 'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${EXISTING_PR}"' in pr
+    assert '-f body="$BODY"' in pr, "the create call must use the same body"
     # the edit has to happen inside the EXISTING_PR branch, before ITS exit --
     # the step has an earlier exit for the nothing-to-commit case, so anchor on
     # the branch rather than on the first `exit 0` in the file
     branch = pr[pr.index('if [ -n "$EXISTING_PR" ]'):]
-    assert branch.index('gh pr edit "$EXISTING_PR"') < branch.index("exit 0")
+    assert branch.index('gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${EXISTING_PR}"') < branch.index("exit 0")
 
 
 def test_the_pr_body_heredoc_cannot_execute_its_own_markdown():
