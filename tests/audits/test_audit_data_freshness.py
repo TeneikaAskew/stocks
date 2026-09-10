@@ -590,6 +590,13 @@ def test_check_dicts_declare_settle_hour_for_after_hours_fetchers():
     # (Tue 21 ET writes Mon's bars). Codex P2 on PR #494.
     assert by_name["market_data_intraday"]["settle_hour_et"] == 21
     assert by_name["market_data_intraday"]["settle_lag_days"] == 1
+    # historical_signals — 01:00 ET cron Tue-Sat (gcp/deploy.sh:4830),
+    # same D-1 shape as market_data_intraday. Issue #1051: missing this
+    # lag anchored freshness at "today" and false-flagged every run
+    # after a holiday/weekend gap even though the writer ran and
+    # correctly inserted nothing.
+    assert by_name["historical_signals"]["settle_hour_et"] == 1
+    assert by_name["historical_signals"]["settle_lag_days"] == 1
 
 
 def test_spx_not_monitored_in_market_data_daily():
@@ -667,3 +674,101 @@ def test_recent_trading_days_with_lag_1():
     days = _recent_trading_days(now, n=3, settle_hour_et=21, settle_lag_days=1)
     # Anchor=Wed (post-21 ET), lag=1 → end at Tue 5/12, going back: Tue, Mon, Fri
     assert days == [date(2026, 5, 12), date(2026, 5, 11), date(2026, 5, 8)]
+
+
+def test_historical_signals_settle_lag_matches_production_incident(monkeypatch):
+    """Issue #1051: freshness-watchdog reported historical_signals STALE
+    (lag 87.0h, limit 36h) at 2026-09-08T22:00:48Z, nine hourly runs in a
+    row, even though historical-signals-watchlist (cron `0 1 * * 2-6` ET,
+    gcp/deploy.sh:4830) had run to completion every day and correctly
+    inserted nothing over the Labor Day (2026-09-07) gap.
+
+    Reproduces the exact incident numbers without the fix (87.0h, stale)
+    and confirms settle_lag_days=1 — the market_data_intraday pattern —
+    fixes it (0h, ok), using the CHECKS entry itself so a future edit to
+    the dict is caught by this test rather than only by production. The
+    check now watches `entry_time` (event time), not `inserted_at`
+    (ingestion time) — see test_historical_signals_lag_detects_real_multi_day_outage
+    for why that distinction matters — but the values here model the same
+    Saturday-writes-Friday's-close row either way, since entry_time for
+    the last-processed signal lands close to that session's own close."""
+    from scripts.audit_data_freshness import (
+        CHECKS, _query_freshness_one, most_recent_trading_day,
+    )
+
+    check = next(c for c in CHECKS if c["name"] == "historical_signals")
+    now = datetime(2026, 9, 8, 22, 0, 48)  # matches freshness-watchdog-n79mf
+    last_dt = datetime(2026, 9, 5, 5, 1, 44, 860000)  # Sat cron wrote Fri's close
+    _patch_query(monkeypatch, pd.DataFrame([{"last_row_at": last_dt, "row_count_recent": 16}]))
+
+    # Without the lag (the bug as shipped): expected day anchors at "today"
+    # (Tue 9/8), so lag is measured against Tue's close → false 87h stale.
+    buggy_expected = most_recent_trading_day(now, settle_hour_et=check["settle_hour_et"])
+    buggy_row = _query_freshness_one(dict(check, settle_lag_days=0), buggy_expected, now_utc=now)
+    assert buggy_row.lag_hours == pytest.approx(87.0, abs=0.05)
+    assert buggy_row.status == "stale"
+
+    # With the fix: expected day rolls back to the last session the Tue-Sat
+    # cron actually delivers (Fri 9/4, skipping the 9/7 holiday + weekend).
+    fixed_expected = most_recent_trading_day(
+        now, settle_hour_et=check["settle_hour_et"], settle_lag_days=check["settle_lag_days"],
+    )
+    assert fixed_expected == date(2026, 9, 4)
+    fixed_row = _query_freshness_one(check, fixed_expected, now_utc=now)
+    assert fixed_row.lag_hours == 0.0
+    assert fixed_row.status == "ok"
+
+
+def test_historical_signals_lag_detects_real_multi_day_outage(monkeypatch):
+    """PR #1065 review (Codex, P2): settle_lag_days models a *data*-time
+    lag. Applied to an *ingestion*-time column (inserted_at, which lands
+    same-day as every successful run) it would silently downgrade a real
+    3-cron-cycle silent failure from stale (87h) to warn (63h) — warn
+    never opens an issue, `--strict` only exits 1 on stale (see
+    scripts/audit_data_freshness.py main()). That's the exact F11 failure
+    mode (per-ticker exception swallow reporting `success` on zero output,
+    docs/incidents/2026-06-01-pipeline-failures-audit.md) this check
+    exists to catch.
+
+    Reproduced here on the pre-fix `inserted_at` column to confirm the
+    finding is real, then shown fixed by checking `entry_time` (event
+    time) instead: a frozen entry_time makes lag grow at the true rate
+    regardless of the settle_lag_days anchor shift, so the same outage
+    still measures stale.
+
+    Scenario: Tuesday's run succeeds and writes a signal whose entry_time
+    is Monday's close (a normal trading day, no holiday involved — this
+    failure mode is unrelated to the Labor Day gap in the sibling test
+    above). Wed/Thu/Fri all fail silently. Checked Friday evening."""
+    from scripts.audit_data_freshness import (
+        CHECKS, _query_freshness_one, most_recent_trading_day,
+    )
+
+    check = next(c for c in CHECKS if c["name"] == "historical_signals")
+    now = datetime(2026, 5, 15, 22, 0, 0)  # Fri 5/15 18:00 ET, post-settle
+    expected = most_recent_trading_day(
+        now, settle_hour_et=check["settle_hour_et"], settle_lag_days=check["settle_lag_days"],
+    )
+    assert expected == date(2026, 5, 14)  # Thu — Fri's cron writes Thu's data
+
+    # Pre-fix column (inserted_at, ingestion time): the finding as filed.
+    # Tuesday's run wrote fresh rows with inserted_at = its own write time
+    # (01:01 ET, mirroring the Sat-run shape in the sibling test above) —
+    # NOT Monday's close, because inserted_at is ingestion time.
+    buggy_last_dt = datetime(2026, 5, 12, 5, 1, 0)  # Tue write time
+    _patch_query(monkeypatch, pd.DataFrame([{"last_row_at": buggy_last_dt, "row_count_recent": 16}]))
+    buggy_row = _query_freshness_one(
+        dict(check, ts_column="inserted_at"), expected, now_utc=now,
+    )
+    assert buggy_row.lag_hours == pytest.approx(62.9, abs=0.2)
+    assert buggy_row.status == "warn", "pre-fix: a real 3-day outage only warns, no issue opens"
+
+    # Fixed column (entry_time, event time): that same Tuesday run's last
+    # signal has entry_time = Monday's close, frozen there through the
+    # Wed-Fri outage, so lag grows at the true rate and the same outage
+    # measures stale.
+    fixed_last_dt = datetime(2026, 5, 11, 19, 55, 0)  # Mon close
+    _patch_query(monkeypatch, pd.DataFrame([{"last_row_at": fixed_last_dt, "row_count_recent": 16}]))
+    fixed_row = _query_freshness_one(check, expected, now_utc=now)
+    assert fixed_row.lag_hours == pytest.approx(72.08, abs=0.2)
+    assert fixed_row.status == "stale", "fixed: entry_time preserves detection of a real outage"
