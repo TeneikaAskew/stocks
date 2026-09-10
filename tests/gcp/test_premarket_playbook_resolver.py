@@ -276,7 +276,7 @@ def test_pnl_dollar_scales_with_notional():
 from datetime import date as _date
 from zoneinfo import ZoneInfo as _ZoneInfo
 
-from gcp.premarket_playbook_resolver import classify_date_outcome
+from gcp.premarket_playbook_resolver import classify_date_outcome, pending_dates
 
 _ET_TZ = _ZoneInfo('America/New_York')
 
@@ -310,3 +310,55 @@ def test_classify_past_date_all_skipped_is_failed():
     # A past date can never be a pre-ingestion race, whatever the hour.
     now = datetime(2026, 8, 25, 16, 30, tzinfo=_ET_TZ)
     assert classify_date_outcome(_date(2026, 8, 24), 0, 3, now) == 'failed'
+
+
+def test_classify_past_holiday_all_skipped_is_benign_holiday():
+    # Reproduces #1068: 2026-09-07 is Labor Day (a weekday brief row with
+    # no session — market_data_intraday will never have bars for it).
+    # The 09-08 sweep found it all-skipped and classified it 'failed',
+    # and would have kept re-firing 'failed' every day through 09-21
+    # (the end of the 14-day lookback window) without this case.
+    now = datetime(2026, 9, 8, 21, 15, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2026, 9, 7), 0, 3, now) == 'benign_holiday'
+
+
+def test_classify_past_non_holiday_all_skipped_still_fails_next_to_a_holiday():
+    # The holiday exception must not swallow a real gap on an adjacent
+    # ordinary trading day — only the exact holiday date is benign.
+    now = datetime(2026, 9, 9, 21, 15, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2026, 9, 8), 0, 3, now) == 'failed'
+
+
+def test_pending_dates_normalizes_postgres_timestamps_to_plain_date(monkeypatch):
+    # Codex review on #1075 (P1): pd.read_sql returns pandas.Timestamp for a
+    # Postgres DATE column, and Timestamp is a datetime which is a date, so
+    # the old `d if isinstance(d, date) else d.date()` check never converted
+    # it. A Timestamp compares unequal to every plain `date` (different
+    # classes never compare equal in Python), so classify_date_outcome's
+    # `analysis_date == now_et.date()` and `analysis_date in
+    # NYSE_FULL_CLOSURES` checks were both silently unreachable against
+    # pending_dates()'s real output — the holiday fix in this same PR would
+    # not have actually fired in production without this.
+    import gcp.premarket_playbook_resolver as mod
+
+    def _fake_read_sql(sql, engine, params=None):
+        return pd.DataFrame({'analysis_date': [pd.Timestamp('2026-09-07')]})
+
+    monkeypatch.setattr(mod.pd, 'read_sql', _fake_read_sql)
+
+    result = pending_dates(engine=object(), today_et=_date(2026, 9, 9), lookback_days=14)
+
+    assert result == [_date(2026, 9, 7)]
+    assert type(result[0]) is _date, f"expected plain date, got {type(result[0])!r}"
+
+
+def test_classify_black_friday_all_skipped_still_fails():
+    # Codex review on #1075: audit_data_freshness.py's MARKET_HOLIDAYS_2026
+    # marks 2026-11-27 (Black Friday) "early close, treated as closed" for
+    # its OWN staleness-tolerance purposes, but NYSE trades an abbreviated
+    # session that day — bars do land. Blindly reusing that set here would
+    # have given a real ingestion gap on Black Friday a free pass all the
+    # way through the lookback window, the exact false-negative this
+    # resolver's sweep design exists to prevent.
+    now = datetime(2026, 11, 30, 21, 15, tzinfo=_ET_TZ)  # next weekday sweep
+    assert classify_date_outcome(_date(2026, 11, 27), 0, 3, now) == 'failed'
