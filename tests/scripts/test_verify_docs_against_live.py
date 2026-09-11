@@ -22,12 +22,14 @@ run that reported clean:
 
 Hermetic: no gcloud, no network. The live snapshot is a literal.
 """
+import ast
 import importlib.util
 import json
 import pathlib
 import sys
 
 import pytest
+import yaml
 
 _SRC = pathlib.Path(__file__).resolve().parent.parent.parent / "scripts" / "verify_docs_against_live.py"
 _spec = importlib.util.spec_from_file_location("verify_docs_against_live", _SRC)
@@ -955,3 +957,47 @@ def test_listed_alone_does_not_suppress_a_fleet_total(tmp_path):
     found = _count_findings(
         tmp_path, "The inventory contains 68 Cloud Run Jobs listed alphabetically below.\n")
     assert len(found) == 1, "'listed' suppressed a fleet total"
+
+
+_WORKFLOW_PATH = pathlib.Path(__file__).resolve().parent.parent.parent / ".github/workflows/verify-docs-against-live.yml"
+
+
+def _required_gcloud_components() -> set[str]:
+    """Every non-GA gcloud release track read_live() actually invokes."""
+    tree = ast.parse(_SRC.read_text())
+    tracks = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+        if name not in ("_gcloud", "_gjson"):
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and first.value in ("alpha", "beta"):
+            tracks.add(first.value)
+    return tracks
+
+
+def test_every_gcloud_track_read_live_uses_is_installed_on_the_runner():
+    """The runner's gcloud ships GA surfaces only, and `gcloud run
+    domain-mappings list` does not accept --region on GA -- only alpha and
+    beta do -- so read_live() dies with "You do not currently have this
+    command group installed: [beta]" before it reads anything past the
+    domain-mappings call. Failed this way twice (2026-09-09, 2026-09-10)
+    because the workflow's setup-gcloud step never requested the component.
+    refresh-architecture-docs.yml hit the identical gap in doc_inventory.py
+    (run 14) and has its own version of this test
+    (tests/meta/test_refresh_architecture_docs_pr_token.py); this is the
+    same check against the sibling script/workflow pair so a new alpha/beta
+    call here fails hermetically instead of on the next scheduled run."""
+    required = _required_gcloud_components()
+    assert required, "the AST scan found no alpha/beta calls; the scan is broken, not the script"
+    doc = yaml.safe_load(_WORKFLOW_PATH.read_text())
+    steps = doc["jobs"]["verify"]["steps"]
+    setup = [s for s in steps if str(s.get("uses", "")).startswith("google-github-actions/setup-gcloud")]
+    assert len(setup) == 1, setup
+    installed = {c.strip() for c in (setup[0].get("with") or {}).get("install_components", "").split(",") if c.strip()}
+    assert required <= installed, (
+        f"verify_docs_against_live.py calls gcloud {sorted(required)} but the workflow installs "
+        f"{sorted(installed) or 'nothing'}; the live comparison will die on the runner")
