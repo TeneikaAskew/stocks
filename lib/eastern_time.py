@@ -16,7 +16,8 @@ every new way to spell a fixed offset.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from typing import TypeAlias
 from zoneinfo import ZoneInfo
 
 #: The canonical Eastern zone name. Use it for the pandas / pytz string APIs
@@ -26,6 +27,96 @@ ET_NAME = "America/New_York"
 #: The canonical Eastern zone object. Use it wherever a ``tzinfo`` is wanted
 #: (``datetime.now(ET)``, ``dt.astimezone(ET)``).
 ET = ZoneInfo(ET_NAME)
+UTC = timezone.utc
+
+DateLike: TypeAlias = date | datetime
+
+
+def require_aware(value: datetime, *, name: str = "timestamp") -> datetime:
+    """Return *value* when it denotes an instant; reject ambiguous wall time."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
+    return value
+
+
+def localize_assuming_utc(value: datetime) -> datetime:
+    """Attach UTC to a deliberately naive UTC value.
+
+    This function's explicit name is the required documentation at boundaries
+    that emit naive UTC.  Already-aware values are rejected so callers cannot
+    accidentally relabel an instant instead of converting it.
+    """
+    if value.tzinfo is not None:
+        raise ValueError("value is already timezone-aware; use as_utc_instant")
+    return value.replace(tzinfo=UTC)
+
+
+def localize_assuming_eastern(
+    value: datetime,
+    *,
+    fold: int | None = None,
+) -> datetime:
+    """Attach the market zone to an unambiguous naive Eastern wall time.
+
+    Eastern clocks skip an hour each spring and repeat an hour each autumn.
+    ``datetime.replace(tzinfo=...)`` accepts both impossible and ambiguous wall
+    times without warning, so this boundary validates a UTC round trip.  A
+    repeated wall time requires the caller to choose ``fold=0`` (the first
+    occurrence) or ``fold=1`` (the second); ordinary times require no choice.
+    """
+    if value.tzinfo is not None:
+        raise ValueError("value is already timezone-aware; use as_eastern_time")
+    if fold not in (None, 0, 1):
+        raise ValueError("fold must be 0, 1, or None")
+
+    candidates = [value.replace(tzinfo=ET, fold=candidate) for candidate in (0, 1)]
+    valid = [
+        candidate
+        for candidate in candidates
+        if candidate.astimezone(UTC).astimezone(ET).replace(tzinfo=None) == value
+    ]
+    if not valid:
+        raise ValueError(f"Eastern wall time does not exist: {value.isoformat()}")
+
+    ambiguous = valid[0].utcoffset() != valid[-1].utcoffset()
+    if ambiguous and fold is None:
+        raise ValueError(
+            f"Eastern wall time is ambiguous; specify fold=0 or fold=1: "
+            f"{value.isoformat()}"
+        )
+    return candidates[0 if fold is None else fold]
+
+
+def as_utc_instant(value: datetime) -> datetime:
+    """Convert an aware timestamp to the canonical UTC representation."""
+    return require_aware(value).astimezone(UTC)
+
+
+def as_eastern_time(value: datetime) -> datetime:
+    """Convert an aware instant to the exchange's Eastern wall clock."""
+    return require_aware(value).astimezone(ET)
+
+
+def market_date(value: DateLike) -> date:
+    """Return a market date, converting instants to Eastern before truncation.
+
+    A plain ``date`` is already a business-date value and is returned as-is.
+    A ``datetime`` must be aware: silently guessing what a naive datetime means
+    is the defect class this boundary exists to prevent.
+    """
+    if isinstance(value, datetime):
+        return as_eastern_time(value).date()
+    return value
+
+
+def utc_now() -> datetime:
+    """Return the current instant as an aware UTC datetime."""
+    return datetime.now(UTC)
+
+
+def eastern_now() -> datetime:
+    """Return the current instant in the exchange's Eastern timezone."""
+    return datetime.now(ET)
 
 
 def verify_eastern_is_dst_correct() -> None:
