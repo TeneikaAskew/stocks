@@ -869,6 +869,24 @@ setup_insight_tasks_queue() {
         --max-attempts 2 \
         --max-concurrent-dispatches 5 \
         --quiet 2>/dev/null || echo "  insight-pipeline-queue: already exists"
+
+    # The scheduled insight-pipeline batch now fans out one Cloud Tasks
+    # message per ticker, so the JOB's own identity enqueues — previously
+    # only the API service did. Verified 2026-09-14: trading-runner@ held
+    # no cloudtasks role at project level, which would have failed every
+    # enqueue and silently dropped the batch back to the sequential loop.
+    # actAs for the task's oauth_token is already covered by a
+    # service-account-level roles/iam.serviceAccountUser binding on the SA
+    # itself.
+    #
+    # No `|| echo` swallow: add-iam-policy-binding exits 0 when the binding
+    # already exists, so a non-zero here is a real failure worth surfacing.
+    echo "Granting roles/cloudtasks.enqueuer to ${SA_EMAIL}..."
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role=roles/cloudtasks.enqueuer \
+        --condition=None \
+        --quiet 2>&1 | tail -3
 }
 
 # Sensitive values are passed via Cloud Run --set-secrets so they never

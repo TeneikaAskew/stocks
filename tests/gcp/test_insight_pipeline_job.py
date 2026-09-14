@@ -148,6 +148,12 @@ def stub_run_pipeline(monkeypatch):
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
     monkeypatch.setattr(job, "_insert_run", fake_insert_run)
+    # These tests assert which tickers RAN in-process, which only has
+    # meaning on the sequential path. Pin it explicitly: without this the
+    # suite's result depends on whether google-cloud-tasks happens to be
+    # importable in the environment (absent -> enqueue fails -> in-process
+    # fallback -> green for the wrong reason).
+    monkeypatch.setenv("INSIGHT_FANOUT", "0")
     return calls
 
 
@@ -166,6 +172,7 @@ def captured_triggers(monkeypatch):
         return True
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
+    monkeypatch.setenv("INSIGHT_FANOUT", "0")  # see stub_run_pipeline
     return triggers
 
 
@@ -453,3 +460,132 @@ def test_run_on_demand_invalid_as_of_returns_one(captured_as_of, monkeypatch):
     code = _run(job._run_on_demand())
     assert code == 1
     assert captured_as_of == []
+
+
+# ---------------------------------------------------------------------------
+# Fan-out dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_fanout(monkeypatch):
+    """Hermetic fan-out: record enqueues, record in-process runs.
+
+    Returns (enqueued, ran). `enqueued` holds the kwargs of every
+    enqueue_insight_task call; `ran` holds (run_id, ticker) for every
+    ticker that fell through to in-process execution.
+    """
+    enqueued: list[dict] = []
+    ran: list[tuple[str, str]] = []
+
+    def fake_enqueue(run_id, ticker, **kwargs):
+        enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
+        return True
+
+    async def fake_run_one(run_id: str, ticker: str, as_of=None,
+                           allow_update: bool = False,
+                           run_kind: str = "scheduled", triggered_by=None) -> bool:
+        ran.append((run_id, ticker))
+        return True
+
+    monkeypatch.setattr(job, "enqueue_insight_task", fake_enqueue)
+    monkeypatch.setattr(job, "_run_one", fake_run_one)
+    monkeypatch.setattr(job, "_insert_run", lambda ticker, trigger: f"run-{ticker}")
+    monkeypatch.delenv("INSIGHT_FANOUT", raising=False)
+    return enqueued, ran
+
+
+def test_fanout_enqueues_each_ticker_and_runs_none_in_process(
+    stub_fanout, monkeypatch
+):
+    enqueued, ran = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
+    code = _run(job._run_scheduled())
+    assert code == 0
+    assert [e["ticker"] for e in enqueued] == ["SPY", "IWM", "QQQ"]
+    assert ran == []
+
+
+def test_fanout_forwards_triggered_by_so_run_kind_stays_scheduled(
+    stub_fanout, monkeypatch
+):
+    """The daily scheduler passes INSIGHT_TRIGGERED_BY as a container
+    override. If the dispatcher drops it, children record manual_replay
+    and the audit trail is wrong while everything still looks green."""
+    enqueued, _ = stub_fanout
+    _set_env(
+        monkeypatch,
+        INSIGHT_TICKERS="SPY,IWM",
+        INSIGHT_AS_OF=None,
+        INSIGHT_TRIGGERED_BY="cloud-scheduler:insight-pipeline-daily",
+    )
+    _run(job._run_scheduled())
+    assert all(
+        e["triggered_by"] == "cloud-scheduler:insight-pipeline-daily"
+        for e in enqueued
+    )
+
+
+def test_fanout_forwards_as_of_cutoff(stub_fanout, monkeypatch):
+    enqueued, _ = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_AS_OF="2026-09-04")
+    _run(job._run_scheduled())
+    assert all(e["as_of_iso"] == "2026-09-04" for e in enqueued)
+
+
+def test_replay_child_is_not_forced_to_manual_update(stub_fanout, monkeypatch):
+    """INSIGHT_AS_OF resolves allow_update=True, but the child must
+    re-derive that from the cutoff. Forwarding force_update would
+    relabel the run manual_update."""
+    enqueued, _ = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_AS_OF="2026-09-04")
+    _run(job._run_scheduled())
+    assert all(e["force_update"] is False for e in enqueued)
+
+
+def test_explicit_update_is_forwarded(stub_fanout, monkeypatch):
+    enqueued, _ = stub_fanout
+    _set_env(
+        monkeypatch, INSIGHT_TICKERS="SPY,IWM",
+        INSIGHT_AS_OF=None, INSIGHT_UPDATE="true",
+    )
+    _run(job._run_scheduled())
+    assert all(e["force_update"] is True for e in enqueued)
+
+
+def test_enqueue_failure_falls_back_in_process_for_that_ticker_only(
+    stub_fanout, monkeypatch
+):
+    enqueued, ran = stub_fanout
+
+    def flaky(run_id, ticker, **kwargs):
+        if ticker == "IWM":
+            return False
+        enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
+        return True
+
+    monkeypatch.setattr(job, "enqueue_insight_task", flaky)
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
+    code = _run(job._run_scheduled())
+    assert code == 0
+    assert [e["ticker"] for e in enqueued] == ["SPY", "QQQ"]
+    # Only the failed one runs in-process, and it reuses its existing
+    # run row rather than inserting a second.
+    assert ran == [("run-IWM", "IWM")]
+
+
+def test_fanout_disabled_runs_sequentially(stub_fanout, monkeypatch):
+    enqueued, ran = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_AS_OF=None,
+             INSIGHT_FANOUT="0")
+    _run(job._run_scheduled())
+    assert enqueued == []
+    assert [t for _, t in ran] == ["SPY", "IWM"]
+
+
+def test_single_ticker_does_not_pay_a_container_start(stub_fanout, monkeypatch):
+    enqueued, ran = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY", INSIGHT_AS_OF=None)
+    _run(job._run_scheduled())
+    assert enqueued == []
+    assert [t for _, t in ran] == ["SPY"]

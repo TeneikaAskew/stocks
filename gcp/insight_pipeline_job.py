@@ -10,9 +10,23 @@ This job is invoked two ways:
    and upserts an InsightReport into Cloud SQL.
 
 2. **Scheduled** — invoked without `INSIGHT_RUN_ID` to run the daily
-   batch. In that mode it iterates the tickers in `INSIGHT_TICKERS`
-   (comma-separated, defaults to `SPY,IWM,QQQ`), inserts a new
-   `insight_runs` row per ticker, and executes them sequentially.
+   batch. It resolves the tickers (`INSIGHT_TICKERS`, else the
+   watchlist, else `SPY,IWM,QQQ`), inserts a `queued` `insight_runs`
+   row per ticker, and fans each one out as its own Cloud Tasks
+   message back into mode 1 above, so the tickers run as parallel
+   executions rather than a sequential in-process loop.
+
+   Fan-out is about isolation more than speed. Under the old loop a
+   single ticker's failure was contained only by a `try/except`: on
+   2026-09-11 a transient Vertex 429 killed SPY at the judge node while
+   IWM and QQQ had already been written, and the job still exited 0.
+   One execution per ticker gives each its own task timeout and its own
+   Cloud Run retry, and `max-concurrent-dispatches` on the queue is a
+   real throttle if the LLM provider starts rate-limiting.
+
+   Set `INSIGHT_FANOUT=0` to revert to the sequential loop without a
+   redeploy. A Cloud Tasks enqueue failure also falls back to running
+   that ticker in-process, so an outage costs throughput, not reports.
 
 Every run ends with exit 0 or exit 1; Cloud Run's retry policy takes
 over from there. The job never raises — it catches top-level
@@ -41,6 +55,7 @@ from uuid import uuid4
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from gcp.insight_tasks import enqueue_insight_task  # noqa: E402
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
@@ -431,6 +446,74 @@ async def _run_one(
 # ---------------------------------------------------------------------------
 
 
+def _update_explicitly_requested(arg_update: bool) -> bool:
+    """Whether an update was asked for OUTRIGHT, as opposed to implied.
+
+    Mirrors the highest-precedence branch of
+    `_resolve_run_kind_and_update`. A replay (`INSIGHT_AS_OF`) also
+    resolves allow_update=True, but for a different reason and with a
+    different run_kind, and a child re-derives that from the forwarded
+    cutoff on its own. Only the outright request travels as
+    INSIGHT_UPDATE.
+    """
+    return bool(arg_update or os.environ.get("INSIGHT_UPDATE") == "true")
+
+
+def _fanout_enabled() -> bool:
+    """Whether the scheduled batch fans out one execution per ticker.
+
+    On by default. `INSIGHT_FANOUT=0` reverts to the in-process loop
+    without a redeploy — the Cloud Scheduler body can pass it as a
+    container override, so reverting is a scheduler edit, not a build.
+    """
+    raw = os.environ.get("INSIGHT_FANOUT", "1").strip().lower()
+    return raw not in ("0", "false", "no")
+
+
+def _dispatch_fanout(
+    tickers: list[str],
+    *,
+    trigger: str,
+    as_of: Optional[Union[date, datetime]],
+    force_update: bool,
+    triggered_by: Optional[str],
+) -> list[tuple[str, str]]:
+    """Enqueue one Cloud Tasks message per ticker.
+
+    Returns the `(run_id, ticker)` pairs whose enqueue FAILED so the
+    caller can run those in-process. A successfully enqueued ticker is
+    picked up by a separate `insight-pipeline` execution in on-demand
+    mode, which owns its own queued -> running -> done|failed
+    transitions from there.
+
+    The `insight_runs` row is inserted BEFORE the enqueue. A row whose
+    enqueue then fails is handed back to the caller and executed with
+    that same id, so the run is never orphaned and never duplicated.
+    """
+    # date.isoformat() and datetime.isoformat() both round-trip through
+    # parse_as_of (10-char date vs tz-aware datetime).
+    as_of_iso = as_of.isoformat() if as_of is not None else None
+    failed: list[tuple[str, str]] = []
+    for ticker in tickers:
+        run_id = _insert_run(ticker, trigger=trigger)
+        ok = enqueue_insight_task(
+            run_id,
+            ticker,
+            as_of_iso=as_of_iso,
+            triggered_by=triggered_by,
+            force_update=force_update,
+        )
+        if ok:
+            logger.info("[run_id=%s] enqueued %s for parallel execution", run_id, ticker)
+        else:
+            failed.append((run_id, ticker))
+    logger.info(
+        "fan-out dispatched: %d/%d enqueued, %d falling back in-process",
+        len(tickers) - len(failed), len(tickers), len(failed),
+    )
+    return failed
+
+
 async def _run_on_demand(allow_update_arg: bool = False) -> int:
     run_id = os.environ["INSIGHT_RUN_ID"]
     ticker = os.environ["INSIGHT_TICKER"]
@@ -522,20 +605,54 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
     allow_update, run_kind = _resolve_run_kind_and_update(allow_update_arg)
     triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY')
 
-    any_failures = False
-    for ticker in tickers:
-        run_id = _insert_run(ticker, trigger=trigger)
-        ok = await _run_one(
-            run_id, ticker, as_of=as_of,
-            allow_update=allow_update, run_kind=run_kind,
+    # Fan out unless disabled, or unless there is only one ticker (a
+    # lone ticker would pay a container start to save nothing).
+    pending: Optional[list[tuple[str, str]]] = None
+    if _fanout_enabled() and len(tickers) > 1:
+        pending = _dispatch_fanout(
+            tickers, trigger=trigger, as_of=as_of,
+            force_update=_update_explicitly_requested(allow_update_arg),
             triggered_by=triggered_by,
         )
-        if not ok:
-            any_failures = True
+        if pending:
+            logger.warning(
+                "Cloud Tasks enqueue failed for %d of %d ticker(s) (%s) - "
+                "running those in-process so the batch still completes",
+                len(pending), len(tickers), ",".join(t for _, t in pending),
+            )
+
+    any_failures = False
+    if pending is None:
+        # Sequential mode: insert each run row immediately before
+        # executing it, as this job did before fan-out existed.
+        for ticker in tickers:
+            run_id = _insert_run(ticker, trigger=trigger)
+            ok = await _run_one(
+                run_id, ticker, as_of=as_of,
+                allow_update=allow_update, run_kind=run_kind,
+                triggered_by=triggered_by,
+            )
+            if not ok:
+                any_failures = True
+    else:
+        # Enqueue-failure fallback: rows already exist, reuse their ids.
+        for run_id, ticker in pending:
+            ok = await _run_one(
+                run_id, ticker, as_of=as_of,
+                allow_update=allow_update, run_kind=run_kind,
+                triggered_by=triggered_by,
+            )
+            if not ok:
+                any_failures = True
     # Scheduled runs exit 0 even on partial failure — one ticker's
     # failure shouldn't block the other two from being reported as
     # "done" to Cloud Scheduler. The insight_runs table carries the
     # per-ticker error text for the admin to investigate.
+    #
+    # Under fan-out this exit code covers DISPATCH only: the children
+    # run in their own executions and report their own status, so a
+    # green dispatcher no longer implies three written reports. Per
+    # ticker state lives in insight_runs either way.
     if any_failures:
         logger.warning("scheduled run completed with at least one failure")
     return 0
