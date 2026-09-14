@@ -180,3 +180,69 @@ def test_catalyst_filter_passed_to_ranker(monkeypatch):
                                      "earnings,sec_8k", "--dry-run"])
     ar.main()
     assert captured.get("catalyst_filter") == {"earnings", "sec_8k"}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Import-target regression (#1005)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Both DB helpers lazily import `connect`. `gcp.database` has never
+# exported one, so `from gcp.database import connect` raised ImportError
+# at call time. _is_cached_today swallows every exception and fails open,
+# so the wrong target read as "not cached" rather than as an error, and
+# _insert_queued_run's failure was caught by the per-ticker handler.
+# The job exited 0 every morning while enqueuing nothing: production logs
+# show `enqueued=0 ... failed=3` on every run from 2026-08-28 to
+# 2026-09-14. These tests stub the CORRECT module, so a regression to a
+# module that lacks `connect` fails them.
+
+
+class _FakeCursor:
+    def __init__(self, calls, row):
+        self._calls = calls
+        self._row = row
+
+    def execute(self, *args):
+        self._calls.append(args)
+
+    def fetchone(self):
+        return self._row
+
+
+class _FakeConn:
+    def __init__(self, calls, row=None):
+        self._calls = calls
+        self._row = row
+
+    def cursor(self):
+        return _FakeCursor(self._calls, self._row)
+
+    def commit(self):
+        self._calls.append(("commit",))
+
+    def close(self):
+        pass
+
+
+def test_cache_check_reaches_a_connect_that_actually_exists(monkeypatch):
+    from gcp import auto_refresh_top_n as ar
+
+    calls: list = []
+    monkeypatch.setattr(
+        "lib.agents.model_routing.connect", lambda: _FakeConn(calls, row=(1,))
+    )
+    assert ar._is_cached_today("SPY") is True
+    # Fails open on ImportError, so "reached the DB" is the real assertion.
+    assert calls, "connect() was never reached — import target is wrong"
+
+
+def test_insert_queued_run_reaches_a_connect_that_actually_exists(monkeypatch):
+    from gcp import auto_refresh_top_n as ar
+
+    calls: list = []
+    monkeypatch.setattr(
+        "lib.agents.model_routing.connect", lambda: _FakeConn(calls)
+    )
+    run_id = ar._insert_queued_run("SPY", "scheduled")
+    assert run_id
+    assert any("INSERT INTO insight_runs" in str(c) for c in calls)

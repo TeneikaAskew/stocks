@@ -60,7 +60,7 @@ def _is_cached_today(ticker: str) -> bool:
     ticker with today's UTC date — meaning a fresh report exists and
     we'd be wasting LLM budget to re-run."""
     try:
-        from gcp.database import connect
+        from lib.agents.model_routing import connect
 
         conn = connect()
         try:
@@ -87,7 +87,7 @@ def _is_cached_today(ticker: str) -> bool:
 def _insert_queued_run(ticker: str, trigger: str) -> str:
     """Insert a `queued` row in insight_runs and return its id.
     Mirrors platform.api.routers.insights._insert_run."""
-    from gcp.database import connect
+    from lib.agents.model_routing import connect
 
     conn = connect()
     run_id = str(uuid4())
