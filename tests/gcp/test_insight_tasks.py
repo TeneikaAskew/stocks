@@ -200,6 +200,7 @@ def _fake_tasks_modules(monkeypatch, create_side_effects):
     gexc.NotFound = type("NotFound", (Exception,), {})
     gexc.FailedPrecondition = type("FailedPrecondition", (Exception,), {})
     gexc.ResourceExhausted = type("ResourceExhausted", (Exception,), {})
+    gexc.TooManyRequests = type("TooManyRequests", (Exception,), {})
 
     monkeypatch.setitem(sys.modules, "google.cloud.tasks_v2", tasks)
     monkeypatch.setitem(sys.modules, "google.api_core.exceptions", gexc)
@@ -293,3 +294,30 @@ def test_the_lock_pin_satisfies_the_declared_floor():
     assert to_t(pinned) >= to_t(floor), (
         f"lock pins {pinned.group(1)} below the declared floor {floor.group(1)}"
     )
+
+
+def test_the_classification_matches_the_real_exception_hierarchy():
+    """The fakes above assert behaviour; this asserts the real library still
+    supports it. Two properties the classification depends on:
+
+    * AlreadyExists is a SIBLING of every definitive type, not a subclass, so
+      catching it first is correct rather than luckily ordered.
+    * No transport-shaped error is a subclass of a definitive type, so an
+      ambiguous failure can never be mistaken for a refusal and re-run.
+    """
+    gexc = pytest.importorskip("google.api_core.exceptions")
+    definitive = (
+        gexc.PermissionDenied, gexc.Unauthenticated, gexc.InvalidArgument,
+        gexc.NotFound, gexc.FailedPrecondition, gexc.ResourceExhausted,
+        gexc.TooManyRequests,
+    )
+    assert not any(issubclass(gexc.AlreadyExists, d) for d in definitive)
+    for name in ("DeadlineExceeded", "ServiceUnavailable",
+                 "InternalServerError", "Aborted"):
+        exc = getattr(gexc, name, None)
+        if exc is None:
+            continue
+        assert not issubclass(exc, definitive), (
+            f"{name} would be treated as a definitive refusal and the caller "
+            f"would re-run a ticker that may already be queued"
+        )

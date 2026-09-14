@@ -137,7 +137,8 @@ def enqueue_insight_task(
         gexc.InvalidArgument,       # malformed task/name/body
         gexc.NotFound,              # the queue does not exist
         gexc.FailedPrecondition,    # queue disabled or paused
-        gexc.ResourceExhausted,     # queue rate limit rejected the request
+        gexc.ResourceExhausted,     # queue rate limit rejected the request (gRPC)
+        gexc.TooManyRequests,       # the same rejection over the REST transport
     )
 
     project = os.environ.get("GCP_PROJECT_ID", DEFAULT_PROJECT)
