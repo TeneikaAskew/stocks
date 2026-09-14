@@ -34,6 +34,7 @@ stay ``str`` so a mis-set variable cannot turn a working route into a 500.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -153,7 +154,9 @@ class ChartVoterCondition(ApiModel):
 
 
 class ChartVoterSide(ApiModel):
-    direction: str
+    # Provably closed: lib/chart_voter.py builds exactly {"direction": "CALL"}
+    # and {"direction": "PUT"} — nothing else constructs this model.
+    direction: Literal["CALL", "PUT"]
     conditions: list[ChartVoterCondition]
     met_count: int
     total_count: int
@@ -163,7 +166,8 @@ class ChartVoterSide(ApiModel):
 class ChartVoter(ApiModel):
     call: ChartVoterSide
     put: ChartVoterSide
-    firing: Optional[str] = None
+    # Provably closed: lib/chart_voter.py sets "CALL" / "PUT" / None only.
+    firing: Optional[Literal["CALL", "PUT"]] = None
 
 
 class IndicatorsResponse(ApiModel):
@@ -525,8 +529,15 @@ class ExpectedMove(ApiModel):
     pred_bucket: Optional[int] = None
     probabilities: Optional[ExpectedMoveProbabilities] = None
     max_proba: Optional[float] = None
-    model_version: Any = None
-    ts: Any = None
+    # magnitude_predictions.model_version is VARCHAR(64) — the producer
+    # (lib/movement_statement.py) passes the raw DB value straight through,
+    # so string-or-null is the whole wire domain. `ts` arrives as a
+    # datetime from the SQL row and FastAPI ISO-stringifies it; the Union
+    # keeps that path valid while declaring the wire type (a bare `Any`
+    # generated `unknown` on the solyra side and defeated its widening
+    # check — its issue #56).
+    model_version: Optional[str] = None
+    ts: Optional[Union[datetime, str]] = None
     atr_20: Optional[float] = None
     current_price: Optional[float] = None
     usage_guidance: Optional[str] = None
@@ -539,10 +550,15 @@ class Regime(ApiModel):
     role: Optional[str] = None
     regime: Optional[str] = None
     mood: Optional[str] = None
-    gamma_flip: Any = None
-    total_gex: Any = None
-    data_source: Any = None
-    snapshot_ts: Any = None
+    # The producer (lib/movement_statement._build_regime) passes the gamma
+    # summary's numeric flip/GEX and vendor string straight through; the
+    # bare `Any`s generated `unknown` on the solyra side and defeated its
+    # widening check (its issue #56). snapshot_ts, like ExpectedMove.ts,
+    # may be a datetime the encoder ISO-stringifies — hence the Union.
+    gamma_flip: Optional[float] = None
+    total_gex: Optional[float] = None
+    data_source: Optional[str] = None
+    snapshot_ts: Optional[Union[datetime, str]] = None
     reason: Optional[str] = None
 
 
@@ -1261,11 +1277,21 @@ class SignalContribution(ApiModel):
     raw: dict[str, Any]
 
 
+# Provably closed: every add_catalyst() call in lib/agents/ranker/candidates.py
+# passes one of these seven literals, and /api/insights/watchlist ranks fresh
+# per request (nothing stored can carry a legacy kind). Keep in sync with the
+# producer and with solyra's src/types/watchlist.ts CatalystType.
+CatalystKind = Literal[
+    "earnings", "sec_8k", "insider", "top_mover",
+    "economic_event", "watchlist", "manual",
+]
+
+
 class RankedTicker(ApiModel):
     ticker: str
     score: float
     pct_of_max: float
-    catalyst_types: list[str]
+    catalyst_types: list[CatalystKind]
     catalyst_metadata: dict[str, list[dict[str, Any]]]
     score_breakdown: list[SignalContribution]
 

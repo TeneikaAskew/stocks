@@ -226,9 +226,14 @@ def test_reconcile_against_snapshot_reports_the_known_deltas():
     assert "p2-build-gamma-levels" not in rec["jobs_live_only"]
     assert "compute-spx-greeks-backfill" in rec["jobs_repo_only"]
     # signal-quality-report-hourly was retired by #1005 and its paused live
-    # entry deleted on 2026-09-07, so schedulers reconcile exactly.
+    # entry deleted on 2026-09-07, so schedulers reconcile exactly — except
+    # earnings-sweep-sunday, added 2026-09-14 (issue #1091: the watchlist's
+    # 14-day freshness gate assumed a weekly winners refresh nothing
+    # scheduled). Repo-only until `./gcp/deploy.sh schedulers` runs against
+    # the project; drop it from this list once a fresher snapshot carries it.
     assert rec["schedulers_paused"] == [] and rec["schedulers_live_only"] == []
-    assert rec["schedulers_repo_only"] == [] and rec["schedulers_cron_drift"] == []
+    assert rec["schedulers_repo_only"] == ["earnings-sweep-sunday"]
+    assert rec["schedulers_cron_drift"] == []
     assert rec["counts"]["jobs_live"] == live["counts"]["jobs"]
 
 

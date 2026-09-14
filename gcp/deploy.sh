@@ -3565,13 +3565,23 @@ deploy_param_sweep() {
 }
 
 
-# ── Earnings playability calibration sweep (on-demand Cloud Run Job) ──────────
+# ── Earnings playability calibration sweep (Cloud Run Job) ────────────────────
 # Sweeps (min_nq, lookback_quarters) over the playability backtest and
 # auto-applies the best combo to earnings_calibration, which the
-# premarket brief reads. Sibling to param-sweep.
+# premarket brief reads. Sibling to param-sweep. Also rewrites
+# earnings_options_strategy_winners, whose calculation_date is what
+# earnings-long-watchlist's freshness gate reads.
 #
-# On-demand only: `gcloud run jobs execute earnings-sweep --region us-east1`.
-# The sweep is formula-eval over ~21k earnings_reactions rows — light.
+# Scheduled weekly (earnings-sweep-sunday, Sun 20:30 ET, with an
+# --options-insights args override — the bare sweep does NOT write the
+# winners table) since 2026-09-14: it ran on-demand only, while the
+# watchlist's gate accepts "at most one missed weekly refresh"
+# (MAX_SOURCE_AGE_DAYS=14) — so every second week without a manual sweep,
+# the Sunday watchlist failed closed on a stale snapshot (issue #1091 was
+# this). Manual runs still work the same way:
+# `gcloud run jobs execute earnings-sweep --region us-east1`
+# (add --args="--options-insights" to also refresh the winners snapshot).
+# The bare sweep is formula-eval over ~21k earnings_reactions rows — light.
 deploy_earnings_sweep() {
     echo "Deploying earnings-sweep job..."
     # Memory bumped from 1Gi → 4Gi on 2026-05-21 when the PR-B options-join
@@ -4615,6 +4625,21 @@ deploy_schedulers() {
     # Sunday 7pm ET — long-side "Next NVAX" watchlist (PR-B follow-up).
     # Fires after the refresh chain so the data is current.
     _schedule "earnings-long-watchlist-sunday"    "45 19 * * 0"  "earnings-long-watchlist"
+    # Sunday 8:30pm ET — playability calibration sweep, AFTER the whole
+    # refresh chain (19:15/19:30/19:45) so it calibrates on that evening's
+    # reactions. --options-insights is REQUIRED here, not decoration: the
+    # bare sweep never touches earnings_options_strategy_winners (only the
+    # insights mode persists it — scripts/calibrate_earnings.py:306-308),
+    # and that table's calculation_date is what earnings-long-watchlist's
+    # freshness gate reads. With a weekly insights run the snapshot is at
+    # most ~7 days old at every 19:45 watchlist fire, half the gate's
+    # 14-day cap; unscheduled, the gate failed closed every second week
+    # (issue #1091). Manual plain-sweep runs keep their behavior — the
+    # override rides only this trigger. ~5-15 min at 2cpu/4Gi (the
+    # options-join is what the 4Gi bump was sized for) ≈ $0.05/run,
+    # ~$0.25/mo.
+    _schedule_with_args "earnings-sweep-sunday"   "30 20 * * 0"  "earnings-sweep" \
+        "--options-insights"
     # Earnings frontend data prep (mat view refreshes + upcoming rebuild).
     # Weekly: Sun 8:00 PM ET — REFRESH MATERIALIZED VIEW × 2 after the
     #   refresh chain (7:00/7:15/7:30/7:45 PM) finishes its source-data
@@ -5099,6 +5124,9 @@ case "${1:-help}" in
         deploy_signal_quality_alarm
         deploy_signal_replay
         deploy_indicator_correlation
+        # Scheduled since 2026-09-14 (earnings-sweep-sunday) — a fresh
+        # project must create the job before that trigger can fire it.
+        deploy_earnings_sweep
         deploy_weekly_pg_dump
         deploy_notifier
         # Slash-command service + the jobs it dispatches (#831). Needs the
