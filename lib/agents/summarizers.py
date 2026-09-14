@@ -60,6 +60,20 @@ def _unavailable(reason: str) -> dict:
     return {"available": False, "reason": reason}
 
 
+def _chain_snapshot_date(df) -> date_type:
+    """The loaded chain's OWN snapshot_date, as a `date`.
+
+    Both the REALTIME and EOD phases select `snapshot_date`, so this is
+    always available once a chain has been loaded — which is why the
+    "latest" sentinel it replaced was never necessary. That sentinel was
+    bound straight to a Postgres DATE parameter downstream
+    (`options_greeks.get_rate_and_yield`) and rejected with SQLSTATE
+    22007, dropping `gamma_flip` from every live report.
+    """
+    raw = df["snapshot_date"].iloc[0]
+    return raw.date() if hasattr(raw, "date") else pd.to_datetime(raw).date()
+
+
 # Maximum trading-day gap between an options chain's snapshot_date and the
 # brief's as-of date before we silence the options/gamma sections. The AV
 # options fetcher writes EOD chains at ~21:00 ET; a Tuesday-morning brief
@@ -536,8 +550,7 @@ def summarize_options_flow(
     if df.empty:
         return _unavailable(f"no etf_options_snapshots for {ticker}")
 
-    chain_date_raw = df["snapshot_date"].iloc[0]
-    chain_date = chain_date_raw.date() if hasattr(chain_date_raw, "date") else pd.to_datetime(chain_date_raw).date()
+    chain_date = _chain_snapshot_date(df)
     stale_reason = _check_chain_freshness(chain_date, as_of)
     if stale_reason:
         return _unavailable(stale_reason)
@@ -692,11 +705,7 @@ def summarize_gamma_levels(
 
         # Tier the EOD snapshot into eod_fallback / stale_fallback /
         # hard-stale based on trading-day gap.
-        chain_date_raw = df["snapshot_date"].iloc[0]
-        chain_date = (
-            chain_date_raw.date() if hasattr(chain_date_raw, "date")
-            else pd.to_datetime(chain_date_raw).date()
-        )
+        chain_date = _chain_snapshot_date(df)
         target = as_of if as_of else date_type.today()
         if isinstance(target, datetime):
             target = target.date()
@@ -742,7 +751,12 @@ def summarize_gamma_levels(
             "last": row.get("last_price"),
         })
 
-    snapshot_date = str(as_of) if as_of else "latest"
+    # The CHAIN's date, not the request's. `gamma.build_summary` forwards
+    # this to `get_rate_and_yield`, which binds it to a DATE column, so it
+    # has to be a real date — and it has to be the snapshot's own day, since
+    # an EOD chain from Tuesday must be re-curved with Tuesday's r/q rather
+    # than the rates of whatever day happens to be asking.
+    snapshot_date = _chain_snapshot_date(df).isoformat()
     summary = gamma.build_summary(
         ticker=ticker,
         snapshot_date=snapshot_date,
