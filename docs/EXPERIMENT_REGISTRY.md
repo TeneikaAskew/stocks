@@ -1292,3 +1292,103 @@ cutoffs re-run via the reliable config-tagged GCS path shows the SIZE gate pass
 HOLDS across fold placements — prune: Jan-1 (8/7/6) and shifted (7/8/7), both
 3/3. No fold-fragility. FINAL: SIZE robustly predictable+calibrated at
 15m+isotonic+prune. See MAGNITUDE_ENGINE_RESULTS.md.
+
+---
+
+# 2026-09-14 SESSION — Provenance labelling of the analytical corpus (DQ3)
+
+**Not an experiment. A data-integrity change that alters what every experiment
+reading `historical_signals` is actually reading.** Recorded here because the
+registry's job is that a later reader can reproduce a number, and from this date
+the corpus carries a column that earlier queries could not have filtered on.
+
+Origin: [#1095](https://github.com/TeneikaAskew/stocks/issues/1095) →
+[#1098](https://github.com/TeneikaAskew/stocks/pull/1098), merged `711d91f8`.
+Continues **E-24/DQ1** (data-quality remediation) and the **L-series**
+(live-system audits), and closes the generalisation of
+[#820](https://github.com/TeneikaAskew/stocks/issues/820).
+
+## DQ3 — `run_kind` on the three remaining API-served tables
+
+`signal_alerts` and `trades` gained `run_kind` in #820 after
+`scripts/backfill_signals.py` was found writing 432 + 412 **simulated** rows
+into production with forward-looking perfect-fill exits — those rows read
+**72.6% win rate against 48.1% on live ones**. That fix stopped at those two
+tables. DQ3 is the sweep for the same shape everywhere else. The audit question
+was not "is that one script gone" but "can any reader tell a backfill from a
+live row".
+
+**No fabricated data was found this time.** Every row in the three tables is
+computed from real bars and real model runs. The defect was that it was
+unlabelled, so no consumer could choose.
+
+### Measured in production 2026-09-14 (db-query `w2lsq`, `fwcrn`, `46dm4`, `d7z4k`, `dzqhv`, `rjqn2`, `nnzjl`, `nzvbq`)
+
+| Table | Non-live rows | Total | Predicate |
+|---|---|---|---|
+| `historical_signals` | **1,553,629 `backfill`** | 1,708,932 (**90.9%**) | `inserted_at::date - entry_time::date > 7` |
+| `insight_reports` | 1 `replay` + 85 `backfill` | 807 | latest `insight_reports_history` entry is `replay_refresh`, or `created_at::date > as_of::date` |
+| `premarket_analysis` | 135 `replay` | 395 | latest `premarket_analysis_history` entry is `replay_refresh`, or `analysis_ts::date > analysis_date + 1` |
+
+Post-migration counts matched every prediction exactly, with **0 rows left
+matching the marking predicate**.
+
+The single densest write: one hour on **2026-04-26 02:00 UTC inserted 1,090,746
+rows** whose `entry_time` spans 2017-02-01 → 2024-06-28. Per ticker, QQQ alone
+is 1,325,860 of the 1.71M rows and 1,310,033 of the marked ones.
+
+### What this changes for anyone querying the corpus
+
+1. **A query over `historical_signals` that wants same-day-generated signals
+   must now say so.** Before this date it could not, and no result recorded in
+   this registry distinguished them. Treat every pre-2026-09-14
+   `historical_signals` number as a mixture whose composition is ~91% backfill.
+2. **Filtering to `run_kind='live'` there drops 90.9% of the corpus.** That is
+   almost certainly not what a similar-signal statistic wants, which is exactly
+   why `/api/signals` discloses the column rather than filtering on it. See
+   `docs/product/15-OPEN-DECISIONS.md` — whether backfilled and live-generated
+   signals over the same bars are statistically interchangeable is an **open
+   question, not a settled one**.
+3. **`insight_reports` and `premarket_analysis` are now filtered for live
+   readers**, including `lib/strategies/insight_cache.py` and
+   `lib/strategies/brief_bias.py`, which feed the signal monitor. A replay for
+   today's date previously changed signal scoring while being invisible on the
+   dashboard. Any L-series replay run after this date that expects its own
+   output to be read back by the monitor must account for the filter.
+
+### Trap worth recording — history `run_kind` inverts the meaning
+
+`run_kind='backfill'` in the **history** tables does *not* mean the canonical
+row is backfilled content. `scripts/backfill_history_tables.py` stamped it on
+every row it copied **in** from the canonical tables when the history tables
+were created on 2026-04-12; `insight_reports_history` carries **465** such
+rows. Deriving provenance from history kinds naively would have marked 465
+legitimate reports as backfill and hidden them from `/api/insights`. Only
+`replay_refresh` is unambiguous evidence of an as-of run, because
+`_resolve_run_kind_and_update` assigns it exactly when `BRIEF_AS_OF` /
+`INSIGHT_AS_OF` is set.
+
+Related trap, same family: `created_at` and `analysis_ts` are **insert-only**
+defaults, so a replay that *overwrote* a live row kept the original same-day
+timestamp. Timestamp-only rules missed 65 of the 128 `replay_refresh`
+`premarket_analysis` rows — precisely the ones that matter most.
+
+### Capacity note (the operator lesson)
+
+The marking query was written as one atomic transaction with self-checking
+count bands. It **cannot run that way**: the `historical_signals` UPDATE took
+254 s clean, and the `db-query` Cloud Run Job's own **task timeout is 600 s**,
+so `--timeout` above that is inert. The first `--commit` attempt hit the cap and
+rolled back — and a rolled-back 1.55M-row UPDATE still writes 1.55M dead
+tuples, so each retry is slower than the last (measured: 3,027,638 dead tuples,
+5,845 MB, before autovacuum reclaimed them).
+
+It was completed instead as 15 bounded chunks — QQQ by year, then IWM, then the
+remaining 14 tickers — each committing independently, each 7–166 s. The
+predicate is idempotent (`WHERE run_kind='live' AND …`), so chunking converges
+on the same result, and it did: **1,553,629, exactly the pre-migration
+measurement, to the row.** This is Rule 0.4's default pattern, and the PR's own
+capacity paragraph asserting "`--timeout 600`" was a claim made without
+measuring wall-clock. Any future bulk UPDATE over this table needs the same
+treatment.
+
