@@ -292,8 +292,14 @@ def _canonical_run_kind() -> str:
     report from that day's data: real analysis, but not the report that
     was published then, so /api/insights must not serve it as one
     (audit 2026-09-14).
+
+    Blank and whitespace-only are "no override": parse_as_of returns None
+    for them and the pipeline generates a current live report, so testing
+    the raw env var for truthiness would stamp that live report 'replay'
+    and the new live-only readers would hide it (Codex on #1098 round 4).
     """
-    return 'replay' if os.environ.get('INSIGHT_AS_OF') else 'live'
+    raw = os.environ.get('INSIGHT_AS_OF')
+    return 'replay' if raw and raw.strip() else 'live'
 
 
 def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optional[str]:

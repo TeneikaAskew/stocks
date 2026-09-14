@@ -911,6 +911,21 @@ def select_orb_window(today_events: list) -> dict:
 
 # ── Brief Generation ────────────────────────────────────────────────────────
 
+def _as_of_override() -> Optional[str]:
+    """The active BRIEF_AS_OF value, or None when there isn't one.
+
+    Blank and whitespace-only are deliberately "no override" — the brief
+    then runs against today, live. Every consumer of BRIEF_AS_OF must ask
+    this rather than test the raw env var for truthiness, because "  " is
+    truthy while resolving to today: it would stamp a genuinely live
+    canonical row as replay, enable allow_update on it, and suppress the
+    Discord post, hiding the day's real brief from every live-only reader
+    (Codex on #1098 round 4).
+    """
+    raw = os.environ.get("BRIEF_AS_OF")
+    return raw.strip() if raw and raw.strip() else None
+
+
 def _resolve_analysis_date() -> date:
     """Resolve the brief's analysis date.
 
@@ -919,10 +934,10 @@ def _resolve_analysis_date() -> date:
     Future-dated cutoffs are rejected so a typo doesn't silently
     produce a blank brief.
     """
-    raw = os.environ.get("BRIEF_AS_OF")
-    if not raw or not raw.strip():
+    raw = _as_of_override()
+    if raw is None:
         return date.today()
-    parsed = date.fromisoformat(raw.strip())
+    parsed = date.fromisoformat(raw)
     if parsed > date.today():
         raise ValueError(f"BRIEF_AS_OF {raw!r} is in the future")
     return parsed
@@ -3089,7 +3104,7 @@ def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
     """
     if allow_update_arg or os.environ.get('BRIEF_UPDATE') == 'true':
         return True, 'manual_update'
-    if os.environ.get('BRIEF_AS_OF'):
+    if _as_of_override():
         return True, 'replay_refresh'
     triggered_by = os.environ.get('BRIEF_TRIGGERED_BY', '')
     if triggered_by.startswith('cloud-scheduler'):
@@ -3284,7 +3299,7 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # A BRIEF_AS_OF run reconstructs a past morning, so its row is
     # 'replay': real analysis, but not the brief that was actually
     # published that day, and /api/dashboard must not serve it as one.
-    canonical_run_kind = 'replay' if os.environ.get('BRIEF_AS_OF') else 'live'
+    canonical_run_kind = 'replay' if _as_of_override() else 'live'
     canonical_rows = [{**r, 'run_kind': canonical_run_kind}
                       for r in rows if r['ticker'] not in skip_canonical]
     if playbook_failed:
@@ -3307,12 +3322,23 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
         return n
 
     # Default path — INSERT only the rows that don't already exist.
+    #
+    # "Exists" means a LIVE row when this run is live. A /replay for today
+    # with refresh:true writes a `replay` row on the allow_update path; if
+    # any row blocked the scheduled brief that follows, the ticker would
+    # end the day with a replay row that /api/dashboard, brief_bias,
+    # movement_statement and the Discord push all filter out — no usable
+    # brief at all. Same deadlock the insight writer had with ON CONFLICT
+    # DO NOTHING, in the sibling writer (Codex on #1098 round 4). An
+    # existing live row is still protected: only --update / BRIEF_UPDATE
+    # overwrite one, and that is the explicit operator path.
+    exists_key = {'run_kind': 'live'} if canonical_run_kind == 'live' else {}
     rows_to_write = []
     skipped = []
     for row in canonical_rows:
         if row_exists('premarket_analysis',
                       {'analysis_date': row['analysis_date'],
-                       'ticker': row['ticker']}):
+                       'ticker': row['ticker'], **exists_key}):
             skipped.append(row['ticker'])
         else:
             rows_to_write.append(row)
@@ -3511,7 +3537,7 @@ def main(argv: Optional[list[str]] = None):
         no_discord = (
             args.no_discord
             or post_to_discord_env == 'false'
-            or bool(os.environ.get('BRIEF_AS_OF'))
+            or _as_of_override() is not None
         )
     webhook_url = '' if no_discord else os.environ.get('DISCORD_WEBHOOK_URL')
     # Earnings-specific channel. The Earnings embed routes here so

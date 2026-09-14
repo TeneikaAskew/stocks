@@ -91,6 +91,7 @@
 DO $$
 DECLARE
     n_signals INT;
+    n_replays INT;
     n_reports INT;
     n_briefs  INT;
     n_extra   INT;
@@ -101,19 +102,38 @@ BEGIN
        AND inserted_at::date - entry_time::date > 7;
     GET DIAGNOSTICS n_signals = ROW_COUNT;
 
+    -- insight_reports has TWO non-live writers and the marked rows must
+    -- say which one, or migrated rows contradict new writes: INSIGHT_AS_OF
+    -- stamps 'replay', generate_historical_report.py stamps 'backfill'
+    -- (Codex on #1098 round 4). 'replay_refresh' in the history table is
+    -- assigned by exactly the INSIGHT_AS_OF branch, so it is evidence of a
+    -- replay and not of a batch backfill. Ordering matters: the replay pass
+    -- runs first, and the backfill pass then only sees rows still 'live'.
+    --
+    -- Measured 2026-09-14 (db-query nzvbq), on the 86 rows the union
+    -- predicate matches:  replay_refresh 1,  timestamp-only 85.
+    UPDATE insight_reports r
+       SET run_kind = 'replay'
+     WHERE r.run_kind = 'live'
+       AND EXISTS (SELECT 1 FROM (
+               SELECT DISTINCT ON (ticker, as_of) ticker, as_of, run_kind
+                 FROM insight_reports_history
+                ORDER BY ticker, as_of, written_at DESC) h
+            WHERE h.ticker = r.ticker AND h.as_of = r.as_of
+              AND h.run_kind = 'replay_refresh');
+    GET DIAGNOSTICS n_replays = ROW_COUNT;
+
     UPDATE insight_reports r
        SET run_kind = 'backfill'
      WHERE r.run_kind = 'live'
-       AND (r.created_at::date > r.as_of::date
-            OR EXISTS (SELECT 1 FROM (
-                   SELECT DISTINCT ON (ticker, as_of) ticker, as_of, run_kind
-                     FROM insight_reports_history
-                    ORDER BY ticker, as_of, written_at DESC) h
-                WHERE h.ticker = r.ticker AND h.as_of = r.as_of
-                  AND h.run_kind = 'replay_refresh'));
+       AND r.created_at::date > r.as_of::date;
     GET DIAGNOSTICS n_reports = ROW_COUNT;
 
     -- History FIRST, timestamp as a supplement. See the block above.
+    -- Both branches stamp 'replay', unlike insight_reports above: this
+    -- table has exactly ONE non-live writer (BRIEF_AS_OF in
+    -- premarket_brief.py), so a late analysis_ts is a replay run under a
+    -- different trigger, never a batch backfill.
     UPDATE premarket_analysis p
        SET run_kind = 'replay'
       FROM (SELECT DISTINCT ON (analysis_date, ticker) analysis_date, ticker, run_kind
@@ -143,9 +163,14 @@ BEGIN
             'historical_signals: expected ~1,553,629 rows (band 1.50M-1.65M), matched %; nothing committed',
             n_signals;
     END IF;
+    IF n_replays NOT BETWEEN 1 AND 60 THEN
+        RAISE EXCEPTION
+            'insight_reports replay: expected ~1 row (band 1-60), matched %; nothing committed',
+            n_replays;
+    END IF;
     IF n_reports NOT BETWEEN 60 AND 250 THEN
         RAISE EXCEPTION
-            'insight_reports: expected ~86 rows (band 60-250), matched %; nothing committed',
+            'insight_reports backfill: expected ~85 rows (band 60-250), matched %; nothing committed',
             n_reports;
     END IF;
     IF n_briefs NOT BETWEEN 110 AND 220 THEN
@@ -154,6 +179,6 @@ BEGIN
             n_briefs;
     END IF;
 
-    RAISE NOTICE 'marked % historical_signals backfill, % insight_reports backfill, % premarket_analysis replay',
-        n_signals, n_reports, n_briefs;
+    RAISE NOTICE 'marked % historical_signals backfill, % insight_reports replay, % insight_reports backfill, % premarket_analysis replay',
+        n_signals, n_replays, n_reports, n_briefs;
 END $$;
