@@ -196,11 +196,11 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 > **2026-08-31 snapshot — frozen pending the next regeneration.** At the snapshot, every
 > open issue appeared exactly once. The dated updates above list the deltas since:
-> fourteen of the rows below are now closed (#820, #825, #829, #831, #833, #838, #841,
-> #843, #861, #898, #900, #904, plus post-audit #958/#1019), #868 moved to solyra#28,
-> #717 closed as duplicate, and the eleven post-audit issues opened in September
-> (#1017 through #1095) are not yet mapped here. Cross-check the updates before treating
-> a row as a live blocker.
+> fourteen of the rows below are now closed (canonical #820, #825, #829, #831, #833,
+> #838, #841, #843, #861, #898, #900, #904, and ops records #930/#944), #868 moved to
+> solyra#28, #717 closed as duplicate, and the issues opened after the snapshot (#958,
+> #1017 through #1095, of which #958 and #1019 have already closed again) are not mapped
+> here at all. Cross-check the updates before treating a row as a live blocker.
 
 **No range notation** — the previous revision wrote
 `#829–#850`, which reads as 22 issues while naming six. Ranges are replaced with explicit lists.
