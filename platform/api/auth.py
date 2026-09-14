@@ -32,7 +32,27 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-AUTH_MODE = os.environ.get("AUTH_MODE", "open").strip().lower()
+# The complete mode set this middleware implements (see the module
+# docstring). Anything else must refuse to start: the mode checks below are
+# equality tests, so an unrecognized value would silently no-op the
+# middleware and serve every gated endpoint ungated — fail-OPEN, the worst
+# direction for an auth control (Rule 3.7: INTERNAL misconfiguration fails
+# loud). A failed startup keeps the previous Cloud Run revision serving.
+_VALID_AUTH_MODES = ("open", "firebase", "iap")
+
+
+def _validated_auth_mode(raw: str) -> str:
+    mode = raw.strip().lower()
+    if mode not in _VALID_AUTH_MODES:
+        raise RuntimeError(
+            f"AUTH_MODE={raw!r} is not one of {_VALID_AUTH_MODES} — refusing "
+            "to start. An unrecognized mode would silently disable the auth "
+            "middleware; fix the service's AUTH_MODE env var."
+        )
+    return mode
+
+
+AUTH_MODE = _validated_auth_mode(os.environ.get("AUTH_MODE", "open"))
 
 # Reachable without a token so the SPA shell + login screen can boot and probe.
 # Two match modes, mirrored by the OPEN_* lists in solyra's

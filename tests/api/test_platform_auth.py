@@ -446,3 +446,25 @@ def test_me_plain_user_and_anonymous(monkeypatch):
     }
     anon = _me(monkeypatch, None, None)
     assert anon == {"email": None, "is_admin": False, "is_dev": False}
+
+
+class TestValidatedAuthMode:
+    """AUTH_MODE is validated at import: the middleware's mode checks are
+    equality tests, so an unrecognized value would silently no-op the
+    middleware and serve gated endpoints ungated. Refusing to start turns
+    that fail-open into a failed deploy (the previous revision keeps
+    serving), and is what lets RuntimeConfigResponse.authMode be a
+    Literal without risking a 500 on the boot request."""
+
+    def test_accepts_and_normalizes_the_three_modes(self):
+        assert auth_mod._validated_auth_mode(" Firebase ") == "firebase"
+        assert auth_mod._validated_auth_mode("IAP") == "iap"
+        assert auth_mod._validated_auth_mode("open") == "open"
+
+    def test_refuses_unknown_mode(self):
+        with pytest.raises(RuntimeError, match="AUTH_MODE"):
+            auth_mod._validated_auth_mode("pass-code")
+
+    def test_refuses_empty_mode(self):
+        with pytest.raises(RuntimeError, match="AUTH_MODE"):
+            auth_mod._validated_auth_mode("")

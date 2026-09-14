@@ -4740,6 +4740,58 @@
         "title": "MineAndValidateRequest",
         "type": "object"
       },
+      "MineStyleAggregateMetrics": {
+        "additionalProperties": true,
+        "description": "The keys the frontend's style panel renders, typed but optional:\nlib/walk_forward._aggregate_metrics only emits avg_*/std_* keys the\nfolds actually produced, so none of these are guaranteed present. Every\nother fold metric passes through untyped (ApiModel allows extras).",
+        "properties": {
+          "avg_expectancy_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Expectancy Pct"
+          },
+          "avg_win_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Win Rate"
+          },
+          "total_folds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Folds"
+          },
+          "total_trades_all_folds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Trades All Folds"
+          }
+        },
+        "title": "MineStyleAggregateMetrics",
+        "type": "object"
+      },
       "MineStyleProfile": {
         "additionalProperties": true,
         "properties": {
@@ -4776,11 +4828,7 @@
         "additionalProperties": true,
         "properties": {
           "aggregate_metrics": {
-            "additionalProperties": {
-              "type": "number"
-            },
-            "title": "Aggregate Metrics",
-            "type": "object"
+            "$ref": "#/components/schemas/MineStyleAggregateMetrics"
           },
           "profile": {
             "$ref": "#/components/schemas/MineStyleProfile"
@@ -7520,6 +7568,11 @@
         "additionalProperties": true,
         "properties": {
           "authMode": {
+            "enum": [
+              "open",
+              "firebase",
+              "iap"
+            ],
             "title": "Authmode",
             "type": "string"
           },
@@ -8513,7 +8566,9 @@
             "type": "boolean"
           },
           "class_probs": {
-            "additionalProperties": true,
+            "additionalProperties": {
+              "type": "number"
+            },
             "default": {},
             "title": "Class Probs",
             "type": "object"
