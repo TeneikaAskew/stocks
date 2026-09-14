@@ -600,6 +600,9 @@ class SignalRow(ApiModel):
     conditions_met: Any = None
     return_pct: Optional[float] = None
     ticker: str
+    # 'live' | 'replay' | 'backfill' — disclosed, deliberately not filtered.
+    # See the note in routers/signals.py.
+    run_kind: Optional[str] = None
 
 
 class SignalsResponse(ApiModel):
@@ -633,6 +636,12 @@ class SimilarMatch(ApiModel):
     return_pct: Optional[float] = None
     return_5min: Optional[float] = None
     return_20min: Optional[float] = None
+    # Disclosed for the same reason as SignalRow.run_kind: this endpoint
+    # returns individual historical_signals rows, and the decision not to
+    # filter the corpus only holds if a consumer can see which rows are
+    # backfilled. The first revision added the field to the list endpoint
+    # and missed this one (Codex on #1098).
+    run_kind: Optional[str] = None
 
 
 class SimilarResponse(ApiModel):
@@ -1332,6 +1341,15 @@ class InsightHistoryRow(ApiModel):
     conviction: Optional[str] = None
     thesis: Optional[str] = None
     cost_usd: Optional[float] = None
+    # 'live' | 'replay' | 'backfill'. The History tab is the one insights
+    # surface that legitimately WANTS backfilled reports — that is what
+    # scripts/generate_historical_report.py exists to populate — so it is
+    # not filtered to live. It is disclosed instead: 70 of 807 production
+    # rows were generated after the fact (measured 2026-09-14) and the tab
+    # presented them identically to a report published that morning. An
+    # unread field is not disclosure (CLAUDE.md §3.7.1), so the UI must
+    # label a non-live row.
+    run_kind: Optional[str] = None
 
 
 class InsightHistoryResponse(ApiModel):

@@ -3716,6 +3716,17 @@
             "title": "Id",
             "type": "string"
           },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
           "thesis": {
             "anyOf": [
               {
@@ -7289,6 +7300,17 @@
             "title": "Report",
             "type": "object"
           },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
           "ticker": {
             "title": "Ticker",
             "type": "string"
@@ -8003,6 +8025,17 @@
             ],
             "title": "Rsi"
           },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
           "score": {
             "anyOf": [
               {
@@ -8233,6 +8266,17 @@
               }
             ],
             "title": "Rsi"
+          },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
           },
           "score": {
             "anyOf": [

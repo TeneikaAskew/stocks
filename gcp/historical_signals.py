@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 # server-side via the column DEFAULT, but we always send it explicitly
 # from the application layer so the value is auditable in CI logs.
 COLS = (
+    # Provenance, same three-value taxonomy as trades / signal_alerts
+    # (audit 2026-09-14). 1,553,629 of 1,708,932 production rows were
+    # written more than 7 days after the signal they describe, and
+    # /api/signals served them alongside same-day rows with no way to
+    # tell them apart.
+    'run_kind',
     'ticker',
     'entry_time',
     'strategy',
@@ -123,7 +129,8 @@ def delete_for_ticker(ticker: str, strategy: Optional[str] = None) -> int:
     return n
 
 
-def bulk_insert(df: pd.DataFrame, chunk_size: int = 1000) -> tuple[int, int]:
+def bulk_insert(df: pd.DataFrame, chunk_size: int = 1000,
+                run_kind: str = 'live') -> tuple[int, int]:
     """Insert rows from ``df`` with ON CONFLICT DO NOTHING.
 
     Returns ``(attempted, inserted)``. Column names must match the table
@@ -145,6 +152,12 @@ def bulk_insert(df: pd.DataFrame, chunk_size: int = 1000) -> tuple[int, int]:
     # tolerates missing columns by filling NaN — required so legacy
     # callers + tests that don't yet emit the Phase 1 / 1.5 enrichment
     # columns still write rows (the columns are nullable in the schema).
+    # Stamped here rather than left to the caller: reindex would fill a
+    # missing run_kind with NaN, and NOT NULL would then reject the whole
+    # chunk. An explicit column on the frame wins, so a caller that
+    # already knows the kind per row keeps control.
+    if 'run_kind' not in df.columns:
+        df = df.assign(run_kind=run_kind)
     df = df.reindex(columns=list(COLS)).copy()
     if 'extra' in df.columns:
         df['extra'] = df['extra'].apply(

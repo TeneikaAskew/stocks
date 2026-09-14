@@ -509,19 +509,19 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
 | `GET` | `/api/health` | [`platform/api/main.py:270`](../../../platform/api/main.py#L270) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:158`](../../../platform/api/routers/health.py#L158) | Return the cached freshness report (see freshness_report_dict). |
-| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1083`](../../../platform/api/routers/insights.py#L1083) | Stream a Gemini response for the given mode and message. |
-| `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:733`](../../../platform/api/routers/insights.py#L733) | Return the most recent InsightReport for the ticker. |
-| `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:762`](../../../platform/api/routers/insights.py#L762) | Return a scannable list of recent reports for the ticker. |
-| `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:810`](../../../platform/api/routers/insights.py#L810) | Enqueue a fresh pipeline run for the ticker. |
-| `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:772`](../../../platform/api/routers/insights.py#L772) | Return a single insight report by row id. |
-| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:934`](../../../platform/api/routers/insights.py#L934) | Poll the status of a refresh run. |
-| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:513`](../../../platform/api/routers/insights.py#L513) | Search for tickers by keyword (company name, symbol, etc). |
-| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:528`](../../../platform/api/routers/insights.py#L528) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
-| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:559`](../../../platform/api/routers/insights.py#L559) | Return peer tickers from FinViz (cached). |
-| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:548`](../../../platform/api/routers/insights.py#L548) | Return latest price/volume from AV GLOBAL_QUOTE. |
-| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:678`](../../../platform/api/routers/insights.py#L678) | Return today's ranked candidate tickers with score breakdowns. |
-| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:568`](../../../platform/api/routers/insights.py#L568) | Add a ticker to the watchlist and return its info + quote. |
-| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:645`](../../../platform/api/routers/insights.py#L645) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
+| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1112`](../../../platform/api/routers/insights.py#L1112) | Stream a Gemini response for the given mode and message. |
+| `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:762`](../../../platform/api/routers/insights.py#L762) | Return the most recent InsightReport for the ticker. |
+| `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:791`](../../../platform/api/routers/insights.py#L791) | Return a scannable list of recent reports for the ticker. |
+| `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:839`](../../../platform/api/routers/insights.py#L839) | Enqueue a fresh pipeline run for the ticker. |
+| `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:801`](../../../platform/api/routers/insights.py#L801) | Return a single insight report by row id. |
+| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:963`](../../../platform/api/routers/insights.py#L963) | Poll the status of a refresh run. |
+| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:542`](../../../platform/api/routers/insights.py#L542) | Search for tickers by keyword (company name, symbol, etc). |
+| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:557`](../../../platform/api/routers/insights.py#L557) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
+| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:588`](../../../platform/api/routers/insights.py#L588) | Return peer tickers from FinViz (cached). |
+| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:577`](../../../platform/api/routers/insights.py#L577) | Return latest price/volume from AV GLOBAL_QUOTE. |
+| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:707`](../../../platform/api/routers/insights.py#L707) | Return today's ranked candidate tickers with score breakdowns. |
+| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:597`](../../../platform/api/routers/insights.py#L597) | Add a ticker to the watchlist and return its info + quote. |
+| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:674`](../../../platform/api/routers/insights.py#L674) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
 | `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:915`](../../../platform/api/routers/journal.py#L915) | Read-only teaching "Examples" — the UNION of the admin's own journal |
 | `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1366`](../../../platform/api/routers/journal.py#L1366) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
 | `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1511`](../../../platform/api/routers/journal.py#L1511) | Insert the caller-selected `PairedTrade`s from a preview. |
@@ -550,7 +550,7 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../../../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:145`](../../../platform/api/routers/profile.py#L145) |  |
 | `PUT` | `/api/me/profile` | [`platform/api/routers/profile.py:162`](../../../platform/api/routers/profile.py#L162) | Upsert the provided subset of fields and return the full stored row. |
-| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:528`](../../../platform/api/routers/dashboard.py#L528) | PHASE 3 — read-only, feature-flagged movement statement. |
+| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:530`](../../../platform/api/routers/dashboard.py#L530) | PHASE 3 — read-only, feature-flagged movement statement. |
 | `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:318`](../../../platform/api/routers/options.py#L318) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
 | `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:753`](../../../platform/api/routers/options.py#L753) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
 | `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:633`](../../../platform/api/routers/options.py#L633) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
@@ -565,8 +565,8 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:306`](../../../platform/api/routers/playbook.py#L306) | Return structured setup cards for a ticker from ``playbook_cards``. |
 | `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:367`](../../../platform/api/routers/playbook.py#L367) | List available phase report files for a given ticker (from GCS). |
 | `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:440`](../../../platform/api/routers/playbook.py#L440) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
-| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:209`](../../../platform/api/routers/signals.py#L209) | Return historical signals for a ticker. |
-| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:309`](../../../platform/api/routers/signals.py#L309) | Return historical signals similar to the supplied bar's conditions. |
+| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:221`](../../../platform/api/routers/signals.py#L221) | Return historical signals for a ticker. |
+| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:321`](../../../platform/api/routers/signals.py#L321) | Return historical signals similar to the supplied bar's conditions. |
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:690`](../../../platform/api/routers/backtest.py#L690) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:84`](../../../platform/api/routers/waitlist.py#L84) |  |
 | `GET` | `/dev` | [`platform/api/main.py:433`](../../../platform/api/main.py#L433) |  |
