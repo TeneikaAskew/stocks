@@ -910,7 +910,7 @@ firewall" — it's "find the 443-based escape hatch for this operation."
 
 | Operation | Mechanism | Port | Works in sandbox? |
 |---|---|---|---|
-| `gcloud …` (Asset, IAM, Run, SQL admin, Build, Scheduler, Logging) | REST API | 443 | ✅ |
+| `gcloud …` (Asset, IAM, Run, SQL admin, Build, Scheduler, Logging) | REST API | 443 | ✅ — but see **GCP credentials** below: in a Remote/Cowork session bare `gcloud` fails UNAUTHENTICATED until you strip `CLOUDSDK_AUTH_ACCESS_TOKEN` |
 | `gh …` (GitHub: PRs, issues, runs, workflows, secrets, releases) | REST + GraphQL API | 443 | ✅ |
 | `gcloud secrets versions access` | Secret Manager API | 443 | ✅ |
 | `gcloud run jobs execute` / `deploy` (job itself runs in GCP, not the sandbox) | Cloud Run control-plane API | 443 | ✅ |
@@ -994,6 +994,105 @@ you need a 443-based intermediary.** The two intermediaries this repo has
 already wired up are `./scripts/db_query_cr.sh` (for ad-hoc SQL) and Cloud Run Jobs (for
 anything else that needs production network access — they're triggered from
 443 but execute with full GCP networking).
+
+### GCP credentials — the exported token is fake, the credential underneath is real
+
+**You have working GCP access. The first `gcloud` command you run will tell you
+that you don't. Do not believe it, and do not start designing around "no GCP
+access" — strip one environment variable instead.**
+
+Measured 2026-09-14 in a Claude Code Remote session. The failure looks final:
+
+```
+$ gcloud projects describe adept-mountain-474619-d4
+ERROR: (gcloud.projects.describe) UNAUTHENTICATED: Request had invalid
+authentication credentials. ... This command is authenticated with an access
+token from the CLOUDSDK_AUTH_ACCESS_TOKEN environment variable.
+                                          ^^^ the whole diagnosis is in this clause
+
+$ env -u CLOUDSDK_AUTH_ACCESS_TOKEN gcloud projects describe adept-mountain-474619-d4
+adept-mountain-474619-d4
+```
+
+The session exports `CLOUDSDK_AUTH_ACCESS_TOKEN` as a **14-character
+placeholder** (same harness pattern as `GH_TOKEN`/`GITHUB_TOKEN`, see *GitHub
+API access* below). gcloud prefers that variable over everything else, so it
+sends a garbage bearer token and never reaches the real credential. The
+`claude-web@` service-account credential is already activated in gcloud's
+store and works fine — `gcloud auth list` shows it as ACTIVE the whole time,
+which is why "the account looks fine but every call 401s" is the signature of
+this problem and not of a revoked key.
+
+#### What needs the prefix and what doesn't
+
+| Path | bare | `env -u CLOUDSDK_AUTH_ACCESS_TOKEN …` |
+|---|---|---|
+| `gcloud …` (including `gcloud storage`) | ❌ UNAUTHENTICATED | ✅ |
+| `bq …` | ❌ | ✅ |
+| `gsutil …` | ✅ (ignores the variable — different auth path) | ✅ |
+| `./scripts/db_query_cr.sh` | ✅ **self-heals** | ✅ (prefix is redundant) |
+
+`db_query_cr.sh` already probes the API and drops the value only when it is
+provably a placeholder, never when it is a real-but-expired token — read the
+comment at `scripts/db_query_cr.sh:102-140` before copying that logic
+anywhere, because "expired credential" and "never was a credential" must not
+be treated alike: silently falling back to a different, possibly more
+privileged principal on a `--commit` run means writes executed as somebody
+else.
+
+#### You cannot fix this once
+
+The variable is re-seeded into **every** new Bash invocation — shell state does
+not persist between tool calls, so `unset` in one call does nothing for the
+next. There is no one-time fix from inside a session; prefix every `gcloud`
+and `bq` call. If a long script shells out to `gcloud` internally, prefix the
+script.
+
+#### What this identity can and cannot do
+
+`claude-web@adept-mountain-474619-d4.iam.gserviceaccount.com` holds
+`roles/editor`, `roles/iam.serviceAccountUser`, `roles/logging.configWriter`,
+`roles/secretmanager.secretAccessor` (read 2026-09-14). Practical limits, so
+you stop guessing at a 403:
+
+- **No `roles/owner`** → cannot `setIamPolicy`. Project-level IAM grants and
+  service-account self-bindings are owner-only; `deploy.sh` handles this by
+  checking, trying, then printing the owner command (`_schedule_min_instances`,
+  `setup_insight_tasks_queue`). Never write an unconditional
+  `add-iam-policy-binding` into a deploy path: the script runs under
+  `set -euo pipefail` and it will abort the whole deploy for everyone.
+- **No `roles/iam.serviceAccountTokenCreator`** → cannot impersonate
+  `trading-runner@`. What that SA can do is not something you can borrow.
+- **Reading IAM policy is not uniform.** Project IAM reads fine
+  (`gcloud projects get-iam-policy`); sub-resource policy reads can 403
+  (`gcloud tasks queues get-iam-policy` → `PERMISSION_DENIED` on
+  `cloudtasks.queues.getIamPolicy`). "I could not read it" is not "it is not
+  there" — say which one you mean.
+- **Secret Manager holds no second GCP key.** Checked the full secret list;
+  there is no more-privileged SA credential to escalate to. `claude-web@` is
+  the only GCP identity in a session.
+- **Python client libraries do not auto-authenticate.** There is no ADC file
+  and `GOOGLE_APPLICATION_CREDENTIALS` is unset, so `google.cloud.*` in a
+  local script finds no credentials even while `gcloud` works. For REST from
+  Python, mint a token: `env -u CLOUDSDK_AUTH_ACCESS_TOKEN gcloud auth
+  print-access-token`. This is *separate* from packages simply not being
+  installed in the sandbox, and the two produce different errors: a missing
+  package is `ModuleNotFoundError` / `cannot import name 'storage' from
+  'google.cloud'`, a missing credential is `DefaultCredentialsError`. Do not
+  diagnose one as the other. Measured 2026-09-14: `google-cloud-tasks` is in
+  `requirements-gcp.txt` only, `google-api-core` is in neither file (it
+  arrives transitively), and `google-cloud-storage` is in both yet was still
+  absent from this sandbox — so check what is importable rather than
+  reasoning from the requirements files.
+
+#### Why this keeps costing time
+
+The evidence was already in the repo — `db_query_cr.sh` handles it, and three
+audit documents under `docs/` use the `env -u` prefix without comment — but it
+was never stated as a rule here, so each session rediscovers it from a raw
+UNAUTHENTICATED and some conclude GCP is simply unavailable. The table above
+said `gcloud … 443 ✅` while bare `gcloud` did not work at all. A tool that is
+reachable is not the same as a tool that is authenticated.
 
 ### Database access
 
