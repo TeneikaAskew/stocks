@@ -59,11 +59,13 @@ The 13 pre-audit issues excluded from the canonical set are
 [#685](https://github.com/TeneikaAskew/stocks/issues/685) (moved to [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) 2026-09-03),
 [#701](https://github.com/TeneikaAskew/stocks/issues/701),
 [#716](https://github.com/TeneikaAskew/stocks/issues/716),
-[#717](https://github.com/TeneikaAskew/stocks/issues/717),
+[#717](https://github.com/TeneikaAskew/stocks/issues/717) (closed 2026-09-11 as duplicate of #716, whose item 1 now carries the return-unit defect),
 [#722](https://github.com/TeneikaAskew/stocks/issues/722),
 [#784](https://github.com/TeneikaAskew/stocks/issues/784) and
-[#808](https://github.com/TeneikaAskew/stocks/issues/808). They are real open work and remain
-mapped here even though no delivery stream owns them — a gap worth an explicit decision.
+[#808](https://github.com/TeneikaAskew/stocks/issues/808). Ten of the thirteen remain real open
+work mapped here even though no delivery stream owns them — a gap worth an explicit decision;
+the other three (#683/#685 moved to solyra, #717 closed as duplicate) are retained as
+historical entries only.
 
 ### Closed duplicate records retained from PR #924
 
