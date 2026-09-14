@@ -78,6 +78,30 @@ def realtime_snapshots(db_engine, clean_db):
     return SNAPS
 
 
+def _marks():
+    """load_realtime_marks against the ephemeral DB.
+
+    `query_fn` must be passed explicitly. Left to its default, the function
+    short-circuits to an empty DataFrame when CLOUD_SQL_CONNECTION_NAME is
+    unset, and the integration environment reaches Postgres over DB_HOST
+    instead, so every assertion below would have run against an empty frame.
+    That guard is a "not configured" branch rather than a swallowed failure,
+    and `estimate_options_pnl` does disclose the consequence by returning
+    data_source='empirical_fallback', so it is left as-is here rather than
+    widened into this PR (CLAUDE.md §3.7, "when you find an existing
+    fallback"). load_realtime_theta_curve has no equivalent guard, which is
+    why it passed while this one silently found nothing.
+    """
+    from gcp.database import query_to_dataframe
+    from scripts.analysis.options_pnl_translation import load_realtime_marks
+
+    return load_realtime_marks(
+        ticker=TICKER, trade_date=VALIDATION_DATE,
+        expiration=VALIDATION_DATE, strike=STRIKE, option_type="call",
+        query_fn=query_to_dataframe,
+    )
+
+
 def test_theta_curve_round_trips_through_real_postgres(realtime_snapshots):
     """load_realtime_theta_curve's SQL survives a real driver and schema."""
     from lib.options_intraday import load_realtime_theta_curve
@@ -95,12 +119,7 @@ def test_theta_curve_round_trips_through_real_postgres(realtime_snapshots):
 
 
 def test_realtime_marks_round_trip(realtime_snapshots):
-    from scripts.analysis.options_pnl_translation import load_realtime_marks
-
-    marks = load_realtime_marks(
-        ticker=TICKER, trade_date=VALIDATION_DATE,
-        expiration=VALIDATION_DATE, strike=STRIKE, option_type="call",
-    )
+    marks = _marks()
     assert not marks.empty
     assert len(marks) == 6
     assert marks["mark"].iloc[0] == pytest.approx(2.50)
@@ -109,47 +128,71 @@ def test_realtime_marks_round_trip(realtime_snapshots):
 
 
 def test_find_mark_at_picks_the_nearest_snapshot(realtime_snapshots):
-    from scripts.analysis.options_pnl_translation import (
-        find_realtime_mark_at, load_realtime_marks,
-    )
+    from scripts.analysis.options_pnl_translation import find_realtime_mark_at
 
-    marks = load_realtime_marks(
-        ticker=TICKER, trade_date=VALIDATION_DATE,
-        expiration=VALIDATION_DATE, strike=STRIKE, option_type="call",
-    )
+    marks = _marks()
     target = datetime.combine(VALIDATION_DATE, datetime.min.time(),
                               tzinfo=timezone.utc) + timedelta(hours=14, minutes=2)
     found = find_realtime_mark_at(marks, target)
-    assert found is not None
-    assert found == pytest.approx(3.20), "14:02 is nearest the 14:00 snapshot"
+    # Returns the matching ROW, and an EMPTY Series (never None) when nothing
+    # is within tolerance, so `is not None` would pass on a miss.
+    assert not found.empty, "expected a snapshot within the 5-min tolerance"
+    assert found["mark"] == pytest.approx(3.20), (
+        "14:02 is 2 min from the 14:00 snapshot and 3 min from 14:05"
+    )
 
 
-def test_pnl_dispatches_on_data_presence_not_on_a_flag(realtime_snapshots, db_engine):
-    """The dispatch that the original script existed to prove: realtime
-    marks present means mark-to-mark, absent means the Greeks-approximation
-    fallback, and the answer says which it used. A fabricated value in
-    either direction would be silent (CLAUDE.md §3.7)."""
-    from scripts.analysis.options_pnl_translation import estimate_options_pnl
+def test_pnl_dispatches_on_data_presence_not_on_a_flag(realtime_snapshots):
+    """The dispatch the original script existed to prove: realtime marks
+    present means mark-to-mark from observed mids, absent means the
+    empirical Greeks approximation, and the answer says which it used.
+    Silently returning one when the caller assumes the other is the
+    CLAUDE.md §3.7 shape.
+
+    Trade: entry 13:35 UTC, 30-min hold, exit 14:05 UTC. The realtime
+    bracket is mark_entry 2.55 and mark_exit 3.00 with a 0.05 spread, so
+    the realized figure is 3.00 - 2.55 - 0.05 = 0.40 and no Greek is used.
+    """
+    import pandas as pd
+    from scripts.analysis.options_pnl_translation import (
+        estimate_options_pnl,
+    )
     from lib.options_intraday import (
         DATA_SOURCE_EMPIRICAL_FALLBACK, DATA_SOURCE_REALTIME,
     )
 
-    entry = datetime.combine(VALIDATION_DATE, datetime.min.time(),
-                             tzinfo=timezone.utc) + timedelta(hours=13, minutes=30)
-    exit_ = entry + timedelta(hours=1)
+    marks = _marks()
+    trade = pd.Series({
+        "trade_date": VALIDATION_DATE,
+        "direction": "CALL",
+        "entry_price": 600.0,
+        "entry_time": datetime.combine(VALIDATION_DATE, datetime.min.time(),
+                                       tzinfo=timezone.utc)
+                      + timedelta(hours=13, minutes=35),
+        "return_pct": 0.005,
+        "hold_min": 30.0,
+        "hhmm": 935,
+    })
+    atm = pd.Series({
+        "strike": STRIKE, "mark": 2.50, "bid": 2.45, "ask": 2.55,
+        "delta": 0.50, "theta": -0.20,
+        "expiration": VALIDATION_DATE, "type": "call",
+    })
 
-    with_data = estimate_options_pnl(
-        ticker=TICKER, trade_date=VALIDATION_DATE, expiration=VALIDATION_DATE,
-        strike=STRIKE, option_type="call", entry_ts=entry, exit_ts=exit_,
-    )
-    assert with_data["data_source"] == DATA_SOURCE_REALTIME
+    realtime = estimate_options_pnl(trade, atm, realtime_marks=marks)
+    assert realtime is not None
+    assert realtime["data_source"] == DATA_SOURCE_REALTIME
+    assert realtime["net_pnl_dollar"] == pytest.approx(0.40, abs=0.01)
+    # Mark-to-mark uses no Greek, and says so with NaN rather than a 0 the
+    # caller could read as "no delta contribution".
+    assert pd.isna(realtime["delta_pnl"])
+    assert pd.isna(realtime["theta_cost"])
 
-    # Same call against a strike with no snapshots must fall back and SAY so.
-    without_data = estimate_options_pnl(
-        ticker=TICKER, trade_date=VALIDATION_DATE, expiration=VALIDATION_DATE,
-        strike=STRIKE + 25.0, option_type="call", entry_ts=entry, exit_ts=exit_,
-    )
-    assert without_data["data_source"] == DATA_SOURCE_EMPIRICAL_FALLBACK
+    fallback = estimate_options_pnl(trade, atm, realtime_marks=None)
+    assert fallback is not None
+    assert fallback["data_source"] == DATA_SOURCE_EMPIRICAL_FALLBACK
+    # 0.5 delta on a 600 * 0.005 underlying move.
+    assert fallback["delta_pnl"] == pytest.approx(1.50, abs=0.01)
 
 
 def test_no_synthetic_contract_markers_leak_into_the_schema():
