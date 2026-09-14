@@ -883,17 +883,18 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
              gates["g4_lift_pass_folds"], "PASS" if gates["g4_pass"] else "FAIL")
     log.info("=" * 70)
 
-    # Pull predictions OUT of fold dicts (they'd bloat the JSON and aren't
-    # needed by downstream consumers of the summary). Upload as a single
-    # CSV per cell-run; analysis scripts read by run_id.
+    # Harvest predictions for the per-cell CSV. They are NOT removed from
+    # the fold dicts here: _persist_predictions_table reads `_predictions`
+    # off each fold further down, so popping at this point starved the SQL
+    # write of every row while the CSV stayed complete (the CSV reads the
+    # harvested list). The pop happens after that call, just before the
+    # summary is serialised -- see _drop_predictions_from_folds below.
     pred_columns = None
     pred_rows: list[tuple] = []
     for f in folds:
         if "_predictions" in f:
             pred_columns = f.get("predictions_columns") or pred_columns
             pred_rows.extend(f["_predictions"])
-            f.pop("_predictions", None)
-            f.pop("predictions_columns", None)
 
     summary = {
         "phase": phase, "ticker": ticker, "tf": tf,
@@ -1000,6 +1001,14 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf,
             label_mode=label_mode, thresholds=thresholds)
+    # Only now that both consumers (the CSV harvest above and
+    # _persist_predictions_table) have read them do the per-bar rows come
+    # off the folds -- they would otherwise bloat the summary JSON by
+    # orders of magnitude.
+    for f in folds:
+        f.pop("_predictions", None)
+        f.pop("predictions_columns", None)
+
     blob = f"{prefix}/walk_forward_{run_id}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved gs://%s/%s",

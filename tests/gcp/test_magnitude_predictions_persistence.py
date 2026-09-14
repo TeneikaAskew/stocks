@@ -247,3 +247,41 @@ def test_predictions_ddl_index_exists():
     )
     assert "magnitude_per_bar_predictions" in PREDICTIONS_DDL_INDEX
     assert "ts DESC" in PREDICTIONS_DDL_INDEX
+
+
+def test_the_walk_forward_pop_happens_after_the_sql_persist():
+    """`_persist_predictions_table` reads `_predictions` off each fold dict.
+
+    The CSV-harvest loop pops that key so it cannot bloat the summary JSON.
+    If the pop runs BEFORE the SQL persist, every fold arrives empty, the
+    persist logs "no per-bar predictions to persist" and returns, and the
+    walk-forward half of magnitude_per_bar_predictions is silently never
+    written. Measured on 2026-09-14: the table held 16,666 rows, all
+    source='inference' and zero source='walk_forward', while the GCS CSVs
+    for the same runs were complete -- the CSV write reads the harvested
+    list, so only the SQL consumer starved.
+    """
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    pop_at = src.index('f.pop("_predictions"')
+    persist_at = src.index("_persist_predictions_table(engine")
+    assert persist_at < pop_at, (
+        "_predictions is popped off the folds before "
+        "_persist_predictions_table reads them; the SQL write silently "
+        "receives zero rows")
+
+
+def test_the_summary_json_never_carries_the_per_bar_predictions():
+    """The pop must still happen before the summary is serialised -- moving
+    it later must not reintroduce the bloat it exists to prevent."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    src = inspect.getsource(mwf.walk_forward)
+    pop_at = src.index('f.pop("_predictions"')
+    dump_at = src.index("json.dumps(summary")
+    assert pop_at < dump_at, (
+        "the summary JSON would be serialised with _predictions still "
+        "attached to every fold")
