@@ -437,6 +437,44 @@ The frontend left this repository in #957 (2026-09-01); `platform/` now holds on
 
 **Test-file sweep (2026-09-03):** every test file deleted by #957 was diffed against solyra's tree. All 27 Vitest files and 25 of 29 Playwright specs landed in solyra (solyra's own tree counts 29 `*.test.*` files because it has since added two); the four that did not: `phase1-charts.spec.ts` deliberately dropped (#958); `api-smoke.spec.ts` and `dev.spec.ts` are stocks-side subjects deleted with no replacement (tracked by [#971](https://github.com/TeneikaAskew/stocks/issues/971) and noted on [#943](https://github.com/TeneikaAskew/stocks/issues/943), both recoverable from `9f28a60^`); `data-pipeline-status.spec.ts` was split — its dashboard widget guard is ported and verified passing in [solyra#29](https://github.com/TeneikaAskew/solyra/pull/29), its live `/api/health/freshness` tests fall under #971. No Solyra-targeted test remains in this repository (`make test-e2e` drives the legacy static sites, not the Solyra frontend).
 
+### Full reverification against origin/main (2026-09-14)
+
+Every open issue in the repository (125 at the start of the pass; 115 after it, one new
+audit finding [#1095](https://github.com/TeneikaAskew/stocks/issues/1095) having been filed
+mid-pass by a concurrent session) was reverified against
+`origin/main` at `ee565e4`, eleven days and 67 commits after the previous baseline —
+including the Wave 1 (#1005) and Wave 2 (#1022) critical-audit remediations, the #994
+fallback closures, and the #1049 timezone centralization. Method: seven parallel
+code-verification passes over the tree (each issue's body re-read, each claimed defect
+re-located or shown absent, file:line evidence recorded), plus live production checks
+(executions `db-query-74kbr` and direct Cloud Run/Scheduler reads). Per-issue evidence is
+in the closing/status comments posted on the issues this date.
+
+**Closed this pass (11), each verified at HEAD and where applicable in production:**
+[#820](https://github.com/TeneikaAskew/stocks/issues/820) (script deleted; `run_kind` live: 432 alerts + 412 trades marked `backfill`),
+[#825](https://github.com/TeneikaAskew/stocks/issues/825) (typed unavailable envelope; nothing was ever persisted),
+[#829](https://github.com/TeneikaAskew/stocks/issues/829) / [#831](https://github.com/TeneikaAskew/stocks/issues/831) (deploy reachability + class tests),
+[#833](https://github.com/TeneikaAskew/stocks/issues/833) (retired in deploy.sh; live scheduler deleted),
+[#838](https://github.com/TeneikaAskew/stocks/issues/838) (admin token gate removed entirely, role-based now),
+[#843](https://github.com/TeneikaAskew/stocks/issues/843) (trade_logger coverage landed),
+[#898](https://github.com/TeneikaAskew/stocks/issues/898) / [#900](https://github.com/TeneikaAskew/stocks/issues/900) (replay RTH scope unconditional; session-keyed brief cache),
+[#904](https://github.com/TeneikaAskew/stocks/issues/904) (EDT hardcode replaced by zoneinfo with DST tests),
+[#1019](https://github.com/TeneikaAskew/stocks/issues/1019) (superseded by lib/eastern_time.py import-time assertion).
+With #818, #861 and #841 already closed, **14 of the 105 canonical findings are now resolved (13) or relocated (1, #868); 91 remain open in stocks plus [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), 92 open canonical in total.**
+
+**Code fixed on main, blocked only on recorded operator/production steps (keep open):**
+#812 (recompute the 54 contaminated `gamma_levels_eod` rows), #819 (affected-replay-rows statement), #821 (job deletion + Tier re-derivation), #822 (`INSIGHT_AS_OF` before/after replay), #823 (re-derive put re-anchor shadow rows), #824 (four `backfill-ticker` re-runs), #830 (live service converged, verified today — token **rotation** still unconfirmed), #834 (live job on the managed `:research` tag, verified today), #928 (historical cohort disposition). #835's operator step has **not** run: `fetch-fred-rates` is still pinned to `trading-system:spx-removal-fred-20260516` (verified live today).
+
+**Partially fixed:** #815 (decision recorded, reopening condition coupled to #814), #816 (shadow columns populating; loss limit still realized-only, #940 still gates activation), #826 (grid gated, but `gamma_levels_eod` has no coverage column and `net_gamma or 0.0` persists), #828 (region rewritten, two broad catches remain, re-read never recorded), #847 (analytics covered via #999), #852 (lint landed, 19 standalone arms missing), #858 (C8 fixed, C5 window mismatch remains), #859 (D8 converged, D4-D7 still drifted per the 09-07 snapshot), #873 (persist path on replay clock; `_check_exits` still wall-clock), #910 (label contract is one slice), #914 (tz/DST centralized; holidays misplaced per #1076, sessions/half-days not centralized), #925/#926 (strict path exists, ~110 permissive callers remain, tracked in #1047), #929 (frame-level fixed; two wall-clock substitutions survive), #716/#722 (one open item each), #971 (staging deploy curls `/api/health`, which touches no DB).
+
+**Still valid, defect verified present at HEAD:** #813, #814, #817, #827, #832, #836, #837, #839, #840, #842, #844, #845, #846, #848, #849, #850, #851, #853, #854, #855, #856, #857, #860, #866, #869, #871, #872, #874, #875, #876, #878, #880, #884, #886, #888, #890, #892, #894, #896, #897, #899, #901, #902, #903, #905 (needs the prospective machinery), #906, #907, #908, #909, #911, #912, #915, #917, #918, #920, #921, #922, #923, #940, #943, plus pre-audit #249, #285, #380, #442, #607, #701, #784 and post-audit #1017, #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091. #919 needs a live fed-status query. Notably, none of the recent merges touched the gamma-math family (#871/#872/#876/#878/#880/#896), the indicator contracts (#870/#892/#894), or the magnitude leakage paths (#874/#875/#890).
+
+**Time-sensitive state re-measured (2026-09-14):**
+- [#808](https://github.com/TeneikaAskew/stocks/issues/808): target date passed. Suppress states now n=36, mean **+0.0053** (sign flipped positive; every negative day predates the ~09-08 #823 deploy, every positive day follows it — a labeling-regime confound). Verdict under the issue's own rule: do not flip; accumulate under the post-#823 cohort (n=14 so far). Reading posted on the issue.
+- [#862](https://github.com/TeneikaAskew/stocks/issues/862): `exit_config_overrides` still `calibration_date = 2026-05-08` (129 days); the 180-day guard trips **2026-11-04**, and since #1022 a guard trip fails closed rather than silently degrading.
+- [#863](https://github.com/TeneikaAskew/stocks/issues/863): `earnings_options_strategy_winners` still last computed 2026-05-22 (115 days); the posting guard (#938) holds but the restore-or-retire decision is unmade, and the `earnings-long-watchlist` job is failing live (#1091).
+- [#1084](https://github.com/TeneikaAskew/stocks/issues/1084) / [#1091](https://github.com/TeneikaAskew/stocks/issues/1091): both jobs re-verified failing on their latest executions (09-12 and 09-13); real, current operational issues.
+
 ### Proposed grouped remediation PRs
 
 The 105 canonical issues partition into the following candidate delivery streams (each issue appears exactly once) — originally 18 streams; the 2026-09-03 PR-O split into a stocks side and a solyra side makes **19 rows**, the issue partition itself unchanged. Fifteen are intentionally multi-issue groups; four are single-issue rows (PR-E, PR-Q, PR-R, and the split-out PR-O2) because their risk, refactor, or repository boundary should not be mixed with other work. These are proposed PR manifests, not already-open pull requests.
