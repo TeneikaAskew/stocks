@@ -4167,3 +4167,106 @@ ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS ancestors TEXT NOT NUL
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS schema_sha256 TEXT NOT NULL DEFAULT '';
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS forced BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
+
+-- ── Provenance on the three remaining API-served analytical tables ──────────
+-- Audit 2026-09-14, follow-up to #820 R3. The run_kind convention closed
+-- signal_alerts and trades; the same defect shape survived on every other
+-- table a router serves as ground truth. Measured in production that day:
+--
+--   historical_signals  1,553,629 of 1,708,932 rows (90.9%) were written
+--                       more than 7 days after the signal they describe.
+--                       One hour alone, 2026-04-26 02:00 UTC, wrote
+--                       1,090,746 rows covering 2017-02-01 .. 2024-06-28.
+--   insight_reports     70 of 807 reports were generated more than 2 days
+--                       after their as_of date (scripts/generate_historical_report.py).
+--   premarket_analysis  74 of 395 rows have analysis_ts on a later calendar
+--                       day than analysis_date; 70 are more than a full day
+--                       later and 50 more than a week. An earlier revision
+--                       of this comment claimed the table carried no
+--                       timestamp at all. That was wrong: analysis_ts
+--                       TIMESTAMPTZ NOT NULL DEFAULT NOW() has been on the
+--                       table since line 1341, and premarket_analysis_history
+--                       already treats it as the original write time. The
+--                       claim came from a column-name scan whose list did not
+--                       include it, i.e. a proxy quoted without being checked
+--                       against a known case (CLAUDE.md §3.11). Caught by
+--                       Codex on #1098.
+--
+-- None of it is fabricated: the rows are computed from real bars and real
+-- model runs. The defect is that a backfill write and a live write are
+-- indistinguishable once they land, so no reader can choose, which is the
+-- CLAUDE.md §3.7 rule (a value the caller cannot tell apart from a
+-- legitimate one) applied to provenance rather than to a number.
+--
+-- Marking the existing rows is a separate, count-checked step per table:
+-- gcp/queries/mark_backfill_provenance_2026-09-14.sql.
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS run_kind VARCHAR(16) NOT NULL DEFAULT 'live';
+
+ALTER TABLE insight_reports
+    ADD COLUMN IF NOT EXISTS run_kind VARCHAR(16) NOT NULL DEFAULT 'live';
+
+-- No written_at here: analysis_ts already is the write timestamp. Adding a
+-- second one would have created two columns meaning the same thing, with the
+-- new one wrong on every pre-existing row and stale after any update.
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS run_kind VARCHAR(16) NOT NULL DEFAULT 'live';
+
+CREATE INDEX IF NOT EXISTS idx_historical_signals_run_kind
+    ON historical_signals(run_kind) WHERE run_kind != 'live';
+CREATE INDEX IF NOT EXISTS idx_insight_reports_run_kind
+    ON insight_reports(run_kind) WHERE run_kind != 'live';
+CREATE INDEX IF NOT EXISTS idx_premarket_analysis_run_kind
+    ON premarket_analysis(run_kind) WHERE run_kind != 'live';
+
+-- Same taxonomy as trades / signal_alerts. A typo would exclude the row
+-- from every reader forever with no error anywhere.
+--
+-- Created only when ABSENT, unlike the trades / signal_alerts block above
+-- which drops and re-adds on every apply. Adding a CHECK validates every
+-- existing row under an ACCESS EXCLUSIVE lock, and schema.sql is applied on
+-- every schema-touching push: on trades (3k rows) that is unmeasurable, on
+-- historical_signals (1,708,932 rows) it would rescan the table and block
+-- the API's readers and the signals job's writers on each deploy, forever,
+-- for a constraint that cannot have changed (Codex on #1098). Changing the
+-- allowed set later therefore needs its own migration, which is the correct
+-- cost: it is a data change, not a redefinition.
+DO $$
+DECLARE
+    t         TEXT;
+    live_def  TEXT;
+    -- Verified against production 2026-09-14 (db-query mkmkd): this is
+    -- exactly what pg_get_constraintdef returns for the identically-shaped
+    -- trades_run_kind_check and signal_alerts_run_kind_check on their
+    -- VARCHAR columns. A wrong expectation here would raise on EVERY apply,
+    -- so it is measured rather than guessed, and
+    -- tests/integration/test_run_kind_constraints.py applies this block
+    -- twice against a real Postgres to prove it does not.
+    want_def  CONSTANT TEXT :=
+        'CHECK (((run_kind)::text = ANY ((ARRAY[''live''::character varying, ''replay''::character varying, ''backfill''::character varying])::text[])))';
+BEGIN
+    FOREACH t IN ARRAY ARRAY['historical_signals', 'insight_reports', 'premarket_analysis']
+    LOOP
+        SELECT pg_get_constraintdef(oid) INTO live_def
+          FROM pg_constraint WHERE conname = t || '_run_kind_check';
+
+        IF live_def IS NULL THEN
+            EXECUTE format(
+                'ALTER TABLE %I ADD CONSTRAINT %I CHECK (run_kind IN (''live'', ''replay'', ''backfill''))',
+                t, t || '_run_kind_check');
+        ELSIF live_def <> want_def THEN
+            -- Name-only matching would accept a stale definition forever:
+            -- edit the value set here, apply to a database that already has
+            -- the constraint, and the apply succeeds while the old check
+            -- survives, so the first writer using the new value fails at
+            -- runtime instead (Codex on #1098 round 2). Raising forces the
+            -- one-time migration this block promises rather than silently
+            -- accepting divergence, and still never rescans on a match.
+            RAISE EXCEPTION
+                'constraint %I has drifted from schema.sql. live: %  wanted: %  '
+                'Write a migration that drops and re-adds it (a rescan of this '
+                'table, deliberately explicit) rather than editing this block.',
+                t || '_run_kind_check', live_def, want_def;
+        END IF;
+    END LOOP;
+END $$;

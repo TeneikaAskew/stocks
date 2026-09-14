@@ -107,7 +107,8 @@ async def dashboard_brief(
             df = await run_in_threadpool(
                 _query_fn,
                 "SELECT * FROM premarket_analysis "
-                "WHERE ticker = :ticker AND analysis_date <= :date "
+                "WHERE ticker = :ticker AND run_kind = 'live' "
+                "AND analysis_date <= :date "
                 "ORDER BY analysis_date DESC LIMIT 1",
                 {"ticker": ticker, "date": date},
             )
@@ -115,7 +116,8 @@ async def dashboard_brief(
             df = await run_in_threadpool(
                 _query_fn,
                 "SELECT * FROM premarket_analysis "
-                "WHERE ticker = :ticker ORDER BY analysis_date DESC LIMIT 1",
+                "WHERE ticker = :ticker AND run_kind = 'live' "
+                "ORDER BY analysis_date DESC LIMIT 1",
                 {"ticker": ticker},
             )
         if not df.empty:

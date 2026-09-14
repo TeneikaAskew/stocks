@@ -81,7 +81,9 @@ def get_premarket_bias(ticker: str, target_date: _date) -> dict:
                calls_trigger_price, calls_t1_price, calls_stop_price,
                puts_trigger_price, puts_t1_price, puts_stop_price
           FROM premarket_analysis
-         WHERE ticker = :ticker AND analysis_date = :d
+         -- run_kind='live': this changes signal scoring, so a BRIEF_AS_OF
+         -- replay for today must not reach it (Codex on #1098 round 2).
+         WHERE ticker = :ticker AND analysis_date = :d AND run_kind = 'live'
          LIMIT 1
         """
     )
