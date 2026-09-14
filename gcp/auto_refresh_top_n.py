@@ -38,7 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.agents.ranker import rank_tickers  # noqa: E402
-from gcp.insight_tasks import enqueue_insight_task  # noqa: E402
+from gcp.insight_tasks import EnqueueOutcome, enqueue_insight_task  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +46,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("auto-refresh-top-n")
+
+# Documented in docs/plans/MORNING_RUN_PROTECTION_PLAN.md alongside
+# run_kind='auto_refresh'. Forwarded on every enqueue so the child can
+# classify itself; the prefix (not the exact string) is what
+# _resolve_run_kind_and_update matches.
+AUTO_REFRESH_TRIGGERED_BY = "cron:auto-refresh-top-n"
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +209,9 @@ def main() -> int:
     enqueued: list[tuple[str, str]] = []
     skipped_cached: list[str] = []
     enqueue_failures: list[str] = []
+    # Tracked apart from failures: an unknown outcome is not a failure,
+    # and counting it as one would under-report tickers that may have run.
+    unknown_outcomes: list[str] = []
 
     for entry in top:
         ticker = entry["ticker"]
@@ -230,21 +239,43 @@ def main() -> int:
             enqueue_failures.append(ticker)
             continue
 
-        if enqueue_insight_task(run_id, ticker):
+        outcome = enqueue_insight_task(
+            run_id,
+            ticker,
+            # Container overrides replace the child's env, so this is the
+            # only thing that tells the child it was pre-warmed rather than
+            # hand-run. _resolve_run_kind_and_update maps it to
+            # run_kind='auto_refresh', the value MORNING_RUN_PROTECTION_PLAN
+            # defines for this producer.
+            triggered_by=AUTO_REFRESH_TRIGGERED_BY,
+        )
+        if outcome == EnqueueOutcome.ENQUEUED:
             enqueued.append((ticker, run_id))
             logger.info("  %s: enqueued run_id=%s", ticker, run_id)
-        else:
-            # The row was inserted 'queued' a moment ago and nothing will
-            # ever pick it up, so close it out. Leaving it queued shows
-            # operators and the UI a run that is permanently pending while
+        elif outcome == EnqueueOutcome.NOT_ENQUEUED:
+            # Definitively refused, so the row inserted 'queued' a moment
+            # ago will never be picked up. Close it out: leaving it queued
+            # shows operators and the UI a permanently pending run while
             # the job exits 0 and Cloud Run never retries.
             _mark_run_failed(run_id, "Cloud Tasks enqueue failed")
             enqueue_failures.append(ticker)
+        else:
+            # UNKNOWN: a child may be running this right now. Marking it
+            # failed would label a live run dead, so leave it queued and
+            # count it separately from a real failure.
+            unknown_outcomes.append(ticker)
+            logger.error(
+                "  %s: enqueue outcome unknown for run_id=%s - left queued, "
+                "not marked failed (a child may be running it)",
+                ticker, run_id,
+            )
 
     # 4. Summary
     logger.info(
-        "summary: enqueued=%d cached_skipped=%d failed=%d total_top_n=%d",
-        len(enqueued), len(skipped_cached), len(enqueue_failures), len(top),
+        "summary: enqueued=%d cached_skipped=%d failed=%d unknown=%d "
+        "total_top_n=%d",
+        len(enqueued), len(skipped_cached), len(enqueue_failures),
+        len(unknown_outcomes), len(top),
     )
 
     # Exit 0 even on partial failures — one ticker's enqueue failure

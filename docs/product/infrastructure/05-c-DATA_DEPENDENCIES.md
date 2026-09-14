@@ -291,18 +291,18 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_insider_transactions.py`](../../../gcp/fetchers/fetch_insider_transactions.py) — line [227](../../../gcp/fetchers/fetch_insider_transactions.py#L227)
 
 ### `insight_reports`
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [317](../../../gcp/insight_pipeline_job.py#L317), [348](../../../gcp/insight_pipeline_job.py#L348)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [335](../../../gcp/insight_pipeline_job.py#L335), [366](../../../gcp/insight_pipeline_job.py#L366)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [397](../../../platform/api/routers/insights.py#L397)
 - [`scripts/generate_historical_report.py`](../../../scripts/generate_historical_report.py) — line [67](../../../scripts/generate_historical_report.py#L67)
 
 ### `insight_reports_history`
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [276](../../../gcp/insight_pipeline_job.py#L276)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [294](../../../gcp/insight_pipeline_job.py#L294)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [169](../../../scripts/backfill_history_tables.py#L169)
 
 ### `insight_runs`
-- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [99](../../../gcp/auto_refresh_top_n.py#L99), [126](../../../gcp/auto_refresh_top_n.py#L126)
+- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [105](../../../gcp/auto_refresh_top_n.py#L105), [132](../../../gcp/auto_refresh_top_n.py#L132)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [377](../../../gcp/discord_interactions/main.py#L377)
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [192](../../../gcp/insight_pipeline_job.py#L192), [215](../../../gcp/insight_pipeline_job.py#L215), [221](../../../gcp/insight_pipeline_job.py#L221), [230](../../../gcp/insight_pipeline_job.py#L230)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [197](../../../gcp/insight_pipeline_job.py#L197), [220](../../../gcp/insight_pipeline_job.py#L220), [226](../../../gcp/insight_pipeline_job.py#L226), [235](../../../gcp/insight_pipeline_job.py#L235)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [310](../../../platform/api/routers/insights.py#L310), [363](../../../platform/api/routers/insights.py#L363), [369](../../../platform/api/routers/insights.py#L369), [378](../../../platform/api/routers/insights.py#L378)
 
 ### `intraday_flow_15m`
@@ -615,10 +615,10 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [148](../../../scripts/backfill_watchlist_data.py#L148)
 
 ### `insight_reports`
-- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [71](../../../gcp/auto_refresh_top_n.py#L71)
+- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [77](../../../gcp/auto_refresh_top_n.py#L77)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [357](../../../gcp/discord_interactions/main.py#L357)
 - [`gcp/insight_discord_push.py`](../../../gcp/insight_discord_push.py) — line [86](../../../gcp/insight_discord_push.py#L86), [97](../../../gcp/insight_discord_push.py#L97)
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [372](../../../gcp/insight_pipeline_job.py#L372)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [390](../../../gcp/insight_pipeline_job.py#L390)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [284](../../../lib/strategies/insight_cache.py#L284)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [211](../../../platform/api/routers/insights.py#L211), [223](../../../platform/api/routers/insights.py#L223), [244](../../../platform/api/routers/insights.py#L244), [280](../../../platform/api/routers/insights.py#L280)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [547](../../../scripts/audit_data_freshness.py#L547), [548](../../../scripts/audit_data_freshness.py#L548), [707](../../../scripts/audit_data_freshness.py#L707)

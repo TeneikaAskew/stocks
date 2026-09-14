@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from enum import Enum
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROJECT = "adept-mountain-474619-d4"
 DEFAULT_REGION = "us-east1"
 DEFAULT_QUEUE = "insight-pipeline-queue"
+
+
+class EnqueueOutcome(str, Enum):
+    """Three outcomes, because two is a lie.
+
+    A boolean forces every transport failure to be reported as either
+    "queued" or "not queued", and the caller acts on that: NOT_ENQUEUED
+    means "run it here instead". When the truth is "I do not know", both
+    answers are wrong in a different direction, and the wrong one costs a
+    duplicate concurrent pipeline on a single run_id.
+
+    * ENQUEUED      - a child will run this. Do nothing else.
+    * NOT_ENQUEUED  - definitively nothing was accepted. Safe to run the
+                      work another way, and safe to mark the run failed.
+    * UNKNOWN       - a child MAY run this. Do not run it again and do not
+                      mark it failed; leave it queued and surface it.
+    """
+
+    ENQUEUED = "enqueued"
+    NOT_ENQUEUED = "not_enqueued"
+    UNKNOWN = "unknown"
 
 
 def build_child_env(
@@ -91,18 +113,32 @@ def enqueue_insight_task(
     """Enqueue one Cloud Tasks message that runs `insight-pipeline` in
     on-demand mode for a single ticker.
 
-    Returns True on a successful enqueue, False on any failure. The
-    caller decides what to do about a False — every current caller
-    falls back to running the ticker in-process and says so in the log,
-    so a Cloud Tasks outage degrades throughput rather than dropping a
-    report on the floor.
+    Returns an `EnqueueOutcome`. Only `NOT_ENQUEUED` licenses the caller
+    to run the work another way: `UNKNOWN` means a child may already be
+    running it, and acting on that as if it were a failure is how one
+    run_id ends up executing twice.
     """
     try:
         from google.cloud import tasks_v2  # type: ignore
         from google.api_core import exceptions as gexc  # type: ignore
     except ImportError:
+        # Nothing was sent, so this is definitive.
         logger.error("google-cloud-tasks not installed - cannot enqueue %s", ticker)
-        return False
+        return EnqueueOutcome.NOT_ENQUEUED
+
+    # Errors that are the SERVER saying no. Each one is returned instead of
+    # accepting the task, so nothing is queued and falling back is safe.
+    # Anything not listed here is treated as ambiguous, which is the
+    # conservative direction: a mis-classified definitive error costs one
+    # skipped report, a mis-classified ambiguous error costs a duplicate run.
+    _DEFINITIVE_REJECTIONS = (
+        gexc.PermissionDenied,      # SA lacks cloudtasks.tasks.create
+        gexc.Unauthenticated,       # no usable credential
+        gexc.InvalidArgument,       # malformed task/name/body
+        gexc.NotFound,              # the queue does not exist
+        gexc.FailedPrecondition,    # queue disabled or paused
+        gexc.ResourceExhausted,     # queue rate limit rejected the request
+    )
 
     project = os.environ.get("GCP_PROJECT_ID", DEFAULT_PROJECT)
     region = os.environ.get("GCP_REGION", DEFAULT_REGION)
@@ -155,34 +191,47 @@ def enqueue_insight_task(
         }
         try:
             client.create_task(parent=parent, task=task)
-            return True
+            return EnqueueOutcome.ENQUEUED
         except gexc.AlreadyExists:
-            # Someone already enqueued this exact run. Nothing to do, and
-            # reporting failure here would trigger a duplicate in-process run.
+            # The deterministic name already exists, so this exact run is
+            # queued. Reporting failure here would trigger a duplicate.
             logger.warning("task for %s (%s) already enqueued", ticker, run_id)
-            return True
-        except Exception as first:
-            # Ambiguous: the server may have accepted the task before the
-            # error reached us. Ask again under the same name -- an
-            # AlreadyExists answer proves the first attempt landed.
-            logger.warning(
-                "Cloud Tasks enqueue for %s failed (%s); re-checking by name",
-                ticker, first,
+            return EnqueueOutcome.ENQUEUED
+        except _DEFINITIVE_REJECTIONS as rejected:
+            # The server answered, and the answer was "no". Nothing was
+            # accepted, so running this ticker in-process cannot duplicate.
+            logger.error(
+                "Cloud Tasks rejected %s (%s): %s",
+                ticker, type(rejected).__name__, rejected,
             )
-            try:
-                client.create_task(parent=parent, task=task)
-                return True
-            except gexc.AlreadyExists:
-                logger.warning(
-                    "first enqueue for %s did land despite the error", ticker
-                )
-                return True
-            except Exception as second:
-                logger.error(
-                    "Cloud Tasks enqueue failed for %s: %s (re-check: %s)",
-                    ticker, first, second,
-                )
-                return False
-    except Exception as exc:  # client construction, queue path, body build
+            return EnqueueOutcome.NOT_ENQUEUED
+        except Exception as ambiguous:
+            # Transport-shaped failure: timeout, reset, 5xx. The task may
+            # or may not have been accepted and NOTHING AVAILABLE HERE CAN
+            # TELL US WHICH.
+            #
+            # A second create_task cannot: it has the identical ambiguous
+            # outcome, which is the regress the first version of this fix
+            # walked into (Codex, PR #1094). A get_task read cannot either:
+            # Cloud Tasks deletes a task once it has been dispatched and
+            # the target returned 2xx, and the target here is Cloud Run's
+            # :run, which answers immediately with an Operation -- so
+            # NotFound means "never accepted" OR "already dispatched", and
+            # the two are indistinguishable.
+            #
+            # So do not guess. UNKNOWN is not a failure to be retried; it
+            # is a state the caller must not resolve by running the work
+            # again. A missing report is visible and recoverable; two
+            # concurrent pipelines on one run_id race the status
+            # transitions and double the history rows, which is corruption.
+            logger.error(
+                "Cloud Tasks enqueue outcome UNKNOWN for %s (run_id=%s): %s. "
+                "The task may be queued; NOT running it in-process.",
+                ticker, run_id, ambiguous,
+            )
+            return EnqueueOutcome.UNKNOWN
+    except Exception as exc:
+        # Raised before any RPC left this process (client construction,
+        # queue path, body build), so nothing can have been accepted.
         logger.error("Cloud Tasks enqueue failed for %s: %s", ticker, exc)
-        return False
+        return EnqueueOutcome.NOT_ENQUEUED

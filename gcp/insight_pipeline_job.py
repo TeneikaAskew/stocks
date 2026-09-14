@@ -21,12 +21,17 @@ This job is invoked two ways:
    2026-09-11 a transient Vertex 429 killed SPY at the judge node while
    IWM and QQQ had already been written, and the job still exited 0.
    One execution per ticker gives each its own task timeout and its own
-   Cloud Run retry, and `max-concurrent-dispatches` on the queue is a
-   real throttle if the LLM provider starts rate-limiting.
+   Cloud Run retry. Note that the queue does NOT throttle the resulting
+   workloads: `max-concurrent-dispatches` bounds in-flight dispatch
+   requests, and `jobs.run` returns as soon as the execution exists, so
+   the slot frees immediately. Concurrency is bounded by refusing to fan
+   out a batch larger than FANOUT_MAX_TICKERS instead.
 
    Set `INSIGHT_FANOUT=0` to revert to the sequential loop without a
-   redeploy. A Cloud Tasks enqueue failure also falls back to running
-   that ticker in-process, so an outage costs throughput, not reports.
+   redeploy. An enqueue the server definitively refused falls back to
+   running that ticker in-process, so an outage costs throughput rather
+   than reports; an enqueue whose outcome is UNKNOWN does not, because a
+   child may already be running it.
 
 Every run ends with exit 0 or exit 1; Cloud Run's retry policy takes
 over from there. The job never raises — it catches top-level
@@ -55,7 +60,7 @@ from uuid import uuid4
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from gcp.insight_tasks import enqueue_insight_task  # noqa: E402
+from gcp.insight_tasks import EnqueueOutcome, enqueue_insight_task  # noqa: E402
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
@@ -248,13 +253,26 @@ def _resolve_run_kind_and_update(arg_update: bool) -> tuple[bool, str]:
       1. arg_update=True OR INSIGHT_UPDATE=true → ('manual_update', True)
       2. INSIGHT_AS_OF set (replay) → ('replay_refresh', True)
       3. INSIGHT_TRIGGERED_BY starts with 'cloud-scheduler' → ('scheduled', False)
-      4. otherwise → ('manual_replay', False)
+      4. INSIGHT_TRIGGERED_BY starts with 'cron:auto-refresh' → ('auto_refresh', False)
+      5. otherwise → ('manual_replay', False)
+
+    Branch 4 is the run_kind docs/plans/MORNING_RUN_PROTECTION_PLAN.md
+    defines for auto_refresh_top_n, with 'cron:auto-refresh-top-n' as its
+    documented triggered_by. Without it the pre-warm's children fall
+    through to 'manual_replay' and are indistinguishable from a hand-run
+    replay in insight_reports_history -- which is the only place that
+    producer was still identifiable once its insight_runs.trigger had to
+    become 'on_demand' to satisfy the check constraint (Codex, PR #1094).
+    run_kind is VARCHAR(20) with no check constraint, so extending the
+    set here needs no migration.
     """
     if arg_update or os.environ.get('INSIGHT_UPDATE') == 'true':
         return True, 'manual_update'
     if os.environ.get('INSIGHT_AS_OF'):
         return True, 'replay_refresh'
     triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY', '')
+    if triggered_by.startswith('cron:auto-refresh'):
+        return False, 'auto_refresh'
     if triggered_by.startswith('cloud-scheduler'):
         return False, 'scheduled'
     return False, 'manual_replay'
@@ -499,29 +517,45 @@ def _dispatch_fanout(
     transitions from there.
 
     The `insight_runs` row is inserted BEFORE the enqueue. A row whose
-    enqueue then fails is handed back to the caller and executed with
-    that same id, so the run is never orphaned and never duplicated.
+    enqueue was definitively refused is handed back to the caller and
+    executed with that same id, so the run is never orphaned and never
+    duplicated.
+
+    Only NOT_ENQUEUED is handed back. An UNKNOWN outcome means a child
+    may already be running that ticker, so running it here too would put
+    two pipelines on one run_id; it is left queued and logged instead.
     """
     # date.isoformat() and datetime.isoformat() both round-trip through
     # parse_as_of (10-char date vs tz-aware datetime).
     as_of_iso = as_of.isoformat() if as_of is not None else None
     failed: list[tuple[str, str]] = []
+    unknown = 0
     for ticker in tickers:
         run_id = _insert_run(ticker, trigger=trigger)
-        ok = enqueue_insight_task(
+        outcome = enqueue_insight_task(
             run_id,
             ticker,
             as_of_iso=as_of_iso,
             triggered_by=triggered_by,
             force_update=force_update,
         )
-        if ok:
+        if outcome == EnqueueOutcome.ENQUEUED:
             logger.info("[run_id=%s] enqueued %s for parallel execution", run_id, ticker)
-        else:
+        elif outcome == EnqueueOutcome.NOT_ENQUEUED:
             failed.append((run_id, ticker))
+        else:
+            # Deliberately neither retried nor marked failed: the row may
+            # be genuinely queued, and 'queued' is the honest state for
+            # "not yet known to have started".
+            unknown += 1
+            logger.error(
+                "[run_id=%s] %s enqueue outcome unknown - left queued, NOT run "
+                "in-process. Re-run it on demand once you can confirm no child ran.",
+                run_id, ticker,
+            )
     logger.info(
-        "fan-out dispatched: %d/%d enqueued, %d falling back in-process",
-        len(tickers) - len(failed), len(tickers), len(failed),
+        "fan-out dispatched: %d/%d enqueued, %d falling back in-process, %d unknown",
+        len(tickers) - len(failed) - unknown, len(tickers), len(failed), unknown,
     )
     return failed
 

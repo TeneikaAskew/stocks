@@ -480,7 +480,7 @@ def stub_fanout(monkeypatch):
 
     def fake_enqueue(run_id, ticker, **kwargs):
         enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
-        return True
+        return job.EnqueueOutcome.ENQUEUED
 
     async def fake_run_one(run_id: str, ticker: str, as_of=None,
                            allow_update: bool = False,
@@ -560,9 +560,9 @@ def test_enqueue_failure_falls_back_in_process_for_that_ticker_only(
 
     def flaky(run_id, ticker, **kwargs):
         if ticker == "IWM":
-            return False
+            return job.EnqueueOutcome.NOT_ENQUEUED
         enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
-        return True
+        return job.EnqueueOutcome.ENQUEUED
 
     monkeypatch.setattr(job, "enqueue_insight_task", flaky)
     _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
@@ -614,3 +614,74 @@ def test_a_batch_at_the_cap_still_fans_out(stub_fanout, monkeypatch):
     _run(job._run_scheduled())
     assert len(enqueued) == job.FANOUT_MAX_TICKERS
     assert ran == []
+
+
+def test_an_unknown_enqueue_is_not_run_in_process(stub_fanout, monkeypatch):
+    """UNKNOWN means a child may already be running this run_id. Running it
+    here too would put two pipelines on one run, racing its status
+    transitions and doubling its history rows -- strictly worse than the
+    missing report that skipping costs."""
+    enqueued, ran = stub_fanout
+
+    def ambiguous(run_id, ticker, **kwargs):
+        if ticker == "IWM":
+            return job.EnqueueOutcome.UNKNOWN
+        enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
+        return job.EnqueueOutcome.ENQUEUED
+
+    monkeypatch.setattr(job, "enqueue_insight_task", ambiguous)
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
+    code = _run(job._run_scheduled())
+    assert code == 0
+    assert [e["ticker"] for e in enqueued] == ["SPY", "QQQ"]
+    assert ran == [], "an unknown outcome must not be resolved by running it again"
+
+
+def test_a_definitive_refusal_still_runs_in_process(stub_fanout, monkeypatch):
+    """The contrast case: NOT_ENQUEUED is the server saying nothing was
+    accepted, so the fallback is safe and must still happen."""
+    enqueued, ran = stub_fanout
+
+    def refused(run_id, ticker, **kwargs):
+        if ticker == "IWM":
+            return job.EnqueueOutcome.NOT_ENQUEUED
+        enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
+        return job.EnqueueOutcome.ENQUEUED
+
+    monkeypatch.setattr(job, "enqueue_insight_task", refused)
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
+    _run(job._run_scheduled())
+    assert ran == [("run-IWM", "IWM")]
+
+
+def test_auto_refresh_children_are_classified_as_auto_refresh(monkeypatch):
+    """docs/plans/MORNING_RUN_PROTECTION_PLAN.md defines run_kind
+    'auto_refresh' for auto_refresh_top_n, reached via triggered_by
+    'cron:auto-refresh-top-n'. Without this branch the pre-warm's children
+    record 'manual_replay' and are indistinguishable from a hand-run replay
+    -- and insight_runs.trigger can no longer tell them apart either, since
+    the check constraint forces it to 'on_demand'."""
+    from gcp import auto_refresh_top_n as ar
+
+    for key in ("INSIGHT_UPDATE", "INSIGHT_AS_OF", "INSIGHT_TRIGGERED_BY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("INSIGHT_TRIGGERED_BY", ar.AUTO_REFRESH_TRIGGERED_BY)
+    assert job._resolve_run_kind_and_update(False) == (False, "auto_refresh")
+
+
+def test_auto_refresh_classification_does_not_shadow_scheduled_or_replay(monkeypatch):
+    """The new branch sits below update and as_of, and beside
+    cloud-scheduler — it must not capture those."""
+    for key in ("INSIGHT_UPDATE", "INSIGHT_AS_OF", "INSIGHT_TRIGGERED_BY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("INSIGHT_TRIGGERED_BY", "cloud-scheduler:insight-pipeline-daily")
+    assert job._resolve_run_kind_and_update(False) == (False, "scheduled")
+    monkeypatch.setenv("INSIGHT_TRIGGERED_BY", "cron:auto-refresh-top-n")
+    monkeypatch.setenv("INSIGHT_AS_OF", "2026-09-04")
+    assert job._resolve_run_kind_and_update(False) == (True, "replay_refresh")
+
+
+def test_run_kind_fits_the_column():
+    """run_kind is VARCHAR(20) with no check constraint, so a new value
+    needs no migration but must still fit."""
+    assert len("auto_refresh") <= 20

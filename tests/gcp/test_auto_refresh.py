@@ -63,9 +63,12 @@ def test_top_n_selects_highest_scored_and_skips_cached(monkeypatch):
     monkeypatch.setattr(ar, "_insert_queued_run",
                         lambda tk, trigger: f"run-{tk}")
     enqueued: list[tuple[str, str]] = []
-    def fake_enqueue(run_id, ticker):
+    def fake_enqueue(run_id, ticker, **kwargs):
         enqueued.append((run_id, ticker))
-        return True
+        # The child classifies itself from this alone (container overrides
+        # replace its env), so assert it is forwarded rather than trusting it.
+        assert kwargs.get("triggered_by") == ar.AUTO_REFRESH_TRIGGERED_BY
+        return ar.EnqueueOutcome.ENQUEUED
     monkeypatch.setattr(ar, "enqueue_insight_task", fake_enqueue)
 
     rc = ar.main.__wrapped__() if hasattr(ar.main, "__wrapped__") else None
@@ -131,9 +134,10 @@ def test_enqueue_failure_does_not_block_other_tickers(monkeypatch):
                         lambda tk, trigger: f"run-{tk}")
 
     attempted: list[str] = []
-    def flaky_enqueue(run_id, ticker):
+    def flaky_enqueue(run_id, ticker, **kwargs):
         attempted.append(ticker)
-        return ticker != "NVDA"  # fail on NVDA
+        return (ar.EnqueueOutcome.NOT_ENQUEUED if ticker == "NVDA"
+                else ar.EnqueueOutcome.ENQUEUED)
     monkeypatch.setattr(ar, "enqueue_insight_task", flaky_enqueue)
 
     monkeypatch.setattr("sys.argv", ["prog"])
@@ -157,8 +161,10 @@ def test_top_n_respects_env_var(monkeypatch):
     monkeypatch.setattr(ar, "_insert_queued_run",
                         lambda tk, trigger: f"run-{tk}")
     enqueued: list[str] = []
-    monkeypatch.setattr(ar, "enqueue_insight_task",
-                        lambda r, t: enqueued.append(t) or True)
+    monkeypatch.setattr(
+        ar, "enqueue_insight_task",
+        lambda r, t, **k: enqueued.append(t) or ar.EnqueueOutcome.ENQUEUED,
+    )
 
     monkeypatch.setattr("sys.argv", ["prog"])
     ar.main()
@@ -277,7 +283,8 @@ def test_the_trigger_written_is_one_the_constraint_permits(monkeypatch):
         ar, "_insert_queued_run",
         lambda tk, trigger: seen.append(trigger) or f"run-{tk}",
     )
-    monkeypatch.setattr(ar, "enqueue_insight_task", lambda *a, **k: True)
+    monkeypatch.setattr(ar, "enqueue_insight_task",
+                        lambda *a, **k: ar.EnqueueOutcome.ENQUEUED)
     monkeypatch.setattr("sys.argv", ["prog"])
     ar.main()
     assert seen, "no run was inserted"
@@ -298,7 +305,8 @@ def test_a_failed_enqueue_does_not_leave_the_run_queued_forever(monkeypatch):
     )
     monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
     monkeypatch.setattr(ar, "_insert_queued_run", lambda tk, trigger: f"run-{tk}")
-    monkeypatch.setattr(ar, "enqueue_insight_task", lambda *a, **k: False)
+    monkeypatch.setattr(ar, "enqueue_insight_task",
+                        lambda *a, **k: ar.EnqueueOutcome.NOT_ENQUEUED)
     monkeypatch.setattr(
         ar, "_mark_run_failed",
         lambda run_id, error: failed.append((run_id, error)),
@@ -317,7 +325,31 @@ def test_a_successful_enqueue_leaves_the_run_alone(monkeypatch):
     )
     monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
     monkeypatch.setattr(ar, "_insert_queued_run", lambda tk, trigger: f"run-{tk}")
-    monkeypatch.setattr(ar, "enqueue_insight_task", lambda *a, **k: True)
+    monkeypatch.setattr(ar, "enqueue_insight_task",
+                        lambda *a, **k: ar.EnqueueOutcome.ENQUEUED)
+    monkeypatch.setattr(
+        ar, "_mark_run_failed", lambda run_id, error: failed.append(run_id)
+    )
+    monkeypatch.setattr("sys.argv", ["prog"])
+    ar.main()
+    assert failed == []
+
+
+def test_an_unknown_enqueue_is_not_marked_failed(monkeypatch):
+    """A child may be running it. Marking the row failed would label a live
+    run dead, and the UI would show a failure for a report that then
+    appears."""
+    from gcp import auto_refresh_top_n as ar
+
+    failed: list = []
+    monkeypatch.setattr(
+        ar, "rank_tickers", lambda **kw: _fake_rank([("SPY", 5.0)])
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
+    monkeypatch.setattr(ar, "_insert_queued_run", lambda tk, trigger: f"run-{tk}")
+    monkeypatch.setattr(
+        ar, "enqueue_insight_task", lambda *a, **k: ar.EnqueueOutcome.UNKNOWN
+    )
     monkeypatch.setattr(
         ar, "_mark_run_failed", lambda run_id, error: failed.append(run_id)
     )

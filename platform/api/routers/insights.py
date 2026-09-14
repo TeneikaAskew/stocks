@@ -34,7 +34,7 @@ from pydantic import BaseModel
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from gcp.insight_tasks import enqueue_insight_task  # noqa: E402
+from gcp.insight_tasks import EnqueueOutcome, enqueue_insight_task  # noqa: E402
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
@@ -835,12 +835,22 @@ def refresh_insight_report(
     if _is_local_dev():
         background_tasks.add_task(_sync_run, run_id, ticker_up, parsed_as_of)
     else:
-        enqueued = enqueue_insight_task(run_id, ticker_up, as_of_iso=as_of)
-        if not enqueued:
+        outcome = enqueue_insight_task(run_id, ticker_up, as_of_iso=as_of)
+        if outcome == EnqueueOutcome.NOT_ENQUEUED:
             logger.warning(
-                "Cloud Tasks enqueue unavailable — falling back to BackgroundTasks"
+                "Cloud Tasks enqueue refused — falling back to BackgroundTasks"
             )
             background_tasks.add_task(_sync_run, run_id, ticker_up, parsed_as_of)
+        elif outcome == EnqueueOutcome.UNKNOWN:
+            # Deliberately no fallback. A queued child may already be
+            # running this run_id, and a BackgroundTask alongside it would
+            # race its status transitions and double its history rows. The
+            # response still says "queued", which is accurate: it may be.
+            logger.error(
+                "Cloud Tasks enqueue outcome unknown for run_id=%s (%s) — "
+                "no BackgroundTasks fallback, a child may be running it",
+                run_id, ticker_up,
+            )
 
     return RefreshResponse(
         run_id=run_id,

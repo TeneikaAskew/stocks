@@ -160,6 +160,14 @@ class _FakeAlreadyExists(Exception):
     pass
 
 
+class _FakePermissionDenied(Exception):
+    pass
+
+
+class _FakeDeadlineExceeded(Exception):
+    """Stands in for the transport-shaped failures: timeout, reset, 5xx."""
+
+
 def _fake_tasks_modules(monkeypatch, create_side_effects):
     """Install fake google.cloud.tasks_v2 + google.api_core.exceptions whose
     create_task walks `create_side_effects` (an exception to raise, or None
@@ -186,6 +194,12 @@ def _fake_tasks_modules(monkeypatch, create_side_effects):
 
     gexc = types.ModuleType("google.api_core.exceptions")
     gexc.AlreadyExists = _FakeAlreadyExists
+    gexc.PermissionDenied = _FakePermissionDenied
+    gexc.Unauthenticated = type("Unauthenticated", (Exception,), {})
+    gexc.InvalidArgument = type("InvalidArgument", (Exception,), {})
+    gexc.NotFound = type("NotFound", (Exception,), {})
+    gexc.FailedPrecondition = type("FailedPrecondition", (Exception,), {})
+    gexc.ResourceExhausted = type("ResourceExhausted", (Exception,), {})
 
     monkeypatch.setitem(sys.modules, "google.cloud.tasks_v2", tasks)
     monkeypatch.setitem(sys.modules, "google.api_core.exceptions", gexc)
@@ -200,29 +214,82 @@ def _fake_tasks_modules(monkeypatch, create_side_effects):
 
 def test_the_task_carries_a_deterministic_name(monkeypatch):
     seen = _fake_tasks_modules(monkeypatch, [None])
-    assert insight_tasks.enqueue_insight_task("run-abc", "SPY") is True
+    assert (insight_tasks.enqueue_insight_task("run-abc", "SPY")
+            is insight_tasks.EnqueueOutcome.ENQUEUED)
     assert seen[0]["name"].endswith("/tasks/insight-run-abc")
 
 
-def test_an_accepted_task_that_errored_on_the_way_back_is_not_rerun(monkeypatch):
-    """First create raises (ambiguous); the re-check says AlreadyExists, so
-    the task DID land and the caller must not also run it in-process."""
-    seen = _fake_tasks_modules(
-        monkeypatch, [RuntimeError("504 deadline exceeded"), _FakeAlreadyExists()]
-    )
-    assert insight_tasks.enqueue_insight_task("run-abc", "SPY") is True
-    assert len(seen) == 2, "the ambiguous failure must be re-checked, not guessed"
+def test_a_transport_failure_is_unknown_and_is_never_retried(monkeypatch):
+    """A timeout/reset may or may not have been accepted. Re-issuing the
+    create cannot settle it -- the retry has the identical ambiguous
+    outcome -- so exactly one create is attempted and the answer is
+    UNKNOWN, which forbids the caller from running the work again."""
+    seen = _fake_tasks_modules(monkeypatch, [_FakeDeadlineExceeded("504")])
+    assert (insight_tasks.enqueue_insight_task("run-abc", "SPY")
+            is insight_tasks.EnqueueOutcome.UNKNOWN)
+    assert len(seen) == 1, "a second create only moves the ambiguity, it cannot resolve it"
 
 
-def test_a_genuinely_failed_enqueue_still_reports_false(monkeypatch):
-    """Both attempts fail for a non-AlreadyExists reason: the task really is
-    not queued, so the caller should fall back and run it."""
-    _fake_tasks_modules(
-        monkeypatch, [RuntimeError("permission denied"), RuntimeError("permission denied")]
-    )
-    assert insight_tasks.enqueue_insight_task("run-abc", "SPY") is False
+def test_a_server_refusal_is_definitive_and_permits_fallback(monkeypatch):
+    """PermissionDenied is the server answering 'no': nothing was accepted,
+    so running the ticker another way cannot duplicate it."""
+    seen = _fake_tasks_modules(monkeypatch, [_FakePermissionDenied("403")])
+    assert (insight_tasks.enqueue_insight_task("run-abc", "SPY")
+            is insight_tasks.EnqueueOutcome.NOT_ENQUEUED)
+    assert len(seen) == 1
 
 
 def test_an_already_enqueued_run_is_not_reported_as_failed(monkeypatch):
     _fake_tasks_modules(monkeypatch, [_FakeAlreadyExists()])
-    assert insight_tasks.enqueue_insight_task("run-abc", "SPY") is True
+    assert (insight_tasks.enqueue_insight_task("run-abc", "SPY")
+            is insight_tasks.EnqueueOutcome.ENQUEUED)
+
+
+def test_unknown_is_not_falsy_by_accident():
+    """Guards the migration from bool: `if enqueue(...)` used to mean
+    'enqueued'. Every outcome is truthy now, so any caller still using a
+    truth test would read UNKNOWN as success. Callers must compare
+    explicitly, and this records why."""
+    assert bool(insight_tasks.EnqueueOutcome.UNKNOWN) is True
+    assert bool(insight_tasks.EnqueueOutcome.NOT_ENQUEUED) is True
+
+
+# ---------------------------------------------------------------------------
+# The deployed image must actually contain the client (Codex, PR #1094)
+# ---------------------------------------------------------------------------
+
+
+def test_the_deployed_image_pins_google_cloud_tasks():
+    """gcp/Dockerfile installs requirements-gcp.lock when it exists, so a
+    package present only in requirements-gcp.txt is NOT in the image. When
+    google-cloud-tasks was missing from the lock, `from google.cloud import
+    tasks_v2` took the ImportError branch on every call: the daily fan-out
+    silently degraded to sequential forever, and auto-refresh marked every
+    uncached run failed. A .txt entry is not deployment."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    lock = (root / "requirements-gcp.lock").read_text()
+    assert re.search(r"^google-cloud-tasks==", lock, re.M), (
+        "google-cloud-tasks missing from requirements-gcp.lock — the image "
+        "the Cloud Run jobs run would have no Cloud Tasks client"
+    )
+
+
+def test_the_lock_pin_satisfies_the_declared_floor():
+    """The .txt declares the minimum the code needs; the lock is what ships.
+    They must not disagree."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    txt = (root / "requirements-gcp.txt").read_text()
+    lock = (root / "requirements-gcp.lock").read_text()
+    floor = re.search(r"^google-cloud-tasks>=([\d.]+)", txt, re.M)
+    pinned = re.search(r"^google-cloud-tasks==([\d.]+)", lock, re.M)
+    assert floor and pinned
+    to_t = lambda v: tuple(int(x) for x in v.group(1).split("."))
+    assert to_t(pinned) >= to_t(floor), (
+        f"lock pins {pinned.group(1)} below the declared floor {floor.group(1)}"
+    )

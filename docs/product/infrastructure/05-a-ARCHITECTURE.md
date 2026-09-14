@@ -509,12 +509,12 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
 | `GET` | `/api/health` | [`platform/api/main.py:270`](../../../platform/api/main.py#L270) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:158`](../../../platform/api/routers/health.py#L158) | Return the cached freshness report (see freshness_report_dict). |
-| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1014`](../../../platform/api/routers/insights.py#L1014) | Stream a Gemini response for the given mode and message. |
+| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1024`](../../../platform/api/routers/insights.py#L1024) | Stream a Gemini response for the given mode and message. |
 | `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:726`](../../../platform/api/routers/insights.py#L726) | Return the most recent InsightReport for the ticker. |
 | `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:755`](../../../platform/api/routers/insights.py#L755) | Return a scannable list of recent reports for the ticker. |
 | `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:803`](../../../platform/api/routers/insights.py#L803) | Enqueue a fresh pipeline run for the ticker. |
 | `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:765`](../../../platform/api/routers/insights.py#L765) | Return a single insight report by row id. |
-| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:865`](../../../platform/api/routers/insights.py#L865) | Poll the status of a refresh run. |
+| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:875`](../../../platform/api/routers/insights.py#L875) | Poll the status of a refresh run. |
 | `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:506`](../../../platform/api/routers/insights.py#L506) | Search for tickers by keyword (company name, symbol, etc). |
 | `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:521`](../../../platform/api/routers/insights.py#L521) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
 | `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:552`](../../../platform/api/routers/insights.py#L552) | Return peer tickers from FinViz (cached). |
