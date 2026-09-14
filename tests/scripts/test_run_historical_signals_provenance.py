@@ -33,7 +33,10 @@ def no_cursor(monkeypatch):
 
 @pytest.fixture
 def has_cursor(monkeypatch):
-    cursor = datetime(2026, 9, 12, 14, 30, tzinfo=timezone.utc)
+    # Relative, not a fixed date: the classification now measures cursor age
+    # against now, so a hardcoded timestamp would silently flip these tests
+    # from 'live' to 'backfill' as it aged.
+    cursor = datetime.now(timezone.utc) - timedelta(hours=20)
     monkeypatch.setattr("scripts.run_historical_signals.latest_entry_time",
                         lambda *a, **k: cursor)
     return cursor
@@ -68,4 +71,51 @@ def test_force_is_backfill_even_on_the_cursor_path(has_cursor):
     """--force deletes the ticker's rows and reprocesses, so the cursor it
     would have resumed from is gone."""
     _, _, kind = resolve_window(_args(force=True))
+    assert kind == "backfill"
+
+
+# ── window age, not just the flags (Codex round 2 on #1098) ──────────────
+#
+# I argued in round 1 that a cursor resume after a week of downtime is still
+# the live cursor doing its job. That was wrong for the reason Codex gave:
+# the label lands on the ROW, and /api/signals discloses it per row, so a
+# signal reconstructed days after its bar is mislabelled whatever code path
+# produced it. `--end-date` into the past makes it plainer.
+
+
+def test_stale_cursor_catch_up_is_backfill(monkeypatch):
+    """After a multi-day outage the cursor resume reconstructs history."""
+    stale = datetime.now(timezone.utc) - timedelta(days=9)
+    monkeypatch.setattr("scripts.run_historical_signals.latest_entry_time",
+                        lambda *a, **k: stale)
+    _, _, kind = resolve_window(_args())
+    assert kind == "backfill"
+
+
+def test_fresh_cursor_resume_is_still_live(monkeypatch):
+    """The ordinary daily run must not be relabelled by this rule."""
+    fresh = datetime.now(timezone.utc) - timedelta(hours=20)
+    monkeypatch.setattr("scripts.run_historical_signals.latest_entry_time",
+                        lambda *a, **k: fresh)
+    _, _, kind = resolve_window(_args())
+    assert kind == "live"
+
+
+def test_weekend_gap_on_the_cursor_stays_live(monkeypatch):
+    """A Friday cursor read on Monday is a 3-day span and still the live
+    cadence; LIVE_WINDOW_DAYS exists to keep that from flipping."""
+    friday = datetime.now(timezone.utc) - timedelta(days=2, hours=20)
+    monkeypatch.setattr("scripts.run_historical_signals.latest_entry_time",
+                        lambda *a, **k: friday)
+    _, _, kind = resolve_window(_args())
+    assert kind == "live"
+
+
+def test_historical_end_date_on_a_fresh_cursor_is_backfill(monkeypatch):
+    """`--end-date` pointing into the past makes the window historical even
+    when the cursor itself is recent."""
+    fresh = datetime.now(timezone.utc) - timedelta(hours=20)
+    monkeypatch.setattr("scripts.run_historical_signals.latest_entry_time",
+                        lambda *a, **k: fresh)
+    _, _, kind = resolve_window(_args(end_date="2024-06-01"))
     assert kind == "backfill"

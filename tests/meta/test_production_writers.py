@@ -287,9 +287,23 @@ def test_every_sanctioned_provenance_writer_sets_run_kind():
 # not a publication record, and filtering it would discard 91% of the
 # history its own statistics summarise. Its provenance is disclosed on the
 # row instead (see routers/signals.py).
+# Codex round 2 on #1098 found five more, and they are the worse half: the
+# first pass filtered the DISPLAY while leaving the TRADING path unfiltered,
+# so an INSIGHT_AS_OF / BRIEF_AS_OF replay for today was hidden from the
+# dashboard and still drove live fire decisions. Filtering one side of a pair
+# is worse than filtering neither, because the operator's view and the
+# system's behaviour then disagree silently.
 LIVE_ONLY_READERS = {
     "platform/api/routers/dashboard.py": "premarket_analysis",
     "platform/api/routers/insights.py": "insight_reports",
+    # The live signal monitor's own adapters.
+    "lib/strategies/insight_cache.py": "insight_reports",
+    "lib/strategies/brief_bias.py": "premarket_analysis",
+    # Annotates the live ladder from the session's published brief.
+    "lib/movement_statement.py": "premarket_analysis",
+    # A backfill row counting as today's cache would skip live generation
+    # while the live-only API cannot serve it: no report at all that day.
+    "gcp/auto_refresh_top_n.py": "insight_reports",
 }
 
 
@@ -305,3 +319,33 @@ def test_live_only_readers_filter_on_run_kind():
         "readers that serve a table as current truth without excluding "
         f"replay/backfill rows: {unfiltered}"
     )
+
+
+def test_freshness_checks_only_count_live_rows():
+    """A replay generated for the expected trading day would otherwise make
+    /api/health/freshness report the dataset healthy while the live pipeline
+    had failed and every live-only reader had nothing (Codex on #1098).
+    signal_alerts already carried this predicate from #820; the two tables
+    this PR adds provenance to did not."""
+    src = (REPO / "scripts/audit_data_freshness.py").read_text()
+    for name in ("premarket_analysis", "insight_reports", "signal_alerts"):
+        block = src[src.index(f'"name": "{name}"'):]
+        block = block[:block.index("},")]
+        assert "run_kind = 'live'" in block, (
+            f"freshness check for {name} counts replay/backfill rows as fresh")
+
+
+def test_every_insight_reports_upsert_carries_run_kind_through_the_conflict():
+    """On conflict the SET list must move provenance too. All three writers
+    hardcode or derive run_kind on INSERT, which does nothing on an UPDATE:
+    a pre-existing 'live' row took backfill content and stayed live. I
+    asserted on #1098 that one of these was fine because "EXCLUDED and the
+    literal agree"; the literal only applies on INSERT (Codex, round 2)."""
+    for rel in ("gcp/insight_pipeline_job.py",
+                "platform/api/routers/insights.py",
+                "scripts/generate_historical_report.py"):
+        src = (REPO / rel).read_text()
+        for m in re.finditer(r"ON CONFLICT\s*\([^)]*\)\s*DO UPDATE(.*?)RETURNING",
+                             src, re.S | re.I):
+            assert "run_kind = EXCLUDED.run_kind" in m.group(1), (
+                f"{rel}: a conflict clause replaces the report but not its provenance")

@@ -139,6 +139,11 @@ def _resolve_tickers(args: argparse.Namespace) -> list[str]:
         return []
 
 
+# A cursor-resume window wider than this is catch-up, not the live cadence.
+# The job runs on a 2-day lookback; 3 allows a weekend or one missed run.
+LIVE_WINDOW_DAYS = 3
+
+
 def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime, str]:
     """Determine the [start, end) bar window, and the provenance it implies.
 
@@ -189,6 +194,33 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime, str]:
         else:
             start = last + timedelta(minutes=1)
             log.info('resuming from MAX(entry_time)=%s [%s]', last, args.strategy)
+
+    # A cursor resume is only 'live' while the window it produces is recent.
+    # I argued on #1098 round 1 that a resume after a week of downtime is
+    # still the live cursor doing its job; Codex's round-2 counter is the one
+    # that holds: those rows are reconstructed days after their bars, and
+    # /api/signals discloses run_kind per row, so calling them live is a
+    # wrong label on the row itself regardless of which code path produced
+    # it. `--end-date` into the past makes it plainer still — the window is
+    # historical whatever the cursor says.
+    #
+    # LIVE_WINDOW_DAYS mirrors the job's own --lookback-days default of 2
+    # plus a day of slack for a weekend or a single missed run.
+    # Measured against NOW, not as a span: `end` defaults to now + 1 day, so
+    # every live window is a day wide before the cursor is even considered,
+    # and an --end-date before the cursor makes the span negative. Both of
+    # those made a span test read 'live' on windows that are plainly
+    # historical.
+    if run_kind == 'live':
+        now = datetime.now(timezone.utc)
+        if args.end_date and end < now - timedelta(days=1):
+            log.info('--end-date %s is historical — classifying as backfill',
+                     args.end_date)
+            run_kind = 'backfill'
+        elif (now - start) > timedelta(days=LIVE_WINDOW_DAYS):
+            log.info('cursor is %s old (> %dd) — classifying as backfill',
+                     now - start, LIVE_WINDOW_DAYS)
+            run_kind = 'backfill'
 
     return start, end, run_kind
 

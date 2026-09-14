@@ -78,7 +78,13 @@ def _upsert_report(report: InsightReport) -> str:
                 model_versions = EXCLUDED.model_versions,
                 cost_usd = EXCLUDED.cost_usd,
                 per_role_cost = EXCLUDED.per_role_cost,
-                latency_ms = EXCLUDED.latency_ms
+                latency_ms = EXCLUDED.latency_ms,
+                -- Regenerating over an existing row must move its provenance
+                -- too. I told Codex on #1098 round 1 that "EXCLUDED and the
+                -- literal agree" here, which was wrong: the literal only
+                -- applies on INSERT, so a pre-existing 'live' row took
+                -- backfill content and stayed live.
+                run_kind = EXCLUDED.run_kind
             RETURNING id::text
             """,
             (
