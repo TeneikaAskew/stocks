@@ -420,6 +420,27 @@ class ContractMismatch(ContractRejection, RuntimeError):
     """CONTRACT.json parses and disagrees with the serving contract."""
 
 
+class NeverPromoted(FileNotFoundError):
+    """A serving cell that has never had a production model published.
+
+    Distinct from every other missing-artifact state: the cell's production
+    prefix holds NOTHING — no LATEST pointer and no run artifacts — so this
+    is a standing configuration gap (the cell is scheduled ahead of its
+    first walk_forward promotion), not a broken publish. mag_inference
+    skips such a cell with a WARNING naming the remediation instead of
+    logging a daily ERROR: the state carries no new information after the
+    first day, and each ERROR line fires the failure notifier as if the
+    execution itself had failed (Discord alert + auto-issue) while the job
+    correctly exits 0 under its partial-success rule — a false-alarm loop
+    every scheduled morning (issues #1079/#1083/#1087/#1092 were this).
+
+    A prefix that has run artifacts but no LATEST pointer is NOT this: that
+    is a corrupted or interrupted publish and stays a hard
+    FileNotFoundError. Subclasses FileNotFoundError so existing
+    except-clauses keep working (house rule, see ContractMissing above).
+    """
+
+
 CONTRACT_BLOB = "CONTRACT.json"
 
 

@@ -55,7 +55,7 @@ from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     LABEL_CLASSES, LABEL_TO_IDX,
     CONTRACT_BLOB, contract_mismatch,
     ContractRejection, ContractMissing, ContractMalformed,
-    ContractMismatch,
+    ContractMismatch, NeverPromoted,
 )
 from gcp.research.magnitude_engine.mag_walk_forward import (  # noqa: E402
     PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX,
@@ -202,10 +202,28 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
     # LATEST after all three uploads succeed.
     latest_blob = bucket.blob(f"{base_prefix}/LATEST")
     if not latest_blob.exists():
+        # Two different states hide behind a missing pointer, and they need
+        # different responses. An EMPTY prefix means the cell has never been
+        # promoted — a standing config gap the operator already knows about,
+        # skipped upstream with a WARNING (see NeverPromoted). A prefix that
+        # HAS artifacts but no pointer means a publish was interrupted or the
+        # pointer was lost — that is new, real breakage and must fail loud.
+        has_artifacts = any(
+            client.list_blobs(bucket_name, prefix=f"{base_prefix}/",
+                               max_results=1))
+        if not has_artifacts:
+            raise NeverPromoted(
+                f"no production model has ever been published for "
+                f"{ticker}:{tf} — nothing under "
+                f"gs://{bucket_name}/{base_prefix}/. Run walk_forward with "
+                f"--persist-production-model to publish."
+            )
         raise FileNotFoundError(
             f"no production model deployed for {ticker}:{tf} — LATEST "
-            f"pointer missing at gs://{bucket_name}/{base_prefix}/LATEST. "
-            f"Run walk_forward with --persist-production-model to publish."
+            f"pointer missing at gs://{bucket_name}/{base_prefix}/LATEST "
+            f"while run artifacts exist under that prefix (interrupted or "
+            f"corrupted publish). Re-run walk_forward with "
+            f"--persist-production-model to publish a consistent set."
         )
     run_id = latest_blob.download_as_text().strip()
     prefix = f"{base_prefix}/{run_id}"
@@ -692,6 +710,7 @@ def main() -> int:
     total_written = 0
     failures: list[tuple[str, str, str]] = []
     contract_failures: list[tuple[str, str, str]] = []
+    never_promoted: list[tuple[str, str]] = []
     for ticker, tf in cells:
         try:
             model, feature_cols, version, contract = \
@@ -711,12 +730,27 @@ def main() -> int:
             log.exception("%s:%s CONTRACT REJECTED: %s", ticker, tf, e)
             failures.append((ticker, tf, str(e)))
             contract_failures.append((ticker, tf, str(e)))
+        except NeverPromoted as e:
+            # A standing config gap, not a run failure: the cell is scheduled
+            # ahead of its first promotion, its production prefix is empty,
+            # and nothing about that changes between runs. WARNING (not
+            # ERROR/exception) so the failure notifier does not page a
+            # "job failed" every morning for a job that exits 0 by design;
+            # the skip stays visible in every run's summary line below, and
+            # the message names the remediation. If EVERY cell is in this
+            # state, total_written is 0 and the zero-output guard still
+            # exits 1 — an unservable fleet stays a hard failure.
+            log.warning("%s:%s SKIPPED (awaiting first promotion): %s",
+                        ticker, tf, e)
+            never_promoted.append((ticker, tf))
         except Exception as e:
             log.exception("%s:%s failed: %s", ticker, tf, e)
             failures.append((ticker, tf, str(e)))
 
-    log.info("mag_inference done — %d total predictions, %d cell failure(s)",
-             total_written, len(failures))
+    log.info("mag_inference done — %d total predictions, %d cell failure(s), "
+             "%d cell(s) awaiting first promotion%s",
+             total_written, len(failures), len(never_promoted),
+             f" ({never_promoted})" if never_promoted else "")
 
     # Zero-output is itself a silent-failure mode (Codex P1 on PR #597):
     # if every cell quietly produces 0 scorable rows (empty features
@@ -750,13 +784,21 @@ def main() -> int:
     # Half-or-more failures -> exit 1 so failure-notifier opens an issue.
     # Matches the F11 pattern from
     # docs/incidents/2026-06-01-pipeline-failures-audit.md.
-    if failures and len(failures) > len(cells) // 2:
-        log.error("TOO-MANY-FAILURES — %d/%d cells failed: %s",
-                  len(failures), len(cells), failures)
+    #
+    # The threshold is applied against SERVABLE cells (cells minus the
+    # never-promoted skips), not the configured list. Counting a standing
+    # awaiting-first-promotion cell in the denominator would let a fleet
+    # whose every servable cell failed still exit 0 — e.g. 2 skipped +
+    # 2 failed of 6 configured is 2/6 under the old arithmetic but 2/2 of
+    # what could actually run.
+    servable = len(cells) - len(never_promoted)
+    if failures and len(failures) > servable // 2:
+        log.error("TOO-MANY-FAILURES — %d/%d servable cells failed: %s",
+                  len(failures), servable, failures)
         return 1
     if failures:
-        log.warning("partial success — %d/%d cells failed (under 50%% threshold)",
-                    len(failures), len(cells))
+        log.warning("partial success — %d/%d servable cells failed "
+                    "(under 50%% threshold)", len(failures), servable)
     return 0
 
 

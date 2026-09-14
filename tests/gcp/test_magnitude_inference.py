@@ -329,6 +329,134 @@ def test_main_exits_1_when_majority_cells_fail(monkeypatch):
     assert rc == 1
 
 
+# ─────────────── never-promoted cells: skip, don't page ───────────────
+#
+# SPY:15m and QQQ:15m sat in DEFAULT_CELLS ahead of their first promotion,
+# so every 09:25 run raised FileNotFoundError for both, logged it via
+# log.exception, and exited 0 under the partial-success rule — and the
+# failure notifier turned each morning's ERROR lines into a "GCP job
+# failed" Discord alert + auto-issue that the hourly reconciler then
+# closed as "recovered" (#1079/#1083/#1087/#1092, daily 9-14 Sep). A cell
+# whose production prefix is EMPTY is a standing config state, not a run
+# failure: it is skipped at WARNING and excluded from the failure count,
+# while an interrupted publish (artifacts without LATEST) stays a hard
+# error, and an entirely unpromoted fleet still exits 1 via zero-output.
+
+def test_main_skips_never_promoted_cells_without_error(monkeypatch, caplog):
+    """Awaiting-first-promotion cells warn and skip; the run exits 0 and
+    logs no ERROR for them, so the failure notifier stays quiet."""
+    import logging as _logging
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:15m,QQQ:15m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import NeverPromoted
+
+    def fake_load(ticker, tf):
+        if tf == "15m":
+            raise NeverPromoted(f"no production model has ever been "
+                                 f"published for {ticker}:{tf}")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=5), \
+         caplog.at_level(_logging.DEBUG, logger=mod.log.name):
+        rc = mod.main()
+
+    assert rc == 0
+    skip_records = [r for r in caplog.records
+                    if "SKIPPED (awaiting first promotion)" in r.getMessage()]
+    assert len(skip_records) == 2
+    assert all(r.levelno == _logging.WARNING for r in skip_records), \
+        "the skip must be WARNING — ERROR is what pages the notifier"
+    assert not [r for r in caplog.records
+                if r.levelno >= _logging.ERROR], \
+        "a never-promoted skip must not produce any ERROR record"
+
+
+def test_main_exits_1_when_every_cell_is_never_promoted(monkeypatch):
+    """An entirely unpromoted fleet writes nothing — the zero-output guard
+    still turns that into a hard failure."""
+    monkeypatch.setenv("INFERENCE_CELLS", "SPY:15m,QQQ:15m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import NeverPromoted
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version",
+                       side_effect=NeverPromoted("empty prefix")), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    assert rc == 1
+
+
+def test_main_majority_threshold_counts_servable_cells_only(monkeypatch):
+    """2 skips + 2 real failures of 4 configured: every cell that COULD
+    run failed, so the run must exit 1 — under the old arithmetic
+    (failures vs configured cells) this was 2/4 and exited 0."""
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:5m,SPY:15m,QQQ:15m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import NeverPromoted
+
+    def fake_load(ticker, tf):
+        if tf == "15m":
+            raise NeverPromoted("empty prefix")
+        raise FileNotFoundError(f"LATEST pointer missing for {ticker}:{tf} "
+                                 f"while run artifacts exist")
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    assert rc == 1, "2/2 servable cells failed — partial success is a lie here"
+
+
+def _never_promoted_bucket(*, prefix_has_artifacts):
+    """A stub bucket with no LATEST pointer; the client's list_blobs says
+    whether anything else exists under the production prefix."""
+    def make(name):
+        b = MagicMock()
+        b.exists.return_value = False
+        return b
+    bucket = MagicMock()
+    bucket.blob.side_effect = make
+    client = MagicMock()
+    client.bucket.return_value = bucket
+    client.list_blobs.return_value = iter(
+        [MagicMock()] if prefix_has_artifacts else [])
+    return client
+
+
+def test_loader_raises_never_promoted_only_for_an_empty_prefix():
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import NeverPromoted
+
+    client = _never_promoted_bucket(prefix_has_artifacts=False)
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(NeverPromoted, match="ever been published"):
+            mod._load_model_and_version("SPY", "15m")
+    # The distinction is derived from a real listing of the prefix, not
+    # assumed: the loader must have asked GCS what exists there.
+    assert client.list_blobs.called
+
+
+def test_loader_keeps_hard_failure_for_a_corrupted_publish():
+    """Artifacts under the prefix but no LATEST is an interrupted publish —
+    that stays FileNotFoundError (and is NOT the skippable state)."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import NeverPromoted
+
+    client = _never_promoted_bucket(prefix_has_artifacts=True)
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(FileNotFoundError,
+                           match="run artifacts exist") as excinfo:
+            mod._load_model_and_version("SPY", "15m")
+    assert not isinstance(excinfo.value, NeverPromoted)
+
+
 def test_load_recent_features_joins_levels_table(monkeypatch):
     """Inference MUST LEFT JOIN strat_features_levels_{tf} like training does
     (strat_dataset.load_labeled_dataset). Without it the ORB / level columns are
