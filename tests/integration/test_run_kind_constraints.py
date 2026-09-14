@@ -81,15 +81,77 @@ def test_drift_is_raised_rather_than_silently_accepted(db_engine):
             trans.rollback()
 
 
-# Minimal valid rows: only the NOT NULL columns without defaults, so these
-# stay correct as the tables gain columns.
-_SEED = {
-    "historical_signals": "(ticker, entry_time, run_kind) VALUES ('ZZZ', now(), %s)",
-    "insight_reports": "(id, ticker, as_of, report, run_kind) "
-                       "VALUES (gen_random_uuid(), 'ZZZ', current_date, '{}'::jsonb, %s)",
-    "premarket_analysis": "(analysis_date, ticker, run_kind) "
-                          "VALUES (current_date, 'ZZZ', %s)",
+# A minimal valid row is DERIVED from the server, never hand-listed.
+#
+# The first version of this hand-listed "the NOT NULL columns without
+# defaults" for each table and got two of the three wrong:
+# historical_signals.trade_type and insight_reports.model_versions are both
+# NOT NULL with no default, so the INSERT meant to prove the valid value is
+# ACCEPTED failed on 23502 instead, and the typo half never reached the
+# CHECK at all. Same defect as the UPDATE version round 3 replaced — a test
+# that cannot fail for its own reason — and the same root cause as the
+# audit it belongs to: a proxy quoted without being checked against the
+# thing it stands for (CLAUDE.md §3.11). Asking information_schema removes
+# the hand-list, so the test stays correct as the tables gain columns.
+_LITERALS = {
+    "character varying": "'ZZZ'",
+    "text": "'ZZZ'",
+    "character": "'Z'",
+    "date": "current_date",
+    "timestamp with time zone": "now()",
+    "timestamp without time zone": "now()",
+    "jsonb": "'{}'::jsonb",
+    "json": "'{}'::json",
+    "uuid": "gen_random_uuid()",
+    "integer": "0",
+    "bigint": "0",
+    "smallint": "0",
+    "numeric": "0",
+    "double precision": "0",
+    "real": "0",
+    "boolean": "false",
+    "ARRAY": "'{}'",
 }
+
+
+def _minimal_insert(conn, table: str, run_kind: str) -> str:
+    """INSERT naming every column the server requires, and nothing else."""
+    cols = conn.execute(text("""
+        SELECT column_name, data_type
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = :t
+           AND is_nullable = 'NO'
+           AND column_default IS NULL
+           AND is_generated = 'NEVER'
+         ORDER BY ordinal_position
+    """), {"t": table}).fetchall()
+    assert cols, f"{table} has no required columns — is the schema loaded?"
+    names, values = ["run_kind"], [f"'{run_kind}'"]
+    for name, dtype in cols:
+        # run_kind carries DEFAULT 'live', so the query above excludes it.
+        # It is named explicitly because it is the column under test.
+        if name == "run_kind":
+            continue
+        names.append(name)
+        # An unknown type raises rather than guessing: a silently wrong
+        # literal would fail the INSERT before the CHECK is reached, which
+        # is the exact failure this rewrite exists to stop.
+        assert dtype in _LITERALS, f"{table}.{name} has unhandled type {dtype!r}"
+        values.append(_LITERALS[dtype])
+    return (f"INSERT INTO {table} ({', '.join(names)}) "
+            f"VALUES ({', '.join(values)})")
+
+
+def _assert_run_kind_is_not_null(conn, table: str) -> None:
+    """A nullable run_kind would let a writer skip the CHECK entirely."""
+    row = conn.execute(text("""
+        SELECT is_nullable FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = :t
+           AND column_name = 'run_kind'
+    """), {"t": table}).fetchone()
+    assert row is not None, f"{table} has no run_kind column"
+    assert row[0] == "NO", f"{table}.run_kind must be NOT NULL"
 
 
 @pytest.mark.parametrize("table", TABLES)
@@ -97,21 +159,21 @@ def test_the_constraint_rejects_a_typo(db_engine, table):
     """'Live' or 'backfil' would be excluded from every reader forever with
     no error anywhere, which is why the CHECK exists at all.
 
-    Tests an INSERT, not an UPDATE. The first version of this test ran
-    `UPDATE ... WHERE true` against these tables, which the integration
-    harness leaves empty: Postgres evaluates a CHECK only for affected rows,
-    so zero rows meant zero evaluations and `pytest.raises` failed with DID
-    NOT RAISE. A test that cannot fail for its own reason is worse than none
-    (Codex on #1098 round 3)."""
+    Tests an INSERT, not an UPDATE. The first version ran
+    `UPDATE ... WHERE true` against tables the harness leaves empty:
+    Postgres evaluates a CHECK only for affected rows, so zero rows meant
+    zero evaluations and `pytest.raises` failed with DID NOT RAISE (Codex
+    on #1098 round 3)."""
     with db_engine.connect() as conn:
         trans = conn.begin()
         try:
-            # The valid value is accepted...
-            conn.execute(text(
-                f"INSERT INTO {table} {_SEED[table].replace('%s', chr(39) + 'live' + chr(39))}"))
+            _assert_run_kind_is_not_null(conn, table)
+            # The valid value is accepted. This half is load-bearing: if it
+            # raises for any other reason, the typo half below proves
+            # nothing, because it would raise for that reason too.
+            conn.execute(text(_minimal_insert(conn, table, "live")))
             # ...and the typo is not.
             with pytest.raises(Exception, match="run_kind_check"):
-                conn.execute(text(
-                    f"INSERT INTO {table} {_SEED[table].replace('%s', chr(39) + 'Live' + chr(39))}"))
+                conn.execute(text(_minimal_insert(conn, table, "Live")))
         finally:
             trans.rollback()
