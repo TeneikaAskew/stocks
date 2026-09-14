@@ -145,20 +145,84 @@ def test_child_keeps_as_of_cutoff_not_just_run_kind():
 
 
 # ---------------------------------------------------------------------------
-# enqueue failure handling — returns False, never raises
+# Ambiguous enqueue (Codex, PR #1094)
 # ---------------------------------------------------------------------------
+#
+# create_task can reach Cloud Tasks and have the task accepted, then fail on
+# the way back (timeout, reset). Treating that as a failure makes the caller
+# run the same run_id in-process while the accepted child also runs it: two
+# paid pipelines, duplicate history rows, racing status writes. A
+# deterministic task name turns the retry into a question with an
+# authoritative answer.
 
 
-def test_enqueue_returns_false_when_client_raises(monkeypatch):
-    class _Boom:
-        def __init__(self, *a, **k):
-            raise RuntimeError("no credentials")
+class _FakeAlreadyExists(Exception):
+    pass
 
-    fake = type("M", (), {"CloudTasksClient": _Boom, "HttpMethod": type("H", (), {"POST": 1})})
-    monkeypatch.setitem(
-        __import__("sys").modules, "google.cloud.tasks_v2", fake
+
+def _fake_tasks_modules(monkeypatch, create_side_effects):
+    """Install fake google.cloud.tasks_v2 + google.api_core.exceptions whose
+    create_task walks `create_side_effects` (an exception to raise, or None
+    to succeed). Records every task dict it is handed."""
+    import sys
+    import types
+
+    seen: list = []
+
+    class _Client:
+        def queue_path(self, p, r, q):
+            return f"projects/{p}/locations/{r}/queues/{q}"
+
+        def create_task(self, parent=None, task=None):
+            seen.append(task)
+            effect = create_side_effects.pop(0)
+            if effect is not None:
+                raise effect
+            return task
+
+    tasks = types.ModuleType("google.cloud.tasks_v2")
+    tasks.CloudTasksClient = _Client
+    tasks.HttpMethod = types.SimpleNamespace(POST=1)
+
+    gexc = types.ModuleType("google.api_core.exceptions")
+    gexc.AlreadyExists = _FakeAlreadyExists
+
+    monkeypatch.setitem(sys.modules, "google.cloud.tasks_v2", tasks)
+    monkeypatch.setitem(sys.modules, "google.api_core.exceptions", gexc)
+    for mod, attr, val in (
+        ("google.cloud", "tasks_v2", tasks),
+        ("google.api_core", "exceptions", gexc),
+    ):
+        if mod in sys.modules:
+            monkeypatch.setattr(sys.modules[mod], attr, val, raising=False)
+    return seen
+
+
+def test_the_task_carries_a_deterministic_name(monkeypatch):
+    seen = _fake_tasks_modules(monkeypatch, [None])
+    assert insight_tasks.enqueue_insight_task("run-abc", "SPY") is True
+    assert seen[0]["name"].endswith("/tasks/insight-run-abc")
+
+
+def test_an_accepted_task_that_errored_on_the_way_back_is_not_rerun(monkeypatch):
+    """First create raises (ambiguous); the re-check says AlreadyExists, so
+    the task DID land and the caller must not also run it in-process."""
+    seen = _fake_tasks_modules(
+        monkeypatch, [RuntimeError("504 deadline exceeded"), _FakeAlreadyExists()]
     )
-    monkeypatch.setattr(
-        insight_tasks, "enqueue_insight_task", insight_tasks.enqueue_insight_task
+    assert insight_tasks.enqueue_insight_task("run-abc", "SPY") is True
+    assert len(seen) == 2, "the ambiguous failure must be re-checked, not guessed"
+
+
+def test_a_genuinely_failed_enqueue_still_reports_false(monkeypatch):
+    """Both attempts fail for a non-AlreadyExists reason: the task really is
+    not queued, so the caller should fall back and run it."""
+    _fake_tasks_modules(
+        monkeypatch, [RuntimeError("permission denied"), RuntimeError("permission denied")]
     )
-    assert insight_tasks.enqueue_insight_task("r", "SPY") is False
+    assert insight_tasks.enqueue_insight_task("run-abc", "SPY") is False
+
+
+def test_an_already_enqueued_run_is_not_reported_as_failed(monkeypatch):
+    _fake_tasks_modules(monkeypatch, [_FakeAlreadyExists()])
+    assert insight_tasks.enqueue_insight_task("run-abc", "SPY") is True

@@ -459,6 +459,18 @@ def _update_explicitly_requested(arg_update: bool) -> bool:
     return bool(arg_update or os.environ.get("INSIGHT_UPDATE") == "true")
 
 
+# The queue's max-concurrent-dispatches bounds in-flight HTTP requests, NOT
+# running executions: Cloud Run's jobs.run returns a long-running Operation
+# as soon as the execution is created, so each :run response frees its queue
+# slot immediately and N enqueued tickers become N concurrent executions.
+# That is fine at the daily 3 and wrong at DEFAULT_MAX_BATCH=10, which would
+# put roughly 10x the analyst fan-out against Vertex at once -- the opposite
+# of what this change is for. Cap the batch size that may fan out; anything
+# larger runs in-process, where the concurrency is one ticker at a time.
+# (Codex, PR #1094.)
+FANOUT_MAX_TICKERS = 5
+
+
 def _fanout_enabled() -> bool:
     """Whether the scheduled batch fans out one execution per ticker.
 
@@ -605,10 +617,18 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
     allow_update, run_kind = _resolve_run_kind_and_update(allow_update_arg)
     triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY')
 
-    # Fan out unless disabled, or unless there is only one ticker (a
-    # lone ticker would pay a container start to save nothing).
+    # Fan out unless disabled, unless there is only one ticker (a lone
+    # ticker would pay a container start to save nothing), or unless the
+    # batch is larger than FANOUT_MAX_TICKERS.
     pending: Optional[list[tuple[str, str]]] = None
-    if _fanout_enabled() and len(tickers) > 1:
+    if _fanout_enabled() and len(tickers) > FANOUT_MAX_TICKERS:
+        logger.warning(
+            "fan-out skipped: %d tickers exceeds FANOUT_MAX_TICKERS=%d; "
+            "running in-process so the batch cannot launch that many "
+            "concurrent executions at the LLM provider",
+            len(tickers), FANOUT_MAX_TICKERS,
+        )
+    elif _fanout_enabled() and len(tickers) > 1:
         pending = _dispatch_fanout(
             tickers, trigger=trigger, as_of=as_of,
             force_update=_update_explicitly_requested(allow_update_arg),

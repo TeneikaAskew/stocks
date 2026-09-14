@@ -107,6 +107,35 @@ def _insert_queued_run(ticker: str, trigger: str) -> str:
     return run_id
 
 
+def _mark_run_failed(run_id: str, error: str) -> None:
+    """Close out a `queued` row whose enqueue never landed.
+
+    Mirrors gcp.insight_pipeline_job._transition's 'failed' branch. Raises
+    nothing the caller must handle differently from any other ticker: a
+    failure here is logged and the batch continues, because the enqueue
+    failure it is recording has already been counted.
+    """
+    from lib.agents.model_routing import connect
+
+    try:
+        conn = connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE insight_runs
+                SET status='failed', finished_at=NOW(), error=%s
+                WHERE id=%s
+                """,
+                (error, run_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.error("could not mark run %s failed: %s", run_id, exc)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -187,7 +216,15 @@ def main() -> int:
             continue
 
         try:
-            run_id = _insert_queued_run(ticker, trigger="auto_refresh")
+            # 'on_demand', not 'auto_refresh': insight_runs_trigger_check
+            # permits only on_demand/scheduled/local_dev/manual_batch/
+            # cache_hit/replay_refresh (verified against the live
+            # constraint 2026-09-14), so 'auto_refresh' failed the insert
+            # outright. 'on_demand' is also what this module's header says
+            # it intends -- runs that "look identical to UI-triggered runs
+            # (same trigger string)" -- and the UI path inserts 'on_demand'
+            # at platform/api/routers/insights.py:832.
+            run_id = _insert_queued_run(ticker, trigger="on_demand")
         except Exception as exc:
             logger.error("  %s: insert_run failed: %s", ticker, exc)
             enqueue_failures.append(ticker)
@@ -197,6 +234,11 @@ def main() -> int:
             enqueued.append((ticker, run_id))
             logger.info("  %s: enqueued run_id=%s", ticker, run_id)
         else:
+            # The row was inserted 'queued' a moment ago and nothing will
+            # ever pick it up, so close it out. Leaving it queued shows
+            # operators and the UI a run that is permanently pending while
+            # the job exits 0 and Cloud Run never retries.
+            _mark_run_failed(run_id, "Cloud Tasks enqueue failed")
             enqueue_failures.append(ticker)
 
     # 4. Summary

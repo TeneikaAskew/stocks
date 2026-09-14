@@ -873,20 +873,50 @@ setup_insight_tasks_queue() {
     # The scheduled insight-pipeline batch now fans out one Cloud Tasks
     # message per ticker, so the JOB's own identity enqueues — previously
     # only the API service did. Verified 2026-09-14: trading-runner@ held
-    # no cloudtasks role at project level, which would have failed every
-    # enqueue and silently dropped the batch back to the sequential loop.
-    # actAs for the task's oauth_token is already covered by a
-    # service-account-level roles/iam.serviceAccountUser binding on the SA
-    # itself.
+    # no cloudtasks role at project level. actAs for the task's oauth_token
+    # is already covered by a service-account-level
+    # roles/iam.serviceAccountUser binding on the SA itself.
     #
-    # No `|| echo` swallow: add-iam-policy-binding exits 0 when the binding
-    # already exists, so a non-zero here is a real failure worth surfacing.
-    echo "Granting roles/cloudtasks.enqueuer to ${SA_EMAIL}..."
-    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-        --member="serviceAccount:${SA_EMAIL}" \
-        --role=roles/cloudtasks.enqueuer \
-        --condition=None \
-        --quiet 2>&1 | tail -3
+    # CHECK, then try, then print — never an unconditional setIamPolicy.
+    # setIamPolicy on the project is owner-only, and the documented deploy
+    # identity here is claude-web@ with roles/editor, which cannot do it
+    # (same limitation _schedule_min_instances handles below). Under
+    # `set -euo pipefail` an unconditional binding call would abort every
+    # routine `deploy.sh insights` run before the jobs were updated.
+    #
+    # Missing the grant is not fatal to the deploy: every enqueue then
+    # fails and _dispatch_fanout runs those tickers in-process, which is
+    # slower but still writes all the reports. So warn loudly and carry on
+    # rather than blocking the deploy on an owner-only action.
+    local enq_policy
+    if ! enq_policy=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+            --flatten="bindings[].members" \
+            --filter="bindings.role=roles/cloudtasks.enqueuer AND bindings.members=serviceAccount:${SA_EMAIL}" \
+            --format="value(bindings.role)" 2>/dev/null); then
+        echo "  WARNING: cannot read project IAM policy; skipping the" >&2
+        echo "           cloudtasks.enqueuer check. If the binding is absent the" >&2
+        echo "           daily batch falls back to its in-process loop." >&2
+        return 0
+    fi
+    if [ -n "${enq_policy}" ]; then
+        echo "  cloudtasks.enqueuer: already granted to ${SA_EMAIL}"
+        return 0
+    fi
+    if gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+            --member="serviceAccount:${SA_EMAIL}" \
+            --role=roles/cloudtasks.enqueuer \
+            --condition=None \
+            --quiet >/dev/null 2>&1; then
+        echo "  cloudtasks.enqueuer: granted to ${SA_EMAIL}"
+        return 0
+    fi
+    echo "  WARNING: ${SA_EMAIL} lacks roles/cloudtasks.enqueuer and this" >&2
+    echo "           identity cannot grant it. The insight-pipeline fan-out will" >&2
+    echo "           fall back to running tickers in-process (correct, slower)." >&2
+    echo "           A project owner can enable it with:" >&2
+    echo "           gcloud projects add-iam-policy-binding ${PROJECT_ID} \\" >&2
+    echo "             --member=serviceAccount:${SA_EMAIL} \\" >&2
+    echo "             --role=roles/cloudtasks.enqueuer --condition=None" >&2
 }
 
 # Sensitive values are passed via Cloud Run --set-secrets so they never

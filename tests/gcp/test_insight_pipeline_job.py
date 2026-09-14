@@ -589,3 +589,28 @@ def test_single_ticker_does_not_pay_a_container_start(stub_fanout, monkeypatch):
     _run(job._run_scheduled())
     assert enqueued == []
     assert [t for _, t in ran] == ["SPY"]
+
+
+def test_a_batch_too_large_to_throttle_does_not_fan_out(stub_fanout, monkeypatch):
+    """max-concurrent-dispatches bounds in-flight dispatch requests, not
+    running executions: jobs.run returns as soon as the execution exists,
+    so the slot frees immediately and N tickers would become N concurrent
+    executions against the same LLM provider. Above the cap we stay
+    in-process, where concurrency is one ticker at a time."""
+    enqueued, ran = stub_fanout
+    over = ",".join(f"T{i}" for i in range(job.FANOUT_MAX_TICKERS + 1))
+    _set_env(monkeypatch, INSIGHT_TICKERS=over, INSIGHT_AS_OF=None,
+             INSIGHT_BATCH_OVERRIDE="1")
+    code = _run(job._run_scheduled())
+    assert code == 0
+    assert enqueued == [], "a batch this size must not launch that many executions"
+    assert len(ran) == job.FANOUT_MAX_TICKERS + 1
+
+
+def test_a_batch_at_the_cap_still_fans_out(stub_fanout, monkeypatch):
+    enqueued, ran = stub_fanout
+    at_cap = ",".join(f"T{i}" for i in range(job.FANOUT_MAX_TICKERS))
+    _set_env(monkeypatch, INSIGHT_TICKERS=at_cap, INSIGHT_AS_OF=None)
+    _run(job._run_scheduled())
+    assert len(enqueued) == job.FANOUT_MAX_TICKERS
+    assert ran == []

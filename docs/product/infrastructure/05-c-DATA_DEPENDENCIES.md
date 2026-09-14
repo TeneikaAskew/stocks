@@ -300,7 +300,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [169](../../../scripts/backfill_history_tables.py#L169)
 
 ### `insight_runs`
-- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [99](../../../gcp/auto_refresh_top_n.py#L99)
+- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [99](../../../gcp/auto_refresh_top_n.py#L99), [126](../../../gcp/auto_refresh_top_n.py#L126)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [377](../../../gcp/discord_interactions/main.py#L377)
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [192](../../../gcp/insight_pipeline_job.py#L192), [215](../../../gcp/insight_pipeline_job.py#L215), [221](../../../gcp/insight_pipeline_job.py#L221), [230](../../../gcp/insight_pipeline_job.py#L230)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [310](../../../platform/api/routers/insights.py#L310), [363](../../../platform/api/routers/insights.py#L363), [369](../../../platform/api/routers/insights.py#L369), [378](../../../platform/api/routers/insights.py#L378)

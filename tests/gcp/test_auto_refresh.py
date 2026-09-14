@@ -246,3 +246,81 @@ def test_insert_queued_run_reaches_a_connect_that_actually_exists(monkeypatch):
     run_id = ar._insert_queued_run("SPY", "scheduled")
     assert run_id
     assert any("INSERT INTO insight_runs" in str(c) for c in calls)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Trigger constraint + queued-row cleanup (Codex, PR #1094)
+# ──────────────────────────────────────────────────────────────────────
+
+# Verified against the live constraint on 2026-09-14:
+#   CHECK (trigger IN ('on_demand','scheduled','local_dev','manual_batch',
+#                      'cache_hit','replay_refresh'))
+# 'auto_refresh' is not a member, so the insert raised, the per-ticker
+# handler swallowed it, and fixing only the import would have left the
+# outage in place behind a different exception.
+LIVE_TRIGGER_VALUES = frozenset(
+    {"on_demand", "scheduled", "local_dev", "manual_batch",
+     "cache_hit", "replay_refresh"}
+)
+
+
+def test_the_trigger_written_is_one_the_constraint_permits(monkeypatch):
+    from gcp import auto_refresh_top_n as ar
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        ar, "rank_tickers",
+        lambda **kw: _fake_rank([("SPY", 5.0)]),
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
+    monkeypatch.setattr(
+        ar, "_insert_queued_run",
+        lambda tk, trigger: seen.append(trigger) or f"run-{tk}",
+    )
+    monkeypatch.setattr(ar, "enqueue_insight_task", lambda *a, **k: True)
+    monkeypatch.setattr("sys.argv", ["prog"])
+    ar.main()
+    assert seen, "no run was inserted"
+    assert set(seen) <= LIVE_TRIGGER_VALUES, (
+        f"trigger {seen!r} violates insight_runs_trigger_check"
+    )
+
+
+def test_a_failed_enqueue_does_not_leave_the_run_queued_forever(monkeypatch):
+    """Nothing will ever pick up a queued row whose enqueue failed, and the
+    job exits 0 so Cloud Run never retries. Operators and the UI would see a
+    permanently pending run."""
+    from gcp import auto_refresh_top_n as ar
+
+    failed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        ar, "rank_tickers", lambda **kw: _fake_rank([("SPY", 5.0)])
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
+    monkeypatch.setattr(ar, "_insert_queued_run", lambda tk, trigger: f"run-{tk}")
+    monkeypatch.setattr(ar, "enqueue_insight_task", lambda *a, **k: False)
+    monkeypatch.setattr(
+        ar, "_mark_run_failed",
+        lambda run_id, error: failed.append((run_id, error)),
+    )
+    monkeypatch.setattr("sys.argv", ["prog"])
+    ar.main()
+    assert failed == [("run-SPY", "Cloud Tasks enqueue failed")]
+
+
+def test_a_successful_enqueue_leaves_the_run_alone(monkeypatch):
+    from gcp import auto_refresh_top_n as ar
+
+    failed: list = []
+    monkeypatch.setattr(
+        ar, "rank_tickers", lambda **kw: _fake_rank([("SPY", 5.0)])
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
+    monkeypatch.setattr(ar, "_insert_queued_run", lambda tk, trigger: f"run-{tk}")
+    monkeypatch.setattr(ar, "enqueue_insight_task", lambda *a, **k: True)
+    monkeypatch.setattr(
+        ar, "_mark_run_failed", lambda run_id, error: failed.append(run_id)
+    )
+    monkeypatch.setattr("sys.argv", ["prog"])
+    ar.main()
+    assert failed == []

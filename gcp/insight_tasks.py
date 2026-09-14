@@ -99,6 +99,7 @@ def enqueue_insight_task(
     """
     try:
         from google.cloud import tasks_v2  # type: ignore
+        from google.api_core import exceptions as gexc  # type: ignore
     except ImportError:
         logger.error("google-cloud-tasks not installed - cannot enqueue %s", ticker)
         return False
@@ -136,16 +137,52 @@ def enqueue_insight_task(
             }
         ).encode()
         task = {
+            # A deterministic name makes create_task idempotent, which is
+            # what lets an ambiguous failure be resolved rather than
+            # guessed. Without it, a timeout AFTER the server accepted the
+            # task reads as a failure, the caller runs the same run_id
+            # in-process, and the queued child runs it too: two paid
+            # pipelines, duplicate history rows, racing status writes.
+            # run_id is a per-run UUID, so the name is never reused.
+            "name": f"{parent}/tasks/insight-{run_id}",
             "http_request": {
                 "http_method": tasks_v2.HttpMethod.POST,
                 "url": job_url,
                 "headers": {"Content-Type": "application/json"},
                 "body": body,
                 "oauth_token": {"service_account_email": sa_email},
-            }
+            },
         }
-        client.create_task(parent=parent, task=task)
-        return True
-    except Exception as exc:  # network, auth, queue-missing, quota
+        try:
+            client.create_task(parent=parent, task=task)
+            return True
+        except gexc.AlreadyExists:
+            # Someone already enqueued this exact run. Nothing to do, and
+            # reporting failure here would trigger a duplicate in-process run.
+            logger.warning("task for %s (%s) already enqueued", ticker, run_id)
+            return True
+        except Exception as first:
+            # Ambiguous: the server may have accepted the task before the
+            # error reached us. Ask again under the same name -- an
+            # AlreadyExists answer proves the first attempt landed.
+            logger.warning(
+                "Cloud Tasks enqueue for %s failed (%s); re-checking by name",
+                ticker, first,
+            )
+            try:
+                client.create_task(parent=parent, task=task)
+                return True
+            except gexc.AlreadyExists:
+                logger.warning(
+                    "first enqueue for %s did land despite the error", ticker
+                )
+                return True
+            except Exception as second:
+                logger.error(
+                    "Cloud Tasks enqueue failed for %s: %s (re-check: %s)",
+                    ticker, first, second,
+                )
+                return False
+    except Exception as exc:  # client construction, queue path, body build
         logger.error("Cloud Tasks enqueue failed for %s: %s", ticker, exc)
         return False
