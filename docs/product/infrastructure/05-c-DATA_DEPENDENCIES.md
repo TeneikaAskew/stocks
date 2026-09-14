@@ -291,18 +291,18 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_insider_transactions.py`](../../../gcp/fetchers/fetch_insider_transactions.py) — line [227](../../../gcp/fetchers/fetch_insider_transactions.py#L227)
 
 ### `insight_reports`
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [335](../../../gcp/insight_pipeline_job.py#L335), [366](../../../gcp/insight_pipeline_job.py#L366)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [365](../../../gcp/insight_pipeline_job.py#L365), [396](../../../gcp/insight_pipeline_job.py#L396)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [406](../../../platform/api/routers/insights.py#L406)
 - [`scripts/generate_historical_report.py`](../../../scripts/generate_historical_report.py) — line [67](../../../scripts/generate_historical_report.py#L67)
 
 ### `insight_reports_history`
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [294](../../../gcp/insight_pipeline_job.py#L294)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [324](../../../gcp/insight_pipeline_job.py#L324)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [169](../../../scripts/backfill_history_tables.py#L169)
 
 ### `insight_runs`
 - [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [105](../../../gcp/auto_refresh_top_n.py#L105), [132](../../../gcp/auto_refresh_top_n.py#L132)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [377](../../../gcp/discord_interactions/main.py#L377)
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [197](../../../gcp/insight_pipeline_job.py#L197), [220](../../../gcp/insight_pipeline_job.py#L220), [226](../../../gcp/insight_pipeline_job.py#L226), [235](../../../gcp/insight_pipeline_job.py#L235)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [197](../../../gcp/insight_pipeline_job.py#L197), [243](../../../gcp/insight_pipeline_job.py#L243), [253](../../../gcp/insight_pipeline_job.py#L253), [262](../../../gcp/insight_pipeline_job.py#L262)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [319](../../../platform/api/routers/insights.py#L319), [372](../../../platform/api/routers/insights.py#L372), [378](../../../platform/api/routers/insights.py#L378), [387](../../../platform/api/routers/insights.py#L387)
 
 ### `intraday_flow_15m`
@@ -618,7 +618,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [77](../../../gcp/auto_refresh_top_n.py#L77)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [357](../../../gcp/discord_interactions/main.py#L357)
 - [`gcp/insight_discord_push.py`](../../../gcp/insight_discord_push.py) — line [86](../../../gcp/insight_discord_push.py#L86), [97](../../../gcp/insight_discord_push.py#L97)
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [390](../../../gcp/insight_pipeline_job.py#L390)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [420](../../../gcp/insight_pipeline_job.py#L420)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [284](../../../lib/strategies/insight_cache.py#L284)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [220](../../../platform/api/routers/insights.py#L220), [232](../../../platform/api/routers/insights.py#L232), [253](../../../platform/api/routers/insights.py#L253), [289](../../../platform/api/routers/insights.py#L289)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [547](../../../scripts/audit_data_freshness.py#L547), [548](../../../scripts/audit_data_freshness.py#L548), [707](../../../scripts/audit_data_freshness.py#L707)

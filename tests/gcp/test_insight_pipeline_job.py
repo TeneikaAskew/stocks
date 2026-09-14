@@ -685,3 +685,63 @@ def test_run_kind_fits_the_column():
     """run_kind is VARCHAR(20) with no check constraint, so a new value
     needs no migration but must still fit."""
     assert len("auto_refresh") <= 20
+
+
+# ---------------------------------------------------------------------------
+# Redelivered-launch claim (Codex, PR #1094)
+# ---------------------------------------------------------------------------
+#
+# Two things can start a SECOND execution carrying the SAME run_id, and the
+# deterministic Cloud Tasks name stops neither because it only deduplicates
+# create_task: Cloud Tasks retries the HTTP target POST (queue is
+# --max-attempts 2, and jobs.run creates the execution before returning an
+# Operation, so a lost response is indistinguishable from a failed launch),
+# and Cloud Run retries the task (job is --max-retries 1). Unclaimed, both
+# run the paid pipeline, both append history, and they race the final status.
+
+
+def test_the_loser_of_a_redelivery_race_does_not_run_the_pipeline(monkeypatch):
+    """Second execution finds the row already 'running' and stands down
+    WITHOUT invoking the pipeline."""
+    ran: list = []
+
+    async def fake_pipeline(ticker, **kwargs):
+        ran.append(ticker)
+        raise AssertionError("pipeline must not run for an unclaimed run")
+
+    monkeypatch.setattr(job, "_transition", lambda *a, **k: False)
+    monkeypatch.setattr(job, "run_insight_pipeline", fake_pipeline)
+    ok = _run(job._run_one("run-1", "SPY"))
+    # True, not False: nothing failed. Returning False would make Cloud Run
+    # retry the loser of the race indefinitely.
+    assert ok is True
+    assert ran == [], "the losing execution ran the pipeline anyway"
+
+
+def test_the_winner_of_the_claim_proceeds(monkeypatch):
+    """Contrast case: a successful claim must still run normally."""
+    ran: list = []
+
+    async def fake_pipeline(ticker, **kwargs):
+        ran.append(ticker)
+        raise RuntimeError("stop after the claim")
+
+    monkeypatch.setattr(job, "_transition", lambda *a, **k: True)
+    monkeypatch.setattr(job, "run_insight_pipeline", fake_pipeline)
+    monkeypatch.setattr(job, "load_routes_snapshot", lambda *a, **k: {})
+    _run(job._run_one("run-1", "SPY"))
+    assert ran == ["SPY"], "the claiming execution must run the pipeline"
+
+
+def test_the_claim_is_a_compare_and_swap_on_claimable_states():
+    """The SQL must be conditional, and must still admit 'failed' so Cloud
+    Run's own retry-after-failure keeps working. 'running' is deliberately
+    excluded: a crashed execution leaves a visibly stuck row, which beats a
+    second one duplicating work we cannot prove has stopped."""
+    import inspect
+
+    src = inspect.getsource(job._transition)
+    assert "status IN ('queued', 'failed')" in src, (
+        "the running transition must be a conditional claim, not a bare UPDATE"
+    )
+    assert "rowcount" in src, "the claim must be decided by rows affected"

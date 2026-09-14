@@ -211,15 +211,42 @@ def _transition(
     *,
     error: str | None = None,
     report_id: str | None = None,
-) -> None:
+) -> bool:
+    """Move a run to `status`. Returns whether this caller made the move.
+
+    Only the 'running' transition can return False, and it is the claim
+    that makes a redelivered launch safe. Two things can start a SECOND
+    execution carrying the SAME run_id, and the deterministic task name
+    fixes neither because it only deduplicates `create_task`:
+
+      * Cloud Tasks retries the HTTP target POST (queue is --max-attempts 2).
+        `jobs.run` creates the execution and returns an Operation, so a
+        lost response after a successful launch is indistinguishable from
+        a failed one, and the retry launches a second execution.
+      * Cloud Run retries the task itself (job is --max-retries 1).
+
+    Unclaimed, both executions run the paid pipeline, append their own
+    insight_reports_history row, and race the final status. The DB row is
+    the only state both can see, so the claim is a compare-and-swap on it:
+    exactly one UPDATE matches and the loser stands down.
+
+    'failed' is claimable so Cloud Run's own retry-after-failure still
+    works. 'running' deliberately is NOT: a crashed execution leaves a
+    visibly stuck row, which is better than a second one silently
+    duplicating work we cannot prove has stopped. (Codex, PR #1094.)
+    """
     conn = connect()
     try:
         cur = conn.cursor()
         if status == "running":
             cur.execute(
-                "UPDATE insight_runs SET status='running', started_at=NOW() WHERE id=%s",
+                "UPDATE insight_runs SET status='running', started_at=NOW() "
+                "WHERE id=%s AND status IN ('queued', 'failed')",
                 (run_id,),
             )
+            claimed = cur.rowcount == 1
+            conn.commit()
+            return claimed
         elif status == "done":
             cur.execute(
                 """
@@ -241,6 +268,9 @@ def _transition(
         conn.commit()
     finally:
         conn.close()
+    # done/failed are unconditional and always "applied"; only the
+    # 'running' claim above can decline.
+    return True
 
 
 def _resolve_run_kind_and_update(arg_update: bool) -> tuple[bool, str]:
@@ -436,7 +466,16 @@ async def _run_one(
         f" as_of={as_of}" if as_of else "",
         allow_update, run_kind,
     )
-    _transition(run_id, "running")
+    if not _transition(run_id, "running"):
+        # Another execution owns this run_id. Returning True rather than
+        # False on purpose: nothing failed, and exiting non-zero here would
+        # make Cloud Run retry the loser of the race over and over.
+        logger.warning(
+            "[run_id=%s] %s is already claimed by another execution "
+            "(redelivered task or job retry) — standing down, not re-running it",
+            run_id, ticker,
+        )
+        return True
     try:
         snapshot = load_routes_snapshot()
         report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
