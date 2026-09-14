@@ -27,7 +27,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -39,11 +38,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.agents.ranker import rank_tickers  # noqa: E402
+from gcp.insight_tasks import enqueue_insight_task  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 )
+
 logger = logging.getLogger("auto-refresh-top-n")
 
 
@@ -104,64 +105,6 @@ def _insert_queued_run(ticker: str, trigger: str) -> str:
     finally:
         conn.close()
     return run_id
-
-
-def _enqueue_cloud_task(run_id: str, ticker: str) -> bool:
-    """Enqueue a Cloud Tasks message that runs the insight-pipeline
-    Cloud Run job with INSIGHT_RUN_ID + INSIGHT_TICKER env overrides.
-
-    Mirrors platform.api.routers.insights._enqueue_cloud_task. Returns
-    True on success, False on any failure (so the orchestrator can
-    log + skip without blocking the other tickers).
-    """
-    try:
-        from google.cloud import tasks_v2  # type: ignore
-    except ImportError:
-        logger.error("google-cloud-tasks not installed — cannot enqueue")
-        return False
-
-    project = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
-    region = os.environ.get("GCP_REGION", "us-east1")
-    queue = os.environ.get("INSIGHT_TASKS_QUEUE", "insight-pipeline-queue")
-    sa_email = os.environ.get(
-        "INSIGHT_TASKS_SERVICE_ACCOUNT",
-        f"trading-runner@{project}.iam.gserviceaccount.com",
-    )
-    job_url = (
-        f"https://{region}-run.googleapis.com/apis/run.googleapis.com/v1/"
-        f"namespaces/{project}/jobs/insight-pipeline:run"
-    )
-    try:
-        client = tasks_v2.CloudTasksClient()
-        parent = client.queue_path(project, region, queue)
-        body = json.dumps(
-            {
-                "overrides": {
-                    "containerOverrides": [
-                        {
-                            "env": [
-                                {"name": "INSIGHT_RUN_ID", "value": run_id},
-                                {"name": "INSIGHT_TICKER", "value": ticker},
-                            ]
-                        }
-                    ]
-                }
-            }
-        ).encode()
-        task = {
-            "http_request": {
-                "http_method": tasks_v2.HttpMethod.POST,
-                "url": job_url,
-                "headers": {"Content-Type": "application/json"},
-                "body": body,
-                "oauth_token": {"service_account_email": sa_email},
-            }
-        }
-        client.create_task(parent=parent, task=task)
-        return True
-    except Exception as exc:
-        logger.error("Cloud Tasks enqueue failed for %s: %s", ticker, exc)
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +193,7 @@ def main() -> int:
             enqueue_failures.append(ticker)
             continue
 
-        if _enqueue_cloud_task(run_id, ticker):
+        if enqueue_insight_task(run_id, ticker):
             enqueued.append((ticker, run_id))
             logger.info("  %s: enqueued run_id=%s", ticker, run_id)
         else:

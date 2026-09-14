@@ -66,7 +66,7 @@ def test_top_n_selects_highest_scored_and_skips_cached(monkeypatch):
     def fake_enqueue(run_id, ticker):
         enqueued.append((run_id, ticker))
         return True
-    monkeypatch.setattr(ar, "_enqueue_cloud_task", fake_enqueue)
+    monkeypatch.setattr(ar, "enqueue_insight_task", fake_enqueue)
 
     rc = ar.main.__wrapped__() if hasattr(ar.main, "__wrapped__") else None
     # main() uses argparse defaults (top_n=3 from env or fallback)
@@ -85,7 +85,7 @@ def test_top_n_zero_when_ranker_empty(monkeypatch):
     monkeypatch.setattr(ar, "rank_tickers", lambda **kw: _fake_rank([]))
     monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
     enqueued: list = []
-    monkeypatch.setattr(ar, "_enqueue_cloud_task",
+    monkeypatch.setattr(ar, "enqueue_insight_task",
                         lambda r, t: enqueued.append((r, t)) or True)
 
     monkeypatch.setattr("sys.argv", ["prog"])
@@ -108,7 +108,7 @@ def test_top_n_dry_run_skips_db_writes(monkeypatch):
     monkeypatch.setattr(ar, "_insert_queued_run",
                         lambda tk, trigger: insert_calls.append((tk, trigger)) or "x")
     enqueue_calls: list = []
-    monkeypatch.setattr(ar, "_enqueue_cloud_task",
+    monkeypatch.setattr(ar, "enqueue_insight_task",
                         lambda r, t: enqueue_calls.append((r, t)) or True)
 
     monkeypatch.setattr("sys.argv", ["prog", "--dry-run"])
@@ -134,7 +134,7 @@ def test_enqueue_failure_does_not_block_other_tickers(monkeypatch):
     def flaky_enqueue(run_id, ticker):
         attempted.append(ticker)
         return ticker != "NVDA"  # fail on NVDA
-    monkeypatch.setattr(ar, "_enqueue_cloud_task", flaky_enqueue)
+    monkeypatch.setattr(ar, "enqueue_insight_task", flaky_enqueue)
 
     monkeypatch.setattr("sys.argv", ["prog"])
     rc = ar.main()
@@ -157,7 +157,7 @@ def test_top_n_respects_env_var(monkeypatch):
     monkeypatch.setattr(ar, "_insert_queued_run",
                         lambda tk, trigger: f"run-{tk}")
     enqueued: list[str] = []
-    monkeypatch.setattr(ar, "_enqueue_cloud_task",
+    monkeypatch.setattr(ar, "enqueue_insight_task",
                         lambda r, t: enqueued.append(t) or True)
 
     monkeypatch.setattr("sys.argv", ["prog"])

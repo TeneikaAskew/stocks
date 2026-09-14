@@ -7,7 +7,8 @@ Cloud SQL's insight_reports table. The refresh endpoint enqueues a
 run; clients poll /runs/{run_id} until status='done'.
 
 In production, refresh dispatches a Cloud Tasks message to the
-Cloud Run job (gcp/insight_pipeline_job.py). In local dev, it falls
+Cloud Run job (gcp/insight_pipeline_job.py) via the shared
+gcp.insight_tasks.enqueue_insight_task. In local dev, it falls
 back to FastAPI BackgroundTasks so you can exercise the full path
 without spinning up infrastructure.
 """
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from gcp.insight_tasks import enqueue_insight_task  # noqa: E402
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
@@ -833,7 +835,7 @@ def refresh_insight_report(
     if _is_local_dev():
         background_tasks.add_task(_sync_run, run_id, ticker_up, parsed_as_of)
     else:
-        enqueued = _enqueue_cloud_task(run_id, ticker_up, as_of_iso=as_of)
+        enqueued = enqueue_insight_task(run_id, ticker_up, as_of_iso=as_of)
         if not enqueued:
             logger.warning(
                 "Cloud Tasks enqueue unavailable — falling back to BackgroundTasks"
@@ -846,68 +848,6 @@ def refresh_insight_report(
         status="queued",
         as_of=str(parsed_as_of) if parsed_as_of else None,
     )
-
-
-def _enqueue_cloud_task(
-    run_id: str,
-    ticker: str,
-    as_of_iso: Optional[str] = None,
-) -> bool:
-    """Submit a Cloud Tasks message that runs the insight-pipeline
-    Cloud Run job with INSIGHT_RUN_ID / INSIGHT_TICKER env overrides.
-
-    Returns True on successful enqueue, False on any failure (so the
-    caller can fall back to BackgroundTasks).
-    """
-    try:
-        from google.cloud import tasks_v2  # type: ignore
-    except ImportError:
-        return False
-
-    project = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
-    region = os.environ.get("GCP_REGION", "us-east1")
-    queue = os.environ.get("INSIGHT_TASKS_QUEUE", "insight-pipeline-queue")
-    sa_email = os.environ.get(
-        "INSIGHT_TASKS_SERVICE_ACCOUNT",
-        f"trading-runner@{project}.iam.gserviceaccount.com",
-    )
-    job_url = (
-        f"https://{region}-run.googleapis.com/apis/run.googleapis.com/v1/"
-        f"namespaces/{project}/jobs/insight-pipeline:run"
-    )
-
-    try:
-        client = tasks_v2.CloudTasksClient()
-        parent = client.queue_path(project, region, queue)
-        env_vars = [
-            {"name": "INSIGHT_RUN_ID", "value": run_id},
-            {"name": "INSIGHT_TICKER", "value": ticker},
-        ]
-        if as_of_iso:
-            env_vars.append({"name": "INSIGHT_AS_OF", "value": as_of_iso})
-        body = json.dumps(
-            {
-                "overrides": {
-                    "containerOverrides": [
-                        {"env": env_vars}
-                    ]
-                }
-            }
-        ).encode()
-        task = {
-            "http_request": {
-                "http_method": tasks_v2.HttpMethod.POST,
-                "url": job_url,
-                "headers": {"Content-Type": "application/json"},
-                "body": body,
-                "oauth_token": {"service_account_email": sa_email},
-            }
-        }
-        client.create_task(parent=parent, task=task)
-        return True
-    except Exception as exc:  # network, auth, queue-missing, etc.
-        logger.warning("Cloud Tasks enqueue failed: %s", exc)
-        return False
 
 
 def _sync_run(
