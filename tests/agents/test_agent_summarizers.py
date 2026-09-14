@@ -30,6 +30,9 @@ def patch_query(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    # retrieve_similar_journal uses the non-swallowing sibling; a fixture
+    # is exempt from Rule 3.7, so both wrappers get the same canned data.
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
     return set_result
 
 
@@ -1028,3 +1031,90 @@ def test_gamma_levels_realtime_forwards_the_snapshot_date(patch_query, monkeypat
     summarizers.summarize_gamma_levels("SPY")
 
     assert date.fromisoformat(str(seen["snapshot_date"])[:10]) == date(2026, 5, 13)
+
+
+# ---------------------------------------------------------------------------
+# Regression: the reflection-memory query must be a legal bound statement.
+#
+# `:vec::vector` is not a cast of the bind parameter — SQLAlchemy's text()
+# parser reads `:vec:` and keeps `:vec::vector` verbatim in the SQL while
+# declaring a phantom parameter named `ve`. Postgres then sees a literal
+# colon and rejects the whole statement:
+#
+#   syntax error at or near ":"   (SQLSTATE 42601, position 77)
+#
+# `_query` swallows that (CLAUDE.md Rule 3.7), so retrieve_similar_journal
+# returned [] and every insight report lost its journal reflection section
+# with no visible failure. Measured: 3 per insight-pipeline run, every
+# weekday. `CAST(:vec AS vector)` is the spelling text() parses correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_similar_journal_sql_binds_every_parameter(patch_query):
+    """The emitted SQL must declare exactly the params the call supplies."""
+    import sqlalchemy
+
+    captured: dict[str, object] = {}
+
+    def capture(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return pd.DataFrame()
+
+    import lib.agents.summarizers as mod
+    orig = mod._query_strict
+    mod._query_strict = capture
+    try:
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
+    finally:
+        mod._query_strict = orig
+
+    stmt = sqlalchemy.text(str(captured["sql"]))
+    assert set(stmt._bindparams) == set(captured["params"]), (
+        "bind parameters parsed out of the SQL must match the params passed in"
+    )
+
+
+def test_retrieve_similar_journal_sql_leaves_no_literal_placeholder(patch_query):
+    """Compiling must consume every ':name' — a leftover is the 42601."""
+    import sqlalchemy
+    from sqlalchemy.dialects import postgresql
+
+    captured: dict[str, object] = {}
+
+    def capture(sql, params=None):
+        captured["sql"] = sql
+        return pd.DataFrame()
+
+    import lib.agents.summarizers as mod
+    orig = mod._query_strict
+    mod._query_strict = capture
+    try:
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
+    finally:
+        mod._query_strict = orig
+
+    compiled = str(
+        sqlalchemy.text(str(captured["sql"])).compile(
+            dialect=postgresql.dialect(paramstyle="format")
+        )
+    )
+    assert ":vec" not in compiled
+    assert compiled.count("%s") == 4, (
+        f"expected vec twice plus ticker and k, got: {compiled}"
+    )
+
+
+def test_retrieve_similar_journal_surfaces_db_failure(monkeypatch):
+    """A DB failure must raise, not read as 'no similar trades'.
+
+    The swallowing `_query` is what let the malformed cast above look like
+    an empty result for a week. The orchestrator wraps this call in its own
+    handler, so raising here costs nothing and names the failure in the log.
+    """
+    def boom(sql, params=None):
+        raise RuntimeError("Cloud SQL unreachable")
+
+    monkeypatch.setattr(summarizers, "_query_strict", boom)
+    with pytest.raises(RuntimeError, match="Cloud SQL unreachable"):
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)

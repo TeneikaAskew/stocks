@@ -11,11 +11,16 @@ One function per analyst section plus a catalyst lookup and a
 journal-memory retrieval. Each returns a dict that's trivially
 JSON-serializable for embedding in a prompt.
 
-All DB access goes through `gcp.database.query_to_dataframe`, which
+Most DB access goes through `gcp.database.query_to_dataframe`, which
 returns an empty DataFrame on failure — summarizers degrade to
 `{'available': False, 'reason': ...}` rather than raising. The
 orchestrator passes degraded bundles to analysts with a clear flag
 so the final report can mark which sections were missing.
+
+`retrieve_similar_journal` is the exception: it goes through
+`_query_strict` and raises, because it returns a list rather than an
+availability envelope, so a swallowed failure is indistinguishable
+from "no similar trades" (CLAUDE.md Rule 3.7). Its caller handles it.
 """
 
 from __future__ import annotations
@@ -40,6 +45,21 @@ def _query(sql: str, params: Optional[dict] = None):
     from gcp.database import query_to_dataframe
 
     return query_to_dataframe(sql, params or {})
+
+
+def _query_strict(sql: str, params: Optional[dict] = None):
+    """Non-swallowing sibling of ``_query`` — raises on any DB failure.
+
+    ``query_to_dataframe`` returns an empty DataFrame on error, which a
+    caller cannot tell apart from "matched no rows". That is how a
+    malformed pgvector cast in ``retrieve_similar_journal`` sat in
+    production for a week looking like "this ticker has no similar
+    journal entries" (CLAUDE.md Rule 3.7). Callers on this path have
+    their own handler and would rather see the exception.
+    """
+    from gcp.database import query_to_dataframe_strict
+
+    return query_to_dataframe_strict(sql, params or {})
 
 
 def _scalar(row, col, cast=float, digits: Optional[int] = None):
@@ -1551,18 +1571,23 @@ def retrieve_similar_journal(
 
     # psycopg2 has no native pgvector adapter; serialize to text literal.
     vec_literal = format_vector_literal(query_embedding)
+    # CAST(:vec AS vector), never `:vec::vector` — SQLAlchemy's text()
+    # parser reads the first colon of `::` as part of the parameter name,
+    # declares a phantom `ve`, and leaves `:vec::vector` verbatim in the
+    # statement. Postgres then rejects the whole thing with SQLSTATE 42601,
+    # 'syntax error at or near ":"'.
     sql = (
         "SELECT id::text AS id, ticker, direction, return_pct, "
-        "       (embedding <=> :vec::vector) AS cosine_distance "
+        "       (embedding <=> CAST(:vec AS vector)) AS cosine_distance "
         "FROM journal_entries "
         # Per-user privacy: never surface a user-owned (private) journal entry in
         # the GLOBAL insights reflection — only owner-less (legacy/system) rows
         # feed the cross-user memory. Per-user insights are a separate follow-up.
         "WHERE embedding IS NOT NULL AND ticker = :ticker AND user_email IS NULL "
-        "ORDER BY embedding <=> :vec::vector ASC "
+        "ORDER BY embedding <=> CAST(:vec AS vector) ASC "
         "LIMIT :k"
     )
-    df = _query(sql, {"vec": vec_literal, "ticker": ticker.upper(), "k": k})
+    df = _query_strict(sql, {"vec": vec_literal, "ticker": ticker.upper(), "k": k})
     if df.empty:
         return []
     out: list[JournalRef] = []
