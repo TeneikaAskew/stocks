@@ -1189,6 +1189,10 @@
           "firing": {
             "anyOf": [
               {
+                "enum": [
+                  "CALL",
+                  "PUT"
+                ],
                 "type": "string"
               },
               {
@@ -1248,6 +1252,10 @@
             "type": "array"
           },
           "direction": {
+            "enum": [
+              "CALL",
+              "PUT"
+            ],
             "title": "Direction",
             "type": "string"
           },
@@ -1996,6 +2004,14 @@
             "title": "Max Proba"
           },
           "model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Model Version"
           },
           "pred_bucket": {
@@ -2057,6 +2073,18 @@
             "type": "string"
           },
           "ts": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Ts"
           },
           "usage_guidance": {
@@ -6513,6 +6541,15 @@
           },
           "catalyst_types": {
             "items": {
+              "enum": [
+                "earnings",
+                "sec_8k",
+                "insider",
+                "top_mover",
+                "economic_event",
+                "watchlist",
+                "manual"
+              ],
               "type": "string"
             },
             "title": "Catalyst Types",
@@ -6730,6 +6767,12 @@
           },
           "status": {
             "default": "queued",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed"
+            ],
             "title": "Status",
             "type": "string"
           },
@@ -6749,9 +6792,25 @@
         "additionalProperties": true,
         "properties": {
           "data_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Data Source"
           },
           "gamma_flip": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Gamma Flip"
           },
           "mood": {
@@ -6799,6 +6858,18 @@
             "title": "Role"
           },
           "snapshot_ts": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Snapshot Ts"
           },
           "status": {
@@ -6806,6 +6877,14 @@
             "type": "string"
           },
           "total_gex": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Total Gex"
           }
         },
@@ -7432,6 +7511,12 @@
             "title": "Started At"
           },
           "status": {
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed"
+            ],
             "title": "Status",
             "type": "string"
           },

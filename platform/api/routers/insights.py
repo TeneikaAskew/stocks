@@ -21,7 +21,7 @@ import os
 import sys
 from datetime import date, datetime, time, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 from uuid import UUID, uuid4
 
 from typing import Generator
@@ -70,10 +70,19 @@ def _watchlist_owner(request: Request) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Provably closed: insight_runs.status is written only by this router
+# (INSERT 'queued', _update_run_status transitions to running/done/failed)
+# and by discord_interactions' cache-hit audit rows ('done'). Declaring the
+# set makes a rogue stored value fail loud at serialization instead of
+# serving as junk, and gives solyra's generated types the union its
+# hand-written RunStatus/RefreshResponse already claim (its issue #56).
+RunState = Literal["queued", "running", "done", "failed"]
+
+
 class RunStatus(BaseModel):
     id: str
     ticker: str
-    status: str
+    status: RunState
     trigger: str
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
@@ -84,7 +93,7 @@ class RunStatus(BaseModel):
 class RefreshResponse(BaseModel):
     run_id: str
     ticker: str
-    status: str = "queued"
+    status: RunState = "queued"
     as_of: Optional[str] = None
 
 
