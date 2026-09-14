@@ -198,9 +198,12 @@ class FirebaseWebConfig(ApiModel):
 
 
 class RuntimeConfigResponse(ApiModel):
-    # Any lowercased AUTH_MODE value; a Literal here would 500 the app's boot
-    # request on a mis-set environment.
-    authMode: str
+    # The three modes api/auth.py implements. api.auth now validates
+    # AUTH_MODE at import and refuses to START on anything else (an
+    # unrecognized mode silently no-opped the middleware — fail-open), so a
+    # running service can only ever hold one of these values and the
+    # Literal cannot 500 a boot request the way a mis-set env once could.
+    authMode: Literal["open", "firebase", "iap"]
     firebase: Optional[FirebaseWebConfig] = None
 
 
@@ -1182,11 +1185,21 @@ class MineStyleProfile(ApiModel):
     total: int
 
 
+class MineStyleAggregateMetrics(ApiModel):
+    """The keys the frontend's style panel renders, typed but optional:
+    lib/walk_forward._aggregate_metrics only emits avg_*/std_* keys the
+    folds actually produced, so none of these are guaranteed present. Every
+    other fold metric passes through untyped (ApiModel allows extras)."""
+
+    avg_expectancy_pct: Optional[float] = None
+    avg_win_rate: Optional[float] = None
+    total_trades_all_folds: Optional[int] = None
+    total_folds: Optional[int] = None
+
+
 class MineStyleSuccess(ApiModel):
     profile: MineStyleProfile
-    # avg_*/std_* for every fold metric plus total_folds and
-    # total_trades_all_folds; the key set varies per request.
-    aggregate_metrics: dict[str, float]
+    aggregate_metrics: MineStyleAggregateMetrics
     stability_score: float
     staged: bool
 
