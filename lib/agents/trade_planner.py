@@ -799,6 +799,16 @@ def _build_rationale(
 # ───────────────────────────────────────────────────────────────────────────
 
 
+class PlanContextUnavailable(ValueError):
+    """The bundle cannot produce a usable PlanContext.
+
+    Distinct from an unexpected bug so a caller can mark the plan section
+    degraded on the report rather than swallowing it alongside genuine
+    crashes. Subclasses ValueError because that is what callers already
+    catch for a malformed context.
+    """
+
+
 def context_from_bundle(
     bundle: dict, direction: Direction, conviction: Conviction,
 ) -> PlanContext:
@@ -837,7 +847,36 @@ def context_from_bundle(
 
     # summarize_market_context emits 'close' + 'atr_14'; older fixtures
     # may use 'last_close' / 'atr'.
-    close = float(market.get("close") or market.get("last_close") or 0.0)
+    #
+    # `close` is load-bearing and has no defensible default: every stop,
+    # target and distance is measured from it, and `safe_atr()` falls back
+    # to a percentage OF it. The previous `or 0.0` turned a missing price
+    # into a plausible-looking zero that survived ~400 lines and then
+    # surfaced as `ZeroDivisionError: float division by zero` at the first
+    # `/ atr` — a message naming neither the field nor the ticker. Fail
+    # here instead, where the cause is still in scope (CLAUDE.md Rule 3.7:
+    # an INTERNAL failure fails loud, it does not fabricate a value).
+    close_val = _maybe_float(market.get("close"))
+    if close_val is None:
+        close_val = _maybe_float(market.get("last_close"))
+    if close_val is None or close_val <= 0:
+        raise PlanContextUnavailable(
+            f"cannot build a plan context for {ticker or '<unknown>'}: the "
+            f"market section carries no usable close "
+            f"(close={market.get('close')!r}, "
+            f"last_close={market.get('last_close')!r}, "
+            f"available={market.get('available')!r}, "
+            f"reason={market.get('reason')!r}). Whatever "
+            f"summarize_market_context read for this run has no completed "
+            f"daily bar."
+        )
+    close = float(close_val)
+    # AUDIT-2026-05-13: silent fallback — `or 0.0` on a financial field.
+    # Left in place because `safe_atr()` rescues a zero ATR into
+    # `close * 0.01` rather than propagating it, and unwinding that
+    # fabricated default means giving every persona plan an unavailable
+    # path. Tracked separately; with `close > 0` guaranteed above, it can
+    # no longer produce a zero divisor.
     atr = float(market.get("atr_14") or market.get("atr") or 0.0)
 
     # Multi-timeframe levels (PR α). summarize_strat_status surfaces a
@@ -864,6 +903,11 @@ def context_from_bundle(
         sma_200=_maybe_float(market.get("sma_200")),
         prior_swing_low=_maybe_float(market.get("prior_swing_low")),
         prior_swing_high=_maybe_float(market.get("prior_swing_high")),
+        # AUDIT-2026-05-13: silent fallback — `or 0.0` on a financial field.
+        # See docs/audits/FALLBACK_AUDIT_2026-05-13.md §13, `lib/agents/` row.
+        # A missing FTFC score becomes 0.0, which fails the conservative
+        # persona's _CONSERVATIVE_MIN_FTFC gate and sets ftfc_aligned False:
+        # "unknown" is read as "actively unaligned".
         ftfc_score=float(strat.get("ftfc_score") or 0.0),
         high_impact_catalyst_in_window=high_impact_in_window,
         analog_median_day_5_pct=_maybe_float(analog_d5),

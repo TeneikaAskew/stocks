@@ -277,6 +277,12 @@ def summarize_market_context(
     above_200 = None
     if close is not None and sma_200 is not None:
         above_200 = close > sma_200
+    # AUDIT-2026-05-13: silent fallback — `or 0` on a financial field. See
+    # docs/audits/FALLBACK_AUDIT_2026-05-13.md §13, `lib/agents/` row. A
+    # missing price_vs_ema20 is classified "ranging", so "unknown" reads as
+    # "flat". Not fixed here: `regime` is a required string with no
+    # unavailable member, so the fix is a schema change with its own
+    # consumers.
     if above_200 is True and (price_vs_ema20 or 0) > 0:
         regime = "trending_up"
     elif above_200 is False and (price_vs_ema20 or 0) < 0:
