@@ -216,8 +216,8 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime, str]:
     # it. `--end-date` into the past makes it plainer still — the window is
     # historical whatever the cursor says.
     #
-    # LIVE_WINDOW_DAYS mirrors the job's own --lookback-days default of 2
-    # plus a day of slack for a weekend or a single missed run.
+    # LIVE_WINDOW_DAYS is derived from the job's cron, not from its
+    # --lookback-days flag — see the constant's own block above.
     # Measured against NOW, not as a span: `end` defaults to now + 1 day, so
     # every live window is a day wide before the cursor is even considered,
     # and an --end-date before the cursor makes the span negative. Both of

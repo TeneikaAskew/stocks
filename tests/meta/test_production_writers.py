@@ -304,6 +304,9 @@ LIVE_ONLY_READERS = {
     # A backfill row counting as today's cache would skip live generation
     # while the live-only API cannot serve it: no report at all that day.
     "gcp/auto_refresh_top_n.py": "insight_reports",
+    # Publishes to Discord: a replayed report announced as today's is the
+    # same misrepresentation as serving it from /api/insights.
+    "gcp/insight_discord_push.py": "insight_reports",
 }
 
 
