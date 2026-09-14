@@ -6,7 +6,7 @@ from `magnitude_per_bar_predictions` and flags degraded states that
 freshness alone can't catch:
 
 * **Modal-class dominance** — a healthy 4-class softmax should spread
-  probability mass across buckets. When >=90% of bars argmax-pick the
+  probability mass across buckets. When >=90% of bars decide on the
   same bucket for a (ticker, tf) cell, the model has collapsed (the
   promotion gate's collapse ceiling; the ~68% TIGHT base rate means a
   healthy model already sits in the MEDIUM tier). Was the
@@ -75,10 +75,15 @@ REGION = os.environ.get("GCP_REGION", "us-east1")
 # this same number as its collapse criterion. If the two drifted apart, a
 # model could pass promotion and then be flagged HIGH by this auditor every
 # day after (which is exactly what happened with c49qf, when no promotion
-# gate existed at all). The gate's second, relative criterion (predicted vs
-# true modal share, mag_config.PROMOTION_MAX_MODAL_EXCESS) needs labels, which
-# live rows do not carry, so it is not mirrored here; a healthy model on a
-# ~68% TIGHT base rate lands in MEDIUM, which is "eyeball", not "page".
+# gate existed at all).
+#
+# Since 2026-09-14 `pred_bucket` is the served DECISION (the highest bucket
+# whose probability clears DECISION_LIFT_MIN times its class prior, else
+# TIGHT), not argmax. The gate scores that same decision over the training
+# matrix, so this check reads exactly what the gate measured; there is no
+# longer a labels-only criterion left unmirrored. A calibrated model lands
+# around 82% modal share at the default lift bar, which is MEDIUM
+# ("eyeball", not "page"); a constant-output model is 100% and HIGH.
 MODAL_DOMINANCE_HIGH = PROMOTION_COLLAPSE_MODAL_SHARE  # >= 90% in one bucket = collapsed
 MODAL_DOMINANCE_MED = 0.55    # >= 55% in one bucket = worth eyeballing
 
@@ -315,7 +320,7 @@ def check_modal_dominance(rows: list[dict], report: Report) -> None:
         bucket_name = {0: "TIGHT", 1: "NORMAL", 2: "EXPANDED", 3: "EXPLOSIVE"}.get(
             modal["pred_bucket"], f"bucket-{modal['pred_bucket']}"
         )
-        detail = (f"argmax={bucket_name} on {modal['n_predictions']}/{total} bars "
+        detail = (f"decision={bucket_name} on {modal['n_predictions']}/{total} bars "
                   f"({share:.1%}, avg_conf={modal['avg_conf']:.3f}) "
                   f"over last {LOOKBACK_DAYS}d (model={mv})")
         if share >= MODAL_DOMINANCE_HIGH:

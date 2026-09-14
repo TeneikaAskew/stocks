@@ -39,8 +39,16 @@ from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     contract_payload, MAGNITUDE_THRESHOLDS, DEFAULT_LABEL_MODE,
 )
 
+# The ~64/27/7/2 magnitude class balance; what a promoted artifact records.
+_PRIORS = [0.64, 0.27, 0.07, 0.02]
 _SERVING_CONTRACT = contract_payload(DEFAULT_LABEL_MODE,
-                                     MAGNITUDE_THRESHOLDS)
+                                     MAGNITUDE_THRESHOLDS,
+                                     class_priors=_PRIORS)
+
+
+def _contract(**overrides):
+    """A complete, servable contract dict with fields overridden."""
+    return {**_SERVING_CONTRACT, **overrides}
 
 
 def _stub_missing_modules(mods: list[str]) -> None:
@@ -155,7 +163,7 @@ def test_score_and_persist_returns_zero_on_empty_features():
     engine = MagicMock()
     n = _score_and_persist(engine, "IWM", "5m",
                             _fake_model([]), ["rsi_14"], "v1",
-                            pd.DataFrame())
+                            pd.DataFrame(), _SERVING_CONTRACT)
     assert n == 0
     engine.begin.assert_not_called()
 
@@ -170,7 +178,7 @@ def test_score_and_persist_raises_on_feature_drift(fake_features):
         _score_and_persist(engine, "IWM", "5m",
                             _fake_model([[0.25] * 4] * 3),
                             ["rsi_14", "atr_14", "gone_feature"],
-                            "v1", fake_features)
+                            "v1", fake_features, _SERVING_CONTRACT)
 
 
 def test_score_and_persist_raises_on_wrong_class_count(fake_features):
@@ -183,7 +191,7 @@ def test_score_and_persist_raises_on_wrong_class_count(fake_features):
     feature_cols = ["rsi_14", "atr_14", "ema_9", "vwap"]
     with pytest.raises(RuntimeError, match="expected 4"):
         _score_and_persist(engine, "IWM", "5m",
-                            bad_model, feature_cols, "v1", fake_features)
+                            bad_model, feature_cols, "v1", fake_features, _SERVING_CONTRACT)
 
 
 def test_score_and_persist_skips_rows_missing_essential_ohlcv(fake_features):
@@ -202,7 +210,7 @@ def test_score_and_persist_skips_rows_missing_essential_ohlcv(fake_features):
     engine = MagicMock()
     feature_cols = ["rsi_14", "atr_14", "ema_9", "vwap"]
     n = _score_and_persist(engine, "IWM", "5m",
-                            model, feature_cols, "v1", fake_features)
+                            model, feature_cols, "v1", fake_features, _SERVING_CONTRACT)
     # 2 surviving bars persisted.
     assert n == 2
     # Model was called with 2 rows (not 3).
@@ -230,7 +238,7 @@ def test_score_and_persist_keeps_nan_in_sparse_nonessential_features(fake_featur
     engine = MagicMock()
     feature_cols = ["rsi_14", "atr_14", "ema_9", "vwap"]
     n = _score_and_persist(engine, "IWM", "5m",
-                            model, feature_cols, "v1", fake_features)
+                            model, feature_cols, "v1", fake_features, _SERVING_CONTRACT)
     # All 3 bars survive — the sparse NaN does not gate scoring.
     assert n == 3
     args, _ = model.predict_proba.call_args
@@ -245,7 +253,7 @@ def test_score_and_persist_zero_after_essential_nan_filter(fake_features):
     model = MagicMock()
     engine = MagicMock()
     n = _score_and_persist(engine, "IWM", "5m",
-                            model, ["rsi_14"], "v1", fake_features)
+                            model, ["rsi_14"], "v1", fake_features, _SERVING_CONTRACT)
     assert n == 0
     model.predict_proba.assert_not_called()
 
@@ -260,7 +268,7 @@ def test_score_and_persist_raises_when_an_essential_ohlcv_column_missing(fake_fe
     with pytest.raises(RuntimeError, match="essential OHLCV"):
         _score_and_persist(MagicMock(), "IWM", "5m",
                             _fake_model([[0.25] * 4] * 3),
-                            ["rsi_14"], "v1", frame)
+                            ["rsi_14"], "v1", frame, _SERVING_CONTRACT)
 
 
 # ──────────────────── main() exit-disposition contract ────────────────────
@@ -656,7 +664,7 @@ def test_a_research_label_model_is_refused_not_served():
     """The case #1055 blocks at the writer, arriving at the reader anyway."""
     import json as _json
     from gcp.research.magnitude_engine.mag_config import contract_payload
-    bad = contract_payload("excursion", (0.5, 1.0, 1.5))
+    bad = contract_payload("excursion", (0.5, 1.0, 1.5), class_priors=_PRIORS)
     with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
         _load_with(_json.dumps(bad))
     assert "excursion" in str(e.value)
@@ -665,7 +673,7 @@ def test_a_research_label_model_is_refused_not_served():
 def test_rebucketed_thresholds_are_refused():
     import json as _json
     from gcp.research.magnitude_engine.mag_config import contract_payload
-    bad = contract_payload("body", (0.35, 0.75, 1.25))
+    bad = contract_payload("body", (0.35, 0.75, 1.25), class_priors=_PRIORS)
     with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
         _load_with(_json.dumps(bad))
     assert "0.35" in str(e.value)
@@ -724,9 +732,7 @@ def test_a_reordered_class_list_is_still_caught():
     from gcp.research.magnitude_engine.mag_config import (
         contract_mismatch, LABEL_CLASSES)
     reordered = list(LABEL_CLASSES)[::-1]
-    got = contract_mismatch({"label_mode": "body",
-                             "thresholds": [0.5, 1.0, 1.5],
-                             "classes": reordered})
+    got = contract_mismatch(_contract(classes=reordered))
     assert got and "classes=" in got
 
 
@@ -781,15 +787,20 @@ def test_the_backfill_states_history_rather_than_rederiving_it():
     mean something else -- the precise evolution CONTRACT.json exists to
     catch. (Codex P2 on #1074.)"""
     src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
-    literal = src[src.index("_AUDITED_LEGACY_CONTRACT = {"):src.index("def main(")]
+    literal = src[src.index("_AUDITED_LEGACY_CONTRACT = {"):src.index("_LEGACY_KEYS = (")]
     assert '"label_mode": "body"' in literal
     assert "[0.5, 1.0, 1.5]" in literal
+    # the decision bar is a literal for the same reason: if DECISION_LIFT_MIN
+    # moves, the reader must refuse the old artifact, not have this script
+    # quietly restamp it
+    assert '"decision_lift_min": 2.0' in literal
     for derived in ("MAGNITUDE_THRESHOLDS", "LABEL_CLASSES",
-                    "DEFAULT_LABEL_MODE", "contract_payload"):
+                    "DEFAULT_LABEL_MODE", "contract_payload",
+                    "DECISION_LIFT_MIN"):
         assert derived not in literal, (
             f"the audited contract must not be derived from {derived}")
-    # and it is what gets written
-    assert "json.dumps(_AUDITED_LEGACY_CONTRACT" in src
+    # and it is what gets written, merged only with the per-cell priors
+    assert "{**_AUDITED_LEGACY_CONTRACT," in src
 
 
 def test_the_backfill_validates_rather_than_checking_existence():
@@ -882,16 +893,13 @@ def test_a_scalar_classes_is_malformed_not_an_ordinary_failure(bad):
     payload rather than naming it malformed. (Codex P2 on #1074.)"""
     from gcp.research.magnitude_engine.mag_config import contract_mismatch
     with pytest.raises(ValueError, match="is not a JSON array"):
-        contract_mismatch({"label_mode": "body",
-                           "thresholds": [0.5, 1.0, 1.5], "classes": bad})
+        contract_mismatch(_contract(classes=bad))
 
 
 def test_a_non_string_label_mode_is_malformed_not_merely_mismatched():
     from gcp.research.magnitude_engine.mag_config import contract_mismatch
     with pytest.raises(ValueError, match="is not a string"):
-        contract_mismatch({"label_mode": 3, "thresholds": [0.5, 1.0, 1.5],
-                           "classes": ["TIGHT", "NORMAL", "EXPANDED",
-                                       "EXPLOSIVE"]})
+        contract_mismatch(_contract(label_mode=3))
 
 
 def test_every_malformed_shape_reaches_the_fatal_path():
@@ -1132,10 +1140,7 @@ def test_threshold_coercion_fails_closed():
     #1074.)"""
     from gcp.research.magnitude_engine.mag_config import contract_mismatch
     with pytest.raises(ValueError, match="not a list of numbers"):
-        contract_mismatch({"label_mode": "body",
-                           "thresholds": [10 ** 400, 1.0, 1.5],
-                           "classes": ["TIGHT", "NORMAL", "EXPANDED",
-                                       "EXPLOSIVE"]})
+        contract_mismatch(_contract(thresholds=[10 ** 400, 1.0, 1.5]))
 
 
 def test_an_overflowing_threshold_reaches_the_fatal_path():
@@ -1371,3 +1376,109 @@ def test_the_fleet_sweep_iterates_a_materialised_copy():
         if v == 1:
             del d[k]
     assert d == {("b", "2"): 2}
+
+
+# ─── 2026-09-14: the served decision rule ───
+
+def test_pred_bucket_is_the_decision_not_argmax(fake_features):
+    """Three bars: one at the base rates, one carrying 3x the EXPLOSIVE
+    prior, one carrying ~3x the EXPANDED prior. Argmax says TIGHT for all
+    three (that is the constant column c49qf served for weeks); the decision
+    rule names TIGHT / EXPLOSIVE / EXPANDED, and that is what is persisted."""
+    from gcp.research.magnitude_engine.mag_inference import _score_and_persist
+    proba = np.array([
+        [0.64, 0.27, 0.07, 0.02],
+        [0.60, 0.27, 0.07, 0.06],
+        [0.55, 0.25, 0.17, 0.03],
+    ])
+    assert (proba.argmax(1) == 0).all()
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    n = _score_and_persist(engine, "IWM", "5m", _fake_model(proba),
+                            ["rsi_14", "atr_14"], "v1", fake_features,
+                            _SERVING_CONTRACT)
+    assert n == 3
+    params = conn.execute.call_args.args[1]
+    assert [params[f"pred_bucket_{i}"] for i in range(3)] == [0, 3, 2]
+    # probabilities are still served untouched
+    assert params["p_explosive_1"] == pytest.approx(0.06)
+
+
+def test_a_contract_without_the_decision_rule_is_malformed_not_served():
+    """An artifact stamped before 2026-09-14 carries the label contract but
+    no priors. Its probabilities cannot be turned into a decision the
+    consumer has been told the meaning of, so it is refused -- and the
+    refusal names the missing keys, so the operator reaches for the
+    backfill's upgrade path rather than guessing."""
+    import json as _json
+    legacy = {k: v for k, v in _SERVING_CONTRACT.items()
+              if k not in ("class_priors", "decision_lift_min",
+                           "class_priors_source")}
+    with pytest.raises(ValueError, match="class_priors") as e:
+        _load_with(_json.dumps(legacy))
+    assert "decision_lift_min" in str(e.value)
+
+
+def test_a_contract_under_a_different_lift_bar_is_refused():
+    """pred_bucket must mean one thing across the fleet: the API and the
+    movement statement read it without the contract. An artifact stamped
+    under another bar is a mismatch, exactly like other thresholds."""
+    import json as _json
+    with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
+        _load_with(_json.dumps(_contract(decision_lift_min=3.0)))
+    assert "decision_lift_min=3.0" in str(e.value)
+
+
+@pytest.mark.parametrize("priors,why", [
+    ([0.5, 0.5, 0.5, 0.5], "sum to"),
+    ([0.9, 0.2, -0.1, 0.0], "probabilities in"),
+    ([0.64, 0.27, 0.09], "one per class"),
+    (["a", "b", "c", "d"], "not a list of numbers"),
+    ("0.64,0.27,0.07,0.02", "not a JSON array"),
+])
+def test_priors_that_are_not_a_distribution_are_malformed(priors, why):
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match=why):
+        contract_mismatch(_contract(class_priors=priors))
+
+
+@pytest.mark.parametrize("lift", [1.0, 0.5, 0.0, -2.0, "two", float("nan")])
+def test_a_lift_bar_at_or_under_one_is_malformed(lift):
+    """A bar at or under 1.0 would name a bucket at or BELOW its base rate;
+    that is not a decision rule, it is a bug, and it fails closed."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="decision_lift_min"):
+        contract_mismatch(_contract(decision_lift_min=lift))
+
+
+def test_the_backfill_upgrades_a_legacy_contract_in_place():
+    """A contract written by the 2026-09-11 backfill is upgraded, not
+    overwritten, and only when its three legacy keys agree with the audited
+    history -- otherwise it is not the artifact the audit was about."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    body = src[src.index("def main("):]
+    assert "_DECISION_KEYS" in body and "_LEGACY_KEYS" in body
+    assert "already carries the decision rule" in body
+    assert "disagrees with the audited history" in body
+    assert "no walk-forward prediction CSV" in body
+    assert '"upgraded" if existing else "wrote"' in body
+
+
+def test_the_backfill_measures_priors_rather_than_guessing_them():
+    """Priors are per-cell facts and cannot be a literal. They come from the
+    cell's own prediction CSV, and an artifact with no CSV is refused rather
+    than stamped with someone else's numbers."""
+    from scripts.backfill_model_contracts import _priors_from_predictions
+    csv_text = "fold,ts,true_bucket_idx\n" + "\n".join(
+        ["a,t,0"] * 64 + ["a,t,1"] * 27 + ["a,t,2"] * 7 + ["a,t,3"] * 2)
+    blob = MagicMock()
+    blob.exists.return_value = True
+    blob.download_as_text.return_value = csv_text
+    bucket = MagicMock()
+    bucket.blob.return_value = blob
+    got = _priors_from_predictions(bucket, "SPY", "5m", "magnitude-engine-x")
+    assert got == pytest.approx([0.64, 0.27, 0.07, 0.02])
+    bucket.blob.assert_called_with(
+        "research/magnitude_engine/phase0/spy_5m/predictions_magnitude-engine-x.csv")
+    blob.exists.return_value = False
+    assert _priors_from_predictions(bucket, "SPY", "5m", "magnitude-engine-x") is None

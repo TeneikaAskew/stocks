@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from gcp.research.magnitude_engine.mag_config import (
+    DECISION_LIFT_MIN,
     LABEL_COL, LABEL_CLASSES,
 )
 from gcp.research.strat_engine.strat_config import (
@@ -175,11 +176,60 @@ def decisive_call_hit_rate(y_true_idx: np.ndarray, y_proba: np.ndarray,
     return out
 
 
+def decide_bucket(y_proba: np.ndarray, class_priors: np.ndarray,
+                  lift_min: float = DECISION_LIFT_MIN) -> np.ndarray:
+    """The served decision: the highest bucket whose probability is at least
+    `lift_min` times its class prior, else TIGHT (index 0).
+
+    This replaces argmax everywhere a bucket is NAMED (gate 4, the promotion
+    verdict, the per-bar CSV, and mag_inference's pred_bucket) so that the
+    gate measures the same decision the consumer sees. On a 64%-TIGHT label
+    set the argmax of a calibrated model is TIGHT on ~97% of bars, which made
+    gate 4 a test on a dozen bars per fold and the promotion gate a test the
+    calibrated model failed by construction (2026-09-14; see mag_config's
+    DECISION_LIFT_MIN for the measured operating curve).
+
+    Buckets are walked from the top down and the first that clears wins, so
+    a bar that clears both EXPANDED and EXPLOSIVE is EXPLOSIVE. The bar is
+    inclusive: exactly lift_min * prior names the bucket. A prior of zero
+    for a bucket (a training slice with no examples of it) makes that bucket
+    un-nameable rather than always-named: 0 * lift is 0, and a `>=` against
+    0 would fire on every bar, so that case is guarded explicitly.
+    """
+    proba = np.asarray(y_proba, dtype=float)
+    priors = np.asarray(class_priors, dtype=float)
+    if proba.ndim != 2 or proba.shape[1] != len(LABEL_CLASSES):
+        raise ValueError(
+            f"y_proba must be (n, {len(LABEL_CLASSES)}); got {proba.shape}")
+    if priors.shape != (len(LABEL_CLASSES),):
+        raise ValueError(
+            f"class_priors must have one entry per class; got {priors.shape}")
+    if not np.isfinite(lift_min) or lift_min <= 1.0:
+        raise ValueError(f"lift_min must be a finite number above 1.0; got {lift_min!r}")
+    decision = np.zeros(len(proba), dtype=np.int64)
+    for b in range(len(LABEL_CLASSES) - 1, 0, -1):
+        if priors[b] <= 0.0:
+            continue
+        clears = proba[:, b] >= lift_min * priors[b]
+        # only rows not already claimed by a HIGHER bucket
+        decision = np.where((decision == 0) & clears, b, decision)
+    return decision
+
+
 def explosive_lift(y_true_idx: np.ndarray, y_proba: np.ndarray,
-                    explosive_idx: int) -> dict:
-    """Lift of the EXPLOSIVE bucket = P(true=EXPLOSIVE | predicted=EXPLOSIVE)
-    / P(true=EXPLOSIVE).  Spec gate 4 wants this >= 1.5."""
-    pred = np.argmax(y_proba, axis=1)
+                    explosive_idx: int,
+                    class_priors: np.ndarray,
+                    lift_min: float = DECISION_LIFT_MIN) -> dict:
+    """Lift of the EXPLOSIVE bucket = P(true=EXPLOSIVE | named EXPLOSIVE)
+    / P(true=EXPLOSIVE).  Spec gate 4 wants this >= 1.5.
+
+    "Named" is decide_bucket(), not argmax (2026-09-14). `class_priors` are
+    the TRAINING-fold class frequencies, because that is what the model was
+    fitted against and what the served decision will scale; the base rate in
+    the denominator is still the TEST fold's, because that is what the lift
+    is realised against.
+    """
+    pred = decide_bucket(y_proba, class_priors, lift_min)
     base_rate = float((y_true_idx == explosive_idx).mean()) if len(y_true_idx) else 0.0
     pred_explosive_mask = pred == explosive_idx
     n_pred = int(pred_explosive_mask.sum())
@@ -194,6 +244,7 @@ def explosive_lift(y_true_idx: np.ndarray, y_proba: np.ndarray,
         "n_predicted": n_pred,
         "precision": precision,
         "lift": lift,
+        "decision_lift_min": float(lift_min),
     }
 
 
@@ -248,17 +299,44 @@ def resolve_class_weight(y):
     Default 0.75 was validated on IWM 5m: alpha=0.5 under-predicted tails
     (85/12/2/1), alpha=1.0 over-predicted them (47/27/19/7), alpha=0.75 tracked
     the true base rates (68/21/7/4 vs true 66/25/6/2)."""
-    import os
-    try:
-        alpha = float(os.environ.get(
-            "MAG_CLASS_WEIGHT_POWER", str(MAG_CLASS_WEIGHT_POWER_DEFAULT)))
-    except ValueError:
-        alpha = MAG_CLASS_WEIGHT_POWER_DEFAULT
+    alpha = class_weight_power()
     if alpha >= 1.0:
         return "balanced"
     if alpha <= 0.0:
         return None
     return tempered_class_weight(y, alpha)
+
+
+def class_weight_power() -> float:
+    """The class-weight exponent in effect, as a number.
+
+    Split out of resolve_class_weight so the walk-forward summary can record
+    the value the training actually used. Until 2026-09-14 no run record
+    carried it, and the exponent turned out to be the hyperparameter the
+    whole promotion trade-off turns on: the same cell goes from beating the
+    class-prior baseline in 8 of 8 folds at alpha=0 to losing in 8 of 8 at
+    alpha=0.75. The run that was serving production at the time (c49qf) had
+    no record of its own alpha and the code that produced it predates this
+    repository, so its setting is unrecoverable. This makes the next one
+    recoverable.
+
+    A malformed MAG_CLASS_WEIGHT_POWER RAISES rather than falling back to the
+    default: silently training under a different exponent than the one the
+    operator named is the exact kind of unrecorded configuration this exists
+    to end.
+    """
+    import os
+    raw = os.environ.get("MAG_CLASS_WEIGHT_POWER", "").strip()
+    if raw == "":
+        return float(MAG_CLASS_WEIGHT_POWER_DEFAULT)
+    try:
+        alpha = float(raw)
+    except ValueError as e:
+        raise ValueError(
+            f"MAG_CLASS_WEIGHT_POWER={raw!r} is not a number") from e
+    if not np.isfinite(alpha):
+        raise ValueError(f"MAG_CLASS_WEIGHT_POWER={raw!r} is not finite")
+    return alpha
 
 
 def tempered_class_weight(y, alpha: float = 0.5) -> dict:

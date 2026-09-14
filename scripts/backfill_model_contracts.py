@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Write CONTRACT.json for production model artifacts published before it existed.
+"""Write or upgrade CONTRACT.json for production model artifacts.
+
+Two jobs, one pass. Artifacts promoted before CONTRACT.json existed get one;
+artifacts stamped by the 2026-09-11 backfill, which carry the label contract
+but not the decision rule added on 2026-09-14 (`class_priors`,
+`decision_lift_min`), are upgraded in place. mag_inference refuses either
+kind until this has run.
 
 mag_inference refuses to score a model whose artifact does not state its own
 label contract (see mag_config.CONTRACT_BLOB). Artifacts promoted before that
@@ -76,7 +82,45 @@ _AUDITED_LEGACY_CONTRACT = {
     "label_mode": "body",
     "thresholds": [0.5, 1.0, 1.5],
     "classes": ["TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE"],
+    # 2026-09-14: the served decision rule. A literal for the same reason as
+    # the rest: if the serving lift bar in mag_config moves, the reader must
+    # refuse an artifact stamped under the old bar rather than have this
+    # script quietly restamp it with the new one.
+    "decision_lift_min": 2.0,
+    "class_priors_source": "walk_forward_test_labels",
 }
+
+# The keys a contract needs to carry to be servable now. A contract written
+# by the 2026-09-11 backfill carries only the first three; it is upgraded in
+# place below rather than overwritten, and only when what it says agrees with
+# the audited history.
+_LEGACY_KEYS = ("label_mode", "thresholds", "classes")
+_DECISION_KEYS = ("class_priors", "decision_lift_min")
+
+
+def _priors_from_predictions(bucket, ticker: str, tf: str, run_id: str):
+    """The cell's class frequencies, measured from its own walk-forward
+    prediction CSV, or None when that CSV does not exist.
+
+    Priors are per-cell facts, so unlike the rest of the contract they
+    cannot be a literal. The prediction CSV carries `true_bucket_idx` for
+    every test bar across all eight folds (2019 -> 2026), which is the same
+    population the promoted model's training labels come from; the source
+    is recorded in the contract so the provenance is explicit.
+    """
+    import csv, io    # noqa: PLC0415
+    name = (f"research/magnitude_engine/phase0/{ticker.lower()}_{tf}/"
+            f"predictions_{run_id}.csv")
+    blob = bucket.blob(name)
+    if not blob.exists():
+        return None
+    counts = [0] * len(_AUDITED_LEGACY_CONTRACT["classes"])
+    for row in csv.DictReader(io.StringIO(blob.download_as_text())):
+        counts[int(row["true_bucket_idx"])] += 1
+    n = sum(counts)
+    if n == 0:
+        return None
+    return [c / n for c in counts]
 
 
 class _PointerMoved(RuntimeError):
@@ -138,7 +182,6 @@ def main() -> int:
     # two BUCKETS.
     os.environ["GCS_BUCKET"] = args.bucket
     bucket = gcs.Client().bucket(args.bucket)
-    payload = json.dumps(_AUDITED_LEGACY_CONTRACT, indent=2)
 
     # How many cells each run wrote. The task-parallel path fans out across
     # cells; the single-cell path writes exactly one. That is the signal
@@ -185,23 +228,50 @@ def main() -> int:
                 refused += 1
                 continue
             blob = bucket.blob(f"{base}/{run_id}/{CONTRACT_BLOB}")
+            existing = None
             if blob.exists():
-                print(f"{ticker}:{tf} run={run_id} — {CONTRACT_BLOB} already "
-                      f"present, left alone")
-                skipped += 1
+                existing = json.loads(blob.download_as_text())
+                if all(existing.get(k) is not None for k in _DECISION_KEYS):
+                    print(f"{ticker}:{tf} run={run_id} — {CONTRACT_BLOB} "
+                          f"already carries the decision rule, left alone")
+                    skipped += 1
+                    continue
+                # An upgrade, not an overwrite: the three legacy keys must
+                # say what the audit says, or this is not the artifact the
+                # audit was about and nothing here may touch it.
+                disagree = [k for k in _LEGACY_KEYS
+                            if existing.get(k) != _AUDITED_LEGACY_CONTRACT[k]]
+                if disagree:
+                    print(f"{ticker}:{tf} run={run_id} — REFUSED: existing "
+                          f"{CONTRACT_BLOB} disagrees with the audited history "
+                          f"on {disagree}; not upgraded")
+                    refused += 1
+                    continue
+            priors = _priors_from_predictions(bucket, ticker, tf, run_id)
+            if priors is None:
+                print(f"{ticker}:{tf} run={run_id} — REFUSED: "
+                      f"no walk-forward prediction CSV to measure class "
+                      f"priors from; the decision rule cannot be stamped "
+                      f"without them")
+                refused += 1
                 continue
+            payload = json.dumps({**_AUDITED_LEGACY_CONTRACT,
+                                  "class_priors": priors}, indent=2)
+            action = "upgraded" if existing else "wrote"
             if args.commit:
                 blob.upload_from_string(payload,
                                         content_type="application/json")
                 print(f"{ticker}:{tf} run={run_id} (spans {span[run_id]} "
-                      f"cells) — wrote {CONTRACT_BLOB}")
+                      f"cells) — {action} {CONTRACT_BLOB} "
+                      f"(priors={[round(p, 4) for p in priors]})")
             else:
                 print(f"{ticker}:{tf} run={run_id} (spans {span[run_id]} "
-                      f"cells) — WOULD write {CONTRACT_BLOB}")
+                      f"cells) — WOULD have {action} {CONTRACT_BLOB} "
+                      f"(priors={[round(p, 4) for p in priors]})")
             written += 1
 
-    verb = "wrote" if args.commit else "would write"
-    print(f"\n{verb} {written}; {skipped} already had one; "
+    verb = "wrote/upgraded" if args.commit else "would write/upgrade"
+    print(f"\n{verb} {written}; {skipped} already complete; "
           f"{refused} refused as unverified; {missing} cells not serving")
     if not args.commit and written:
         print("dry run — re-run with --commit to apply")

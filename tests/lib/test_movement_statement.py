@@ -931,7 +931,7 @@ def test_degenerate_magnitude_leaves_headline_and_levels_ok(monkeypatch):
     assert out["levels"]["calls"][0]["reach_rate"]["status"] == "OK"
     em = out["confidence_modifiers"]["expected_move"]
     assert em["status"] == "UNAVAILABLE"
-    assert "argmax-collapsed" in em["reason"]
+    assert "decision-collapsed" in em["reason"]
     assert em["degeneracy"]["degenerate"] is True
 
 
@@ -1033,7 +1033,7 @@ def test_collapsed_model_bucket_is_withheld():
     em = ms._build_expected_move(
         "SPY", "15m", _degeneracy_qf({0: 588}), as_of=None)
     assert em["status"] == "UNAVAILABLE"
-    assert "argmax-collapsed" in em["reason"]
+    assert "decision-collapsed" in em["reason"]
     assert "TIGHT" in em["reason"]
     # The numbers behind the decision travel with the envelope.
     assert em["degeneracy"]["modal_share"] == 1.0

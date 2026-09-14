@@ -125,6 +125,16 @@ project stops with the verdict "magnitude is unlearnable from these
 features." No subsequent phases are dispatched, no tuning is applied,
 no rescues. That's the test.
 
+> **Amendment 2026-09-14 (gate 4 population).** G4's metric (realised
+> EXPLOSIVE lift over base rate) and threshold (≥ 1.5 in ≥ 6/8 folds) are
+> unchanged. What changed is *which bars count as "predicted EXPLOSIVE"*:
+> the served decision rule (`decide_bucket`: P(EXPLOSIVE) ≥ 2.0 × its
+> training prior) rather than argmax. Under argmax a calibrated model
+> named EXPLOSIVE on ~12 bars per fold and the gate passed on noise (4 of
+> 12 right read as 13.4× lift). Under the rule it is scored on the same
+> population the consumer sees. Every gate count before this date was
+> computed on the argmax population; see the 2026-09-14 section.
+
 **Sub-test for moving on**: if Phase 0 passes, Phases 1–4 each test
 their additions IN ISOLATION on top of the baseline — not stacked. The
 question being answered is "does this feature family add independent
@@ -615,8 +625,10 @@ The walk-forward harness writes per-fold rows to
 `magnitude_walk_forward_results` in Cloud SQL and a JSON summary to
 GCS (`gs://adept-mountain-474619-d4-trading-data/research/magnitude_engine/{phase}/{ticker}_{tf}/walk_forward_*.json`).
 This markdown file is updated by a follow-up commit AFTER each phase
-dispatch completes — by querying the results table via `db-query.yml`,
-not by editing during a live run. **Edits to this file during a run
+dispatch completes — by querying the results table via
+`./scripts/db_query_cr.sh` (the `db-query.yml` workflow it replaced was
+deleted 2026-05-30) and the GCS summaries, not by editing during a live
+run. **Edits to this file during a run
 are not allowed** because they'd let post-hoc number-fitting back into
 the workflow.
 
@@ -853,3 +865,234 @@ supersedes and confirms the retraction: there is no fold-fragility; the earlier
 **FINAL SIZE VERDICT: predictable, calibrated (ECE ~0.04), and ROBUSTLY gate-
 passing at 15m + isotonic + prune.** Deploy target confirmed. This is the pure-
 prediction lens (log-loss); orthogonal to the 2026-05-29 gate-7 (cost) FAIL.
+
+
+---
+
+## 2026-09-14 — the promotion criteria measured one fact from two sides; nothing could satisfy both
+
+**Question.** Which configuration belongs in production? The June runs
+(`rmcwj`, `r7c4q`) passed gates 1-4 on several 5m cells; the serving
+`c49qf` cells fail gate 4 at 0/8. Was calibration the lever, and is
+anything actually promotable?
+
+**Runs.** `hbb6v` (27 cells, phases 0+1+3, body, calibration none,
+default class weight α=0.75, 2026-09-14 14:04 → 14:32 UTC), then a
+class-weight sweep on phase1 (9 cells each): `54nrr` α=0.00, `tbkpt`
+α=0.30, `gfsnt` α=0.45, `mj95j` α=0.60. Gate 6 via `direction-probe`
+executions `wptxx` / `kdr97` / `72pfg`. Every LATEST pointer was captured
+before dispatch and was byte-identical after: nothing promoted.
+
+### 1. A persistence bug, found on the way
+
+`magnitude_per_bar_predictions` held 16,666 rows, **all** `source='inference'`,
+zero `source='walk_forward'`, `fold_label` NULL throughout. The CSV-harvest
+loop in `walk_forward` popped `_predictions` off every fold dict *before*
+`_persist_predictions_table` read them, so the SQL write received empty
+folds and logged "no per-bar predictions to persist" on every run. The GCS
+CSVs were complete because that writer reads the harvested list. Fixed in
+`66a2daae` (pop moved after the SQL write, before the summary is
+serialised; two ordering tests pin both ends). GCS was and is the complete
+record.
+
+### 2. `hbb6v`: 0 of 27, and the base rates prove it is not the market
+
+Gate 1 was 0/8 on 25 of 27 cells (1/8 on the other two); median ECE 0.078
+against a 0.05 ceiling. Same cell, same folds, June vs today:
+
+| fold | rmcwj (June) logloss / base / beat | hbb6v (today) logloss / base / beat |
+|---|---|---|
+| 2019 | 0.9066 / 0.9154 / **+0.0089** | 1.1157 / 0.9154 / **−0.2003** |
+| 2021 | 0.9210 / 0.9435 / +0.0225 | 1.0507 / 0.9435 / −0.1073 |
+| 2025 | 0.8760 / 0.9007 / +0.0247 | 1.1080 / 0.9007 / −0.2074 |
+
+`base_logloss` is identical on every historical fold, as are `n_train`
+(55,788) and `n_test` (18,632). Same data, same labels; the model got
+worse on fixed data. Cause: the June runs trained unweighted; the current
+default is a tempered class weight at α=0.75 (`MAG_CLASS_WEIGHT_POWER`,
+`mag_pred_train.resolve_class_weight`). Predicted vs true distribution:
+
+```
+                predicted TIGHT/NORMAL/EXPANDED/EXPLOSIVE   true
+rmcwj  (α=0)    97.1 / 2.5 / 0.1 / 0.3                      63.6 / 26.9 / 6.9 / 2.6
+hbb6v  (α=.75)  70.6 / 17.9 / 6.1 / 5.4                     64.2 / 26.4 / 6.8 / 2.6
+```
+
+rmcwj is argmax-collapsed: 97% TIGHT, never EXPANDED. It wins gate 1
+because collapsing to the majority class is a strong log-loss play, wins
+gate 2 because a confident majority predictor is calibrated on the
+majority, and wins gate 4 because its dozen EXPLOSIVE calls per fold are
+high-precision. The promotion verdict would refuse it at 97.1% modal share
+and +33.5 pp excess. **So on 2026-09-14 the four walk-forward gates and
+the promotion criteria pointed in opposite directions, and nothing
+satisfied both.**
+
+This also revises the calibration story: isotonic and α were confounded in
+every earlier comparison (the isotonic runs 4jhx2/c49qf/w4gn7 all ran at
+the later default; rmcwj/r7c4q unweighted). c49qf's α is **unrecoverable**:
+the engine directory was squashed into this repo in `1e93ae97` on
+2026-08-28, one day after c49qf ran, and no summary recorded the exponent.
+Every summary now does (`class_weight_power`).
+
+### 3. The α sweep: a strict monotone trade-off, no dial setting works
+
+SPY 5m phase1, 8 folds:
+
+| α | modal share | excess vs true modal | gate 1 folds | median beat |
+|---|---|---|---|---|
+| 0.00 | 97.3% | +33.2 pp | 8 | +0.0213 |
+| 0.30 | 92.3% | +28.1 pp | 4 | −0.0019 |
+| 0.45 | 89.3% | +25.1 pp | 2 | −0.0273 |
+| 0.60 | 82.1% | +17.9 pp | 1 | −0.0689 |
+| 0.75 | 70.6% | +6.4 pp | 0 | ≈ −0.13 |
+
+Across all 36 sweep cells: **0 satisfy both** the gates and the
+distribution criteria. Exactly one (SPY 15m, α=0.60, excess +9.1 pp)
+clears the distribution checks; its gate 1 is 0/8. The α=0 control
+reproduced rmcwj's collapse on today's data and features (97.0% / 97.3%
+vs 97.1%), so class weighting alone explains the June-vs-today difference;
+the two-feature swap between the runs was a red herring.
+
+### 4. Prior correction: tested, and it lands in the collapsed corner
+
+Dividing the α=0.60 probabilities by the training weights and
+renormalising (the textbook fix) recovers log-loss and re-collapses argmax:
+
+| SPY 5m fold | raw beat | corrected beat | raw modal | corrected modal | true modal |
+|---|---|---|---|---|---|
+| 2019 | −0.0932 | +0.0124 | 74.0% | 96.9% | 63.7% |
+| 2022 | −0.1053 | +0.0088 | 70.3% | 97.1% | 62.5% |
+| 2025 | −0.0782 | +0.0299 | 88.7% | 99.5% | 64.9% |
+
+Positive corrected beat on 23 of 24 fold-cells (SPY/QQQ/IWM 5m); corrected
+argmax at 94-99.8%. Robust to the weight proxy: sweeping the assumed
+exponent from 0 to 1.0, beat is positive only between 0.3 and 0.75 and
+modal share is 93.7%-99.1% across that whole range. No transform of the
+probability vector satisfies both.
+
+### 5. Why: the excess criterion's premise was false
+
+`mag_config` said "a perfectly calibrated model predicts TIGHT on ~68.5%
+of bars." Measured on the α=0 model (SPY 5m, 138,717 bars):
+
+```
+mean predicted p   0.634 / 0.264 / 0.073 / 0.029
+true rate          0.642 / 0.264 / 0.068 / 0.026
+argmax share TIGHT 97.3%
+```
+
+Calibrated to within a point on every class, and argmax TIGHT on 97% of
+bars, because TIGHT genuinely is the most likely bucket on nearly every
+bar. The criterion conflated *mean probability* with *argmax frequency*.
+Gate 1 scores the probability vector; the collapse and excess criteria
+scored the argmax; a calibrated model with weak tail signal fails the
+second by construction, and the gap between them is a direct measurement
+of the signal that is missing. slv7m (2026-09-07, withdrawn for gate 1 at
+0/8, modal share 68-73%) was the high-α end of this same line; c49qf the
+collapsed end. Neither incident was new; both were this.
+
+### 6. What was serving
+
+The `c49qf` artifacts, measured on their own walk-forward CSVs:
+
+| cell | predicted TIGHT/NORMAL/EXPANDED/EXPLOSIVE | true |
+|---|---|---|
+| IWM 15m | **100.0** / 0.0 / 0.0 / 0.0 | 68.7 / 24.6 / 5.2 / 1.5 |
+| SPY 5m | **100.0** / 0.0 / 0.0 / 0.0 | 64.0 / 26.5 / 6.8 / 2.6 |
+| IWM 5m | 99.9 / 0.1 / 0.0 / 0.0 | 63.1 / 27.4 / 7.1 / 2.4 |
+| QQQ 5m | 99.9 / 0.1 / 0.0 / 0.0 | 64.2 / 26.7 / 6.7 / 2.4 |
+
+A constant. `audit-magnitude-drift` has flagged this HIGH every weekday
+(2026-09-14 13:56: `argmax=TIGHT on 300/300 bars (100.0%)` on SPY 5m, and
+the same on the other three). The detector worked; the argmax column it
+was reading was the problem.
+
+### 7. Gates 5 and 6 on the June passers (for the record)
+
+Gate 5 (1,000-sample bootstrap over test bars, no retraining) on every
+June cell passing gates 1-4: SPY 5m phase1 **100%** under both `r7c4q`
+and `rmcwj`; QQQ 5m phase1/phase3 100%; IWM 5m phase1 100%; all other 5m
+93.6-99.9%; **SPY 15m phase0 12.2%, phase3 7.4%**. SPY 15m cleared gates
+1-4 deterministically and reproduces one time in ten. Gate 6
+(event-window concentration, run in GCP via `direction-probe`): SPY 5m
+0.23×, QQQ 5m 0.23×, IWM 5m 0.63× — not a calendar lookup. Both are
+recorded because they were run, not because they rank anything: every
+one of these cells is argmax-collapsed (§2), and under the amended gate 4
+its counts will change.
+
+### 8. The change: score the decision the consumer sees
+
+`decide_bucket(proba, priors, lift_min)` names the highest bucket whose
+probability is at least `lift_min` × its training-class prior, else TIGHT.
+Operating curve on the calibrated α=0 model (and, for contrast, the
+serving c49qf artifact):
+
+| model | L | non-TIGHT calls | EXPLOSIVE calls | EXPLOSIVE precision | realised lift | folds lift ≥ 1.5 | modal share |
+|---|---|---|---|---|---|---|---|
+| 54nrr SPY 5m | 1.5 | 31.2% | 19.6% | 7.0% | 2.69× | 8/8 | 68.8% |
+| 54nrr SPY 5m | **2.0** | 18.2% | 13.1% | 8.5% | 3.27× | 8/8 | 81.8% |
+| 54nrr SPY 5m | 3.0 | 8.2% | 7.0% | 11.3% | 4.36× | 8/8 | 91.8% |
+| c49qf SPY 5m | 2.0 | 36.5% | 11.5% | 5.4% | 2.07× | 7/8 | 63.5% |
+| c49qf QQQ 5m | 2.0 | 2.4% | 0.5% | 10.6% | 4.46× | 4/8 | 97.6% |
+| c49qf IWM 5m | 2.0 | 3.7% | 3.5% | 9.2% | 3.78× | 8/8 | 96.3% |
+
+At L=2.0 a calibrated model makes tail calls on a real population, clears
+gate 4's 1.5× in every fold with margin, and lands at 82% modal share; at
+L=1.5 its modal share lands *at the true TIGHT share*, which is the
+property the excess criterion wanted and misattributed to argmax. What
+shipped, with the evidence above in the code comments:
+
+- `DECISION_LIFT_MIN = 2.0`. Recorded in `CONTRACT.json` as
+  `decision_lift_min` with the cell's `class_priors`; `mag_inference`
+  refuses an artifact lacking either and refuses one stamped under a
+  different bar, so `pred_bucket` means one thing fleet-wide.
+- `pred_bucket` (predictions table, `/api/magnitude`, the movement
+  statement) is now this decision. Field names and the OpenAPI schema are
+  unchanged; the meaning is not.
+- Gate 4 and the per-bar CSV's `pred_bucket_idx` use the same rule, so
+  gates 5 and 6 resample the calls the gate counted.
+- `promotion_verdict(proba, priors)`: `PROMOTION_MIN_DISTINCT_CLASSES`,
+  the 90% collapse ceiling, and a new `PROMOTION_MIN_TAIL_CALL_SHARE =
+  0.10` (the ceiling's complement, so the label-free live detector reads
+  the same line), all on the decision output. The relative excess
+  criterion is removed. No labels needed; the verdict is exactly what the
+  drift auditor and render backstop can check against live rows.
+- `class_weight_power` is recorded in every run summary and every
+  `PROMOTION_BLOCKED` marker.
+- `scripts/backfill_model_contracts.py` upgrades a legacy contract in
+  place with priors measured from the cell's own prediction CSV.
+- `scripts/dispatch_magnitude_phase.sh --class-weight-power=`.
+- `scripts/bootstrap_gate_fragility.py` and
+  `scripts/naive_calendar_lookup_baseline.py` recompute gate 4 under the
+  same rule (the fold's truth distribution stands in for the training
+  prior in the bootstrap, the substitution it already made for base
+  log-loss).
+
+Gate 5 re-run under the amended gate 4, on the α=0 run (`54nrr`, SPY 5m
+phase1, 138,717 bars, 200 resamples): deterministic **8 / 8 / 8 / 8**,
+cell-level pass rate **100%**, gate 4 now scored on ~13% of bars instead
+of ~12 per fold. By the measurements in this section that model also
+clears the new distribution checks (81.8% modal, 18.2% tail calls), which
+would make it promotable under the amended criteria. That has **not** been
+exercised: `54nrr` ran under the old code and promoted nothing; a fresh
+dispatch at `--class-weight-power=0.0` is how it gets tested for real.
+
+### 9. Precisely what is and is not established
+
+- Only phase1 was swept. The structural argument does not depend on the
+  feature set, so phase0/phase3 are not expected to differ, but that is
+  unmeasured.
+- The honest product number at L=2.0 is an EXPLOSIVE call on ~13% of bars
+  with 8-9% precision against a 2.6% base rate. That is the tail signal
+  this feature set has. The three real options remain: gate on
+  probabilities rather than argmax (done), rebalance the labels via
+  `MAG_THRESHOLDS`, or find features that raise P(EXPLOSIVE) on the bars
+  that are.
+- The four constant-output cells are **still serving**. Their contracts
+  need the priors upgrade before the new inference can serve them at all,
+  and under the new rule c49qf QQQ 5m and IWM 5m sit at 2-4% tail calls
+  (blocked). Withdrawal is a product decision; see
+  `docs/product/15-OPEN-DECISIONS.md`.
+- No gate count in any section above this one was computed under the
+  amended gate 4. Re-running the walk-forward under the new rule is how
+  the phase table gets re-established.

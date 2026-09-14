@@ -117,8 +117,8 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/live/quote/{ticker}` | [`platform/api/routers/live.py:189`](../../../platform/api/routers/live.py#L189) | Fetch real-time quote from Alpha Vantage GLOBAL_QUOTE. |
 | `POST` | `/api/live/signal-series` | [`platform/api/routers/live.py:610`](../../../platform/api/routers/live.py#L610) | Per-bar CALL/PUT signal fires for the Charts page "Sig" overlay. |
 | `GET` | `/api/live/status` | [`platform/api/routers/live.py:174`](../../../platform/api/routers/live.py#L174) | Return current market open/closed status based on Eastern Time. |
-| `GET` | `/api/magnitude/{ticker}/{tf}/at/{ts}` | [`platform/api/routers/magnitude.py:153`](../../../platform/api/routers/magnitude.py#L153) | Return the prediction for exactly this (ticker, tf, ts). |
-| `GET` | `/api/magnitude/{ticker}/{tf}/latest` | [`platform/api/routers/magnitude.py:109`](../../../platform/api/routers/magnitude.py#L109) | Return the most-recent prediction for this (ticker, tf). |
+| `GET` | `/api/magnitude/{ticker}/{tf}/at/{ts}` | [`platform/api/routers/magnitude.py:156`](../../../platform/api/routers/magnitude.py#L156) | Return the prediction for exactly this (ticker, tf, ts). |
+| `GET` | `/api/magnitude/{ticker}/{tf}/latest` | [`platform/api/routers/magnitude.py:112`](../../../platform/api/routers/magnitude.py#L112) | Return the most-recent prediction for this (ticker, tf). |
 | `GET` | `/api/market/coverage` | [`platform/api/main.py:1239`](../../../platform/api/main.py#L1239) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
 | `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:913`](../../../platform/api/main.py#L913) | Load intraday OHLCV data for a specific ticker and date. |
 | `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:607`](../../../platform/api/main.py#L607) | List available trading dates for a ticker (Cloud SQL → local fallback). |

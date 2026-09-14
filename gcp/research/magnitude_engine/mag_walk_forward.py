@@ -39,8 +39,8 @@ from gcp.research.magnitude_engine.mag_config import (
     DEFAULT_CUTOFFS, MIN_TEST_BARS,
     MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds,
     DEFAULT_CALIBRATION, DEFAULT_CV,
-    PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MAX_MODAL_EXCESS,
-    PROMOTION_MIN_DISTINCT_CLASSES,
+    PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MIN_TAIL_CALL_SHARE,
+    PROMOTION_MIN_DISTINCT_CLASSES, DECISION_LIFT_MIN,
     ECE_CEILING_BY_TF, SUCCESS_BAR_EXPLOSIVE_LIFT_MIN,
     SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
@@ -50,7 +50,8 @@ from gcp.research.magnitude_engine.mag_config import (
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.mag_pred_train import (
-    featurize, make_lgbm, resolve_class_weight, expected_calibration_error,
+    featurize, make_lgbm, resolve_class_weight, class_weight_power,
+    decide_bucket, expected_calibration_error,
     decisive_call_hit_rate, explosive_lift,
 )
 from gcp.research.direction_program.phase2_features import (
@@ -207,7 +208,17 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     ece_pass = ece <= ece_ceiling
 
     decisive = decisive_call_hit_rate(y_te, proba, SUCCESS_BAR_CONFIDENCE_THRESHOLDS)
-    explosive = explosive_lift(y_te, proba, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"])
+    # The decision rule scales by the TRAINING fold's class frequencies: that
+    # is what the model was fitted against and what a promoted model's
+    # CONTRACT.json will carry, so the gate names buckets exactly the way the
+    # served model will.
+    priors_tr = np.bincount(y_tr, minlength=len(LABEL_CLASSES)) / len(y_tr)
+    explosive = explosive_lift(y_te, proba, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
+                               class_priors=priors_tr)
+    # pred_bucket_idx in the per-bar CSV is the DECISION, not argmax, so the
+    # analysis scripts (gates 5 and 6) resample the same calls the gate
+    # counted and the consumer sees.
+    pred = decide_bucket(proba, priors_tr)
 
     # Per-bar predictions for downstream event-window concentration analysis
     # (check 3). Kept as a numpy struct → CSV row list, attached to the fold
@@ -369,95 +380,82 @@ def _persist_predictions_table(engine, ticker: str, tf: str,
              len(df))
 
 
-def promotion_verdict(y_pred: np.ndarray, y_true: np.ndarray | None = None) -> dict:
+def promotion_verdict(y_proba: np.ndarray, class_priors: np.ndarray) -> dict:
     """Decide whether a freshly-trained production candidate may be promoted.
 
-    Takes the candidate's argmax predictions over its own training matrix, and
-    the true buckets for the same rows, and applies two criteria (see
-    mag_config for the incidents each encodes):
+    Takes the candidate's PROBABILITIES over its own training matrix and the
+    class priors it was trained against, runs the served decision rule
+    (mag_pred_train.decide_bucket) and applies the criteria in mag_config:
 
-      * collapse — the modal bucket on >= PROMOTION_COLLAPSE_MODAL_SHARE of
-        rows, whatever the labels say. This is the criterion the
-        post-deployment detector (gcp/audit_magnitude_drift.py) applies to
-        live rows, which carry no labels.
-      * excess — the modal bucket's predicted share exceeds its TRUE share on
-        the same rows by more than PROMOTION_MAX_MODAL_EXCESS. A calibrated
-        model predicts TIGHT about as often as TIGHT happens (~68.5% on the
-        15m cells), and a fixed ceiling just above that measured the labels,
-        not the model (slv7m, #1025).
+      * distinct  -- the rule names at least PROMOTION_MIN_DISTINCT_CLASSES
+        buckets.
+      * collapse  -- no bucket is named on >= PROMOTION_COLLAPSE_MODAL_SHARE
+        of rows. This is the number the post-deployment detector
+        (gcp/audit_magnitude_drift.py) and the render backstop
+        (lib/movement_statement.py) apply to live pred_bucket rows, which
+        carry no labels; pred_bucket IS this decision, so all three read the
+        same thing.
+      * tail      -- a bucket other than TIGHT is named on at least
+        PROMOTION_MIN_TAIL_CALL_SHARE of rows. A constant-output model
+        scores 0 here.
 
-    Scored on the training matrix on purpose: it is the most generous possible
-    test, so a candidate that fails HERE cannot do better out-of-sample.
-    `y_true` is optional only so the collapse criterion can be evaluated where
-    labels are genuinely absent; the persist path always passes it.
+    Until 2026-09-14 this scored ARGMAX and also required the modal share to
+    sit within 10 points of the true modal share. Both failed a calibrated
+    model by construction (mag_config explains the measurement); neither
+    needed labels the live detector lacks in any case. No `y_true` now: the
+    verdict is exactly what the live rows can be checked against.
 
-    Returns a dict with `ok` plus the numbers behind the decision, so the caller
-    can log exactly why a promotion was refused (and the same dict lands in the
-    run summary and the PROMOTION_BLOCKED marker for later forensics).
+    Scored on the training matrix on purpose: it is the most generous
+    possible test, so a candidate that fails HERE cannot do better
+    out-of-sample.
+
+    Returns a dict with `ok` plus the numbers behind the decision, so the
+    caller can log exactly why a promotion was refused (and the same dict
+    lands in the run summary and the PROMOTION_BLOCKED marker for later
+    forensics).
     """
-    y_pred = np.asarray(y_pred)
-    n = int(y_pred.size)
+    proba = np.asarray(y_proba, dtype=float)
+    n = int(proba.shape[0]) if proba.ndim == 2 else 0
     if n == 0:
         return {"ok": False, "reason": "no predictions to evaluate",
-                "n": 0, "modal_share": None, "distinct_classes": 0,
-                "modal_class": None, "true_modal_share": None,
-                "modal_excess": None}
-    if y_true is not None:
-        y_true = np.asarray(y_true)
-        if y_true.size != n:
-            raise ValueError(
-                f"y_true has {y_true.size} rows but y_pred has {n}; the excess "
-                "criterion needs the labels for the same rows")
-    classes, counts = np.unique(y_pred, return_counts=True)
+                "n": 0, "modal_share": None, "modal_class": None,
+                "tail_call_share": None, "distinct_classes": 0,
+                "class_counts": {},
+                "decision_lift_min": float(DECISION_LIFT_MIN)}
+    decision = decide_bucket(proba, class_priors, DECISION_LIFT_MIN)
+    classes, counts = np.unique(decision, return_counts=True)
     modal_count = int(counts.max())
+    modal_class = int(classes[int(np.argmax(counts))])
     modal_share = modal_count / n
     distinct = int(classes.size)
-    # Every class tied for the mode is a candidate: np.argmax would pick the
-    # lowest class id, and the excess criterion must not depend on label
-    # numbering (Codex, #1042). With labels, the tied class with the greatest
-    # excess is the one reported and judged; without them, the lowest id.
-    tied = [int(c) for c, k in zip(classes, counts) if int(k) == modal_count]
-    modal_class = tied[0]
-    true_modal_share = None
-    modal_excess = None
-    excess_frac = None
-    if y_true is not None:
-        # Exact arithmetic on counts: 4/10 - 3/10 is 0.10000000000000003 in
-        # binary floating point, which would block a candidate sitting on
-        # the documented inclusive boundary (Codex, #1042).
-        best = None
-        for c in tied:
-            true_count = int(np.count_nonzero(y_true == c))
-            frac = Fraction(modal_count - true_count, n)
-            if best is None or frac > best[1]:
-                best = (c, frac, true_count)
-        modal_class, excess_frac, true_count = best
-        true_modal_share = true_count / n
-        modal_excess = float(excess_frac)
+    tail_count = int(np.count_nonzero(decision != 0))
+    # Exact rational comparisons: a share that sits on the documented boundary
+    # must not be blocked by binary floating point (Codex, #1042).
+    modal_frac = Fraction(modal_count, n)
+    tail_frac = Fraction(tail_count, n)
     reasons = []
     if distinct < PROMOTION_MIN_DISTINCT_CLASSES:
         reasons.append(
-            f"predicts only {distinct} distinct bucket(s) "
+            f"names only {distinct} distinct bucket(s) "
             f"(min {PROMOTION_MIN_DISTINCT_CLASSES})")
-    if modal_share >= PROMOTION_COLLAPSE_MODAL_SHARE:
+    if modal_frac >= Fraction(str(PROMOTION_COLLAPSE_MODAL_SHARE)):
         reasons.append(
-            f"collapsed: modal bucket {modal_class} on {modal_count}/{n} rows "
+            f"collapsed: bucket {modal_class} named on {modal_count}/{n} rows "
             f"({modal_share:.1%} >= {PROMOTION_COLLAPSE_MODAL_SHARE:.0%})")
-    if excess_frac is not None and excess_frac > Fraction(str(PROMOTION_MAX_MODAL_EXCESS)):
+    if tail_frac < Fraction(str(PROMOTION_MIN_TAIL_CALL_SHARE)):
         reasons.append(
-            f"over-predicts bucket {modal_class}: {modal_share:.1%} predicted "
-            f"vs {true_modal_share:.1%} true on the same rows "
-            f"(+{modal_excess:.1%} > {PROMOTION_MAX_MODAL_EXCESS:.0%})")
+            f"no tail calls: a bucket other than TIGHT named on {tail_count}/{n} "
+            f"rows ({tail_count / n:.1%} < {PROMOTION_MIN_TAIL_CALL_SHARE:.0%})")
     return {
         "ok": not reasons,
         "reason": "; ".join(reasons) if reasons else "passed",
         "n": n,
         "modal_share": modal_share,
         "modal_class": modal_class,
-        "true_modal_share": true_modal_share,
-        "modal_excess": modal_excess,
+        "tail_call_share": tail_count / n,
         "distinct_classes": distinct,
         "class_counts": {int(c): int(k) for c, k in zip(classes, counts)},
+        "decision_lift_min": float(DECISION_LIFT_MIN),
     }
 
 
@@ -621,13 +619,17 @@ def _persist_production_model_artifact(
         )
         model.fit(X_full, y_full)
 
-    # Promotion gate — refuse to make a collapsed or TIGHT-over-predicting
-    # model LATEST. Scored on the training matrix on purpose: it is the most
-    # generous test available, so a candidate that fails here cannot do
-    # better live. y_full is the true bucket for the same rows, which is what
-    # the excess criterion compares against. See mag_config for the c49qf
-    # and slv7m incidents.
-    verdict = promotion_verdict(model.predict(X_full), y_true=y_full)
+    # Promotion gate -- refuse to make a model LATEST whose served decision
+    # rule is stuck on one bucket. Scored on the training matrix on purpose:
+    # it is the most generous test available, so a candidate that fails here
+    # cannot do better live. The priors are the training-label frequencies
+    # the decision rule scales by, and they go into CONTRACT.json below so
+    # inference names buckets exactly as this verdict did. See mag_config for
+    # the c49qf, slv7m and alpha-sweep evidence.
+    class_priors = np.bincount(y_full, minlength=len(LABEL_CLASSES)) / len(y_full)
+    verdict = promotion_verdict(model.predict_proba(X_full), class_priors)
+    verdict["class_priors"] = [float(p) for p in class_priors]
+    verdict["class_weight_power"] = class_weight_power()
     # Second criterion (#1025, 2026-09-08): the cell's own walk-forward
     # verdict. Distribution sanity alone let three slv7m cells promote
     # without ever beating the class-prior baseline.
@@ -651,17 +653,16 @@ def _persist_production_model_artifact(
                              else f"{verdict['reason']}; {gate_reason}")
         verdict["ok"] = False
     log.info("promotion gate %s:%s — %s (n=%d wf_gates=%s modal_share=%s "
-             "true=%s excess=%s distinct=%d)",
+             "tail_call_share=%s distinct=%d lift_min=%.2f alpha=%.2f)",
              ticker, tf, "PASS" if verdict["ok"] else "BLOCK",
              verdict["n"],
              "PASS" if gates.get("cell_pass_gates_1_to_4") else "FAIL",
              "n/a" if verdict["modal_share"] is None
              else f"{verdict['modal_share']:.3f}",
-             "n/a" if verdict["true_modal_share"] is None
-             else f"{verdict['true_modal_share']:.3f}",
-             "n/a" if verdict["modal_excess"] is None
-             else f"{verdict['modal_excess']:+.3f}",
-             verdict["distinct_classes"])
+             "n/a" if verdict["tail_call_share"] is None
+             else f"{verdict['tail_call_share']:.3f}",
+             verdict["distinct_classes"],
+             verdict["decision_lift_min"], verdict["class_weight_power"])
 
     # Upload artifacts under run_prefix; update LATEST pointer LAST.
     try:
@@ -682,7 +683,9 @@ def _persist_production_model_artifact(
         # because mag_inference verifies it, and a reader that can only
         # check a value the writer never wrote is not a check at all.
         bucket.blob(f"{run_prefix}/{CONTRACT_BLOB}").upload_from_string(
-            json.dumps(contract_payload(label_mode, thresholds), indent=2),
+            json.dumps(contract_payload(label_mode, thresholds,
+                                        class_priors=class_priors),
+                       indent=2),
             content_type="application/json")
         # Artifacts are uploaded even when the gate blocks: the run-scoped
         # path is write-only forensics (nothing reads it without LATEST), and
@@ -901,6 +904,11 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration, "cv": cv,
+        # The exponent the class weighting actually used. Absent from every
+        # summary before 2026-09-14, which left the serving model's setting
+        # unrecoverable (see mag_pred_train.class_weight_power).
+        "class_weight_power": class_weight_power(),
+        "decision_lift_min": float(DECISION_LIFT_MIN),
         # Recorded so a run's own output says which labels it trained on.
         # Before #1048's follow-up the summary named neither, and three of the
         # four dispatch paths silently ignored --label-mode.

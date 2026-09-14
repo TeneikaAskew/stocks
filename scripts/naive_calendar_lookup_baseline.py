@@ -126,7 +126,10 @@ def evaluate_fold(y_tr, y_te, proba_te, tf):
     clean = [a for a in accs if a is not None]
     monotone = (len(clean) >= 2 and all(b >= a for a, b in zip(clean, clean[1:])))
 
-    explosive = explosive_lift(y_te, proba_te, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"])
+    # Decision-rule population (2026-09-14): scaled by the training prior,
+    # exactly as the harness does.
+    explosive = explosive_lift(y_te, proba_te, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
+                               class_priors=prior)
     lift = explosive.get("lift")
     lift_pass = lift is not None and lift >= SUCCESS_BAR_EXPLOSIVE_LIFT_MIN
 

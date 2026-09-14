@@ -73,7 +73,10 @@ class MagnitudePrediction(BaseModel):
     tf: str
     ts: datetime
     probabilities: BucketProbabilities
-    pred_bucket: int           # 0..3 (TIGHT/NORMAL/EXPANDED/EXPLOSIVE)
+    # 0..3 (TIGHT/NORMAL/EXPANDED/EXPLOSIVE). The served DECISION, not argmax:
+    # the highest bucket whose probability clears DECISION_LIFT_MIN times its
+    # class prior, else TIGHT (mag_pred_train.decide_bucket, 2026-09-14).
+    pred_bucket: int
     pred_bucket_label: str
     max_proba: float
     model_version: str

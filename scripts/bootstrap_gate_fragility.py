@@ -81,7 +81,14 @@ def fold_gates(fold_df: pd.DataFrame, tf: str) -> dict:
     clean = [a for a in accs if a is not None]
     monotone = (len(clean) >= 2 and all(b >= a for a, b in zip(clean, clean[1:])))
 
-    expl = explosive_lift(y_true, proba, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"])
+    # Gate 4 names EXPLOSIVE by the decision rule (P >= lift x prior), not
+    # argmax, since 2026-09-14. The harness scales by the TRAINING fold's
+    # priors; those are not in the prediction CSV, so the fold's own truth
+    # distribution stands in, the same substitution already made for the
+    # base log-loss above and for the same reason: held constant across
+    # iterations, it is the variance that matters here.
+    expl = explosive_lift(y_true, proba, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
+                          class_priors=prior)
     lift = expl.get("lift")
     lift_pass = lift is not None and lift >= SUCCESS_BAR_EXPLOSIVE_LIFT_MIN
 

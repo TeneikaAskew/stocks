@@ -24,6 +24,7 @@ from gcp.research.magnitude_engine.mag_config import (
 from gcp.research.magnitude_engine.mag_dataset import _bucket_magnitude
 from gcp.research.magnitude_engine.mag_pred_train import (
     expected_calibration_error, decisive_call_hit_rate, explosive_lift,
+    decide_bucket, class_weight_power,
 )
 
 
@@ -184,14 +185,84 @@ class TestDecisiveCallHitRate:
         assert accs == sorted(accs), f"accuracy not monotone: {accs}"
 
 
+# ─────────────────────── The served decision rule ───────────────────────
+
+# A ~64/27/7/2 label set, the real magnitude balance.
+_PRIORS = np.array([0.64, 0.27, 0.07, 0.02])
+
+
+class TestDecideBucket:
+    """decide_bucket names the highest bucket whose probability clears
+    lift_min x its prior, else TIGHT. It replaced argmax everywhere a
+    bucket is named (2026-09-14)."""
+
+    def test_a_constant_output_model_names_tight_everywhere(self):
+        # The c49qf / calibrated-but-signal-free shape: every row emits the
+        # base rates. No bucket reaches 2x its own prior, so every decision
+        # is TIGHT and the tail-call share is exactly zero.
+        proba = np.tile(_PRIORS, (50, 1))
+        d = decide_bucket(proba, _PRIORS, 2.0)
+        assert d.tolist() == [0] * 50
+
+    def test_argmax_and_decision_disagree_on_a_calibrated_tail_bar(self):
+        # A bar the model thinks is 3x its base rate of EXPLOSIVE. Argmax
+        # still says TIGHT (0.60 is the largest entry); the decision names
+        # EXPLOSIVE. This is the whole point of the change.
+        row = np.array([[0.60, 0.27, 0.07, 0.06]])
+        assert row.argmax() == 0
+        assert decide_bucket(row, _PRIORS, 2.0).tolist() == [3]
+
+    def test_the_highest_clearing_bucket_wins(self):
+        # Clears both EXPANDED (0.20 >= 0.14) and EXPLOSIVE (0.05 >= 0.04).
+        row = np.array([[0.50, 0.25, 0.20, 0.05]])
+        assert decide_bucket(row, _PRIORS, 2.0).tolist() == [3]
+        # Clears EXPANDED only.
+        row = np.array([[0.55, 0.25, 0.17, 0.03]])
+        assert decide_bucket(row, _PRIORS, 2.0).tolist() == [2]
+        # Clears NORMAL only (0.54 >= 0.54, inclusive).
+        row = np.array([[0.40, 0.54, 0.05, 0.01]])
+        assert decide_bucket(row, _PRIORS, 2.0).tolist() == [1]
+
+    def test_the_bar_is_inclusive(self):
+        at = np.array([[0.90, 0.05, 0.01, 0.04]])      # exactly 2 x 0.02
+        under = np.array([[0.90, 0.05, 0.01, 0.0399]])
+        assert decide_bucket(at, _PRIORS, 2.0).tolist() == [3]
+        assert decide_bucket(under, _PRIORS, 2.0).tolist() == [0]
+
+    def test_a_zero_prior_makes_a_bucket_unnameable_not_always_named(self):
+        # A training slice with no EXPLOSIVE examples: 0 x lift is 0, and a
+        # bare >= would fire on every row. It must fire on none.
+        priors = np.array([0.70, 0.25, 0.05, 0.0])
+        proba = np.array([[0.7, 0.2, 0.05, 0.05], [0.9, 0.05, 0.03, 0.02]])
+        assert decide_bucket(proba, priors, 2.0).tolist() == [0, 0]
+
+    def test_malformed_inputs_raise(self):
+        with pytest.raises(ValueError, match="one entry per class"):
+            decide_bucket(np.tile(_PRIORS, (3, 1)), np.array([0.5, 0.5]), 2.0)
+        with pytest.raises(ValueError, match="must be \\(n, 4\\)"):
+            decide_bucket(np.ones((3, 3)) / 3, _PRIORS, 2.0)
+        for bad in (1.0, 0.5, float("nan"), float("inf")):
+            with pytest.raises(ValueError, match="above 1.0"):
+                decide_bucket(np.tile(_PRIORS, (3, 1)), _PRIORS, bad)
+
+    def test_the_operating_point_is_the_config_default(self):
+        from gcp.research.magnitude_engine.mag_config import DECISION_LIFT_MIN
+        assert DECISION_LIFT_MIN == 2.0
+        row = np.array([[0.60, 0.27, 0.07, 0.06]])
+        assert decide_bucket(row, _PRIORS).tolist() == [3]
+
+
 # ─────────────────────── EXPLOSIVE lift ───────────────────────
 
 class TestExplosiveLift:
-    """gate 4 input — precision of EXPLOSIVE-prediction / base-rate."""
+    """gate 4 input — precision of the bars the DECISION RULE names EXPLOSIVE
+    over the base rate. Argmax until 2026-09-14; on a calibrated model that
+    was a dozen bars per fold and passed on noise."""
 
     def test_perfect_explosive_calls_give_high_lift(self):
-        # 4 bars total, 1 truly EXPLOSIVE, 1 predicted EXPLOSIVE, and it's
-        # the same bar → precision = 1.0, base rate = 0.25, lift = 4.0
+        # 4 bars, 1 truly EXPLOSIVE, and the model puts 0.7 on it: clears
+        # 2 x 0.25 by a mile; the other three sit at 0.1 < 0.5 and are not
+        # named. precision 1.0, base rate 0.25, lift 4.0.
         y_true = np.array([0, 1, 2, 3])
         proba = np.array([
             [0.7, 0.1, 0.1, 0.1],
@@ -199,44 +270,104 @@ class TestExplosiveLift:
             [0.1, 0.1, 0.7, 0.1],
             [0.1, 0.1, 0.1, 0.7],
         ])
+        priors = np.array([0.25, 0.25, 0.25, 0.25])
         result = explosive_lift(y_true, proba,
-                                 explosive_idx=LABEL_TO_IDX["EXPLOSIVE"])
+                                 explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
+                                 class_priors=priors)
         assert result["n_predicted"] == 1
         assert result["precision"] == 1.0
         assert result["base_rate"] == 0.25
         assert result["lift"] == 4.0
+        assert result["decision_lift_min"] == 2.0
 
-    def test_no_explosive_predictions_returns_none_lift(self):
-        # Architectural test — naive lookup would hit this every time
-        # because it can't argmax a 3% class. Lift is None, gate fails.
-        y_true = np.array([3, 3, 3, 0])  # 75% explosive
-        # No prediction argmaxes EXPLOSIVE (always class 0 or 1)
-        proba = np.array([
-            [0.5, 0.2, 0.2, 0.1],
-            [0.5, 0.2, 0.2, 0.1],
-            [0.5, 0.2, 0.2, 0.1],
-            [0.5, 0.2, 0.2, 0.1],
-        ])
+    def test_no_explosive_calls_returns_none_lift(self):
+        # Every row emits its base rate: nothing clears 2x, nothing is named.
+        # Lift is None and the gate fails -- a signal-free model cannot pass
+        # gate 4 by construction.
+        y_true = np.array([3, 3, 3, 0])
+        priors = np.array([0.5, 0.2, 0.2, 0.1])
+        proba = np.tile(priors, (4, 1))
         result = explosive_lift(y_true, proba,
-                                 explosive_idx=LABEL_TO_IDX["EXPLOSIVE"])
+                                 explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
+                                 class_priors=priors)
         assert result["n_predicted"] == 0
         assert result["lift"] is None
 
-    def test_all_explosive_predictions_wrong_gives_zero_lift(self):
-        # Predict EXPLOSIVE for every bar; none are actually EXPLOSIVE
+    def test_all_explosive_calls_wrong_gives_zero_precision(self):
         y_true = np.array([0, 1, 2, 0])
-        proba = np.array([
-            [0.1, 0.1, 0.1, 0.7],
-            [0.1, 0.1, 0.1, 0.7],
-            [0.1, 0.1, 0.1, 0.7],
-            [0.1, 0.1, 0.1, 0.7],
-        ])
+        proba = np.array([[0.1, 0.1, 0.1, 0.7]] * 4)
+        priors = np.array([0.25, 0.25, 0.25, 0.25])
         result = explosive_lift(y_true, proba,
-                                 explosive_idx=LABEL_TO_IDX["EXPLOSIVE"])
+                                 explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
+                                 class_priors=priors)
         assert result["n_predicted"] == 4
         assert result["precision"] == 0.0
-        # Base rate = 0 (no EXPLOSIVE bars in y_true) — lift undefined; impl returns None
+        # Base rate = 0 (no EXPLOSIVE bars in y_true) -- lift undefined
         assert result["lift"] is None
+
+    def test_the_gate_measures_a_population_not_a_dozen_bars(self):
+        """The regression this change is for. A calibrated model that argmax-
+        names EXPLOSIVE on 1 of 1000 bars and gets it right had lift = 1/base
+        under argmax: enormous, and from one bar. Under the decision rule the
+        same model is scored on every bar it thinks is 2x its prior."""
+        rng = np.random.default_rng(3)
+        n = 1000
+        y_true = rng.choice(4, size=n, p=[0.64, 0.27, 0.07, 0.02])
+        # calibrated-ish rows around the priors, with EXPLOSIVE nudged up on
+        # a tenth of the bars (the model has weak but real tail signal)
+        proba = np.tile(_PRIORS, (n, 1)) + rng.normal(0, 0.01, (n, 4))
+        bump = rng.random(n) < 0.10
+        proba[bump, 3] += 0.05
+        proba = np.clip(proba, 1e-3, None); proba /= proba.sum(1, keepdims=True)
+        assert (proba.argmax(1) == 3).sum() == 0, "argmax never names EXPLOSIVE here"
+        result = explosive_lift(y_true, proba,
+                                 explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
+                                 class_priors=_PRIORS)
+        assert result["n_predicted"] > 50, result
+
+
+# ─────────────────────── class_weight_power ───────────────────────
+
+class TestClassWeightPower:
+    """The exponent the training used, recorded rather than inferred."""
+
+    def test_default_when_unset(self, monkeypatch):
+        from gcp.research.magnitude_engine.mag_pred_train import (
+            MAG_CLASS_WEIGHT_POWER_DEFAULT)
+        monkeypatch.delenv("MAG_CLASS_WEIGHT_POWER", raising=False)
+        assert class_weight_power() == MAG_CLASS_WEIGHT_POWER_DEFAULT
+        monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", "   ")
+        assert class_weight_power() == MAG_CLASS_WEIGHT_POWER_DEFAULT
+
+    def test_the_named_value_is_the_one_used(self, monkeypatch):
+        from gcp.research.magnitude_engine.mag_pred_train import resolve_class_weight
+        y = np.array([0] * 64 + [1] * 27 + [2] * 7 + [3] * 2)
+        monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", "0.0")
+        assert class_weight_power() == 0.0
+        assert resolve_class_weight(y) is None
+        monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", "1.0")
+        assert resolve_class_weight(y) == "balanced"
+        monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", "0.3")
+        w = resolve_class_weight(y)
+        assert isinstance(w, dict) and w[3] > w[0]
+
+    def test_a_malformed_value_raises_rather_than_training_under_the_default(self, monkeypatch):
+        # Silently training under a different exponent than the operator
+        # named is the unrecorded configuration this exists to end.
+        for bad in ("abc", "nan", "inf"):
+            monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", bad)
+            with pytest.raises(ValueError, match="MAG_CLASS_WEIGHT_POWER"):
+                class_weight_power()
+
+    def test_the_run_summary_records_it(self):
+        """Every summary before 2026-09-14 lacked it, which is why c49qf's
+        setting is unrecoverable."""
+        import inspect
+        from gcp.research.magnitude_engine import mag_walk_forward as mwf
+        src = inspect.getsource(mwf.walk_forward)
+        summary = src[src.index("summary = {"):src.index("run_id = (")]
+        assert '"class_weight_power": class_weight_power()' in summary
+        assert '"decision_lift_min"' in summary
 
 
 # ─────────────────────── Gate constants live in mag_config ───────────────
@@ -262,3 +393,48 @@ class TestGateConstants:
         # walk-forward and all gate analyses need re-running.
         assert LABEL_CLASSES == ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
         assert LABEL_TO_IDX["EXPLOSIVE"] == 3
+
+
+# ─────────────────────── analysis scripts follow the harness ───────────────
+
+class TestAnalysisScriptsUseTheDecisionRule:
+    """gate 5 recomputes gate 4 from the prediction CSV. It has to name
+    EXPLOSIVE the way the harness does or it resamples a different
+    population than the one the gate counted."""
+
+    def test_bootstrap_fold_gates_runs_under_the_decision_rule(self):
+        from scripts.bootstrap_gate_fragility import fold_gates
+        rng = np.random.default_rng(5)
+        n = 400
+        y = rng.choice(4, size=n, p=[0.64, 0.27, 0.07, 0.02])
+        proba = np.tile(_PRIORS, (n, 1)) + rng.normal(0, 0.01, (n, 4))
+        proba[rng.random(n) < 0.15, 3] += 0.05
+        proba = np.clip(proba, 1e-3, None); proba /= proba.sum(1, keepdims=True)
+        df = pd.DataFrame({
+            "fold": "2020..2021", "ts": "t",
+            "true_bucket_idx": y,
+            "pred_bucket_idx": decide_bucket(proba, _PRIORS),
+            "max_proba": proba.max(1),
+            "p_TIGHT": proba[:, 0], "p_NORMAL": proba[:, 1],
+            "p_EXPANDED": proba[:, 2], "p_EXPLOSIVE": proba[:, 3],
+        })
+        g = fold_gates(df, "5m")
+        assert set(g) == {"beat", "ece", "ece_pass", "monotone", "lift", "lift_pass"}
+        # argmax never names EXPLOSIVE on these rows; the decision rule does,
+        # so gate 4 is evaluated on a real population rather than None
+        assert (proba.argmax(1) == 3).sum() == 0
+        assert g["lift"] is not None
+
+    def test_bootstrap_constant_fold_has_no_lift(self):
+        from scripts.bootstrap_gate_fragility import fold_gates
+        n = 200
+        y = np.array([0] * 128 + [1] * 54 + [2] * 14 + [3] * 4)
+        proba = np.tile(_PRIORS, (n, 1))
+        df = pd.DataFrame({
+            "fold": "f", "ts": "t", "true_bucket_idx": y,
+            "pred_bucket_idx": 0, "max_proba": 0.64,
+            "p_TIGHT": proba[:, 0], "p_NORMAL": proba[:, 1],
+            "p_EXPANDED": proba[:, 2], "p_EXPLOSIVE": proba[:, 3],
+        })
+        g = fold_gates(df, "5m")
+        assert g["lift"] is None and g["lift_pass"] is False

@@ -558,20 +558,20 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict)
 # tier in gcp/audit_magnitude_drift.py. Not imported from mag_config because
 # lib/ must not depend on gcp/research/ (the research package pulls
 # LightGBM); the number is asserted equal in tests/lib/test_movement_statement
-# .py so the two cannot silently drift. Inference rows carry no labels, so
-# the gate's relative criterion has no counterpart here: this backstop
-# catches c49qf's 100%, not a model a few points over the ~68% TIGHT base
-# rate (that is the gate's job, before the model is ever served).
+# .py so the two cannot silently drift. `pred_bucket` has been the served
+# decision rule rather than argmax since 2026-09-14 (mag_pred_train
+# .decide_bucket), and the gate scores that same rule over the training
+# matrix, so this backstop reads exactly what the gate measured.
 _MAG_DEGENERATE_MODAL_SHARE = 0.90
 _MAG_DEGENERACY_LOOKBACK_DAYS = 7
 
 
 def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict:
-    """Is the model that produced this prediction argmax-collapsed?
+    """Is the model that produced this prediction decision-collapsed?
 
-    A 4-class softmax that argmax-picks the same bucket on ~every recent bar
-    has learned the base rate, not the signal. Its per-bar `pred_bucket` is a
-    constant and rendering it tells the user nothing — which is exactly what
+    A model whose served decision rule names the same bucket on ~every recent
+    bar is telling the user nothing. Its per-bar `pred_bucket` is a constant
+    and rendering it reads as a confident size class — which is exactly what
     `magnitude-engine-c49qf` did to the Expected-Move card from 2026-08-26
     (TIGHT on 588/588 bars, fold accuracy equal to the base rate) until it was
     caught on 2026-08-28.
@@ -687,13 +687,13 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     bucket = int(row["pred_bucket"])
     ts = row.get("ts")
 
-    # Backstop for an argmax-collapsed model reaching production (c49qf, 2026-08-26).
+    # Backstop for a decision-collapsed model reaching production (c49qf, 2026-08-26).
     # A constant pred_bucket is not information; render it and the user reads a
     # confident-looking size class that is really just the base rate.
     degeneracy = _model_degeneracy(ticker, tf, row.get("model_version"), ts, query_fn)
     if degeneracy.get("status") == "OK" and degeneracy.get("degenerate"):
         return _unavailable(
-            "magnitude model is argmax-collapsed: "
+            "magnitude model is decision-collapsed: "
             f"{_MAG_BUCKET_LABELS[degeneracy['modal_bucket']]} on "
             f"{degeneracy['modal_share']:.1%} of the last "
             f"{degeneracy['n_bars']} bars "
