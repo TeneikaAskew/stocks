@@ -64,16 +64,27 @@ def _upsert_report(report: InsightReport) -> str:
         cur = conn.cursor()
         cur.execute(
             """
+            -- run_kind='backfill' is hardcoded, not a parameter: every row
+            -- this script writes is a report generated after the fact for a
+            -- historical as_of. 70 of 807 rows in production were written
+            -- this way with no marker (measured 2026-09-14), so /api/insights
+            -- served them as if published that morning (audit 2026-09-14).
             INSERT INTO insight_reports
                 (id, ticker, as_of, report, model_versions, cost_usd,
-                 per_role_cost, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
+                 per_role_cost, latency_ms, run_kind)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, 'backfill')
             ON CONFLICT (ticker, as_of) DO UPDATE
             SET report = EXCLUDED.report,
                 model_versions = EXCLUDED.model_versions,
                 cost_usd = EXCLUDED.cost_usd,
                 per_role_cost = EXCLUDED.per_role_cost,
-                latency_ms = EXCLUDED.latency_ms
+                latency_ms = EXCLUDED.latency_ms,
+                -- Regenerating over an existing row must move its provenance
+                -- too. I told Codex on #1098 round 1 that "EXCLUDED and the
+                -- literal agree" here, which was wrong: the literal only
+                -- applies on INSERT, so a pre-existing 'live' row took
+                -- backfill content and stayed live.
+                run_kind = EXCLUDED.run_kind
             RETURNING id::text
             """,
             (

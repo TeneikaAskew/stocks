@@ -344,6 +344,27 @@ def _insert_report_history(report: InsightReport, insight_run_id: str,
         conn.close()
 
 
+def _canonical_run_kind() -> str:
+    """Provenance for the canonical insight_reports row.
+
+    The operational `run_kind` threaded through _run_one ('scheduled',
+    'manual_update', ...) describes HOW a run was triggered and lands in
+    insight_reports_history. This is the three-value DATA taxonomy shared
+    with trades, signal_alerts and premarket_analysis, which is what the
+    routers filter on. An INSIGHT_AS_OF run reconstructs a past day's
+    report from that day's data: real analysis, but not the report that
+    was published then, so /api/insights must not serve it as one
+    (audit 2026-09-14).
+
+    Blank and whitespace-only are "no override": parse_as_of returns None
+    for them and the pipeline generates a current live report, so testing
+    the raw env var for truthiness would stamp that live report 'replay'
+    and the new live-only readers would hide it (Codex on #1098 round 4).
+    """
+    raw = os.environ.get('INSIGHT_AS_OF')
+    return 'replay' if raw and raw.strip() else 'live'
+
+
 def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optional[str]:
     """Write to insight_reports.
 
@@ -364,14 +385,19 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                 """
                 INSERT INTO insight_reports
                     (id, ticker, as_of, report, model_versions, cost_usd,
-                     per_role_cost, latency_ms)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
+                     per_role_cost, latency_ms, run_kind)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
                 ON CONFLICT (ticker, as_of) DO UPDATE
                 SET report = EXCLUDED.report,
                     model_versions = EXCLUDED.model_versions,
                     cost_usd = EXCLUDED.cost_usd,
                     per_role_cost = EXCLUDED.per_role_cost,
-                    latency_ms = EXCLUDED.latency_ms
+                    latency_ms = EXCLUDED.latency_ms,
+                    -- Provenance rides the overwrite. Without it an as-of
+                    -- replay overwriting a live row left the row reading 'live'
+                    -- with replay content, which the live-only reader then serves
+                    -- as current; the reverse hid newly live content (Codex, #1098).
+                    run_kind = EXCLUDED.run_kind
                 RETURNING id::text
                 """,
                 (
@@ -381,6 +407,7 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                     report.run_cost_usd,
                     json.dumps(report.per_role_cost),
                     report.run_latency_ms,
+                    _canonical_run_kind(),
                 ),
             )
             returned = cur.fetchone()
@@ -395,9 +422,23 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
             """
             INSERT INTO insight_reports
                 (id, ticker, as_of, report, model_versions, cost_usd,
-                 per_role_cost, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
-            ON CONFLICT (ticker, as_of) DO NOTHING
+                 per_role_cost, latency_ms, run_kind)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
+            -- Protect an existing LIVE row, but replace a non-live one.
+            -- DO NOTHING alone deadlocked with the cache fix: once a
+            -- backfill row held today's key, _is_cached_today correctly
+            -- asked for a live refresh, this insert then did nothing, the
+            -- run was marked done against the non-live row's id, and the
+            -- live-only reader still had no row to serve. The ticker ended
+            -- the day with no report at all (Codex on #1098 round 3).
+            ON CONFLICT (ticker, as_of) DO UPDATE
+            SET report = EXCLUDED.report,
+                model_versions = EXCLUDED.model_versions,
+                cost_usd = EXCLUDED.cost_usd,
+                per_role_cost = EXCLUDED.per_role_cost,
+                latency_ms = EXCLUDED.latency_ms,
+                run_kind = EXCLUDED.run_kind
+            WHERE insight_reports.run_kind <> 'live'
             RETURNING id::text
             """,
             (
@@ -407,6 +448,7 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                 report.run_cost_usd,
                 json.dumps(report.per_role_cost),
                 report.run_latency_ms,
+                _canonical_run_kind(),
             ),
         )
         returned = cur.fetchone()

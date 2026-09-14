@@ -280,7 +280,6 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/options_retention_job.py`](../../../../gcp/options_retention_job.py) — line [79](../../../../gcp/options_retention_job.py#L79)
 - [`platform/api/routers/grid.py`](../../../../platform/api/routers/grid.py) — line [594](../../../../platform/api/routers/grid.py#L594)
 - [`scripts/maintenance/compute_spx_greeks.py`](../../../../scripts/maintenance/compute_spx_greeks.py) — line [149](../../../../scripts/maintenance/compute_spx_greeks.py#L149)
-- [`scripts/validate_track2_live.py`](../../../../scripts/validate_track2_live.py) — line [80](../../../../scripts/validate_track2_live.py#L80), [112](../../../../scripts/validate_track2_live.py#L112)
 
 ### `exit_config_overrides`
 - [`scripts/run_param_sweep.py`](../../../../scripts/run_param_sweep.py) — line [134](../../../../scripts/run_param_sweep.py#L134)
@@ -871,7 +870,7 @@ Tables with two or more writing files. The risk in each case is the same shape: 
 |---|---|---|
 | `earnings_calendar` | 2 | `gcp/fetchers/evaluate_ew_strikes.py`, `scripts/fetch_earnings_calendar.py` |
 | `earnings_options_snapshots` | 2 | `gcp/fetchers/fetch_av_earnings_options_backfill.py`, `gcp/migrate_to_gcp.py` |
-| `etf_options_snapshots` | 7 | `gcp/fetchers/fetch_av_historical_options.py`, `gcp/fetchers/fetch_av_realtime_options.py`, `gcp/migrate_to_gcp.py`, `gcp/options_retention_job.py`, `platform/api/routers/grid.py`, `scripts/maintenance/compute_spx_greeks.py`, `scripts/validate_track2_live.py` |
+| `etf_options_snapshots` | 6 | `gcp/fetchers/fetch_av_historical_options.py`, `gcp/fetchers/fetch_av_realtime_options.py`, `gcp/migrate_to_gcp.py`, `gcp/options_retention_job.py`, `platform/api/routers/grid.py`, `scripts/maintenance/compute_spx_greeks.py` |
 | `historical_signals` | 3 | `gcp/historical_signals.py`, `scripts/backfill_timeframe_tags.py`, `scripts/run_historical_signals.py` |
 | `insight_reports` | 3 | `gcp/insight_pipeline_job.py`, `platform/api/routers/insights.py`, `scripts/generate_historical_report.py` |
 | `insight_reports_history` | 2 | `gcp/insight_pipeline_job.py`, `scripts/backfill_history_tables.py` |
@@ -1424,3 +1423,13 @@ Rendered from `table_refs` by `scripts/maintenance/doc_inventory.py`: thick `==>
 - 2026-09-07: the 2026-09-02 layout's "1. Table inventory" became "1. Table inventory (declared in `gcp/schema.sql`)" plus "1b. Live relations"; its "`market_data_intraday` (and partitions)" write-graph subsection became the per-table `market_data_intraday` subsection (partitions are routed by Postgres and are listed in §1 and §5 only). Every table that had a §2/§3 entry still has one.
 
 Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](../../../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md); inventory blocks rendered by `scripts/maintenance/doc_inventory.py`. This hand-maintained copy is not refreshed; update this line yourself when you edit it.
+
+<!-- provenance-audit-2026-09-14 -->
+> **2026-09-14, provenance audit (#1095).** This frozen snapshot lost one
+> `etf_options_snapshots` writer: `scripts/validate_track2_live.py` inserted six
+> synthetic option snapshots into the production table to validate the
+> realtime-mark path, then deleted them. It moved to
+> [`tests/integration/test_options_realtime_marks.py`](../../../../tests/integration/test_options_realtime_marks.py),
+> which runs the same assertions against the ephemeral Postgres, so the
+> writer count for that table drops from 7 to 6. No other row in this
+> snapshot changed.

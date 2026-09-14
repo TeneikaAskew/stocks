@@ -176,6 +176,10 @@ CHECKS: list[dict] = [
         "name": "premarket_analysis",
         "ts_column": "analysis_date",
         "ts_is_date": True,
+        # A replay generated for the expected trading day would otherwise
+        # make this read healthy while the live pipeline had failed and the
+        # live-only product readers had nothing (Codex on #1098 round 2).
+        "where": "run_kind = 'live'",
         "expected_lag_hours": 30,
         "per_ticker": True,
         "tickers": ("IWM", "SPY", "QQQ"),
@@ -189,6 +193,7 @@ CHECKS: list[dict] = [
         "name": "insight_reports",
         "ts_column": "as_of",
         "ts_is_date": False,
+        "where": "run_kind = 'live'",   # same reason as premarket_analysis
         "expected_lag_hours": 30,
         "per_ticker": True,
         "tickers": ("SPY", "IWM", "QQQ"),

@@ -142,6 +142,13 @@ class ReportEnvelope(BaseModel):
     model_versions: dict
     cost_usd: Optional[float] = None
     latency_ms: Optional[int] = None
+    # 'live' | 'replay' | 'backfill'. The by-ID route deliberately serves
+    # non-live rows, so it must say so. I argued on #1098 that the id could
+    # only come from the history list, which discloses run_kind; that was
+    # incomplete — /api/insights/runs/{run_id} also returns report_id,
+    # including for an as_of replay, and a client can call the ID route
+    # directly (Codex, round 3).
+    run_kind: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -216,9 +223,9 @@ def _fetch_latest_report(
             cur.execute(
                 """
                 SELECT id::text, ticker, as_of, report, model_versions,
-                       cost_usd, latency_ms
+                       cost_usd, latency_ms, run_kind
                 FROM insight_reports
-                WHERE ticker = %s
+                WHERE ticker = %s AND run_kind = 'live'
                 ORDER BY as_of DESC
                 LIMIT 1
                 """,
@@ -228,9 +235,9 @@ def _fetch_latest_report(
             cur.execute(
                 """
                 SELECT id::text, ticker, as_of, report, model_versions,
-                       cost_usd, latency_ms
+                       cost_usd, latency_ms, run_kind
                 FROM insight_reports
-                WHERE ticker = %s AND as_of <= %s
+                WHERE ticker = %s AND run_kind = 'live' AND as_of <= %s
                 ORDER BY as_of DESC
                 LIMIT 1
                 """,
@@ -249,8 +256,12 @@ def _fetch_report_by_id(report_id: str) -> Optional[dict]:
         cur.execute(
             """
             SELECT id::text, ticker, as_of, report, model_versions,
-                   cost_usd, latency_ms
+                   cost_usd, latency_ms, run_kind
             FROM insight_reports
+            -- Deliberately NOT filtered to run_kind='live': the caller named
+            -- one row by id, so returning it is not a silent substitution the
+            -- way an unfiltered "latest for this ticker" would be. The id
+            -- comes from the history list, which discloses run_kind.
             WHERE id = %s
             """,
             (report_id,),
@@ -272,6 +283,7 @@ def _row_to_envelope(row) -> Optional[dict]:
         "model_versions": row[4],
         "cost_usd": float(row[5]) if row[5] is not None else None,
         "latency_ms": row[6],
+        "run_kind": row[7],
     }
 
 
@@ -285,7 +297,7 @@ def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
                    report->>'direction' AS direction,
                    report->>'conviction' AS conviction,
                    report->>'thesis' AS thesis,
-                   cost_usd
+                   cost_usd, run_kind
             FROM insight_reports
             WHERE ticker = %s
             ORDER BY as_of DESC
@@ -304,6 +316,7 @@ def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
             "conviction": r[3],
             "thesis": r[4],
             "cost_usd": float(r[5]) if r[5] is not None else None,
+            "run_kind": r[6],
         }
         for r in rows
     ]
@@ -395,8 +408,18 @@ def _update_run_status(
         conn.close()
 
 
-def _upsert_report(report: InsightReport) -> str:
-    """Upsert the report and return its row id."""
+def _upsert_report(report: InsightReport, as_of: Optional[Union[date, datetime]] = None) -> str:
+    """Upsert the report and return its row id.
+
+    ``as_of`` is the cutoff the caller asked for, and it decides provenance.
+    An earlier revision hardcoded 'live' on the reasoning that this is the
+    on-demand endpoint, so the row is generated now for now. That was wrong:
+    POST /api/insights/report/{ticker}/refresh accepts ``?as_of=``, and this
+    writer runs for it both in local dev and in the production
+    BackgroundTasks fallback when Cloud Tasks enqueueing fails. A
+    reconstructed historical report stamped 'live' is served as the current
+    one by the live-only query this PR adds (Codex on #1098).
+    """
     conn = connect()
     row_id = str(uuid4())
     try:
@@ -405,14 +428,19 @@ def _upsert_report(report: InsightReport) -> str:
             """
             INSERT INTO insight_reports
                 (id, ticker, as_of, report, model_versions, cost_usd,
-                 per_role_cost, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
+                 per_role_cost, latency_ms, run_kind)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
             ON CONFLICT (ticker, as_of) DO UPDATE
             SET report = EXCLUDED.report,
                 model_versions = EXCLUDED.model_versions,
                 cost_usd = EXCLUDED.cost_usd,
                 per_role_cost = EXCLUDED.per_role_cost,
-                latency_ms = EXCLUDED.latency_ms
+                latency_ms = EXCLUDED.latency_ms,
+                -- Provenance rides the overwrite. Without it an as-of
+                -- replay overwriting a live row left the row reading 'live'
+                -- with replay content, which the live-only reader then serves
+                -- as current; the reverse hid newly live content (Codex, #1098).
+                run_kind = EXCLUDED.run_kind
             RETURNING id::text
             """,
             (
@@ -424,6 +452,7 @@ def _upsert_report(report: InsightReport) -> str:
                 report.run_cost_usd,
                 json.dumps(report.per_role_cost),
                 report.run_latency_ms,
+                'replay' if as_of is not None else 'live',
             ),
         )
         returned = cur.fetchone()
@@ -450,7 +479,7 @@ async def _execute_pipeline(
     try:
         snapshot = load_routes_snapshot()
         report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
-        report_id = _upsert_report(report)
+        report_id = _upsert_report(report, as_of=as_of)
         _update_run_status(run_id, "done", report_id=report_id)
     except Exception as exc:
         logger.exception("pipeline run %s failed", run_id)
