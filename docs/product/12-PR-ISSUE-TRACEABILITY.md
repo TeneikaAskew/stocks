@@ -6,7 +6,7 @@
 
 | | Count | Method |
 |---|---|---|
-| Open issues mapped | **121 of 121 (100%)** | `list_issues` (state OPEN), classified by label and title prefix. Reconciled 2026-08-31; #943 security exposure and automated failure #944 included |
+| Open issues mapped | **121 of 121 (100%) at the 2026-08-31 snapshot** | `list_issues` (state OPEN), classified by label and title prefix. Reconciled 2026-08-31; the dated updates below carry the deltas since — **115 open as of 2026-09-14** — and the per-capability map further down is the 2026-08-31 snapshot pending the next regeneration |
 | Significant PRs mapped | **151** | `list_pull_requests` (state closed, 4 pages, #184–#932) |
 
 > **Why PR lineage came from the API, not `git log`.** The working clone is **shallow**
@@ -194,7 +194,15 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 ## Full open-issue map by capability
 
-Every open issue appears exactly once. **No range notation** — the previous revision wrote
+> **2026-08-31 snapshot — frozen pending the next regeneration.** At the snapshot, every
+> open issue appeared exactly once. The dated updates above list the deltas since:
+> fourteen of the rows below are now closed (#820, #825, #829, #831, #833, #838, #841,
+> #843, #861, #898, #900, #904, plus post-audit #958/#1019), #868 moved to solyra#28,
+> #717 closed as duplicate, and the eleven post-audit issues opened in September
+> (#1017 through #1095) are not yet mapped here. Cross-check the updates before treating
+> a row as a live blocker.
+
+**No range notation** — the previous revision wrote
 `#829–#850`, which reads as 22 issues while naming six. Ranges are replaced with explicit lists.
 
 ### FEAT-REPLAY-001 — Replay / backtest / evaluation (21 open)
