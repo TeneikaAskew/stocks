@@ -194,13 +194,16 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 ## Full open-issue map by capability
 
-> **2026-08-31 snapshot — frozen pending the next regeneration.** At the snapshot, every
-> open issue appeared exactly once. The dated updates above list the deltas since:
-> fourteen of the rows below are now closed (canonical #820, #825, #829, #831, #833,
-> #838, #841, #843, #861, #898, #900, #904, and ops records #930/#944), #868 moved to
-> solyra#28, #717 closed as duplicate, and the issues opened after the snapshot (#958,
-> #1017 through #1095, of which #958 and #1019 have already closed again) are not mapped
-> here at all. Cross-check the updates before treating a row as a live blocker.
+> **Last regenerated for the 2026-08-31 reconciliation, with the 2026-09-03 cross-repo
+> edits applied (#971 added; the #683/#685 rows re-pointed at solyra#26/#27); not
+> regenerated since.** As of 2026-09-03 every then-open issue appeared exactly once.
+> The dated updates above list the deltas since: fourteen of the rows below are now
+> closed (canonical #820, #825, #829, #831, #833, #838, #841, #843, #861, #898, #900,
+> #904, and ops records #930/#944), #868's row points at solyra#28, #717 closed as
+> duplicate, and the eleven issues opened after 2026-09-03 that remain open (#1017,
+> #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, #1095) are not mapped
+> here at all (#958 and #1019 also postdate the map but have closed again).
+> Cross-check the updates before treating a row as a live blocker.
 
 **No range notation** — the previous revision wrote
 `#829–#850`, which reads as 22 issues while naming six. Ranges are replaced with explicit lists.
