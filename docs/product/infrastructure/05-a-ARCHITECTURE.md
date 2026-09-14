@@ -371,9 +371,9 @@ Declared in `gcp/schema.sql` but absent live: `schema_apply_history`
 | `direction-phase2` | [`gcp/deploy.sh:1937`](../../../gcp/deploy.sh#L1937) | python -m gcp.research.direction_program.phase2_ablation | 8Gi / 4 CPU / 10800s / retries 0 / tasks ${n} | research | 2026-07-11 ok |
 | `direction-probe` | [`gcp/deploy.sh:1655`](../../../gcp/deploy.sh#L1655) | python -m gcp.research.strat_engine.strat_dir_probes --experiment=e1_horizon --ticker=IWM --tf=15m --horizon=15 | 8Gi / 4 CPU / 5400s / retries 0 | research | 2026-06-21 ok |
 | `earnings-long-watchlist` | [`gcp/deploy.sh:1330`](../../../gcp/deploy.sh#L1330) | python -m gcp.earnings_long_watchlist | 512Mi / 1 CPU / 600s / retries 0 | main | 2026-09-06 ok |
-| `earnings-options-backfill` | [`gcp/deploy.sh:3663`](../../../gcp/deploy.sh#L3663) | python -m gcp.fetchers.fetch_av_earnings_options_backfill | 1Gi / 1 CPU / 32400s / retries 0 | main | 2026-05-22 ok |
+| `earnings-options-backfill` | [`gcp/deploy.sh:3673`](../../../gcp/deploy.sh#L3673) | python -m gcp.fetchers.fetch_av_earnings_options_backfill | 1Gi / 1 CPU / 32400s / retries 0 | main | 2026-05-22 ok |
 | `earnings-reactions-brief` | [`gcp/deploy.sh:1297`](../../../gcp/deploy.sh#L1297) | python -m gcp.earnings_reactions_brief | 1Gi / 1 CPU / 600s / retries 0 | main | 2026-09-04 ok |
-| `earnings-sweep` | [`gcp/deploy.sh:3533`](../../../gcp/deploy.sh#L3533) | python -m scripts.calibrate_earnings | 4Gi / 2 CPU / 1800s / retries 0 | main | 2026-05-22 ok |
+| `earnings-sweep` | [`gcp/deploy.sh:3543`](../../../gcp/deploy.sh#L3543) | python -m scripts.calibrate_earnings | 4Gi / 2 CPU / 1800s / retries 0 | main | 2026-05-22 ok |
 | `etf-options-retention` | [`gcp/deploy.sh:2265`](../../../gcp/deploy.sh#L2265) | python -m gcp.options_retention_job | 512Mi / 1 CPU / 3600s / retries 0 | main | 2026-09-06 ok |
 | `evaluate-ew-strikes` | [`gcp/deploy.sh:2708`](../../../gcp/deploy.sh#L2708) | python -m gcp.fetchers.evaluate_ew_strikes | 512Mi / 1 CPU / 600s / retries 1 | main | 2026-09-05 ok |
 | `exec-backtest` | **not in deploy.sh** (hand-created) | python -m lib.exec_backtest.cli --mode=base | 8Gi / 4 CPU / 5400s / retries 0 | trading-system:research-exec-backtest | 2026-05-27 ok |
@@ -397,7 +397,7 @@ Declared in `gcp/schema.sql` but absent live: `schema_apply_history`
 | `indicator-correlation` | [`gcp/deploy.sh:749`](../../../gcp/deploy.sh#L749) | python -m gcp.indicator_correlation_job | 1Gi / 1 CPU / 1800s / retries 1 | research | 2026-05-31 ok |
 | `insight-discord-push` | [`gcp/deploy.sh:580`](../../../gcp/deploy.sh#L580) | python -m gcp.insight_discord_push | 512Mi / 1 CPU / 120s / retries 1 | main | 2026-09-04 ok |
 | `insight-pipeline` | [`gcp/deploy.sh:556`](../../../gcp/deploy.sh#L556) | python -m gcp.insight_pipeline_job | 2Gi / 1 CPU / 1800s / retries 1 | main | 2026-09-04 ok |
-| `intraday-bulk-backfill` | [`gcp/deploy.sh:3633`](../../../gcp/deploy.sh#L3633) | python -m gcp.fetchers.fetch_alphavantage_intraday --symbols-file /app/gcp/fetchers/symbol_lists/earnings_universe.txt --start-date 2024-01-01 | 1Gi / 1 CPU / 86400s / retries 0 / tasks 4 | main | 2026-05-23 failed |
+| `intraday-bulk-backfill` | [`gcp/deploy.sh:3643`](../../../gcp/deploy.sh#L3643) | python -m gcp.fetchers.fetch_alphavantage_intraday --symbols-file /app/gcp/fetchers/symbol_lists/earnings_universe.txt --start-date 2024-01-01 | 1Gi / 1 CPU / 86400s / retries 0 / tasks 4 | main | 2026-05-23 failed |
 | `magnitude-engine` | [`gcp/deploy.sh:1813`](../../../gcp/deploy.sh#L1813) | python -m gcp.research.magnitude_engine.mag_walk_forward | 8Gi / 4 CPU / 5400s / retries 0 / tasks ${plan_size} | research | 2026-08-27 ok |
 | `magnitude-inference` | [`gcp/deploy.sh:1975`](../../../gcp/deploy.sh#L1975) | python -m gcp.research.magnitude_engine.mag_inference | 1Gi / 1 CPU / 300s / retries 0 | research | 2026-09-04 ok |
 | `magnitude-recal` | [`gcp/deploy.sh:1930`](../../../gcp/deploy.sh#L1930) | python -m gcp.research.magnitude_engine.mag_walk_forward --phase=phase0 --all-cells --calibration=isotonic | 8Gi / 4 CPU / 10800s / retries 0 | research | 2026-07-12 ok |
@@ -608,6 +608,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | `discord-warm-open` | `0 9 * * 1-5` | `discord-interactions (service, minInstanceCount patch)` | minInstanceCount=1 | ENABLED |  |
 | `earnings-long-watchlist-sunday` | `45 19 * * 0` | `earnings-long-watchlist` |  | ENABLED | 2026-09-06 |
 | `earnings-reactions-brief-daily` | `35 8 * * 1-5` | `earnings-reactions-brief` |  | ENABLED | 2026-09-04 |
+| `earnings-sweep-sunday` | `30 20 * * 0` | `earnings-sweep` | --options-insights | **not live** (declared in deploy.sh) |  |
 | `economic-events-daily` | `0 7 * * 1-5` | `fetch-economic-events` |  | ENABLED | 2026-09-04 |
 | `evaluate-ew-strikes-daily` | `0 23 * * 1-5` | `evaluate-ew-strikes` |  | ENABLED | 2026-09-05 |
 | `fetch-market-data-daily` | `0 23 * * 1-5` | `fetch-market-data` |  | ENABLED | 2026-09-05 |
@@ -869,12 +870,12 @@ Backup and restore procedures are in [CLAUDE.md → Backup and disaster recovery
 ## 15. Live-vs-repo reconciliation
 
 <!-- inventory:reconcile:start -->
-Live read 2026-09-07T04:35:16Z. Repo declares 68 jobs / 65 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->
+Live read 2026-09-07T04:35:16Z. Repo declares 68 jobs / 66 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->
 
 **Jobs live but not in deploy.sh** (10): `backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`
 **Jobs in deploy.sh but not live** (2): `compute-spx-greeks-backfill`, `options-exec-backtest`
 **Schedulers live but not in deploy.sh** (0): none
-**Schedulers in deploy.sh but not live** (0): none
+**Schedulers in deploy.sh but not live** (1): `earnings-sweep-sunday`
 **Schedulers paused** (0): none
 **Live schedulers targeting a missing job** (0): none
 **deploy.sh schedulers targeting a job deploy.sh never creates** (0): none
