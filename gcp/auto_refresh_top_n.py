@@ -70,6 +70,11 @@ def _is_cached_today(ticker: str) -> bool:
                 SELECT 1 FROM insight_reports
                 WHERE ticker = %s
                   AND as_of::date = (NOW() AT TIME ZONE 'UTC')::date
+                  -- A backfill row for today would otherwise count as the
+                  -- cache hit, skipping live generation, while the live-only
+                  -- API query cannot serve that row: the ticker ends the day
+                  -- with no visible report (Codex on #1098 round 2).
+                  AND run_kind = 'live'
                 LIMIT 1
                 """,
                 (ticker.upper(),),

@@ -139,12 +139,44 @@ def _resolve_tickers(args: argparse.Namespace) -> list[str]:
         return []
 
 
-def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
-    """Determine [start, end) bar window to load from market_data_intraday.
+# A cursor-resume window wider than this is catch-up, not the live cadence.
+#
+# Derived from the ACTUAL schedule, not from the --lookback-days default:
+# gcp/deploy.sh:4830 runs historical-signals-watchlist-daily on
+# `0 1 * * 2-6`, Tue-Sat at 01:00 ET. So the ordinary Tuesday run resumes
+# from a cursor set by Saturday's run, which covered Friday's session: a
+# Friday 16:00 ET close read at Tuesday 01:00 ET is ~81 hours. A three-day
+# cutoff therefore labelled the normal weekly Monday ingestion 'backfill'
+# every single week (Codex on #1098 round 3 — my "3 allows a weekend"
+# comment was reasoning about the lookback flag rather than the cron).
+#
+# 5 days covers Friday-to-Tuesday (~3.4d) and the holiday-Monday case where
+# Wednesday's run picks up Friday's cursor (~4.4d), while still catching the
+# multi-day outage this rule exists for.
+LIVE_WINDOW_DAYS = 5
+
+
+def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime, str]:
+    """Determine the [start, end) bar window, and the provenance it implies.
 
     The auto-resume path (no --start-date / --backfill-from) reads
     MAX(entry_time) scoped to the requested ``args.strategy`` so that
     momentum and mean_reversion backfills resume from independent cursors.
+
+    Returns ``(start, end, run_kind)``. Only ONE path is 'live': resuming
+    from an existing cursor, with no explicit window and no --force. Every
+    other path computes signals well after the bars they describe:
+
+      --force              deletes the ticker's rows and reprocesses history
+      --backfill-from      an explicit historical start
+      --start-date         likewise, and it was classified 'live' by an
+                           earlier revision of this function that keyed only
+                           off the first two flags
+      no cursor yet        the 30-day bootstrap, also historical
+
+    The third argument exists because this is the only place that knows
+    which branch ran; the caller cannot re-derive the cursor case from
+    ``args`` alone (Codex on #1098).
     """
     ticker = args.symbol.upper()
 
@@ -153,10 +185,14 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
     else:
         end = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=1)  # exclusive
 
+    run_kind = 'backfill' if args.force else 'live'
+
     if args.start_date:
         start = datetime.fromisoformat(args.start_date).replace(tzinfo=timezone.utc)
+        run_kind = 'backfill'
     elif args.backfill_from:
         start = datetime.fromisoformat(args.backfill_from).replace(tzinfo=timezone.utc)
+        run_kind = 'backfill'
     else:
         # Default: resume from MAX(entry_time) + 1 minute scoped to THIS
         # strategy, or fall back to a 30-day window if the table has no
@@ -166,11 +202,39 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
             log.info('no existing rows for %s [%s] — defaulting to last 30 days',
                      ticker, args.strategy)
             start = end - timedelta(days=30)
+            run_kind = 'backfill'
         else:
             start = last + timedelta(minutes=1)
             log.info('resuming from MAX(entry_time)=%s [%s]', last, args.strategy)
 
-    return start, end
+    # A cursor resume is only 'live' while the window it produces is recent.
+    # I argued on #1098 round 1 that a resume after a week of downtime is
+    # still the live cursor doing its job; Codex's round-2 counter is the one
+    # that holds: those rows are reconstructed days after their bars, and
+    # /api/signals discloses run_kind per row, so calling them live is a
+    # wrong label on the row itself regardless of which code path produced
+    # it. `--end-date` into the past makes it plainer still — the window is
+    # historical whatever the cursor says.
+    #
+    # LIVE_WINDOW_DAYS is derived from the job's cron, not from its
+    # --lookback-days flag — see the constant's own block above.
+    # Measured against NOW, not as a span: `end` defaults to now + 1 day, so
+    # every live window is a day wide before the cursor is even considered,
+    # and an --end-date before the cursor makes the span negative. Both of
+    # those made a span test read 'live' on windows that are plainly
+    # historical.
+    if run_kind == 'live':
+        now = datetime.now(timezone.utc)
+        if args.end_date and end < now - timedelta(days=1):
+            log.info('--end-date %s is historical — classifying as backfill',
+                     args.end_date)
+            run_kind = 'backfill'
+        elif (now - start) > timedelta(days=LIVE_WINDOW_DAYS):
+            log.info('cursor is %s old (> %dd) — classifying as backfill',
+                     now - start, LIVE_WINDOW_DAYS)
+            run_kind = 'backfill'
+
+    return start, end, run_kind
 
 
 def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
@@ -353,7 +417,7 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
     # `resolve_window` reads args.symbol — patch it through for this ticker
     # in the watchlist iteration path.
     args.symbol = ticker
-    start, end = resolve_window(args)
+    start, end, window_kind = resolve_window(args)
     if start >= end:
         log.info('  %s: window [%s, %s) empty — already up-to-date', ticker, start, end)
         return 0
@@ -402,9 +466,13 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
                  ticker, len(table_df), args.strategy)
         return 0
 
-    attempted, inserted = bulk_insert(table_df)
-    log.info('  %s [%s]: done attempted=%d inserted=%d skipped=%d',
-             ticker, args.strategy, attempted, inserted, attempted - inserted)
+    # resolve_window decided this: only the cursor-resume path is 'live'.
+    # A backfill row is real analysis of a real bar, but it is not a signal
+    # that was published when it fired, so /api/signals must be able to tell
+    # them apart (audit 2026-09-14).
+    attempted, inserted = bulk_insert(table_df, run_kind=window_kind)
+    log.info('  %s [%s]: done attempted=%d inserted=%d skipped=%d run_kind=%s',
+             ticker, args.strategy, attempted, inserted, attempted - inserted, window_kind)
     return 0
 
 

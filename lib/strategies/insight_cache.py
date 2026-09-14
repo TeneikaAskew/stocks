@@ -282,7 +282,12 @@ def fetch_insight_for_ticker(
             report->>'regime'         AS regime,
             (report->>'invalidation_level')::numeric AS invalidation_level
         FROM insight_reports
-        WHERE ticker = :t AND as_of::date = :d
+        -- run_kind='live' or the monitor trades on a replay. An
+        -- INSIGHT_AS_OF run for today's date is hidden from /api/insights
+        -- but this adapter can suppress or downgrade a fire, so filtering
+        -- the display alone made the operator's view and the trading
+        -- decision disagree (Codex on #1098 round 2).
+        WHERE ticker = :t AND as_of::date = :d AND run_kind = 'live'
         ORDER BY created_at DESC
         LIMIT 1
     """)
