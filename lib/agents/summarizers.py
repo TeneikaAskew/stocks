@@ -52,10 +52,12 @@ def _query_strict(sql: str, params: Optional[dict] = None):
 
     ``query_to_dataframe`` returns an empty DataFrame on error, which a
     caller cannot tell apart from "matched no rows". That is how a
-    malformed pgvector cast in ``retrieve_similar_journal`` sat in
-    production for a week looking like "this ticker has no similar
-    journal entries" (CLAUDE.md Rule 3.7). Callers on this path have
-    their own handler and would rather see the exception.
+    malformed pgvector cast in ``retrieve_similar_journal`` went
+    unnoticed for the whole of Cloud Logging's 30-day retention —
+    3 failures per insight-pipeline run, every weekday, all of them
+    reading as "this ticker has no similar journal entries"
+    (CLAUDE.md Rule 3.7). Callers on this path have their own handler
+    and would rather see the exception.
     """
     from gcp.database import query_to_dataframe_strict
 
