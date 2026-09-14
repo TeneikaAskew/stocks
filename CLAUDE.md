@@ -1071,11 +1071,25 @@ you stop guessing at a 403:
 - **Secret Manager holds no second GCP key.** Checked the full secret list;
   there is no more-privileged SA credential to escalate to. `claude-web@` is
   the only GCP identity in a session.
-- **Python client libraries do not auto-authenticate.** There is no ADC file
-  and `GOOGLE_APPLICATION_CREDENTIALS` is unset, so `google.cloud.*` in a
-  local script finds no credentials even while `gcloud` works. For REST from
-  Python, mint a token: `env -u CLOUDSDK_AUTH_ACCESS_TOKEN gcloud auth
-  print-access-token`. This is *separate* from packages simply not being
+- **Python client libraries do not auto-authenticate, but you can point them
+  at the same credential.** There is no ADC file and
+  `GOOGLE_APPLICATION_CREDENTIALS` is unset, so `google.cloud.*` /
+  `google.auth.default()` raise `DefaultCredentialsError` even while `gcloud`
+  works. The service-account key gcloud is already using is on disk, and
+  exporting it as ADC makes the Python libraries work — verified 2026-09-14
+  by minting a token and calling Cloud Resource Manager with it:
+
+  ```bash
+  export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/legacy_credentials/\
+  claude-web@adept-mountain-474619-d4.iam.gserviceaccount.com/adc.json"
+  ```
+
+  `google.auth.default()` then returns credentials for `claude-web@` — with
+  `project=None`, so pass the project explicitly rather than relying on
+  inference. For a one-off REST call, minting a token is simpler:
+  `env -u CLOUDSDK_AUTH_ACCESS_TOKEN gcloud auth print-access-token`.
+  Neither path widens what the identity may do; both are `claude-web@`.
+  This is *separate* from packages simply not being
   installed in the sandbox, and the two produce different errors: a missing
   package is `ModuleNotFoundError` / `cannot import name 'storage' from
   'google.cloud'`, a missing credential is `DefaultCredentialsError`. Do not
