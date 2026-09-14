@@ -71,7 +71,7 @@ body:
         $ gcloud beta run jobs executions list --job=phase6-playbook --region=us-east1 --limit=10
         (six executions, all 2026-06-14)
 
-        $ grep -n "phase6-playbook" gcp/deploy.sh
+        $ grep -n -e "phase6-playbook" gcp/deploy.sh
         (no _schedule entry; not in the all) target)
     validations:
       required: true
@@ -86,11 +86,202 @@ body:
         build.
       render: shell
       placeholder: |
-        $ grep -rEn "playbook_cards|/api/playbook" lib/ gcp/ platform/ scripts/ tests/
-        (11 hits: router, writer, tests)
+        # Repo-wide over TRACKED files, not the five source directories — a job's
+        # only caller is often a workflow. Measured:
+        # .github/workflows/deploy-staging.yml:299 dispatches
+        # refresh-earnings-views and the five-dir search misses it entirely.
+        # ':!archive/' as well: archive/README.md says "Retired code ... Nothing
+        # here runs in production", so a hit there is not a consumer. Measured —
+        # TradingAlertSystem matches archive/standalone-scripts/trading_alerts.py
+        # and nothing live, which would block a correct retirement.
+        # ':!.github/ISSUE_TEMPLATE/' and ':!.claude/commands/' exclude the files
+        # that cite example symbols in their own prose, THIS ONE INCLUDED. The
+        # line above names TradingAlertSystem, so without them the search for it
+        # matches this comment and .claude/commands/resolve-issue.md and returns
+        # rc=0 forever — measured, exactly those two hits and nothing else. A
+        # retirement check whose passing state is unreachable is not a check.
+        # NOT by directory and NOT by extension: .claude/settings.json is an
+        # executable hook and .claude/agents/*.md are executable too — measured,
+        # gcp-config-reviewer read as dead under ':!*.md' while
+        # .claude/agents/pre-deploy-check.md:75 delegates to it.
+        # ':!*.drawio' and the live_gcp_snapshot fixture likewise: measured, the
+        # three root .drawio diagrams and the GCP state capture they are drawn
+        # from match six of seven probe surfaces and invoke none of them. Derive
+        # this list, do not extend it per report — recipe in the resolver's
+        # Phase 2. platform/api/openapi.json deliberately stays IN: it is
+        # generated, so a retired route still named there means the snapshot was
+        # not regenerated, which the check SHOULD catch.
+        # ANCHOR AT THE REPO ROOT. `.` and the four Claude scopes are relative
+        # to your CWD, and a pathspec that does not exist there is a CLEAN MISS
+        # rather than an error. Measured from gcp/: all five searches below
+        # return rc=1 for debug-workflow — "no consumers, dormant" — while the
+        # root .claude/commands/ really does route to it.
+        # A FUNCTION, so a failed root resolution can `return` instead of
+        # leaving $root empty for the probes below. `git -C ""` does NOT fail:
+        # measured on git 2.43.0 it silently runs in the CURRENT directory,
+        # which is the CWD-relative search this comment exists to prevent.
+        # A `|| echo …` guard cannot stop it — the echo succeeds, so the guard
+        # reports and the probe runs anyway — and `${root:?…}` cannot either:
+        # inside a pipeline the expansion kills only the first stage, so a
+        # counting probe still prints 0 and reads as a clean miss.
+        # rc=2, not 1: for these searches 0 is a hit and 1 is a clean miss, so
+        # a root failure needs a third code or it files as "no consumers". The
+        # message goes to STDERR so a counting pipe cannot count it as a match.
+        $ at_root() {
+            local root
+            root=$(git rev-parse --show-toplevel) \
+              || { echo "not in a checkout — this probe did not run" >&2; return 2; }
+            test -n "$root" \
+              || { echo "empty top level — this probe did not run" >&2; return 2; }
+            git -C "$root" "$@"
+          }
+        # `-e` BEFORE THE PATTERN. git grep and plain grep both read a first
+        # argument beginning with `-` as an option, and the `--` further along
+        # separates PATHS, not the pattern. Measured on git 2.43.0 with a
+        # surface named `--legacy-mode`: `error: unknown option 'legacy-mode'`
+        # plus a usage dump, rc=129 through the `| wc -l` form below. The
+        # PIPESTATUS rule above catches it only if you read the number, and the
+        # recipes without a pipe do not print one at all. `-e` says the next
+        # word is the pattern, whatever it starts with.
+        $ at_root grep -En -e "playbook_cards|/api/playbook" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt'
+        (142 matching LINES across 13 files: router, writer, tests. Lines, not
+        occurrences — `git grep -c`/`wc -l` count lines, and 7 of these carry
+        both alternatives, so the pattern occurs 149 times. Use `git grep -Eo`
+        if you mean occurrences; say which one your number is.)
+
+        # THE SEARCH ABOVE IS NOT THE WHOLE ANSWER. It excludes *.md and
+        # .claude/commands/ because those cite example symbols in their own
+        # prose — but .claude/agents/*.md and .claude/commands/*.md are also
+        # EXECUTABLE, and a Claude agent or slash command is a surface you can
+        # be retiring. Measured: gcp-config-reviewer returns NO MATCHES above
+        # while .claude/agents/pre-deploy-check.md:75 delegates to it on every
+        # deploy. So run these two as well, and exclude the surface's OWN
+        # definition file — an agent always matches itself, which would make
+        # every agent look consumed:
+        # ONE EXCLUSION PER ALTERNATIVE. `<surface>` may be the documented
+        # coupled-retirement form, `code-reviewer|pine-script-reviewer`, and
+        # substituting that whole string builds ONE path named
+        # `code-reviewer|pine-script-reviewer.md`, which excludes neither real
+        # definition — so both report themselves as consumers and a dormant
+        # pair can never satisfy this field. Substituting per alternative:
+        #   $ at_root grep -nE -e "code-reviewer|pine-script-reviewer" -- .claude/agents \
+        #       ':(exclude,literal).claude/agents/code-reviewer.md' \
+        #       ':(exclude,literal).claude/agents/pine-script-reviewer.md'
+        # The resolver's helper splits the alternation itself; here the
+        # substitution is yours, so the splitting is too.
+        # `:(exclude,literal)` on the SELF-exclusions only. A symbol is an ERE
+        # and a pathspec is a glob, and they share `*`, `?` and `[`. Under `:!`
+        # the substituted surface is pasted into a glob, so it can exclude a
+        # file that is not its definition at all — measured with `ab*c` on a
+        # checkout holding one live `.claude/agents/abXYZc.md` that names the
+        # symbol: the search returns a clean miss, and the path scan cannot
+        # catch it either, since the ERE `ab*c` does not match `abXYZc.md`.
+        # The scope exclusions above (`:!*.md`, `:!docs/`, `:!.claude/commands/`)
+        # stay plain `:!` — those ARE meant to be globs.
+        $ at_root grep -nE -e "<surface>" -- .claude/agents ':(exclude,literal).claude/agents/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .claude/commands ':(exclude,literal).claude/commands/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .github/prompts ':(exclude,literal).github/prompts/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- CLAUDE.md
+        CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
+        mistake for prose: Claude Code loads it automatically and it routes by
+        name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and
+        pre-deploy-check. Measured on fallback-guard with its code and agent
+        callers simulated away: every other scope returns no matches while
+        CLAUDE.md still routes to it. Root file only; docs/*.md stay prose.
+        That third one is the fourth executable-markdown scope found so far:
+        scripts/maintenance/render_doc_prompts.py renders .github/prompts/*.md
+        and refresh-architecture-docs.yml:537 cats the result into Gemini, so a
+        symbol named only in a source template is a live input to a scheduled
+        job that ':!*.md' hides. Measured on verify_docs_against_live
+        with its real consumers simulated away — code, agents and commands all
+        return "no matches" while .github/prompts/architecture.md:80 names
+        scripts/verify_docs_against_live.py as the gate the refresh must pass.
+        A hit in .claude/commands/ is AMBIGUOUS, not proof: it may be a real
+        route (`/debug-workflow`) or one of these forms quoting an example.
+        Read the two or three lines and say which. The resolver's Phase 4
+        helper returns a distinct exit code for exactly this case.
+
+        # AND SOLYRA, WITH A COMMAND. This box asks for consumers in BOTH
+        # repos, and every probe above is anchored to the stocks checkout —
+        # `git -C "$root"` cannot see the frontend. Without this, the field can
+        # be completed with a prose claim about solyra and no search behind it,
+        # which is how a surface with a surviving frontend caller gets filed as
+        # dormant. Same three scopes as above, under solyra's own exclusion set
+        # (it vendors stocks' OpenAPI snapshot, so that file names routes
+        # nothing there calls).
+        # CHECK THE ORIGIN, not just that it is a git checkout. `rev-parse
+        # --git-dir` exits 0 for any repo, so a stale SOLYRA or a typo makes
+        # every symbol absent "over there" — the answer this box exists to
+        # distrust, arriving with the confidence of a successful search. Four
+        # literal forms, no glob: a suffix pattern checks the path and says
+        # nothing about the HOST. Same rule the resolver's gate applies.
+        $ at_solyra() {
+            local s=${SOLYRA:-} o
+            if [ -z "$s" ]; then
+              s=$(git rev-parse --show-toplevel 2>/dev/null); s=${s:+$s/../solyra}
+            fi
+            git -C "${s:-/nonexistent}" rev-parse --git-dir >/dev/null 2>&1 \
+              || { echo "no solyra checkout at '${s:-<unresolved>}' — set" >&2
+                   echo "SOLYRA=<path>; this probe did not run" >&2
+                   return 2; }
+            o=$(git -C "$s" remote get-url origin 2>/dev/null); o=${o%/}; o=${o%.git}
+            case "$o" in
+              https://github.com/TeneikaAskew/solyra|\
+              ssh://git@github.com/TeneikaAskew/solyra|\
+              git://github.com/TeneikaAskew/solyra|\
+              git@github.com:TeneikaAskew/solyra) ;;
+              *) echo "'$s' is a checkout, but origin is '${o:-<none>}' — that is" >&2
+                 echo "not solyra; this probe did not run" >&2
+                 return 2;;
+            esac
+            # RE-ANCHOR AT THE ROOT. Everything above passes for a
+            # SUBDIRECTORY of the right repo — it is a git checkout and origin
+            # matches — and then `git -C "$s" … -- .` searches only that
+            # subtree. Measured on the real checkout: `useQuery` matches 42
+            # files from the root and 39 from `src/`, so consumers outside it
+            # are invisible and this evidence would read as "no consumers".
+            s=$(git -C "$s" rev-parse --show-toplevel) || return 2
+            git -C "$s" "$@"
+          }
+        $ at_solyra grep -nE -e "<surface>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
+            ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!package-lock.json' \
+            ':!bun.lock' ':!package.json' ':!tests/fixtures/stocks-openapi.json'
+        # AND package.json SEPARATELY, because the search above excludes it and
+        # it is EXECUTABLE. Its `scripts` block runs on every `npm run`, and a
+        # dependency entry is what an import resolves through — so a surface
+        # whose only remaining consumer is a script or a dependency reads as a
+        # clean miss above, and none of the Markdown probes brings it back. The
+        # resolver's consumed() parses those two sections for exactly this case;
+        # this field would otherwise recommend retiring on a strictly narrower
+        # search than the gate runs. An npm ALIAS hides the installed package
+        # inside the value (`"charts": "npm:d3@^7"`), so read the lines rather
+        # than counting them.
+        $ at_solyra grep -nE -e "<surface>" -- package.json
+        # SELF-EXCLUDED PER SCOPE, exactly as the stocks probes above are. A
+        # Solyra agent or slash command is a retirable surface too, and its own
+        # definition always mentions its name — so a combined search returns
+        # `.claude/agents/<surface>.md` as a "consumer" and a genuinely dormant
+        # Solyra surface can never reach the no-consumer state. Measured on
+        # code-reviewer: the combined form returns its own definition file.
+        # Solyra has no .github/prompts, so there are three scopes here, not
+        # four — checked, not assumed symmetric with stocks.
+        # One exclusion per alternative here too — see the note on the stocks
+        # probes above.
+        $ at_solyra grep -nE -e "<surface>" -- .claude/agents ':(exclude,literal).claude/agents/<surface>.md'
+        $ at_solyra grep -nE -e "<surface>" -- .claude/commands ':(exclude,literal).claude/commands/<surface>.md'
+        $ at_solyra grep -nE -e "<surface>" -- CLAUDE.md
+        src/pages/DashboardPage.tsx:142:  const { data } = useQuery(['<surface>', d])
+        src/pages/PlaybookPage.tsx:88:    fetch(`/api/<surface>?date=${d}`)
 
         solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
         Both live. So this is Tier 1: stale rows rendered as today's setups.
+
+        # THAT IS YOUR WORKING TREE, not the revision anyone is serving. The
+        # resolver's Phase 4 gate re-asks the same question against solyra's
+        # fetched origin/main, because a consumer deleted there five minutes ago
+        # is still running in every open tab — a different question, and that one
+        # decides whether the surface may go. This box is triage evidence: paste
+        # what the commands returned, including "no matches".
     validations:
       required: true
 
@@ -122,10 +313,91 @@ body:
         # Measured — under that pathspec `refresh-earnings-views`, `replay_signal_monitor`,
         # `_emergency_ceiling_block` and `db_query_cr` ALL return 0 commits, so the search
         # answers "never had a consumer" for every surface in the repo.
-        $ git log --oneline --all --full-history -G "<symbol>" --no-renames \
-            -- lib gcp platform scripts .github tests
+        # --diff-merges=separate as well: --full-history controls TRAVERSAL, not
+        # whether merge diffs are SEARCHED. An importer introduced only by a manual
+        # conflict resolution in a merge commit is invisible without it. Reproduced
+        # on git 2.43.0 (solyra#63): without it the search returned only the commit
+        # that REMOVED the importer; with it, the merge that added it appears too.
+        # "Added by nobody, removed by someone" is the tell.
+        # --no-patch as well, or this dumps a full diff against every merge
+        # parent: measured on this repo, 12,981 lines for one symbol versus 9
+        # with it. -G selection and the parent-qualified summaries are kept.
+        # .claude/ is IN and .github/ISSUE_TEMPLATE/ is OUT, for the same reasons
+        # the consumer field above gives. A Claude agent or command is a surface
+        # you can be retiring, and its whole history lives under .claude/ —
+        # measured, `code-reviewer` returns 0 commits without it and 2 with it.
+        # Meanwhile these forms name example symbols, so leaving ISSUE_TEMPLATE
+        # in returns commits that touched only this prose and none of the code.
+        # .claude/agents IS implementation history; .claude/commands is BOTH,
+        # and mixing them buries the answer. Measured on TradingAlertSystem,
+        # which this resolver cites as its worked example: the combined form
+        # returned FOUR commits, every one of them an edit to
+        # .claude/commands/resolve-issue.md and none a consumer change — and
+        # --no-patch shows only summaries, so they read like real history.
+        #
+        # SCOPE IT LIKE THE CONSUMER SEARCH: repo-wide minus prose, not a list of
+        # source directories. The consumer field above is already repo-wide for
+        # this reason and the history search lagged behind it — measured,
+        # `pipeline-fast` is defined at Makefile:50 and NOTHING else, so the
+        # directory list returned 0 commits and read as "it never had a
+        # consumer", while repo-wide returns 1. Root-level executables
+        # (Makefile, Dockerfiles, dependency manifests) are code.
+        #
+        # But ':!*.md' then hides the executable markdown, so agents and prompts
+        # come back as their own scopes — measured, `code-reviewer` goes to 0
+        # under the exclusion and 1 with .claude/agents searched separately.
+        # Same three-scope shape the resolver's consumed() uses.
+        # ANCHORED, like the consumer searches above and for the same reason:
+        # measured from platform/, the first search below finds 2 commits where
+        # the root finds 5, and from gcp/ the .claude scopes return ZERO with
+        # rc=0 — a successful empty result that reads as "no history".
+        # RESOLVE THE ROOT HERE, IN A FUNCTION OF THIS FIELD'S OWN. This is a
+        # different issue-form field from the Consumers one, and form fields are
+        # independent placeholders — a filer working through this box in a fresh
+        # shell has no $root, and no at_root, from up there.
+        # `git -C ""` does NOT fail: measured on git 2.43.0 it silently runs in
+        # the CURRENT directory, so an empty root turns every probe below back
+        # into the CWD-relative search this comment exists to prevent — 5
+        # history lines from the root, 0 from gcp/, rc=0 both times. Under
+        # `set -u` an UNSET name aborts, which is at least loud; an EMPTY one
+        # does not, which is why the guard tests the value.
+        # The two guards this replaced ended in a SUCCESSFUL ECHO, so they
+        # reported the failure and every probe below ran anyway. A function is
+        # what lets a guard stop the thing it guards.
+        $ at_root() {
+            local root
+            root=$(git rev-parse --show-toplevel) \
+              || { echo "not in a checkout — this probe did not run" >&2; return 2; }
+            test -n "$root" \
+              || { echo "empty top level — this probe did not run" >&2; return 2; }
+            git -C "$root" "$@"
+          }
+        $ at_root log --oneline --all --full-history \
+            --diff-merges=separate --no-patch \
+            -G "<symbol>" --no-renames \
+            -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' \
+               ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' \
+               ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' \
+               ':!.github/workflows/logs.txt'
+        # The generated artifacts belong here too, even though history is a
+        # different question from consumers. -G matches the commit that WROTE
+        # the artifact, and --no-patch hides which file matched, so it reads as
+        # "the change that wired a real caller". Measured on fetch_market_data:
+        # without them the top hit is c19ab32, a docs-refresh commit; restricted
+        # to the snapshot fixture alone it still matches, and restricted to
+        # everything else it does not appear at all.
+        $ at_root log --oneline --all --full-history \
+            --diff-merges=separate --no-patch \
+            -G "<symbol>" --no-renames -- .claude/agents .github/prompts CLAUDE.md
         <sha> (date) added it and wired it into <the caller>
         <sha> (date) rewrote that caller, silently dropping the mount
+
+        # Then .claude/commands SEPARATELY. For a slash-command surface these ARE
+        # its implementation history; for anything else they are this resolver's
+        # own prose about the example. Read them knowing which you have.
+        $ at_root log --oneline --all --full-history \
+            --diff-merges=separate --no-patch \
+            -G "<symbol>" --no-renames -- .claude/commands
 
         The shape of a conclusive answer: the second commit enumerates the new code's
         contents and never mentions the removal. That reads as accidental rewrite debris
@@ -164,10 +436,47 @@ body:
       label: Acceptance criteria
       description: Retiring and restoring have different bars. Restoring needs a writer, a schedule, a freshness SLO and a consumer guard, not just a re-run.
       placeholder: |
-        Retire: `git grep -q "<name>" -- . ':!docs/'` returns 1 — repo-wide, since
+        Retire: `git grep -qE -e "<name>" -- . ':!docs/' ':!archive/'
+        ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/'
+        ':!.claude/commands/' ':!*.md' ':!*.drawio'
+        ':!tests/fixtures/live_gcp_snapshot_*.json'
+        ':!.github/workflows/logs.txt'` returns 1 — and separately
+        `.claude/agents/`, `.claude/commands/`, `.github/prompts/` and root
+        `CLAUDE.md`, which are executable too: an agent delegated to by name, a
+        command another command routes to, a prompt a workflow cats into Gemini,
+        or an agent the auto-loaded project instructions name, is a
+        live consumer that a prose-shaped exclusion hides — the same exclusions as the
+        consumer field above, and repo-wide because
         .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs
-        cannot see; the schedule is deleted; the retention/export decision is recorded;
-        the cost delta is measured.
+        cannot see; AND the surface's own definition is gone, which no consumer
+        search can tell you: every executable-markdown scope excludes the
+        surface's own file so an agent does not match itself, and a module's
+        contents need not contain its basename, so both come back "no consumers"
+        with the implementation still on disk — measured on two dormant agents
+        in this repo. Assert it on PATHS instead, and assert it by RUNNING
+        `/resolve-issue`'s `absent_everywhere` rather than by re-typing the
+        command here.
+
+        That is deliberate, and this line is why. A copy of that scan lived
+        here for five rounds and drifted from the original in every one of
+        them: it read the index instead of the working tree, resolved paths
+        against the filer's CWD instead of the repo root, piped the listing
+        straight into grep so a failed inventory read as a pass, matched the
+        raw name so `premarket-brief` missed `gcp/premarket_brief.py`, and
+        ignored the reviewed-file approvals so an ordinary word like `react`
+        could never clear. Each was found by review, one round after the
+        original had been fixed for it. A second implementation of one
+        assertion is what produces that, so there is now one.
+
+        What it must establish, so you can tell a correct run from a broken
+        one: no tracked or untracked path that still EXISTS matches the
+        surface's name, with `-`/`_` treated as the same character, ignoring
+        paths a retirement deliberately keeps (`*.yml.disabled`, `archive/`)
+        and any file you have read and named in `REVIEWED` for this symbol —
+        anchored at the repo root, in both repos, with every listing's status
+        checked. `absent_everywhere "<name>"` answers exactly that and prints
+        what it found; the schedule is deleted; the retention/export decision
+        is recorded; the cost delta is measured.
 
         Restore: writer scheduled and in gcp/deploy.sh `all)`; an entry in
         scripts/audit_data_freshness.py with writer_job and min_rows_per_day; a max-age guard at

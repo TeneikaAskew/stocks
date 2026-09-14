@@ -23,7 +23,9 @@ from 2026-06-19 to 2026-08-25. Without PLAYBOOK_RESOLVE_DATE the job
 sweeps every unresolved weekday date in a lookback window (default 14
 days), so a missed night self-heals on the next run instead of orphaning
 the date, and a same-day pre-ingestion miss is benign while a past date
-with no bars turns the run red.
+with no bars turns the run red — unless that date is a known NYSE
+holiday (see classify_date_outcome), which never gets bars and would
+otherwise alarm once a day for the rest of the lookback window.
 
 Environment overrides:
   - PLAYBOOK_RESOLVE_DATE=YYYY-MM-DD : resolve one specific date instead
@@ -59,6 +61,22 @@ from typing import Optional
 
 import pandas as pd
 from sqlalchemy import text
+
+# Same NYSE holiday set audit_data_freshness.py uses to avoid false
+# "stale" alerts — reused here so a holiday date (a weekday brief row
+# with no session, per pending_dates()'s docstring) doesn't get
+# classified as a resolver failure. One source of truth for the
+# calendar rather than a second hardcoded list drifting from it.
+#
+# NYSE_FULL_CLOSURES excludes Black Friday: audit_data_freshness.py's own
+# comment says it's "early close, treated as closed" — a deliberate
+# leniency for ITS staleness check, not a real closure. NYSE trades an
+# abbreviated session that day, so intraday bars do land, and zero
+# resolved rows on it is a real gap this resolver must still flag red,
+# not the never-any-bars case the rest of the set represents.
+from scripts.audit_data_freshness import MARKET_HOLIDAYS_2026
+
+NYSE_FULL_CLOSURES = MARKET_HOLIDAYS_2026 - {date(2026, 11, 27)}
 
 logger = logging.getLogger(__name__)
 
@@ -508,12 +526,25 @@ def pending_dates(engine, today_et: date, lookback_days: int) -> list[date]:
         ),
         engine, params={'today': str(today_et), 'floor': str(floor)},
     )
-    return [d if isinstance(d, date) else d.date() for d in df['analysis_date']]
+    # pd.read_sql returns a pandas.Timestamp for a Postgres DATE column, and
+    # Timestamp subclasses datetime.datetime which subclasses date, so the
+    # naive `isinstance(d, date)` check this used to have is true for BOTH
+    # and never normalizes the Timestamp. A Timestamp then compares unequal
+    # to every plain `date` it's checked against downstream — `analysis_date
+    # == now_et.date()` and `analysis_date in NYSE_FULL_CLOSURES` are both
+    # always False for it (Python: comparing a date/datetime across classes
+    # is never equal), so classify_date_outcome's benign_pending AND
+    # benign_holiday cases were both unreachable from this sweep in
+    # production. Check datetime first so a Timestamp gets .date()'d; a
+    # genuine plain date (not expected from this query, but harmless if it
+    # ever occurs) passes through unchanged.
+    return [d.date() if isinstance(d, datetime) else d for d in df['analysis_date']]
 
 
 def classify_date_outcome(analysis_date: date, n_resolved: int, n_skipped: int,
                           now_et: datetime) -> str:
-    """Classify one date's resolution pass: 'ok' | 'benign_pending' | 'failed'.
+    """Classify one date's resolution pass:
+    'ok' | 'benign_pending' | 'benign_holiday' | 'failed'.
 
     - 'ok':             at least one row resolved, or nothing to do (rows
                         already resolved / nothing attempted).
@@ -524,12 +555,23 @@ def classify_date_outcome(analysis_date: date, n_resolved: int, n_skipped: int,
                         market_data_intraday.inserted_at), so same-day
                         missing bars are always the expected pre-ingestion
                         race — the next run's sweep picks the date up.
-    - 'failed':         nothing resolved on a PAST date — a real gap that
-                        must turn the run red, not exit 0. This is the
-                        silent failure that left every date after
-                        2026-06-19 unresolved for two months. A genuine
-                        ingestion outage therefore alarms on the next run
-                        (within ~24h), when the date ages into 'past'.
+    - 'benign_holiday': nothing resolved on a PAST date that is a known
+                        NYSE market holiday. There is no session, so
+                        market_data_intraday will never have bars for it
+                        — this is the "weekday brief row with no session"
+                        case pending_dates() already documents as
+                        expected to age out. Without this check every
+                        holiday alarmed as 'failed' once a day for the
+                        full lookback window (e.g. #1068: 2026-09-07
+                        Labor Day fired 'failed' on the 09-08 sweep and
+                        would have kept firing daily through 09-21).
+    - 'failed':         nothing resolved on a PAST, non-holiday date — a
+                        real gap that must turn the run red, not exit 0.
+                        This is the silent failure that left every date
+                        after 2026-06-19 unresolved for two months. A
+                        genuine ingestion outage therefore alarms on the
+                        next run (within ~24h), when the date ages into
+                        'past'.
 
     n_skipped must count only rows that could not resolve (missing bars,
     no setup, missing row) — never already-resolved no-ops, so an
@@ -539,6 +581,8 @@ def classify_date_outcome(analysis_date: date, n_resolved: int, n_skipped: int,
         return 'ok'
     if analysis_date == now_et.date():
         return 'benign_pending'
+    if analysis_date in NYSE_FULL_CLOSURES:
+        return 'benign_holiday'
     return 'failed'
 
 

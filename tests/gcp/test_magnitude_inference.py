@@ -12,6 +12,7 @@ Tests use the same import-stub pattern as Phase A.
 """
 from __future__ import annotations
 
+import pathlib
 import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -30,6 +31,16 @@ import pytest
 # keeps sys.modules clean under default ordering. (When the research stack
 # is installed — see the research-test CI job — nothing is stubbed at all.)
 _STUBBED_BY_THIS_MODULE: list[str] = []
+
+
+# The loader returns the artifact's label contract as a fourth value
+# (mag_inference verifies it before scoring), so stubs must supply one.
+from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
+    contract_payload, MAGNITUDE_THRESHOLDS, DEFAULT_LABEL_MODE,
+)
+
+_SERVING_CONTRACT = contract_payload(DEFAULT_LABEL_MODE,
+                                     MAGNITUDE_THRESHOLDS)
 
 
 def _stub_missing_modules(mods: list[str]) -> None:
@@ -272,7 +283,7 @@ def test_main_exits_1_when_total_written_is_zero(monkeypatch):
     with patch("sys.argv", ["mag_inference"]), \
          patch.object(mod, "get_engine", return_value=fake_engine), \
          patch.object(mod, "_load_model_and_version",
-                       return_value=(MagicMock(), ["rsi_14"], "v1")), \
+                       return_value=(MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)), \
          patch.object(mod, "_load_recent_features",
                        return_value=pd.DataFrame()), \
          patch.object(mod, "_score_and_persist", return_value=0):
@@ -288,7 +299,7 @@ def test_main_exits_0_when_some_predictions_written(monkeypatch):
     with patch("sys.argv", ["mag_inference"]), \
          patch.object(mod, "get_engine", return_value=MagicMock()), \
          patch.object(mod, "_load_model_and_version",
-                       return_value=(MagicMock(), ["rsi_14"], "v1")), \
+                       return_value=(MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)), \
          patch.object(mod, "_load_recent_features",
                        return_value=pd.DataFrame()), \
          patch.object(mod, "_score_and_persist", side_effect=[5, 7]):
@@ -305,7 +316,7 @@ def test_main_exits_1_when_majority_cells_fail(monkeypatch):
     def fake_load(ticker, tf):
         if ticker in ("IWM", "SPY"):
             raise FileNotFoundError(f"missing model for {ticker}:{tf}")
-        return (MagicMock(), ["rsi_14"], "v1")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
 
     with patch("sys.argv", ["mag_inference"]), \
          patch.object(mod, "get_engine", return_value=MagicMock()), \
@@ -564,3 +575,799 @@ def test_load_recent_features_falls_back_to_now_when_no_prior_bars(monkeypatch):
     if cutoff.tzinfo is None:
         cutoff = cutoff.tz_localize("UTC")
     assert (before - pd.Timedelta(hours=24)) <= cutoff <= (after - pd.Timedelta(hours=24))
+
+
+# ─── the artifact must state what its numbers mean, and the reader checks ───
+#
+# serving_contract_reason() (#1055) defends the WRITER: a walk-forward run
+# under non-default labels cannot flip LATEST. That leaves the reader with no
+# defense of its own, and the reader is where the damage lands -- every label
+# contract emits classes 0-3 with a plausible spread, so a model that arrived
+# by some other route (hand-copied blob, restored WITHDRAWN pointer, a future
+# code path) would score silently and put confidently wrong numbers on the
+# Expected-Move card. These cover the reader half.
+
+def _contract_blobs(contract_text, *, contract_exists=True):
+    """A stub GCS bucket whose blobs satisfy _load_model_and_version."""
+    def make(name):
+        b = MagicMock()
+        if name.endswith("/LATEST"):
+            b.exists.return_value = True
+            b.download_as_text.return_value = "run-abc"
+        elif name.endswith("/CONTRACT.json"):
+            b.exists.return_value = contract_exists
+            b.download_as_text.return_value = contract_text
+            b.download_as_bytes.return_value = (
+                contract_text.encode("utf-8")
+                if isinstance(contract_text, str) else contract_text)
+        elif name.endswith("/model.joblib"):
+            b.exists.return_value = True
+            b.download_to_filename.side_effect = lambda p: None
+        elif name.endswith("/VERSION"):
+            b.exists.return_value = True
+            b.download_as_text.return_value = "v9"
+        elif name.endswith("/feature_cols.txt"):
+            b.exists.return_value = True
+            b.download_as_text.return_value = "rsi_14\natr_14"
+        else:
+            b.exists.return_value = False
+        return b
+    bucket = MagicMock()
+    bucket.blob.side_effect = make
+    return bucket
+
+
+def _load_with(contract_text, *, contract_exists=True, download_raises=None,
+               model=None):
+    from gcp.research.magnitude_engine import mag_inference as mod
+    bucket = _contract_blobs(contract_text, contract_exists=contract_exists)
+    if download_raises is not None:
+        real = bucket.blob.side_effect
+        def raising(name):
+            b = real(name)
+            if name.endswith("/CONTRACT.json"):
+                b.download_as_text.side_effect = download_raises
+                b.download_as_bytes.side_effect = download_raises
+            return b
+        bucket.blob.side_effect = raising
+    if model is None:
+        # An estimator ordered the way our own training produces: labels are
+        # mapped through LABEL_TO_IDX to ints 0..n-1, so classes_ is range(n).
+        from gcp.research.magnitude_engine.mag_config import LABEL_CLASSES
+        model = MagicMock()
+        model.classes_ = list(range(len(LABEL_CLASSES)))
+    client = MagicMock()
+    client.bucket.return_value = bucket
+    with patch("google.cloud.storage.Client", return_value=client), \
+         patch("joblib.load", return_value=model):
+        return mod._load_model_and_version("IWM", "5m")
+
+
+def test_a_matching_contract_loads_and_is_returned():
+    import json as _json
+    model, cols, version, contract = _load_with(_json.dumps(_SERVING_CONTRACT))
+    assert cols == ["rsi_14", "atr_14"]
+    assert version == "v9"
+    assert contract["label_mode"] == "body"
+    assert contract["thresholds"] == [0.5, 1.0, 1.5]
+
+
+def test_a_research_label_model_is_refused_not_served():
+    """The case #1055 blocks at the writer, arriving at the reader anyway."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import contract_payload
+    bad = contract_payload("excursion", (0.5, 1.0, 1.5))
+    with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
+        _load_with(_json.dumps(bad))
+    assert "excursion" in str(e.value)
+
+
+def test_rebucketed_thresholds_are_refused():
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import contract_payload
+    bad = contract_payload("body", (0.35, 0.75, 1.25))
+    with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
+        _load_with(_json.dumps(bad))
+    assert "0.35" in str(e.value)
+
+
+def test_a_missing_contract_is_not_assumed_to_be_the_default():
+    """The silent fallback this exists to prevent. An artifact that never
+    stated its contract is unverifiable, not presumed innocent -- and the
+    error names the backfill rather than leaving it to be inferred."""
+    with pytest.raises(FileNotFoundError, match="carries no CONTRACT.json") as e:
+        _load_with("", contract_exists=False)
+    assert "backfill_model_contracts" in str(e.value)
+
+
+def test_a_corrupt_contract_is_distinguishable_from_a_mismatched_one():
+    """Two different failures: unparseable is not the same as disagreeing,
+    and collapsing them would send the operator after the wrong thing."""
+    with pytest.raises(ValueError, match="could not be decoded"):
+        _load_with("{not json")
+    # and it names WHICH decoding failure, so the operator is not left
+    # guessing between bad syntax, bad bytes and an oversized literal
+    with pytest.raises(ValueError, match="JSONDecodeError"):
+        _load_with("{not json")
+
+
+def test_the_contract_is_checked_before_the_model_is_downloaded():
+    """Ordering matters for the same reason it did in the writer (#1055
+    round 9): a refused artifact should cost nothing. joblib.load must not
+    run for a model that will be rejected."""
+    import json as _json, inspect
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import contract_payload
+    src = inspect.getsource(mod._load_model_and_version)
+    assert src.index("contract_mismatch(") < src.index("joblib.load("), (
+        "the contract check must precede the model download")
+
+
+# ─── Codex P2 review, #1074 ───
+
+def test_classes_is_required_not_optional():
+    """`classes` exists to catch a LABEL_CLASSES reorder. Treating it as
+    optional defeats exactly that: the reorder would arrive in an artifact
+    that simply omits the field, and a hand-created or restored contract
+    with matching label_mode and thresholds would be served without ever
+    proving how its probability columns map to buckets."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    for payload in ({"label_mode": "body", "thresholds": [0.5, 1.0, 1.5]},
+                    {"label_mode": "body", "thresholds": [0.5, 1.0, 1.5],
+                     "classes": None}):
+        with pytest.raises(ValueError, match="classes"):
+            contract_mismatch(payload)
+
+
+def test_a_reordered_class_list_is_still_caught():
+    """The case the field is for: same buckets, different order."""
+    from gcp.research.magnitude_engine.mag_config import (
+        contract_mismatch, LABEL_CLASSES)
+    reordered = list(LABEL_CLASSES)[::-1]
+    got = contract_mismatch({"label_mode": "body",
+                             "thresholds": [0.5, 1.0, 1.5],
+                             "classes": reordered})
+    assert got and "classes=" in got
+
+
+def test_the_backfill_refuses_an_unaudited_run():
+    """Before #1055 the single-cell dispatch path DID forward --label-mode
+    while the persist path checked nothing, so `old` does not imply `body`.
+    The script must name the runs it is allowed to stamp rather than
+    stamping whatever LATEST points at."""
+    import subprocess, sys as _sys
+    out = subprocess.run(
+        [_sys.executable, "-m", "scripts.backfill_model_contracts"],
+        capture_output=True, text=True)
+    assert out.returncode != 0
+    assert "--audited-run-id" in (out.stderr + out.stdout)
+
+
+def test_the_backfill_guards_the_single_cell_path_explicitly():
+    """A one-cell run is the single-cell dispatch path -- the one that could
+    carry a non-default label -- so it needs a deliberate override rather
+    than passing on the strength of being named."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    assert "--allow-single-cell-run" in src
+    assert "span" in src and "REFUSED" in src
+
+
+def test_the_backfill_exits_nonzero_while_any_serving_artifact_is_unverified():
+    """A backfill that refuses an artifact and still exits 0 is a fabricated
+    success in the tool whose whole job is to prevent one. It gates a deploy:
+    mag_inference refuses a cell with no CONTRACT.json, and its majority-
+    failure threshold means a minority of unstamped cells leaves the job
+    exiting 0 while those cells serve nothing. (Codex P1 on #1074.)
+
+    The exit code answers "is every SERVING artifact verifiable", checked by
+    reading the blobs back rather than trusting that the writes returned."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    body = src[src.index("def main("):]
+    assert "return 1" in body, "refused/unverified artifacts must fail the run"
+    # the verdict is an actual check over serving cells, not a counter. It
+    # now delegates to the reader rather than re-checking blob presence
+    # itself; the property is that something real is consulted per cell.
+    verdict = body[body.index("unverified = []"):]
+    assert "mag_inference._load_model_and_version" in verdict
+    assert verdict.index("return 1") < verdict.index("return 0"), (
+        "the failure path must precede the success path")
+
+
+def test_the_backfill_states_history_rather_than_rederiving_it():
+    """A backfill that derives its payload from the live constants cannot
+    detect drift; it moves with it. After a future change to
+    MAGNITUDE_THRESHOLDS or LABEL_CLASSES it would stamp an OLD model with
+    the NEW contract and mag_inference would accept probability columns that
+    mean something else -- the precise evolution CONTRACT.json exists to
+    catch. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    literal = src[src.index("_AUDITED_LEGACY_CONTRACT = {"):src.index("def main(")]
+    assert '"label_mode": "body"' in literal
+    assert "[0.5, 1.0, 1.5]" in literal
+    for derived in ("MAGNITUDE_THRESHOLDS", "LABEL_CLASSES",
+                    "DEFAULT_LABEL_MODE", "contract_payload"):
+        assert derived not in literal, (
+            f"the audited contract must not be derived from {derived}")
+    # and it is what gets written
+    assert "json.dumps(_AUDITED_LEGACY_CONTRACT" in src
+
+
+def test_the_backfill_validates_rather_than_checking_existence():
+    """Existence is not validity, the same distinction as exit-0 not being
+    success. A corrupt or mismatched blob would pass a presence check and
+    then be rejected by mag_inference at load, so the pre-deploy verdict has
+    to run the reader's own parse and contract_mismatch."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    # Stronger than the original form of this test, which asserted the
+    # verdict re-implemented the reader's parse. It now runs the reader
+    # itself, so every validation the reader performs — parse, required
+    # keys, types, mismatch, estimator class order — is covered by
+    # construction and cannot drift out of sync.
+    assert "mag_inference._load_model_and_version" in verdict, (
+        "must run the reader's own validation, not a copy of part of it")
+    assert "ContractRejection" in verdict, "a rejected contract must be reported"
+    assert "could not be loaded to verify" in verdict, (
+        "a cell that cannot even be loaded is not verified")
+
+
+def test_a_contract_rejection_is_fatal_regardless_of_the_threshold(monkeypatch):
+    """The majority threshold (`len(failures) > len(cells)//2`) exists for
+    cells that failed for their own reasons. Applying it to a contract
+    rejection would let one to three of six cells serve unverifiable
+    semantics -- or go unscored behind stale data -- while the job exits 0
+    and the failure notifier never fires. That is the scenario this change
+    exists to catch, so it must not be the one that slips under a threshold.
+    (Codex P2 on #1074.)"""
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:5m,QQQ:5m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ContractMismatch
+
+    def fake_load(ticker, tf):
+        if ticker == "IWM":                       # 1 of 3 — a clear minority
+            raise ContractMismatch("label_mode='excursion'")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    assert rc == 1, "one contract rejection out of three cells must exit 1"
+
+
+def test_an_ordinary_cell_failure_still_uses_the_threshold(monkeypatch):
+    """The inverse, so the fix does not quietly turn every transient
+    per-cell failure fatal: a missing MODEL is legitimately partial."""
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:5m,QQQ:5m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    def fake_load(ticker, tf):
+        if ticker == "IWM":
+            raise FileNotFoundError("no production model deployed")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    assert rc == 0, "1/3 ordinary failures stays under the threshold"
+
+
+def test_the_three_contract_outcomes_stay_distinguishable():
+    """Each subclass keeps the builtin a caller would expect, so the
+    separate handling established earlier in this PR still holds."""
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractRejection, ContractMissing, ContractMalformed,
+        ContractMismatch)
+    assert issubclass(ContractMissing, FileNotFoundError)
+    assert issubclass(ContractMalformed, ValueError)
+    assert issubclass(ContractMismatch, RuntimeError)
+    for cls in (ContractMissing, ContractMalformed, ContractMismatch):
+        assert issubclass(cls, ContractRejection)
+
+
+@pytest.mark.parametrize("bad", [3, True, "TIGHT", {"a": 1}])
+def test_a_scalar_classes_is_malformed_not_an_ordinary_failure(bad):
+    """`list(3)` raises TypeError, which is NOT the ValueError the reader
+    turns into ContractMalformed -- so it fell through to the ordinary
+    per-cell handler and back under the partial-success threshold the
+    previous round had just closed. A string was worse: "TIGHT" char-split
+    into ['T','I','G','H','T'] and reported a mismatch that misdescribed the
+    payload rather than naming it malformed. (Codex P2 on #1074.)"""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="is not a JSON array"):
+        contract_mismatch({"label_mode": "body",
+                           "thresholds": [0.5, 1.0, 1.5], "classes": bad})
+
+
+def test_a_non_string_label_mode_is_malformed_not_merely_mismatched():
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="is not a string"):
+        contract_mismatch({"label_mode": 3, "thresholds": [0.5, 1.0, 1.5],
+                           "classes": ["TIGHT", "NORMAL", "EXPANDED",
+                                       "EXPLOSIVE"]})
+
+
+def test_every_malformed_shape_reaches_the_fatal_path():
+    """The property that matters: each of these must surface as
+    ContractMalformed from the real loader, since only ContractRejection
+    bypasses the partial-success threshold."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractRejection, ContractMalformed)
+    for payload in ({"label_mode": "body", "thresholds": [0.5, 1.0, 1.5],
+                     "classes": 3},
+                    {"label_mode": "body", "thresholds": [0.5, 1.0, 1.5],
+                     "classes": "TIGHT"},
+                    {"label_mode": 3, "thresholds": [0.5, 1.0, 1.5],
+                     "classes": ["TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE"]}):
+        with pytest.raises(ContractMalformed) as e:
+            _load_with(_json.dumps(payload))
+        assert isinstance(e.value, ContractRejection)
+
+
+def test_the_backfill_rereads_latest_in_the_final_pass():
+    """A promotion running concurrently flips LATEST between the scan and the
+    verification, and validating the stale run would print "safe to deploy"
+    about an artifact that is no longer serving. The verdict has to describe
+    the world at the moment it is issued. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    assert "scanned_run" in verdict, "the scan-time run id must be compared"
+    assert "LATEST moved during the run" in verdict
+    assert "LATEST vanished during the run" in verdict
+    assert verdict.index("_read_latest(bucket, base)") < verdict.index(
+        "_load_model_and_version"), "LATEST must be re-read before the check"
+
+
+def test_every_decoding_failure_reaches_the_fatal_path():
+    """Only one of the three ways CONTRACT.json fails to decode is a
+    JSONDecodeError. The other two are ValueErrors that the narrower clause
+    let escape to the ordinary per-cell handler, and hence back under the
+    partial-success threshold. (Codex P2 on #1074.)"""
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMalformed, ContractRejection)
+
+    # 1. ordinary bad syntax
+    with pytest.raises(ContractMalformed):
+        _load_with("{not json")
+
+    # 2. an int literal over the 3.11 int_max_str_digits limit — raised by the
+    #    int conversion, NOT the parser, so it is a plain ValueError
+    huge = '{"label_mode":"body","thresholds":[' + "1" * 5000 + '],"classes":[]}'
+    with pytest.raises(ContractMalformed) as e2:
+        _load_with(huge)
+    assert isinstance(e2.value, ContractRejection)
+
+    # 3. non-UTF-8 bytes — real payload, decoded in the guarded block rather
+    #    than injected, so this exercises the actual decode path
+    with pytest.raises(ContractMalformed) as e3:
+        _load_with(b"\xff\xfe not utf-8")
+    assert isinstance(e3.value, ContractRejection)
+
+    # 4. deep nesting: RecursionError, not a ValueError at all
+    with pytest.raises(ContractMalformed):
+        _load_with("[" * 10000 + "]" * 10000)
+
+
+def test_a_transport_failure_is_not_a_contract_rejection():
+    """The inverse, so the broadened clause does not overshoot: a GCS read
+    that fails for its own reasons is an ordinary transient cell failure and
+    must stay subject to the partial-success threshold, not be recast as
+    evidence the contract is malformed."""
+    from gcp.research.magnitude_engine.mag_config import ContractRejection
+
+    class TransportError(Exception):
+        pass
+
+    with pytest.raises(TransportError):
+        _load_with("", download_raises=TransportError("503 backend error"))
+    # and it is not a contract rejection
+    try:
+        _load_with("", download_raises=TransportError("503"))
+    except Exception as e:
+        assert not isinstance(e, ContractRejection)
+
+
+def test_a_wrongly_ordered_estimator_is_refused():
+    """_score_and_persist reads probability columns positionally via the
+    global LABEL_TO_IDX and checks only that there are four of them. An
+    estimator whose classes_ are ordered differently -- a model fitted on
+    string labels sorts alphabetically -- would pass the shape check and
+    persist every probability under the wrong bucket name while looking
+    entirely normal. (Codex P2 on #1074.)"""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMismatch, ContractRejection)
+    wrong = MagicMock()
+    wrong.classes_ = ["EXPANDED", "EXPLOSIVE", "NORMAL", "TIGHT"]
+    with pytest.raises(ContractMismatch) as e:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=wrong)
+    assert "classes_" in str(e.value)
+    assert isinstance(e.value, ContractRejection), "must reach the fatal path"
+
+
+def test_an_estimator_without_classes_is_refused_not_assumed():
+    """A wrapper exposing no classes_ cannot be checked, and the order is not
+    guessed about -- guessing is what the whole change exists to stop."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import ContractMismatch
+    bare = MagicMock(spec=[])           # no classes_ attribute at all
+    with pytest.raises(ContractMismatch, match="no classes_"):
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=bare)
+
+
+def test_our_own_integer_ordered_estimator_passes():
+    """The inverse: training maps labels through LABEL_TO_IDX to ints 0..n-1,
+    so classes_ is exactly range(n). This check must be a no-op for anything
+    we produced, or it would refuse the whole live fleet."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import LABEL_CLASSES
+    ok = MagicMock()
+    ok.classes_ = list(range(len(LABEL_CLASSES)))
+    model, cols, version, contract = _load_with(
+        _json.dumps(_SERVING_CONTRACT), model=ok)
+    assert contract["label_mode"] == "body"
+
+
+def test_the_backfill_rescans_cells_that_were_idle_at_scan_time():
+    """A cell idle during the scan can gain a LATEST before the verdict --
+    the old writer is still promoting during the pre-deploy backfill -- and
+    iterating the scan's keys would omit it, leaving a freshly promoted
+    artifact with no CONTRACT.json behind a "safe to deploy". The loop taught
+    itself that a pointer can MOVE and VANISH; this is the third case, that
+    one can APPEAR. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    assert "for ticker, tf in [(t, f) for t in TICKERS for f in TIMEFRAMES]" \
+        in verdict, "the verdict must rescan every cell, not the scan's keys"
+    assert "LATEST appeared during the run" in verdict
+    # and the success line reports what THIS pass verified
+    assert "len(latest_of)" not in verdict
+
+
+def test_deeply_nested_json_is_malformed_not_an_ordinary_failure():
+    """RecursionError is not a ValueError at all, so the previous clause let
+    it reach the ordinary per-cell handler. Measured: a 10,000-deep array
+    reproduces it on this interpreter. (Codex P2 on #1074.)"""
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMalformed, ContractRejection)
+    deep = "[" * 10000 + "]" * 10000
+    with pytest.raises(ContractMalformed) as e:
+        _load_with(deep)
+    assert isinstance(e.value, ContractRejection)
+
+
+@pytest.mark.parametrize("classes,accepted", [
+    ([0, 1, 2, 3], True),                 # what our training produces
+    ([0.0, 1.0, 2.0, 3.0], True),         # floats that round-trip unchanged
+    ([0.5, 1.5, 2.5, 3.5], False),        # int() truncated these to 0,1,2,3
+    (["EXPANDED", "EXPLOSIVE", "NORMAL", "TIGHT"], False),
+    # BOTH orderings. [True, False, ...] fails on order alone, so it passed
+    # even while the bool rule was a no-op and gave false assurance; the
+    # IN-ORDER case is the one that actually tests the rule, because
+    # False == 0 and True == 1 make it compare equal to range(4).
+    ([False, True, 2, 3], False),
+    ([True, False, 2, 3], False),
+])
+def test_estimator_classes_are_compared_losslessly(classes, accepted):
+    """int() truncates, so [0.5,1.5,2.5,3.5] passed as range(4) and the check
+    accepted a mapping it had not proved -- the same accept-without-evidence
+    failure the PR is about, introduced by the fix for it. (Codex P2 on
+    #1074.)"""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import ContractMismatch
+    est = MagicMock()
+    est.classes_ = classes
+    if accepted:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+    else:
+        with pytest.raises(ContractMismatch):
+            _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+
+
+def test_the_backfill_verdict_calls_the_reader_rather_than_reimplementing_it():
+    """The verdict claimed "the reader accepts" while running its own subset
+    of the reader's checks, and stopped being true the moment the reader grew
+    a check it lacked -- which happened one commit later. Adding the missing
+    check would not fix the class; the next check re-opens it. Calling the
+    reader is the only version that cannot drift. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    assert "mag_inference._load_model_and_version(ticker, tf)" in verdict
+    assert "ContractRejection" in verdict
+    # and it no longer re-implements the reader's parsing
+    assert "contract_mismatch(" not in verdict, (
+        "the verdict must not re-implement the reader's checks")
+
+
+def test_contract_interpretation_fails_closed_by_construction():
+    """Five rounds of review each found another way past this clause:
+    JSONDecodeError -> ValueError -> (ValueError, RecursionError), defeated in
+    turn by UnicodeDecodeError, a plain ValueError from the 3.11
+    int_max_str_digits limit, and RecursionError from deep nesting. Every miss
+    lands the artifact back under the partial-success threshold.
+
+    Enumerating decoder failure modes is unwinnable, so interpretation now
+    fails CLOSED: anything that goes wrong turning the bytes into a contract
+    is a malformed contract. That is only safe because the FETCH was lifted
+    out of the guard, which the companion test pins."""
+    src = pathlib.Path("gcp/research/magnitude_engine/mag_inference.py").read_text()
+    fn = src[src.index("def _load_model_and_version"):src.index("def _last_settled_ts")]
+    # the fetch is outside the guard
+    assert "raw_bytes = contract_blob.download_as_bytes()" in fn
+    fetch = fn.index("raw_bytes = contract_blob.download_as_bytes()")
+    guard = fn.index("contract = json.loads(raw_bytes.decode")
+    assert fetch < guard, "the fetch must precede, and sit outside, the guard"
+    # and the guard is not an exception list
+    block = fn[guard:fn.index("raise ContractMalformed", guard)]
+    assert "except Exception" in block, (
+        "interpretation must fail closed, not by enumerating decoder errors")
+
+
+def test_an_arbitrary_interpretation_failure_is_still_fatal():
+    """The property the construction buys: a decoder failure nobody
+    enumerated is still a contract rejection. Simulated with a payload that
+    json.loads rejects for a reason none of the five rounds named."""
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMalformed, ContractRejection)
+    with pytest.raises(ContractMalformed) as e:
+        _load_with(b"\x00\x01\x02\x03")          # not text, not JSON
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_threshold_coercion_fails_closed():
+    """A 400-digit JSON integer is valid JSON and under the 3.11 int-digit
+    limit, but float() raises OverflowError -- neither TypeError nor
+    ValueError, so it escaped ContractMalformed and put the artifact back
+    under the partial-success threshold. Sixth enumeration escape in this PR.
+    The payload is already parsed and type-checked by this point, so ANY
+    failure to turn it into numbers means the same thing. (Codex P2 on
+    #1074.)"""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="not a list of numbers"):
+        contract_mismatch({"label_mode": "body",
+                           "thresholds": [10 ** 400, 1.0, 1.5],
+                           "classes": ["TIGHT", "NORMAL", "EXPANDED",
+                                       "EXPLOSIVE"]})
+
+
+def test_an_overflowing_threshold_reaches_the_fatal_path():
+    """End to end: the ValueError above must surface from the real loader as
+    ContractMalformed, which is what makes it fatal."""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMalformed, ContractRejection)
+    payload = ('{"label_mode":"body","thresholds":[' + "1" * 400
+               + ',1.0,1.5],"classes":["TIGHT","NORMAL","EXPANDED",'
+                 '"EXPLOSIVE"]}')
+    with pytest.raises(ContractMalformed) as e:
+        _load_with(payload)
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_the_backfill_verifies_the_bucket_it_was_pointed_at():
+    """The verdict delegates to the reader, which picks its bucket from
+    GCS_BUCKET. A run against a non-default --bucket would otherwise scan and
+    write one bucket while verifying another. (Codex P2 on #1074.)"""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    body = src[src.index("def main("):]
+    assert 'os.environ["GCS_BUCKET"] = args.bucket' in body
+    # Match the CALL, not the symbol: the surrounding comment names it too,
+    # and an index() on the bare name finds the comment first.
+    call = "mag_inference._load_model_and_version(ticker, tf)"
+    assert body.index('os.environ["GCS_BUCKET"] = args.bucket') < body.index(
+        call), "the bucket must be pinned before the reader is called"
+
+
+@pytest.mark.parametrize("bad_class", [float("inf"), float("-inf"),
+                                       float("nan")])
+def test_non_finite_estimator_classes_reach_the_fatal_path(bad_class):
+    """int(float("inf")) raises OverflowError, which the clause did not catch,
+    so a non-finite class escaped ContractMismatch and landed back under the
+    partial-success threshold. Seventh escape of this shape in the PR, and the
+    third distinct place that interprets a value it did not produce -- the
+    previous two were fixed to fail closed and this one was missed. (Codex P2
+    on #1074.)"""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMismatch, ContractRejection)
+    est = MagicMock()
+    est.classes_ = [bad_class, 1, 2, 3]
+    with pytest.raises(ContractMismatch) as e:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_every_site_that_interprets_untrusted_values_fails_closed():
+    """The generalisation this PR took seven rounds to reach and then had to
+    extend: it interprets values it did not produce in FOUR places, not
+    three, and each was separately bitten by an exception type not on its
+    list. The fourth (reading classes_ at all) was found a round after the
+    invariant was written for the first three, which is the point of
+    asserting the invariant rather than the instances. All four catch
+    broadly, safe only because each sits AFTER the transport or parse
+    boundary -- so the only thing they can be wrong about is a value, never
+    a network."""
+    inf = pathlib.Path(
+        "gcp/research/magnitude_engine/mag_inference.py").read_text()
+    cfg = pathlib.Path(
+        "gcp/research/magnitude_engine/mag_config.py").read_text()
+    # 1. decoding the contract bytes
+    decode = inf[inf.index("raw_bytes = contract_blob.download_as_bytes()"):]
+    assert "except Exception" in decode[:decode.index("raise ContractMalformed")]
+    # 2. coercing the thresholds
+    coerce = cfg[cfg.index("got_thresholds = tuple(float(t)"):]
+    assert "except Exception" in coerce[:coerce.index("raise ValueError")]
+    # 3. normalising the estimator classes
+    norm = inf[inf.index("def _as_index(c):"):
+               inf.index("if normalised != expected_classes")]
+    assert "except Exception" in norm
+    # 4. reading classes_ at all — a scalar is not iterable
+    assert "normalised = [_as_index(c) for c in actual_classes]" in norm
+    read = norm[norm.index("normalised = [_as_index(c)"):]
+    assert "except Exception" in read[:read.index("raise ContractMismatch")]
+
+
+def test_a_rejected_class_can_never_coincidentally_match():
+    """The bool hole was not a missing case, it was a no-op guard: returning
+    the offending value meant False == 0 and True == 1, so an in-order
+    boolean class list compared EQUAL to range(n) and was accepted while the
+    comment claimed otherwise. Rejected values now become a sentinel that is
+    equal only to itself, so no rejected class can coincide with an expected
+    index for any reason. (Codex P2 on #1074.)"""
+    src = pathlib.Path(
+        "gcp/research/magnitude_engine/mag_inference.py").read_text()
+    fn = src[src.index("class _NotAnIndex"):
+             src.index("if normalised != expected_classes")]
+    assert "def __eq__" in fn and "return self is other" in fn, (
+        "the sentinel must be equal only to itself")
+    # every rejecting return path yields the sentinel, not the raw value
+    body = src[src.index("def _as_index(c):"):
+               src.index("normalised = [_as_index(c)")]
+    # Three rejecting paths — bool, non-convertible, and a value that does
+    # not round-trip — and every one wraps. The single bare `return c` is the
+    # ACCEPTING path for a real int, where returning it is the point.
+    # Two `return _NotAnIndex(c)` (bool, non-convertible) plus the ternary
+    # for a value that does not round-trip: three rejecting paths, three
+    # wraps. Counted from the code rather than assumed — an earlier version
+    # of this assertion guessed 3 and 4 and was wrong about both.
+    assert body.count("return _NotAnIndex(c)") == 2, body
+    assert body.count("_NotAnIndex(c)") == 3, "including the non-round-trip"
+    assert body.count("return c\n") == 1, (
+        "only the accepting int path may return the raw value")
+
+
+def test_numpy_booleans_are_rejected_like_builtin_ones():
+    """isinstance(np.bool_(False), bool) is False while np.bool_(False) == 0
+    is True, so a numpy boolean walked past the builtin check and normalised
+    to a valid index. sklearn hands back numpy scalars, so this is the
+    realistic form of the bug the builtin fix only half-closed. (Codex P2 on
+    #1074.)"""
+    import numpy as _np
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMismatch, ContractRejection)
+    est = MagicMock()
+    est.classes_ = _np.array([_np.bool_(False), _np.bool_(True), 2, 3],
+                             dtype=object)
+    with pytest.raises(ContractMismatch) as e:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_a_non_iterable_classes_attribute_is_rejected():
+    """A scalar classes_ is not iterable and raised a bare TypeError, which
+    is not a ContractRejection and escaped the fatal path. Reading classes_
+    is itself an interpretation of a value we did not produce, so it fails
+    closed like the other three sites. (Codex P2 on #1074.)"""
+    import json as _json
+    from gcp.research.magnitude_engine.mag_config import (
+        ContractMismatch, ContractRejection)
+    est = MagicMock()
+    est.classes_ = 3
+    with pytest.raises(ContractMismatch) as e:
+        _load_with(_json.dumps(_SERVING_CONTRACT), model=est)
+    assert "could not be read" in str(e.value)
+    assert isinstance(e.value, ContractRejection)
+
+
+def test_a_real_sklearn_class_array_is_still_accepted():
+    """The inverse that matters most: sklearn's classes_ is a numpy int64
+    array, and isinstance(np.int64(0), int) is False. If the tightening had
+    caught that, every live cell would refuse to serve."""
+    import numpy as _np
+    import json as _json
+    est = MagicMock()
+    est.classes_ = _np.array([0, 1, 2, 3])
+    model, cols, version, contract = _load_with(
+        _json.dumps(_SERVING_CONTRACT), model=est)
+    assert contract["label_mode"] == "body"
+
+
+def test_the_backfill_rechecks_latest_after_loading_the_artifact():
+    """The re-read before the load closes the scan-to-verdict window but not
+    the load-to-reader one: LATEST can flip after this loop reads its pointer
+    and before _load_model_and_version resolves its OWN, so the reader
+    verifies run A while run B -- freshly promoted by the old writer, with no
+    CONTRACT.json -- is what now serves, and the loop still counts it verified.
+    (Codex P2 on #1074.)
+
+    The check narrows that window; it cannot close it, since a flip is always
+    possible after the last check. The message therefore tells the operator
+    the durable mitigation: pause promotions."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    load = verdict.index("_load_model_and_version")
+    tail = verdict[load:]
+    recheck = tail.index("_read_latest(bucket, base)")
+    assert recheck < tail.index("verified_gen[(ticker, tf)] = generation"), (
+        "LATEST must be re-read AFTER the load and BEFORE the cell counts "
+        "as verified")
+    assert "verified, so the reader may have resolved a different run" in tail
+    # generation, not just the run id: an A -> B -> A flip leaves the run id
+    # identical and only the version number records that it moved at all.
+    assert "after[1] != generation" in tail
+
+
+def test_the_latest_reader_pins_its_read_to_one_version():
+    """Reading the generation and the text as two unpinned calls would let the
+    pointer move between them, producing a run id from one version paired with
+    the generation of another -- a pair describing no state that ever existed,
+    which the post-load comparison would then read as "unchanged"."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    fn = src[src.index("def _read_latest"):src.index("def main()")]
+    assert "if_generation_match=blob.generation" in fn
+    # and a failed pinned read is raised, never returned as "no pointer"
+    assert "raise _PointerMoved" in fn
+    assert fn.count("return None") == 1, (
+        "None must mean 'no LATEST', not 'the read failed'")
+
+
+def test_the_backfill_resweeps_every_verdict_before_declaring_the_fleet_safe():
+    """The per-cell recheck covers only that cell's own load. The loop is
+    sequential and each iteration downloads a model, so by the last cell the
+    first cell's verdict is many downloads old and nothing revisits it -- a
+    promotion landing on an already-passed cell still reached "safe to
+    deploy". (Codex P2 on #1074.)
+
+    The sweep bounds the staleness of every verdict to the sweep itself. It
+    does not close the race -- nothing in this script can, since a promotion
+    is always possible after the last check -- so the message still points at
+    the durable mitigation."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    verdict = src[src.index("unverified = []"):]
+    loop_end = verdict.index("verified_gen[(ticker, tf)] = generation")
+    after_loop = verdict[loop_end:]
+    sweep = after_loop.index("for (ticker, tf), generation in sorted(")
+    # the sweep runs after the per-cell loop and BEFORE the verdict is issued
+    assert sweep < after_loop.index("if unverified:"), (
+        "the fleet sweep must precede the pass/fail decision")
+    assert "LATEST changed after this run verified it" in after_loop
+    # a demoted cell leaves the verified set, so the success line cannot
+    # report a count that includes it
+    assert "del verified_gen[(ticker, tf)]" in after_loop
+    assert "len(verified_gen)" in after_loop
+    assert "{verified}" not in after_loop, (
+        "a standalone counter would not survive the sweep")
+
+
+def test_the_fleet_sweep_iterates_a_materialised_copy():
+    """The sweep deletes from verified_gen inside its own loop. Iterating the
+    dict view directly would raise RuntimeError on the first demotion, which
+    would turn a detected race into a crash instead of a verdict."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    sweep = src[src.index("for (ticker, tf), generation in sorted("):]
+    assert "sorted(verified_gen.items())" in sweep.split("\n")[0]
+    # prove the pattern itself is sound rather than asserting it looks right
+    d = {("a", "1"): 1, ("b", "2"): 2}
+    for k, v in sorted(d.items()):
+        if v == 1:
+            del d[k]
+    assert d == {("b", "2"): 2}

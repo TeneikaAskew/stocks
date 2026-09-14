@@ -377,6 +377,144 @@ def research_namespace(label_mode: str | None,
     return "__".join(parts) if parts else None
 
 
+# The blob that records what a promoted model's numbers MEAN. Written
+# beside model.joblib / feature_cols.txt / VERSION, read by mag_inference
+# before it scores anything.
+#
+# Why it exists: the artifact used to carry no statement of its own label
+# contract, so `LATEST` was an unqualified promise that whatever it pointed
+# at predicted `body` magnitude at MAGNITUDE_THRESHOLDS. serving_contract_
+# reason() defends the WRITER (#1055), but a reader that trusts LATEST
+# blindly has no defense of its own against an artifact that arrived some
+# other way -- a hand-copied blob, a restored WITHDRAWN pointer, a future
+# code path. Buckets are 0-3 under every contract and a wrong one looks
+# entirely plausible, so the mismatch has to be checked, not eyeballed.
+class ContractRejection(Exception):
+    """A serving artifact's label contract could not be verified.
+
+    Categorically different from a cell that failed for its own reasons (no
+    model deployed, a bad feature window, a transient read). Those are
+    partial-success material; this is not. A rejected contract means a model
+    whose numbers may mean something other than what the Expected-Move card
+    reads, and one such cell is a production defect however many others
+    succeeded -- so mag_inference exits non-zero on ANY of these regardless of
+    its majority-failure threshold (Codex P2 on #1074).
+
+    The three subclasses keep the outcomes distinguishable, because they need
+    different responses: an artifact that never stated its contract, one whose
+    statement cannot be parsed, and one that parses and disagrees. Each also
+    inherits the builtin a caller would naturally expect, so existing
+    except-clauses keep working.
+    """
+
+
+class ContractMissing(ContractRejection, FileNotFoundError):
+    """No CONTRACT.json beside the model. Needs the backfill."""
+
+
+class ContractMalformed(ContractRejection, ValueError):
+    """CONTRACT.json is unparseable or missing a required key."""
+
+
+class ContractMismatch(ContractRejection, RuntimeError):
+    """CONTRACT.json parses and disagrees with the serving contract."""
+
+
+CONTRACT_BLOB = "CONTRACT.json"
+
+
+def contract_payload(label_mode: str,
+                     thresholds: tuple[float, ...]) -> dict:
+    """The label contract a model artifact was trained under.
+
+    `classes` is recorded even though it is currently a constant: a future
+    change to LABEL_CLASSES would silently re-map every stored prediction,
+    and an artifact that states its own class list makes that detectable
+    rather than archaeological. contract_mismatch() REQUIRES it for that
+    reason -- a field that may be omitted cannot detect anything, since the
+    reorder it exists to catch would arrive in an artifact that simply
+    leaves it out (Codex P2 on #1074).
+    """
+    return {
+        "label_mode": label_mode,
+        "thresholds": [float(t) for t in thresholds],
+        "classes": list(LABEL_CLASSES),
+    }
+
+
+def contract_mismatch(payload: dict,
+                      label_mode: str = DEFAULT_LABEL_MODE,
+                      thresholds: tuple[float, ...] = MAGNITUDE_THRESHOLDS
+                      ) -> str | None:
+    """Why `payload` may not be served under the given contract, or None.
+
+    Malformed input RAISES rather than counting as a mismatch: a payload
+    that cannot be parsed is a different failure from one that parses and
+    disagrees, and collapsing the two would let a corrupt blob read as a
+    tidy "contract mismatch" and send whoever is on call after the wrong
+    thing entirely.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"{CONTRACT_BLOB} must contain a JSON object, got "
+            f"{type(payload).__name__}")
+    missing = [k for k in ("label_mode", "thresholds", "classes")
+               if payload.get(k) is None]
+    if missing:
+        raise ValueError(
+            f"{CONTRACT_BLOB} is missing or null for required key(s) {missing}; "
+            f"got keys {sorted(payload)}")
+    # Type-check before comparing. A scalar `classes` used to reach
+    # list() and raise TypeError, which is NOT the ValueError the reader
+    # translates into ContractMalformed -- so it fell through to the ordinary
+    # per-cell handler and back under the partial-success threshold the
+    # previous round had just closed. Worse, a STRING silently char-split:
+    # "TIGHT" became ['T','I','G','H','T'] and reported a mismatch that
+    # misdescribed the payload rather than naming it malformed (Codex P2 on
+    # #1074). Malformed and mismatched must not blur into one another.
+    got_mode = payload["label_mode"]
+    if not isinstance(got_mode, str):
+        raise ValueError(
+            f"{CONTRACT_BLOB} label_mode={got_mode!r} is not a string")
+    for key in ("thresholds", "classes"):
+        val = payload[key]
+        if isinstance(val, (str, bytes)) or not isinstance(val, (list, tuple)):
+            raise ValueError(
+                f"{CONTRACT_BLOB} {key}={val!r} is not a JSON array")
+    # Fail CLOSED, like the decode guard in mag_inference and for the same
+    # reason. This clause was (TypeError, ValueError) and a JSON integer of
+    # 400 digits -- valid JSON, under the 3.11 int-digit limit -- makes
+    # float() raise OverflowError, which is neither, so it escaped
+    # ContractMalformed and put the artifact back under the partial-success
+    # threshold (Codex P2 on #1074). That is the sixth such escape found by
+    # enumeration across this PR; the payload is already parsed and
+    # type-checked here, so ANY failure to turn it into numbers means the
+    # same thing: this is not a readable contract.
+    try:
+        got_thresholds = tuple(float(t) for t in payload["thresholds"])
+    except Exception as e:                              # noqa: BLE001
+        raise ValueError(
+            f"{CONTRACT_BLOB} thresholds={payload['thresholds']!r} is not a "
+            f"list of numbers: {type(e).__name__}: {e}") from e
+
+    mismatches = []
+    if got_mode != label_mode:
+        mismatches.append(
+            f"label_mode={got_mode!r} (serving contract is {label_mode!r})")
+    if got_thresholds != tuple(thresholds):
+        mismatches.append(
+            f"thresholds={got_thresholds} (serving contract is "
+            f"{tuple(thresholds)})")
+    classes = payload["classes"]
+    if list(classes) != list(LABEL_CLASSES):
+        mismatches.append(
+            f"classes={list(classes)} (serving contract is "
+            f"{list(LABEL_CLASSES)})")
+    if not mismatches:
+        return None
+    return "; ".join(mismatches)
+
+
 def parse_research_namespace(slug: str) -> tuple[str, tuple[float, ...]]:
     """Inverse of research_namespace: the label contract a slug stands for.
 

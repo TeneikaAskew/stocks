@@ -1076,17 +1076,31 @@ jobs:
           EOF
           )
 
-          EXISTING_PR=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number // empty')
+          # REST, not `gh pr list/edit/create`. Those go through GraphQL, which
+          # resolves reviewer and assignee objects and so demands `read:org`:
+          #
+          #   GraphQL: The 'login' field requires one of the following scopes:
+          #   ['read:org'], but your token has only been granted the:
+          #   ['repo', 'workflow'] scopes.
+          #
+          # Run 35 produced documents that passed every gate, committed them and
+          # pushed the branch, then died here on that error -- a red run over a
+          # scope the job does not need. The REST endpoints below need only
+          # `repo`, which PR_WORKFLOW_TOKEN already has, so the monthly job no
+          # longer depends on a token change nobody has made. (Run 35.)
+          EXISTING_PR=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${GITHUB_REPOSITORY%%/*}:${BRANCH}" \
+            --jq '.[0].number // empty')
           if [ -n "$EXISTING_PR" ]; then
-            gh pr edit "$EXISTING_PR" --body "$BODY"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${EXISTING_PR}" \
+              -f body="$BODY" --jq '.number' > /dev/null
             echo "::notice::PR #$EXISTING_PR already open for $BRANCH — force-pushed fresh content and updated its body"
             exit 0
           fi
 
-          gh pr create \
-            --base main --head "$BRANCH" \
-            --title "Monthly architecture doc refresh: ${MONTH}" \
-            --body "$BODY"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f base=main -f head="$BRANCH" \
+            -f title="Monthly architecture doc refresh: ${MONTH}" \
+            -f body="$BODY" --jq '.number' > /dev/null
 
       - name: No-op summary
         if: steps.detect.outputs.meaningful != '1'

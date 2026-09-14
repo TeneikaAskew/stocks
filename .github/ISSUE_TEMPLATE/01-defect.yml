@@ -93,9 +93,153 @@ body:
         surface dead. Paste what you ran.
       render: shell
       placeholder: |
-        $ grep -rEn "playbook_cards" lib/ gcp/ platform/ scripts/ tests/ | wc -l
-        11
+        # Repo-wide over TRACKED files, not the five source directories: CI is
+        # where jobs are dispatched, and .github/ is outside them. Measured —
+        # .github/workflows/deploy-staging.yml:299 runs
+        # `gcloud run jobs execute refresh-earnings-views`, and the five-dir
+        # search cannot see it.
+        # ':!archive/' too: archive/ is retired code that does not run in
+        # production, so a hit there is not a consumer.
+        # ':!.github/ISSUE_TEMPLATE/', ':!.claude/commands/' and ':!*.md' exclude
+        # the files that cite example symbols in their own prose, THIS ONE
+        # INCLUDED — measured on TradingAlertSystem, rc=0 from this file and
+        # .claude/commands/resolve-issue.md alone, so the search could never
+        # reach "no consumers". Note this is NOT a rule about markdown or about
+        # .claude/: both hold EXECUTABLE files here (.claude/settings.json is a
+        # hook, .claude/agents/*.md are delegated to by name), and the resolver
+        # searches those separately for exactly that reason.
+        # Echo PIPESTATUS[0]. `wc` supplies the pipeline's exit status, so a
+        # git grep that FAILED still prints a number and the pipeline exits 0 —
+        # measured, a bad regex exits 128 on its own and 0 through the pipe,
+        # which files as "no matches" instead of "the measurement broke". 0 is
+        # a hit, 1 is a clean miss, anything else means the count is meaningless.
+        # `wc -l` also counts matching LINES, not occurrences — a line with two
+        # matches counts once. Say which you mean; `git grep -Eo` counts those.
+        # ANCHOR AT THE REPO ROOT. `.` and the four Claude scopes are relative
+        # to your CWD, and a pathspec that does not exist there is a CLEAN MISS
+        # rather than an error. Measured from gcp/: all five searches below
+        # return rc=1 for debug-workflow — "no consumers, dormant" — while the
+        # root .claude/commands/ really does route to it.
+        # A FUNCTION, so a failed root resolution can `return` instead of
+        # leaving $root empty for the probes below. `git -C ""` does NOT fail:
+        # measured on git 2.43.0 it silently runs in the CURRENT directory,
+        # which is the CWD-relative search this comment exists to prevent.
+        # A `|| echo …` guard cannot stop it — the echo succeeds, so the guard
+        # reports and the probe runs anyway — and `${root:?…}` cannot either:
+        # inside a pipeline the expansion kills only the first stage, so a
+        # `| wc -l` still prints 0 and reads as a clean miss.
+        # rc=2 because the rule above is already "0 is a hit, 1 is a clean
+        # miss, anything else means the count is meaningless"; a root failure
+        # is the third case. The message goes to STDERR so a `| wc -l` cannot
+        # count it as a match.
+        $ at_root() {
+            local root
+            root=$(git rev-parse --show-toplevel) \
+              || { echo "not in a checkout — this probe did not run" >&2; return 2; }
+            test -n "$root" \
+              || { echo "empty top level — this probe did not run" >&2; return 2; }
+            git -C "$root" "$@"
+          }
+        # `-e` BEFORE THE PATTERN. git grep and plain grep both read a first
+        # argument beginning with `-` as an option, and the `--` further along
+        # separates PATHS, not the pattern. Measured on git 2.43.0 with a
+        # surface named `--legacy-mode`: `error: unknown option 'legacy-mode'`
+        # plus a usage dump, rc=129 through the `| wc -l` form below. The
+        # PIPESTATUS rule above catches it only if you read the number, and the
+        # recipes without a pipe do not print one at all. `-e` says the next
+        # word is the pattern, whatever it starts with.
+        $ at_root grep -En -e "playbook_cards" -- . ':!docs/' ':!archive/' ':!gcp/research/_archive/' ':!*.disabled' ':!.github/ISSUE_TEMPLATE/' ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!tests/fixtures/live_gcp_snapshot_*.json' ':!.github/workflows/logs.txt' | wc -l; echo "grep rc=${PIPESTATUS[0]}"
+        107
+        grep rc=0
+        # AND the executable Claude scopes, which the search above excludes as
+        # prose. .claude/agents/*.md and .claude/commands/*.md RUN — measured,
+        # gcp-config-reviewer returns no matches above while
+        # .claude/agents/pre-deploy-check.md:75 delegates to it on every deploy.
+        # Exclude the surface's own definition file: an agent always matches
+        # itself, which would make every agent look consumed.
+        # `:(exclude,literal)` on the SELF-exclusions only. A symbol is an ERE
+        # and a pathspec is a glob, and they share `*`, `?` and `[`. Under `:!`
+        # the substituted surface is pasted into a glob, so it can exclude a
+        # file that is not its definition at all — measured with `ab*c` on a
+        # checkout holding one live `.claude/agents/abXYZc.md` that names the
+        # symbol: the search returns a clean miss, and the path scan cannot
+        # catch it either, since the ERE `ab*c` does not match `abXYZc.md`.
+        # The scope exclusions above (`:!*.md`, `:!docs/`, `:!.claude/commands/`)
+        # stay plain `:!` — those ARE meant to be globs.
+        $ at_root grep -nE -e "<surface>" -- .claude/agents ':(exclude,literal).claude/agents/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .claude/commands ':(exclude,literal).claude/commands/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- .github/prompts ':(exclude,literal).github/prompts/<surface>.md'
+        $ at_root grep -nE -e "<surface>" -- CLAUDE.md
+        CLAUDE.md is the SIXTH executable-markdown scope and the easiest to
+        mistake for prose: Claude Code loads it automatically and it routes by
+        name — `CLAUDE.md:502` and `:507` send sessions to fallback-guard and
+        pre-deploy-check. Measured on fallback-guard with its code and agent
+        callers simulated away: every other scope returns no matches while
+        CLAUDE.md still routes to it. Root file only; docs/*.md stay prose.
+        .github/prompts/*.md is the fourth executable-markdown scope:
+        scripts/maintenance/render_doc_prompts.py renders them and
+        refresh-architecture-docs.yml:537 cats the result into Gemini, so the
+        source templates are markdown that ':!*.md' hides. Measured on
+        verify_docs_against_live with its real consumers simulated away — code,
+        agents and commands all return "no matches" while
+        .github/prompts/architecture.md:80 names
+        scripts/verify_docs_against_live.py as the gate the refresh must pass.
+        A .claude/commands/ hit is AMBIGUOUS — a real route, or one of these
+        forms quoting an example. Read the lines and say which. An agent or
+        prompt hit is not ambiguous: both are consumers.
+
+        # AND SOLYRA, WITH COMMANDS. Every probe above is anchored to the
+        # stocks checkout and cannot see the frontend, so the line below was a
+        # claim with no search behind it — the same gap fixed in the
+        # dormant-surface form. It validates the ORIGIN as well as the path,
+        # because `rev-parse --git-dir` exits 0 for any repo and a stale SOLYRA
+        # then reports every symbol absent over there.
+        $ at_solyra() {
+            local s=${SOLYRA:-} o
+            if [ -z "$s" ]; then
+              s=$(git rev-parse --show-toplevel 2>/dev/null); s=${s:+$s/../solyra}
+            fi
+            git -C "${s:-/nonexistent}" rev-parse --git-dir >/dev/null 2>&1 \
+              || { echo "no solyra checkout at '${s:-<unresolved>}' — set" >&2
+                   echo "SOLYRA=<path>; this probe did not run" >&2
+                   return 2; }
+            o=$(git -C "$s" remote get-url origin 2>/dev/null); o=${o%/}; o=${o%.git}
+            case "$o" in
+              https://github.com/TeneikaAskew/solyra|\
+              ssh://git@github.com/TeneikaAskew/solyra|\
+              git://github.com/TeneikaAskew/solyra|\
+              git@github.com:TeneikaAskew/solyra) ;;
+              *) echo "'$s' is a checkout, but origin is '${o:-<none>}' — that is" >&2
+                 echo "not solyra; this probe did not run" >&2
+                 return 2;;
+            esac
+            # RE-ANCHOR AT THE ROOT. Everything above passes for a
+            # SUBDIRECTORY of the right repo — it is a git checkout and origin
+            # matches — and then `git -C "$s" … -- .` searches only that
+            # subtree. Measured on the real checkout: `useQuery` matches 42
+            # files from the root and 39 from `src/`, so consumers outside it
+            # are invisible and this evidence would read as "no consumers".
+            s=$(git -C "$s" rev-parse --show-toplevel) || return 2
+            git -C "$s" "$@"
+          }
+        $ at_solyra grep -nE -e "<symbol>" -- . ':!docs/' ':!.github/ISSUE_TEMPLATE/' \
+            ':!.claude/commands/' ':!*.md' ':!*.drawio' ':!package-lock.json' \
+            ':!bun.lock' ':!package.json' ':!tests/fixtures/stocks-openapi.json'
+        # package.json separately, because that list excludes it and its
+        # `scripts` block and dependency entries are executable.
+        $ at_solyra grep -nE -e "<symbol>" -- package.json
+        # The executable markdown, self-excluded per scope, and one exclusion
+        # per alternative if <symbol> is the coupled `a|b` form. Solyra has no
+        # .github/prompts — three scopes, not four.
+        $ at_solyra grep -nE -e "<symbol>" -- .claude/agents ':(exclude,literal).claude/agents/<symbol>.md'
+        $ at_solyra grep -nE -e "<symbol>" -- .claude/commands ':(exclude,literal).claude/commands/<symbol>.md'
+        $ at_solyra grep -nE -e "<symbol>" -- CLAUDE.md
+        src/pages/DashboardPage.tsx:142:  const { data } = useQuery(['<symbol>', d])
+        src/pages/PlaybookPage.tsx:88:    fetch(`/api/<symbol>?date=${d}`)
+
         Live consumers in solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
+        # That is your WORKING TREE, not the revision anyone is serving. The
+        # resolver's Phase 4 gate re-asks against solyra's fetched origin/main.
     validations:
       required: true
 

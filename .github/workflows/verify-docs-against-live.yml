@@ -55,6 +55,14 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT }}
+          # verify_docs_against_live.py calls `gcloud beta run domain-mappings
+          # list` (GA does not accept --region on that command). The runner's
+          # gcloud ships GA surfaces only, so without this the script dies with
+          # "You do not currently have this command group installed" before it
+          # reads anything else -- it failed this way on 2026-09-09 and again
+          # on 2026-09-10. refresh-architecture-docs.yml hit the identical gap
+          # in doc_inventory.py (run 14) and installs beta for the same reason.
+          install_components: beta
 
       # The snapshot makes a failure reproducible offline: re-run the same
       # comparison locally with --snapshot rather than needing gcloud access to

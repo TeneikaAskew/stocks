@@ -22,12 +22,14 @@ run that reported clean:
 
 Hermetic: no gcloud, no network. The live snapshot is a literal.
 """
+import ast
 import importlib.util
 import json
 import pathlib
 import sys
 
 import pytest
+import yaml
 
 _SRC = pathlib.Path(__file__).resolve().parent.parent.parent / "scripts" / "verify_docs_against_live.py"
 _spec = importlib.util.spec_from_file_location("verify_docs_against_live", _SRC)
@@ -827,3 +829,175 @@ def test_the_hand_maintained_copies_are_not_enrolled():
     enrolled = {str(p.relative_to(root)) for pattern in v.LIVE_STATE_GLOBS for p in root.glob(pattern)}
     assert "docs/product/infrastructure/05-a-ARCHITECTURE.md" in enrolled
     assert not any("/manual/" in e for e in enrolled), sorted(e for e in enrolled if "/manual/" in e)
+
+
+def _count_findings(tmp_path, text, n_jobs=76):
+    live = dict(LIVE)
+    live["run_jobs"] = {f"j{i}": {} for i in range(n_jobs)}
+    p = tmp_path / "docs/product/infrastructure/05-d-COST_ANALYSIS.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+    out: list[vd.Finding] = []
+    vd.check_counts(p, "05-d-COST_ANALYSIS.md", live, out)
+    return [f for f in out if f.check == "count-drift"]
+
+
+def test_a_subset_count_is_not_read_as_a_fleet_count(tmp_path):
+    """Run 34 failed on 05-d line 78:
+
+        [count-drift] claims 10 Cloud Run Jobs; live count is 76
+
+    The sentence was TRUE -- "10 Cloud Run jobs identified in
+    `05-a-ARCHITECTURE.md` as being manually created", and 05-a marks exactly
+    ten job rows `(hand-created)`. The pattern read any "N Cloud Run jobs" as a
+    claim about the whole fleet. (Run 34.)
+    """
+    text = ("*   **Resource**: 10 Cloud Run jobs identified in "
+            "`05-a-ARCHITECTURE.md` as being manually created.\n")
+    assert _count_findings(tmp_path, text) == []
+
+
+@pytest.mark.parametrize("line", [
+    # The phrasing quoted in the source comment. The first version of this
+    # test used "top 10 ... that dominate spend", which passed only because
+    # the bare `that` was wrongly accepted as a cue -- so the form actually
+    # cited was never covered. (Codex, PR #1072.)
+    "The top 10 Cloud Run jobs by cost are listed below.",
+    "The top 5 Cloud Run Jobs dominate spend.",
+    "3 Cloud Run jobs failed overnight.",
+    "12 Cloud Run jobs declared in `gcp/deploy.sh` have no scheduler.",
+])
+def test_other_subset_phrasings_are_not_fleet_counts(tmp_path, line):
+    assert _count_findings(tmp_path, line + "\n") == []
+
+
+@pytest.mark.parametrize("line", [
+    "The platform runs 42 Cloud Run Jobs today.",
+    "| Cloud Run Jobs | 12 Cloud Run Jobs | x |",
+    "All 68 Cloud Run Jobs are covered by this estimate.",
+    # A bare relative pronoun does not scope a count. Accepting `that` /
+    # `which` as cues silenced ordinary fleet claims. (Codex, PR #1072.)
+    "The fleet consists of 68 Cloud Run Jobs that are currently deployed.",
+    "There are 50 Cloud Run Jobs which run nightly.",
+])
+def test_the_subset_rule_does_not_blind_the_fleet_check(tmp_path, line):
+    """Over-suppressing here would make the check blind to the drift it exists
+    to catch, which is the failure mode the scheduler-vocabulary comment
+    records. A wrong fleet count must still be reported."""
+    found = _count_findings(tmp_path, line + "\n")
+    assert len(found) == 1, f"real drift was suppressed: {line!r}"
+    assert "live count is 76" in found[0].detail
+
+
+def test_a_qualifier_in_the_next_paragraph_does_not_suppress(tmp_path):
+    """`check_counts` scans the WHOLE file, so a `\\s*` gap could reach across
+    blank lines and let unrelated content suppress a stale count. The gap is
+    horizontal whitespace only. (Codex, PR #1072.)"""
+    text = "## 68 Cloud Run Jobs\n\nCreated jobs run on demand.\n"
+    found = _count_findings(tmp_path, text)
+    assert len(found) == 1, "the next paragraph suppressed a stale fleet count"
+
+
+def test_a_correct_fleet_count_is_silent(tmp_path):
+    assert _count_findings(tmp_path, "All 76 Cloud Run Jobs are in scope.\n") == []
+
+
+def test_only_emphasises_a_total_it_does_not_select_a_subset(tmp_path):
+    """`only` was in the leading-qualifier list. "The project has only 68 Cloud
+    Run Jobs" emphasises the total; it does not select from it, so the count is
+    still a fleet claim. (Codex, PR #1072.)"""
+    found = _count_findings(tmp_path, "The project has only 68 Cloud Run Jobs.\n")
+    assert len(found) == 1, "an 'only N' fleet total was suppressed"
+
+
+def test_a_subset_sentence_may_wrap_after_the_noun(tmp_path):
+    """Requiring the qualifier on the same PHYSICAL line reported a wrapped
+    subset sentence as fleet drift -- the blind spot the whole-file scan exists
+    to remove. One soft wrap is the same sentence. (Codex, PR #1072.)"""
+    text = ("*   **Resource**: 10 Cloud Run jobs\n"
+            "identified as hand-created in `05-a-ARCHITECTURE.md`.\n")
+    assert _count_findings(tmp_path, text) == []
+
+
+@pytest.mark.parametrize("text", [
+    # a blank line is a paragraph break, not a wrap
+    "## 68 Cloud Run Jobs\n\nCreated jobs run on demand.\n",
+    # a heading's text ends at the newline, so the line after it is new content
+    "## 68 Cloud Run Jobs\nCreated jobs run on demand.\n",
+])
+def test_the_soft_wrap_does_not_reach_into_unrelated_content(tmp_path, text):
+    found = _count_findings(tmp_path, text)
+    assert len(found) == 1, "unrelated following content suppressed a stale count"
+
+
+def test_a_leading_qualifier_inside_the_match_is_still_seen(tmp_path):
+    """Several patterns start well before the number -- "Cloud Scheduler
+    (10 jobs)" by 17 characters, "Secret Manager ... 10 secrets" by 31 -- so
+    slicing the prefix from the MATCH hid any qualifier between the two.
+    (Codex, PR #1072.)"""
+    live = dict(LIVE)
+    live["secrets"] = {f"s{i}": {} for i in range(22)}
+    p = tmp_path / "d.md"
+    p.write_text("Secret Manager lists the first 10 secrets used by this service.\n")
+    out: list[vd.Finding] = []
+    vd.check_counts(p, "d.md", live, out)
+    assert [f for f in out if f.check == "count-drift"] == []
+
+    p.write_text("Secret Manager lists the 10 secrets used by this service.\n")
+    out = []
+    vd.check_counts(p, "d.md", live, out)
+    assert len([f for f in out if f.check == "count-drift"]) == 1, \
+        "removing the qualifier must restore the drift finding"
+
+
+def test_listed_alone_does_not_suppress_a_fleet_total(tmp_path):
+    """`listed` describes presentation, not a subset. "68 Cloud Run Jobs listed
+    alphabetically below" is the inventory's total, and accepting the participle
+    as a cue suppressed a real fleet count. (Codex, PR #1072.)"""
+    found = _count_findings(
+        tmp_path, "The inventory contains 68 Cloud Run Jobs listed alphabetically below.\n")
+    assert len(found) == 1, "'listed' suppressed a fleet total"
+
+
+_WORKFLOW_PATH = pathlib.Path(__file__).resolve().parent.parent.parent / ".github/workflows/verify-docs-against-live.yml"
+
+
+def _required_gcloud_components() -> set[str]:
+    """Every non-GA gcloud release track read_live() actually invokes."""
+    tree = ast.parse(_SRC.read_text())
+    tracks = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+        if name not in ("_gcloud", "_gjson"):
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and first.value in ("alpha", "beta"):
+            tracks.add(first.value)
+    return tracks
+
+
+def test_every_gcloud_track_read_live_uses_is_installed_on_the_runner():
+    """The runner's gcloud ships GA surfaces only, and `gcloud run
+    domain-mappings list` does not accept --region on GA -- only alpha and
+    beta do -- so read_live() dies with "You do not currently have this
+    command group installed: [beta]" before it reads anything past the
+    domain-mappings call. Failed this way twice (2026-09-09, 2026-09-10)
+    because the workflow's setup-gcloud step never requested the component.
+    refresh-architecture-docs.yml hit the identical gap in doc_inventory.py
+    (run 14) and has its own version of this test
+    (tests/meta/test_refresh_architecture_docs_pr_token.py); this is the
+    same check against the sibling script/workflow pair so a new alpha/beta
+    call here fails hermetically instead of on the next scheduled run."""
+    required = _required_gcloud_components()
+    assert required, "the AST scan found no alpha/beta calls; the scan is broken, not the script"
+    doc = yaml.safe_load(_WORKFLOW_PATH.read_text())
+    steps = doc["jobs"]["verify"]["steps"]
+    setup = [s for s in steps if str(s.get("uses", "")).startswith("google-github-actions/setup-gcloud")]
+    assert len(setup) == 1, setup
+    installed = {c.strip() for c in (setup[0].get("with") or {}).get("install_components", "").split(",") if c.strip()}
+    assert required <= installed, (
+        f"verify_docs_against_live.py calls gcloud {sorted(required)} but the workflow installs "
+        f"{sorted(installed) or 'nothing'}; the live comparison will die on the runner")

@@ -229,22 +229,62 @@ CHECKS: list[dict] = [
         "min_rows_per_day": 12,
         "gap_scan_days": 3,
     },
-    # historical_signals — written by historical-signals-watchlist daily at
-    # 05:00 UTC. Audit 2026-06-02 (F11 in
+    # historical_signals — written by historical-signals-watchlist
+    # (`0 1 * * 2-6` ET, gcp/deploy.sh:4830 — Tue-Sat 01:00 ET). Audit
+    # 2026-06-02 (F11 in
     # docs/incidents/2026-06-01-pipeline-failures-audit.md) found this table
     # going stale silently because the writer job's per-ticker exception
     # handler swallowed errors and reported `success` even when ALL tickers
     # crashed. Tracking it here means the next watchdog run after a silent
     # zero-output day will flag it.
+    #
+    # Issue #1051: like av-intraday-nightly, the Tue-Sat cron fires the
+    # NEXT trading day and resumes from MAX(entry_time)+1min, so it writes
+    # the PREVIOUS session's close (Tue 01:00 ET processes Mon's data).
+    # Without settle_lag_days=1 the watchdog anchored expected freshness at
+    # "today" instead of the last session the cron actually delivers,
+    # producing a false 87h/36h stale alert every run after a holiday or
+    # weekend gap (run freshness-watchdog-n79mf, 2026-09-08T22:05Z: job
+    # completed successfully and correctly inserted nothing for Labor Day).
+    #
+    # PR #1065 review (Codex): settle_lag_days models a *data*-time lag and
+    # is wrong applied to `inserted_at`, an *ingestion*-time column that
+    # lands same-day as every successful run. Combined with the -1-day
+    # anchor it silently downgrades a genuine 3-cron-cycle silent failure
+    # from "stale" (87h, alerts) to "warn" (63h, no issue opened —
+    # `--strict` only exits 1 on stale) — the exact F11 failure mode this
+    # check exists to catch. Fix: check `entry_time` instead, the table's
+    # own event-time column (schema.sql:2114, already the column the
+    # writer's MAX()+1min resume logic advances on, and indexed —
+    # idx_historical_signals_ticker_time — where inserted_at has no
+    # index). entry_time genuinely IS the previous session's data, so
+    # settle_lag_days=1 is the correct av-intraday-nightly pattern here,
+    # not a workaround: a real outage leaves entry_time frozen and lag
+    # grows at the true rate regardless of the anchor shift. Reproduced:
+    # with entry_time frozen at Monday's close, PR #1065's failure
+    # scenario now measures ~72h (stale) instead of 63h (warn).
+    #
+    # ISSUE-1067 (Codex, same PR): this is still not a complete fix. A
+    # genuinely quiet multi-session stretch (the watchlist's 5-condition
+    # voter fires zero qualifying signals) freezes entry_time exactly
+    # like a real writer crash does -- no data column on this table can
+    # tell the two apart, because zero rows written means MAX() doesn't
+    # move either way. The real fix is a job_runs heartbeat
+    # (gcp/database.py:record_job_run, already wired for the duration-
+    # regression check below) written unconditionally by the writer on
+    # every completion; historical-signals-watchlist doesn't call it
+    # yet (verified live: 0 of 16 job_runs rows are from this job).
+    # Tracked separately -- it needs writer-side instrumentation, not
+    # just this audit script.
     {
         "name": "historical_signals",
-        "ts_column": "inserted_at",
+        "ts_column": "entry_time",
         "ts_is_date": False,
-        "expected_lag_hours": 36,           # daily cron at 05:00 UTC + 6h buffer
+        "expected_lag_hours": 36,           # cron fires 01:00 ET + buffer
         "per_ticker": False,
         "writer_job": "historical-signals-watchlist",
-        "settle_hour_et": 1,                # 05:00 UTC ≈ 01:00 ET
-        "tolerate_holidays": True,
+        "settle_hour_et": 1,                # 0 1 * * 2-6 ET
+        "settle_lag_days": 1,               # cron writes the PREVIOUS trading day
     },
     # strat_features_5m / _15m / _30m — written by strat-engine in
     # default-mode (incremental). 2026-06-19 investigation found these
@@ -559,6 +599,11 @@ def _query_freshness_one(
     # Measure lag relative to expected session close, not wall clock.
     # Wall-clock lag inflates over weekends/holidays (e.g., Friday data looks
     # 65h old on Monday morning), causing false stale alarms.
+    # ISSUE-1066: this 20:00 UTC is only 16:00 ET during EDT; under EST
+    # (winter) 16:00 ET is 21:00 UTC, so lag_hours under-counts by up to 1h
+    # for every check in CHECKS, not just this one. See issue for why a
+    # fix belongs in a dedicated PR (ET-aware close, full regression
+    # across every check) rather than here.
     expected_close_dt = datetime.combine(expected_date, time(20, 0, 0))  # 4 PM ET = 20:00 UTC
     lag_hours = max(0, (expected_close_dt - last_dt).total_seconds() / 3600.0)
     expected_max = check["expected_lag_hours"]

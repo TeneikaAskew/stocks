@@ -36,6 +36,7 @@ docs/MAGNITUDE_ENGINE_RESULTS.md for the verdict context.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -43,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 # Add project root for gcp.* / lib.* imports
@@ -51,6 +53,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from gcp.database import get_engine, query_to_dataframe  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     LABEL_CLASSES, LABEL_TO_IDX,
+    CONTRACT_BLOB, contract_mismatch,
+    ContractRejection, ContractMissing, ContractMalformed,
+    ContractMismatch,
 )
 from gcp.research.magnitude_engine.mag_walk_forward import (  # noqa: E402
     PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX,
@@ -169,7 +174,7 @@ def _gcs_model_path(ticker: str, tf: str) -> str:
     return f"gs://{bucket}/magnitude-models/production/{ticker}/{tf}"
 
 
-def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], str]:
+def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], str, dict]:
     """Load (model, feature_cols, model_version) for the given cell.
 
     Returns the model with a `.predict_proba` interface (joblib-pickled
@@ -215,12 +220,185 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             f"gs://{bucket_name}/{prefix}/model.joblib"
         )
 
+    # The contract check, before anything is scored. A model whose numbers
+    # mean something else is the failure this cannot afford to miss: every
+    # contract emits classes 0-3 with a plausible-looking spread, so a
+    # mismatch is invisible downstream and would surface as an Expected-Move
+    # card that is confidently wrong rather than obviously broken.
+    #
+    # Absent is NOT treated as the default contract. Guessing is exactly the
+    # silent fallback this exists to prevent, and the message names the
+    # backfill rather than leaving the operator to infer it. Every artifact
+    # promoted before CONTRACT.json existed is provably body at
+    # MAGNITUDE_THRESHOLDS -- pre-#1055 `--label-mode` reached only the
+    # single-cell path while production ran the task-parallel one, and the
+    # thresholds were a module constant -- so the backfill is a statement of
+    # fact, not an assumption, and belongs in the artifact rather than here.
+    contract_blob = bucket.blob(f"{prefix}/{CONTRACT_BLOB}")
+    if not contract_blob.exists():
+        raise ContractMissing(
+            f"{ticker}:{tf} model at run={run_id} carries no {CONTRACT_BLOB}, "
+            f"so what its buckets mean is unverifiable. Expected "
+            f"gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}. Backfill it for a "
+            f"legacy artifact with scripts/backfill_model_contracts.py, or "
+            f"re-run walk_forward with --persist-production-model to publish "
+            f"one.")
+    # Fetch and interpret are separated ON PURPOSE, because they fail for
+    # different reasons and must be classified differently.
+    #
+    # FETCH is transport. A GCS read that fails is an ordinary transient cell
+    # failure and stays subject to the partial-success threshold; recasting it
+    # as a contract rejection would page on every flaky read and let a blip
+    # block a deploy. So it is outside the guard and propagates as itself.
+    raw_bytes = contract_blob.download_as_bytes()
+    # INTERPRET is a claim about the bytes. Every way that can fail means the
+    # same thing -- these bytes are not a readable contract -- so it fails
+    # CLOSED by construction rather than by an exception list.
+    #
+    # The list is why: over five review rounds this clause was JSONDecodeError,
+    # then ValueError, then (ValueError, RecursionError), and each round found
+    # another escape (UnicodeDecodeError; a plain ValueError from the 3.11
+    # int_max_str_digits limit; RecursionError from deep nesting). Enumerating
+    # decoder failure modes is unwinnable -- the next one is always one
+    # interpreter detail away, and every miss lands the artifact back under the
+    # partial-success threshold. Catching everything HERE is safe precisely
+    # because the transport half was lifted out above, so the only thing this
+    # block can be wrong about is the bytes.
+    try:
+        contract = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:                              # noqa: BLE001
+        raise ContractMalformed(
+            f"{ticker}:{tf} run={run_id}: {CONTRACT_BLOB} could not be "
+            f"decoded at gs://{bucket_name}/{prefix}/{CONTRACT_BLOB}: "
+            f"{type(e).__name__}: {e}") from e
+
+    try:
+        mismatch = contract_mismatch(contract)
+    except ValueError as e:
+        raise ContractMalformed(
+            f"{ticker}:{tf} run={run_id}: {e}") from e
+    if mismatch:
+        raise ContractMismatch(
+            f"REFUSING to serve {ticker}:{tf} run={run_id}: the model was "
+            f"trained on labels the serving path does not read -- {mismatch}. "
+            f"Its predictions are 0-3 like any other and would look normal on "
+            f"the Expected-Move card while meaning something different. Point "
+            f"LATEST at a model trained under the serving contract.")
+
     # Download to a temp file (joblib.load can't take a stream cleanly
     # for sklearn models). Tempfile cleanup happens by GC.
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=".joblib") as tf_file:
         model_blob.download_to_filename(tf_file.name)
         model = joblib.load(tf_file.name)
+
+    # The contract says what the buckets MEAN; this says the columns are in
+    # the order the reader assumes. _score_and_persist assigns p_tight ..
+    # p_explosive by the global LABEL_TO_IDX and checks only that there are
+    # four columns, so an estimator whose classes_ are ordered differently --
+    # a model fitted on string labels sorts alphabetically, for instance --
+    # would pass the shape check and persist all four probabilities under the
+    # wrong bucket names (Codex P2 on #1074).
+    #
+    # Our own training maps labels through LABEL_TO_IDX to ints 0..n-1, so
+    # classes_ is exactly range(n) and this is a no-op for anything we
+    # produced. It is not a no-op for an artifact that arrived some other
+    # way, which is the threat this PR exists for.
+    #
+    # Checked against the FITTED OBJECT rather than recorded in the contract:
+    # a stated claim about column order is one more thing that can be wrong,
+    # and the estimator is the authority. A model without classes_ (some
+    # wrappers) cannot be checked and is not guessed about -- it is refused.
+    expected_classes = list(range(len(LABEL_CLASSES)))
+    actual_classes = getattr(model, "classes_", None)
+    if actual_classes is None:
+        raise ContractMismatch(
+            f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator "
+            f"exposes no classes_, so the order of its probability columns "
+            f"cannot be verified against {LABEL_CLASSES}.")
+    # Compare LOSSLESSLY. The previous version coerced with int(), which
+    # truncates: classes_ of [0.5, 1.5, 2.5, 3.5] became [0, 1, 2, 3] and the
+    # check accepted a mapping it had not proved, which is the same
+    # accept-without-evidence failure the whole PR is about -- introduced by
+    # the fix for it (Codex P2 on #1074). int() on a string class also raised
+    # a bare ValueError, escaping the fatal path entirely.
+    #
+    # A class is acceptable only if it IS the integer index: an int (never a
+    # bool, which is an int subclass) or a float/numpy value that survives a
+    # round trip unchanged. Anything else, including anything that will not
+    # coerce at all, is reported as-is in the mismatch.
+    # A value that cannot compare equal to anything but itself, so a
+    # rejected class can never coincidentally match the expected index.
+    # Returning the offending value itself was NOT enough for bools: Python
+    # has False == 0 and True == 1, so classes_ of [False, True, 2, 3]
+    # compared EQUAL to [0, 1, 2, 3] and was accepted, while the comment here
+    # claimed it was rejected. The test that was supposed to cover it used
+    # [True, False, 2, 3], which fails on ORDER rather than on the bool rule,
+    # so it passed for the wrong reason and gave false assurance (Codex P2 on
+    # #1074).
+    class _NotAnIndex:
+        __slots__ = ("value",)
+
+        def __init__(self, value):
+            self.value = value
+
+        def __eq__(self, other):
+            return self is other
+
+        def __hash__(self):
+            return id(self)
+
+        def __repr__(self):
+            return repr(self.value)
+
+    def _as_index(c):
+        # np.bool_ is NOT a bool: isinstance(np.bool_(False), bool) is False,
+        # while np.bool_(False) == 0 is True -- so a numpy boolean walked
+        # straight past the builtin check and normalised to a valid index
+        # (Codex P2 on #1074). sklearn hands back numpy scalars, so this is
+        # the realistic form, not the exotic one.
+        if isinstance(c, (bool, np.bool_)):
+            return _NotAnIndex(c)         # never equal to 0 or 1
+        if isinstance(c, int):
+            return c
+        try:
+            i = int(c)
+        except Exception:                 # noqa: BLE001
+            # Fail CLOSED, the third and last place in this change that
+            # interprets a value it did not produce. This clause was
+            # (TypeError, ValueError) and int(float("inf")) raises
+            # OverflowError, which is neither, so a non-finite class escaped
+            # ContractMismatch entirely and landed back under the
+            # partial-success threshold (Codex P2 on #1074).
+            #
+            # Seventh escape of this shape across the PR. Rejecting is right
+            # regardless of WHY the value would not convert -- it is then not
+            # the integer index. It is wrapped rather than returned raw so it
+            # cannot compare equal to one, which is the trap the bool branch
+            # above fell into.
+            return _NotAnIndex(c)
+        return i if i == c else _NotAnIndex(c)   # 0.5 is not 0
+    # Reading classes_ is itself an interpretation of a value we did not
+    # produce, so it fails CLOSED like the other three sites. A scalar
+    # classes_ (say 3) is not iterable and raised a bare TypeError, which is
+    # not a ContractRejection and so escaped the fatal path entirely (Codex
+    # P2 on #1074). Anything that goes wrong reading or normalising the class
+    # list means the same thing: its column order cannot be verified.
+    try:
+        normalised = [_as_index(c) for c in actual_classes]
+    except Exception as e:                              # noqa: BLE001
+        raise ContractMismatch(
+            f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator's "
+            f"classes_ could not be read as a list of class labels "
+            f"({type(e).__name__}: {e}), so the order of its probability "
+            f"columns cannot be verified against {LABEL_CLASSES}.") from e
+    if normalised != expected_classes:
+        raise ContractMismatch(
+            f"REFUSING to serve {ticker}:{tf} run={run_id}: the estimator's "
+            f"classes_ are {list(actual_classes)}, not {expected_classes}. "
+            f"Probability columns are read positionally as {LABEL_CLASSES}, "
+            f"so every probability would be persisted under the wrong bucket "
+            f"name while looking entirely normal.")
 
     version = (version_blob.download_as_text().strip()
                if version_blob.exists() else "unknown")
@@ -232,7 +410,7 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
             " inference features with training schema"
         )
 
-    return model, feature_cols, version
+    return model, feature_cols, version, contract
 
 
 def _last_settled_ts(engine, ticker: str, tf: str) -> Optional[pd.Timestamp]:
@@ -513,15 +691,26 @@ def main() -> int:
 
     total_written = 0
     failures: list[tuple[str, str, str]] = []
+    contract_failures: list[tuple[str, str, str]] = []
     for ticker, tf in cells:
         try:
-            model, feature_cols, version = _load_model_and_version(ticker, tf)
+            model, feature_cols, version, contract = \
+                _load_model_and_version(ticker, tf)
+            log.info("%s:%s — serving contract verified: label_mode=%s "
+                     "thresholds=%s", ticker, tf, contract.get("label_mode"),
+                     contract.get("thresholds"))
             features = _load_recent_features(ticker, tf, args.lookback_hours)
             n = _score_and_persist(engine, ticker, tf,
                                     model, feature_cols, version, features)
             log.info("%s:%s — %d predictions written (model_version=%s)",
                      ticker, tf, n, version)
             total_written += n
+        except ContractRejection as e:
+            # Never partial-success material: this cell is serving numbers
+            # whose meaning cannot be verified. See ContractRejection.
+            log.exception("%s:%s CONTRACT REJECTED: %s", ticker, tf, e)
+            failures.append((ticker, tf, str(e)))
+            contract_failures.append((ticker, tf, str(e)))
         except Exception as e:
             log.exception("%s:%s failed: %s", ticker, tf, e)
             failures.append((ticker, tf, str(e)))
@@ -541,6 +730,20 @@ def main() -> int:
     if total_written == 0:
         log.error("ZERO-OUTPUT — no predictions written across any cell; "
                   "treating as failure (data outage or universal NaN filter)")
+        return 1
+
+    # A contract rejection is fatal on its own. The majority threshold below
+    # exists for cells that failed for their own reasons; applying it here
+    # would let one to three of six cells serve unverifiable semantics -- or
+    # go unscored behind stale data -- while the job exits 0 and the failure
+    # notifier never fires. That is the scenario this whole change exists to
+    # catch, so it cannot be the scenario that slips under a threshold
+    # (Codex P2 on #1074).
+    if contract_failures:
+        log.error("CONTRACT-REJECTED — %d/%d cell(s) could not have their "
+                  "label contract verified: %s. Not subject to the "
+                  "partial-success threshold.",
+                  len(contract_failures), len(cells), contract_failures)
         return 1
 
     # No silent fallback: any cell failure is a real production issue.

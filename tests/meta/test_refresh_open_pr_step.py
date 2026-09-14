@@ -29,12 +29,27 @@ OPEN_PR = next(s for s in STEPS if s.get("name") == "Open refresh PR")
 # to the refresh cannot leave this fixture behind.
 STAGED = [w for w in OPEN_PR["run"].split("git add ", 1)[1].split("\n", 1)[0].split()]
 
+# The step calls the REST API rather than `gh pr ...`, because the GraphQL
+# path those subcommands use demands `read:org` and failed run 35. The stub
+# routes on the endpoint and method instead of the subcommand. (Run 35.)
 GH_STUB = """#!/usr/bin/env bash
 echo "$@" >> "$GH_CALLS"
-case "$1 $2" in
-  "pr list") printf '%s' "$GH_EXISTING_PR" ;;
-  "pr create") printf '%s' "$*" > "$GH_OUT/create.txt" ;;
-  "pr edit")   printf '%s' "$*" > "$GH_OUT/edit.txt" ;;
+if [ "$1" != "api" ]; then exit 0; fi
+shift
+METHOD=GET
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) METHOD="$2"; shift 2 ;;
+    -f) ARGS+=("$2"); shift 2 ;;
+    --jq) shift 2 ;;
+    *) ENDPOINT="$1"; shift ;;
+  esac
+done
+case "$METHOD:$ENDPOINT" in
+  GET:*/pulls\?state=open*) printf '%s' "$GH_EXISTING_PR" ;;
+  POST:*/pulls)  printf '%s %s' "$ENDPOINT" "${ARGS[*]}" > "$GH_OUT/create.txt" ;;
+  PATCH:*/pulls/*) printf '%s %s' "$ENDPOINT" "${ARGS[*]}" > "$GH_OUT/edit.txt" ;;
 esac
 """
 
@@ -77,7 +92,8 @@ def _run_step(tmp_path: Path, *, existing_pr: str = "", touch: list[str] | None 
     env.update(PATH=f"{bin_dir}:{env['PATH']}", PR_BRANCH_PREFIX="bot/arch-refresh",
                GEMINI_MODEL="gemini-2.5-pro", GH_TOKEN="stub",
                GH_OUT=str(out), GH_CALLS=str(out / "calls.txt"),
-               GH_EXISTING_PR=existing_pr, RUN_DATE=RUN_DATE)
+               GH_EXISTING_PR=existing_pr, RUN_DATE=RUN_DATE,
+               GITHUB_REPOSITORY="o/r")
     proc = subprocess.run(["bash", "-c", OPEN_PR["run"]], cwd=work, env=env,
                           capture_output=True, text=True)
     return proc, work, remote / "origin.git", out
@@ -100,7 +116,7 @@ def test_the_step_branches_commits_pushes_and_opens_one_pr(tmp_path):
     assert pushed.stdout.strip() == f"docs: monthly architecture doc refresh {month}"
 
     args = (out / "create.txt").read_text()
-    assert "--base main" in args and f"--head {branch}" in args
+    assert "base=main" in args and f"head={branch}" in args
     assert f"Monthly architecture doc refresh: {month}" in args
     assert not (out / "edit.txt").exists(), "opened AND edited a PR"
 
@@ -131,7 +147,7 @@ def test_a_second_run_in_the_same_month_updates_the_open_pr(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert not (out / "create.txt").exists(), "created a duplicate PR"
     edit = (out / "edit.txt").read_text()
-    assert edit.startswith("pr edit 123 --body")
+    assert edit.startswith("repos/o/r/pulls/123 body=")
     assert "| ARCH | 12 | 3 |" in edit
 
 
@@ -221,7 +237,7 @@ def test_a_missing_drift_report_is_named_not_blanked(tmp_path):
     env.update(PATH=f"{tmp_path / 'bin'}:{env['PATH']}", PR_BRANCH_PREFIX="bot/arch-refresh",
                GEMINI_MODEL="gemini-2.5-pro", GH_TOKEN="stub", GH_OUT=str(out),
                GH_CALLS=str(out / "calls.txt"), GH_EXISTING_PR="123",
-               RUN_DATE=RUN_DATE)
+               RUN_DATE=RUN_DATE, GITHUB_REPOSITORY="o/r")
     (work / STAGED[0]).write_text("regenerated again\n")
     proc = subprocess.run(["bash", "-c", OPEN_PR["run"]], cwd=work, env=env,
                           capture_output=True, text=True)
@@ -251,3 +267,26 @@ def test_marker_blocks_are_restored_from_the_frozen_snapshot_before_the_gates():
     # write the model's numbers back with the workflow's signature on them.
     assert code.index("sha256sum -c") < code.index("--restore")
     assert "::warning::" in run and "model edited a rendered block" in run
+
+
+def test_the_pr_step_uses_rest_not_graphql():
+    """`gh pr list/edit/create` go through GraphQL, which resolves reviewer and
+    assignee objects and therefore demands `read:org`. PR_WORKFLOW_TOKEN has
+    only `repo` and `workflow`, so run 35 produced documents that passed every
+    gate, committed them, pushed the branch, and then died here:
+
+        GraphQL: The 'login' field requires one of the following scopes:
+        ['read:org'], but your token has only been granted the:
+        ['repo', 'workflow'] scopes.
+
+    A red monthly run over a scope the job does not need. The REST endpoints
+    need only `repo`. (Run 35.)
+    """
+    import re
+    body = OPEN_PR["run"]
+    code = "\n".join(l for l in body.split("\n") if not l.strip().startswith("#"))
+    assert not re.search(r"\bgh pr (list|edit|create)\b", code), \
+        "a GraphQL-backed `gh pr` subcommand is back; it needs read:org"
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open' in code
+    assert 'gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${EXISTING_PR}"' in code
+    assert 'gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls"' in code
