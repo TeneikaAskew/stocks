@@ -355,7 +355,21 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                 (id, ticker, as_of, report, model_versions, cost_usd,
                  per_role_cost, latency_ms, run_kind)
             VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
-            ON CONFLICT (ticker, as_of) DO NOTHING
+            -- Protect an existing LIVE row, but replace a non-live one.
+            -- DO NOTHING alone deadlocked with the cache fix: once a
+            -- backfill row held today's key, _is_cached_today correctly
+            -- asked for a live refresh, this insert then did nothing, the
+            -- run was marked done against the non-live row's id, and the
+            -- live-only reader still had no row to serve. The ticker ended
+            -- the day with no report at all (Codex on #1098 round 3).
+            ON CONFLICT (ticker, as_of) DO UPDATE
+            SET report = EXCLUDED.report,
+                model_versions = EXCLUDED.model_versions,
+                cost_usd = EXCLUDED.cost_usd,
+                per_role_cost = EXCLUDED.per_role_cost,
+                latency_ms = EXCLUDED.latency_ms,
+                run_kind = EXCLUDED.run_kind
+            WHERE insight_reports.run_kind <> 'live'
             RETURNING id::text
             """,
             (

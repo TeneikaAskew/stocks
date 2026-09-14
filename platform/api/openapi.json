@@ -7173,6 +7173,17 @@
             "title": "Report",
             "type": "object"
           },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
           "ticker": {
             "title": "Ticker",
             "type": "string"

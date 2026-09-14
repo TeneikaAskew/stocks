@@ -140,8 +140,20 @@ def _resolve_tickers(args: argparse.Namespace) -> list[str]:
 
 
 # A cursor-resume window wider than this is catch-up, not the live cadence.
-# The job runs on a 2-day lookback; 3 allows a weekend or one missed run.
-LIVE_WINDOW_DAYS = 3
+#
+# Derived from the ACTUAL schedule, not from the --lookback-days default:
+# gcp/deploy.sh:4830 runs historical-signals-watchlist-daily on
+# `0 1 * * 2-6`, Tue-Sat at 01:00 ET. So the ordinary Tuesday run resumes
+# from a cursor set by Saturday's run, which covered Friday's session: a
+# Friday 16:00 ET close read at Tuesday 01:00 ET is ~81 hours. A three-day
+# cutoff therefore labelled the normal weekly Monday ingestion 'backfill'
+# every single week (Codex on #1098 round 3 — my "3 allows a weekend"
+# comment was reasoning about the lookback flag rather than the cron).
+#
+# 5 days covers Friday-to-Tuesday (~3.4d) and the holiday-Monday case where
+# Wednesday's run picks up Friday's cursor (~4.4d), while still catching the
+# multi-day outage this rule exists for.
+LIVE_WINDOW_DAYS = 5
 
 
 def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime, str]:

@@ -95,7 +95,11 @@ def fetch_reports_for_date(target_date: date, ticker: Optional[str] = None) -> l
                 SELECT DISTINCT ON (ticker)
                        ticker, as_of, report::text, cost_usd, latency_ms
                   FROM insight_reports
-                 WHERE as_of::date = %s
+                 -- run_kind='live': this publishes to Discord every
+                 -- weekday at 09:15 ET, so a replay that overwrote today's
+                 -- row would be broadcast as today's report while the API
+                 -- hid it (Codex on #1098 round 3).
+                 WHERE as_of::date = %s AND run_kind = 'live'
                  ORDER BY ticker, as_of DESC
                 """,
                 (target_date,),

@@ -52,11 +52,48 @@
 --                        next-morning manual run is indistinguishable from a
 --                        same-day replay at that distance, and marking an
 --                        honest row as backfill hides it from the dashboard.
+--
+-- ROUND-3 CORRECTION, and it is the important one. The predicates above
+-- originally used ONLY created_at / analysis_ts. Both are insert-only
+-- defaults: premarket_brief.persist_to_cloud_sql builds canonical rows
+-- without analysis_ts and upsert_dataframe updates only the columns in the
+-- frame, and the historical-report conflict clause never touched created_at.
+-- So a replay that OVERWROTE an existing same-key live row kept the
+-- original same-day timestamp and stayed marked live: the rule missed
+-- precisely the rows that matter most, and the count bands could not detect
+-- it because they were measured with the same timestamps (Codex on #1098).
+--
+-- Measured 2026-09-14 (db-query dzqhv, rjqn2), joining each canonical row to
+-- the latest append-only history entry for its key:
+--
+--   premarket_analysis   latest history kind   rows   also caught by analysis_ts
+--     scheduled                                 243    0
+--     replay_refresh                            128   63   <- 65 MISSED
+--     backfill                                   15    7
+--     manual_update                               5    0
+--     manual_replay                               4    0
+--
+-- A TRAP in the obvious fix, worth stating because it inverts the meaning.
+-- `run_kind='backfill'` in the HISTORY tables does not mean the canonical
+-- row is backfilled content: scripts/backfill_history_tables.py stamped it
+-- on every row it copied IN from the canonical tables when the history
+-- tables were created. insight_reports_history carries 465 such rows. Taking
+-- history 'backfill' as evidence would have hidden 465 legitimate reports.
+-- Only 'replay_refresh' is unambiguous evidence of an as-of run, because
+-- _resolve_run_kind_and_update assigns it exactly when BRIEF_AS_OF /
+-- INSIGHT_AS_OF is set.
+--
+-- So the rule is the UNION: the latest history entry says replay_refresh, OR
+-- the insert-only timestamp is late. 'manual_update' and 'manual_replay' are
+-- left live: the first is assigned before the as-of branch is even tested so
+-- it cannot distinguish the two, and the second is a hand-run of that day's
+-- own brief.
 DO $$
 DECLARE
     n_signals INT;
     n_reports INT;
     n_briefs  INT;
+    n_extra   INT;
 BEGIN
     UPDATE historical_signals
        SET run_kind = 'backfill'
@@ -64,17 +101,42 @@ BEGIN
        AND inserted_at::date - entry_time::date > 7;
     GET DIAGNOSTICS n_signals = ROW_COUNT;
 
-    UPDATE insight_reports
+    UPDATE insight_reports r
        SET run_kind = 'backfill'
-     WHERE run_kind = 'live'
-       AND created_at::date > as_of::date;
+     WHERE r.run_kind = 'live'
+       AND (r.created_at::date > r.as_of::date
+            OR EXISTS (SELECT 1 FROM (
+                   SELECT DISTINCT ON (ticker, as_of) ticker, as_of, run_kind
+                     FROM insight_reports_history
+                    ORDER BY ticker, as_of, written_at DESC) h
+                WHERE h.ticker = r.ticker AND h.as_of = r.as_of
+                  AND h.run_kind = 'replay_refresh'));
     GET DIAGNOSTICS n_reports = ROW_COUNT;
 
-    UPDATE premarket_analysis
+    -- History FIRST, timestamp as a supplement. See the block above.
+    UPDATE premarket_analysis p
        SET run_kind = 'replay'
-     WHERE run_kind = 'live'
-       AND analysis_ts::date > analysis_date + 1;
+      FROM (SELECT DISTINCT ON (analysis_date, ticker) analysis_date, ticker, run_kind
+              FROM premarket_analysis_history
+             ORDER BY analysis_date, ticker, written_at DESC) h
+     WHERE h.analysis_date = p.analysis_date
+       AND h.ticker = p.ticker
+       AND p.run_kind = 'live'
+       AND (h.run_kind = 'replay_refresh'
+            OR p.analysis_ts::date > p.analysis_date + 1);
     GET DIAGNOSTICS n_briefs = ROW_COUNT;
+
+    -- Rows with no history entry at all (written before the history table
+    -- existed on 2026-04-12) can only use the timestamp.
+    UPDATE premarket_analysis p
+       SET run_kind = 'replay'
+     WHERE p.run_kind = 'live'
+       AND p.analysis_ts::date > p.analysis_date + 1
+       AND NOT EXISTS (SELECT 1 FROM premarket_analysis_history h
+                        WHERE h.analysis_date = p.analysis_date
+                          AND h.ticker = p.ticker);
+    GET DIAGNOSTICS n_extra = ROW_COUNT;
+    n_briefs := n_briefs + n_extra;
 
     IF n_signals NOT BETWEEN 1500000 AND 1650000 THEN
         RAISE EXCEPTION
@@ -86,9 +148,9 @@ BEGIN
             'insight_reports: expected ~86 rows (band 60-250), matched %; nothing committed',
             n_reports;
     END IF;
-    IF n_briefs NOT BETWEEN 50 AND 150 THEN
+    IF n_briefs NOT BETWEEN 110 AND 220 THEN
         RAISE EXCEPTION
-            'premarket_analysis: expected ~70 rows (band 50-150), matched %; nothing committed',
+            'premarket_analysis: expected ~135 rows (band 110-220), matched %; nothing committed',
             n_briefs;
     END IF;
 

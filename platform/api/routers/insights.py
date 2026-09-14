@@ -131,6 +131,13 @@ class ReportEnvelope(BaseModel):
     model_versions: dict
     cost_usd: Optional[float] = None
     latency_ms: Optional[int] = None
+    # 'live' | 'replay' | 'backfill'. The by-ID route deliberately serves
+    # non-live rows, so it must say so. I argued on #1098 that the id could
+    # only come from the history list, which discloses run_kind; that was
+    # incomplete — /api/insights/runs/{run_id} also returns report_id,
+    # including for an as_of replay, and a client can call the ID route
+    # directly (Codex, round 3).
+    run_kind: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +212,7 @@ def _fetch_latest_report(
             cur.execute(
                 """
                 SELECT id::text, ticker, as_of, report, model_versions,
-                       cost_usd, latency_ms
+                       cost_usd, latency_ms, run_kind
                 FROM insight_reports
                 WHERE ticker = %s AND run_kind = 'live'
                 ORDER BY as_of DESC
@@ -217,7 +224,7 @@ def _fetch_latest_report(
             cur.execute(
                 """
                 SELECT id::text, ticker, as_of, report, model_versions,
-                       cost_usd, latency_ms
+                       cost_usd, latency_ms, run_kind
                 FROM insight_reports
                 WHERE ticker = %s AND run_kind = 'live' AND as_of <= %s
                 ORDER BY as_of DESC
@@ -238,7 +245,7 @@ def _fetch_report_by_id(report_id: str) -> Optional[dict]:
         cur.execute(
             """
             SELECT id::text, ticker, as_of, report, model_versions,
-                   cost_usd, latency_ms
+                   cost_usd, latency_ms, run_kind
             FROM insight_reports
             -- Deliberately NOT filtered to run_kind='live': the caller named
             -- one row by id, so returning it is not a silent substitution the
@@ -265,6 +272,7 @@ def _row_to_envelope(row) -> Optional[dict]:
         "model_versions": row[4],
         "cost_usd": float(row[5]) if row[5] is not None else None,
         "latency_ms": row[6],
+        "run_kind": row[7],
     }
 
 

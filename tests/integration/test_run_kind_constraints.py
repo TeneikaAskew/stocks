@@ -81,15 +81,37 @@ def test_drift_is_raised_rather_than_silently_accepted(db_engine):
             trans.rollback()
 
 
+# Minimal valid rows: only the NOT NULL columns without defaults, so these
+# stay correct as the tables gain columns.
+_SEED = {
+    "historical_signals": "(ticker, entry_time, run_kind) VALUES ('ZZZ', now(), %s)",
+    "insight_reports": "(id, ticker, as_of, report, run_kind) "
+                       "VALUES (gen_random_uuid(), 'ZZZ', current_date, '{}'::jsonb, %s)",
+    "premarket_analysis": "(analysis_date, ticker, run_kind) "
+                          "VALUES (current_date, 'ZZZ', %s)",
+}
+
+
 @pytest.mark.parametrize("table", TABLES)
 def test_the_constraint_rejects_a_typo(db_engine, table):
     """'Live' or 'backfil' would be excluded from every reader forever with
-    no error anywhere, which is why the CHECK exists at all."""
+    no error anywhere, which is why the CHECK exists at all.
+
+    Tests an INSERT, not an UPDATE. The first version of this test ran
+    `UPDATE ... WHERE true` against these tables, which the integration
+    harness leaves empty: Postgres evaluates a CHECK only for affected rows,
+    so zero rows meant zero evaluations and `pytest.raises` failed with DID
+    NOT RAISE. A test that cannot fail for its own reason is worse than none
+    (Codex on #1098 round 3)."""
     with db_engine.connect() as conn:
         trans = conn.begin()
         try:
-            with pytest.raises(Exception):
+            # The valid value is accepted...
+            conn.execute(text(
+                f"INSERT INTO {table} {_SEED[table].replace('%s', chr(39) + 'live' + chr(39))}"))
+            # ...and the typo is not.
+            with pytest.raises(Exception, match="run_kind_check"):
                 conn.execute(text(
-                    f"UPDATE {table} SET run_kind = 'Live' WHERE true"))
+                    f"INSERT INTO {table} {_SEED[table].replace('%s', chr(39) + 'Live' + chr(39))}"))
         finally:
             trans.rollback()
