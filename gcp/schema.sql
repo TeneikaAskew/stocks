@@ -4167,3 +4167,65 @@ ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS ancestors TEXT NOT NUL
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS schema_sha256 TEXT NOT NULL DEFAULT '';
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS forced BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
+
+-- ── Provenance on the three remaining API-served analytical tables ──────────
+-- Audit 2026-09-14, follow-up to #820 R3. The run_kind convention closed
+-- signal_alerts and trades; the same defect shape survived on every other
+-- table a router serves as ground truth. Measured in production that day:
+--
+--   historical_signals  1,553,629 of 1,708,932 rows (90.9%) were written
+--                       more than 7 days after the signal they describe.
+--                       One hour alone, 2026-04-26 02:00 UTC, wrote
+--                       1,090,746 rows covering 2017-02-01 .. 2024-06-28.
+--   insight_reports     70 of 807 reports were generated more than 2 days
+--                       after their as_of date (scripts/generate_historical_report.py).
+--   premarket_analysis  unmeasurable — the table carried NO timestamp at
+--                       all, so a BRIEF_AS_OF replay row and a real 06:00
+--                       brief row were indistinguishable by construction.
+--
+-- None of it is fabricated: the rows are computed from real bars and real
+-- model runs. The defect is that a backfill write and a live write are
+-- indistinguishable once they land, so no reader can choose, which is the
+-- CLAUDE.md §3.7 rule (a value the caller cannot tell apart from a
+-- legitimate one) applied to provenance rather than to a number.
+--
+-- Marking the existing rows is a separate, count-checked step per table:
+-- gcp/queries/mark_backfill_provenance_2026-09-14.sql.
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS run_kind VARCHAR(16) NOT NULL DEFAULT 'live';
+
+ALTER TABLE insight_reports
+    ADD COLUMN IF NOT EXISTS run_kind VARCHAR(16) NOT NULL DEFAULT 'live';
+
+-- premarket_analysis gets a write timestamp as well as provenance: it had
+-- neither, so nothing could reconstruct when a row was written. Existing
+-- rows take now() once, which is honest about being unknown rather than
+-- inventing a plausible morning time.
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS run_kind   VARCHAR(16)  NOT NULL DEFAULT 'live',
+    ADD COLUMN IF NOT EXISTS written_at TIMESTAMPTZ  NOT NULL DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS idx_historical_signals_run_kind
+    ON historical_signals(run_kind) WHERE run_kind != 'live';
+CREATE INDEX IF NOT EXISTS idx_insight_reports_run_kind
+    ON insight_reports(run_kind) WHERE run_kind != 'live';
+CREATE INDEX IF NOT EXISTS idx_premarket_analysis_run_kind
+    ON premarket_analysis(run_kind) WHERE run_kind != 'live';
+
+-- Same taxonomy as trades / signal_alerts. A typo would exclude the row
+-- from every reader forever with no error anywhere.
+DO $$
+DECLARE
+    t TEXT;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['historical_signals', 'insight_reports', 'premarket_analysis']
+    LOOP
+        IF EXISTS (SELECT 1 FROM pg_constraint
+                    WHERE conname = t || '_run_kind_check') THEN
+            EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', t, t || '_run_kind_check');
+        END IF;
+        EXECUTE format(
+            'ALTER TABLE %I ADD CONSTRAINT %I CHECK (run_kind IN (''live'', ''replay'', ''backfill''))',
+            t, t || '_run_kind_check');
+    END LOOP;
+END $$;

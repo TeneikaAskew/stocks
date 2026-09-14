@@ -148,6 +148,17 @@ def _query_signals_sql(
     """Cloud SQL query path. Returns (total_count_in_window, rows[<=limit]).
     Raises HTTPException(503) when the query fails."""
 
+    # NOT filtered to run_kind='live', unlike /api/analytics and
+    # /api/dashboard (audit 2026-09-14). Measured in production that day:
+    # 1,553,629 of 1,708,932 rows (90.9%) were written more than 7 days
+    # after the signal they describe. That is not contamination here.
+    # signal_alerts is the record of fires that were PUBLISHED; this table
+    # is the analytical corpus of every signal the strategies would have
+    # produced over real bars, and a backfilled row is the same computation
+    # over the same bars as a same-day one. Filtering would discard 91% of
+    # the history the "similar signals" statistics exist to summarise, which
+    # is churn dressed as a fix (CLAUDE.md §3.11). Provenance is disclosed
+    # on each row instead so a consumer can segment if it ever matters.
     where = ['ticker = :ticker']
     params: dict = {'ticker': ticker_upper}
 
@@ -188,7 +199,8 @@ def _query_signals_sql(
                    entry_volume AS volume,
                    signal_strength AS score,
                    conditions_met,
-                   return_pct
+                   return_pct,
+                   run_kind
             FROM historical_signals
             WHERE {where_sql}
             ORDER BY entry_time DESC

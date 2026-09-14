@@ -3688,6 +3688,17 @@
             "title": "Id",
             "type": "string"
           },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
           "thesis": {
             "anyOf": [
               {
@@ -7864,6 +7875,17 @@
               }
             ],
             "title": "Rsi"
+          },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
           },
           "score": {
             "anyOf": [

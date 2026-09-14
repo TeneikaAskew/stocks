@@ -281,6 +281,21 @@ def _insert_report_history(report: InsightReport, insight_run_id: str,
         conn.close()
 
 
+def _canonical_run_kind() -> str:
+    """Provenance for the canonical insight_reports row.
+
+    The operational `run_kind` threaded through _run_one ('scheduled',
+    'manual_update', ...) describes HOW a run was triggered and lands in
+    insight_reports_history. This is the three-value DATA taxonomy shared
+    with trades, signal_alerts and premarket_analysis, which is what the
+    routers filter on. An INSIGHT_AS_OF run reconstructs a past day's
+    report from that day's data: real analysis, but not the report that
+    was published then, so /api/insights must not serve it as one
+    (audit 2026-09-14).
+    """
+    return 'replay' if os.environ.get('INSIGHT_AS_OF') else 'live'
+
+
 def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optional[str]:
     """Write to insight_reports.
 
@@ -301,8 +316,8 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                 """
                 INSERT INTO insight_reports
                     (id, ticker, as_of, report, model_versions, cost_usd,
-                     per_role_cost, latency_ms)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
+                     per_role_cost, latency_ms, run_kind)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
                 ON CONFLICT (ticker, as_of) DO UPDATE
                 SET report = EXCLUDED.report,
                     model_versions = EXCLUDED.model_versions,
@@ -318,6 +333,7 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                     report.run_cost_usd,
                     json.dumps(report.per_role_cost),
                     report.run_latency_ms,
+                    _canonical_run_kind(),
                 ),
             )
             returned = cur.fetchone()
@@ -332,8 +348,8 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
             """
             INSERT INTO insight_reports
                 (id, ticker, as_of, report, model_versions, cost_usd,
-                 per_role_cost, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
+                 per_role_cost, latency_ms, run_kind)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
             ON CONFLICT (ticker, as_of) DO NOTHING
             RETURNING id::text
             """,
@@ -344,6 +360,7 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                 report.run_cost_usd,
                 json.dumps(report.per_role_cost),
                 report.run_latency_ms,
+                _canonical_run_kind(),
             ),
         )
         returned = cur.fetchone()

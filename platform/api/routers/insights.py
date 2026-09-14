@@ -207,7 +207,7 @@ def _fetch_latest_report(
                 SELECT id::text, ticker, as_of, report, model_versions,
                        cost_usd, latency_ms
                 FROM insight_reports
-                WHERE ticker = %s
+                WHERE ticker = %s AND run_kind = 'live'
                 ORDER BY as_of DESC
                 LIMIT 1
                 """,
@@ -219,7 +219,7 @@ def _fetch_latest_report(
                 SELECT id::text, ticker, as_of, report, model_versions,
                        cost_usd, latency_ms
                 FROM insight_reports
-                WHERE ticker = %s AND as_of <= %s
+                WHERE ticker = %s AND run_kind = 'live' AND as_of <= %s
                 ORDER BY as_of DESC
                 LIMIT 1
                 """,
@@ -240,6 +240,10 @@ def _fetch_report_by_id(report_id: str) -> Optional[dict]:
             SELECT id::text, ticker, as_of, report, model_versions,
                    cost_usd, latency_ms
             FROM insight_reports
+            -- Deliberately NOT filtered to run_kind='live': the caller named
+            -- one row by id, so returning it is not a silent substitution the
+            -- way an unfiltered "latest for this ticker" would be. The id
+            -- comes from the history list, which discloses run_kind.
             WHERE id = %s
             """,
             (report_id,),
@@ -274,7 +278,7 @@ def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
                    report->>'direction' AS direction,
                    report->>'conviction' AS conviction,
                    report->>'thesis' AS thesis,
-                   cost_usd
+                   cost_usd, run_kind
             FROM insight_reports
             WHERE ticker = %s
             ORDER BY as_of DESC
@@ -293,6 +297,7 @@ def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
             "conviction": r[3],
             "thesis": r[4],
             "cost_usd": float(r[5]) if r[5] is not None else None,
+            "run_kind": r[6],
         }
         for r in rows
     ]
@@ -392,10 +397,15 @@ def _upsert_report(report: InsightReport) -> str:
         cur = conn.cursor()
         cur.execute(
             """
+            -- run_kind='live': this is the on-demand endpoint, so the row is
+            -- generated now for now. The historical path is
+            -- scripts/generate_historical_report.py, which stamps 'backfill'
+            -- (audit 2026-09-14). Hardcoded rather than parameterised so a
+            -- future caller cannot pass a kind that misrepresents the row.
             INSERT INTO insight_reports
                 (id, ticker, as_of, report, model_versions, cost_usd,
-                 per_role_cost, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
+                 per_role_cost, latency_ms, run_kind)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, 'live')
             ON CONFLICT (ticker, as_of) DO UPDATE
             SET report = EXCLUDED.report,
                 model_versions = EXCLUDED.model_versions,

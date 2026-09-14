@@ -402,9 +402,15 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
                  ticker, len(table_df), args.strategy)
         return 0
 
-    attempted, inserted = bulk_insert(table_df)
-    log.info('  %s [%s]: done attempted=%d inserted=%d skipped=%d',
-             ticker, args.strategy, attempted, inserted, attempted - inserted)
+    # --force and --backfill-from reprocess history; the default
+    # auto-resume path writes the newest bars and is the live cursor.
+    # A backfill row is real analysis of a real bar, but it is not a
+    # signal that was published when it fired, so /api/signals must be
+    # able to tell them apart (audit 2026-09-14).
+    kind = 'backfill' if (args.force or args.backfill_from) else 'live'
+    attempted, inserted = bulk_insert(table_df, run_kind=kind)
+    log.info('  %s [%s]: done attempted=%d inserted=%d skipped=%d run_kind=%s',
+             ticker, args.strategy, attempted, inserted, attempted - inserted, kind)
     return 0
 
 

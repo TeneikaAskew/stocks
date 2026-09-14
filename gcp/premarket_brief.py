@@ -3276,7 +3276,17 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # corrupt the canonical row by overwriting it with stale or
     # empty values.
     skip_canonical = playbook_failed | stale_data
-    canonical_rows = [r for r in rows if r['ticker'] not in skip_canonical]
+    # Provenance on the canonical row (audit 2026-09-14). The history
+    # table's `run_kind` is a four-value operational taxonomy
+    # ('scheduled' / 'manual_update' / 'replay_refresh' / 'manual_replay');
+    # the canonical table takes the three-value data taxonomy shared with
+    # trades and signal_alerts, because that is what readers filter on.
+    # A BRIEF_AS_OF run reconstructs a past morning, so its row is
+    # 'replay': real analysis, but not the brief that was actually
+    # published that day, and /api/dashboard must not serve it as one.
+    canonical_run_kind = 'replay' if os.environ.get('BRIEF_AS_OF') else 'live'
+    canonical_rows = [{**r, 'run_kind': canonical_run_kind}
+                      for r in rows if r['ticker'] not in skip_canonical]
     if playbook_failed:
         logger.warning(
             "Skipped premarket_analysis write for %d PLAYBOOK_FAILED "
