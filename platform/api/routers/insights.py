@@ -389,29 +389,39 @@ def _update_run_status(
         conn.close()
 
 
-def _upsert_report(report: InsightReport) -> str:
-    """Upsert the report and return its row id."""
+def _upsert_report(report: InsightReport, as_of: Optional[Union[date, datetime]] = None) -> str:
+    """Upsert the report and return its row id.
+
+    ``as_of`` is the cutoff the caller asked for, and it decides provenance.
+    An earlier revision hardcoded 'live' on the reasoning that this is the
+    on-demand endpoint, so the row is generated now for now. That was wrong:
+    POST /api/insights/report/{ticker}/refresh accepts ``?as_of=``, and this
+    writer runs for it both in local dev and in the production
+    BackgroundTasks fallback when Cloud Tasks enqueueing fails. A
+    reconstructed historical report stamped 'live' is served as the current
+    one by the live-only query this PR adds (Codex on #1098).
+    """
     conn = connect()
     row_id = str(uuid4())
     try:
         cur = conn.cursor()
         cur.execute(
             """
-            -- run_kind='live': this is the on-demand endpoint, so the row is
-            -- generated now for now. The historical path is
-            -- scripts/generate_historical_report.py, which stamps 'backfill'
-            -- (audit 2026-09-14). Hardcoded rather than parameterised so a
-            -- future caller cannot pass a kind that misrepresents the row.
             INSERT INTO insight_reports
                 (id, ticker, as_of, report, model_versions, cost_usd,
                  per_role_cost, latency_ms, run_kind)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, 'live')
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
             ON CONFLICT (ticker, as_of) DO UPDATE
             SET report = EXCLUDED.report,
                 model_versions = EXCLUDED.model_versions,
                 cost_usd = EXCLUDED.cost_usd,
                 per_role_cost = EXCLUDED.per_role_cost,
-                latency_ms = EXCLUDED.latency_ms
+                latency_ms = EXCLUDED.latency_ms,
+                -- Provenance rides the overwrite. Without it an as-of
+                -- replay overwriting a live row left the row reading 'live'
+                -- with replay content, which the live-only reader then serves
+                -- as current; the reverse hid newly live content (Codex, #1098).
+                run_kind = EXCLUDED.run_kind
             RETURNING id::text
             """,
             (
@@ -423,6 +433,7 @@ def _upsert_report(report: InsightReport) -> str:
                 report.run_cost_usd,
                 json.dumps(report.per_role_cost),
                 report.run_latency_ms,
+                'replay' if as_of is not None else 'live',
             ),
         )
         returned = cur.fetchone()
@@ -449,7 +460,7 @@ async def _execute_pipeline(
     try:
         snapshot = load_routes_snapshot()
         report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
-        report_id = _upsert_report(report)
+        report_id = _upsert_report(report, as_of=as_of)
         _update_run_status(run_id, "done", report_id=report_id)
     except Exception as exc:
         logger.exception("pipeline run %s failed", run_id)

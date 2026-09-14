@@ -617,6 +617,12 @@ class SimilarMatch(ApiModel):
     return_pct: Optional[float] = None
     return_5min: Optional[float] = None
     return_20min: Optional[float] = None
+    # Disclosed for the same reason as SignalRow.run_kind: this endpoint
+    # returns individual historical_signals rows, and the decision not to
+    # filter the corpus only holds if a consumer can see which rows are
+    # backfilled. The first revision added the field to the list endpoint
+    # and missed this one (Codex on #1098).
+    run_kind: Optional[str] = None
 
 
 class SimilarResponse(ApiModel):

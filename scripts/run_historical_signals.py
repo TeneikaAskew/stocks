@@ -139,12 +139,27 @@ def _resolve_tickers(args: argparse.Namespace) -> list[str]:
         return []
 
 
-def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
-    """Determine [start, end) bar window to load from market_data_intraday.
+def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime, str]:
+    """Determine the [start, end) bar window, and the provenance it implies.
 
     The auto-resume path (no --start-date / --backfill-from) reads
     MAX(entry_time) scoped to the requested ``args.strategy`` so that
     momentum and mean_reversion backfills resume from independent cursors.
+
+    Returns ``(start, end, run_kind)``. Only ONE path is 'live': resuming
+    from an existing cursor, with no explicit window and no --force. Every
+    other path computes signals well after the bars they describe:
+
+      --force              deletes the ticker's rows and reprocesses history
+      --backfill-from      an explicit historical start
+      --start-date         likewise, and it was classified 'live' by an
+                           earlier revision of this function that keyed only
+                           off the first two flags
+      no cursor yet        the 30-day bootstrap, also historical
+
+    The third argument exists because this is the only place that knows
+    which branch ran; the caller cannot re-derive the cursor case from
+    ``args`` alone (Codex on #1098).
     """
     ticker = args.symbol.upper()
 
@@ -153,10 +168,14 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
     else:
         end = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=1)  # exclusive
 
+    run_kind = 'backfill' if args.force else 'live'
+
     if args.start_date:
         start = datetime.fromisoformat(args.start_date).replace(tzinfo=timezone.utc)
+        run_kind = 'backfill'
     elif args.backfill_from:
         start = datetime.fromisoformat(args.backfill_from).replace(tzinfo=timezone.utc)
+        run_kind = 'backfill'
     else:
         # Default: resume from MAX(entry_time) + 1 minute scoped to THIS
         # strategy, or fall back to a 30-day window if the table has no
@@ -166,11 +185,12 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
             log.info('no existing rows for %s [%s] — defaulting to last 30 days',
                      ticker, args.strategy)
             start = end - timedelta(days=30)
+            run_kind = 'backfill'
         else:
             start = last + timedelta(minutes=1)
             log.info('resuming from MAX(entry_time)=%s [%s]', last, args.strategy)
 
-    return start, end
+    return start, end, run_kind
 
 
 def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
@@ -353,7 +373,7 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
     # `resolve_window` reads args.symbol — patch it through for this ticker
     # in the watchlist iteration path.
     args.symbol = ticker
-    start, end = resolve_window(args)
+    start, end, window_kind = resolve_window(args)
     if start >= end:
         log.info('  %s: window [%s, %s) empty — already up-to-date', ticker, start, end)
         return 0
@@ -402,15 +422,13 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
                  ticker, len(table_df), args.strategy)
         return 0
 
-    # --force and --backfill-from reprocess history; the default
-    # auto-resume path writes the newest bars and is the live cursor.
-    # A backfill row is real analysis of a real bar, but it is not a
-    # signal that was published when it fired, so /api/signals must be
-    # able to tell them apart (audit 2026-09-14).
-    kind = 'backfill' if (args.force or args.backfill_from) else 'live'
-    attempted, inserted = bulk_insert(table_df, run_kind=kind)
+    # resolve_window decided this: only the cursor-resume path is 'live'.
+    # A backfill row is real analysis of a real bar, but it is not a signal
+    # that was published when it fired, so /api/signals must be able to tell
+    # them apart (audit 2026-09-14).
+    attempted, inserted = bulk_insert(table_df, run_kind=window_kind)
     log.info('  %s [%s]: done attempted=%d inserted=%d skipped=%d run_kind=%s',
-             ticker, args.strategy, attempted, inserted, attempted - inserted, kind)
+             ticker, args.strategy, attempted, inserted, attempted - inserted, window_kind)
     return 0
 
 

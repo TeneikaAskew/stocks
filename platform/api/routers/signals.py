@@ -418,7 +418,8 @@ def get_similar_signals(
                entry_rsi AS rsi,
                return_pct,
                return_5min,
-               return_20min
+               return_20min,
+               run_kind
         FROM historical_signals
         WHERE {where}
         ORDER BY entry_time DESC

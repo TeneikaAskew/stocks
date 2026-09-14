@@ -323,7 +323,12 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                     model_versions = EXCLUDED.model_versions,
                     cost_usd = EXCLUDED.cost_usd,
                     per_role_cost = EXCLUDED.per_role_cost,
-                    latency_ms = EXCLUDED.latency_ms
+                    latency_ms = EXCLUDED.latency_ms,
+                    -- Provenance rides the overwrite. Without it an as-of
+                    -- replay overwriting a live row left the row reading 'live'
+                    -- with replay content, which the live-only reader then serves
+                    -- as current; the reverse hid newly live content (Codex, #1098).
+                    run_kind = EXCLUDED.run_kind
                 RETURNING id::text
                 """,
                 (
