@@ -22,12 +22,14 @@ an Operation as soon as the execution is created, freeing the dispatch
 slot immediately. Top-3 reports run in parallel and finish in ~90s,
 comfortably before the premarket-brief at 8:30.
 
-Exit code covers DISPATCH, not reports: a green run means the tickers
-were handed to Cloud Tasks, and each child owns its own outcome in
-`insight_runs` from there. The one exception is a run that dispatched
-nothing it had work for — that exits non-zero, because this job has no
-in-process fallback (unlike insight-pipeline's `_dispatch_fanout`) and
-a green run producing zero reports is indistinguishable from success.
+Exit codes:
+  0 — dispatched. Covers DISPATCH, not reports: each child owns its own
+      outcome in `insight_runs` from there. An all-cached run is also 0,
+      since a warm cache is the outcome this job exists to produce.
+  1 — dispatched nothing it had work for. This job has no in-process
+      fallback (unlike insight-pipeline's `_dispatch_fanout`), so a green
+      run producing zero reports would be indistinguishable from success.
+  2 — misconfigured (negative N). Rejected before the ranker runs.
 
 Usage:
     python -m gcp.auto_refresh_top_n              # production
@@ -186,6 +188,22 @@ def main() -> int:
         help="Run the ranker + cache check but don't insert/enqueue anything.",
     )
     args = parser.parse_args()
+
+    # Validate before anything costs money. A negative N is unambiguously a
+    # misconfiguration, and Python's slicing would read it as "all but the
+    # last |N|" — `ranked[:-1]` is 19 tickers against the default ranker
+    # limit, straight through the FANOUT_MAX_TICKERS ceiling below. Clamping
+    # it to 0 instead would turn a typo into a silent no-op, which is the
+    # failure this job was just fixed for. Exit 2 marks a config error,
+    # distinct from 1 (dispatched nothing it had work for).
+    if args.top_n < 0:
+        logger.error(
+            "top_n=%d is negative; refusing to run. Slicing a negative N "
+            "selects every ranked ticker but the last, which would bypass "
+            "FANOUT_MAX_TICKERS=%d entirely. Use 0 to disable pre-warming.",
+            args.top_n, FANOUT_MAX_TICKERS,
+        )
+        return 2
 
     started = datetime.now(tz=timezone.utc)
     logger.info("auto-refresh-top-n starting at %s", started.isoformat())

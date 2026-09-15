@@ -513,3 +513,74 @@ def test_the_fanout_ceiling_is_one_constant_both_producers_read(monkeypatch):
     from gcp import insight_tasks
 
     assert job.FANOUT_MAX_TICKERS is insight_tasks.FANOUT_MAX_TICKERS
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A negative top-N must not slice its way around the ceiling.
+#
+# Codex P2 on the clamp added in 6566876. `min(args.top_n, FANOUT_MAX_TICKERS)`
+# bounds only the upper end, and Python's negative slicing then reads
+# `ranked[:-1]` as "everything but the last" — measured: top_n=-1 yields 19
+# tickers against a ranker_limit of 20, defeating the 5-ticker ceiling the
+# clamp exists to enforce.
+#
+# Rejected rather than clamped to 0. A negative N is unambiguously a
+# misconfiguration, not an intent, and clamping it to "enqueue nothing"
+# would be the same quiet no-op this job was just fixed for. Exit 2 marks
+# it as a config error, distinct from exit 1 (dispatched nothing it had
+# work for) and exit 0 (dispatch succeeded).
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bad_n", [-1, -3, -20])
+def test_a_negative_top_n_is_rejected_not_sliced(monkeypatch, bad_n):
+    from gcp import auto_refresh_top_n as ar
+
+    sent: list[str] = []
+    monkeypatch.setattr(
+        ar, "rank_tickers",
+        lambda **kw: _fake_rank([(f"T{i}", 9.0) for i in range(20)]),
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
+    monkeypatch.setattr(ar, "_insert_queued_run", lambda tk, trigger: f"run-{tk}")
+
+    def record(run_id, ticker, **kwargs):
+        sent.append(ticker)
+        return ar.EnqueueOutcome.ENQUEUED
+    monkeypatch.setattr(ar, "enqueue_insight_task", record)
+    monkeypatch.setattr("sys.argv", ["prog", "--top-n", str(bad_n)])
+
+    rc = ar.main()
+
+    assert rc != 0, "a negative top-N must not report success"
+    assert sent == [], f"nothing may be enqueued; got {len(sent)}"
+
+
+def test_a_negative_top_n_is_rejected_before_the_ranker_runs(monkeypatch):
+    """Validation happens up front — a misconfigured run must not pay for
+    a ranker pass or write its audit row."""
+    from gcp import auto_refresh_top_n as ar
+
+    ranked_called: list[bool] = []
+
+    def spy(**kw):
+        ranked_called.append(True)
+        return _fake_rank([("SPY", 9.0)])
+    monkeypatch.setattr(ar, "rank_tickers", spy)
+    monkeypatch.setattr("sys.argv", ["prog", "--top-n", "-1"])
+
+    assert ar.main() != 0
+    assert ranked_called == []
+
+
+def test_zero_top_n_is_a_legitimate_disable(monkeypatch):
+    """0 means "pre-warm nothing" and is a valid way to turn this off —
+    it must not be swept up by the negative check."""
+    from gcp import auto_refresh_top_n as ar
+
+    monkeypatch.setattr(
+        ar, "rank_tickers", lambda **kw: _fake_rank([("SPY", 9.0)])
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
+    monkeypatch.setattr("sys.argv", ["prog", "--top-n", "0"])
+    assert ar.main() == 0
