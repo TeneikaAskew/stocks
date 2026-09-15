@@ -1248,3 +1248,9 @@ ceiling on a shorter sample is MEDIUM with the reason in the finding. This
 is what SPY 5m's calm session needed. A constant model is now MEDIUM for
 its first week and HIGH after; the render backstop covers the card in the
 meantime. An unknown timeframe raises rather than guessing the sample.
+
+Deployed the same day (base image `a4d72306` → `24f89de6…`, auditor
+generation 4). First run, `audit-magnitude-drift-x6hgq`: no HIGH findings;
+SPY 5m `6hp7l` MEDIUM with the reason in the finding; IWM 15m (`c49qf`,
+still a constant, 115 bars) crosses its 130-bar minimum on the next
+session and pages HIGH then, as it should.
