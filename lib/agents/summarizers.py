@@ -219,6 +219,13 @@ def summarize_market_context(
         "       pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr "
         "FROM market_data_daily "
         "WHERE ticker = :ticker "
+        # Skip the pre-market placeholder. `date < :as_of` used to be the
+        # only thing keeping it out, so on a LIVE run (as_of=None, no date
+        # bound) `ORDER BY date DESC` selected it and every daily column
+        # came back NULL. Asking the data rather than the date also covers
+        # the replay path, where an as_of whose prior row is itself a
+        # placeholder would still have picked NULLs.
+        "  AND close IS NOT NULL "
         + (f"AND date {daily_op} :as_of " if as_of else "")
         + "ORDER BY date DESC LIMIT 1"
     )
@@ -227,29 +234,37 @@ def summarize_market_context(
         params["as_of"] = str(as_of)
     df = _query(daily_sql, params)
     if df.empty:
-        return _unavailable(f"no market_data_daily row for {ticker}")
+        # Names the predicate, not a guess at why it failed: this is
+        # equally "we have never fetched this ticker" and "the only row
+        # is today's pre-market placeholder".
+        return _unavailable(f"no market_data_daily row with a close for {ticker}")
 
     row = df.iloc[0]
 
-    # On replay, overlay today's pre_* columns (today's row exists at
-    # 8:45 AM ET via the premarket fetcher, with daily OHLC still NULL).
-    if as_of:
-        pm_df = _query(
-            "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
-            "       pre_range_atr "
-            "FROM market_data_daily "
-            "WHERE ticker = :ticker AND date = :as_of LIMIT 1",
-            {"ticker": ticker.upper(), "as_of": str(as_of)},
-        )
-        if not pm_df.empty:
-            pm_row = pm_df.iloc[0]
-            row = row.copy()
-            for col in (
-                "pre_high", "pre_low", "pre_vwap", "pre_volume",
-                "gap_pct", "pre_range_atr",
-            ):
-                if col in pm_row.index:
-                    row[col] = pm_row[col]
+    # Overlay the pre_* columns from the CURRENT day's row. The daily
+    # query above deliberately reads the last completed bar, whose pre_*
+    # are a day old; the 8:30 AM ET fetcher has already written today's.
+    # Replay pins that row by date, live takes the newest — which is the
+    # placeholder when one exists and otherwise the same row we just
+    # read, making the overlay a no-op.
+    pm_df = _query(
+        "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
+        "       pre_range_atr "
+        "FROM market_data_daily "
+        "WHERE ticker = :ticker "
+        + ("AND date = :as_of " if as_of else "")
+        + "ORDER BY date DESC LIMIT 1",
+        params,
+    )
+    if not pm_df.empty:
+        pm_row = pm_df.iloc[0]
+        row = row.copy()
+        for col in (
+            "pre_high", "pre_low", "pre_vwap", "pre_volume",
+            "gap_pct", "pre_range_atr",
+        ):
+            if col in pm_row.index:
+                row[col] = pm_row[col]
 
     close = _scalar(row, "close", digits=2)
     ema_20 = _scalar(row, "ema_20", digits=2)
@@ -262,6 +277,12 @@ def summarize_market_context(
     above_200 = None
     if close is not None and sma_200 is not None:
         above_200 = close > sma_200
+    # AUDIT-2026-05-13: silent fallback — `or 0` on a financial field. See
+    # docs/audits/FALLBACK_AUDIT_2026-05-13.md §13, `lib/agents/` row. A
+    # missing price_vs_ema20 is classified "ranging", so "unknown" reads as
+    # "flat". Not fixed here: `regime` is a required string with no
+    # unavailable member, so the fix is a schema change with its own
+    # consumers.
     if above_200 is True and (price_vs_ema20 or 0) > 0:
         regime = "trending_up"
     elif above_200 is False and (price_vs_ema20 or 0) < 0:

@@ -751,3 +751,71 @@ def test_blue_sky_anchor_uses_nearest_structural_qqq_5_6_replay():
     # Pre-fix value 694.80 must NOT come back — guards against regression
     # to the pre_high-anchored formula.
     assert trigger < 690.0
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Regression: a market section with no close must not become close=0.0.
+#
+# `float(market.get("close") or market.get("last_close") or 0.0)` is a
+# Rule 3.7 fabricated default on a financial field. A market_data_daily
+# pre-market placeholder row (every daily column NULL) made it 0.0, which
+# made `safe_atr()` return `0.0 * 0.01`, which made the first `/ atr` raise
+# 400 lines later. Production saw only "deterministic plan compute failed:
+# float division by zero" — a message that names neither the field nor the
+# reason, on every live insight run.
+# ───────────────────────────────────────────────────────────────────────────
+
+
+def _placeholder_bundle() -> dict:
+    """What build_context_bundle returns when the day's only row is the
+    8:30 ET placeholder: available, but every daily field None."""
+    return {
+        "ticker": "SPY",
+        "market": {
+            "available": True,
+            "date": "2026-09-14",
+            "close": None,
+            "atr_14": None,
+            "sma_200": None,
+            "premarket": {"pre_high": 766.18, "pre_low": 757.77,
+                          "pre_vwap": 759.37, "gap_pct": -0.649},
+        },
+        "strat": {"available": True, "trigger_high": 766.38,
+                  "trigger_low": 763.6, "ftfc_score": 0.5},
+        "catalysts": {"available": True, "events": []},
+        "backtest": {"available": False},
+    }
+
+
+def test_context_from_bundle_rejects_a_market_section_with_no_close():
+    """Fail with the field named, not with a ZeroDivisionError downstream."""
+    with pytest.raises(ValueError, match="close"):
+        context_from_bundle(
+            _placeholder_bundle(), direction="long", conviction="medium",
+        )
+
+
+def test_context_from_bundle_error_names_the_ticker_and_the_value():
+    """The orchestrator logs `%s` of this exception and nothing else, so
+    the message is the entire diagnostic. It must carry the ticker, the
+    offending value, and where the value came from — and must NOT guess
+    at a cause it cannot see from here."""
+    with pytest.raises(ValueError) as excinfo:
+        context_from_bundle(
+            _placeholder_bundle(), direction="long", conviction="medium",
+        )
+    message = str(excinfo.value)
+    assert "SPY" in message
+    assert "close=None" in message
+    assert "summarize_market_context" in message
+
+
+def test_context_from_bundle_still_accepts_a_zero_atr_with_a_real_close():
+    """Only `close` is load-bearing. A missing ATR is still rescued by
+    safe_atr(), which needs a non-zero close to be meaningful."""
+    bundle = _placeholder_bundle()
+    bundle["market"]["close"] = 764.29
+    ctx = context_from_bundle(bundle, direction="long", conviction="medium")
+    assert ctx.close == 764.29
+    assert ctx.safe_atr() > 0
+    assert compute_persona_plans(ctx)

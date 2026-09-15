@@ -83,7 +83,13 @@ def test_market_context_trending_down(patch_query):
 
 def test_market_context_unavailable_when_empty(patch_query):
     out = summarizers.summarize_market_context("SPY")  # no patched result
-    assert out == {"available": False, "reason": "no market_data_daily row for SPY"}
+    # The reason names the query's predicate — a row with a close — because
+    # "no rows at all" and "only a pre-market placeholder" are the same
+    # answer here and guessing between them would be a claim, not a fact.
+    assert out == {
+        "available": False,
+        "reason": "no market_data_daily row with a close for SPY",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1118,3 +1124,120 @@ def test_retrieve_similar_journal_surfaces_db_failure(monkeypatch):
     monkeypatch.setattr(summarizers, "_query_strict", boom)
     with pytest.raises(RuntimeError, match="Cloud SQL unreachable"):
         summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
+
+
+# ---------------------------------------------------------------------------
+# Regression: the live path must not read the pre-market placeholder row.
+#
+# The daily fetcher writes a row for the current trading day at ~8:30 ET
+# carrying only the pre_* columns; open/high/low/close/volume and every
+# indicator are NULL until the 11 PM ET fetcher fills them. The replay path
+# already avoids that row (`date < :as_of`) and PR #323 taught
+# summarize_backtest_metrics to walk back past it — but the LIVE path
+# (as_of=None) applies no date bound at all, so `ORDER BY date DESC LIMIT 1`
+# selects the placeholder and every daily field comes back None.
+#
+# Downstream that becomes `float(None or None or 0.0)` in
+# trade_planner.context_from_bundle, `safe_atr()` returns `0.0 * 0.01`, and
+# the first `/ atr` raises. Measured in production: "deterministic plan
+# compute failed: float division by zero", 3 per insight-pipeline run, every
+# weekday — leaving persona_plans empty and handing the report's headline
+# entry/stop/targets back to the LLM, which is the exact hallucination
+# surface compute_persona_plans exists to close.
+# ---------------------------------------------------------------------------
+
+
+def _placeholder_row(d: date) -> dict:
+    """Today's 8:30 ET row: pre_* populated, everything else NULL."""
+    return {
+        "date": d, "open": None, "high": None, "low": None, "close": None,
+        "volume": None, "sma_200": None, "ema_20": None, "ema_50": None,
+        "rsi_14": None, "macd": None, "macd_signal": None,
+        "macd_histogram": None, "bb_upper": None, "bb_lower": None,
+        "bb_pct": None, "atr_14": None, "rvol": None, "volatility_20d": None,
+        "price_vs_ema20": None,
+        "pre_high": 766.18, "pre_low": 757.77, "pre_vwap": 759.37,
+        "pre_volume": 4_200_000, "gap_pct": -0.649, "pre_range_atr": 0.4,
+    }
+
+
+def _completed_row(d: date) -> dict:
+    """Yesterday's finished bar."""
+    return {
+        "date": d, "open": 762.0, "high": 766.0, "low": 760.0, "close": 764.29,
+        "volume": 71_000_000, "sma_200": 714.23, "ema_20": 760.1,
+        "ema_50": 750.0, "rsi_14": 58.0, "macd": 1.2, "macd_signal": 0.9,
+        "macd_histogram": 0.3, "bb_upper": 772.0, "bb_lower": 748.0,
+        "bb_pct": 0.66, "atr_14": 6.21, "rvol": 1.05, "volatility_20d": 0.14,
+        "price_vs_ema20": 0.005,
+        "pre_high": 758.0, "pre_low": 752.0, "pre_vwap": 755.0,
+        "pre_volume": 3_000_000, "gap_pct": 0.11, "pre_range_atr": 0.2,
+    }
+
+
+def _market_query_router(monkeypatch, *, placeholder_present: bool):
+    """Stand in for market_data_daily with a placeholder row on top.
+
+    Serves whichever row the SQL actually asks for, so the test measures
+    the query's selectivity rather than a canned answer.
+    """
+    today, yesterday = date(2026, 9, 14), date(2026, 9, 11)
+    rows = [_completed_row(yesterday)]
+    if placeholder_present:
+        rows.append(_placeholder_row(today))
+
+    def fake_query(sql: str, params=None):
+        if "market_data_daily" not in sql:
+            return pd.DataFrame()
+        frame = pd.DataFrame(rows).sort_values("date", ascending=False)
+        if "close IS NOT NULL" in sql:
+            frame = frame[frame["close"].notna()]
+        if params and "as_of" in params:
+            as_of = pd.to_datetime(params["as_of"]).date()
+            if "date = :as_of" in sql:
+                frame = frame[frame["date"] == as_of]
+            elif "date < :as_of" in sql:
+                frame = frame[frame["date"] < as_of]
+            elif "date <= :as_of" in sql:
+                frame = frame[frame["date"] <= as_of]
+        return frame.head(1).reset_index(drop=True)
+
+    monkeypatch.setattr(summarizers, "_query", fake_query)
+
+
+def test_market_context_live_skips_the_premarket_placeholder(monkeypatch):
+    """as_of=None must return yesterday's completed bar, not today's NULLs."""
+    _market_query_router(monkeypatch, placeholder_present=True)
+
+    out = summarizers.summarize_market_context("SPY")
+
+    assert out["available"] is True
+    assert out["close"] == 764.29
+    assert out["atr_14"] == 6.21
+    assert out["sma_200"] == 714.23
+    assert out["date"].startswith("2026-09-11")
+
+
+def test_market_context_live_still_takes_premarket_from_todays_row(monkeypatch):
+    """The pre_* overlay is the whole reason today's row is read at all.
+
+    A day-old pre_high is worse than none — the docstring's replay
+    contract says so, and the live path owes the same guarantee.
+    """
+    _market_query_router(monkeypatch, placeholder_present=True)
+
+    out = summarizers.summarize_market_context("SPY")
+
+    assert out["premarket"]["pre_high"] == 766.18
+    assert out["premarket"]["pre_low"] == 757.77
+    assert out["premarket"]["gap_pct"] == -0.649
+
+
+def test_market_context_live_unchanged_when_no_placeholder_exists(monkeypatch):
+    """Before the 8:30 fetcher runs, the latest row IS the completed bar."""
+    _market_query_router(monkeypatch, placeholder_present=False)
+
+    out = summarizers.summarize_market_context("SPY")
+
+    assert out["close"] == 764.29
+    assert out["premarket"]["pre_high"] == 758.0

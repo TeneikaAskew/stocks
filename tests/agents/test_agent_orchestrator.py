@@ -1511,3 +1511,58 @@ def test_count_analyst_agreement_counts_matching_bias():
     assert _count_analyst_agreement(reports, "flat") == 1
     # None analysts (failed) don't count
     assert _count_analyst_agreement({"x": None, "y": None}, "long") == 0
+
+
+# ---------------------------------------------------------------------------
+# Regression: a failed deterministic plan must be visible on the REPORT.
+#
+# When compute_persona_plans raises, persona_plans is [] and the headline
+# entry_zone / stop / targets fall back to the LLM's own numbers — the
+# hallucination surface the deterministic planner exists to close. In
+# production that happened on every live run (a ZeroDivisionError from a
+# pre-market placeholder row) and the only trace was one WARNING line, so
+# nothing reading the report could tell a deterministic plan from an
+# LLM-authored one.
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_marks_persona_plans_when_the_deterministic_plan_fails(
+    canned_bundle, seven_role_snapshot, monkeypatch
+):
+    from lib.agents import trade_planner
+
+    def boom(_ctx):
+        raise trade_planner.PlanContextUnavailable("no usable close for SPY")
+
+    monkeypatch.setattr(trade_planner, "compute_persona_plans", boom)
+
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+
+    assert report.persona_plans == []
+    assert "persona_plans" in report.failed_sections
+    reason = report.failed_section_reasons["persona_plans"]
+    assert "PlanContextUnavailable" in reason
+    assert "no usable close for SPY" in reason
+
+
+def test_pipeline_leaves_persona_plans_unflagged_on_the_happy_path(
+    canned_bundle, seven_role_snapshot
+):
+    """The flag must mean something — it can't be set on a good run."""
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    assert report.persona_plans
+    assert "persona_plans" not in report.failed_sections
