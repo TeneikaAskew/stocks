@@ -1088,11 +1088,31 @@ dispatch at `--class-weight-power=0.0` is how it gets tested for real.
   probabilities rather than argmax (done), rebalance the labels via
   `MAG_THRESHOLDS`, or find features that raise P(EXPLOSIVE) on the bars
   that are.
-- The four constant-output cells are **still serving**. Their contracts
-  need the priors upgrade before the new inference can serve them at all,
-  and under the new rule c49qf QQQ 5m and IWM 5m sit at 2-4% tail calls
-  (blocked). Withdrawal is a product decision; see
-  `docs/product/15-OPEN-DECISIONS.md`.
+- The four constant-output cells are **still serving, now under the new
+  rule**. 2026-09-15: contracts stamped with measured priors, research
+  image rebuilt (`ad36961a`, digest `79940375…`), both jobs updated, and
+  `magnitude-inference-pfr64` re-scored the latest session (bars of
+  2026-09-14) with the decision rule. Live decision distribution:
+
+  | cell | bars | tail calls | EXPLOSIVE calls | mean P(EXPLOSIVE) |
+  |---|---|---|---|---|
+  | IWM 15m | 23 | 0 (0.0%) | 0 | 0.010 |
+  | IWM 5m | 75 | 35 (46.7%) | 35 | 0.055 |
+  | QQQ 5m | 75 | 5 (6.7%) | 5 | 0.018 |
+  | SPY 5m | 75 | 1 (1.3%) | 1 | 0.018 |
+
+  Three of four sit under the 10% tail floor and would be blocked at
+  promotion. IWM 5m is the opposite failure: isotonic compressed its
+  P(EXPLOSIVE) into a band around 0.05, which is right at 2× its 0.024
+  prior, so half the bars clear the bar and every tail call is EXPLOSIVE.
+  Neither shape is a usable model; the walk-forward measurement (§6) and
+  the live one agree. Withdrawal, or replacement by a promoted α=0 model,
+  is the open product decision in `docs/product/15-OPEN-DECISIONS.md`.
+- `magnitude_per_bar_predictions.computed_at` is the FIRST insert time
+  for a bar: the upsert keys on `(ticker, tf, ts, model_version)` and a
+  re-score does not advance it. Read decisions by `ts`, not `computed_at`.
+- `audit-magnitude-drift` still runs on the base image (not rebuilt this
+  round); its logic is unchanged and its `argmax=` wording lags the code.
 - No gate count in any section above this one was computed under the
   amended gate 4. Re-running the walk-forward under the new rule is how
   the phase table gets re-established.

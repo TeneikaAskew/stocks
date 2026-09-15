@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-09-01 (PR #811 deployed: fixes four Codex findings on #810 — the put-side 9:31 re-anchor was a live no-op because run_loop calls update_window before evaluate_ticker's lazy refresh_level_map, so the level map was always None on the first RTH poll while the tracker was still stamped for the day; re-anchor now refreshes on demand and applies the brief's 3xATR staleness filter read from the LATEST daily row only; degeneracy backstop scoped to source='inference' so walk-forward fold rows sharing a run_id cannot contaminate it. Verified by replaying 2026-08-28 through the production signal-monitor path: all three tickers emitted a re-anchored put leg (SPY 768.84->767.16 PDL, QQQ 715.84->714.53 PDL, IWM 296.20->292.90 CMO). trading-platform rev 00123-kl4, MOVEMENT_STATEMENT_ENABLED=false; full suite 4,083 passed / 0 failed)
+**Last Updated**: 2026-09-15 (magnitude decision-rule deploy, branch `claude/e2e-ci-behavior-1cr1g6` at `9c70f694`: research image rebuilt by Cloud Build `ad36961a` → `trading-system:research@sha256:79940375…` (was `7c3afb98…`, 2026-09-08); `magnitude-engine` (gen 177) and `magnitude-inference` (gen 12) updated onto it; the six serving `CONTRACT.json` files upgraded in place with measured `class_priors` + `decision_lift_min=2.0` by `scripts/backfill_model_contracts.py --commit`; `magnitude-inference-pfr64` verified every served cell's contract and wrote 75 rows/cell under the decision rule; α=0 test run `magnitude-engine-vpj2r` dispatched on the new engine. Rollback: both jobs to `@sha256:7c3afb98…`; LATEST pointers unchanged (recorded). Full suite 5552 passed / 16 pre-existing sandbox failures (yfinance, idna, NYSE calendar), magnitude suites 446 passed)
 
 ---
 
@@ -411,6 +411,8 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 
 | Suite | Status | Tests | Date |
 |-------|--------|-------|------|
+| Unit/Integration (`make test`) | ⚠️ 16 pre-existing sandbox failures (yfinance ×10, idna ×1, NYSE calendar ×5); all reproduce on the clean tree | 5552/5568 (52 skipped) | 2026-09-15 |
+| Magnitude decision-rule change (`tests/gcp/test_magnitude_*`, `test_mag_persist_production_model`, `tests/lib/test_movement_statement`, `tests/audits/test_audit_magnitude_drift`, `tests/api/test_openapi_snapshot`, `tests/scripts/test_check_generated_docs`) | ✅ PASS | 446/446 | 2026-09-15 |
 | Unit/Integration (`make test`) | ⚠️ 1 pre-existing failure | 247/248 (10 skipped) | 2026-04-26 |
 | Post-merge audit coverage suite (commit `c7ee564`) | ✅ PASS | 119 new (suite 531 → 650) | 2026-04-26 |
 | Platform API (`tests/api/test_platform_api.py`) | ⚠️ Cloud SQL gated in sandbox | 17 pre-existing fail / 156 pass | 2026-04-26 |
