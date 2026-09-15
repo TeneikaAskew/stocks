@@ -18,6 +18,13 @@ Cost control: the only knob is N. With max-concurrent-dispatches=5 on
 the Cloud Tasks queue, top-3 reports run in parallel and finish in
 ~90s — comfortably before the premarket-brief at 8:30.
 
+Exit code covers DISPATCH, not reports: a green run means the tickers
+were handed to Cloud Tasks, and each child owns its own outcome in
+`insight_runs` from there. The one exception is a run that dispatched
+nothing it had work for — that exits non-zero, because this job has no
+in-process fallback (unlike insight-pipeline's `_dispatch_fanout`) and
+a green run producing zero reports is indistinguishable from success.
+
 Usage:
     python -m gcp.auto_refresh_top_n              # production
     python -m gcp.auto_refresh_top_n --dry-run    # see what it would
@@ -283,9 +290,31 @@ def main() -> int:
         len(unknown_outcomes), len(top),
     )
 
-    # Exit 0 even on partial failures — one ticker's enqueue failure
-    # shouldn't block the others. The cron retry policy handles
-    # whole-job failures; per-ticker failures are visible in the logs.
+    # Partial failure still exits 0: one ticker's enqueue failure must not
+    # fail the run for the others, and per-ticker state is in insight_runs.
+    #
+    # A run that dispatched NOTHING it had work for is different, and must
+    # not report success. `setup_insight_tasks_queue` is deliberately
+    # non-fatal when it cannot grant roles/cloudtasks.enqueuer (setIamPolicy
+    # is owner-only and the documented deploy identity holds roles/editor),
+    # so a deploy can succeed with the binding absent. insight-pipeline
+    # survives that — `_dispatch_fanout` hands NOT_ENQUEUED tickers back and
+    # runs them in-process — but this job has no such fallback: it marks each
+    # run failed and moves on. Returning 0 from there tells Cloud Scheduler
+    # the pre-warm succeeded while producing zero reports, which is the exact
+    # shape of the 30-day `enqueued=0` outage this module was just fixed for.
+    # UNKNOWN does not count as a failure: a child may be running that ticker.
+    if enqueue_failures and not enqueued and not unknown_outcomes:
+        logger.error(
+            "dispatched nothing: all %d ticker(s) refused (%s). Most likely "
+            "trading-runner@ is missing roles/cloudtasks.enqueuer — "
+            "gcp/deploy.sh prints the owner command it cannot run itself. "
+            "Exiting non-zero so this surfaces as a failed execution rather "
+            "than a green run that produced no reports.",
+            len(enqueue_failures), ", ".join(enqueue_failures),
+        )
+        return 1
+
     return 0
 
 

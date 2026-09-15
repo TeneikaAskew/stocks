@@ -356,3 +356,89 @@ def test_an_unknown_enqueue_is_not_marked_failed(monkeypatch):
     monkeypatch.setattr("sys.argv", ["prog"])
     ar.main()
     assert failed == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Exit code: a total dispatch failure is a job failure.
+#
+# Codex P1 on #1094. `setup_insight_tasks_queue` is deliberately non-fatal
+# when it cannot grant roles/cloudtasks.enqueuer (setIamPolicy is owner-only
+# and the documented deploy identity holds roles/editor), so a deploy can
+# succeed with the binding still absent. The insight-pipeline job survives
+# that: `_dispatch_fanout` hands NOT_ENQUEUED tickers back and runs them
+# in-process. This job does not — it marks each run failed and moves on.
+#
+# Returning 0 from that state tells Cloud Scheduler the pre-warm succeeded
+# while producing zero reports, which is exactly the shape of the 30-day
+# `enqueued=0` outage this PR exists to fix. A ticker that fails alone is
+# still a partial failure and still exits 0; a run that dispatches NOTHING
+# it had work for is a failed run.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _dispatch_scenario(monkeypatch, outcomes: dict[str, object]):
+    """Rank exactly the given tickers, none cached, each with its outcome."""
+    from gcp import auto_refresh_top_n as ar
+
+    monkeypatch.setattr(
+        ar, "rank_tickers",
+        lambda **kw: _fake_rank([(tk, 9.0 - i)
+                                 for i, tk in enumerate(outcomes)]),
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
+    monkeypatch.setattr(ar, "_insert_queued_run", lambda tk, trigger: f"run-{tk}")
+    monkeypatch.setattr(ar, "enqueue_insight_task",
+                        lambda run_id, ticker, **k: outcomes[ticker])
+    monkeypatch.setattr(ar, "_mark_run_failed", lambda run_id, error: None)
+    monkeypatch.setattr("sys.argv", ["prog"])
+    return ar
+
+
+def test_a_run_that_enqueued_nothing_at_all_exits_nonzero(monkeypatch):
+    """The missing-IAM-grant case: every ticker refused, zero reports."""
+    from gcp.insight_tasks import EnqueueOutcome
+
+    ar = _dispatch_scenario(monkeypatch, {
+        "SPY": EnqueueOutcome.NOT_ENQUEUED,
+        "IWM": EnqueueOutcome.NOT_ENQUEUED,
+        "QQQ": EnqueueOutcome.NOT_ENQUEUED,
+    })
+    assert ar.main() != 0
+
+
+def test_one_ticker_enqueued_still_exits_zero(monkeypatch):
+    """Partial failure keeps the old contract — one bad ticker must not
+    fail the run for the others."""
+    from gcp.insight_tasks import EnqueueOutcome
+
+    ar = _dispatch_scenario(monkeypatch, {
+        "SPY": EnqueueOutcome.NOT_ENQUEUED,
+        "IWM": EnqueueOutcome.ENQUEUED,
+        "QQQ": EnqueueOutcome.NOT_ENQUEUED,
+    })
+    assert ar.main() == 0
+
+
+def test_an_unknown_outcome_is_not_counted_as_a_dispatch_failure(monkeypatch):
+    """UNKNOWN means a child may be running it, so the run is not empty and
+    the job must not claim failure."""
+    from gcp.insight_tasks import EnqueueOutcome
+
+    ar = _dispatch_scenario(monkeypatch, {
+        "SPY": EnqueueOutcome.NOT_ENQUEUED,
+        "IWM": EnqueueOutcome.UNKNOWN,
+    })
+    assert ar.main() == 0
+
+
+def test_an_all_cached_run_still_exits_zero(monkeypatch):
+    """Nothing to dispatch is not a dispatch failure — the cache is warm,
+    which is the outcome this job exists to produce."""
+    from gcp import auto_refresh_top_n as ar
+
+    monkeypatch.setattr(
+        ar, "rank_tickers", lambda **kw: _fake_rank([("SPY", 9.0)])
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: True)
+    monkeypatch.setattr("sys.argv", ["prog"])
+    assert ar.main() == 0

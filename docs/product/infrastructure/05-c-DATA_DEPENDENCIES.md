@@ -299,7 +299,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [169](../../../scripts/backfill_history_tables.py#L169)
 
 ### `insight_runs`
-- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [110](../../../gcp/auto_refresh_top_n.py#L110), [137](../../../gcp/auto_refresh_top_n.py#L137)
+- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [117](../../../gcp/auto_refresh_top_n.py#L117), [144](../../../gcp/auto_refresh_top_n.py#L144)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [377](../../../gcp/discord_interactions/main.py#L377)
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [197](../../../gcp/insight_pipeline_job.py#L197), [243](../../../gcp/insight_pipeline_job.py#L243), [253](../../../gcp/insight_pipeline_job.py#L253), [262](../../../gcp/insight_pipeline_job.py#L262)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [332](../../../platform/api/routers/insights.py#L332), [385](../../../platform/api/routers/insights.py#L385), [391](../../../platform/api/routers/insights.py#L391), [400](../../../platform/api/routers/insights.py#L400)
@@ -614,7 +614,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [148](../../../scripts/backfill_watchlist_data.py#L148)
 
 ### `insight_reports`
-- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [77](../../../gcp/auto_refresh_top_n.py#L77)
+- [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [84](../../../gcp/auto_refresh_top_n.py#L84)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [357](../../../gcp/discord_interactions/main.py#L357)
 - [`gcp/insight_discord_push.py`](../../../gcp/insight_discord_push.py) — line [86](../../../gcp/insight_discord_push.py#L86), [97](../../../gcp/insight_discord_push.py#L97)
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [462](../../../gcp/insight_pipeline_job.py#L462)
