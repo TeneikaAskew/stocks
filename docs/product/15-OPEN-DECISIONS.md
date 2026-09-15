@@ -1,6 +1,6 @@
 # Open Product Decisions
 
-**Last reviewed:** 2026-09-14 · **Owner:** TBD
+**Last reviewed:** 2026-09-15 · **Owner:** TBD
 
 Every item is **PRODUCT DECISION REQUIRED**; no target implementation should silently resolve it.
 
@@ -10,6 +10,8 @@ Every item is **PRODUCT DECISION REQUIRED**; no target implementation should sil
 | Signal policy | which signals are informational, actionable, hidden, or retired | validated cohorts and user need | TBD |
 | LLM authority | explanation only vs recommendations; numeric authority and veto rules | evaluation, error/risk tolerance | TBD |
 | Production model roster | promote, shadow, retest, pause, remove | PIT-safe frozen results and runtime cost | TBD |
+| Structure Brief language | its gate condition is **met** — Track B and Track C both reported FAIL — so deploy is no longer blocked on evidence; what the brief should say is unresolved | both verdicts have landed ([EXEC_BACKTEST_RESULTS](../EXEC_BACKTEST_RESULTS.md), [DIRECTION_FEATURES_R&D](../DIRECTION_FEATURES_R%26D.md)); see [07 DOC-07](07-MODEL-REGISTRY.md#documentation-coverage-and-freshness) | TBD |
+| Model documentation ownership | seven models have no doc describing them, and every learned model is absent from the master matrix | [07 DOC-10 / DOC-11](07-MODEL-REGISTRY.md#documentation-coverage-and-freshness) | TBD |
 | User/tenancy model | single-user, allowlisted users, or multi-user; data sharing | ownership schema and privacy needs | TBD |
 | Identity/perimeter standard | Firebase, IAP, both, local development constraints | deployment topology and operator model | TBD |
 | Alert channels | Discord only vs additional channels and delivery guarantees | user demand, cost, privacy, reliability | TBD |

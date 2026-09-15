@@ -200,9 +200,13 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 > The dated updates above list the deltas since: fourteen of the rows below are now
 > closed (canonical #820, #825, #829, #831, #833, #838, #841, #843, #861, #898, #900,
 > #904, and ops records #930/#944), #868's row points at solyra#28, #717 closed as
-> duplicate, and the eleven issues opened after 2026-09-03 that remain open (#1017,
-> #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, #1095) are not mapped
-> here at all (#958 and #1019 also postdate the map but have closed again).
+> duplicate, and of the eleven issues opened after 2026-09-03 that remain open (#1017,
+> #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, #1095), **only #1025 is
+> mapped** — added to FEAT-MODEL-001 on 2026-09-15 because
+> [07](07-MODEL-REGISTRY.md) cites it as MODEL-MAG-001's live blocker and
+> `tests/meta/test_model_registry_consistency.py` requires every issue the registry
+> cites to exist here. The other ten are still unmapped (#958 and #1019 also postdate
+> the map but have closed again).
 > Cross-check the updates before treating a row as a live blocker.
 
 **No range notation** — the previous revision wrote
@@ -295,7 +299,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 **PR lineage:** [#255](https://github.com/TeneikaAskew/stocks/pull/255) *structural* · [#536](https://github.com/TeneikaAskew/stocks/pull/536) *origin* · [#539](https://github.com/TeneikaAskew/stocks/pull/539) *origin* · [#540](https://github.com/TeneikaAskew/stocks/pull/540) *origin* · [#541](https://github.com/TeneikaAskew/stocks/pull/541) *evolution* · [#544](https://github.com/TeneikaAskew/stocks/pull/544) *evolution* · [#609](https://github.com/TeneikaAskew/stocks/pull/609) *evolution* · [#614](https://github.com/TeneikaAskew/stocks/pull/614) *evolution* · [#639](https://github.com/TeneikaAskew/stocks/pull/639) *remediation* · [#640](https://github.com/TeneikaAskew/stocks/pull/640) *remediation* · [#645](https://github.com/TeneikaAskew/stocks/pull/645) *structural* · [#791](https://github.com/TeneikaAskew/stocks/pull/791) *remediation*
 
-### FEAT-MODEL-001 — Models / research (10 open)
+### FEAT-MODEL-001 — Models / research (11 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -309,6 +313,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 | [#890](https://github.com/TeneikaAskew/stocks/issues/890) | P1 | [P1][Validation] Replace the magnitude leakage audit with an actual recomputation check |
 | [#886](https://github.com/TeneikaAskew/stocks/issues/886) | P1 | [P1][Research] Eliminate hand-picked-universe survivorship bias |
 | [#380](https://github.com/TeneikaAskew/stocks/issues/380) | P1 | feat: close the loop — data-driven disabled_conditions from per_factor_walkforward verdicts |
+| [#1025](https://github.com/TeneikaAskew/stocks/issues/1025) | P0 | Retrain the magnitude engine: `magnitude-engine-c49qf` is 100% argmax-collapsed and has served nothing since 2026-09-03 |
 
 **PR lineage:** [#355](https://github.com/TeneikaAskew/stocks/pull/355) *origin* · [#575](https://github.com/TeneikaAskew/stocks/pull/575) *verdict* · [#588](https://github.com/TeneikaAskew/stocks/pull/588) *verdict* · [#591](https://github.com/TeneikaAskew/stocks/pull/591) *origin* · [#593](https://github.com/TeneikaAskew/stocks/pull/593) *evolution* · [#594](https://github.com/TeneikaAskew/stocks/pull/594) *evolution* · [#595](https://github.com/TeneikaAskew/stocks/pull/595) *evolution* · [#597](https://github.com/TeneikaAskew/stocks/pull/597) *structural* · [#615](https://github.com/TeneikaAskew/stocks/pull/615) *evolution* · [#622](https://github.com/TeneikaAskew/stocks/pull/622) *remediation* · [#629](https://github.com/TeneikaAskew/stocks/pull/629) *remediation* · [#637](https://github.com/TeneikaAskew/stocks/pull/637) *structural* · [#638](https://github.com/TeneikaAskew/stocks/pull/638) *remediation* · [#647](https://github.com/TeneikaAskew/stocks/pull/647) *evolution* · [#698](https://github.com/TeneikaAskew/stocks/pull/698) *origin* · [#707](https://github.com/TeneikaAskew/stocks/pull/707) *origin* · [#719](https://github.com/TeneikaAskew/stocks/pull/719) *evolution* · [#735](https://github.com/TeneikaAskew/stocks/pull/735) *evolution* · [#810](https://github.com/TeneikaAskew/stocks/pull/810) *structural* · [#811](https://github.com/TeneikaAskew/stocks/pull/811) *remediation*
 
