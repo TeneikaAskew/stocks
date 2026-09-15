@@ -311,7 +311,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [187](../../../gcp/build_intraday_gex.py#L187)
 
 ### `job_runs`
-- [`gcp/database.py`](../../../gcp/database.py) — line [906](../../../gcp/database.py#L906)
+- [`gcp/database.py`](../../../gcp/database.py) — line [936](../../../gcp/database.py#L936)
 
 ### `journal_entries`
 - [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [675](../../../platform/api/routers/journal.py#L675), [1195](../../../platform/api/routers/journal.py#L1195), [1250](../../../platform/api/routers/journal.py#L1250)
