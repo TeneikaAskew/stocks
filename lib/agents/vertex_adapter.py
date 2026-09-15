@@ -36,6 +36,19 @@ DEFAULT_GCP_PROJECT = "adept-mountain-474619-d4"
 DEFAULT_GCP_LOCATION = "global"
 DEFAULT_GCP_KEY_FILE = str(PROJECT_ROOT / ".gcp-key.json")
 
+# google-genai does NOT retry by default. `retry_args(None)` in
+# google/genai/_api_client.py returns `stop_after_attempt(1)`, so an
+# unconfigured client raises on the first error and the tenacity frames in
+# the traceback are the never-retry wrapper, not an exhausted retry. On
+# 2026-09-11 that turned a single transient Vertex 429 into a lost SPY
+# insight report (execution insight-pipeline-z8w9n): one 429 response, no
+# second attempt. Retries are opt-in, so we opt in.
+#
+# 5 attempts with the SDK defaults (1s initial, exponential base 2, jitter,
+# 60s cap) on 408/429/5xx. Worst-case added latency is well inside the
+# job's budget: the daily batch uses ~124s of an 1800s task-timeout.
+VERTEX_RETRY_ATTEMPTS = 5
+
 
 def _get_genai_client():
     """Lazy-initialize the google-genai Vertex client. Reused between
@@ -48,6 +61,7 @@ def _get_genai_client():
          when running on Cloud Run / GCE / GKE.
     """
     from google import genai
+    from google.genai import types
 
     project = os.environ.get("GCP_PROJECT_ID", DEFAULT_GCP_PROJECT)
     # VERTEX_GEMINI_LOCATION is the only knob; we deliberately do NOT fall
@@ -73,6 +87,9 @@ def _get_genai_client():
         project=project,
         location=location,
         credentials=credentials,
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(attempts=VERTEX_RETRY_ATTEMPTS),
+        ),
     )
 
 
