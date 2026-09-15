@@ -1353,7 +1353,7 @@ calls per fold; gate 5 keeps IWM/QQQ/SPY 5m (100%) and SPY 15m (86.5%),
 drops IWM 15m (34%) and SPY 30m (5%); gate 6 0.45-1.15× on all six (not a
 calendar proxy). Live under the rule, the serving c49qf cells make tail
 calls on 0 / 1.3 / 6.7 / 46.7% of bars (IWM 15m / SPY 5m / QQQ 5m / IWM 5m).
-Promotion test is `6hp7l` (phase0). `MAGNITUDE_ENGINE_RESULTS.md` §9-10.
+Promotion test `6hp7l` (phase0, α=0): **SPY/QQQ/IWM 5m promoted** (8888 / 8888 / 7888; gate 5 100% each; gate 6 0.90/1.05/1.20×); six cells blocked, every one on gate 1 with the distribution checks passing. Live on the 09-14 session the promoted models named tail buckets on 32 / 10.7 / 2.7% of bars; the auditor's HIGH tier paged on SPY 5m's calm session (75 bars ≥ `DRIFT_MIN_SAMPLE`), a detector sample-size question now open. `MAGNITUDE_ENGINE_RESULTS.md` §9-10.
 
 **Artifacts:** `MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14; `mag_config.py`
 (`DECISION_LIFT_MIN` comment); `mag_pred_train.decide_bucket`;

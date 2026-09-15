@@ -1153,3 +1153,63 @@ production-artifact path runs for phase0 only, and this was phase1; no
 `LATEST` moved and nothing was written under `production/`. The
 promotion test proper is `magnitude-engine-6hp7l` (phase0, α=0), reported
 below when it completes.
+
+**`magnitude-engine-6hp7l`** — phase0, α=0, 9 cells on the new engine: the
+promotion test proper. Every cell wrote its artifacts and a
+`CONTRACT.json` with `class_priors_source: training_labels` and
+`decision_lift_min: 2.0`.
+
+| cell | g1 g2 g3 g4 | verdict | reason |
+|---|---|---|---|
+| SPY 5m | 8 8 8 8 | **PROMOTED** | — |
+| QQQ 5m | 8 8 8 8 | **PROMOTED** | — |
+| IWM 5m | 7 8 8 8 | **PROMOTED** | — |
+| SPY 15m | 5 7 8 8 | blocked | g1 5/8 (modal 84.3%, tail 15.7%: distribution checks pass) |
+| IWM 15m | 5 7 8 8 | blocked | g1 5/8 (modal 84.9%, tail 15.1%) |
+| QQQ 15m | 5 6 8 8 | blocked | g1 5/8 (modal 84.4%, tail 15.6%) |
+| SPY 30m | 5 7 8 7 | blocked | g1 5/8 (modal 81.2%, tail 18.8%) |
+| QQQ 30m | 2 7 8 7 | blocked | g1 2/8 |
+| IWM 30m | 1 8 8 8 | blocked | g1 1/8 |
+
+Three `LATEST` pointers flipped from `c49qf` to `6hp7l` (SPY 5m, QQQ 5m,
+IWM 5m). **Every block is on gate 1**, with the distribution checks passing
+on all six: the new verdict is no longer failing calibrated models on
+argmax, and log-loss is the discriminator, which is the design. The 15m
+cells sit one fold under the bar under phase0 features (phase1's vol
+family lifted SPY 15m to 7/8 in `vpj2r`, which could not promote).
+
+Promoted cells, post-hoc: gate 5 **100% / 100% / 100%** (IWM / QQQ / SPY
+5m, 1,000 resamples; g1 P(<6) = 0.0% on each); gate 6 predicted-EXPLOSIVE
+concentration 1.20× / 1.05× / 0.90× (`direction-probe` 9w8sh / rxwvj /
+bp6r2). `magnitude-inference-h4hk7` then served them (75 rows per cell).
+Live decision distribution on the 2026-09-14 session:
+
+| cell | model | tail calls | EXPLOSIVE | mean P(EXPLOSIVE) |
+|---|---|---|---|---|
+| IWM 5m | 6hp7l | 32.0% | 19 / 75 | 0.054 |
+| QQQ 5m | 6hp7l | 10.7% | 8 / 75 | 0.018 |
+| SPY 5m | 6hp7l | 2.7% | 0 / 75 | 0.007 |
+| IWM 15m | c49qf (unchanged) | 0.0% | 0 / 23 | 0.010 |
+
+**A detector consequence to decide on.** `audit-magnitude-drift-d9kkm`
+flagged SPY 5m `6hp7l` **HIGH** (TIGHT on 73/75, 97.3%) and IWM/QQQ 5m
+MEDIUM. SPY 5m's model averages 11-13% EXPLOSIVE calls across eight years
+and reproduces at 100% bootstrap; on one calm session it legitimately
+named almost none (mean P(EXPLOSIVE) 0.007 against a 0.026 prior). The
+auditor evaluates any model version with ≥ `DRIFT_MIN_SAMPLE` = 50 rows in
+its 7-day window, so a single 75-bar session is enough to page. Under
+argmax that never mattered, because argmax share did not move with the
+session. Under the decision rule it does, by design. The honest fix is
+a minimum sample for the HIGH tier of at least one week of bars (≈ 375
+at 5m), not a wider ceiling; it is a one-line default change in
+`gcp/audit_magnitude_drift.py` plus its test, and it is **not** made
+here because the auditor also runs on the base image, which this round
+did not rebuild. Until then, expect a HIGH finding on any promoted 5m
+cell after a calm session, and read the 7-day tail share rather than
+the page. The `c49qf` rows remain in the window as their own
+model-version groups and age out over the week.
+
+**Rollback**, if wanted: write `magnitude-engine-c49qf` back to
+`magnitude-models/production/{SPY,QQQ,IWM}/5m/LATEST` (their contracts
+already carry priors); both jobs back to
+`trading-system@sha256:7c3afb98…`.
