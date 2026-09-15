@@ -415,6 +415,31 @@ def test_commit_ignores_client_return_pct_and_recomputes_from_prices(client_loca
     assert spy[0]["return_pct"] == pytest.approx(-4.84, abs=0.01)
 
 
+def test_commit_zero_entry_price_keeps_return_null_and_status_closed(client_local_owner):
+    """entry_price 0 makes the percentage uncomputable — the committed row
+    must carry return_pct None with status 'closed', never a fabricated 0%
+    (Rule 3.7; the same rule the create/close paths follow)."""
+    body = {
+        "broker": "generic",
+        "trades": [
+            {
+                "ticker": "QQQ", "direction": "CALL",
+                "entry_ts": "2026-06-03 09:30", "entry_price": 0.0,
+                "exit_ts": "2026-06-03 10:00", "exit_price": 1.5,
+                "return_pct": 42.0, "quantity": 1, "status": "closed",
+            },
+        ],
+    }
+    r = client_local_owner.post("/api/journal/import/commit", json=body)
+    assert r.status_code == 200
+    assert r.json()["imported"] == 1
+
+    qqq = client_local_owner.get("/api/journal/trades/QQQ").json()["trades"]
+    assert len(qqq) == 1
+    assert qqq[0]["return_pct"] is None
+    assert qqq[0]["status"] == "closed"
+
+
 # ── (i) Minor b: commit's broker validated against the allowlist ───────────
 
 
