@@ -17,6 +17,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [05 Infrastructure references](05-INFRASTRUCTURE.md#reference-documents) | Where are the long-form architecture, ERD, API, cost and pipeline documents? (`docs/product/infrastructure/`) |
 | [06 Data Architecture](06-DATA-ARCHITECTURE.md) | What are the 64 relations and how does data flow? |
 | [07 Model Registry](07-MODEL-REGISTRY.md) | Which rules and models exist, and are they trustworthy? |
+| [07 Experiment traceability](07-MODEL-REGISTRY.md#experiment-traceability) | Which experiments (`E-01…E-34`) produced each model's verdict, and where is the long-form evidence? |
 | [08 Ai Agent Architecture](08-AI-AGENT-ARCHITECTURE.md) | What are the 14 LLM nodes actually wired today? |
 | [09 Security Auth](09-SECURITY-AUTH.md) | How are identity, access, tenancy and perimeter separated? |
 | [10 Operations Reliability](10-OPERATIONS-RELIABILITY.md) | How is production trust measured and recovered? |
@@ -26,6 +27,25 @@ The maintained index from product intent through implementation, evidence, risk 
 | [14 Work Breakdown](14-WORK-BREAKDOWN.md) | How does the work decompose into evidence? |
 | [15 Open Decisions](15-OPEN-DECISIONS.md) | Which product choices remain unresolved? |
 | [16 Consolidation Audit](16-CONSOLIDATION-AUDIT.md) | What was preserved from Claude and PR #924, and how was every section validated? |
+
+## Research and experiment evidence
+
+The model verdicts in [07](07-MODEL-REGISTRY.md) rest on a research corpus that lives
+outside `docs/product/`. It is joined to this plan by the
+[experiment traceability table](07-MODEL-REGISTRY.md#experiment-traceability).
+
+| Doc | Question answered |
+|---|---|
+| [EXPERIMENT_REGISTRY.md](../EXPERIMENT_REGISTRY.md) | **The experiment log** — what was tried, `E-01…E-34`, and what each returned |
+| [RESEARCH_COMPENDIUM.md](../RESEARCH_COMPENDIUM.md) | Why each approach and feature set was picked; the correlation analyses |
+| [MODEL_REGISTRY.md](../MODEL_REGISTRY.md) | Research-side model inventory: target, features, data, status |
+| [INVESTMENT_MODELS_SUMMARY.md](../INVESTMENT_MODELS_SUMMARY.md) | Models #1–#5, `lib/`, the Strat classifier, the backtest engine |
+| [MAGNITUDE_ENGINE_RESULTS.md](../MAGNITUDE_ENGINE_RESULTS.md) · [DIRECTION_RESEARCH_RESULTS.md](../DIRECTION_RESEARCH_RESULTS.md) · [DIRECTION_FEATURES_R&D.md](../DIRECTION_FEATURES_R%26D.md) | Per-program verdicts — all FAIL or null; retained deliberately as evidence |
+| [EXEC_BACKTEST_RESULTS.md](../EXEC_BACKTEST_RESULTS.md) · [OPTIONS_EXEC_BACKTEST_RESULTS.md](../OPTIONS_EXEC_BACKTEST_RESULTS.md) · [BSVP_VALIDATION_RESULTS.md](../BSVP_VALIDATION_RESULTS.md) | Execution backtests and BSVP validation |
+| [MODEL_RETHINK_PLANS.md](../MODEL_RETHINK_PLANS.md) | The pivot from options-buying to trading the underlying |
+
+Full list, including the dated `docs/research/` program folders and the machine-written
+run records: [07 § Research documentation corpus](07-MODEL-REGISTRY.md#research-documentation-corpus).
 
 ## Where the app lives
 
