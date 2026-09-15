@@ -148,6 +148,12 @@ def stub_run_pipeline(monkeypatch):
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
     monkeypatch.setattr(job, "_insert_run", fake_insert_run)
+    # These tests assert which tickers RAN in-process, which only has
+    # meaning on the sequential path. Pin it explicitly: without this the
+    # suite's result depends on whether google-cloud-tasks happens to be
+    # importable in the environment (absent -> enqueue fails -> in-process
+    # fallback -> green for the wrong reason).
+    monkeypatch.setenv("INSIGHT_FANOUT", "0")
     return calls
 
 
@@ -166,6 +172,7 @@ def captured_triggers(monkeypatch):
         return True
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
+    monkeypatch.setenv("INSIGHT_FANOUT", "0")  # see stub_run_pipeline
     return triggers
 
 
@@ -453,3 +460,288 @@ def test_run_on_demand_invalid_as_of_returns_one(captured_as_of, monkeypatch):
     code = _run(job._run_on_demand())
     assert code == 1
     assert captured_as_of == []
+
+
+# ---------------------------------------------------------------------------
+# Fan-out dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_fanout(monkeypatch):
+    """Hermetic fan-out: record enqueues, record in-process runs.
+
+    Returns (enqueued, ran). `enqueued` holds the kwargs of every
+    enqueue_insight_task call; `ran` holds (run_id, ticker) for every
+    ticker that fell through to in-process execution.
+    """
+    enqueued: list[dict] = []
+    ran: list[tuple[str, str]] = []
+
+    def fake_enqueue(run_id, ticker, **kwargs):
+        enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
+        return job.EnqueueOutcome.ENQUEUED
+
+    async def fake_run_one(run_id: str, ticker: str, as_of=None,
+                           allow_update: bool = False,
+                           run_kind: str = "scheduled", triggered_by=None) -> bool:
+        ran.append((run_id, ticker))
+        return True
+
+    monkeypatch.setattr(job, "enqueue_insight_task", fake_enqueue)
+    monkeypatch.setattr(job, "_run_one", fake_run_one)
+    monkeypatch.setattr(job, "_insert_run", lambda ticker, trigger: f"run-{ticker}")
+    monkeypatch.delenv("INSIGHT_FANOUT", raising=False)
+    return enqueued, ran
+
+
+def test_fanout_enqueues_each_ticker_and_runs_none_in_process(
+    stub_fanout, monkeypatch
+):
+    enqueued, ran = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
+    code = _run(job._run_scheduled())
+    assert code == 0
+    assert [e["ticker"] for e in enqueued] == ["SPY", "IWM", "QQQ"]
+    assert ran == []
+
+
+def test_fanout_forwards_triggered_by_so_run_kind_stays_scheduled(
+    stub_fanout, monkeypatch
+):
+    """The daily scheduler passes INSIGHT_TRIGGERED_BY as a container
+    override. If the dispatcher drops it, children record manual_replay
+    and the audit trail is wrong while everything still looks green."""
+    enqueued, _ = stub_fanout
+    _set_env(
+        monkeypatch,
+        INSIGHT_TICKERS="SPY,IWM",
+        INSIGHT_AS_OF=None,
+        INSIGHT_TRIGGERED_BY="cloud-scheduler:insight-pipeline-daily",
+    )
+    _run(job._run_scheduled())
+    assert all(
+        e["triggered_by"] == "cloud-scheduler:insight-pipeline-daily"
+        for e in enqueued
+    )
+
+
+def test_fanout_forwards_as_of_cutoff(stub_fanout, monkeypatch):
+    enqueued, _ = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_AS_OF="2026-09-04")
+    _run(job._run_scheduled())
+    assert all(e["as_of_iso"] == "2026-09-04" for e in enqueued)
+
+
+def test_replay_child_is_not_forced_to_manual_update(stub_fanout, monkeypatch):
+    """INSIGHT_AS_OF resolves allow_update=True, but the child must
+    re-derive that from the cutoff. Forwarding force_update would
+    relabel the run manual_update."""
+    enqueued, _ = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_AS_OF="2026-09-04")
+    _run(job._run_scheduled())
+    assert all(e["force_update"] is False for e in enqueued)
+
+
+def test_explicit_update_is_forwarded(stub_fanout, monkeypatch):
+    enqueued, _ = stub_fanout
+    _set_env(
+        monkeypatch, INSIGHT_TICKERS="SPY,IWM",
+        INSIGHT_AS_OF=None, INSIGHT_UPDATE="true",
+    )
+    _run(job._run_scheduled())
+    assert all(e["force_update"] is True for e in enqueued)
+
+
+def test_enqueue_failure_falls_back_in_process_for_that_ticker_only(
+    stub_fanout, monkeypatch
+):
+    enqueued, ran = stub_fanout
+
+    def flaky(run_id, ticker, **kwargs):
+        if ticker == "IWM":
+            return job.EnqueueOutcome.NOT_ENQUEUED
+        enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
+        return job.EnqueueOutcome.ENQUEUED
+
+    monkeypatch.setattr(job, "enqueue_insight_task", flaky)
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
+    code = _run(job._run_scheduled())
+    assert code == 0
+    assert [e["ticker"] for e in enqueued] == ["SPY", "QQQ"]
+    # Only the failed one runs in-process, and it reuses its existing
+    # run row rather than inserting a second.
+    assert ran == [("run-IWM", "IWM")]
+
+
+def test_fanout_disabled_runs_sequentially(stub_fanout, monkeypatch):
+    enqueued, ran = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_AS_OF=None,
+             INSIGHT_FANOUT="0")
+    _run(job._run_scheduled())
+    assert enqueued == []
+    assert [t for _, t in ran] == ["SPY", "IWM"]
+
+
+def test_single_ticker_does_not_pay_a_container_start(stub_fanout, monkeypatch):
+    enqueued, ran = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY", INSIGHT_AS_OF=None)
+    _run(job._run_scheduled())
+    assert enqueued == []
+    assert [t for _, t in ran] == ["SPY"]
+
+
+def test_a_batch_too_large_to_throttle_does_not_fan_out(stub_fanout, monkeypatch):
+    """max-concurrent-dispatches bounds in-flight dispatch requests, not
+    running executions: jobs.run returns as soon as the execution exists,
+    so the slot frees immediately and N tickers would become N concurrent
+    executions against the same LLM provider. Above the cap we stay
+    in-process, where concurrency is one ticker at a time."""
+    enqueued, ran = stub_fanout
+    over = ",".join(f"T{i}" for i in range(job.FANOUT_MAX_TICKERS + 1))
+    _set_env(monkeypatch, INSIGHT_TICKERS=over, INSIGHT_AS_OF=None,
+             INSIGHT_BATCH_OVERRIDE="1")
+    code = _run(job._run_scheduled())
+    assert code == 0
+    assert enqueued == [], "a batch this size must not launch that many executions"
+    assert len(ran) == job.FANOUT_MAX_TICKERS + 1
+
+
+def test_a_batch_at_the_cap_still_fans_out(stub_fanout, monkeypatch):
+    enqueued, ran = stub_fanout
+    at_cap = ",".join(f"T{i}" for i in range(job.FANOUT_MAX_TICKERS))
+    _set_env(monkeypatch, INSIGHT_TICKERS=at_cap, INSIGHT_AS_OF=None)
+    _run(job._run_scheduled())
+    assert len(enqueued) == job.FANOUT_MAX_TICKERS
+    assert ran == []
+
+
+def test_an_unknown_enqueue_is_not_run_in_process(stub_fanout, monkeypatch):
+    """UNKNOWN means a child may already be running this run_id. Running it
+    here too would put two pipelines on one run, racing its status
+    transitions and doubling its history rows -- strictly worse than the
+    missing report that skipping costs."""
+    enqueued, ran = stub_fanout
+
+    def ambiguous(run_id, ticker, **kwargs):
+        if ticker == "IWM":
+            return job.EnqueueOutcome.UNKNOWN
+        enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
+        return job.EnqueueOutcome.ENQUEUED
+
+    monkeypatch.setattr(job, "enqueue_insight_task", ambiguous)
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
+    code = _run(job._run_scheduled())
+    assert code == 0
+    assert [e["ticker"] for e in enqueued] == ["SPY", "QQQ"]
+    assert ran == [], "an unknown outcome must not be resolved by running it again"
+
+
+def test_a_definitive_refusal_still_runs_in_process(stub_fanout, monkeypatch):
+    """The contrast case: NOT_ENQUEUED is the server saying nothing was
+    accepted, so the fallback is safe and must still happen."""
+    enqueued, ran = stub_fanout
+
+    def refused(run_id, ticker, **kwargs):
+        if ticker == "IWM":
+            return job.EnqueueOutcome.NOT_ENQUEUED
+        enqueued.append({"run_id": run_id, "ticker": ticker, **kwargs})
+        return job.EnqueueOutcome.ENQUEUED
+
+    monkeypatch.setattr(job, "enqueue_insight_task", refused)
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_AS_OF=None)
+    _run(job._run_scheduled())
+    assert ran == [("run-IWM", "IWM")]
+
+
+def test_auto_refresh_children_are_classified_as_auto_refresh(monkeypatch):
+    """docs/plans/MORNING_RUN_PROTECTION_PLAN.md defines run_kind
+    'auto_refresh' for auto_refresh_top_n, reached via triggered_by
+    'cron:auto-refresh-top-n'. Without this branch the pre-warm's children
+    record 'manual_replay' and are indistinguishable from a hand-run replay
+    -- and insight_runs.trigger can no longer tell them apart either, since
+    the check constraint forces it to 'on_demand'."""
+    from gcp import auto_refresh_top_n as ar
+
+    for key in ("INSIGHT_UPDATE", "INSIGHT_AS_OF", "INSIGHT_TRIGGERED_BY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("INSIGHT_TRIGGERED_BY", ar.AUTO_REFRESH_TRIGGERED_BY)
+    assert job._resolve_run_kind_and_update(False) == (False, "auto_refresh")
+
+
+def test_auto_refresh_classification_does_not_shadow_scheduled_or_replay(monkeypatch):
+    """The new branch sits below update and as_of, and beside
+    cloud-scheduler — it must not capture those."""
+    for key in ("INSIGHT_UPDATE", "INSIGHT_AS_OF", "INSIGHT_TRIGGERED_BY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("INSIGHT_TRIGGERED_BY", "cloud-scheduler:insight-pipeline-daily")
+    assert job._resolve_run_kind_and_update(False) == (False, "scheduled")
+    monkeypatch.setenv("INSIGHT_TRIGGERED_BY", "cron:auto-refresh-top-n")
+    monkeypatch.setenv("INSIGHT_AS_OF", "2026-09-04")
+    assert job._resolve_run_kind_and_update(False) == (True, "replay_refresh")
+
+
+def test_run_kind_fits_the_column():
+    """run_kind is VARCHAR(20) with no check constraint, so a new value
+    needs no migration but must still fit."""
+    assert len("auto_refresh") <= 20
+
+
+# ---------------------------------------------------------------------------
+# Redelivered-launch claim (Codex, PR #1094)
+# ---------------------------------------------------------------------------
+#
+# Two things can start a SECOND execution carrying the SAME run_id, and the
+# deterministic Cloud Tasks name stops neither because it only deduplicates
+# create_task: Cloud Tasks retries the HTTP target POST (queue is
+# --max-attempts 2, and jobs.run creates the execution before returning an
+# Operation, so a lost response is indistinguishable from a failed launch),
+# and Cloud Run retries the task (job is --max-retries 1). Unclaimed, both
+# run the paid pipeline, both append history, and they race the final status.
+
+
+def test_the_loser_of_a_redelivery_race_does_not_run_the_pipeline(monkeypatch):
+    """Second execution finds the row already 'running' and stands down
+    WITHOUT invoking the pipeline."""
+    ran: list = []
+
+    async def fake_pipeline(ticker, **kwargs):
+        ran.append(ticker)
+        raise AssertionError("pipeline must not run for an unclaimed run")
+
+    monkeypatch.setattr(job, "_transition", lambda *a, **k: False)
+    monkeypatch.setattr(job, "run_insight_pipeline", fake_pipeline)
+    ok = _run(job._run_one("run-1", "SPY"))
+    # True, not False: nothing failed. Returning False would make Cloud Run
+    # retry the loser of the race indefinitely.
+    assert ok is True
+    assert ran == [], "the losing execution ran the pipeline anyway"
+
+
+def test_the_winner_of_the_claim_proceeds(monkeypatch):
+    """Contrast case: a successful claim must still run normally."""
+    ran: list = []
+
+    async def fake_pipeline(ticker, **kwargs):
+        ran.append(ticker)
+        raise RuntimeError("stop after the claim")
+
+    monkeypatch.setattr(job, "_transition", lambda *a, **k: True)
+    monkeypatch.setattr(job, "run_insight_pipeline", fake_pipeline)
+    monkeypatch.setattr(job, "load_routes_snapshot", lambda *a, **k: {})
+    _run(job._run_one("run-1", "SPY"))
+    assert ran == ["SPY"], "the claiming execution must run the pipeline"
+
+
+def test_the_claim_is_a_compare_and_swap_on_claimable_states():
+    """The SQL must be conditional, and must still admit 'failed' so Cloud
+    Run's own retry-after-failure keeps working. 'running' is deliberately
+    excluded: a crashed execution leaves a visibly stuck row, which beats a
+    second one duplicating work we cannot prove has stopped."""
+    import inspect
+
+    src = inspect.getsource(job._transition)
+    assert "status IN ('queued', 'failed')" in src, (
+        "the running transition must be a conditional claim, not a bare UPDATE"
+    )
+    assert "rowcount" in src, "the claim must be decided by rows affected"
