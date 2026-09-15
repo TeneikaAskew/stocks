@@ -1116,3 +1116,40 @@ dispatch at `--class-weight-power=0.0` is how it gets tested for real.
 - No gate count in any section above this one was computed under the
   amended gate 4. Re-running the walk-forward under the new rule is how
   the phase table gets re-established.
+
+### 10. First runs on the deployed code (2026-09-15)
+
+**`magnitude-engine-vpj2r`** — phase1, α=0 (`--class-weight-power=0.0`),
+9 cells on the new engine (`79940375…`). Every summary records
+`class_weight_power=0.0` and `decision_lift_min=2.0`. Gate 4 is now scored
+on the decision-rule population: EXPLOSIVE calls per fold went from 3-43
+(argmax, `54nrr`) to 78-2,076, realised lift 3.3-5.2× on every cell.
+
+| cell | g1 g2 g3 g4 | gates 1-4 | gate 5 (1,000 resamples) | gate 6 event conc. (pred / realised) |
+|---|---|---|---|---|
+| IWM 5m | 8 8 8 8 | PASS | **100%** | 1.15× / 0.92× |
+| QQQ 5m | 8 8 8 8 | PASS | **100%** | 0.99× / 0.94× |
+| SPY 5m | 8 8 8 8 | PASS | **100%** | 0.90× / 0.83× |
+| SPY 15m | 7 7 8 8 | PASS | **86.5%** | 0.58× / 0.78× |
+| IWM 15m | 7 8 8 8 | PASS | 34.4% | 0.95× / 0.86× |
+| SPY 30m | 6 6 8 7 | PASS | 4.8% | 0.45× / 0.69× |
+| IWM 30m | 1 8 8 8 | fail (g1) | — | — |
+| QQQ 15m | 5 7 8 8 | fail (g1) | — | — |
+| QQQ 30m | 2 6 8 8 | fail (g1) | — | — |
+
+Six of nine clear gates 1-4; **four survive gate 5** (the 5m cells at 100%,
+SPY 15m at 86.5% against the 80% bar). IWM 15m and SPY 30m pass
+deterministically on noise, the same shape gate 5 caught in June. Gate 6:
+predicted-EXPLOSIVE concentration within ±4 h of a high-impact event is
+0.45-1.15× the base rate on every cell, so none is a calendar lookup; the
+2.0× mechanism bar (`SUCCESS_BAR_MECHANISM_RATIO_MIN`) was written for the
+phase3 event-proximity features and makes no claim about phase1's vol
+family, so it is reported, not applied. Executions: gate 6 via
+`direction-probe` x645p / 4rncr / tn4nm / mwvrx / mj6nc / jmlzf.
+
+At the served operating point these models name EXPLOSIVE on 10-12% of
+5m bars, matching the curve in §8. **`vpj2r` could not promote**: the
+production-artifact path runs for phase0 only, and this was phase1; no
+`LATEST` moved and nothing was written under `production/`. The
+promotion test proper is `magnitude-engine-6hp7l` (phase0, α=0), reported
+below when it completes.

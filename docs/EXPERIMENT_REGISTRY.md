@@ -1347,6 +1347,14 @@ curve (L=1.5/2.0/3.0 → EXPLOSIVE calls 19.6/13.1/7.0%, realised lift
 was computed under the amended gate 4; four constant-output cells still
 serve pending a product decision.
 
+**2026-09-15, deployed and re-run:** `magnitude-engine-vpj2r` (phase1, α=0,
+new engine) clears gates 1-4 on 6/9 cells with gate 4 scored on 78-2,076
+calls per fold; gate 5 keeps IWM/QQQ/SPY 5m (100%) and SPY 15m (86.5%),
+drops IWM 15m (34%) and SPY 30m (5%); gate 6 0.45-1.15× on all six (not a
+calendar proxy). Live under the rule, the serving c49qf cells make tail
+calls on 0 / 1.3 / 6.7 / 46.7% of bars (IWM 15m / SPY 5m / QQQ 5m / IWM 5m).
+Promotion test is `6hp7l` (phase0). `MAGNITUDE_ENGINE_RESULTS.md` §9-10.
+
 **Artifacts:** `MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14; `mag_config.py`
 (`DECISION_LIFT_MIN` comment); `mag_pred_train.decide_bucket`;
 `scripts/backfill_model_contracts.py` (priors upgrade);
