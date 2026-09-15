@@ -27,11 +27,14 @@ Usage
     python -m gcp.auth_email_templates --apply               # PATCH + verify
     python -m gcp.auth_email_templates --render-dir /tmp/x   # write HTML previews
 
-What Google currently allows on this project (probed 2026-09-06, see
-docs/AUTH_EMAILS.md "What Google blocks"): the sender display name and
-reply-to are accepted; subject and the action URL are refused with
+What Google allows on this project (re-probed 2026-09-15, see
+docs/AUTH_EMAILS.md "Template state"): the sender display name and reply-to
+are accepted; subject and the action URL are refused with
 EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED; an HTML body PATCH returns 200 but is not
-persisted. So --apply runs in phases — sender fields first (always applied), a
+persisted. The branded subjects, bodies and action URL that are live today
+were applied by Firebase engineering through a support case, not by this
+script, and the lock is still in force for the next change. So --apply runs
+in phases — sender fields first (always applied), a
 changed sender local part on its own, then subject/body/action URL — and
 reports exactly which phase landed. Phase two is expected to start passing once the project is allowed
 to customize templates (custom SMTP, or a console-side unlock); nothing in
@@ -574,8 +577,9 @@ def main(argv: list[str] | None = None) -> int:
     if locked:
         print(
             "\nTemplate content is LOCKED on this project: Google refuses subject / action URL"
-            "\nchanges and drops HTML bodies. Sender name and reply-to were applied. To unlock,"
-            "\nsee docs/AUTH_EMAILS.md 'What Google blocks' (console edit, or custom SMTP).",
+            "\nchanges and drops HTML bodies. Sender name and reply-to were applied. Changing"
+            "\nthe live content needs a Firebase support request — see docs/AUTH_EMAILS.md"
+            "\n'Template state'.",
             file=sys.stderr,
         )
     if problems:
