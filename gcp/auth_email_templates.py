@@ -498,6 +498,8 @@ def _branding_from_args(args: argparse.Namespace) -> Branding:
         sender_local_part=args.sender_local_part,
         reply_to=args.reply_to,
         support_email=args.support_email,
+        # None keeps Branding's default_factory (the current year).
+        **({"year": args.year} if args.year is not None else {}),
     )
 
 
@@ -511,6 +513,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sender-local-part", default=DEFAULTS.sender_local_part)
     p.add_argument("--reply-to", default=None, help="reply-to address; omitted = keep the live value")
     p.add_argument("--support-email", default=None, help="adds a 'Questions? Write to …' line to the footer")
+    p.add_argument("--year", type=int, default=None,
+                   help="footer copyright year; default is the current year. Pin it to the year the live "
+                        "bodies were applied to diff against them without the year showing as a change.")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--show", action="store_true", help="print the live email config and exit")
     mode.add_argument("--dry-run", action="store_true", help="print the exact phased PATCH requests --apply would send, no write")

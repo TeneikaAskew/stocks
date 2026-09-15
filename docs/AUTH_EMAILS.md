@@ -53,7 +53,16 @@ trailing newline (`'Reset your Solyra password\n'`), introduced when the
 values were transcribed from a support email where each sat on its own line.
 Mail systems normally strip it from the header. `--apply` therefore still
 reports the four subjects as not-applied and exits 2 even though everything
-else matches; that diff is this newline and nothing else.
+else matches.
+
+**That "only the subjects" reading expires each New Year.** The footer renders
+`{{YEAR}}` from `Branding.year`, which defaults to *today's* year, while the
+live bodies stay frozen at the year support applied them (2026). From
+2027-01-01 a default `--apply` will report four *body* mismatches as well, and
+the whole difference will be the copyright line. Pass `--year 2026` to render
+against what is actually live, and treat any body diff that survives that as a
+real one. The same flag is what to use when asking support to re-apply, so the
+footer does not silently jump a year.
 
 ### The lock is still on, and this is the part to remember
 
@@ -119,10 +128,17 @@ Defaults (all overridable by flag): product name `Solyra`, SPA origin
 `https://solyra-stocks.lovable.app`, action path `/auth/action`, sender name
 `Solyra`, sender local part `noreply`. Reply-to is carried over from the live
 config unless `--reply-to` is given. `--support-email` adds a "Questions?
-Write to ..." line to the footer.
+Write to ..." line to the footer. `--year` pins the footer copyright year,
+which otherwise follows today's date and drifts from the frozen live bodies.
 
-When the SPA moves to its own domain, re-run with `--app-url https://<host>`
-after adding that host to authorized domains. Nothing else changes.
+When the SPA moves to its own domain, **`--app-url` alone will not move the
+emails.** It changes `callbackUri`, which is exactly what the lock refuses, so
+the run exits 2 and every emailed link keeps pointing at the old host. The
+sequence is: add the new host to authorized domains, run `--render-dir` with
+`--app-url https://<host>` to produce the HTML carrying the new links, then ask
+Firebase support to apply that action URL and those bodies, quoting the full
+URL you want (`https://<host>/auth/action`). Treat the old host as live until
+`--show` reports the new `callbackUri`.
 
 Auth: `GOOGLE_OAUTH_ACCESS_TOKEN` if set (used as-is), else
 `CLOUDSDK_AUTH_ACCESS_TOKEN`, else `gcloud auth print-access-token`, else
