@@ -6205,6 +6205,7 @@
             "anyOf": [
               {
                 "enum": [
+                  "dawn",
                   "blue",
                   "amber",
                   "violet",
