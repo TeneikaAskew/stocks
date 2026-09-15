@@ -506,3 +506,67 @@ class TestGetEarningsCalibration:
         assert cal == {"min_nq": er.DEFAULT_MIN_NQ,
                        "lookback_quarters": er.DEFAULT_LOOKBACK_QUARTERS}
         er.get_earnings_calibration.cache_clear()
+
+
+class TestMainOptionsInsightsFailsLoud:
+    """--options-insights is the canonical persisting run: any outcome that
+    leaves earnings_options_strategy_winners stale must exit nonzero, so the
+    Sunday scheduler's failure surfaces at the SOURCE instead of as the
+    earnings-long-watchlist freshness gate failing closed a week later
+    (Codex review on #1099). A bare sweep keeps its warn-and-return
+    behavior — it never promised to write the winners table."""
+
+    _WINNER = {
+        "min_nq": 8, "lookback_quarters": 12, "quintile_spread": 0.2,
+        "overall_hit_rate": 0.6, "n_predictions": 100,
+        "expectancy_dollars_per_1k": 10.0, "payoff_ratio": 1.5,
+        "best_hold_horizon_days": 1, "n_q5_directional": 20,
+    }
+
+    def _run_main(self, monkeypatch, argv, *, winner, insights=None):
+        import sys as _sys
+        import scripts.calibrate_earnings as mod
+        import scripts.backtest_playability as bp
+        monkeypatch.setattr(_sys, "argv", ["calibrate_earnings", *argv])
+        monkeypatch.setattr(
+            mod, "run_sweep",
+            lambda: [dict(self._WINNER)])
+        monkeypatch.setattr(mod, "select_earnings_winner",
+                            lambda results: winner)
+        if insights is not None:
+            monkeypatch.setattr(bp, "run_backtest",
+                                lambda **kw: pd.DataFrame({"x": [1]}))
+            monkeypatch.setattr(bp, "_load_options_snapshots",
+                                lambda: pd.DataFrame({"y": [1]}))
+            monkeypatch.setattr(bp, "compute_options_insights",
+                                lambda preds, opts: insights)
+            monkeypatch.setattr(bp, "write_options_insights_to_db",
+                                lambda i, w: (len(i), len(w)))
+        return mod.main()
+
+    def test_exits_nonzero_when_no_combo_clears_the_gates(self, monkeypatch):
+        with pytest.raises(SystemExit) as excinfo:
+            self._run_main(monkeypatch,
+                           ["--options-insights", "--no-apply"], winner=None)
+        assert excinfo.value.code == 1
+
+    def test_exits_nonzero_when_zero_winner_rows_written(self, monkeypatch):
+        with pytest.raises(SystemExit) as excinfo:
+            self._run_main(
+                monkeypatch, ["--options-insights", "--no-apply"],
+                winner=dict(self._WINNER),
+                insights=([{"structure": "long_call"}], [],
+                          "# Options insights\n\nNo data available.\n"))
+        assert excinfo.value.code == 1
+
+    def test_returns_normally_when_winner_rows_written(self, monkeypatch):
+        rc = self._run_main(
+            monkeypatch, ["--options-insights", "--no-apply"],
+            winner=dict(self._WINNER),
+            insights=([{"structure": "long_call"}],
+                      [{"structure": "long_call", "ticker": "IWM"}], "md"))
+        assert rc is None
+
+    def test_bare_sweep_keeps_warn_and_return_on_no_winner(self, monkeypatch):
+        rc = self._run_main(monkeypatch, ["--no-apply"], winner=None)
+        assert rc is None

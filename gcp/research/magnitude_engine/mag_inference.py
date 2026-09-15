@@ -202,21 +202,45 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
     # LATEST after all three uploads succeed.
     latest_blob = bucket.blob(f"{base_prefix}/LATEST")
     if not latest_blob.exists():
-        # Two different states hide behind a missing pointer, and they need
-        # different responses. An EMPTY prefix means the cell has never been
-        # promoted — a standing config gap the operator already knows about,
-        # skipped upstream with a WARNING (see NeverPromoted). A prefix that
-        # HAS artifacts but no pointer means a publish was interrupted or the
-        # pointer was lost — that is new, real breakage and must fail loud.
-        has_artifacts = any(
-            client.list_blobs(bucket_name, prefix=f"{base_prefix}/",
-                               max_results=1))
-        if not has_artifacts:
+        # Three different states hide behind a missing pointer, and they
+        # need different responses. An EMPTY prefix means the cell has never
+        # been promoted — a standing config gap the operator already knows
+        # about, skipped upstream with a WARNING (see NeverPromoted). A
+        # prefix whose EVERY run carries a PROMOTION_BLOCKED marker is the
+        # same state one step later: _persist_production_model uploads a
+        # gate-rejected candidate's artifacts WITH that marker and leaves
+        # LATEST unwritten on purpose (mag_walk_forward), so blocked-only
+        # runs mean no model was ever promoted either. Only a run that has
+        # artifacts but NEITHER a marker NOR a pointer is an interrupted or
+        # corrupted publish — new, real breakage that must fail loud.
+        #
+        # Cost: one paginated listing of the cell's production prefix,
+        # only on the LATEST-missing path. Runs accumulate one directory
+        # of ~5 blobs per training attempt, so even years of attempts stay
+        # within a few pages.
+        runs: dict[str, set[str]] = {}
+        for b in client.list_blobs(bucket_name, prefix=f"{base_prefix}/"):
+            rel = b.name[len(base_prefix) + 1:]
+            run_dir, _, filename = rel.partition("/")
+            # A top-level object (no "/") groups under its own name with an
+            # empty filename set — it can never look gate-blocked, so a
+            # stray top-level artifact still fails loud below.
+            runs.setdefault(run_dir, set()).add(filename)
+        if not runs:
             raise NeverPromoted(
                 f"no production model has ever been published for "
                 f"{ticker}:{tf} — nothing under "
                 f"gs://{bucket_name}/{base_prefix}/. Run walk_forward with "
                 f"--persist-production-model to publish."
+            )
+        if all("PROMOTION_BLOCKED" in files for files in runs.values()):
+            raise NeverPromoted(
+                f"no production model has ever been published for "
+                f"{ticker}:{tf} — all {len(runs)} candidate run(s) under "
+                f"gs://{bucket_name}/{base_prefix}/ were gate-blocked "
+                f"(PROMOTION_BLOCKED). Train a candidate that clears the "
+                f"promotion gate via walk_forward "
+                f"--persist-production-model."
             )
         raise FileNotFoundError(
             f"no production model deployed for {ticker}:{tf} — LATEST "

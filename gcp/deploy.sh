@@ -4280,6 +4280,72 @@ _schedule_with_args() {
         --quiet 2>/dev/null || echo "  ${NAME}: already exists"
 }
 
+# Verified variant of _schedule_with_args, for triggers whose container args
+# ARE the contract (earnings-sweep-sunday: a bare sweep never writes the
+# winners table the watchlist's freshness gate reads). _schedule_with_args'
+# `|| echo "already exists"` swallows real creation failures and never
+# updates an existing entry, so a trigger created before an args change
+# would keep firing the OLD args forever. This helper updates-or-creates
+# (same shape as _schedule_verified) and then reads back schedule, uri,
+# state AND the decoded request body, returning nonzero on any mismatch so
+# deploy_schedulers counts it into SCHEDULER_FAILURES.
+_schedule_with_args_verified() {
+    local NAME=$1 CRON=$2 JOB=$3 uri live live_body
+    shift 3
+    local ARGS_JSON='['
+    local first=1
+    for a in "$@"; do
+        [ ${first} -eq 1 ] || ARGS_JSON+=','
+        ARGS_JSON+='"'"${a}"'"'
+        first=0
+    done
+    ARGS_JSON+=']'
+    local BODY='{"overrides":{"containerOverrides":[{"args":'"${ARGS_JSON}"'}]}}'
+    uri=$(_job_uri "${JOB}")
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: update of ${NAME} failed" >&2; return 1; }
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: create of ${NAME} failed" >&2; return 1; }
+    fi
+    live=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(schedule,httpTarget.uri,state)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read back ${NAME}" >&2; return 1; }
+    if [ "${live}" != "${CRON}"$'\t'"${uri}"$'\t'"ENABLED" ]; then
+        echo "  ERROR: ${NAME} read back as [${live//$'\t'/ | }], expected [${CRON} | ${uri} | ENABLED]" >&2
+        return 1
+    fi
+    # The body carries the args override — verify it round-tripped. describe
+    # returns it base64-encoded; decode via python3 (BSD and GNU base64 take
+    # different flags, python3 is already a dependency of this script).
+    live_body=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(httpTarget.body)" 2>/dev/null \
+        | python3 -c 'import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())') \
+        || { echo "  ERROR: cannot read back ${NAME} body" >&2; return 1; }
+    if [ "${live_body}" != "${BODY}" ]; then
+        echo "  ERROR: ${NAME} body read back as [${live_body}], expected [${BODY}]" >&2
+        return 1
+    fi
+    echo "  ${NAME}: verified ${CRON} args=${ARGS_JSON}"
+}
+
 deploy_schedulers() {
     echo "Creating Cloud Scheduler triggers..."
     # Set by any verified entry that failed to converge; the function then
@@ -4638,8 +4704,9 @@ deploy_schedulers() {
     # override rides only this trigger. ~5-15 min at 2cpu/4Gi (the
     # options-join is what the 4Gi bump was sized for) ≈ $0.05/run,
     # ~$0.25/mo.
-    _schedule_with_args "earnings-sweep-sunday"   "30 20 * * 0"  "earnings-sweep" \
-        "--options-insights"
+    _schedule_with_args_verified "earnings-sweep-sunday"   "30 20 * * 0"  "earnings-sweep" \
+        "--options-insights" \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
     # Earnings frontend data prep (mat view refreshes + upcoming rebuild).
     # Weekly: Sun 8:00 PM ET — REFRESH MATERIALIZED VIEW × 2 after the
     #   refresh chain (7:00/7:15/7:30/7:45 PM) finishes its source-data
