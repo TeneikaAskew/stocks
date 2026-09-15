@@ -181,8 +181,9 @@ governance. Each is real work with a real verdict that no row above claims.
 
 ### Which of these actually run
 
-Of the 68 Cloud Run Jobs in `gcp/deploy.sh`, six model-bearing jobs are on a Cloud
-Scheduler cron; the rest of the research surface is on-demand only.
+Of the 68 Cloud Run Jobs declared in `gcp/deploy.sh`, six model-bearing jobs are on a Cloud Scheduler cron; the rest of the research surface is on-demand only. <!-- verify-docs-ok: 68 is the repo-DECLARED parse (scripts/maintenance/doc_inventory.py --json → declared jobs), deliberately not the live fleet of 76; the gap is jobs created by hand outside deploy.sh, and the declared number is the one this section is about -->
+The live fleet is larger — see [05-INFRASTRUCTURE](05-INFRASTRUCTURE.md) for the
+declared-versus-live reconciliation.
 
 | Scheduler | Cron (`America/New_York`) | Job | Serves |
 |---|---|---|---|
