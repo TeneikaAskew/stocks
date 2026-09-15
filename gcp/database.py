@@ -13,6 +13,7 @@ Usage:
     from gcp.database import get_engine, upsert_dataframe, query_to_dataframe
 """
 
+import atexit
 import os
 import logging
 import threading
@@ -24,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 # ── lazy imports so the module loads even without the cloud packages installed ──
 _engine = None
+# The Cloud SQL Connector owns an aiohttp ClientSession it uses to fetch the
+# ephemeral client cert from the SQL Admin API. Nothing closed it, so every
+# job exited with `ERROR asyncio - Unclosed client session` — ERROR severity
+# on a purely cosmetic leak, which is exactly the kind of line that trains
+# operators to ignore ERROR. Held module-level so the atexit hook below can
+# close it; the _getconn closure needs it alive for the engine's lifetime.
+_connector = None
 # Guards the get_engine() singleton. Before the API handlers moved off the
 # event loop they were serialised by it, so the unlocked check-then-create
 # below could never interleave. Under threadpool dispatch two cold-start
@@ -146,7 +154,9 @@ def _build_engine():
         # The background refresher is unreliable on Cloud Run with
         # request-based CPU (throttled between requests), so the cert can
         # go stale and the next request hits a delayed/failed connection.
+        global _connector
         connector = Connector(refresh_strategy="lazy")
+        _connector = connector
 
         def _getconn():
             return connector.connect(
@@ -182,6 +192,26 @@ def _build_engine():
             "Install cloud-sql-python-connector: "
             "pip install 'cloud-sql-python-connector[pg8000]' sqlalchemy"
         ) from e
+
+
+@atexit.register
+def _close_cloud_sql_connector() -> None:
+    """Close the Cloud SQL Connector's aiohttp session at process exit.
+
+    Cleanup only — any real error has already propagated from the work the
+    job was doing, and a failure to tidy up must not change the exit code
+    of a job that otherwise succeeded (CLAUDE.md Rule 3.7 permits swallowing
+    exactly here, and nowhere else in this module).
+    """
+    global _connector
+    if _connector is None:
+        return
+    try:
+        _connector.close()
+    except Exception as exc:  # cleanup — original error already propagated
+        logger.debug("Cloud SQL Connector close failed at exit: %s", exc)
+    finally:
+        _connector = None
 
 
 def query_to_dataframe(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
