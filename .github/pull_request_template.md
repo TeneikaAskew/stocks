@@ -31,6 +31,19 @@
       financial-constant defaults, or a fabricated value where a typed
       `UNAVAILABLE` envelope belongs
 
+## Shared-policy and reuse review
+
+- [ ] I searched for existing implementations before adding time, config,
+      parsing, provider, persistence, serialization, retry, or notification
+      behavior
+- **Canonical owner extended**: <!-- module, or n/a with justification -->
+- **Call sites migrated**: <!-- paths, or n/a -->
+- **Duplicates intentionally remaining**: <!-- paths + follow-up, or none -->
+- [ ] Repeated domain policy lives in a focused tested module, not a generic
+      `utils.py` and not a script/router/orchestration entry point
+- [ ] Compatibility and removal strategy is documented when migration spans
+      more than this PR
+
 ## Verification (Rules 3.5 / 3.6)
 
 <!-- Paste real command output. If the claim is about pipeline behaviour,
