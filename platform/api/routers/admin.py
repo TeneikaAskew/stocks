@@ -431,7 +431,9 @@ class StratEnginePredictResponse(BaseModel):
     available: bool
     top_class: Optional[str] = None
     top_prob: Optional[float] = None
-    class_probs: dict = {}
+    # str -> float, provably: strat_pred_serve builds it with float() on
+    # every value ({} on the unavailable path).
+    class_probs: dict[str, float] = {}
     model_version: Optional[str] = None
     last_train_date: Optional[str] = None
     live_ece: Optional[float] = None

@@ -264,6 +264,18 @@ def main() -> None:
 
     winner = select_earnings_winner(results)
     if winner is None:
+        if args.options_insights:
+            # The canonical persisting run: exiting 0 here would leave
+            # earnings_options_strategy_winners stale, and the NEXT thing
+            # to notice would be earnings-long-watchlist's freshness gate
+            # failing closed days later, far from the cause. Fail loud at
+            # the source so the scheduled execution goes red and
+            # failure_notifier opens the issue against THIS job.
+            log.error("no combo cleared the gates — no options-insights "
+                      "rows can be computed, so "
+                      "earnings_options_strategy_winners would go stale; "
+                      "exiting nonzero")
+            raise SystemExit(1)
         log.warning("no combo cleared the gates — "
                     "earnings_calibration left unchanged")
         return
@@ -311,6 +323,17 @@ def main() -> None:
             print("\n===== BEGIN OPTIONS INSIGHTS =====\n")
             print(md)
             print("\n===== END OPTIONS INSIGHTS =====\n")
+            if n_w == 0:
+                # Zero winner rows means the winners table's
+                # calculation_date did not advance — the watchlist's
+                # freshness gate will fail closed once it ages past its
+                # cap. The markdown above names why (no data /
+                # insufficient score variation / every event filtered);
+                # exit nonzero so the failure surfaces here, now.
+                log.error("0 winner rows written — "
+                          "earnings_options_strategy_winners left stale; "
+                          "exiting nonzero (see the report above for why)")
+                raise SystemExit(1)
 
         if args.long_only_detail:
             report_md = compute_long_only_report(preds, opts)
