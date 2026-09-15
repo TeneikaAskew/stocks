@@ -94,6 +94,37 @@ LOOKBACK_DAYS = int(os.environ.get("DRIFT_LOOKBACK_DAYS", "7"))
 # the first day after a new cell is added or after a long weekend.
 MIN_SAMPLE = int(os.environ.get("DRIFT_MIN_SAMPLE", "50"))
 
+# The HIGH tier needs more than MIN_SAMPLE. Since 2026-09-14 `pred_bucket`
+# is the decision rule (P(bucket) >= 2x its prior), and under it a
+# calibrated model's modal share MOVES with the session: on the first day
+# it served, SPY 5m `magnitude-engine-6hp7l` named TIGHT on 73/75 bars of
+# a calm session (mean P(EXPLOSIVE) 0.007 against a 0.026 prior) and this
+# check paged HIGH on a model that names EXPLOSIVE on 11-13% of bars over
+# eight years at 100% bootstrap (audit-magnitude-drift-d9kkm). Under argmax
+# that never happened, because argmax share did not move with the session.
+# So HIGH requires at least MIN_SESSIONS_FOR_HIGH sessions of bars for the
+# cell's timeframe; a >= 90% share on a shorter sample is reported as
+# MEDIUM with the reason, so it stays visible without paging. The cost is
+# that a genuinely constant model (c49qf's 100%) is MEDIUM for its first
+# week and HIGH after; the render backstop in lib/movement_statement.py
+# covers the user-facing card in the meantime.
+MIN_SESSIONS_FOR_HIGH = int(os.environ.get("DRIFT_MIN_SESSIONS_FOR_HIGH", "5"))
+# RTH bars per session per timeframe. An unknown timeframe RAISES in
+# _min_sample_for_high rather than guessing: a guessed bar count is a
+# silent fallback on the number that decides whether to page.
+_BARS_PER_SESSION: dict[str, int] = {
+    "1m": 390, "5m": 78, "15m": 26, "30m": 13, "60m": 7, "4h": 2,
+}
+
+
+def _min_sample_for_high(tf: str) -> int:
+    try:
+        return MIN_SESSIONS_FOR_HIGH * _BARS_PER_SESSION[tf]
+    except KeyError as e:
+        raise ValueError(
+            f"no bars-per-session entry for timeframe {tf!r}; add it to "
+            f"_BARS_PER_SESSION rather than guessing the HIGH-tier sample") from e
+
 # Cell-silence freshness threshold. A cell counts as "alive" only if it
 # produced predictions within this many hours. Codex P2 caught the
 # original 7-day check: if a cell silently failed TODAY but yesterday's
@@ -300,8 +331,10 @@ def _cell_key(row: dict) -> tuple[str, str, str]:
 def check_modal_dominance(rows: list[dict], report: Report) -> None:
     """Per (ticker, tf, model_version), compute the modal-class share.
 
-    HIGH: modal >= MODAL_DOMINANCE_HIGH (collapsed model)
-    MEDIUM: modal >= MODAL_DOMINANCE_MED (worth eyeballing)
+    HIGH: modal >= MODAL_DOMINANCE_HIGH on at least MIN_SESSIONS_FOR_HIGH
+          sessions of bars (collapsed model)
+    MEDIUM: modal >= MODAL_DOMINANCE_MED (worth eyeballing), or over the
+            HIGH ceiling on too short a sample to page
     """
     if not rows:
         return
@@ -324,8 +357,17 @@ def check_modal_dominance(rows: list[dict], report: Report) -> None:
                   f"({share:.1%}, avg_conf={modal['avg_conf']:.3f}) "
                   f"over last {LOOKBACK_DAYS}d (model={mv})")
         if share >= MODAL_DOMINANCE_HIGH:
-            report.add(severity="HIGH", check="modal-dominance",
-                       target=target, detail=detail)
+            need = _min_sample_for_high(tf)
+            if total >= need:
+                report.add(severity="HIGH", check="modal-dominance",
+                           target=target, detail=detail)
+            else:
+                report.add(severity="MEDIUM", check="modal-dominance",
+                           target=target,
+                           detail=(f"{detail}; at or over the {MODAL_DOMINANCE_HIGH:.0%} "
+                                   f"ceiling but only {total} bars, under the "
+                                   f"{need}-bar ({MIN_SESSIONS_FOR_HIGH}-session) "
+                                   f"minimum for HIGH"))
         elif share >= MODAL_DOMINANCE_MED:
             report.add(severity="MEDIUM", check="modal-dominance",
                        target=target, detail=detail)

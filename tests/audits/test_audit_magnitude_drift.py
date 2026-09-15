@@ -56,6 +56,9 @@ def test_modal_dominance_high_fires_at_collapse():
     from gcp.audit_magnitude_drift import (
         Report, check_modal_dominance,
     )
+    # c49qf's shape at the size it was caught, two sessions in: 98% over
+    # 156 bars. Since 2026-09-14 that is MEDIUM, named as over the ceiling
+    # on too short a sample; a week of the same shape is HIGH.
     rows = [
         _row("IWM", "5m", 0, 153),  # TIGHT: 153/156 = 98% (the live incident shape)
         _row("IWM", "5m", 2, 1),
@@ -65,11 +68,56 @@ def test_modal_dominance_high_fires_at_collapse():
     check_modal_dominance(rows, r)
     assert len(r.findings) == 1
     f = r.findings[0]
-    assert f.severity == "HIGH"
+    assert f.severity == "MEDIUM"
     assert f.check == "modal-dominance"
     assert f.target == "IWM:5m"
     assert "TIGHT" in f.detail
     assert "98" in f.detail  # the 98% share appears in the message
+    assert "under the 390-bar (5-session) minimum for HIGH" in f.detail
+    rows = [
+        _row("IWM", "5m", 0, 385), _row("IWM", "5m", 2, 3), _row("IWM", "5m", 3, 4),
+    ]
+    r = Report()
+    check_modal_dominance(rows, r)
+    assert r.findings[0].severity == "HIGH", r.findings[0].detail
+    assert "minimum for HIGH" not in r.findings[0].detail
+
+
+def test_a_calm_session_on_a_calibrated_model_does_not_page():
+    """audit-magnitude-drift-d9kkm, 2026-09-15: SPY 5m 6hp7l named TIGHT on
+    73/75 bars of one calm session and was paged HIGH, on a model that
+    names EXPLOSIVE on 11-13% of bars over eight years. Under the decision
+    rule the share moves with the session, so one session cannot be a
+    collapse verdict."""
+    from gcp.audit_magnitude_drift import Report, check_modal_dominance
+    rows = [_row("SPY", "5m", 0, 73, model="magnitude-engine-6hp7l"),
+            _row("SPY", "5m", 1, 2, model="magnitude-engine-6hp7l")]
+    r = Report()
+    check_modal_dominance(rows, r)
+    assert len(r.findings) == 1
+    assert r.findings[0].severity == "MEDIUM"
+    assert "only 75 bars" in r.findings[0].detail
+
+
+def test_the_high_minimum_is_per_timeframe():
+    """Five sessions is 130 bars at 15m, not 390: a 15m cell must be able
+    to reach HIGH inside the 7-day window."""
+    from gcp.audit_magnitude_drift import (
+        Report, check_modal_dominance, _min_sample_for_high)
+    assert _min_sample_for_high("5m") == 390
+    assert _min_sample_for_high("15m") == 130
+    assert _min_sample_for_high("30m") == 65
+    rows = [_row("IWM", "15m", 0, 130)]
+    r = Report()
+    check_modal_dominance(rows, r)
+    assert r.findings[0].severity == "HIGH"
+
+
+def test_an_unknown_timeframe_raises_rather_than_guessing_the_sample():
+    import pytest as _pytest
+    from gcp.audit_magnitude_drift import _min_sample_for_high
+    with _pytest.raises(ValueError, match="bars-per-session"):
+        _min_sample_for_high("2h")
 
 
 def test_modal_dominance_medium_for_a_model_over_the_base_rate():
