@@ -30,6 +30,9 @@ def patch_query(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    # retrieve_similar_journal uses the non-swallowing sibling; a fixture
+    # is exempt from Rule 3.7, so both wrappers get the same canned data.
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
     return set_result
 
 
@@ -938,3 +941,180 @@ def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
                             lambda *a, **k: {"available": False, "reason": "stub"})
     summarizers.build_context_bundle("SPY", inclusive_today=False)
     assert calls["inclusive_today"] is False
+
+
+# ---------------------------------------------------------------------------
+# Regression: the snapshot_date handed to lib.gamma must be a real date.
+#
+# `summarize_gamma_levels` used to pass the literal string "latest" whenever
+# `as_of` was None — which is every live insight-pipeline run. That string
+# travels into `gamma.build_summary` -> `options_greeks.get_rate_and_yield`,
+# where it is bound to a Postgres DATE parameter:
+#
+#   invalid input syntax for type date: "latest"   (SQLSTATE 22007)
+#
+# `get_rate_and_yield` raises RateLookupError, `gamma.py` catches it and sets
+# `gamma_flip = None`, so every live report shipped with the BS-recurved
+# zero-gamma level — the regime divider — silently missing. Measured in
+# production: 3 occurrences per insight-pipeline run, every weekday since
+# the strict rate lookup landed (#994).
+# ---------------------------------------------------------------------------
+
+
+def _capture_build_summary_date(monkeypatch):
+    """Record the snapshot_date `summarize_gamma_levels` forwards to gamma."""
+    from lib import gamma as gamma_mod
+
+    seen: dict[str, object] = {}
+    real = gamma_mod.build_summary
+
+    def spy(*, ticker, snapshot_date, options, **kwargs):
+        seen["snapshot_date"] = snapshot_date
+        return real(ticker=ticker, snapshot_date=snapshot_date,
+                    options=options, **kwargs)
+
+    monkeypatch.setattr(gamma_mod, "build_summary", spy)
+    return seen
+
+
+def _recent_business_day() -> date:
+    """Yesterday-or-earlier business day, so the freshness tier stays 'fresh'.
+
+    as_of=None makes summarize_gamma_levels measure staleness against
+    date.today(), so a fixed fixture date would age into hard-stale.
+    """
+    import numpy as _np
+
+    return _np.busday_offset(date.today(), -1, roll="backward").astype(date)
+
+
+def test_gamma_levels_forwards_a_parseable_date_when_as_of_is_none(
+    patch_query, monkeypatch
+):
+    """as_of=None (the live path) must still yield an ISO date, not a sentinel."""
+    chain_date = _recent_business_day()
+    patch_query("market_session = 'EOD'", _eod_chain_fixture(chain_date))
+    seen = _capture_build_summary_date(monkeypatch)
+
+    out = summarizers.summarize_gamma_levels("SPY")
+
+    assert out["available"] is True
+    forwarded = seen["snapshot_date"]
+    # The contract get_rate_and_yield depends on: bindable as a DATE.
+    assert date.fromisoformat(str(forwarded)[:10]) == chain_date
+
+
+def test_gamma_levels_uses_the_chain_date_not_the_request_date(
+    patch_query, monkeypatch
+):
+    """An EOD chain is re-curved with ITS OWN day's r/q, not the request's.
+
+    A Wednesday run reading Tuesday's chain must price that chain against
+    Tuesday's rates — the snapshot and the rate have to describe the same day.
+    """
+    chain_date = date(2026, 5, 12)
+    patch_query("market_session = 'EOD'", _eod_chain_fixture(chain_date))
+    seen = _capture_build_summary_date(monkeypatch)
+
+    summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+
+    assert str(seen["snapshot_date"])[:10] == "2026-05-12"
+
+
+def test_gamma_levels_realtime_forwards_the_snapshot_date(patch_query, monkeypatch):
+    """The REALTIME phase must supply a date too — it skips the EOD branch."""
+    realtime_df = _eod_chain_fixture(date(2026, 5, 13))
+    realtime_df["snapshot_ts"] = pd.Timestamp("2026-05-13 14:32:00", tz="UTC")
+    patch_query("market_session = 'REALTIME'", realtime_df)
+    seen = _capture_build_summary_date(monkeypatch)
+
+    summarizers.summarize_gamma_levels("SPY")
+
+    assert date.fromisoformat(str(seen["snapshot_date"])[:10]) == date(2026, 5, 13)
+
+
+# ---------------------------------------------------------------------------
+# Regression: the reflection-memory query must be a legal bound statement.
+#
+# `:vec::vector` is not a cast of the bind parameter — SQLAlchemy's text()
+# parser reads `:vec:` and keeps `:vec::vector` verbatim in the SQL while
+# declaring a phantom parameter named `ve`. Postgres then sees a literal
+# colon and rejects the whole statement:
+#
+#   syntax error at or near ":"   (SQLSTATE 42601, position 77)
+#
+# `_query` swallows that (CLAUDE.md Rule 3.7), so retrieve_similar_journal
+# returned [] and every insight report lost its journal reflection section
+# with no visible failure. Measured: 3 per insight-pipeline run, every
+# weekday. `CAST(:vec AS vector)` is the spelling text() parses correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_similar_journal_sql_binds_every_parameter(patch_query):
+    """The emitted SQL must declare exactly the params the call supplies."""
+    import sqlalchemy
+
+    captured: dict[str, object] = {}
+
+    def capture(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return pd.DataFrame()
+
+    import lib.agents.summarizers as mod
+    orig = mod._query_strict
+    mod._query_strict = capture
+    try:
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
+    finally:
+        mod._query_strict = orig
+
+    stmt = sqlalchemy.text(str(captured["sql"]))
+    assert set(stmt._bindparams) == set(captured["params"]), (
+        "bind parameters parsed out of the SQL must match the params passed in"
+    )
+
+
+def test_retrieve_similar_journal_sql_leaves_no_literal_placeholder(patch_query):
+    """Compiling must consume every ':name' — a leftover is the 42601."""
+    import sqlalchemy
+    from sqlalchemy.dialects import postgresql
+
+    captured: dict[str, object] = {}
+
+    def capture(sql, params=None):
+        captured["sql"] = sql
+        return pd.DataFrame()
+
+    import lib.agents.summarizers as mod
+    orig = mod._query_strict
+    mod._query_strict = capture
+    try:
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
+    finally:
+        mod._query_strict = orig
+
+    compiled = str(
+        sqlalchemy.text(str(captured["sql"])).compile(
+            dialect=postgresql.dialect(paramstyle="format")
+        )
+    )
+    assert ":vec" not in compiled
+    assert compiled.count("%s") == 4, (
+        f"expected vec twice plus ticker and k, got: {compiled}"
+    )
+
+
+def test_retrieve_similar_journal_surfaces_db_failure(monkeypatch):
+    """A DB failure must raise, not read as 'no similar trades'.
+
+    The swallowing `_query` is what let the malformed cast above look like
+    an empty result for a week. The orchestrator wraps this call in its own
+    handler, so raising here costs nothing and names the failure in the log.
+    """
+    def boom(sql, params=None):
+        raise RuntimeError("Cloud SQL unreachable")
+
+    monkeypatch.setattr(summarizers, "_query_strict", boom)
+    with pytest.raises(RuntimeError, match="Cloud SQL unreachable"):
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
