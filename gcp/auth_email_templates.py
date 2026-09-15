@@ -159,7 +159,7 @@ def _substitutions(branding: Branding, subject: str, preheader: str) -> dict[str
     if branding.support_email:
         support_line = (
             f' Questions? Write to <a href="mailto:{html.escape(branding.support_email)}"'
-            f' style="color:#0072c6;text-decoration:none;">{html.escape(branding.support_email)}</a>.'
+            f' style="color:#c2410c;text-decoration:none;">{html.escape(branding.support_email)}</a>.'
         )
     return {
         "{{APP_NAME}}": html.escape(branding.app_name),

@@ -127,9 +127,17 @@ the full template object every time.
   `{{SUPPORT_LINE}}`, `{{YEAR}}`, `{{SUBJECT}}`, `{{PREHEADER}}`, `{{CONTENT}}`.
 * The four `<name>.html` files are the card content only. Keep them
   table-based with inline styles; email clients strip `<style>` blocks and
-  ignore web fonts. Light palette on purpose (Gmail and Outlook force it),
-  using the app's light-mode tokens: brand `#0072c6`, text `#1a1c20`,
-  secondary `#485661`, muted `#6e7781`, borders `#e4e7ee`.
+  ignore web fonts. Light palette on purpose (Gmail and Outlook force it):
+  text `#1a1c20`, secondary `#485661`, muted `#6e7781`, borders `#e4e7ee`.
+* **Brand orange, in two tones, and the reason there are two.** The fill is
+  `#ff7a4d` — the orange end of the landing page's dawn gradient
+  (`landing.css --sl-orange`), matching the app's `accent-dawn` default. White
+  text on it measures **2.58:1**, well under the 4.5 that body text needs, so
+  the button label is `#2b1206` (7.4:1) rather than white, and every text
+  *link* uses the darker `#c2410c` (5.18:1 on white) instead of the fill
+  colour. Do not "tidy" these into one value: an `#ff7a4d` link on white is
+  2.58:1 and effectively unreadable. The three brand bars in the header keep
+  the bright `#ff7a4d` because they are decorative, not text.
 * Do not use `%DISPLAY_NAME%` (blank for email/password sign-ups, renders
   "Hello ,") or `%APP_NAME%` (the Firebase project display name, not the
   product). `render_body` raises on either.
