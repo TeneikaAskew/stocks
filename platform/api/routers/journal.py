@@ -338,14 +338,24 @@ class ImportCommitRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _return_pct(direction: str, entry: float, exit_: float) -> float:
+def _return_pct(direction: str, entry: float, exit_: float) -> Optional[float]:
+    """Percent return of a round trip; None when it cannot be computed.
+
+    A zero entry price makes the percentage undefined. This used to
+    fabricate 0.0 there — a value the caller cannot distinguish from a
+    genuinely flat trade, exactly the silent-fallback shape Rule 3.7
+    forbids on a financial field. None propagates instead, and
+    `_derive_status` maps the closed-with-unknown-return trade to
+    'closed'. (Surfaced by Codex on solyra #66, whose journal mock
+    mirrors this helper.)
+    """
     if entry == 0:
-        return 0.0
+        return None
     pct = (exit_ - entry) / entry * 100
     return pct if direction.upper() == "CALL" else -pct
 
 
-def _import_return_pct(entry: float, exit_: float) -> float:
+def _import_return_pct(entry: float, exit_: float) -> Optional[float]:
     """Server-side return_pct for a broker-import round trip
     (`import_commit`) — Task-3-review Important-2 fix.
 
@@ -1579,7 +1589,10 @@ def import_commit(body: ImportCommitRequest, request: Request):
         has_exit = t.exit_ts is not None and t.exit_price is not None
         # `t.return_pct` (client-supplied, advisory only) is deliberately
         # NOT used here — see docstring / Task-3-review Important-2 fix.
-        ret_pct = round(_import_return_pct(t.entry_price, t.exit_price), 4) if has_exit else None
+        # `_import_return_pct` is None for a zero entry price (uncomputable
+        # percentage — Rule 3.7), not only when there is no exit.
+        raw_ret = _import_return_pct(t.entry_price, t.exit_price) if has_exit else None
+        ret_pct = round(raw_ret, 4) if raw_ret is not None else None
         status = _derive_status(has_exit, ret_pct)
         exit_ts = t.exit_ts if has_exit else None
         exit_price = t.exit_price if has_exit else None
