@@ -450,6 +450,8 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 | [#490](https://github.com/TeneikaAskew/stocks/pull/490) | docs(audits): silent-fallback inventory + Rule 3.7 + fallback-guard agent |
 | [#511](https://github.com/TeneikaAskew/stocks/pull/511) | Add four review agents and wire all five delegated reviewers into pre-deploy-check |
 | [#864](https://github.com/TeneikaAskew/stocks/pull/864) | feat: add GitHub REST bridge workflow for blocked API surfaces |
+| [#820](https://github.com/TeneikaAskew/stocks/pull/820) | `run_kind` provenance on `signal_alerts` + `trades`; deleted the script that wrote 844 simulated rows into production |
+| [#1098](https://github.com/TeneikaAskew/stocks/pull/1098) | `run_kind` on the three remaining API-served tables + `tests/meta/test_production_writers.py`: a writer allowlist, a live-only-reader list, freshness predicates and conflict-clause coverage, each mutation-checked, so a new writer or a dropped filter fails CI rather than being found an audit later |
 
 These encode the repository's incident-derived rules. [01](01-PRODUCT-REQUIREMENTS.md) now
 carries a `REQ-` equivalent for each, so the plan and the enforcement agents cannot drift apart.

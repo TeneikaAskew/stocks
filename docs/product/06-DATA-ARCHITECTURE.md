@@ -1,6 +1,6 @@
 # Data Architecture
 
-**Last reviewed:** 2026-08-31 · **Owner:** TBD
+**Last reviewed:** 2026-09-14 · **Owner:** TBD
 
 **VERIFIED — CODE.** 64 relations declared in `gcp/schema.sql` (62 tables + 2 materialized
 views), extracted from **line-start, comment-stripped** `CREATE` statements.
@@ -71,7 +71,7 @@ evidence, this table is a starting point.
 | Relation | Kind | Producer (static) | Consumers | Expected cadence | Known problem |
 |---|---|---|---|---|---|
 | `signal_alerts` | table | `gcp/signal_monitor.py`, `gcp/signal_monitor_eod_resolver.py`, +2 | `gcp/indicator_correlation_job.py`, `gcp/signal_monitor_eod_resolver.py`, +7 | live, per fire | — |
-| `historical_signals` | table | `gcp/historical_signals.py`, `scripts/backfill_timeframe_tags.py` | `gcp/historical_signals.py`, `gcp/research/_archive/p7f_voter_overlay.py`, +5 | TBD | — |
+| `historical_signals` | table | `gcp/historical_signals.py`, `scripts/backfill_timeframe_tags.py` | `gcp/historical_signals.py`, `gcp/research/_archive/p7f_voter_overlay.py`, +5 | Tue–Sat 01:00 ET | 90.9% is `run_kind='backfill'`; `/api/signals` discloses rather than filters |
 | `signal_metrics` | table | `scripts/signal_quality_report.py` | `gcp/signal_quality_alarm.py`, `scripts/analyze_timeframe_heuristic.py`, +1 | TBD | rolling classification defect — [#863](https://github.com/TeneikaAskew/stocks/issues/863) |
 | `exit_config_overrides` | table | `scripts/run_param_sweep.py` | `lib/strategies/exit_config_overrides.py`, `scripts/run_param_sweep.py` | on change (live fire path) | **113 days old, on the live fire path**; guard trips ~2026-11-04 — [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
 
@@ -86,7 +86,7 @@ evidence, this table is a starting point.
 
 | Relation | Kind | Producer (static) | Consumers | Expected cadence | Known problem |
 |---|---|---|---|---|---|
-| `premarket_analysis` | table | `gcp/premarket_brief.py` | `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, +5 | daily premarket | — |
+| `premarket_analysis` | table | `gcp/premarket_brief.py` | `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, +5 | daily premarket | 135 of 395 rows are `run_kind='replay'`; live-only readers filter them out |
 | `premarket_analysis_history` | table | `scripts/backfill_history_tables.py` | `scripts/backfill_history_tables.py` | TBD | — |
 | `playbook_cards` | table | `scripts/analysis/phase6_playbook.py` | `platform/api/routers/playbook.py` | daily premarket | **77 days stale**, rendered as today’s setups — [#861](https://github.com/TeneikaAskew/stocks/issues/861) |
 | `playbook_cards_staging` | table | `platform/api/routers/backtest.py` | **none found** | TBD | — |
@@ -95,7 +95,7 @@ evidence, this table is a starting point.
 
 | Relation | Kind | Producer (static) | Consumers | Expected cadence | Known problem |
 |---|---|---|---|---|---|
-| `insight_reports` | table | `gcp/insight_pipeline_job.py`, `platform/api/routers/insights.py`, +1 | `gcp/auto_refresh_top_n.py`, `gcp/insight_discord_push.py`, +6 | daily / on demand | — |
+| `insight_reports` | table | `gcp/insight_pipeline_job.py`, `platform/api/routers/insights.py`, +1 | `gcp/auto_refresh_top_n.py`, `gcp/insight_discord_push.py`, +6 | daily / on demand | 86 of 807 rows are non-live; History tab discloses, latest-report reads filter |
 | `insight_runs` | table | `gcp/auto_refresh_top_n.py`, `gcp/discord_interactions/main.py`, +2 | `platform/api/routers/insights.py`, `scripts/backfill_history_tables.py` | TBD | — |
 | `insight_reports_history` | table | `gcp/insight_pipeline_job.py`, `scripts/backfill_history_tables.py` | `scripts/backfill_history_tables.py` | TBD | — |
 | `model_routing` | table | `lib/agents/model_routing.py` | `lib/agents/model_routing.py` | TBD | — |
@@ -149,7 +149,8 @@ date, so any counterfactual aggregating across fires must be re-checked against 
 |---|---|
 | ~~[#818](https://github.com/TeneikaAskew/stocks/issues/818)~~ | ~~The daily-trade cap never engages in replay~~ — **CLOSED 2026-08-30**; replay-vs-live inflation measured at **42×**, see [12](12-PR-ISSUE-TRACEABILITY.md#remediation-status-2026-08-30-1755) |
 | [#819](https://github.com/TeneikaAskew/stocks/issues/819) | ORB session window applied against a UTC index in replay |
-| [#820](https://github.com/TeneikaAskew/stocks/issues/820) | `backfill_signals.py` silently scores zero into production `signal_alerts` |
+| ~~[#820](https://github.com/TeneikaAskew/stocks/issues/820)~~ | ~~`backfill_signals.py` silently scores zero into production `signal_alerts`~~ — **CLOSED 2026-09-14**; 432 `signal_alerts` + 412 `trades` marked `backfill`, the script deleted, and the contaminated rows measured at **72.6% win rate against 48.1% live** |
+| ~~[#1095](https://github.com/TeneikaAskew/stocks/issues/1095)~~ | ~~Three more API-served tables could not distinguish a backfill from a live row~~ — **CLOSED 2026-09-14** by [#1098](https://github.com/TeneikaAskew/stocks/pull/1098); see *Provenance labelling* below |
 | [#821](https://github.com/TeneikaAskew/stocks/issues/821) | `compare_tier_fires.py` is a throwaway harness whose numbers gated a calibration PR |
 | [#822](https://github.com/TeneikaAskew/stocks/issues/822) | As-of leakage: `summarize_backtest_metrics` reads the as-of day's completed bar |
 | [#823](https://github.com/TeneikaAskew/stocks/issues/823) | As-of leakage: `refresh_level_map` builds level maps from today's daily bars |
@@ -166,6 +167,53 @@ Silent-empty defects that make a missing read indistinguishable from a legitimat
 [#828](https://github.com/TeneikaAskew/stocks/issues/828), [#927](https://github.com/TeneikaAskew/stocks/issues/927).
 Schema management: [#918](https://github.com/TeneikaAskew/stocks/issues/918) convergence sprawl,
 [#860](https://github.com/TeneikaAskew/stocks/issues/860) live columns absent from `schema.sql`.
+
+### Provenance labelling (`run_kind`)
+
+Five tables now carry `run_kind VARCHAR(16) NOT NULL DEFAULT 'live'`, CHECK-constrained to
+`('live','replay','backfill')`: `signal_alerts` and `trades` ([#820](https://github.com/TeneikaAskew/stocks/pull/820)),
+then `historical_signals`, `insight_reports` and `premarket_analysis`
+([#1098](https://github.com/TeneikaAskew/stocks/pull/1098)).
+
+**The rule is not "delete backfills".** Backfilled analysis is legitimate and in places it is the
+product. The rule is that a backfill write and a live write must never land indistinguishably,
+because then no reader can choose and every aggregate silently includes both — Rule 3.7 applied to
+provenance rather than to a number.
+
+Measured in production on 2026-09-14, before marking:
+
+| Table | Rows marked non-live | Of total | What the label means |
+|---|---|---|---|
+| `historical_signals` | 1,553,629 `backfill` | 1,708,932 (**90.9%**) | `inserted_at` more than 7 days after `entry_time`. One hour on 2026-04-26 wrote 1,090,746 rows spanning 2017–2024 |
+| `insight_reports` | 1 `replay` + 85 `backfill` | 807 | latest history entry is `replay_refresh`, or `created_at` on a later calendar day than `as_of` |
+| `premarket_analysis` | 135 `replay` | 395 | latest history entry is `replay_refresh`, or `analysis_ts` more than a full day after `analysis_date` |
+
+Post-migration counts match those predictions exactly, with zero rows left matching the marking
+predicate. None of that content is fabricated — it is computed from real bars and real model runs.
+The defect was purely that it was unlabelled.
+
+**Readers are split on evidence, not filtered uniformly.** This asymmetry is deliberate and is the
+part most likely to be "fixed" wrongly:
+
+- **Filter to `run_kind = 'live'`** — `/api/dashboard`, `/api/insights`, and the five live
+  trading-path readers (`lib/strategies/insight_cache.py`, `lib/strategies/brief_bias.py`,
+  `lib/movement_statement.py`, `gcp/auto_refresh_top_n.py`, `gcp/insight_discord_push.py`), plus
+  the freshness audit. Serving a replay as *the current* brief or report misrepresents it, and a
+  replay hidden from the dashboard while still driving fires is worse than filtering neither.
+- **Disclose, do not filter** — `/api/signals` and the insights History tab. `signal_alerts` is the
+  record of fires that were *published*; `historical_signals` is the analytical corpus of every
+  signal the strategies would have produced over real bars. Filtering it would discard 90.9% of the
+  history the similar-signals statistics exist to summarise. `run_kind` is returned per row instead,
+  because an unread field is not disclosure (Rule 3.7.1).
+
+**A live write can always displace a non-live row for the same key; the reverse never happens
+silently.** Three separate defects in [#1098](https://github.com/TeneikaAskew/stocks/pull/1098) were
+the same shape — a live-only filter added on the read side with a write side unable to displace what
+the filter now hides, which leaves the key with no servable row at all.
+
+**Consequence for research.** Any query over `historical_signals` that wants same-day-generated
+signals only must now say so; historically it could not. Conversely, a query that filters to
+`run_kind = 'live'` there drops 90.9% of the corpus. See `docs/EXPERIMENT_REGISTRY.md` §2026-09-14.
 
 ## Notable architecture facts
 
@@ -206,7 +254,7 @@ session semantics, and artifacts lacking a version cannot cross into promotion e
 | Aspect | Reference |
 |---|---|
 | Freshness infrastructure | [#323](https://github.com/TeneikaAskew/stocks/pull/323) watchdog re-enable + NULL-close rejection · [#494](https://github.com/TeneikaAskew/stocks/pull/494) per-table `settle_hour_et` · [#644](https://github.com/TeneikaAskew/stocks/pull/644) column-nullity checks · [#759](https://github.com/TeneikaAskew/stocks/pull/759) `job_runs` telemetry |
-| Provenance columns | [#335](https://github.com/TeneikaAskew/stocks/pull/335) `data_as_of` + `freshness_status` on `premarket_analysis` · [#381](https://github.com/TeneikaAskew/stocks/pull/381) `source_data_as_of` on level maps |
+| Provenance columns | [#335](https://github.com/TeneikaAskew/stocks/pull/335) `data_as_of` + `freshness_status` on `premarket_analysis` · [#381](https://github.com/TeneikaAskew/stocks/pull/381) `source_data_as_of` on level maps · [#820](https://github.com/TeneikaAskew/stocks/pull/820) `run_kind` on `signal_alerts` + `trades` · [#1098](https://github.com/TeneikaAskew/stocks/pull/1098) `run_kind` on `historical_signals`, `insight_reports`, `premarket_analysis` + writer/reader guards |
 | Silent-fallback remediation | [#339](https://github.com/TeneikaAskew/stocks/pull/339) `refresh_level_map` · [#490](https://github.com/TeneikaAskew/stocks/pull/490) Rule 3.7 + fallback-guard agent · [#640](https://github.com/TeneikaAskew/stocks/pull/640) no fabricated 0 for `total_gex` · [#785](https://github.com/TeneikaAskew/stocks/pull/785) RVOL fallback · [#791](https://github.com/TeneikaAskew/stocks/pull/791) loud missing vendor gamma |
 | Correctness | [#518](https://github.com/TeneikaAskew/stocks/pull/518) INT-column coercion · [#760](https://github.com/TeneikaAskew/stocks/pull/760) never persist partial current-day bar · [#766](https://github.com/TeneikaAskew/stocks/pull/766) naive-UTC trade timestamps |
 | Code | `gcp/schema.sql`, `gcp/fetchers/`, `lib/data_loader.py`, `gcp/database.py`, `scripts/analysis/phase6_playbook.py` |

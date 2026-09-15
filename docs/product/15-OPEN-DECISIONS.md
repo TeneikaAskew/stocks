@@ -1,6 +1,6 @@
 # Open Product Decisions
 
-**Last reviewed:** 2026-08-30 · **Owner:** TBD
+**Last reviewed:** 2026-09-14 · **Owner:** TBD
 
 Every item is **PRODUCT DECISION REQUIRED**; no target implementation should silently resolve it.
 
@@ -19,6 +19,8 @@ Every item is **PRODUCT DECISION REQUIRED**; no target implementation should sil
 | Portfolio scope | journal only vs positions/exposure/risk portfolio | product boundary and ownership model | TBD |
 | Legacy surfaces | Apps Script, Pine scripts, static reports, archives | current consumers/owners | TBD |
 | `/dev` on public staging | [#943](https://github.com/TeneikaAskew/stocks/issues/943): keep and gate it, or drop it from public deployments — it exposes service account, IAP audience, revision and model state without sign-in when `STAGING_SERVICE=1` (see [09](09-SECURITY-AUTH.md)) | who uses `/dev`, and whether staging must stay public | TBD |
+| Provenance display policy | [#1098](https://github.com/TeneikaAskew/stocks/pull/1098) shipped a split: live-only surfaces (`/api/dashboard`, `/api/insights` latest, the five trading-path readers) **filter** `run_kind='live'`, while `/api/signals` and the insights History tab **disclose** `run_kind` per row and show everything. The open question is what the UI does with a disclosed non-live row — label it, dim it, offer a filter toggle, or nothing. Today nothing reads the field, and an unread field is not disclosure (Rule 3.7.1) | whether users distinguish "what the system published that day" from "what the strategy would have produced over those bars" | TBD |
+| Backfill retention in the analytical corpus | 90.9% of `historical_signals` is `run_kind='backfill'`. Keep it as the corpus for similar-signal statistics (current behaviour), segregate it into a separate table, or require every consumer to state a provenance filter explicitly | whether backfilled and live-generated signals over the same bars are statistically interchangeable | TBD |
 | Stop-loss policy | [#815](https://github.com/TeneikaAskew/stocks/issues/815) proposes **not** adding a live stop-loss to match the backtest; the alternative is changing the backtest instead | which artifact is the source of truth for risk semantics | TBD |
 
 Decision records should capture date, owner, context, alternatives, outcome, consequences, affected feature/requirement IDs, rollout and reversal criteria.
