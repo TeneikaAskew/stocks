@@ -28,50 +28,82 @@ verification was added". This doc is the runbook for the branded versions.
 The action URL host must be in the project's Identity Platform
 **authorized domains** list (the script prints it with `--show`).
 
-## What Google blocks (state on 2026-09-06)
+## Template state (live since 2026-09-15)
 
-The Identity Platform config PATCH was probed field by field against this
-project with the `claude-web@` service account:
+Everything is applied. A `--show` against the project returns:
+
+| Field | Live value |
+|---|---|
+| `senderDisplayName` / From | `Solyra <noreply@stocks.insightscollective.org>` |
+| `callbackUri` | `https://solyra-stocks.lovable.app/auth/action` |
+| `verifyEmailTemplate.subject` | `Confirm your email address for Solyra` |
+| `resetPasswordTemplate.subject` | `Reset your Solyra password` |
+| `changeEmailTemplate.subject` | `Your Solyra sign-in email was changed` |
+| `revertSecondFactorAdditionTemplate.subject` | `Two-step verification was added to your Solyra account` |
+| all four `body` / `bodyFormat` | the HTML in `gcp/auth_email_templates/`, byte-for-byte |
+
+Verified by diffing the live config against `render_all(Branding())` with
+`verify_applied`, not by eye. The action URL was separately confirmed by
+loading a real action link against the deployed SPA: the page reads the
+`mode` / `oobCode` parameters, calls Identity Platform, and renders the
+error card for a used or invalid code.
+
+**Known cosmetic defect, accepted:** each of the four subjects carries a
+trailing newline (`'Reset your Solyra password\n'`), introduced when the
+values were transcribed from a support email where each sat on its own line.
+Mail systems normally strip it from the header. `--apply` therefore still
+reports the four subjects as not-applied and exits 2 even though everything
+else matches.
+
+**That "only the subjects" reading expires each New Year.** The footer renders
+`{{YEAR}}` from `Branding.year`, which defaults to *today's* year, while the
+live bodies stay frozen at the year support applied them (2026). From
+2027-01-01 a default `--apply` will report four *body* mismatches as well, and
+the whole difference will be the copyright line. Pass `--year 2026` to render
+against what is actually live, and treat any body diff that survives that as a
+real one. The same flag is what to use when asking support to re-apply, so the
+footer does not silently jump a year.
+
+### The lock is still on, and this is the part to remember
+
+The API refuses template *content* changes on this project and **still does**,
+even now that the content is customized:
 
 | Field | Result |
 |---|---|
 | `senderDisplayName`, `replyTo` | accepted and persisted |
 | `subject` (any template, any change) | `400 EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED` |
-| `callbackUri` (even the same `firebaseapp.com` host with an extra query param) | `400 EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED` |
-| `body` + `bodyFormat: HTML` | `200 OK`, but the GET afterwards still returns the stock body |
-| A `subject` write identical to the live value | `200 OK` (so it is a change gate, not a permissions error) |
+| `callbackUri` | `400 EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED` |
+| `body` + `bodyFormat: HTML` | `200 OK`, but the GET afterwards still returns the previous body |
+| A `subject` write identical to the live value | `200 OK` (a change gate, not a permissions error) |
 
-So Google is refusing template *content* customization on this project
-(the `customized` flag on every template is unset). The sender name
-"Solyra" is live; the stock subjects, stock body, and Google's
-`firebaseapp.com/__/auth/action` handler page are still in effect.
-`--apply` prints exactly this split and exits 2 while it holds.
+So the current content did **not** get there through this script, and the
+next change will not either. It was applied by Firebase engineering through
+support case **10423967**, in two rounds: the action URL first, then the four
+subjects and bodies. The console editor is blocked the same way as the API.
 
-Ways to unlock, in order of effort:
+**To change a subject, a body, or the action URL from here:** run
+`--render-dir` to produce the HTML, then reply on a Firebase support case
+asking engineering to apply the files and the subject lines. Expect to supply
+a rough volume estimate for the transactional mail. Do not spend time
+debugging `EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED` or re-scoping credentials; the
+lock is project-level and is not an auth problem.
 
-1. **Console editor.** Identity Platform → Templates → pencil icon. If the
-   console lets you change the subject and "Customize action URL" to
-   `https://solyra-stocks.lovable.app/auth/action`, the lock is on the API
-   surface only, and a console edit of the four subjects + the action URL is
-   a five-minute job. Re-run `--apply` afterwards to confirm (`--show`
-   should then report `callbackUri` as the SPA and the phase-content
-   PATCH may start passing too).
+### Ways to get self-service back, in order of effort
+
+1. **Ask support to lift the lock.** The same case that applied the content
+   is the place to ask whether the project can be unlocked for normal
+   console/API edits. Cheapest if it works.
 2. **Custom SMTP.** Templates → SMTP settings: point the project at your own
    sending provider (SendGrid, Postmark, Resend, Mailgun, or a Google
    Workspace relay) with `noreply@stocks.insightscollective.org` as the
-   sender. Google's own reference config for `CUSTOM_SMTP` shows the HTML
-   `body` alongside it, and it also solves the From-domain question with the
-   provider's DKIM/SPF instead of Firebase's. Needs a provider account and
-   credentials; then re-run `--apply`.
-3. **Own the sending entirely** (the "level 3" option): generate action
-   links server-side with firebase-admin (`generate_password_reset_link`,
+   sender. Google's reference config for `CUSTOM_SMTP` shows the HTML `body`
+   alongside it. Needs a provider account and credentials.
+3. **Own the sending entirely** (the "level 3" option): generate action links
+   server-side with firebase-admin (`generate_password_reset_link`,
    `generate_email_verification_link`) and send through a transactional
-   provider with these same HTML files. Google's template lock becomes
+   provider with these same HTML files. The template lock becomes
    irrelevant, at the cost of a vendor and a secret in the API service.
-
-Until one of these lands, the Solyra `/auth/action` page is deployed but
-unreachable from the emails (they still link to Google's page), and the
-forgot-password / verification flows work with Google's stock emails.
 
 ## Apply / update the templates
 
@@ -88,7 +120,7 @@ python -m gcp.auth_email_templates --render-dir /tmp/auth-emails
 
 # Apply in two phases (sender fields, then subject/body/action URL), then
 # re-read the config and diff it against what was sent. Exit 0 = everything
-# landed; 2 = Google refused the content phase (see "What Google blocks").
+# landed; 2 = a content field did not match afterwards (see "Template state").
 python -m gcp.auth_email_templates --apply
 ```
 
@@ -96,10 +128,17 @@ Defaults (all overridable by flag): product name `Solyra`, SPA origin
 `https://solyra-stocks.lovable.app`, action path `/auth/action`, sender name
 `Solyra`, sender local part `noreply`. Reply-to is carried over from the live
 config unless `--reply-to` is given. `--support-email` adds a "Questions?
-Write to ..." line to the footer.
+Write to ..." line to the footer. `--year` pins the footer copyright year,
+which otherwise follows today's date and drifts from the frozen live bodies.
 
-When the SPA moves to its own domain, re-run with `--app-url https://<host>`
-after adding that host to authorized domains. Nothing else changes.
+When the SPA moves to its own domain, **`--app-url` alone will not move the
+emails.** It changes `callbackUri`, which is exactly what the lock refuses, so
+the run exits 2 and every emailed link keeps pointing at the old host. The
+sequence is: add the new host to authorized domains, run `--render-dir` with
+`--app-url https://<host>` to produce the HTML carrying the new links, then ask
+Firebase support to apply that action URL and those bodies, quoting the full
+URL you want (`https://<host>/auth/action`). Treat the old host as live until
+`--show` reports the new `callbackUri`.
 
 Auth: `GOOGLE_OAUTH_ACCESS_TOKEN` if set (used as-is), else
 `CLOUDSDK_AUTH_ACCESS_TOKEN`, else `gcloud auth print-access-token`, else

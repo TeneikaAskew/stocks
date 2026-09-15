@@ -330,3 +330,26 @@ def test_dry_run_prints_the_phased_requests_apply_would_send(capsys):
     assert '"replyTo": "help@live.test"' in out  # live value carried over, visible in the preview
     assert "senderLocalPart" not in out.split("── phase content ──")[0].split("updateMask=")[1].split("\n")[0]
     assert "nothing was written" in out
+
+
+def test_year_flag_pins_the_footer_so_the_live_bodies_stay_diffable(tmp_path):
+    """The footer carries {{YEAR}} from Branding.year, which defaults to *today's*
+    year. The live bodies are frozen at whatever year Firebase support applied
+    them, and the project's template lock means we cannot re-apply to catch up.
+    So from the next new year, rendering with the default would differ from live
+    in four bodies for a reason that is not a real drift. --year pins it."""
+    out = tmp_path / "pinned"
+    rc = aet.main(["--render-dir", str(out), "--year", "2026"])
+    assert rc == 0
+    for f in out.glob("*.html"):
+        assert "&copy; 2026 Solyra" in f.read_text(), f.name
+
+    other = tmp_path / "next"
+    assert aet.main(["--render-dir", str(other), "--year", "2027"]) == 0
+    assert "&copy; 2027 Solyra" in (other / "verifyEmailTemplate.html").read_text()
+
+    # Omitting the flag keeps the current-year default rather than a pinned one.
+    import datetime as _dt
+    auto = tmp_path / "auto"
+    assert aet.main(["--render-dir", str(auto)]) == 0
+    assert f"&copy; {_dt.date.today().year} Solyra" in (auto / "verifyEmailTemplate.html").read_text()
