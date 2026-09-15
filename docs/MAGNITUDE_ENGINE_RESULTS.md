@@ -1213,3 +1213,38 @@ model-version groups and age out over the week.
 `magnitude-models/production/{SPY,QQQ,IWM}/5m/LATEST` (their contracts
 already carry priors); both jobs back to
 `trading-system@sha256:7c3afb98…`.
+
+### 11. First served session, predicted vs actual (2026-09-14 bars, read 2026-09-15)
+
+Per-bar data: `docs/research/2026-09-15/magnitude_0914_predicted_vs_actual.csv`
+(450 rows: both models × three tickers × the session). "Actual" is the
+training label, `|next_close − next_open| / atr_20` on the next bar of the
+same session, bucketed at 0.5 / 1.0 / 1.5, computed in SQL from
+`strat_features_5m`; the last bar of the session has no next bar and is
+excluded (74 scored bars per ticker).
+
+Argmax would have named TIGHT on 74/74 bars for every model and ticker.
+The decision rule, on the promoted `6hp7l` models:
+
+| ticker | actual T/N/X/EXPL | tail calls | EXPLOSIVE calls | exact EXPLOSIVE hits | real EXPLOSIVE bars caught |
+|---|---|---|---|---|---|
+| QQQ | 66/6/0/2 | 8 | 8 | 2 (25% vs 2.7% base, lift 9.3×) | 2/2 |
+| IWM | 45/17/10/2 | 24 | 19 | 2 (11%, lift 3.9×); 8/19 landed ≥ EXPANDED | 2/2 |
+| SPY | 70/1/3/0 | 2 | 0 | none occurred; 1/2 EXPANDED calls hit | — |
+
+IWM's EXPLOSIVE calls form one block, 12:00-13:55 ET, which is where the
+session's large moves were (1.86 and 2.10 ATR at 12:40 / 12:50, P(EXPLOSIVE)
+0.30 and 0.23 on exactly those bars). QQQ's two real EXPLOSIVE bars (11:45,
+11:50: 1.83 and 2.43 ATR) were both called. SPY was calm and the calibrated
+model said so. `c49qf` on the same bars: IWM 35 EXPLOSIVE calls for the same
+2 hits (lift 2.1×, the compressed-band shape of §9), QQQ 5 calls / 1 hit,
+SPY 1 call / 0 hits. One session and four real EXPLOSIVE events: consistent
+with the walk-forward lift of 3-5×, not evidence beyond it.
+
+**Detector change shipped (same day).** `audit-magnitude-drift`'s HIGH
+tier now requires `MIN_SESSIONS_FOR_HIGH` (5) sessions of bars for the
+cell's timeframe (390 at 5m, 130 at 15m, 65 at 30m); a share over the 90%
+ceiling on a shorter sample is MEDIUM with the reason in the finding. This
+is what SPY 5m's calm session needed. A constant model is now MEDIUM for
+its first week and HIGH after; the render backstop covers the card in the
+meantime. An unknown timeframe raises rather than guessing the sample.
