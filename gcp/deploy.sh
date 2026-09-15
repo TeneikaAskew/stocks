@@ -4984,6 +4984,7 @@ case "${1:-help}" in
     direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
     magnitude-recal) deploy_magnitude_recal ;;   # research image (already built)   # research image; build separately (build-research)
     magnitude-inference) _run build_research_image deploy_magnitude_inference ;;
+    magnitude-inference-only) deploy_magnitude_inference ;;   # research image; build separately (build-research)
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend) _run build_image deploy_weekend ;;
     fetchers) _run build_image deploy_fetchers backfill_watchlist ;;
