@@ -27,9 +27,9 @@ Merged 2026-06-10 from:
 | E-21, E-22 | P (P1–P7), D | Archived P7 pipeline + pre-registered program + exec backtests |
 | E-23 | D, G3 | Cost / EV / friction |
 | E-24 | DQ1 + NAN_AUDIT + DATA_DICTIONARY | Data-quality remediation + gamma rename |
-| E-25 | A8 (`STRAT-NEXTBAR`) | Historical tape + next-bar directional forward-walk |
+| E-25 | `CAT-A8` (`STRAT-NEXTBAR`) | Historical tape + next-bar directional forward-walk |
 | E-26…E-31, E-33 | — (2026-07-06 scratch session) | Forward-window / directional re-probe |
-| E-32 | A5 / breakout-meta | BREAKOUT-META execution-quality + OFI-proxy follow-up |
+| E-32 | `CAT-A5` (`STRAT-BREAKOUT-META`) | BREAKOUT-META execution-quality + OFI-proxy follow-up |
 | E-34 | direction_program Phase 2 | Pure-prediction feature-lever ablation |
 
 > When a number in Book I and Book II disagree, the deeper per-fold doc wins
@@ -625,7 +625,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
     --args="^|^-m|scripts.strat_struct_backtest|--tickers=SPY,QQQ,IWM,AAPL,NVDA|--timeframes=1d,1w|--hold=oc|--slippage-bps=2|--band=0.05"
   ```
   Output → Cloud Logging for the execution. Use `--tasks 1` (the job defaults to 27 parallel tasks) and the `^|^` arg delimiter (so comma-separated ticker lists survive). Build with `./gcp/deploy.sh build-research`; SHA-fingerprint-verify scripts in the image before each run (verified 2026-06-09: all four `strat_*` scripts matched local `sha256sum`).
-- **Open items:** ✅ **CLOSED 2026-06-09** — de-mechanize CLV (done: `strat_clv_demech.py` → edge is gap-mechanical, CLV_LAG1≈0); costed underlying backtest of the structural residual (done: `strat_struct_backtest.py` → not tradeable daily, weekly is beta). Remaining: the directional read is best used as the PRIMARY side of a barrier strategy — see BREAKOUT-META (E-18/E-24), the only net-tradeable path in this family.
+- **Open items:** ✅ **CLOSED 2026-06-09** — de-mechanize CLV (done: `strat_clv_demech.py` → edge is gap-mechanical, CLV_LAG1≈0); costed underlying backtest of the structural residual (done: `strat_struct_backtest.py` → not tradeable daily, weekly is beta). Remaining: the directional read is best used as the PRIMARY side of a barrier strategy — see BREAKOUT-META (E-18/E-32), the only net-tradeable path in this family.
 
 ---
 
@@ -1120,7 +1120,7 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Verdict:** ✅ positive IC+Sharpe @15m+ (gross, pre-deep-cost). **Artifacts:** `docs/research/2026-05-24/P7_*`, `p7-analysis/`.
 
 ### P7.2 — 10-model family robustness
-- **Status:** success (signal linear). **Models:** Ridge, Lasso, ElasticNet, BayesRidge, PLS-5, PLS-10, LGBM(+shallow). **Result (60m):** PLS-10 +2.63, BayesRidge +2.59, Ridge +2.58, Lasso +2.52, LGBM +1.42 Sharpe — 8 linear cluster tight. **Verdict:** ✅ genuinely linear @60m. **Artifacts:** `gcp/research/p7_analyze_tf.py`.
+- **Status:** success (signal linear). **Models:** Ridge, Lasso, ElasticNet, BayesRidge, PLS-5, PLS-10, LGBM(+shallow). **Result (60m):** PLS-10 +2.63, BayesRidge +2.59, Ridge +2.58, Lasso +2.52, LGBM +1.42 Sharpe — 8 linear cluster tight. **Verdict:** ✅ genuinely linear @60m. **Artifacts:** `gcp/research/_archive/p7_analyze_tf.py`.
 
 ### P7.3 — Per-ticker single-model training
 - **Status:** success (IWM standout). **Result:** **IWM Sharpe +3.24 (30m LGBM), +3.15 (15m), WR 58–59%**; QQQ +2.48 (15m); SPY +1.67 (15m) but best 60m linear IC 0.058; SPY/QQQ linear negative @15m, LGBM positive. **Verdict:** ✅ per-ticker > pooled @15–30m; IWM special. **Note:** these Sharpes are pre-deep-cost; P7-T1/T3 show net-negative after 10bps. **Artifacts:** `data/p7_per_ticker/{TK}_{TF}_model_summary.csv`.
@@ -1129,7 +1129,7 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Status:** success (regime structure). **Target:** hit_pct @60m. **Results (top):** SPY `322_bull×GEX_MID_VEX_LOW` 80% (N=30); IWM `11_inside×GEX_HIGH_VEX_MID` 73.3% (+47.2 bps); QQQ `322_bull×GEX_HIGH_VEX_LOW` 71.7%; anti: QQQ `clean_2d_bear×GEX_LOW_VEX_MID` 33.3%. **Verdict:** ✅ regime-dependent edge structure (small N). **Artifacts:** `p7-analysis-per-ticker/*/03b_combo_gex.csv`.
 
 ### P7-T1.1 — Next-candle classifier
-- **Status:** classifier works, P&L fails. **Target:** next_candle_type (categorical). **Data:** SPY/IWM/QQQ 5m, 195–200k train, Jan–May 2026 OOS. **Result:** **58–60% OOS accuracy** (QQQ 59.7% post data-fix). **Verdict:** ⚠️ accurate but doesn't survive to P&L. **Bug:** same-day VIX leak (trivial). **Artifacts:** `gcp/research/p7b_next_candle_classifier.py`.
+- **Status:** classifier works, P&L fails. **Target:** next_candle_type (categorical). **Data:** SPY/IWM/QQQ 5m, 195–200k train, Jan–May 2026 OOS. **Result:** **58–60% OOS accuracy** (QQQ 59.7% post data-fix). **Verdict:** ⚠️ accurate but doesn't survive to P&L. **Bug:** same-day VIX leak (trivial). **Artifacts:** `gcp/research/_archive/p7b_next_candle_classifier.py`.
 
 ### P7-T1.2 — Stacked regression
 - **Status:** failed. **Method:** 5-fold OOF classifier probs → layer-2 LGBM regressor. **Result:** baseline IC 0.0295 → stacked **0.0197** (down); L/S +0.68 bps (negligible). **Verdict:** ❌ classifier adds 0 (overlapping signal). **Artifacts:** `p7c_stacked_regression.py`.
@@ -1364,7 +1364,7 @@ Continues **E-24/DQ1** (data-quality remediation) and the **L-series**
 ## DQ3 — `run_kind` on the three remaining API-served tables
 
 `signal_alerts` and `trades` gained `run_kind` in #820 after
-`scripts/backfill_signals.py` was found writing 432 + 412 **simulated** rows
+`scripts/backfill_signals.py` (no longer in the tree as of 2026-09-15; the finding stands as a record) was found writing 432 + 412 **simulated** rows
 into production with forward-looking perfect-fill exits — those rows read
 **72.6% win rate against 48.1% on live ones**. That fix stopped at those two
 tables. DQ3 is the sweep for the same shape everywhere else. The audit question

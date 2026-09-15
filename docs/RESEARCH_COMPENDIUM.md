@@ -836,7 +836,8 @@ Prompted by "what would make the magnitude model effective?" A scratch-harness
 program (single chronological 70/30 split, IWM/SPY/QQQ 5m, tempered α=0.75 —
 **weaker than the 8-fold purged/embargoed + EV + gate-7 standard**) tested target
 reframing, feature additions, and direction. Full record:
-`EXPERIMENT_REGISTRY.md` §2026-07-06 (E-25…E-31 + P0.1); model entry
+`EXPERIMENT_REGISTRY.md` §2026-07-06 (E-26…E-31, E-33 + P0.1 — the session's
+feature-family ablation was renumbered 2026-09-15 from E-25 to E-33); model entry
 `MODEL_REGISTRY.md` §C-mf (PROPOSED/OPEN); addenda in
 `MAGNITUDE_ENGINE_RESULTS.md` and `DIRECTION_RESEARCH_RESULTS.md`.
 

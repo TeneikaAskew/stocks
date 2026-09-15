@@ -18,6 +18,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [06 Data Architecture](06-DATA-ARCHITECTURE.md) | What are the 64 relations and how does data flow? |
 | [07 Model Registry](07-MODEL-REGISTRY.md) | Which rules and models exist, and are they trustworthy? |
 | [07 Experiment traceability](07-MODEL-REGISTRY.md#experiment-traceability) | Which experiments (`E-01…E-34`) produced each model's verdict, and where is the long-form evidence? |
+| [07 Documentation coverage](07-MODEL-REGISTRY.md#documentation-coverage-and-freshness) | Which model documentation is missing, stale or contradicted by the code, and what is being done about it? |
 | [08 Ai Agent Architecture](08-AI-AGENT-ARCHITECTURE.md) | What are the 14 LLM nodes actually wired today? |
 | [09 Security Auth](09-SECURITY-AUTH.md) | How are identity, access, tenancy and perimeter separated? |
 | [10 Operations Reliability](10-OPERATIONS-RELIABILITY.md) | How is production trust measured and recovered? |
@@ -94,7 +95,12 @@ documentation. Where deployment config and source defaults disagree, **both** ar
 **Capability status:** Production · Production but needs remediation · Shadow · Experimental ·
 Research · Incomplete · Planned · Deprecated · Dormant · Broken · Retire candidate.  
 **Model status:** Production · Shadow · Experimental · Research · Failed · Retest Required ·
-Invalidated · Archived · Retired.
+Invalidated · Archived · Retired.  
+**Doc health** — whether a model's documentation still agrees with its code, which none of the
+ladders above express: `CURRENT` (a doc states the model's behaviour and nothing in the code
+contradicts it) · `UNVERIFIED` (documented, but the claim has not been checked against the
+code, or the check is not possible offline) · `CONTRADICTED` (the code or a live signal
+disagrees with what the doc says) · `NONE` (no doc describes this model).
 
 **Monitoring fields.** Every capability record in [02](02-FEATURE-CATALOG.md) carries Owner,
 Status, Priority, Target Phase, Target Release, Last Reviewed, Evidence Status, Blocking Issues
