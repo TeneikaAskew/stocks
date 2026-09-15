@@ -414,9 +414,10 @@ def test_main_majority_threshold_counts_servable_cells_only(monkeypatch):
     assert rc == 1, "2/2 servable cells failed — partial success is a lie here"
 
 
-def _never_promoted_bucket(*, prefix_has_artifacts):
-    """A stub bucket with no LATEST pointer; the client's list_blobs says
-    whether anything else exists under the production prefix."""
+def _never_promoted_bucket(*, blob_names):
+    """A stub bucket with no LATEST pointer; the client's list_blobs returns
+    one object per name in `blob_names`, which is what the loader inspects
+    to tell never-promoted from corrupted-publish."""
     def make(name):
         b = MagicMock()
         b.exists.return_value = False
@@ -425,16 +426,23 @@ def _never_promoted_bucket(*, prefix_has_artifacts):
     bucket.blob.side_effect = make
     client = MagicMock()
     client.bucket.return_value = bucket
-    client.list_blobs.return_value = iter(
-        [MagicMock()] if prefix_has_artifacts else [])
+    blobs = []
+    for name in blob_names:
+        b = MagicMock()
+        b.name = name
+        blobs.append(b)
+    client.list_blobs.return_value = iter(blobs)
     return client
+
+
+_PFX = "magnitude-models/production/SPY/15m"
 
 
 def test_loader_raises_never_promoted_only_for_an_empty_prefix():
     from gcp.research.magnitude_engine import mag_inference as mod
     from gcp.research.magnitude_engine.mag_config import NeverPromoted
 
-    client = _never_promoted_bucket(prefix_has_artifacts=False)
+    client = _never_promoted_bucket(blob_names=[])
     with patch("google.cloud.storage.Client", return_value=client):
         with pytest.raises(NeverPromoted, match="ever been published"):
             mod._load_model_and_version("SPY", "15m")
@@ -449,7 +457,51 @@ def test_loader_keeps_hard_failure_for_a_corrupted_publish():
     from gcp.research.magnitude_engine import mag_inference as mod
     from gcp.research.magnitude_engine.mag_config import NeverPromoted
 
-    client = _never_promoted_bucket(prefix_has_artifacts=True)
+    client = _never_promoted_bucket(blob_names=[
+        f"{_PFX}/run-1/model.joblib",
+        f"{_PFX}/run-1/VERSION",
+    ])
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(FileNotFoundError,
+                           match="run artifacts exist") as excinfo:
+            mod._load_model_and_version("SPY", "15m")
+    assert not isinstance(excinfo.value, NeverPromoted)
+
+
+def test_loader_treats_all_runs_gate_blocked_as_never_promoted():
+    """A gate rejection is an EXPECTED artifacts-without-LATEST state:
+    _persist_production_model uploads the candidate's artifacts plus a
+    PROMOTION_BLOCKED marker and leaves LATEST unwritten (mag_walk_forward,
+    #1099 follow-up). When every run under the prefix carries the marker,
+    the cell has never been promoted — a skip, not a corrupted publish."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import NeverPromoted
+
+    client = _never_promoted_bucket(blob_names=[
+        f"{_PFX}/run-1/model.joblib",
+        f"{_PFX}/run-1/VERSION",
+        f"{_PFX}/run-1/PROMOTION_BLOCKED",
+        f"{_PFX}/run-2/model.joblib",
+        f"{_PFX}/run-2/PROMOTION_BLOCKED",
+    ])
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(NeverPromoted, match="gate-blocked"):
+            mod._load_model_and_version("SPY", "15m")
+
+
+def test_loader_keeps_hard_failure_when_an_unmarked_run_exists():
+    """One gate-blocked run does NOT excuse a second run that has artifacts
+    but neither a PROMOTION_BLOCKED marker nor a LATEST pointer — that run
+    is an interrupted publish and must still fail loud."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import NeverPromoted
+
+    client = _never_promoted_bucket(blob_names=[
+        f"{_PFX}/run-1/model.joblib",
+        f"{_PFX}/run-1/PROMOTION_BLOCKED",
+        f"{_PFX}/run-2/model.joblib",
+        f"{_PFX}/run-2/VERSION",
+    ])
     with patch("google.cloud.storage.Client", return_value=client):
         with pytest.raises(FileNotFoundError,
                            match="run artifacts exist") as excinfo:

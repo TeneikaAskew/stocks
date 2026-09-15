@@ -201,7 +201,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 <!-- inventory:writes:start -->
 ### `admin_refresh_leases`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1452](../../../platform/api/routers/admin.py#L1452), [1455](../../../platform/api/routers/admin.py#L1455), [1478](../../../platform/api/routers/admin.py#L1478)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1454](../../../platform/api/routers/admin.py#L1454), [1457](../../../platform/api/routers/admin.py#L1457), [1480](../../../platform/api/routers/admin.py#L1480)
 
 ### `archive_yahoo_earnings_options_snapshots`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -429,7 +429,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/profile.py`](../../../platform/api/routers/profile.py) — line [187](../../../platform/api/routers/profile.py#L187)
 
 ### `user_roles`
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1109](../../../platform/api/routers/admin.py#L1109), [1122](../../../platform/api/routers/admin.py#L1122)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1111](../../../platform/api/routers/admin.py#L1111), [1124](../../../platform/api/routers/admin.py#L1124)
 
 ### `user_style_results`
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [845](../../../platform/api/routers/backtest.py#L845)
@@ -842,8 +842,8 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/routers/profile.py`](../../../platform/api/routers/profile.py) — line [136](../../../platform/api/routers/profile.py#L136)
 
 ### `user_roles`
-- [`platform/api/auth.py`](../../../platform/api/auth.py) — line [230](../../../platform/api/auth.py#L230), [275](../../../platform/api/auth.py#L275)
-- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [986](../../../platform/api/routers/admin.py#L986)
+- [`platform/api/auth.py`](../../../platform/api/auth.py) — line [250](../../../platform/api/auth.py#L250), [295](../../../platform/api/auth.py#L295)
+- [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [988](../../../platform/api/routers/admin.py#L988)
 
 ### `user_style_results`
 - _no readr found in gcp/, lib/, scripts/, platform/api_

@@ -32,6 +32,7 @@ from api.routers.live import (  # noqa: E402
     MARKET_HOLIDAYS_2026,
 )
 from lib.config import load_config  # noqa: E402
+from api import auth as _auth  # noqa: E402  (AUTH_MODE validated at import there)
 from api.schemas import (
     IndicatorConfigResponse,
     MarketHoursResponse,
@@ -51,7 +52,10 @@ def get_firebase_config() -> dict:
     token verification). Served from env so one image works in every
     environment. Must stay reachable pre-auth (see api/auth._OPEN_API_PREFIXES).
     """
-    mode = os.environ.get("AUTH_MODE", "open").strip().lower()
+    # api.auth validated this value at import (unknown modes refuse to
+    # start), so it always matches RuntimeConfigResponse's Literal. Read as
+    # an attribute so tests that monkeypatch api.auth.AUTH_MODE are seen.
+    mode = _auth.AUTH_MODE
     api_key = os.environ.get("FIREBASE_API_KEY", "").strip()
     firebase = None
     if mode == "firebase" and api_key:
