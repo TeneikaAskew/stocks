@@ -180,6 +180,8 @@ differences (CLAUDE.md "one source of truth").
 
 ### 5.2 A2 — Magnitude engine ⚠️ (predictable, but priced)
 
+- **2026-09-14 update (E-26):** the engine's two promotion criteria (beat the class prior on log-loss; argmax share within 10 pp of the true modal share) were measured mutually unsatisfiable for any class weighting, because a calibrated model on a 64%-TIGHT label set argmax-picks TIGHT on ~97% of bars by construction. The serving artifacts were constants. Every place a bucket is named now uses one decision rule (P(bucket) ≥ 2× its prior); the honest tail signal at that point is an EXPLOSIVE call on ~13% of bars at 8–9% precision (base 2.6%). The gate-7 verdict below is unchanged. `docs/MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14.
+
 - **Predicts:** `magnitude_bucket` of |next_close−next_open|/ATR20 — TIGHT (<0.5),
   NORMAL (0.5–1.0), EXPANDED (1.0–1.5), **EXPLOSIVE (≥1.5)**.
 - **Why:** the literature (§8) says magnitude/volatility is the predictable
