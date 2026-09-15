@@ -40,6 +40,19 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Ceiling on how many tickers either producer may hand to this queue in one
+# run. It lives here, not in a caller, because it bounds a shared resource:
+# every enqueued ticker becomes its own Cloud Run execution, and `jobs.run`
+# returns an Operation the moment the execution is created, so the queue's
+# max-concurrent-dispatches frees its slot immediately and N enqueues become
+# N concurrent pipelines against one Vertex quota. That is the 429 pressure
+# this module's PR started from.
+#
+# Both producers read THIS object. `insight_pipeline_job` runs an oversized
+# batch in-process instead; `auto_refresh_top_n` has no in-process path and
+# clamps its top-N, logging what it dropped.
+FANOUT_MAX_TICKERS = 5
+
 DEFAULT_PROJECT = "adept-mountain-474619-d4"
 DEFAULT_REGION = "us-east1"
 DEFAULT_QUEUE = "insight-pipeline-queue"

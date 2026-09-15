@@ -60,7 +60,11 @@ from uuid import uuid4
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from gcp.insight_tasks import EnqueueOutcome, enqueue_insight_task  # noqa: E402
+from gcp.insight_tasks import (  # noqa: E402
+    FANOUT_MAX_TICKERS as _FANOUT_MAX_TICKERS,
+    EnqueueOutcome,
+    enqueue_insight_task,
+)
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
@@ -558,16 +562,12 @@ def _update_explicitly_requested(arg_update: bool) -> bool:
     return bool(arg_update or os.environ.get("INSIGHT_UPDATE") == "true")
 
 
-# The queue's max-concurrent-dispatches bounds in-flight HTTP requests, NOT
-# running executions: Cloud Run's jobs.run returns a long-running Operation
-# as soon as the execution is created, so each :run response frees its queue
-# slot immediately and N enqueued tickers become N concurrent executions.
-# That is fine at the daily 3 and wrong at DEFAULT_MAX_BATCH=10, which would
-# put roughly 10x the analyst fan-out against Vertex at once -- the opposite
-# of what this change is for. Cap the batch size that may fan out; anything
-# larger runs in-process, where the concurrency is one ticker at a time.
-# (Codex, PR #1094.)
-FANOUT_MAX_TICKERS = 5
+# Bound on concurrent executions, shared with auto_refresh_top_n. Defined in
+# gcp/insight_tasks.py because it constrains the queue and the Vertex quota
+# behind it, not this module: a second copy here would drift from the other
+# producer's. Re-exported at module level so `job.FANOUT_MAX_TICKERS` keeps
+# resolving for existing callers and tests.
+FANOUT_MAX_TICKERS = _FANOUT_MAX_TICKERS
 
 
 def _fanout_enabled() -> bool:

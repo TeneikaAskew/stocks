@@ -14,9 +14,13 @@ land fresh data and before premarket-brief at 8:30. The job:
      `insight-pipeline` Cloud Run job in on-demand mode (same path
      the UI's refresh button uses).
 
-Cost control: the only knob is N. With max-concurrent-dispatches=5 on
-the Cloud Tasks queue, top-3 reports run in parallel and finish in
-~90s — comfortably before the premarket-brief at 8:30.
+Cost control: the only knob is N, and it is bounded. N above
+`insight_tasks.FANOUT_MAX_TICKERS` is clamped with a WARNING, because
+every enqueued ticker becomes its own Cloud Run execution against one
+Vertex quota and the queue does not throttle that — `jobs.run` returns
+an Operation as soon as the execution is created, freeing the dispatch
+slot immediately. Top-3 reports run in parallel and finish in ~90s,
+comfortably before the premarket-brief at 8:30.
 
 Exit code covers DISPATCH, not reports: a green run means the tickers
 were handed to Cloud Tasks, and each child owns its own outcome in
@@ -45,7 +49,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.agents.ranker import rank_tickers  # noqa: E402
-from gcp.insight_tasks import EnqueueOutcome, enqueue_insight_task  # noqa: E402
+from gcp.insight_tasks import FANOUT_MAX_TICKERS, EnqueueOutcome, enqueue_insight_task  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -212,8 +216,26 @@ def main() -> int:
         logger.info("no ranked tickers — exiting cleanly")
         return 0
 
-    # 2. Pick top-N
-    top = ranked[: args.top_n]
+    # 2. Pick top-N, bounded by the shared fan-out ceiling.
+    #
+    # Every enqueued ticker becomes its own Cloud Run execution, and they all
+    # hit one Vertex quota — the 429 pressure this PR started from. The
+    # scheduled pipeline answers an oversized batch by running it in-process;
+    # this job has no in-process path (deliberately — see the exit-code note
+    # below), so it clamps and says so. Delivering the highest-ranked N is
+    # this job's purpose; delivering all of them at once is not worth
+    # recreating the failure mode.
+    effective_top_n = min(args.top_n, FANOUT_MAX_TICKERS)
+    if effective_top_n < args.top_n:
+        logger.warning(
+            "top_n=%d exceeds FANOUT_MAX_TICKERS=%d; pre-warming the top %d "
+            "only. %d enqueues would become %d concurrent executions against "
+            "one Vertex quota. Raise the ceiling in gcp/insight_tasks.py if "
+            "the quota genuinely supports it.",
+            args.top_n, FANOUT_MAX_TICKERS, effective_top_n,
+            args.top_n, args.top_n,
+        )
+    top = ranked[:effective_top_n]
     logger.info("top-%d: %s", len(top),
                 [f"{r['ticker']}({r['score']:.2f})" for r in top])
 

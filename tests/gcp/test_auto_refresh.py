@@ -442,3 +442,74 @@ def test_an_all_cached_run_still_exits_zero(monkeypatch):
     monkeypatch.setattr(ar, "_is_cached_today", lambda tk: True)
     monkeypatch.setattr("sys.argv", ["prog"])
     assert ar.main() == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Both producers share one ceiling on concurrent executions.
+#
+# Codex P2 on #1094. FANOUT_MAX_TICKERS exists because N enqueued tickers
+# become N concurrent Cloud Run executions hitting Vertex at once — the
+# pressure that produced the 429 this branch started from. The scheduled
+# pipeline respects it; auto-refresh called the shared enqueuer directly
+# in its own loop, so the ceiling did not apply to this producer at all.
+#
+# Not reachable on defaults (top_n is 3), and Codex's "up to 20" overstates
+# it — `--ranker-limit` sizes the CANDIDATE POOL, and `top = ranked[:top_n]`
+# is what bounds the enqueue. The exposure is the knob: the module docstring
+# advertises N as "the only knob", so raising it is the expected way to use
+# this job, and nothing stopped it launching 10 at once.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _count_enqueued(monkeypatch, tickers: list[str], top_n: int) -> list[str]:
+    from gcp import auto_refresh_top_n as ar
+
+    sent: list[str] = []
+    monkeypatch.setattr(
+        ar, "rank_tickers",
+        lambda **kw: _fake_rank([(tk, 9.0 - i) for i, tk in enumerate(tickers)]),
+    )
+    monkeypatch.setattr(ar, "_is_cached_today", lambda tk: False)
+    monkeypatch.setattr(ar, "_insert_queued_run", lambda tk, trigger: f"run-{tk}")
+
+    def record(run_id, ticker, **kwargs):
+        sent.append(ticker)
+        return ar.EnqueueOutcome.ENQUEUED
+    monkeypatch.setattr(ar, "enqueue_insight_task", record)
+    monkeypatch.setattr("sys.argv", ["prog", "--top-n", str(top_n)])
+    ar.main()
+    return sent
+
+
+def test_auto_refresh_does_not_exceed_the_shared_fanout_ceiling(monkeypatch):
+    """A raised knob must not launch an unbounded wave at Vertex."""
+    from gcp.insight_tasks import FANOUT_MAX_TICKERS
+
+    over = [f"T{i}" for i in range(FANOUT_MAX_TICKERS + 5)]
+    sent = _count_enqueued(monkeypatch, over, top_n=len(over))
+
+    assert len(sent) == FANOUT_MAX_TICKERS
+    # The highest-ranked survive — this job exists to pre-warm the top.
+    assert sent == over[:FANOUT_MAX_TICKERS]
+
+
+def test_auto_refresh_at_the_ceiling_is_not_clamped(monkeypatch):
+    from gcp.insight_tasks import FANOUT_MAX_TICKERS
+
+    at_cap = [f"T{i}" for i in range(FANOUT_MAX_TICKERS)]
+    assert _count_enqueued(monkeypatch, at_cap, top_n=len(at_cap)) == at_cap
+
+
+def test_auto_refresh_default_top_n_is_untouched(monkeypatch):
+    """The daily 3 must behave exactly as before."""
+    sent = _count_enqueued(monkeypatch, ["SPY", "IWM", "QQQ"], top_n=3)
+    assert sent == ["SPY", "IWM", "QQQ"]
+
+
+def test_the_fanout_ceiling_is_one_constant_both_producers_read(monkeypatch):
+    """A second copy would drift. insight_pipeline_job must read the same
+    object, not a same-valued literal of its own."""
+    from gcp import insight_pipeline_job as job
+    from gcp import insight_tasks
+
+    assert job.FANOUT_MAX_TICKERS is insight_tasks.FANOUT_MAX_TICKERS
