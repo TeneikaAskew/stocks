@@ -370,11 +370,18 @@ def fetch_serving_versions() -> dict[tuple[str, str], str]:
     out: dict[tuple[str, str], str] = {}
     for ticker in TICKERS:
         for tf in TIMEFRAMES:
-            blob = bucket.blob(f"magnitude-models/production/{ticker}/{tf}/LATEST")
+            name = f"magnitude-models/production/{ticker}/{tf}/LATEST"
             try:
-                out[(ticker, tf)] = blob.download_as_text().strip()
+                run_id = bucket.blob(name).download_as_text().strip()
             except gapi.NotFound:
                 continue
+            # An empty pointer is a corrupt registry, not "nothing serving":
+            # inference cannot resolve an artifact from it, and recording ""
+            # would make the check skip every real version for the cell
+            # while cell-silence still saw fresh rows (Codex P2 on #1117).
+            if not run_id:
+                raise ValueError(f"gs://{bucket.name}/{name} is empty")
+            out[(ticker, tf)] = run_id
     return out
 
 

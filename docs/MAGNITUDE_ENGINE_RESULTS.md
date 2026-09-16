@@ -1387,3 +1387,12 @@ row; booleans are refused in priors, thresholds and the lift bar. (4)
 `resolve_class_weight` clamps outside [0, 1], so `--class-weight-power=10`
 would have trained balanced with the summary recording 10; values outside
 [0, 1] are refused.
+
+**Fourth pass (Codex on `c6422a3f`, two P2s).** An empty `LATEST` blob is
+now a registry error from `fetch_serving_versions` (the check is skipped
+with the error in the summary) rather than an empty run id that would
+have skipped every real version for the cell. And the backfill's sibling
+search runs the reader's own `contract_mismatch` on each candidate, so a
+sibling the reader would refuse (a JSON boolean, a non-distribution, a
+foreign lift bar) is never a source of priors; the earlier local
+`isinstance` check let booleans through because `bool` is an `int`.

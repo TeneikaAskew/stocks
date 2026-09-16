@@ -61,7 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     TICKERS, TIMEFRAMES, CONTRACT_BLOB, ContractRejection,
-    GCS_BUCKET_DEFAULT, CLASS_PRIORS_TRAINING_LABELS,
+    GCS_BUCKET_DEFAULT, CLASS_PRIORS_TRAINING_LABELS, contract_mismatch,
 )
 from gcp.research.magnitude_engine import mag_inference  # noqa: E402
 
@@ -132,13 +132,21 @@ def _training_priors_from_sibling(bucket, ticker: str, tf: str):
         if any(payload.get(k) != _AUDITED_LEGACY_CONTRACT[k]
                for k in _LEGACY_KEYS):
             continue   # measured under another label contract; not this population
-        priors = payload.get("class_priors")
-        if (not isinstance(priors, list)
-                or len(priors) != len(_AUDITED_LEGACY_CONTRACT["classes"])
-                or not all(isinstance(x, (int, float)) for x in priors)):
+        # The reader's own validation decides whether the sibling is a
+        # source of priors: malformed (a boolean, a non-distribution, a
+        # wrong-length list) raises and mismatched returns a reason, and
+        # either way the sibling is skipped. A local isinstance check let a
+        # JSON boolean through, since bool is an int in Python, and would
+        # have stamped (1, 0, 0, 0) into the serving artifact (Codex P2 on
+        # #1117). One validator, the one that serves.
+        try:
+            if contract_mismatch(payload) is not None:
+                continue
+        except ValueError:
             continue
+        priors = [float(x) for x in payload["class_priors"]]
         if best is None or blob.updated > best[2]:
-            best = ([float(x) for x in priors], sibling_run, blob.updated)
+            best = (priors, sibling_run, blob.updated)
     return best
 
 

@@ -196,6 +196,43 @@ def test_serving_versions_come_from_the_registry_not_from_recency():
     assert "modal-dominance" not in summary
 
 
+def test_an_empty_serving_pointer_is_a_registry_error():
+    """A LATEST blob that exists but is empty is a corrupt registry:
+    inference cannot resolve an artifact from it, and recording "" would
+    make the check skip every real version for the cell while cell-silence
+    still saw fresh rows (Codex P2 on #1117)."""
+    import pytest as _pytest
+    from unittest.mock import MagicMock, patch
+    from gcp import audit_magnitude_drift as mod
+    try:
+        from google.api_core.exceptions import NotFound
+    except Exception:   # the stub above stands in for the package
+        _pytest.skip("google-api-core not importable here")
+
+    def fake_blob(name):
+        b = MagicMock()
+        if name.startswith("magnitude-models/production/IWM/15m/"):
+            b.download_as_text.return_value = "   \n"
+        elif name.startswith("magnitude-models/production/IWM/5m/"):
+            b.download_as_text.return_value = "magnitude-engine-6hp7l\n"
+        else:
+            b.download_as_text.side_effect = NotFound("no pointer")
+        return b
+    bucket = MagicMock(); bucket.name = "b"; bucket.blob.side_effect = fake_blob
+    client = MagicMock(); client.bucket.return_value = bucket
+    with patch("google.cloud.storage.Client", return_value=client):
+        with _pytest.raises(ValueError, match="IWM/15m/LATEST is empty"):
+            mod.fetch_serving_versions()
+
+        def only_5m(name):
+            b = fake_blob(name)
+            if name.startswith("magnitude-models/production/IWM/15m/"):
+                b.download_as_text.side_effect = NotFound("no pointer")
+            return b
+        bucket.blob.side_effect = only_5m
+        assert mod.fetch_serving_versions() == {("IWM", "5m"): "magnitude-engine-6hp7l"}
+
+
 def test_a_row_without_a_session_count_fails_loud():
     """The session count is what decides whether to page. A row shape that
     lacks it is a query drift, not a zero-session cell."""

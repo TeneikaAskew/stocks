@@ -1687,10 +1687,12 @@ def test_the_backfill_takes_priors_from_a_training_label_measurement():
         blob(base + "magnitude-engine-6hp7l/model.joblib", {}, (15, 21)),
         blob(base + "magnitude-engine-6hp7l/CONTRACT.json",
              {**same, "class_priors": [0.678, 0.2495, 0.0556, 0.0169],
-              "class_priors_source": "training_labels"}, (15, 21)),
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (15, 21)),
         blob(base + "magnitude-engine-older/CONTRACT.json",
              {**same, "class_priors": [0.7, 0.2, 0.07, 0.03],
-              "class_priors_source": "training_labels"}, (10, 1)),
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (10, 1)),
         blob(base + "magnitude-engine-excursion/CONTRACT.json",
              {**same, "label_mode": "excursion",
               "class_priors": [0.4, 0.3, 0.2, 0.1],
@@ -1706,6 +1708,32 @@ def test_the_backfill_takes_priors_from_a_training_label_measurement():
     bucket.list_blobs.return_value = bucket.list_blobs.return_value[:1] + \
         bucket.list_blobs.return_value[4:]
     assert _training_priors_from_sibling(bucket, "IWM", "15m") is None
+    # a sibling the READER would refuse is not a source of priors: booleans
+    # (an int to isinstance), a non-distribution, a foreign lift bar
+    # (Codex P2 on #1117)
+    bad = [
+        blob(base + "magnitude-engine-bool/CONTRACT.json",
+             {**same, "class_priors": [True, False, False, False],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (16, 2)),
+        blob(base + "magnitude-engine-sum/CONTRACT.json",
+             {**same, "class_priors": [0.5, 0.5, 0.5, 0.5],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (16, 3)),
+        blob(base + "magnitude-engine-lift/CONTRACT.json",
+             {**same, "class_priors": [0.7, 0.2, 0.07, 0.03],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 3.0}, (16, 4)),
+    ]
+    bucket.list_blobs.return_value = bad
+    assert _training_priors_from_sibling(bucket, "IWM", "15m") is None
+    bucket.list_blobs.return_value = bad + [
+        blob(base + "magnitude-engine-good/CONTRACT.json",
+             {**same, "class_priors": [0.7, 0.2, 0.07, 0.03],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (10, 1))]
+    got = _training_priors_from_sibling(bucket, "IWM", "15m")
+    assert got is not None and got[1] == "magnitude-engine-good"
 
 
 def test_the_reader_refuses_priors_that_are_not_training_labels():
