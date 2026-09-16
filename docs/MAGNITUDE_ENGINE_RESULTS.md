@@ -1396,3 +1396,10 @@ search runs the reader's own `contract_mismatch` on each candidate, so a
 sibling the reader would refuse (a JSON boolean, a non-distribution, a
 foreign lift bar) is never a source of priors; the earlier local
 `isinstance` check let booleans through because `bool` is an `int`.
+
+**Deployed.** Research image `sha256:7b707cae…` (`magnitude-engine` gen
+179, `magnitude-inference` gen 14), base image `sha256:f3b27740…`
+(`audit-magnitude-drift` gen 6). `audit-magnitude-drift-7ph2x`, the first
+run reading serving versions from the registry, reports the same four
+findings as `t5p82`: today the pointers and write recency agree, and the
+difference only shows across a rollback.
