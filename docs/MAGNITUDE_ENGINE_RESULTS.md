@@ -519,8 +519,8 @@ Per-fold ratios (IWM 5m sample):
 **Gate 7 verdict**: **FAIL on every cell.** Zero of 23 IV-covered folds
 across all three 5m-passing cells crossed the 1.25 ratio threshold.
 (Computed on argmax-EXPLOSIVE bars. Re-run 2026-09-16 on the decision-rule
-population, roughly 100× more called bars per fold: 0 of 21, mean ratio
-0.68-0.75. §12.)
+population, roughly 100× more called bars per fold: 0 of 24, mean ratio
+0.67-0.73. §12.)
 The highest single-fold ratio was 1.23 (SPY 5m, 2020 COVID regime) —
 still under the bar.
 
@@ -1524,8 +1524,9 @@ whether the models are calibrated. It reopens the product question of
 what the served size class is worth (open decisions doc).
 
 *Gate 7, re-run on the decision-rule population (`direction-probe`
-`cb4zw` / `m68nf` / `wtcqd`, `implied_vs_realized_check.py`, `6hp7l`
-predictions, same pre-set bar: ratio ≥ 1.25 in ≥ 6 IV-covered folds).*
+`cb4zw` / `m68nf` / `wtcqd`, then `njwj8` / `hbk22` / `vtgsq` on the
+fixed script; `implied_vs_realized_check.py`, `6hp7l` predictions, same
+pre-set bar: ratio ≥ 1.25 in ≥ 6 IV-covered folds).*
 The May verdict was computed on argmax-EXPLOSIVE bars, roughly a dozen
 per fold; the decision rule names EXPLOSIVE on 1,400 to 3,200 test bars
 per fold, so the population the ratio is conditional on changed and the
@@ -1533,24 +1534,27 @@ verdict had to be re-established, not retained.
 
 | cell | folds w/ IV coverage | passing gate 7 | per-fold realised/implied | mean ratio |
 |---|---|---|---|---|
-| SPY 5m | 7/8 | **0/7** | 0.60 0.84 0.53 0.74 0.72 0.72 0.66 | 0.69 |
-| QQQ 5m | 7/8 | **0/7** | 0.40 0.78 0.65 0.82 0.67 0.73 0.70 | 0.68 |
-| IWM 5m | 7/8 | **0/7** | 0.50 0.76 0.77 0.77 0.78 0.81 0.86 | 0.75 |
+| SPY 5m | 8/8 | **0/8** | 0.60 0.84 0.53 0.74 0.72 0.72 0.66 0.60 | 0.68 |
+| QQQ 5m | 8/8 | **0/8** | 0.40 0.78 0.65 0.82 0.67 0.73 0.70 0.61 | 0.67 |
+| IWM 5m | 8/8 | **0/8** | 0.50 0.76 0.77 0.77 0.78 0.81 0.86 0.61 | 0.73 |
 
-**Gate 7 verdict under the decision rule: FAIL on every cell**, 0 of 21
+**Gate 7 verdict under the decision rule: FAIL on every cell**, 0 of 24
 IV-covered folds, and further under the bar than in May (0.83-0.92 mean
-ratio then; 0.68-0.75 now). Realised moves on the called bars average
+ratio then; 0.67-0.73 now). Realised moves on the called bars average
 two thirds of the straddle-implied move: the broader population the
 rule names is priced at least as fully as the narrow argmax set was.
-The project verdict at the top of this document stands. The 2026 fold
-reported no coverage on all three cells for a script reason, not a data
-one: the harness labels the open-ended last fold with the day after its
-own dataset's newest bar, and the check recomputes that label from
-today's dataset, so the labels differed by one day and 0 of the fold's
-13k bars joined. Fixed in the script (the last fold now matches by its
-start date); a re-run for that one fold cannot move the verdict (six
-passing folds would be needed) and is folded into the next research
-image build.
+The project verdict at the top of this document stands. The first re-run
+(`cb4zw` / `m68nf` / `wtcqd`) reported no coverage on the 2026 fold on
+all three cells for a script reason, not a data one: the harness labels
+the open-ended last fold with the day after its own dataset's newest bar,
+and the check recomputed that label from today's dataset, so the labels
+differed by one day and 0 of the fold's 13k bars joined. Fixed in the
+script (`bb005bbb`: the last fold matches by its start date) and re-run
+on the rebuilt research image (`njwj8` / `hbk22` / `vtgsq`): the 2026
+fold joins 934 / 840 / 1,534 called bars on SPY / QQQ / IWM with full IV
+coverage and comes in at 0.60 / 0.61 / 0.61, among the weakest folds on
+each cell (realised 0.47 / 0.63 / 0.24 ATR against implied 0.78 / 1.02 /
+0.39), which is the table above.
 
 The three findings together: the promoted `6hp7l` models are calibrated
 (gates 1-4, 5, 6) and correctly name the session's large bars (§11),
