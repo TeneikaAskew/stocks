@@ -1204,29 +1204,75 @@ def _round_or_none(v):
 
 def _build_cross_ticker_history(target_ticker: str, cutoff: str,
                                 inclusive_today: bool = False):
-    """Pull every other ticker's daily history and engineer the same
+    """Pull the analog universe's daily history and engineer the same
     feature set used for analog matching. Returned frame has a `ticker`
     column so each match can be attributed to its source.
 
-    Implementation: a single SQL pull (orders ticker, date so groupby
-    is contiguous), then a per-ticker pandas pipeline. This is fine for
-    the current ~5-ticker analog universe — if we ever need to scale
-    past 50 tickers, push the gap/vol/RSI math into SQL window
-    functions instead.
+    The universe is the active watchlist, joined in SQL. It used to be
+    ``WHERE ticker <> :ticker`` — literally every other symbol in
+    ``market_data_daily`` — on the docstring's assumption of "the current
+    ~5-ticker analog universe". The table grew to 2,609 tickers while the
+    query kept pace silently, and on 2026-09-15 that shipped 5,597,928
+    rows (Parallel Seq Scan; ``ticker <>`` cannot use an index) which
+    ``pd.read_sql`` expanded to a measured 2.39 GiB, 2.93 GiB once the
+    per-group ``.copy()`` below ran. insight-pipeline was capped at 2Gi,
+    so NVDA and AMD were OOM-killed on signal 9 (PR #1116).
+
+    Two separate defects, both fixed by the join:
+
+    * **Cost.** 15 other watchlist names is 38,850 rows and a measured
+      9.1 MB peak, against 5,597,928 rows and 2.93 GiB. Each additional
+      watchlist ticker costs ~2,600 rows (~1.4 MB), so the size is
+      legible from the watchlist itself; it is logged below so growth
+      is observable rather than silent.
+    * **Correctness.** The unbounded universe included ``^VIX``,
+      ``^VIX3M`` and ``^VVIX``. A volatility index is not an analog for
+      an equity's gap-and-volume setup. ``left(ticker, 1) <> '^'`` keeps
+      that true even if an index is added to the watchlist for the
+      signal monitor, which is a legitimate reason to put one there.
+
+    Deliberately NOT done: no ``LIMIT``. Truncating an analog sample
+    biases it — ``ORDER BY ticker`` means a LIMIT would silently keep
+    only the alphabetically-early names. The bound belongs on the
+    universe, not on the row count.
+
+    Feature computation stays in pandas. Reading ``market_data_daily``'s
+    stored ``rsi_14`` instead would change results: it is written by
+    ``lib.indicators.calculate_rsi``, which seeds Wilder's average with a
+    simple mean over the first 14 bars, while the matcher below seeds
+    ``ewm(adjust=False)`` from bar one. Measured on NVDA/AMD/AVGO/SPY the
+    two agree to <1 RSI point after ~50 bars (0 disagreements in the last
+    200) but differ by up to 45.7 points before that, and
+    ``calculate_rsi`` ends with ``fillna(50.0)``. Swapping would move
+    ~2% of candidate rows across the +/-5 tight RSI band for no gain here.
     """
     # Same operator as the same-ticker pull, or the as-of bar leaks back
     # in through the analogs (#822).
     daily_op = "<=" if inclusive_today else "<"
     df = _query(
-        "SELECT ticker, date, open, high, low, close, volume "
-        "FROM market_data_daily "
-        "WHERE ticker <> :ticker "
-        f"  AND date {daily_op} CAST(:cutoff AS date) "
-        "ORDER BY ticker ASC, date ASC",
+        "SELECT m.ticker, m.date, m.open, m.high, m.low, m.close, m.volume "
+        "FROM market_data_daily m "
+        "JOIN watchlists w ON w.ticker = m.ticker AND w.removed_at IS NULL "
+        "WHERE m.ticker <> :ticker "
+        "  AND left(m.ticker, 1) <> '^' "
+        f"  AND m.date {daily_op} CAST(:cutoff AS date) "
+        "ORDER BY m.ticker ASC, m.date ASC",
         {"ticker": target_ticker.upper(), "cutoff": cutoff},
     )
     if df is None or df.empty:
+        # Not a fallback: the caller skips cross-ticker analogs and says so
+        # via cross_ticker_used=False. Logged because an empty result means
+        # an empty watchlist or missing bars, and neither should be silent.
+        logger.warning(
+            "cross-ticker analog universe empty for %s (cutoff=%s) — "
+            "no watchlist rows joined to market_data_daily",
+            target_ticker.upper(), cutoff,
+        )
         return None
+    logger.info(
+        "cross_ticker_universe target=%s tickers=%d rows=%d",
+        target_ticker.upper(), df["ticker"].nunique(), len(df),
+    )
 
     out_frames: list[pd.DataFrame] = []
     for tk, group in df.groupby("ticker", sort=False):
