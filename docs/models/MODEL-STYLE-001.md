@@ -22,13 +22,20 @@ mapping 1:1 onto a `lib.config.SignalConfig` tunable:
 
 | Condition | Reads | SignalConfig tunable |
 |---|---|---|
-| `rsi_25_50` | `RSI{rsi_period}` | `call_rsi_range` (default 25–50) |
-| `rsi_50_75` | `RSI{rsi_period}` | `put_rsi_range` (default 50–75) |
-| `above_vwap` | `Price_vs_VWAP > 0` | VWAP side (`check_put_conditions`) |
-| `below_vwap` | `Price_vs_VWAP < 0` | VWAP side (`check_call_conditions`) |
-| `consec_up_ge_{N}` | `Consecutive_Up` | consecutive-bar tunable |
+| `rsi_25_50` | `RSI{rsi_period}` between `call_lo`/`call_hi` | `call_rsi_range` (default 25–50) |
+| `rsi_50_75` | `RSI{rsi_period}` between `put_lo`/`put_hi` | `put_rsi_range` (default 50–75) |
+| `above_vwap` | `Price_vs_VWAP > 0` | VWAP side |
+| `below_vwap` | `Price_vs_VWAP < 0` | VWAP side |
+| `consec_up_ge_{N}` | `Consecutive_Up >= N` | `consecutive_periods` |
+| `consec_down_ge_{N}` | `Consecutive_Down >= N` | `consecutive_periods` |
+| `stoch_oversold` | `StochRSI_K < sig_cfg.stoch_rsi_oversold` | `stoch_rsi_oversold` |
+| `stoch_overbought` | `StochRSI_K > sig_cfg.stoch_rsi_overbought` | `stoch_rsi_overbought` |
 
-(The table above is quoted from the module docstring, which carries the full mapping.)
+All eight, read from the returned dict at `lib/style_miner.py:200-210`. The `{N}` in the two
+consecutive-bar keys is interpolated from the resolved `consecutive_periods`, so the key name
+itself carries the threshold.
+
+
 
 **Conditions are evaluated through the production indicator path**
 (`lib.indicators.add_signal_indicators`) — the same function the live signal-series

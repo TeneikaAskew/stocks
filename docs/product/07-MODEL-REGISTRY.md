@@ -84,7 +84,7 @@ rows — are what keep it open.
 | ID | Name | Type | Decision produced | Code / artifact | Status | Rec | Doc | Evidence |
 |---|---|---|---|---|---|---|---|---|
 | MODEL-MAG-001 | Magnitude prediction | ML | target magnitude class / probability | `gcp/research/magnitude_engine`, `platform/api/routers/magnitude.py` | **Invalidated** — but see below, it is not idle | PAUSE | **CONTRADICTED** · [DOC-06](#documentation-coverage-and-freshness) | Research arc closed **PROJECT VERDICT FAIL by gate 7** ([#575](https://github.com/TeneikaAskew/stocks/pull/575)). Later argmax-collapse incident: predicted TIGHT on 588/588 live bars; promotion gate added in [#810](https://github.com/TeneikaAskew/stocks/pull/810), no-op fixed in [#811](https://github.com/TeneikaAskew/stocks/pull/811). **In flight:** [#1117](https://github.com/TeneikaAskew/stocks/pull/1117) changes what is scored, addressing the collapse. Open: [#874](https://github.com/TeneikaAskew/stocks/issues/874), [#875](https://github.com/TeneikaAskew/stocks/issues/875), [#890](https://github.com/TeneikaAskew/stocks/issues/890) |
-| MODEL-DIR-001 | STRAT direction model | ML | direction classification | `gcp/research/strat_engine` | **Failed** | REMOVE / archive | UNVERIFIED | Directionality research verdict **DEAD-END** ([#588](https://github.com/TeneikaAskew/stocks/pull/588)); experimental direction features **FAIL** ([#566](https://github.com/TeneikaAskew/stocks/pull/566)) |
+| MODEL-DIR-001 | STRAT direction model | ML | direction classification | `gcp/research/strat_engine` | **Failed** | REMOVE | UNVERIFIED | Archive rather than delete — the negative result is evidence. Directionality research verdict **DEAD-END** ([#588](https://github.com/TeneikaAskew/stocks/pull/588)); experimental direction features **FAIL** ([#566](https://github.com/TeneikaAskew/stocks/pull/566)) |
 | MODEL-TYPE-001 | STRAT type / structure continuation | ML | scenario / type classification | `gcp/research/strat_engine` | Shadow | RETEST | UNVERIFIED · [DOC-07](#documentation-coverage-and-freshness) | Wired behind a feature flag ([#647](https://github.com/TeneikaAskew/stocks/pull/647)); QQQ-30m explicitly gated as not calibrated ([#648](https://github.com/TeneikaAskew/stocks/pull/648)) |
 | MODEL-NEXTBAR-001 | STRAT next-bar edge | Statistical / ML | next-candle prediction | `gcp/research/strat_engine`, `lib/strat.py` | Research | RETEST | UNVERIFIED | Held-out OOS forward-walk confirms edge ([#593](https://github.com/TeneikaAskew/stocks/pull/593), [#594](https://github.com/TeneikaAskew/stocks/pull/594)); CLV ablation quantifies mechanical vs genuine ([#595](https://github.com/TeneikaAskew/stocks/pull/595), [#598](https://github.com/TeneikaAskew/stocks/pull/598)) |
 | MODEL-BREAK-001 | Breakout meta-model | ML / ensemble | filter / rank breakouts | `gcp/research`, `lib/strategies` | Research | RETEST | UNVERIFIED | Net reconfirmed in [#598](https://github.com/TeneikaAskew/stocks/pull/598) |
@@ -181,7 +181,9 @@ trustworthy evidence ([#906](https://github.com/TeneikaAskew/stocks/issues/906))
 > `MODEL-CALIB-001` is the per-ticker *threshold* system that writes the `ticker_calibration`
 > table. They share only the word "calibration". Mapping E-20 to MODEL-CALIB-001 made a
 > successful probability experiment look like evidence for a separately invalidated
-> production threshold calibrator, so E-20 now sits with MODEL-TYPE-001 and
+> production threshold calibrator. E-20 is therefore **not mapped to MODEL-CALIB-001**;
+> the ledger scopes it `both (calibration)`, so it is mapped to **MODEL-TYPE-001 and
+> MODEL-MAG-001**, and
 > MODEL-CALIB-001 carries no experiment. That absence is itself the finding: the system
 > that writes thresholds into production has never been evaluated in the ledger.
 
@@ -209,7 +211,7 @@ governance. Each is real work with a real verdict that no row above claims.
 
 ### Which of these actually run
 
-Of the 68 Cloud Run Jobs declared in `gcp/deploy.sh`, seven model-bearing jobs are on a Cloud Scheduler cron; the rest of the research surface is on-demand only.
+Of the 68 Cloud Run Jobs declared in `gcp/deploy.sh`, eight model-bearing jobs are on a Cloud Scheduler cron; the rest of the research surface is on-demand only.
 The live fleet is larger — see [05-INFRASTRUCTURE](05-INFRASTRUCTURE.md) for the
 declared-versus-live reconciliation.
 
@@ -222,6 +224,7 @@ declared-versus-live reconciliation.
 | `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | combo mining (E-22) |
 | `calibrate-thresholds-quarterly` | `0 2 1 1,4,7,10 *` | `calibrate-thresholds` | MODEL-CALIB-001 |
 | `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-GAMMA-001 |
+| `audit-brief-bias-weekly` | `0 10 * * 0` | `audit-brief-bias` | MODEL-BRIEF-001 audit |
 
 `direction-baseline`, `direction-phase2`, `direction-probe`, `direction-importance`
 and `param-sweep` are deployed but **unscheduled**;
@@ -259,8 +262,15 @@ per-run, uncommitted and never aggregated.
 ## Documentation coverage and freshness
 
 The [corpus table](#research-documentation-corpus) above says what documentation exists.
-This says what is **wrong** with it. Every `Doc` cell in the two registry tables that is not
-`CURRENT` names a row here.
+This says what is **wrong** with it.
+
+**What the `Doc` column does and does not promise.** A cell that cites a `DOC-nn` points at a
+specific recorded concern, and every id it cites exists here — that is gated. A **bare
+`UNVERIFIED`** means only that nobody has checked this model's documentation against its code;
+it is not a claim that a finding exists. An earlier revision of this paragraph said every
+non-`CURRENT` cell names a row here, which was false while the suite was green — the kind of
+published contract a reader would reasonably rely on. Ten of the 21 rows are bare `UNVERIFIED`
+today.
 
 **Severity is the documentation scale from
 [ARCHITECTURE_DOCS_AUDIT_2026-09-07](../audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md) §2**,
@@ -283,9 +293,11 @@ here — that one belongs to code defects and is owned by
 | DOC-08 | `BACKTEST_RESULTS.md` (repo root) | Self-labelled "Auto-generated by `generate_backtest_report.py` — 2026-04-12" → no workflow invokes that generator (`grep -rn generate_backtest_report .github/` is empty). The content is a frozen April snapshot presented as generated | dead-generator | **M** | MODEL-CALIB-001 |
 | DOC-09 ([#1118](https://github.com/TeneikaAskew/stocks/issues/1118)) | [INVESTMENT_MODELS_SUMMARY](../INVESTMENT_MODELS_SUMMARY.md) | `ticker_calibration` block says "auto-refreshed monthly" → the monthly workflow **does** call `scripts/refresh_calibration_table.py`, but as `python -m … \|\| echo "::warning::"`, so a failure is swallowed and the block silently ages. Data stamped 2026-07-01 | dead-generator | **M** | MODEL-CALIB-001 |
 | DOC-10 | Seven models | No doc describes them beyond scattered plan/audit mentions: MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-BRIEF-001, MODEL-EARN-001, MODEL-STYLE-001, MODEL-CALIB-001 — measured by searching `docs/` for each one's primary module | omission | **H** | (seven, listed) |
-| DOC-11 | [README](README.md) master matrix | Lists 14 of 21 models; every *learned* model is absent — MODEL-BREAK-001, MODEL-DIR-001, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-RANK-001, MODEL-SUM-001, MODEL-TYPE-001 | omission | **M** | (seven, listed) |
+| DOC-11 | [README](README.md) master matrix | Lists **14 of the 21** models in the two registry tables. Absent: **MODEL-BREAK-001, MODEL-DIR-001, MODEL-FEAT-X, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-RANK-001, MODEL-TYPE-001**. *An earlier revision of this row said "every learned model is absent" and listed MODEL-SUM-001 — both wrong: MODEL-CALIB-001 and MODEL-STYLE-001 are learned and **are** present at README:138, MODEL-RANK-001 is heuristic not learned, and the actually-absent MODEL-FEAT-X was missing from the list. Recomputed from the tables rather than restated* | omission | **M** | (seven, listed) |
 | DOC-12 | [05-INFRASTRUCTURE](05-INFRASTRUCTURE.md) | "Cloud Run jobs (67 declared / 76 live)… Scheduler (65 live)" → `doc_inventory.py` parses **68** declared jobs and **66** declared schedulers | stamp | **M** | — |
 | DOC-13 | `docs/product/*.md` | A first pass counted **57** dead repo-rooted paths across the product plan. Re-measured: **27 distinct**, and **22 of those are not debt** — they are `platform/src/**` and frontend `*.spec.ts` paths the #957 split moved to `TeneikaAskew/solyra`, cited deliberately and explained by a header note in [11](11-CODE-TRACEABILITY.md). Genuinely dead: **2** (`scripts/backfill_signals.py`, `scripts/validate_track2_live.py`). Relocatable and now fixed: **2** (`gcp/freshness_watchdog.py` → `scripts/audit_data_freshness.py`, which is what `gcp/deploy.sh:2471` actually runs; `lib/data_loader` → `lib/data_loader.py`) | dead-path | **M** | — |
+| DOC-18 | `lib/strategies/momentum.py`, `lib/strategies/mean_reversion.py` | **Module docstrings describe behaviour the code no longer has.** momentum's lists `StochRSI < 80` (dropped in Phase 0.7.1) and omits `rvol_above_recent` / `atr_expansion` / `rsi_thrust` (added since); mean_reversion's lists an EMA-proximity condition that **does not exist**. momentum's *function* docstring also says `min_conditions=3` while `config.py:108` sets `MIN_CONDITIONS_MOMENTUM = 5` | contradiction | **H** | MODEL-MOM-001, MODEL-MR-001 |
+| DOC-19 | `docs/models/*` (this PR's own first revision) | Six of the seven new reference docs misdescribed production, because they were assembled from **module** docstrings rather than the scoring functions: MOM and MR described a conjunction where the code scores a gate, EARN called recorded archetype thresholds `UNKNOWN`, BRIEF said a flag was `false` that is `true`, AGREE claimed a ranking that does not exist, STYLE listed 5 of 8 conditions | contradiction | **H** | six models |
 | DOC-15 | `07` (this file) | MODEL-TYPE-001's row showed only its prediction verdict (VALIDATED 8/8) → E-23 tested that same model's 0.55-confidence calls and returned **0/8 positive-expectancy folds in every cell**, net negative after friction. Filing E-23 as ownerless hid the model's failed tradeability test | contradiction | **H** | MODEL-TYPE-001 |
 | DOC-16 | `07` (this file) | E-19 assigned only to MODEL-MAG-001 → its ledger entry is `Engine/area: both (integrity)` and it names `strat_leakage_audit.py`; the integrity evidence underwriting the TYPE verdict was missing from TYPE's row | omission | **M** | MODEL-TYPE-001, MODEL-MAG-001 |
 | DOC-17 | `07` (this file) | E-26 / E-31 / E-33 listed beside committed modules → the ledger records their results as from a scratch harness, *“not committed to the repo”* (`EXPERIMENT_REGISTRY.md:1260`); `phase2_features.py` belongs to E-34. The table implied code that reproduces them | dead-path | **M** | MODEL-FEAT-X |
@@ -295,6 +307,8 @@ here — that one belongs to code defects and is owned by
 
 | ID | Disposition | Why |
 |---|---|---|
+| DOC-18 | **FIXED HERE** in the docs, **FLAGGED** at source | The reference docs now warn about each stale docstring and say which source to trust. Correcting the docstrings themselves touches `lib/strategies/` and belongs in a code PR, not this docs PR |
+| DOC-19 | **FIXED HERE** | All six rewritten from the scoring functions, every condition and constant quoted with its `file:line`. Found by review, not by me — see the note under [How this registry is kept honest](#how-this-registry-is-kept-honest) |
 | DOC-15, DOC-16, DOC-17 | **FIXED HERE** | Found by review, not by this audit — all three were verified against `EXPERIMENT_REGISTRY.md` and `EXEC_BACKTEST_RESULTS.md` before being corrected, and the join is now gated by `tests/meta/test_model_registry_consistency.py` |
 | DOC-01…DOC-05 | **FIXED HERE** | Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit |
 | DOC-07, DOC-08, DOC-13 (registry half), DOC-14 | **FIXED HERE** | Labelled in place with the measured reality; no result was rewritten |
@@ -333,6 +347,8 @@ Read live 2026-09-16. Merged-PR lineage for every model is owned by
 | `N Cloud Run Jobs` matches the declared parse **and** is phrased `declared`, the subset cue `verify_docs_against_live.py` looks for | A correct declared count failing the daily live check |
 | `Status` / `Doc` cells come from the vocabularies, parsed from [README](README.md) rather than retyped | Silent vocabulary drift |
 | Every `DOC-nn` a model cites exists in the register | A dangling concern reference |
+| Every scheduler row matches `deploy.sh`, **and every model-bearing scheduled job appears** | DOC-03, and the `audit-brief-bias-weekly` omission the first version of this gate still allowed |
+| `Rec` comes from the KEEP/RETEST/RESTRUCTURE/PAUSE/REMOVE vocabulary | MODEL-DIR-001's `REMOVE / archive`, which the first version never checked |
 | `Last reviewed` is not older than the newest date in the body | DOC-01's sibling — editing without advancing the stamp, which this branch's first commit did |
 | Every issue cited here appears in [12](12-PR-ISSUE-TRACEABILITY.md) | The registry drifting away from the reconciled issue map |
 | An experiment scoped `both` in the ledger appears on **both** engine models | DOC-16 — E-19's STRAT half, and E-20's magnitude half, each filed under one engine |
@@ -342,8 +358,20 @@ Read live 2026-09-16. Merged-PR lineage for every model is owned by
 Each invariant was mutation-tested: the defect was reintroduced and the test
 confirmed red before being reverted.
 
-**What it cannot do.** It cannot tell whether a cited issue is still *open* — that
-needs the network, and it is exactly the defect that produced DOC-01. Two habits
+**What it cannot do — and what that cost.** It cannot check whether a cited issue is
+still *open*, and it cannot check whether a document's prose matches the code it
+describes. The second limit is the expensive one: DOC-19 records six reference docs
+that misdescribed production while every invariant here was green. **A passing suite
+means the registry is internally consistent, not that it is true.**
+
+The round-2 revision of this section claimed these invariants "replace" external
+review. They do not. The review that followed found six holes in the invariants
+themselves — an ID check that reset per table, a scheduler parser that read commented-out
+declarations, a both-engines check that passed when an experiment was deleted from both,
+a range parser that took only the endpoints, a silent `continue` on an unknown
+experiment id, and a published contract this section stated that the test explicitly
+permitted violating. All six are closed now; the lesson is that the gate needs reading
+adversarially by something other than its author. Two habits
 cover the gap: re-read every cited issue before acting on a row, and treat the
 `Doc` column as a claim about the last review, not about today. The nearest
 offline proxy, that every cited issue appears in

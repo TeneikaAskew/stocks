@@ -11,7 +11,16 @@ engines. Every one of those is a pointer that reads as authoritative and goes
 nowhere. None was caught by a test, because nothing tests `docs/product/*.md`
 — `check_generated_docs.py` gates only 05-a, 05-c, 05-d and the root README.
 
-This pins the parts a machine can settle offline. Eight invariants:
+A second review round then found six holes in the first version of these
+invariants -- an id check that reset per table, a scheduler parser that read
+commented-out declarations, a both-engines check that passed when an experiment
+was deleted from BOTH models, a range parser that took only the endpoints, a
+silent skip on an experiment the ledger could not classify, and a published
+contract the test explicitly permitted violating. All six are closed below, and
+two invariants the first version lacked were added (§9). The lesson worth
+keeping: a gate needs reading adversarially by someone other than its author.
+
+This pins the parts a machine can settle offline. Ten invariants:
 
 1. Every repo-rooted code path the registry cites exists.
 2. Every relative markdown link in `docs/product/*.md` resolves.
@@ -36,6 +45,12 @@ What it deliberately does NOT do:
   defect that started this and it needs the network. The registry carries a
   prose caveat instead, and the nearest offline proxy — every issue cited in
   the registry also appears in 12-PR-ISSUE-TRACEABILITY.md — is asserted below.
+* **It cannot tell whether a document's prose matches the code it describes.**
+  This is the expensive limit. Six reference docs under `docs/models/` shipped
+  misdescribing production -- a conjunction where the code scores a gate, a
+  flag read as `false` that is `true`, a ranking that does not exist -- while
+  every invariant here was green. A passing suite means the registry is
+  internally consistent, not that it is true.
 * **It does not use git dates for staleness.** This repo is a shallow clone:
   graft `4df291d` (2026-09-07) has no parent, so 187 of 220 docs report exactly
   one commit on that date whatever their real age. Worse, CI checks out with no
@@ -187,24 +202,48 @@ def test_product_docs_have_no_dead_relative_links():
 
 # ------------------------------------------------------- 3. ids + schedule --
 
-def test_model_ids_are_unique_within_each_table():
+def test_model_ids_are_globally_unique_across_the_inventory():
+    """Aggregated, not per-table. Resetting the set for each table let the same
+    id appear once under deterministic systems and once under learned models
+    undetected — the exact cross-section ambiguity this gate exists to prevent.
+    The LLM table is included; it was not examined at all before."""
     text = REGISTRY.read_text()
-    for table in ("## Deterministic and heuristic systems", "## Learned models"):
+    ids: list[str] = []
+    for table in ("## Deterministic and heuristic systems", "## Learned models", "## LLM nodes"):
         body = text.split(table, 1)[1].split("\n##", 1)[0]
-        ids = re.findall(r"^\| (MODEL-[A-Z]+-[0-9X]+) \|", body, re.M)
-        dupes = {i for i in ids if ids.count(i) > 1}
-        assert not dupes, f"duplicate ids in {table}: {sorted(dupes)}"
+        ids += re.findall(r"^\| (MODEL-[A-Z-]+(?:-[0-9X]+)?) \|", body, re.M)
+    dupes = {i for i in ids if ids.count(i) > 1}
+    assert not dupes, f"ids appearing in more than one inventory table: {sorted(dupes)}"
+    assert len(ids) >= 20, f"only {len(ids)} ids parsed — did a table's shape change?"
 
 
 def _declared_schedulers() -> dict[str, tuple[str, str]]:
-    """name -> (cron, target job), parsed from gcp/deploy.sh."""
-    return {
-        m.group(1): (m.group(2), m.group(3))
-        for m in re.finditer(
+    """name -> (cron, target job), parsed from gcp/deploy.sh.
+
+    COMMENTED-OUT declarations are excluded. `deploy.sh:4488` carries a
+    disabled `p7b-classifier-daily` whose surrounding comment says to
+    uncomment it only once a profitable cell is found; a parser that reads it
+    would let an inactive scheduler be added to the registry table and still
+    pass. `tests/gcp/test_deploy_reachability.py:89` independently asserts
+    that commented schedule lines are ignored, so this matches that contract.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    pending = ""
+    for raw in DEPLOY.read_text().split("\n"):
+        line = raw.strip()
+        if line.startswith("#"):
+            pending = ""
+            continue
+        joined = (pending + " " + line).strip() if pending else line
+        pending = joined if joined.endswith("\\") else ""
+        m = re.search(
             r'_schedule(?:_with_args)?\s+"([^"]+)"\s+\\?\s*"([^"]+)"\s+\\?\s*"([^"]+)"',
-            DEPLOY.read_text(),
+            joined.replace("\\", " "),
         )
-    }
+        if m:
+            out[m.group(1)] = (m.group(2), m.group(3))
+            pending = ""
+    return out
 
 
 def _run_section() -> str:
@@ -385,6 +424,31 @@ def test_cited_issues_also_appear_in_pr_issue_traceability():
 
 LEDGER = REPO / "docs" / "EXPERIMENT_REGISTRY.md"
 
+#: Ledger sections whose shape `_ledger_engine_area()` cannot parse because they
+#: are session blocks or tables rather than `## E-nn` entries with an immediate
+#: `- **Engine/area:**` line. Listed explicitly so an experiment outside this set
+#: that the parser cannot classify FAILS rather than being skipped.
+UNPARSED_LEDGER_SECTIONS = frozenset({
+    "E-24",  # data-quality remediation, narrative section
+    "E-26", "E-27", "E-28", "E-29", "E-30", "E-31", "E-33",  # 2026-07-06 session table
+    "E-34",  # direction Phase 2, prose section
+})
+
+
+def _expand_experiment_ranges(text: str) -> set[str]:
+    """`E-26 ... E-31, E-33` means seven ids, not three.
+
+    `re.findall(r"E-\\d+")` takes only the endpoints, so E-27..E-30 were never
+    marked uncommitted and could have been attached to a model beside a code
+    path without the reproducibility check firing.
+    """
+    found: set[str] = set()
+    for m in re.finditer(r"E-(\d+)\s*(?:\u2026|\.\.\.|--|\u2013|\u2014)\s*E-(\d+)", text):
+        lo, hi = int(m.group(1)), int(m.group(2))
+        found |= {f"E-{n:02d}" for n in range(lo, hi + 1)}
+    found |= set(re.findall(r"E-\d+", text))
+    return found
+
 #: Model row -> the engine token its experiments should carry. Only models whose
 #: family the ledger names; the rest are not constrained by this invariant.
 MODEL_ENGINE = {
@@ -426,12 +490,14 @@ def test_experiments_spanning_both_engines_appear_on_both_models():
     cited = {model: set(re.findall(r"E-\d+", cell)) for model, cell in rows.items()}
 
     both = {e for e, a in area.items() if a.startswith("both")}
+    assert both, "the ledger no longer scopes any experiment 'both' — did its shape change?"
     missing = []
     for exp in sorted(both):
-        on = {m for m, es in cited.items() if exp in es}
-        # Only meaningful for the two engine models the ledger's "both" refers to.
+        # UNCONDITIONAL. The earlier `if on` guard only fired once some row
+        # already cited the experiment, so deleting E-19 from BOTH models
+        # passed -- total omission, the worse form of the defect, was invisible.
         for model in ("MODEL-TYPE-001", "MODEL-MAG-001"):
-            if on and model not in on:
+            if exp not in cited.get(model, set()):
                 missing.append(f"{exp} is '{area[exp]}' but is not on {model}")
     assert not missing, (
         "experiments scoped to both engines are filed under only one: "
@@ -451,6 +517,13 @@ def test_cited_experiments_match_the_models_engine():
         for exp in re.findall(r"E-\d+", cell):
             a = area.get(exp)
             if a is None:
+                # Do NOT skip. A silent `continue` here left E-24, E-34 and the
+                # E-26..E-33 session outside the family check entirely, and would
+                # accept a typo'd or nonexistent id as valid. Sections whose shape
+                # the parser cannot read must be listed explicitly.
+                if exp in UNPARSED_LEDGER_SECTIONS:
+                    continue
+                wrong.append(f"{model} cites {exp}, which has no Engine/area in the ledger")
                 continue
             if engine in a or a.startswith(("both", "cross-cutting", "precursor")):
                 continue
@@ -476,7 +549,7 @@ def test_uncommitted_experiments_are_not_presented_as_reproducible():
     # The 2026-07-06 session's table rows name them; pick them up from its header too.
     session = re.search(r"# 2026-07-06 SESSION[^\n]*\(([^)]*)\)", ledger)
     if session:
-        uncommitted |= set(re.findall(r"E-\d+", session.group(1)))
+        uncommitted |= _expand_experiment_ranges(session.group(1))
 
     bad = []
     for model, cell in _traceability_rows().items():
@@ -514,4 +587,57 @@ def test_docs_citing_solyra_paths_explain_the_split():
     assert not missing, (
         f"{missing}. Add the frontend-split note (11-CODE-TRACEABILITY.md has the "
         "canonical wording) or link to the doc that carries it."
+    )
+
+
+# ------------------------------------------- 9. the two gaps round 2 left --
+#
+# Round 2 added a scheduler check and shipped it as "un-repeatable". One round
+# later the review found `audit-brief-bias-weekly` missing from the same table.
+# The check verified that listed rows were CORRECT; it never asked whether the
+# list was COMPLETE, which is the defect that actually recurred. Likewise the
+# vocabulary check covered Status and Doc but not Rec, so MODEL-DIR-001 carried
+# `REMOVE / archive` -- outside the declared set -- through a green suite.
+
+#: Jobs whose name marks them as model-bearing: they train, score, or audit a
+#: model. A scheduled job matching this and absent from the table is the
+#: `audit-brief-bias-weekly` omission repeating.
+MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds",
+                 "regime-combo", "audit-walkforward", "audit-brief-bias",
+                 "p2-build-gamma-levels", "audit-magnitude-drift")
+
+
+def test_every_scheduled_model_bearing_job_is_listed():
+    """Completeness, not just correctness of the rows that are present."""
+    listed = {job for _, _, job in re.findall(
+        r"^\| `([a-z0-9-]+)` \| `([^`]+)` \| `([a-z0-9-]+)` \|", _run_section(), re.M)}
+    scheduled = {job for _, job in _declared_schedulers().values()}
+    missing = sorted(
+        j for j in scheduled
+        if any(k in j for k in MODEL_BEARING) and j not in listed
+    )
+    assert not missing, (
+        f"model-bearing jobs on a cron but absent from the table: {missing}. "
+        "This is how audit-brief-bias-weekly was missed one round after the "
+        "gamma omission was 'gated'."
+    )
+
+
+def test_rec_cells_use_the_declared_vocabulary():
+    """`Rec` was never checked. MODEL-DIR-001 read `REMOVE / archive`."""
+    m = re.search(r"\*\*Rec\*\* = ([A-Z/ ]+);", REGISTRY.read_text())
+    assert m, "the column contract no longer declares the Rec vocabulary"
+    allowed = {v.strip() for v in m.group(1).split("/") if v.strip()}
+    text = REGISTRY.read_text()
+    bad = []
+    for table in ("## Deterministic and heuristic systems", "## Learned models"):
+        for line in text.split(table, 1)[1].split("\n##", 1)[0].split("\n"):
+            if not re.match(r"^\| MODEL-", line):
+                continue
+            cells = [c.strip() for c in line.split("|")]
+            if cells[7].strip("* ") not in allowed:
+                bad.append(f"{cells[1]}: {cells[7]!r}")
+    assert not bad, (
+        f"Rec values outside {sorted(allowed)}: {bad}. Put any qualifier in prose, "
+        "not in the column a machine reads."
     )

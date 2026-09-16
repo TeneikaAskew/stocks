@@ -46,13 +46,20 @@ exactly on an average maps to that quintile.
 
 ## Archetypes
 
-| Archetype | Condition | Action hint |
+Evaluated in order by `classify_archetype` (`lib/earnings_reactions.py:479-496`); the first
+match wins.
+
+| Archetype | Condition (numeric) | Action hint |
 |---|---|---|
-| `bullish_trend` | high `dir_consistency`, positive `directional_bias` | bullish gap play |
-| `bearish_trend` | high `dir_consistency`, negative `directional_bias` | bearish gap play |
-| `reversal_play` | high `reversal_rate`, low `dir_consistency` | gap reversal play |
-| `mixed` | moderate on both axes | low conviction |
-| `quiet` | small `move_magnitude` or no clear pattern | skip |
+| `quiet` | `move_magnitude_pct < 1.5`, or magnitude / consistency / reversal missing | skip |
+| `reversal_play` | `reversal_rate >= 0.40` **and** `dir_consistency < 0.50` | gap reversal play |
+| `bullish_trend` | `dir_consistency >= 0.65` **and** `directional_bias_pct > 0.5` | bullish gap play |
+| `bearish_trend` | `dir_consistency >= 0.65` **and** `directional_bias_pct < -0.5` | bearish gap play |
+| `mixed` | anything that matches none of the above | low conviction |
+
+Note `quiet` absorbs the missing-data case, so a `quiet` tag means *either* a genuinely small
+move *or* absent inputs. Those are different situations and the archetype does not separate
+them.
 
 ## Tunable knobs
 
@@ -89,8 +96,26 @@ Two caveats a reader should carry:
    `scripts/backtest_playability.py` is a walk-forward, so the machinery to re-measure
    exists — see CLAUDE.md Rule 3.5 rather than waiting for live data.
 
-The archetype cut-points ("high", "low", "moderate" `dir_consistency`) are **UNKNOWN** —
-the source names the bands but does not give their numeric boundaries or derivation.
+**The archetype cut-points are also recorded, and an earlier revision of this document
+wrongly called them `UNKNOWN`.** `classify_archetype`'s docstring
+(`lib/earnings_reactions.py:466-476`) gives both the numeric boundaries — reproduced in the
+table above — and their provenance: *"Thresholds tuned against the 9-ticker case-study set"*,
+listing the worked cases:
+
+```
+AVGO  -> bullish_trend (dir_cons 0.83, bias +3.24)
+FDX   -> reversal_play (dir_cons 0.33, rev 0.50)
+NVDA  -> mixed         (dir_cons 0.58, mid)
+LLY   -> bullish_trend (dir_cons 0.67, bias +2.15)
+JPM   -> mixed         (dir_cons 0.58)
+WMT   -> bullish_trend (dir_cons 0.67, bias +1.06)
+```
+
+That is weaker evidence than the quintile calibration — nine tickers hand-checked, not a
+21,592-prediction backtest — but it is a recorded derivation, and calling it `UNKNOWN`
+discarded it. The error came from reading the *module* docstring and not the *function*
+docstring; recorded as DOC-19 in
+[07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
 
 ## Tests
 

@@ -30,8 +30,15 @@ The two strategies' per-bar outputs. **Pure helper: no database access, no I/O.*
 | `composite_score` | `(signals) -> float` | The ranking score |
 
 The live signal monitor calls `detect_agreement` once per bar after running both
-strategies, persists the payload to `signal_alerts.strategy_agreement`, and uses the
-composite score to rank Discord embed output.
+strategies and persists the payload to `signal_alerts.strategy_agreement`.
+
+**The composite score does not rank anything.** The module docstring says the monitor
+will *"use the composite score to rank Discord embed output"*, but that was intent and
+was never implemented: `SignalMonitor.fire_alert` emits each alert as it happens, with
+no sorting or prioritisation. The score appears only as a display line
+(`Composite score: X`, `gcp/signal_monitor.py:1562`) and a `🎯 STACKED ` title
+prefix (`:1518`). Anyone assessing this model's production effect should know the score
+currently changes nothing about what fires or in what order.
 
 ## Constants
 

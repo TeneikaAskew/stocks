@@ -1,28 +1,59 @@
 # MODEL-MOM-001 — Momentum strategy
 
-**Code:** `lib/strategies/momentum.py` (260 lines) ·
+**Code:** `lib/strategies/momentum.py` (260 lines), thresholds in
+`lib/strategies/config.py` ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RETEST
 **Doc health:** CURRENT · **Last verified:** 2026-09-16
 
-> **Scope of this document.** It records what the code does, read from the source and
-> its tests. Where the code does not record *why* a value was chosen, this document says
-> so rather than inferring. See [Rationale](#rationale).
+> **Read from the scoring functions, not the module docstring.** The first version of this
+> document was assembled from `momentum.py`'s module docstring and was wrong in three ways
+> — see [A warning about this module's own docstring](#a-warning-about-this-modules-own-docstring).
 
 ## What it decides
 
 Per bar, per ticker: whether a CALL or PUT momentum signal is eligible to fire.
-`CALL = buy strength` — the opposite call logic from
-[MODEL-MR-001](MODEL-MR-001.md), which buys oversold dips.
+`CALL = buy strength` — the opposite call logic from [MODEL-MR-001](MODEL-MR-001.md),
+which buys oversold dips.
 
-The module docstring records that when both strategies fire on the same bar they take
-**opposite directions ~78.6% of the time** (attributed to a 2026-05-01 audit). The
-overlap case is handled by [MODEL-AGREE-001](MODEL-AGREE-001.md).
+## The firing rule: a scored gate, not a conjunction
 
-## Inputs
+**It is not "all conditions hold".** Seven conditions are scored one point each, and a fire
+requires **both**:
 
-Indicator columns on the current bar, produced upstream by `lib/indicators.py`:
-`Consecutive_Up` / `Consecutive_Down`, `RSI`, `StochRSI`, VWAP, EMA9.
+| Gate | Value | Source |
+|---|---|---|
+| Total score | `>= MIN_CONDITIONS_MOMENTUM` = **5** of 7 | `config.py:108` |
+| Core conditions among them | `>= MIN_CORE_CONDITIONS` = **2** | `config.py:127` |
+
+Core conditions are the four structural ones — `consecutive_up`, `rsi_bullish_recovery`,
+`above_vwap`, `above_ema9` (`config.py:129-134`; PUT mirrors at `:136-141`). So the three
+newer confirmation factors cannot carry a fire on their own.
+
+## The seven scored conditions (CALL; PUT mirrors)
+
+| # | Condition name | Test | Threshold | Source |
+|---|---|---|---|---|
+| 1 | `consecutive_up` | `Consecutive_Up >= 3` | `CONSECUTIVE_PERIODS = 3` | `config.py:53` |
+| 2 | `rsi_bullish_recovery` | `25 < RSI < 50` | `CALL_RSI_RANGE = (25.0, 50.0)` | `config.py:31` |
+| 3 | `above_vwap` | `Close > VWAP` | — | `momentum.py:88` |
+| 4 | `above_ema9` | `Close > EMA9` | — | `momentum.py:93` |
+| 5 | `rvol_above_recent` | `RVol_Recent_20 > 1.2` | `RVOL_RECENT_THRESHOLD = 1.2` | `config.py:70` |
+| 6 | `atr_expansion` | `ATR_Expansion > 1.15` | `ATR_EXPANSION_THRESHOLD = 1.15` | `config.py:78` |
+| 7 | `rsi_thrust` | `RSI_Thrust_3 > 5.0` | `RSI_THRUST_THRESHOLD = 5.0` | `config.py:88` |
+
+Conditions 5–7 are NaN-guarded: a missing indicator scores zero rather than raising or
+defaulting true (`momentum.py:99-112`).
+
+**`StochRSI` is not scored.** It was removed in Phase 0.7.1. The function docstring records
+why, with the measurement: *"`stoch_rsi_not_overbought` (StochRSI_K < 80) fired on 72.2% of
+bars — pure free score that didn't discriminate setup quality"* (273 morning bars, 2026-05-01
+strategy audit).
+
+Per-ticker RSI ranges override the Tier-B default via
+`lib.strategies.calibration.get_call_rsi_range(ticker)`, written by
+[MODEL-CALIB-001](MODEL-CALIB-001.md) — whose status is **Invalidated**. Read that document
+before treating a calibrated range as validated.
 
 ## Entry points
 
@@ -30,37 +61,41 @@ Indicator columns on the current bar, produced upstream by `lib/indicators.py`:
 |---|---|
 | `MomentumStrategy` | The canonical implementation. `lib/trading_analysis.py`'s `MarketAnalyzer.generate_technical_signals` is a back-compat wrapper that delegates here |
 
-## Conditions and thresholds
-
-CALL fires when all hold (PUT mirrors):
-
-| Condition | Value |
-|---|---|
-| Consecutive up bars | `>= 3` |
-| RSI | in `(25, 50)` — described in-source as the "bullish recovery range" |
-| StochRSI | `< 80` — described as "not yet overbought" |
-| Price vs VWAP | above |
-| Price vs EMA9 | above |
-
-Per-ticker overrides come from `ticker_calibration` via
-[MODEL-CALIB-001](MODEL-CALIB-001.md), whose own status is **Invalidated** — see its
-document before treating a calibrated threshold as validated.
-
 ## Rationale
 
-**UNKNOWN — not recorded in code or tests.** The source states the thresholds and gives
-each a short label ("bullish recovery range", "not yet overbought") but records no
-derivation for `3` bars, the `(25, 50)` RSI band, or the `80` StochRSI ceiling. The
-module header attributes the implementation to an extraction from
-`lib/trading_analysis.py:799-836`, so the values predate this module. No experiment in
-[EXPERIMENT_REGISTRY](../EXPERIMENT_REGISTRY.md) evaluates them.
+**Partly recorded, and better recorded than most models here.**
+
+- **`MIN_CONDITIONS_MOMENTUM = 5`** — `config.py:97` attributes it to a *"B+ 2026-05-06
+  score-bucket walk-forward"*. That is a real derivation, though this document has not
+  re-measured it.
+- **Dropping StochRSI** — derived, with the 72.2% fire-rate measurement quoted above.
+- **Relaxing `consecutive_up` from 3-of-3 to 3-of-5** — recorded as Phase 0.7.2, no
+  measurement given.
+
+**UNKNOWN — not recorded in code or tests:** the `(25, 50)` RSI band, `MIN_CORE_CONDITIONS = 2`,
+and the three newer thresholds `1.2` / `1.15` / `5.0`. Each is stated as a constant with a
+short label and no derivation.
+
+## A warning about this module's own docstring
+
+`momentum.py`'s **module** docstring (lines 1-20) describes the Phase 0.8 extraction and has
+not tracked the code. It lists five conditions including `StochRSI < 80`, which was later
+dropped, and omits the three that were added. The **function** docstring at `:55-74` is
+current and records each change.
+
+Worse, that function docstring contains its own stale line — *"Seven conditions total;
+min_conditions=3 still gates fires"* (`:67`) — while `config.py:108` sets
+`MIN_CONDITIONS_MOMENTUM = 5`. Prefer `config.py` and the scoring body over either docstring.
+
+Recorded as DOC-18 in
+[07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
 
 ## Tests
 
 `tests/lib/test_strategy_momentum.py` · `test_strategy_interface.py` ·
-`test_strategy_isolation.py` · `test_strategy_legacy_parity.py` (delegation parity with
-the legacy inline path) · `test_strategy_timeframe.py` ·
-`tests/gcp/test_signal_monitor_standalone_momentum.py` ·
+`test_strategy_isolation.py` · `test_strategy_legacy_parity.py` ·
+`test_strategy_timeframe.py` · `tests/gcp/test_signal_monitor_standalone_momentum.py` ·
+`tests/gcp/test_signal_monitor_momentum_instrumentation.py` ·
 `tests/scripts/test_momentum_eligibility.py`
 
 ## Known issues

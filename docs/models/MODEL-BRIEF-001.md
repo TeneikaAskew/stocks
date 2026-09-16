@@ -28,11 +28,13 @@ TRUTH for the movement statement"* and as **feature-flagged, NOT user-facing**.
 
 | Value | Meaning |
 |---|---|
-| `CALL` | brief recommends a CALL setup and FTFC agrees |
-| `PUT` | brief recommends a PUT setup and FTFC agrees |
+| `CALL` | brief recommends a CALL setup **and FTFC does not contradict it** |
+| `PUT` | brief recommends a PUT setup **and FTFC does not contradict it** |
 | `NEUTRAL` | brief is "No signal", or only "building" — not actionable |
 | `CONFLICTED` | brief direction disagrees with FTFC direction; the brief is internally inconsistent |
 | `UNAVAILABLE` | no brief row for this `(ticker, date)` |
+
+**`CALL`/`PUT` do not mean FTFC corroborates the call.** `classify` falls through to the parsed setup when `ftfc_direction` is missing or `mixed`; only an explicitly *opposite* bullish/bearish value produces `CONFLICTED`. So a consumer can receive `CALL` with no FTFC agreement behind it, and reading the tag as a two-source confirmation overstates the evidence attached to it.
 
 **Cold start and failure both return `UNAVAILABLE`**, so the monitor treats an unmapped
 state as *no information* rather than spurious agreement. When Cloud SQL is not
@@ -50,12 +52,21 @@ setup-strength notation.
 
 ## Live gating
 
-`platform/deploy.sh` sets `MOVEMENT_STATEMENT_ENABLED=false`, which hides the whole
-Movement Read card. Per
-[#1025](https://github.com/TeneikaAskew/stocks/issues/1025), the stated reason is
-[MODEL-MAG-001](../MAGNITUDE_ENGINE_RESULTS.md)'s argmax collapse. A render-layer
-backstop, `_model_degeneracy` in `movement_statement.py`, independently refuses to show a
-degenerate bucket, so the card is double-fenced.
+`platform/deploy.sh:177` sets **`MOVEMENT_STATEMENT_ENABLED=true`**, and both the staging and
+production Cloud Build deployments pass the same value. **The Movement Read card is enabled
+in the deployed environments.**
+
+An earlier revision of this document said the flag was `false` and the card "double-fenced".
+That was wrong, and worth recording how: it was taken from
+[#1025](https://github.com/TeneikaAskew/stocks/issues/1025)'s body, which described the state
+on 2026-09-07. [#1024](https://github.com/TeneikaAskew/stocks/pull/1024) flipped it back to
+`true` the same day — `platform/deploy.sh:133` says so in as many words. **An issue body is a
+snapshot, not current state**, the same trap as a stale docstring.
+
+What remains true: `_model_degeneracy` in `lib/movement_statement.py:363` is a render-layer
+backstop that refuses to show a degenerate magnitude bucket. With the flag on, that check is
+the *only* thing standing between [MODEL-MAG-001](../MAGNITUDE_ENGINE_RESULTS.md)'s collapse
+and the card — one fence, not two.
 
 ## Rationale
 
