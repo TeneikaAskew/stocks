@@ -1339,3 +1339,16 @@ The EXPLOSIVE threshold on IWM 15m moves from 0.0305 to 0.0338. The
 run. The pre-restamp payloads are kept in the session scratchpad. All six
 serving artifacts verify under the new reader.
 `tests/gcp/test_magnitude_inference.py`.
+
+**Second pass (Codex on `7cfad58a`, one P2).** `_model_degeneracy` in
+`lib/movement_statement.py`, the render backstop, applied the 90% ceiling
+with no session minimum, so the same calm SPY 5m session the auditor now
+declines to page on (73/75 TIGHT) would have withheld the Expected-Move
+block as "decision-collapsed" for days after a promotion. Its aggregate
+is now grouped by ET session as well as bucket; a share over the ceiling
+on fewer than five sessions renders, with `insufficient_sessions`,
+`n_sessions` and `min_sessions` in the payload saying why it was not
+withheld. The literal is asserted equal to the auditor's
+`MIN_SESSIONS_FOR_HIGH` in the tests, the same discipline as the shared
+90% ceiling. `tests/lib/test_movement_statement.py`
+(`test_one_calm_session_is_insufficient_evidence_not_collapse`).

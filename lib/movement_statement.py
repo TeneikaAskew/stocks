@@ -571,6 +571,16 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict)
 # matrix, so this backstop reads exactly what the gate measured.
 _MAG_DEGENERATE_MODAL_SHARE = 0.90
 _MAG_DEGENERACY_LOOKBACK_DAYS = 7
+# Under the decision rule a calibrated model's modal share moves with the
+# session: SPY 5m `magnitude-engine-6hp7l` named TIGHT on 73/75 bars of its
+# first (calm) served session, on a model that names EXPLOSIVE on 11-13% of
+# bars over eight years. One session is not evidence of collapse, so the
+# detector's HIGH tier (gcp/audit_magnitude_drift.MIN_SESSIONS_FOR_HIGH)
+# requires the share to hold across this many distinct sessions, and so does
+# this backstop (Codex P2 on #1117): fewer sessions is insufficient evidence,
+# reported as such in the payload, never a withheld card. Same literal-not-
+# import discipline as the share above; asserted equal in tests.
+_MAG_DEGENERACY_MIN_SESSIONS = 5
 
 
 def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict:
@@ -608,14 +618,19 @@ def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict
     # a model that collapsed only on live inputs or withhold a healthy one.
     # gcp/audit_magnitude_drift.py filters the same way; this keeps the render
     # backstop measuring exactly what the detector measures.
+    # Grouped by ET session as well as bucket (CLAUDE.md 3.9, named zone), so
+    # one aggregate answers both "what share" and "over how many sessions".
+    # At most LOOKBACK_DAYS x bars-per-session rows feed it.
     sql = (
-        "SELECT pred_bucket, count(*) AS n "
+        "SELECT pred_bucket, "
+        "       (ts AT TIME ZONE 'America/New_York')::date AS session, "
+        "       count(*) AS n "
         "FROM magnitude_per_bar_predictions "
         "WHERE ticker = :ticker AND tf = :tf AND model_version = :mv "
         "  AND source = 'inference' "
         "  AND ts <= :ts "
         f"  AND ts > :ts - INTERVAL '{_MAG_DEGENERACY_LOOKBACK_DAYS} days' "
-        "GROUP BY pred_bucket"
+        "GROUP BY pred_bucket, session"
     )
     params = {"ticker": ticker.upper(), "tf": tf, "mv": model_version, "ts": ts}
     try:
@@ -628,22 +643,35 @@ def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict
 
     if df is None or getattr(df, "empty", True):
         return _unavailable("no recent predictions for this model_version")
-    if "pred_bucket" not in getattr(df, "columns", []) or "n" not in df.columns:
+    cols = getattr(df, "columns", [])
+    if any(c not in cols for c in ("pred_bucket", "session", "n")):
         # A caller-injected query_fn that does not answer this shape. Report
         # it rather than guessing at degeneracy from the wrong frame.
         return _unavailable("degeneracy check returned an unexpected shape")
 
-    counts = {int(r["pred_bucket"]): int(r["n"]) for _, r in df.iterrows()}
+    counts: dict[int, int] = {}
+    sessions: set = set()
+    for _, r in df.iterrows():
+        counts[int(r["pred_bucket"])] = counts.get(int(r["pred_bucket"]), 0) + int(r["n"])
+        sessions.add(r["session"])
     total = sum(counts.values())
     if total <= 0:
         return _unavailable("no recent predictions for this model_version")
     modal_bucket = max(counts, key=counts.get)
     modal_share = counts[modal_bucket] / total
+    n_sessions = len(sessions)
+    enough = n_sessions >= _MAG_DEGENERACY_MIN_SESSIONS
     return _ok(
-        degenerate=bool(modal_share >= _MAG_DEGENERATE_MODAL_SHARE),
+        degenerate=bool(enough and modal_share >= _MAG_DEGENERATE_MODAL_SHARE),
+        # True when the share is over the ceiling but on too few sessions to
+        # call: the card renders, and the payload says why it was not withheld.
+        insufficient_sessions=bool(
+            not enough and modal_share >= _MAG_DEGENERATE_MODAL_SHARE),
         modal_bucket=modal_bucket,
         modal_share=modal_share,
         n_bars=total,
+        n_sessions=n_sessions,
+        min_sessions=_MAG_DEGENERACY_MIN_SESSIONS,
         distinct_buckets=len(counts),
         lookback_days=_MAG_DEGENERACY_LOOKBACK_DAYS,
     )

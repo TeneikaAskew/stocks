@@ -513,6 +513,14 @@ class Degeneracy(ApiModel):
     modal_bucket: Optional[int] = None
     modal_share: Optional[float] = None
     n_bars: Optional[int] = None
+    # Distinct ET sessions behind n_bars, and the minimum before a modal
+    # share over the ceiling counts as collapse rather than a calm day
+    # (Codex P2 on #1117). insufficient_sessions is True when the share is
+    # over the ceiling but the sessions are under the minimum: rendered, and
+    # the payload says why.
+    n_sessions: Optional[int] = None
+    min_sessions: Optional[int] = None
+    insufficient_sessions: Optional[bool] = None
     distinct_buckets: Optional[int] = None
     lookback_days: Optional[int] = None
     reason: Optional[str] = None

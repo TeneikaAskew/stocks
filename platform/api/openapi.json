@@ -1801,6 +1801,17 @@
             ],
             "title": "Distinct Buckets"
           },
+          "insufficient_sessions": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Insufficient Sessions"
+          },
           "lookback_days": {
             "anyOf": [
               {
@@ -1811,6 +1822,17 @@
               }
             ],
             "title": "Lookback Days"
+          },
+          "min_sessions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Sessions"
           },
           "modal_bucket": {
             "anyOf": [
@@ -1844,6 +1866,17 @@
               }
             ],
             "title": "N Bars"
+          },
+          "n_sessions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Sessions"
           },
           "reason": {
             "anyOf": [

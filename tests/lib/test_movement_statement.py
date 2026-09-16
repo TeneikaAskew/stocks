@@ -15,7 +15,7 @@ no GCS, no network. The invariants under test (from the Phase 2 plan):
 """
 from __future__ import annotations
 
-from datetime import date as date_type
+from datetime import date as date_type, timedelta
 
 import pandas as pd
 import pytest
@@ -916,7 +916,9 @@ def test_degenerate_magnitude_leaves_headline_and_levels_ok(monkeypatch):
     """The disentanglement #1024 is for: an argmax-collapsed magnitude model
     withholds ONLY expected_move. The headline and the levels ladder come from
     other inputs and must render unchanged."""
-    degen = pd.DataFrame([{"pred_bucket": 0, "n": 588}])
+    degen = pd.DataFrame([{"pred_bucket": 0, "n": 588 // 5 + (1 if k < 3 else 0),
+                           "session": date_type(2026, 6, 20) - timedelta(days=k)}
+                          for k in range(5)])
 
     def _q(sql, params=None):
         if "GROUP BY pred_bucket" in sql:
@@ -1035,20 +1037,32 @@ def test_expected_move_atr_none_when_features_missing():
 # ── Argmax-collapsed model backstop (c49qf incident, 2026-08-26) ───────────
 
 
-def _degeneracy_qf(bucket_counts, mag_df=None):
+def _degeneracy_qf(bucket_counts, mag_df=None, n_sessions=5):
     """query_fn that answers the prediction read, the ATR lookup, and the
     degeneracy aggregate — the three queries _build_expected_move now makes.
 
-    `bucket_counts` is {pred_bucket: n} as the GROUP BY would return it.
+    `bucket_counts` is {pred_bucket: n}; the GROUP BY is per (bucket, ET
+    session) since #1117, so each bucket's count is spread over `n_sessions`
+    sessions (default a full week, the pre-#1117 assumption).
     """
     state = {"pred_served": False}
+
+    def _rows():
+        out = []
+        for b, n in bucket_counts.items():
+            base, extra = divmod(n, n_sessions)
+            for k in range(n_sessions):
+                cnt = base + (1 if k < extra else 0)
+                if cnt:
+                    out.append({"pred_bucket": b,
+                                "session": date_type(2026, 6, 20) - timedelta(days=k),
+                                "n": cnt})
+        return pd.DataFrame(out)
 
     def _q(sql, params=None):
         if "magnitude_per_bar_predictions" in sql:
             if "GROUP BY pred_bucket" in sql:
-                return pd.DataFrame(
-                    [{"pred_bucket": b, "n": n}
-                     for b, n in bucket_counts.items()])
+                return _rows()
             if not state["pred_served"]:
                 state["pred_served"] = True
                 return _mag_df() if mag_df is None else mag_df
@@ -1110,6 +1124,56 @@ def test_degeneracy_backstop_renders_a_model_over_the_base_rate():
     assert em["status"] == "OK"
     assert em["degeneracy"]["degenerate"] is False
     assert em["degeneracy"]["modal_share"] == pytest.approx(0.761)
+
+
+def test_one_calm_session_is_insufficient_evidence_not_collapse():
+    """SPY 5m magnitude-engine-6hp7l, first served session (2026-09-14):
+    TIGHT on 73/75 bars of a calm day, on a model that names EXPLOSIVE on
+    11-13% of bars over eight years. The auditor declines to page on one
+    session; the backstop must not blank the card on it either (Codex P2 on
+    #1117). The same share across five sessions IS collapse."""
+    em = ms._build_expected_move(
+        "SPY", "5m", _degeneracy_qf({0: 73, 1: 2}, n_sessions=1), as_of=None)
+    assert em["status"] == "OK", em
+    d = em["degeneracy"]
+    assert d["degenerate"] is False
+    assert d["insufficient_sessions"] is True
+    assert d["n_sessions"] == 1 and d["min_sessions"] == 5
+    assert d["modal_share"] == pytest.approx(73 / 75)
+    week = ms._build_expected_move(
+        "SPY", "5m", _degeneracy_qf({0: 365, 1: 10}, n_sessions=5), as_of=None)
+    assert week["status"] == "UNAVAILABLE"
+    assert "decision-collapsed" in week["reason"]
+    assert week["degeneracy"]["n_sessions"] == 5
+    assert week["degeneracy"]["insufficient_sessions"] is False
+    # four sessions of a genuinely constant model: still evidence-short
+    four = ms._build_expected_move(
+        "SPY", "5m", _degeneracy_qf({0: 300}, n_sessions=4), as_of=None)
+    assert four["status"] == "OK" and four["degeneracy"]["insufficient_sessions"] is True
+
+
+def test_degeneracy_session_minimum_matches_the_auditor():
+    """The backstop and the detector must agree on what one session proves,
+    the same way they share the 90% ceiling."""
+    from gcp import audit_magnitude_drift as auditor
+    assert ms._MAG_DEGENERACY_MIN_SESSIONS == auditor.MIN_SESSIONS_FOR_HIGH == 5
+    import inspect
+    src = inspect.getsource(ms._model_degeneracy)
+    assert "AT TIME ZONE 'America/New_York'" in src
+    assert "GROUP BY pred_bucket, session" in src
+
+
+def test_degeneracy_aggregate_without_sessions_is_an_unexpected_shape():
+    def _q(sql, params=None):
+        if "magnitude_per_bar_predictions" in sql:
+            if "GROUP BY pred_bucket" in sql:
+                return pd.DataFrame([{"pred_bucket": 0, "n": 588}])
+            return _mag_df()
+        return None
+    em = ms._build_expected_move("SPY", "15m", _q, as_of=None)
+    assert em["status"] == "OK"          # the check could not run; card stays up
+    assert em["degeneracy"]["status"] == "UNAVAILABLE"
+    assert "unexpected shape" in em["degeneracy"]["reason"]
 
 
 def test_degeneracy_check_failure_does_not_take_the_card_down():
