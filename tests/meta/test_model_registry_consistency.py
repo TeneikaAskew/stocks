@@ -4,13 +4,14 @@ On 2026-09-15 `docs/product/07-MODEL-REGISTRY.md` simultaneously: cited two
 issues as blocking that had been closed the day before; listed a model's code
 as `platform/src/lib/greeksCalculator.ts`, a file deleted months earlier and
 recorded as deleted in this repo's own BRIEFING_DECK; said six model-bearing
-jobs were scheduled while `gcp/deploy.sh:4410` declared a seventh; and mapped
-experiment E-20 to a model it does not evaluate. Every one of those is a
-pointer that reads as authoritative and goes nowhere. None was caught by a
-test, because nothing tests `docs/product/*.md` — `check_generated_docs.py`
-gates only 05-a, 05-c, 05-d and the root README.
+jobs were scheduled while `gcp/deploy.sh:4410` declared a seventh; and filed
+experiment E-20 under MODEL-CALIB-001, the per-ticker threshold writer, when
+E-20 is LightGBM probability calibration and belongs to the TYPE and MAG
+engines. Every one of those is a pointer that reads as authoritative and goes
+nowhere. None was caught by a test, because nothing tests `docs/product/*.md`
+— `check_generated_docs.py` gates only 05-a, 05-c, 05-d and the root README.
 
-This pins the parts a machine can settle offline. Five invariants:
+This pins the parts a machine can settle offline. Eight invariants:
 
 1. Every repo-rooted code path the registry cites exists.
 2. Every relative markdown link in `docs/product/*.md` resolves.
@@ -24,6 +25,10 @@ This pins the parts a machine can settle offline. Five invariants:
    feedback arrives a day late, in CI, on main.
 5. Status / Rec / Doc cells come from the vocabularies `docs/product/README.md`
    and this file declare, parsed from those files rather than retyped here.
+6. Every `DOC-nn` a model cites exists in the concern register.
+7. `Last reviewed` is no older than the newest date in the document's own body.
+8. The experiment-to-model join agrees with the ledger — see section 8 below,
+   which is where the three findings on PR #1111's second review landed.
 
 What it deliberately does NOT do:
 
@@ -328,4 +333,138 @@ def test_cited_issues_also_appear_in_pr_issue_traceability():
         f"issues cited by the registry but absent from 12-PR-ISSUE-TRACEABILITY.md: "
         f"{sorted(orphans, key=int)}. 12 owns the issue map; either it needs a refresh "
         "or the registry is citing something that no longer belongs to a capability."
+    )
+
+
+# ------------------------------------------- 8. the experiment-to-model join --
+#
+# Three review findings on PR #1111 were all one defect class: an experiment's
+# evidence attached to fewer models than the ledger says it covers, or artifacts
+# cited for an experiment the ledger says was never committed. Specifically:
+#
+#   * E-23 tested MODEL-TYPE-001's own 0.55-confidence calls and returned 0/8
+#     positive-expectancy folds, but was filed as belonging to no model — so the
+#     TYPE row showed its prediction success and hid its execution failure.
+#   * E-19 is `Engine/area: both (integrity)` and was on MAG only, so the
+#     leakage audit underwriting the TYPE verdict was missing from TYPE.
+#   * E-26/E-31/E-33 sat beside committed module paths although the ledger
+#     records them as a scratch harness "not committed to the repo".
+#
+# The ledger states each experiment's scope in a fixed field, so the join is
+# checkable rather than a matter of care. Writing these invariants found a
+# fourth instance unprompted: E-20 is `both (calibration)` with artifacts in
+# `strat_config.py` AND `mag_config.py`, and was on TYPE only.
+
+LEDGER = REPO / "docs" / "EXPERIMENT_REGISTRY.md"
+
+#: Model row -> the engine token its experiments should carry. Only models whose
+#: family the ledger names; the rest are not constrained by this invariant.
+MODEL_ENGINE = {
+    "MODEL-TYPE-001": "strat",
+    "MODEL-MAG-001": "magnitude",
+    "MODEL-DIR-001": "direction",
+}
+
+#: Experiments the ledger records as having no committed artifacts. Citing one
+#: beside a code path implies a reproduction route that does not exist.
+UNCOMMITTED_MARKER = "not committed to the repo"
+
+
+def _ledger_engine_area() -> dict[str, str]:
+    """E-nn -> its `Engine/area:` value, from the ledger's own fixed shape."""
+    return {
+        m.group(1): m.group(2).strip().lower()
+        for m in re.finditer(
+            r"^## (E-\d+)[^\n]*\n(?:>.*\n|\n)*- \*\*Engine/area:\*\* ([^·\n]+)",
+            LEDGER.read_text(),
+            re.M,
+        )
+    }
+
+
+def _traceability_rows() -> dict[str, str]:
+    """MODEL-* -> the raw Experiments cell of its traceability row."""
+    body = REGISTRY.read_text().split("| Model | Experiments |", 1)[1].split("\n###", 1)[0]
+    return {
+        m.group(1): m.group(2)
+        for m in re.finditer(r"^\| (MODEL-[A-Z]+-[0-9X]+) \| ([^|]*) \|", body, re.M)
+    }
+
+
+def test_experiments_spanning_both_engines_appear_on_both_models():
+    """An experiment the ledger scopes to `both` must not be filed under one."""
+    area = _ledger_engine_area()
+    rows = _traceability_rows()
+    cited = {model: set(re.findall(r"E-\d+", cell)) for model, cell in rows.items()}
+
+    both = {e for e, a in area.items() if a.startswith("both")}
+    missing = []
+    for exp in sorted(both):
+        on = {m for m, es in cited.items() if exp in es}
+        # Only meaningful for the two engine models the ledger's "both" refers to.
+        for model in ("MODEL-TYPE-001", "MODEL-MAG-001"):
+            if on and model not in on:
+                missing.append(f"{exp} is '{area[exp]}' but is not on {model}")
+    assert not missing, (
+        "experiments scoped to both engines are filed under only one: "
+        f"{missing}. This is how E-19's STRAT half and E-20's magnitude half went missing."
+    )
+
+
+def test_cited_experiments_match_the_models_engine():
+    """An experiment on a model's row should belong to that model's family, or
+    be explicitly qualified in the cell (an arm, a cross-cutting test)."""
+    area = _ledger_engine_area()
+    wrong = []
+    for model, cell in _traceability_rows().items():
+        engine = MODEL_ENGINE.get(model)
+        if engine is None:
+            continue
+        for exp in re.findall(r"E-\d+", cell):
+            a = area.get(exp)
+            if a is None:
+                continue
+            if engine in a or a.startswith(("both", "cross-cutting", "precursor")):
+                continue
+            # Anything else needs a parenthetical saying which arm applies.
+            if not re.search(rf"{exp}\s*\([^)]+\)", cell):
+                wrong.append(f"{model} cites {exp} ('{a}') unqualified")
+    assert not wrong, (
+        f"experiment/model family mismatches without a qualifying note: {wrong}. "
+        "Either the experiment is on the wrong row, or the cell should say which arm applies."
+    )
+
+
+def test_uncommitted_experiments_are_not_presented_as_reproducible():
+    """The ledger marks some results as never committed. A row citing one beside
+    code paths claims a reproduction route that does not exist."""
+    ledger = LEDGER.read_text()
+    if UNCOMMITTED_MARKER not in ledger:
+        pytest.skip("the ledger no longer records uncommitted experiments")
+
+    # Experiments named in the paragraph carrying the marker.
+    para = [p for p in ledger.split("\n\n") if UNCOMMITTED_MARKER in p]
+    uncommitted = {e for p in para for e in re.findall(r"E-\d+", p)}
+    # The 2026-07-06 session's table rows name them; pick them up from its header too.
+    session = re.search(r"# 2026-07-06 SESSION[^\n]*\(([^)]*)\)", ledger)
+    if session:
+        uncommitted |= set(re.findall(r"E-\d+", session.group(1)))
+
+    bad = []
+    for model, cell in _traceability_rows().items():
+        row = REGISTRY.read_text().split(f"| {model} | {cell} |", 1)
+        if len(row) < 2:
+            continue
+        code_cell = row[1].split("|")[0]
+        for exp in re.findall(r"E-\d+", cell) :
+            if exp not in uncommitted:
+                continue
+            if "unavailable" in cell.lower() or "unavailable" in code_cell.lower():
+                continue
+            if "not committed" in cell.lower() or "not committed" in code_cell.lower():
+                continue
+            bad.append(f"{model} cites {exp} without marking its artifacts unavailable")
+    assert not bad, (
+        f"{bad}. The ledger records these as a scratch harness whose code was never "
+        "committed, so no listed path reproduces them — say so in the row."
     )
