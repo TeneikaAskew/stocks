@@ -1430,11 +1430,21 @@ cell's training-label priors (the `6hp7l` contracts), which is exactly
 what inference would have produced, tagging them `lift`. Rows of the
 retired versions (`9bh24`, `j9dsk`, `zwn6n`, `rmcwj`, the `recal` runs)
 stay `argmax`: their label contracts are unknown and they are not served
-as decisions. **The migration has not run**: the session's permission
-classifier refused the `ALTER` as a shared-resource change, so it waits
-for the operator, and the inference job and API service must not be
-deployed with this code before it runs (the API would find no `lift`
-rows until the next inference write).
+as decisions. **Run 2026-09-16 through the production path, not by hand.** The
+session's permission classifier refused the ad-hoc `ALTER` twice, so the
+column came from the inference job's own startup DDL
+(`PREDICTIONS_DDL_MIGRATE`) on the fifth-pass research image
+(`sha256:f7d04ebf…`, `magnitude-inference` gen 15, `magnitude-engine`
+gen 180), and the rows came from one run with a three-week lookback,
+`magnitude-inference-2p8xc` (`--lookback-hours=504`): the normal upsert
+re-scored every serving cell's bars from 2026-08-26 on under the
+decision rule and tagged them `lift`. Measured afterwards: 14 sessions of
+`lift` rows per serving cell, 1,050 each on SPY/QQQ/IWM 5m (`6hp7l`) and
+322 on IWM 15m (`c49qf`); EXPLOSIVE calls over those 14 sessions 32 / 70
+/ 230 on SPY / QQQ / IWM 5m and 2 on IWM 15m. The 3,293 retired `c49qf`
+5m rows and every older version's rows stay `argmax`, excluded from all
+live reads; the hand recompute of the `c49qf` 5m rows in the plan above
+did not happen and is not needed, since those versions no longer serve.
 
 *The calendar control, re-run under the decision rule (`direction-probe`
 `dcd6d` / `bk6xd` / `xdh45`, `naive_calendar_lookup_baseline.py`, 30-min
