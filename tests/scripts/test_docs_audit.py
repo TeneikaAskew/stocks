@@ -414,6 +414,41 @@ def test_owning_job_check_is_quiet_when_the_job_delivered(monkeypatch):
     assert m.check_owning_job("2026-09-16") == []
 
 
+def test_run_returns_empty_for_a_tolerated_non_zero_exit():
+    """`git grep` exits 1 for "ran fine, matched nothing". That is a result."""
+    assert m.run(["git", "grep", "-lE", "zzz-no-such-string-zzz", "HEAD", "--", "README.md"],
+                 ok_exit_codes=(1,)) == ""
+
+
+def test_run_raises_for_an_exit_code_the_caller_did_not_tolerate():
+    """A read that could not happen is never a measurement.
+
+    The boolean `check=False` collapsed exit 1 ("no matches") and exit 128
+    ("unable to resolve revision") into the same empty string, and every
+    caller read that as zero. The Node twin shipped the same shape and CI
+    caught it: actions/checkout's shallow clone has no `origin/main`, so the
+    count check reported 0 where the answer was 37 and would have flagged a
+    correct document as wrong.
+    """
+    with pytest.raises(m.AuditError, match="128"):
+        m.run(["git", "grep", "-lE", "x", "no-such-ref-zzz", "--", "README.md"],
+              ok_exit_codes=(1,))
+
+
+def test_run_raises_on_any_failure_when_nothing_is_tolerated():
+    with pytest.raises(m.AuditError, match="exited 1"):
+        m.run(["git", "grep", "-lE", "zzz-no-such-string-zzz", "HEAD", "--", "README.md"])
+
+
+def test_changed_since_aborts_on_an_unknown_sha_rather_than_reporting_no_drift():
+    """Reporting "nothing changed since <sha>" for a SHA git never read is the
+    same fabrication as a count of zero. The marker check reports the unknown
+    SHA separately, so this path aborts instead of returning [].
+    """
+    with pytest.raises(m.AuditError):
+        m.check_changed_since("d.md", "0000000", ["lib"])
+
+
 def test_a_failed_github_read_aborts_rather_than_reporting_clean():
     """Rule 3.7. An empty issue map would mark every citation resolvable and
     the run would report a clean bill of health on no data at all."""

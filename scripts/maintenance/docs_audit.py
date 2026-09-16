@@ -144,9 +144,21 @@ class AuditError(RuntimeError):
     """The run itself could not be completed. Never degrades to empty results."""
 
 
-def run(cmd: list[str], *, cwd: pathlib.Path = REPO, check: bool = True) -> str:
+def run(cmd: list[str], *, cwd: pathlib.Path = REPO,
+        ok_exit_codes: tuple[int, ...] = ()) -> str:
+    """Run a command, treating only the listed non-zero exits as answers.
+
+    `ok_exit_codes` replaced a boolean `check`, which conflated two different
+    things. `git grep` exits 1 for "ran fine, no matches" and 128 for "could
+    not resolve that revision"; returning stdout for both made a broken read
+    look like a result of zero. The Node twin hit exactly that in CI, where
+    actions/checkout's shallow clone has no `origin/main` ref: every grep
+    exited 128 and the count check reported 0 where the answer was 37, which
+    would have flagged a correct document as wrong. A read that could not
+    happen is never a measurement (CLAUDE.md §3.7).
+    """
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    if check and proc.returncode != 0:
+    if proc.returncode != 0 and proc.returncode not in ok_exit_codes:
         raise AuditError(f"{' '.join(cmd[:4])}... exited {proc.returncode}: {proc.stderr.strip()[:400]}")
     return proc.stdout
 
@@ -569,11 +581,13 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
 def check_changed_since(doc: str, sha: str | None, code_paths: list[str]) -> list[dict]:
     if not sha or not code_paths:
         return []
-    try:
-        out = run(["git", "log", "--oneline", "--diff-filter=M", f"{sha}..origin/main",
-                   "--"] + code_paths, check=False)
-    except AuditError:
-        return []
+    # `git log` exits 0 with empty output when the range holds no commits, so
+    # no non-zero code here means "nothing changed". A SHA the repo does not
+    # have exits 128, and swallowing that reported "nothing changed since
+    # <sha>" for a commit that was never read. The marker check reports an
+    # unknown SHA separately, so this one aborts.
+    out = run(["git", "log", "--oneline", "--diff-filter=M", f"{sha}..origin/main",
+               "--"] + code_paths)
     commits = [c for c in out.strip().split("\n") if c.strip()]
     if not commits:
         return []
