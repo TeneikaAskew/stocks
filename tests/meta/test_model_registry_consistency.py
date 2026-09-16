@@ -79,18 +79,41 @@ EXEMPT_SECTIONS = ("## Documentation coverage and freshness",)
 #: Files this work owns. They must be clean.
 OWNED = {"07-MODEL-REGISTRY.md": 0}
 
-#: Pre-existing dead paths elsewhere under docs/product/. Measured 2026-09-15.
-#: Mostly the solyra frontend split (platform/src/routes/*.tsx) and a test-tree
-#: migration. These may only go DOWN — the test asserts both directions, so
-#: fixing one without lowering its number here also fails.
+#: Paths the #957 frontend split moved to the TeneikaAskew/solyra repository.
+#: These are NOT debt — `11-CODE-TRACEABILITY.md` carries a header note saying
+#: every `platform/src/**` path "now lives at solyra `src/**`", and the docs cite
+#: them deliberately. Counting them as dead paths made a documented convention
+#: look like 57 rotting references and buried the handful that are real.
+#:
+#: The invariant that replaces the count: a doc citing one of these must say
+#: where they went (see `test_docs_citing_solyra_paths_explain_the_split`).
+SOLYRA_OWNED = ("platform/src", "platform/tests")
+
+
+def _is_solyra_owned(path: str) -> bool:
+    if path.startswith(SOLYRA_OWNED):
+        return True
+    # Frontend specs: a *.spec.ts without a tests/ or platform/api prefix, per
+    # the split note's own wording. `tests/*.spec.ts` moved too.
+    return path.endswith((".spec.ts", ".test.ts", ".test.tsx")) and not path.startswith(
+        "platform/api/"
+    )
+
+
+#: Genuinely dead paths under docs/product/ — the file is gone and no relocation
+#: exists in this repo or in solyra. Measured 2026-09-16 after repointing
+#: `gcp/freshness_watchdog.py` (the job runs `scripts/audit_data_freshness.py`,
+#: per `gcp/deploy.sh:2471`) and `lib/data_loader` -> `lib/data_loader.py`.
+#: These may only go DOWN — the test asserts both directions, so fixing one
+#: without lowering its number here also fails.
 KNOWN_BACKLOG = {
-    "02-FEATURE-CATALOG.md": 16,
-    "04-BACKEND-API.md": 3,
-    "09-SECURITY-AUTH.md": 2,
-    "11-CODE-TRACEABILITY.md": 18,
-    "14-WORK-BREAKDOWN.md": 3,
-    "16-CONSOLIDATION-AUDIT.md": 1,
-    "README.md": 14,
+    "02-FEATURE-CATALOG.md": 0,
+    "04-BACKEND-API.md": 0,
+    "09-SECURITY-AUTH.md": 0,
+    "11-CODE-TRACEABILITY.md": 0,
+    "14-WORK-BREAKDOWN.md": 2,
+    "16-CONSOLIDATION-AUDIT.md": 0,
+    "README.md": 0,
 }
 
 
@@ -116,7 +139,12 @@ def _cited_paths(text: str) -> set[str]:
 
 
 def _dead_paths(md: Path) -> set[str]:
-    return {p for p in _cited_paths(_strip_exempt(md.read_text())) if not (REPO / p).exists()}
+    """Cited repo-rooted paths that do not exist AND are not solyra's."""
+    return {
+        p
+        for p in _cited_paths(_strip_exempt(md.read_text()))
+        if not (REPO / p).exists() and not _is_solyra_owned(p)
+    }
 
 
 # ---------------------------------------------------------------- 1. paths --
@@ -467,4 +495,23 @@ def test_uncommitted_experiments_are_not_presented_as_reproducible():
     assert not bad, (
         f"{bad}. The ledger records these as a scratch harness whose code was never "
         "committed, so no listed path reproduces them — say so in the row."
+    )
+
+
+def test_docs_citing_solyra_paths_explain_the_split():
+    """A `platform/src/**` path resolves nowhere in this repo. That is fine —
+    the #957 split moved the frontend — but only if the document says so.
+    Otherwise a reader follows it and finds nothing, which is the same failure
+    as a dead path with none of the visibility."""
+    missing = []
+    for md in sorted(PRODUCT.glob("*.md")):
+        text = md.read_text()
+        cited = {p for p in _cited_paths(_strip_exempt(text)) if _is_solyra_owned(p)}
+        if not cited:
+            continue
+        if "solyra" not in text.lower():
+            missing.append(f"{md.name} cites {len(cited)} solyra path(s) without naming solyra")
+    assert not missing, (
+        f"{missing}. Add the frontend-split note (11-CODE-TRACEABILITY.md has the "
+        "canonical wording) or link to the doc that carries it."
     )
