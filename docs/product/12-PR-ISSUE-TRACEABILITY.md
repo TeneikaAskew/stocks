@@ -202,7 +202,8 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 > #904, and ops records #930/#944), #868's row points at solyra#28, #717 closed as
 > duplicate, and of the eleven issues opened after 2026-09-03 that remain open (#1017,
 > #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, #1095), **only #1025 is
-> mapped** — added to FEAT-MODEL-001 on 2026-09-15 because
+> mapped** (plus #1118, filed 2026-09-16 and mapped to FEAT-OPS-001 on creation) — #1025
+> was added to FEAT-MODEL-001 on 2026-09-15 because
 > [07](07-MODEL-REGISTRY.md) cites it as MODEL-MAG-001's live blocker and
 > `tests/meta/test_model_registry_consistency.py` requires every issue the registry
 > cites to exist here. The other ten are still unmapped (#958 and #1019 also postdate
@@ -397,7 +398,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 **PR lineage:** [#242](https://github.com/TeneikaAskew/stocks/pull/242) *origin* · [#244](https://github.com/TeneikaAskew/stocks/pull/244) *origin* · [#379](https://github.com/TeneikaAskew/stocks/pull/379) *remediation* · [#381](https://github.com/TeneikaAskew/stocks/pull/381) *evolution* · [#400](https://github.com/TeneikaAskew/stocks/pull/400) *remediation* · [#445](https://github.com/TeneikaAskew/stocks/pull/445) *remediation* · [#592](https://github.com/TeneikaAskew/stocks/pull/592) *origin* · [#633](https://github.com/TeneikaAskew/stocks/pull/633) *evolution* · [#796](https://github.com/TeneikaAskew/stocks/pull/796) *evolution* · [#799](https://github.com/TeneikaAskew/stocks/pull/799) *evolution*
 
-### FEAT-OPS-001 — Operations / reliability (4 open)
+### FEAT-OPS-001 — Operations / reliability (5 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -405,6 +406,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 | [#920](https://github.com/TeneikaAskew/stocks/issues/920) | P3 | [P3][Operations] Retire or consume write-only scheduled production surfaces |
 | [#930](https://github.com/TeneikaAskew/stocks/issues/930) | ops | GCP job failed: freshness-watchdog |
 | [#944](https://github.com/TeneikaAskew/stocks/issues/944) | ops | GCP job failed: fetch-sec-filings |
+| [#1118](https://github.com/TeneikaAskew/stocks/issues/1118) | DEBT | refresh_calibration_table failures are swallowed, so INVESTMENT_MODELS_SUMMARY can age silently while claiming to be auto-refreshed |
 
 **PR lineage:** [#189](https://github.com/TeneikaAskew/stocks/pull/189) *origin* · [#192](https://github.com/TeneikaAskew/stocks/pull/192) *evolution* · [#200](https://github.com/TeneikaAskew/stocks/pull/200) *remediation* · [#235](https://github.com/TeneikaAskew/stocks/pull/235) *origin* · [#323](https://github.com/TeneikaAskew/stocks/pull/323) *remediation* · [#389](https://github.com/TeneikaAskew/stocks/pull/389) *origin* · [#392](https://github.com/TeneikaAskew/stocks/pull/392) *origin* · [#494](https://github.com/TeneikaAskew/stocks/pull/494) *evolution* · [#641](https://github.com/TeneikaAskew/stocks/pull/641) *origin* · [#644](https://github.com/TeneikaAskew/stocks/pull/644) *origin* · [#759](https://github.com/TeneikaAskew/stocks/pull/759) *origin* · [#771](https://github.com/TeneikaAskew/stocks/pull/771) *remediation*
 
