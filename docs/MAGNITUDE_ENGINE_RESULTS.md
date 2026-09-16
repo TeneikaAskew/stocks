@@ -1446,6 +1446,58 @@ decision rule and tagged them `lift`. Measured afterwards: 14 sessions of
 live reads; the hand recompute of the `c49qf` 5m rows in the plan above
 did not happen and is not needed, since those versions no longer serve.
 
+*The auditor on the migrated rows (`audit-magnitude-drift-f8llt`, base
+image `sha256:0198777d…`, Cloud Build `dd6db19d`, job gen 7: the first
+auditor image whose distribution query takes `decision_rule = 'lift'`).*
+Four findings: HIGH IWM 15m `c49qf` TIGHT on 137/138 (the known
+constant); **HIGH SPY 5m `6hp7l` TIGHT on 1,015/1,050 (96.7%)**; **HIGH
+QQQ 5m `6hp7l` 977/1,050 (93.0%)**; MEDIUM IWM 5m 788/1,050 (75.0%). The
+auditor windows on `computed_at`, so all 14 re-scored sessions fall
+inside its 7-day window and the five-session minimum is met, where
+`t5p82` / `7ph2x` had judged SPY/QQQ 5m on two sessions (MEDIUM with the
+reason). Whether that is a degenerate model or a calm tape is answered by
+the realised labels on the same bars
+(`docs/research/2026-09-16/magnitude_lift_sessions_vs_actual.csv`, the
+§11 method: `|next_close − next_open| / atr_20` from `strat_features_5m`,
+session-aware next bar, 74 scored bars per session):
+
+| cell | sessions | realised TIGHT | realised EXPLOSIVE | served TIGHT | EXPLOSIVE calls | hits | precision vs base rate |
+|---|---|---|---|---|---|---|---|
+| SPY 5m | 14 | 86.2% | 13 / 1,036 (1.3%) | 96.7% | 32 | 8 | 25.0% vs 1.3% (19.9×); 8 of 13 caught |
+| QQQ 5m | 14 | 86.7% | 18 / 1,036 (1.7%) | 93.0% | 70 | 15 | 21.4% vs 1.7% (12.3×); 15 of 18 caught |
+| IWM 5m | 14 | 73.6% | 46 / 1,036 (4.4%) | 75.0% | 230 | 38 | 16.5% vs 4.4% (3.7×); 38 of 46 caught |
+
+Per session the served share follows the realised one: SPY's five
+sessions with realised TIGHT at or over 90% (08-28, 09-03, 09-10, 09-11,
+09-14) are served at 97-100%, and its two under 80% (08-26 at 66%, 09-04
+at 80%) at 81% and 92% with 14 and 6 EXPLOSIVE calls; IWM's 08-26 (59.5%
+realised TIGHT, 7 EXPLOSIVE bars) is served at 28% TIGHT with 54 calls
+that caught all 7, and 09-08 (10 EXPLOSIVE bars) at 45% with 41 calls
+that caught all 10. So the share is over the 90% ceiling because the tape
+was: the realised TIGHT rate over these three weeks is 86% on SPY/QQQ
+against the 82% modal share the walk-forward measured across the
+2020-2026 folds, the models over-name TIGHT by about ten points in this
+regime and under-call the tail, and the tail calls they do make hit at
+12-20× the base rate. A fixed ceiling that does not condition on the
+realised base rate reads a calm fortnight on a calibrated model the same
+as a constant model. It is the promotion gate's collapse ceiling
+(`PROMOTION_COLLAPSE_MODAL_SHARE`), the auditor's HIGH bar and the
+movement statement's backstop, one number in three places, and is not
+changed in this PR; conditioning it on the realised rate is open decision
+(e) in `docs/product/15-OPEN-DECISIONS.md`.
+
+What the consumer sees today, read from the code and the rows rather than
+from the auth-gated endpoint: `solyra-api-prod` runs `d60643f7`, a `main`
+commit from before this PR, whose `_model_degeneracy` has neither the
+session minimum nor the `decision_rule` filter and windows seven days by
+bar time; over that window the serving versions' rows are TIGHT 98.7% on
+SPY 5m, 96.5% on QQQ 5m and 100% on IWM 15m (five sessions each, 375 /
+375 / 115 rows), so it withholds the expected-move block on those three
+cells and renders it for IWM 5m (80.8%). This head's backstop, with its
+five-session minimum met, reaches the same three verdicts. The auditor
+will report the two 5m HIGHs on every weekday run until the tape widens
+or decision (e) changes the ceiling.
+
 *The calendar control, re-run under the decision rule (`direction-probe`
 `dcd6d` / `bk6xd` / `xdh45`, `naive_calendar_lookup_baseline.py`, 30-min
 buckets, `6hp7l` cutoffs).* The argmax-era claim was that a
