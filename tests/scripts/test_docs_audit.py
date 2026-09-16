@@ -74,8 +74,139 @@ def test_most_specific_glob_wins():
 
 def test_declared_code_paths_are_split_and_cleaned():
     rows = m.load_registry(REGISTRY)
-    _, paths = m.classify("docs/product/02-FEATURE-CATALOG.md", rows)
+    _, paths, _ = m.classify("docs/product/02-FEATURE-CATALOG.md", rows)
     assert paths == ["lib", "platform/api"]
+
+
+def test_a_registry_without_the_region_column_still_parses():
+    """The fourth column is additive. A three-column row must keep working.
+
+    Both tables above are three columns wide; a parser that indexed cells[3]
+    unconditionally would have turned every existing row into an IndexError,
+    i.e. a tool that reports zero documents rather than a tool that fails.
+    """
+    rows = m.load_registry(REGISTRY)
+    assert m.classify("README.md", rows) == ("A", ["gcp/deploy.sh"], [])
+
+
+def test_region_specs_split_on_semicolons_not_commas():
+    """Code paths are comma-separated, so regions cannot be.
+
+    `line:^Generated \\d{4}-\\d{2}-\\d{2}` contains no comma, but
+    `inventory:*; prose:...` must stay two specs while
+    `gcp/deploy.sh, gcp/schema.sql` stays two paths on the same row.
+    """
+    rows = m.load_registry(
+        REGISTRY + "| A | X.md | gcp/deploy.sh, gcp/schema.sql | inventory:*; prose:p.md |\n"
+    )
+    cls, paths, regions = m.classify("X.md", rows)
+    assert (cls, paths, regions) == ("A", ["gcp/deploy.sh", "gcp/schema.sql"],
+                                     ["inventory:*", "prose:p.md"])
+
+
+# ── generated regions (Class A) ─────────────────────────────────────────────
+
+INVENTORY_DOC = """# Title
+
+Prose the refresh never touches.
+
+<!-- inventory:jobs:start -->
+| job | schedule |
+|---|---|
+<!-- inventory:jobs:end -->
+
+Closing prose.
+"""
+
+
+def test_inventory_blocks_are_owned_and_the_prose_around_them_is_not():
+    """The whole point: a Class A file is mixed, not uniformly machine-owned.
+
+    05-e-API.md is 160 lines of which 130 are inventory blocks; treating the
+    file as owned hid the other 30 from every audit while no job wrote them.
+    """
+    owned, unmatched, prompt = m.owned_lines(INVENTORY_DOC, ["inventory:*"])
+    assert unmatched == [] and prompt is None
+    assert owned == {5, 6, 7, 8}
+    assert m.unowned_spans(INVENTORY_DOC, owned) == [(1, 4), (9, 10)]
+
+
+def test_a_declared_region_that_matches_nothing_is_a_finding():
+    """A renderer that stops emitting its block leaves the registry lying.
+
+    Silently treating the spec as satisfied is the failure this whole module
+    exists to catch, one level up: the registry would claim coverage that no
+    longer exists and the span would never be audited.
+    """
+    _, unmatched, _ = m.owned_lines(INVENTORY_DOC, ["inventory:*", "mark:gone"])
+    assert unmatched == ["mark:gone"]
+    findings, _, _ = m.check_regions("d.md", INVENTORY_DOC, ["inventory:*", "mark:gone"])
+    assert any(f["severity"] == "P1" and "matched nothing" in f["detail"] for f in findings)
+
+
+def test_prose_spec_claims_the_remainder_so_nothing_reads_as_unowned():
+    """05-a/05-c/05-d have a model writing their prose; that IS an owner.
+
+    Without `prose:`, every line Gemini rewrites would be reported as prose
+    nobody owns, and the freshness PR would start editing text the next refresh
+    overwrites.
+    """
+    findings, owned, prompt = m.check_regions(
+        "05-a.md", INVENTORY_DOC, ["inventory:*", "prose:.github/prompts/architecture.md"])
+    assert prompt == ".github/prompts/architecture.md"
+    assert not [f for f in findings if "no generated region" in f["detail"]]
+    assert m.region_of(1, owned, prompt) == "model-prose"
+    assert m.region_of(5, owned, prompt) == "generated"
+
+
+def test_unowned_lines_route_to_the_document_itself():
+    _, owned, prompt = m.check_regions("05-e.md", INVENTORY_DOC, ["inventory:*"])
+    assert m.region_of(1, owned, prompt) == "unowned"
+    assert m.region_of(6, owned, prompt) == "generated"
+
+
+def test_class_a_doc_with_no_declared_regions_is_a_finding_not_a_free_pass():
+    """An empty region cell must not read as "the whole file is generated".
+
+    That is the Rule 3.7 shape: the absence of information becoming a
+    permissive default nobody can distinguish from a deliberate one.
+    """
+    findings, owned, prompt = m.check_regions("d.md", INVENTORY_DOC, [])
+    assert owned == set() and prompt is None
+    assert findings and "no generated regions declared" in findings[0]["detail"]
+
+
+def test_line_specs_own_individual_lines():
+    """README's badges are five scattered lines, not a block."""
+    doc = "# T\n\n![a](https://img.shields.io/badge/x-blue)\n\nProse.\n"
+    owned, unmatched, _ = m.owned_lines(doc, [r"line:img\.shields\.io"])
+    assert owned == {3} and unmatched == []
+
+
+def test_mark_pair_owns_the_calibration_table_only():
+    """refresh_calibration_table.py replaces one marked table in 1,247 lines."""
+    doc = "# T\n\nProse.\n<!-- BEGIN tbl -->\n| a |\n<!-- END tbl -->\nMore prose.\n"
+    owned, unmatched, _ = m.owned_lines(doc, ["mark:tbl"])
+    assert owned == {4, 5, 6} and unmatched == []
+
+
+def test_a_trailing_newline_does_not_invent_a_line():
+    """`split("\\n")` on a newline-terminated file yields a phantom final "".
+
+    Counting it reported README as 65 lines and INVESTMENT_MODELS_SUMMARY as
+    1,248 — one more than either file has, which makes every number the audit
+    prints untrustworthy.
+    """
+    assert len(m.doc_lines("a\nb\n")) == 2
+    assert len(m.doc_lines("a\nb")) == 2
+
+
+def test_blank_only_gaps_between_generated_blocks_are_not_reported_as_prose():
+    """A blank line between two rendered tables is not undocumented prose."""
+    doc = "<!-- inventory:a:start -->\nx\n<!-- inventory:a:end -->\n\n" \
+          "<!-- inventory:b:start -->\ny\n<!-- inventory:b:end -->\n"
+    owned, _, _ = m.owned_lines(doc, ["inventory:*"])
+    assert m.unowned_spans(doc, owned) == []
 
 
 # ── markers ─────────────────────────────────────────────────────────────────

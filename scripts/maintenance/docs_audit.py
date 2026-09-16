@@ -37,6 +37,25 @@ Checks
                    actually lives and no link checker sees it)
 ``changed-since``  the doc's declared code paths moved after its reviewed SHA
 ``class-a``        a machine-owned doc whose owning job has not delivered
+``unowned``        a span inside a Class A doc that **no** job writes, so the
+                   "machine-owned" label keeps it out of review while nothing
+                   regenerates it. 1,325 such lines when this check landed.
+
+Class A is a property of a REGION, not of a file
+------------------------------------------------
+``README.md`` is 64 lines of which the refresh writes 5 (four badges and the
+closing date); the file says so itself at line 49, "the prose and the
+documentation map are hand-written and no model touches them".
+``docs/INVESTMENT_MODELS_SUMMARY.md`` is 1,247 lines of which
+``scripts/refresh_calibration_table.py`` writes 11. ``05-e-API.md`` is 160 of
+which 130 are inventory blocks. Treating the whole file as machine-owned
+excluded 1,325 hand-written lines from every audit while no job would ever fix
+them -- which is a rot trap, not a safeguard.
+
+So the registry declares each Class A doc's generated regions and this module
+reports the complement. Findings in an unowned span are ordinary Class D work;
+findings in a generated span route to the renderer or the prompt that writes it,
+and are never edited in place.
 
 Exit codes: 0 clean, 1 findings (so it can gate CI), 2 the run itself failed.
 A failed ``gh`` read is exit 2 and never a silent empty result (CLAUDE.md §3.7).
@@ -156,7 +175,10 @@ def load_registry(text: str) -> list[dict]:
     rows with A/B/C/D, and parsing those registered prose sentences as path
     globs.
 
-    Columns: Class | Path glob | Declared code paths.
+    Columns: Class | Path glob | Declared code paths | Generated regions.
+
+    The fourth column is optional and only meaningful for Class A. It is
+    semicolon-separated so commas stay available to the code-path column.
     """
     rows: list[dict] = []
     in_registry = False
@@ -179,19 +201,159 @@ def load_registry(text: str) -> list[dict]:
         paths = []
         if len(cells) > 2 and _cell(cells[2]) not in {"", "—", "-"}:
             paths = [_cell(p) for p in cells[2].split(",") if _cell(p)]
-        rows.append({"cls": cls, "glob": glob, "code_paths": paths})
+        regions = []
+        if len(cells) > 3 and _cell(cells[3]) not in {"", "—", "-"}:
+            regions = [_cell(r) for r in cells[3].split(";") if _cell(r)]
+        rows.append({"cls": cls, "glob": glob, "code_paths": paths, "regions": regions})
     return rows
 
 
-def classify(doc: str, registry: list[dict]) -> tuple[str | None, list[str]]:
+def classify(doc: str, registry: list[dict]) -> tuple[str | None, list[str], list[str]]:
     """Most specific match wins, so a file rule beats the directory rule."""
-    best: tuple[int, str, list[str]] | None = None
+    best: tuple[int, dict] | None = None
     for row in registry:
         if fnmatch.fnmatch(doc, row["glob"]):
             score = len(row["glob"])
             if best is None or score > best[0]:
-                best = (score, row["cls"], row["code_paths"])
-    return (best[1], best[2]) if best else (None, [])
+                best = (score, row)
+    if best is None:
+        return (None, [], [])
+    return (best[1]["cls"], best[1]["code_paths"], best[1]["regions"])
+
+
+# ── generated regions (Class A) ─────────────────────────────────────────────
+
+INVENTORY_RE = re.compile(r"<!--\s*inventory:(?P<name>[\w.-]+):(?P<edge>start|end)\s*-->")
+
+
+def doc_lines(text: str) -> list[str]:
+    """Lines as `wc -l` counts them: a trailing newline does not add a line.
+
+    `text.split("\\n")` on a file ending in a newline yields a final "" that is
+    not a line of the document. Counting it made every reported total one
+    higher than the file, which is exactly the kind of off-by-one that makes a
+    measurement untrustworthy.
+    """
+    return text[:-1].split("\n") if text.endswith("\n") else text.split("\n")
+
+
+def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str | None]:
+    """Which 1-based lines a job writes, which specs matched nothing, and the prompt.
+
+    The spec grammar is deliberately tiny, because the registry is read by
+    people before it is read by this function:
+
+    ``all``            every line (a wholly rendered artefact, e.g. a .drawio)
+    ``inventory:*``    every ``<!-- inventory:NAME:start/end -->`` pair
+    ``mark:NAME``      the ``<!-- BEGIN NAME -->``..``<!-- END NAME -->`` pair
+    ``line:REGEX``     every line matching REGEX (README's badges, its footer)
+    ``prose:PATH``     everything not otherwise claimed is model-written, by
+                       the prompt at PATH. Declaring it is what distinguishes
+                       "a model owns this prose" from "nobody owns it".
+
+    A spec that matches nothing is returned as unmatched rather than ignored:
+    a renderer that stopped emitting a block leaves the registry claiming
+    coverage that no longer exists, which is the same silent rot the whole
+    module is about.
+    """
+    lines = doc_lines(text)
+    owned: set[int] = set()
+    unmatched: list[str] = []
+    prompt: str | None = None
+
+    for spec in specs:
+        hit = False
+        if spec == "all":
+            owned.update(range(1, len(lines) + 1))
+            hit = bool(lines)
+        elif spec == "inventory:*":
+            open_at: dict[str, int] = {}
+            for n, line in enumerate(lines, 1):
+                m = INVENTORY_RE.search(line)
+                if not m:
+                    continue
+                name = m.group("name")
+                if m.group("edge") == "start":
+                    open_at[name] = n
+                elif name in open_at:
+                    owned.update(range(open_at.pop(name), n + 1))
+                    hit = True
+        elif spec.startswith("mark:"):
+            name = spec[5:]
+            begin = re.compile(rf"<!--\s*BEGIN {re.escape(name)}\s*-->")
+            end = re.compile(rf"<!--\s*END {re.escape(name)}\s*-->")
+            lo = next((n for n, l in enumerate(lines, 1) if begin.search(l)), None)
+            hi = next((n for n, l in enumerate(lines, 1) if end.search(l)), None)
+            if lo and hi and hi >= lo:
+                owned.update(range(lo, hi + 1))
+                hit = True
+        elif spec.startswith("line:"):
+            pat = re.compile(spec[5:])
+            for n, line in enumerate(lines, 1):
+                if pat.search(line):
+                    owned.add(n)
+                    hit = True
+        elif spec.startswith("prose:"):
+            prompt = spec[6:]
+            hit = True
+        else:
+            unmatched.append(spec)
+            continue
+        if not hit:
+            unmatched.append(spec)
+    return owned, unmatched, prompt
+
+
+def unowned_spans(text: str, owned: set[int]) -> list[tuple[int, int]]:
+    """Contiguous runs of lines no job writes, ignoring blank-only runs.
+
+    A blank line between two generated blocks is not documentation, and
+    reporting it as unowned prose would bury the spans that matter.
+    """
+    lines = doc_lines(text)
+    spans, start = [], None
+    for n in range(1, len(lines) + 1):
+        if n in owned:
+            if start is not None:
+                spans.append((start, n - 1))
+                start = None
+        elif start is None:
+            start = n
+    if start is not None:
+        spans.append((start, len(lines)))
+    return [(a, b) for a, b in spans if any(lines[i - 1].strip() for i in range(a, b + 1))]
+
+
+def region_of(line: int, owned: set[int], prompt: str | None) -> str:
+    """Where a finding on this line must be fixed."""
+    if line in owned:
+        return "generated"
+    return "model-prose" if prompt else "unowned"
+
+
+def check_regions(doc: str, text: str, specs: list[str]) -> tuple[list[dict], set[int], str | None]:
+    if not specs:
+        return ([{"check": "unowned", "doc": doc, "severity": "P2",
+                  "detail": "Class A doc with no generated regions declared; "
+                            "the registry cannot say which lines a job writes"}],
+                set(), None)
+    owned, unmatched, prompt = owned_lines(text, specs)
+    out = [{"check": "unowned", "doc": doc, "severity": "P1",
+            "detail": f"declared region `{spec}` matched nothing -- a renderer "
+                      f"stopped emitting it, or the registry is stale"}
+           for spec in unmatched]
+    if prompt is None:
+        total = 0
+        for lo, hi in unowned_spans(text, owned):
+            total += hi - lo + 1
+            out.append({"check": "unowned", "doc": doc, "line": lo, "severity": "P2",
+                        "detail": f"lines {lo}-{hi} ({hi - lo + 1}) are in no generated "
+                                  f"region: no job writes them, audit as Class D"})
+        if total:
+            out.append({"check": "unowned", "doc": doc, "severity": "P2",
+                        "detail": f"{total} of {len(doc_lines(text))} lines are hand-written "
+                                  f"prose inside a doc labelled machine-owned"})
+    return out, owned, prompt
 
 
 # ── markers ─────────────────────────────────────────────────────────────────
@@ -545,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
     counts = {"A": 0, "B": 0, "C": 0, "D": 0, "X": 0, "unclassified": 0}
 
     for doc in docs:
-        cls, code_paths = classify(doc, registry)
+        cls, code_paths, regions = classify(doc, registry)
         if cls is None:
             counts["unclassified"] += 1
             findings.append({"check": "unclassified", "doc": doc, "severity": "P2",
@@ -572,10 +734,26 @@ def main(argv: list[str] | None = None) -> int:
         if cls == "C":
             continue
 
-        findings += check_closed_issues(doc, text, states)
-        findings += check_dead_links(doc, text, tracked)
+        # Class A is write-restricted per REGION, not per file. Map the regions
+        # first: the complement is prose no job writes, and that prose is Class
+        # D in everything but the label -- audited, corrected and stamped here.
+        # Findings inside a generated region are still reported, tagged with
+        # where the fix belongs, and never edited in place.
+        owned: set[int] = set()
+        prompt: str | None = None
+        stampable = cls == "D"
+        if cls == "A":
+            reg_findings, owned, prompt = check_regions(doc, text, regions)
+            findings += reg_findings
+            stampable = prompt is None and bool(unowned_spans(text, owned))
 
-        if cls != "D":
+        content = check_closed_issues(doc, text, states) + check_dead_links(doc, text, tracked)
+        if cls == "A":
+            for f in content:
+                f["region"] = region_of(f.get("line", 0), owned, prompt)
+        findings += content
+
+        if not stampable:
             continue
 
         if found is None:
@@ -598,6 +776,16 @@ def main(argv: list[str] | None = None) -> int:
             findings += check_changed_since(doc, info["sha"], code_paths)
 
         if args.stamp:
+            # Never write a marker into a generated region. The marker goes
+            # after the H1, so the check is whether anything a job owns sits
+            # that high in the file -- on README the H1 is line 1 and the first
+            # badge is line 5, which is why stamping it is safe at all.
+            h1 = h1_index(lines)
+            if owned and h1 is not None and min(owned) <= h1 + 2:
+                findings.append({"check": "unowned", "doc": doc, "severity": "P2",
+                                 "detail": f"not stamped: a generated region starts at line "
+                                           f"{min(owned)}, too close to the H1 on line {h1 + 1}"})
+                continue
             reviewed = doc in verify
             new, action = stamp(text, today, "verified" if reviewed else "scanned",
                                 head, reviewed=reviewed)
