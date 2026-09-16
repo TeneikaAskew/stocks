@@ -547,6 +547,9 @@ class ExpectedMove(ApiModel):
     # of size_class (Codex P1 on #1117). Kept for the auditor and for
     # consumers that already read it.
     max_proba: Optional[float] = None
+    # The rule pred_bucket was made under; 'lift' on every OK row since
+    # 2026-09-16, when argmax-era rows stopped being served as decisions.
+    decision_rule: Optional[str] = None
     # magnitude_predictions.model_version is VARCHAR(64) — the producer
     # (lib/movement_statement.py) passes the raw DB value straight through,
     # so string-or-null is the whole wire domain. `ts` arrives as a

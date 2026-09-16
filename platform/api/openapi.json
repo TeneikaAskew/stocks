@@ -2015,6 +2015,17 @@
             ],
             "title": "Current Price"
           },
+          "decision_rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Rule"
+          },
           "degeneracy": {
             "anyOf": [
               {
@@ -4549,6 +4560,10 @@
             "title": "Computed At",
             "type": "string"
           },
+          "decision_rule": {
+            "title": "Decision Rule",
+            "type": "string"
+          },
           "docs_ref": {
             "title": "Docs Ref",
             "type": "string"
@@ -4616,6 +4631,7 @@
           "max_proba",
           "model_version",
           "source",
+          "decision_rule",
           "computed_at",
           "usage_guidance",
           "not_for",

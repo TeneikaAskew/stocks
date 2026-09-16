@@ -115,7 +115,7 @@ def _mag_df(bucket=2):
             "ticker": "SPY", "tf": "15m", "ts": pd.Timestamp("2026-06-20T15:45:00Z"),
             "p_tight": 0.1, "p_normal": 0.2, "p_expanded": 0.5, "p_explosive": 0.2,
             "pred_bucket": bucket, "max_proba": 0.5, "model_version": "mag-v1",
-            "source": "inference", "computed_at": pd.Timestamp("2026-06-20T16:00:00Z"),
+            "source": "inference", "decision_rule": "lift", "computed_at": pd.Timestamp("2026-06-20T16:00:00Z"),
         }]
     )
 
@@ -970,7 +970,7 @@ def test_expected_move_includes_atr_and_price():
                 "p_tight": 0.2, "p_normal": 0.3, "p_expanded": 0.3, "p_explosive": 0.2,
                 "pred_bucket": 2, "max_proba": 0.3,
                 "model_version": "m1", "source": "inference",
-                "computed_at": pd.Timestamp("2026-07-10T20:00:00Z"),
+                "decision_rule": "lift", "computed_at": pd.Timestamp("2026-07-10T20:00:00Z"),
             }])
         return pd.DataFrame([{"atr_20": 1.85, "close": 218.4}])
 
@@ -998,7 +998,7 @@ def test_expected_move_reads_inference_rows_only_and_names_the_served_probabilit
                 "p_tight": 0.62, "p_normal": 0.24, "p_expanded": 0.06, "p_explosive": 0.08,
                 "pred_bucket": 3, "max_proba": 0.62,
                 "model_version": "magnitude-engine-6hp7l", "source": "inference",
-                "computed_at": pd.Timestamp("2026-09-15T21:22:19Z"),
+                "decision_rule": "lift", "computed_at": pd.Timestamp("2026-09-15T21:22:19Z"),
             }])
         if "GROUP BY" in sql:
             return pd.DataFrame([{"pred_bucket": 0, "n": 51}, {"pred_bucket": 3, "n": 19}])
@@ -1011,6 +1011,10 @@ def test_expected_move_reads_inference_rows_only_and_names_the_served_probabilit
     assert em["max_proba"] == 0.62
     read = [q for q in seen if "magnitude_per_bar_predictions" in q and "GROUP BY" not in q]
     assert read and "source = 'inference'" in read[0], read
+    assert "decision_rule = 'lift'" in read[0]
+    assert em["decision_rule"] == "lift"
+    agg = [q for q in seen if "GROUP BY" in q]
+    assert agg and "decision_rule = 'lift'" in agg[0]
 
 
 def test_expected_move_atr_none_when_features_missing():
@@ -1024,7 +1028,7 @@ def test_expected_move_atr_none_when_features_missing():
                 "p_tight": 0.7, "p_normal": 0.2, "p_expanded": 0.07, "p_explosive": 0.03,
                 "pred_bucket": 0, "max_proba": 0.7,
                 "model_version": "m1", "source": "inference",
-                "computed_at": pd.Timestamp("2026-07-10T20:00:00Z"),
+                "decision_rule": "lift", "computed_at": pd.Timestamp("2026-07-10T20:00:00Z"),
             }])
         return pd.DataFrame()
 

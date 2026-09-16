@@ -90,6 +90,9 @@ class MagnitudePrediction(BaseModel):
     max_proba: float
     model_version: str
     source: str                # always 'inference' on this surface
+    # Always 'lift' on this surface: the rule pred_bucket was made under.
+    # Rows tagged 'argmax' (scored before 2026-09-15) are never served here.
+    decision_rule: str
     computed_at: datetime
     usage_guidance: str
     not_for: list[str]
@@ -115,6 +118,7 @@ def _row_to_response(row: dict) -> MagnitudePrediction:
         max_proba=float(row["max_proba"]),
         model_version=row["model_version"],
         source=row["source"],
+        decision_rule=row["decision_rule"],
         computed_at=row["computed_at"],
         usage_guidance=_USAGE_GUIDANCE,
         not_for=_NOT_FOR,
@@ -140,7 +144,12 @@ def get_latest_prediction(
     distribution — CLAUDE.md §3.7 explicit fail-loud envelope.
     """
     ticker = ticker.upper()
-    # Live reads serve INFERENCE rows only. The walk-forward harness writes
+    # Live reads serve INFERENCE rows scored under the served DECISION RULE
+    # only (decision_rule = 'lift'). Rows from before 2026-09-15 hold argmax
+    # in pred_bucket under the same column and model_version; presenting one
+    # as a decision would mislabel it (Codex P1 on #1117). Those rows are
+    # tagged 'argmax' and stay queryable by direct SQL.
+    # The walk-forward harness once wrote
     # every phase0 fold's test predictions into the same table under
     # source='walk_forward' (mag_walk_forward._persist_predictions_table),
     # for promoted AND blocked candidates alike, with `ts` reaching the
@@ -153,10 +162,10 @@ def get_latest_prediction(
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, "
         "p_explosive, pred_bucket, max_proba, model_version, source, "
-        "computed_at "
+        "decision_rule, computed_at "
         "FROM magnitude_per_bar_predictions "
         f"WHERE ticker = '{ticker}' AND tf = '{tf}' "
-        "  AND source = 'inference' "
+        "  AND source = 'inference' AND decision_rule = 'lift' "
         "ORDER BY ts DESC, computed_at DESC LIMIT 1"
     )
     df = query_to_dataframe(sql)
@@ -190,28 +199,31 @@ def get_prediction_at(
     silently mislead consumers about model confidence.
     """
     ticker = ticker.upper()
-    # Inference rows only, for the reason given on /latest; walk-forward
-    # rows for the same bar stay queryable via direct SQL. When several
-    # inference versions scored the same bar, prefer the most recent
-    # computed_at, the freshest write.
+    # Inference rows under the served decision rule only, for the reasons
+    # given on /latest; a bar scored only under argmax (before 2026-09-15)
+    # is a 404 here, not a mislabeled decision. When several inference
+    # versions scored the same bar, prefer the most recent computed_at, the
+    # freshest write.
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, "
         "p_explosive, pred_bucket, max_proba, model_version, source, "
-        "computed_at "
+        "decision_rule, computed_at "
         "FROM magnitude_per_bar_predictions "
         f"WHERE ticker = '{ticker}' AND tf = '{tf}' "
         f"  AND ts = '{ts.isoformat()}' "
-        "  AND source = 'inference' "
+        "  AND source = 'inference' AND decision_rule = 'lift' "
         "ORDER BY computed_at DESC LIMIT 1"
     )
     df = query_to_dataframe(sql)
     if df.empty:
         raise HTTPException(
             status_code=404,
-            detail=(f"No prediction at {ts.isoformat()} for {ticker}:{tf}."
-                    " This bar was never scored — either inference "
-                    "skipped it (NaN features), the bar predates "
-                    "magnitude_per_bar_predictions coverage, or the "
-                    "cell isn't enabled."),
+            detail=(f"No prediction at {ts.isoformat()} for {ticker}:{tf} "
+                    "under the served decision rule. Either inference "
+                    "skipped the bar (NaN features), the bar predates "
+                    "magnitude_per_bar_predictions coverage or the "
+                    "2026-09-15 decision rule (earlier rows hold argmax and "
+                    "are not served as decisions), or the cell isn't "
+                    "enabled."),
         )
     return _row_to_response(df.iloc[0].to_dict())

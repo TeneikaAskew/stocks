@@ -1734,6 +1734,12 @@ def test_the_backfill_takes_priors_from_a_training_label_measurement():
               "decision_lift_min": 2.0}, (10, 1))]
     got = _training_priors_from_sibling(bucket, "IWM", "15m")
     assert got is not None and got[1] == "magnitude-engine-good"
+    # a corrupt sibling blob skips that sibling, not the search
+    broken = blob(base + "magnitude-engine-corrupt/CONTRACT.json", {}, (16, 5))
+    broken.download_as_text.return_value = "{not json"
+    bucket.list_blobs.return_value = [broken] + bucket.list_blobs.return_value
+    got = _training_priors_from_sibling(bucket, "IWM", "15m")
+    assert got is not None and got[1] == "magnitude-engine-good"
 
 
 def test_the_reader_refuses_priors_that_are_not_training_labels():

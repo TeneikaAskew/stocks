@@ -52,13 +52,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gcp.database import get_engine, query_to_dataframe  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
-    LABEL_CLASSES, LABEL_TO_IDX,
+    LABEL_CLASSES, LABEL_TO_IDX, DECISION_RULE_LIFT,
     CONTRACT_BLOB, contract_mismatch,
     ContractRejection, ContractMissing, ContractMalformed,
     ContractMismatch, NeverPromoted,
 )
 from gcp.research.magnitude_engine.mag_walk_forward import (  # noqa: E402
-    PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX,
+    PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX, PREDICTIONS_DDL_MIGRATE,
 )
 from lib.logging_config import setup_logging  # noqa: E402
 
@@ -695,6 +695,7 @@ def _score_and_persist(engine, ticker: str, tf: str,
             "model_version": version,
             "fold_label": None,
             "source": "inference",
+            "decision_rule": DECISION_RULE_LIFT,
         })
 
     df = pd.DataFrame(rows)
@@ -747,6 +748,7 @@ def main() -> int:
     with engine.begin() as conn:
         conn.execute(text(PREDICTIONS_DDL_CREATE))
         conn.execute(text(PREDICTIONS_DDL_INDEX))
+        conn.execute(text(PREDICTIONS_DDL_MIGRATE))
 
     total_written = 0
     failures: list[tuple[str, str, str]] = []

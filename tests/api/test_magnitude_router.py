@@ -75,7 +75,7 @@ def test_latest_returns_prediction_when_row_exists():
         "p_explosive": 0.1,
         "pred_bucket": 2, "max_proba": 0.5,
         "model_version": "v1-2026-06-01",
-        "source": "inference",
+        "source": "inference", "decision_rule": "lift",
         "computed_at": pd.Timestamp("2026-06-02 13:25:00", tz="UTC"),
     }])
     with patch.object(mod, "query_to_dataframe", return_value=fake_row):
@@ -110,7 +110,7 @@ def test_latest_carries_gate7_caveat_in_response():
         "p_explosive": 0.25,
         "pred_bucket": 0, "max_proba": 0.25,
         "model_version": "v1",
-        "source": "inference",
+        "source": "inference", "decision_rule": "lift",
         "computed_at": pd.Timestamp("2026-06-02 13:25:00", tz="UTC"),
     }])
     with patch.object(mod, "query_to_dataframe", return_value=fake_row):
@@ -147,7 +147,7 @@ def test_at_ts_returns_specific_bar():
         "p_explosive": 0.65,
         "pred_bucket": 3, "max_proba": 0.65,
         "model_version": "v1",
-        "source": "inference",
+        "source": "inference", "decision_rule": "lift",
         "computed_at": pd.Timestamp("2026-06-02 13:55:00", tz="UTC"),
     }])
     with patch.object(mod, "query_to_dataframe", return_value=fake_row):
@@ -215,7 +215,7 @@ def _row_df(pred_bucket: int, **over) -> pd.DataFrame:
         "p_explosive": 0.08,
         "pred_bucket": pred_bucket, "max_proba": 0.62,
         "model_version": "magnitude-engine-6hp7l",
-        "source": "inference",
+        "source": "inference", "decision_rule": "lift",
         "computed_at": pd.Timestamp("2026-09-15 21:22:19", tz="UTC"),
     }
     row.update(over)
@@ -243,6 +243,9 @@ def test_live_reads_serve_inference_rows_only(path):
     assert r.status_code == 200, r.text
     assert len(seen) == 1
     assert "source = 'inference'" in seen[0], seen[0]
+    # and only rows scored under the served rule: pred_bucket on rows from
+    # before 2026-09-15 is argmax under the same column (Codex P1 on #1117)
+    assert "decision_rule = 'lift'" in seen[0], seen[0]
 
 
 def test_response_carries_the_served_buckets_own_probability():
@@ -255,6 +258,7 @@ def test_response_carries_the_served_buckets_own_probability():
     assert data["pred_bucket_label"] == "EXPLOSIVE"
     assert data["pred_bucket_proba"] == 0.08
     assert data["max_proba"] == 0.62
+    assert data["decision_rule"] == "lift"
     with patch.object(mod, "query_to_dataframe", return_value=_row_df(0)):
         data = TestClient(app).get("/api/magnitude/IWM/5m/latest").json()
     assert data["pred_bucket_proba"] == 0.62 == data["max_proba"]

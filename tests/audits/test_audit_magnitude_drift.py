@@ -196,11 +196,12 @@ def test_serving_versions_come_from_the_registry_not_from_recency():
     assert "modal-dominance" not in summary
 
 
-def test_an_empty_serving_pointer_is_a_registry_error():
-    """A LATEST blob that exists but is empty is a corrupt registry:
+def test_an_empty_serving_pointer_is_a_registry_error_for_that_cell_only():
+    """A LATEST blob that exists but is empty is a corrupt registry entry:
     inference cannot resolve an artifact from it, and recording "" would
     make the check skip every real version for the cell while cell-silence
-    still saw fresh rows (Codex P2 on #1117)."""
+    still saw fresh rows. The error is per cell: the other cells keep their
+    pointers and are still judged (Codex P2 x2 on #1117)."""
     import pytest as _pytest
     from unittest.mock import MagicMock, patch
     from gcp import audit_magnitude_drift as mod
@@ -215,22 +216,32 @@ def test_an_empty_serving_pointer_is_a_registry_error():
             b.download_as_text.return_value = "   \n"
         elif name.startswith("magnitude-models/production/IWM/5m/"):
             b.download_as_text.return_value = "magnitude-engine-6hp7l\n"
+        elif name.startswith("magnitude-models/production/SPY/5m/"):
+            b.download_as_text.side_effect = OSError("connection reset")
         else:
             b.download_as_text.side_effect = NotFound("no pointer")
         return b
     bucket = MagicMock(); bucket.name = "b"; bucket.blob.side_effect = fake_blob
     client = MagicMock(); client.bucket.return_value = bucket
     with patch("google.cloud.storage.Client", return_value=client):
-        with _pytest.raises(ValueError, match="IWM/15m/LATEST is empty"):
-            mod.fetch_serving_versions()
-
-        def only_5m(name):
-            b = fake_blob(name)
-            if name.startswith("magnitude-models/production/IWM/15m/"):
-                b.download_as_text.side_effect = NotFound("no pointer")
-            return b
-        bucket.blob.side_effect = only_5m
-        assert mod.fetch_serving_versions() == {("IWM", "5m"): "magnitude-engine-6hp7l"}
+        serving, errors = mod.fetch_serving_versions()
+    assert serving == {("IWM", "5m"): "magnitude-engine-6hp7l"}
+    assert any("IWM:15m LATEST is empty" in e for e in errors)
+    assert any("SPY:5m LATEST unreadable" in e and "connection reset" in e for e in errors)
+    assert len(errors) == 2
+    # main records each registry error and still runs the check on the cells
+    # it could place
+    with patch.object(mod, "fetch_distribution",
+                      return_value=[_row("IWM", "5m", 0, 375, model="magnitude-engine-6hp7l"),
+                                    _row("IWM", "15m", 0, 375, model="magnitude-engine-c49qf")]), \
+         patch.object(mod, "fetch_serving_versions", return_value=(serving, errors)), \
+         patch.object(mod, "fetch_join_coverage", return_value=[]), \
+         patch.object(mod, "post_to_discord") as post:
+        mod.main()
+    summary = post.call_args[0][0]
+    assert "fetch_serving_versions: IWM:15m LATEST is empty" in summary
+    assert "IWM:5m" in summary and "modal-dominance" in summary   # judged
+    assert "IWM:15m`" not in summary.replace("LATEST", "")         # not judged
 
 
 def test_a_row_without_a_session_count_fails_loud():
@@ -255,6 +266,7 @@ def test_fetch_distribution_counts_sessions_in_eastern_time():
     assert "AT TIME ZONE 'America/New_York'" in src
     assert "COUNT(DISTINCT" in src and "n_sessions" in src
     assert "source = 'inference'" in src
+    assert "decision_rule = 'lift'" in src      # argmax-era rows are not decisions
 
 
 def test_modal_dominance_medium_for_a_model_over_the_base_rate():

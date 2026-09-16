@@ -144,12 +144,30 @@ CREATE TABLE IF NOT EXISTS magnitude_per_bar_predictions (
     -- have been ~140k unread rows per cell per run. Live reads filter on it.
     source        VARCHAR(16)      NOT NULL,
     computed_at   TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    -- What pred_bucket MEANS on this row: 'lift' (the served decision rule,
+    -- every row written since 2026-09-15 13:00 UTC) or 'argmax' (the rule
+    -- before it). Added 2026-09-16 (Codex P1 on #1117): pred_bucket changed
+    -- meaning under the same column and model_version, and every live read
+    -- now takes 'lift' rows only rather than presenting an argmax row as a
+    -- decision. See PREDICTIONS_DDL_MIGRATE for the column on existing tables.
+    decision_rule VARCHAR(8)       NOT NULL DEFAULT 'argmax',
     PRIMARY KEY (ticker, tf, ts, model_version)
 )
 """
 PREDICTIONS_DDL_INDEX = """
 CREATE INDEX IF NOT EXISTS ix_mpbp_ticker_tf_ts ON
     magnitude_per_bar_predictions (ticker, tf, ts DESC)
+"""
+# Idempotent column add for a table created before 2026-09-16. The default
+# is the truth for every row that predates the column: they were written
+# under argmax. Rows written under the decision rule before the column
+# existed (2026-09-15 13:00 UTC onward) were re-tagged once by hand, and
+# the c49qf rows from before that were recomputed from their stored
+# probabilities and the cell's training-label priors; both are recorded
+# in docs/MAGNITUDE_ENGINE_RESULTS.md section 12.
+PREDICTIONS_DDL_MIGRATE = """
+ALTER TABLE magnitude_per_bar_predictions
+    ADD COLUMN IF NOT EXISTS decision_rule VARCHAR(8) NOT NULL DEFAULT 'argmax'
 """
 
 

@@ -627,7 +627,7 @@ def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict
         "       count(*) AS n "
         "FROM magnitude_per_bar_predictions "
         "WHERE ticker = :ticker AND tf = :tf AND model_version = :mv "
-        "  AND source = 'inference' "
+        "  AND source = 'inference' AND decision_rule = 'lift' "
         "  AND ts <= :ts "
         f"  AND ts > :ts - INTERVAL '{_MAG_DEGENERACY_LOOKBACK_DAYS} days' "
         "GROUP BY pred_bucket, session"
@@ -692,6 +692,10 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     (the latest row in the table). `ts` is the bar timestamp column in
     `magnitude_per_bar_predictions` (TIMESTAMPTZ).
     """
+    # decision_rule = 'lift': pred_bucket on rows scored before 2026-09-15
+    # is argmax, under the same column and model_version, and an as-of
+    # replay into that period must not present it as the served decision
+    # (Codex P1 on #1117); those rows are tagged 'argmax' and excluded.
     # source = 'inference' for the same reason _model_degeneracy filters:
     # the walk-forward harness writes every phase0 fold's test predictions
     # into this table, promoted or blocked, with `ts` up to the newest
@@ -699,9 +703,11 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     # run's call rather than the served model's (Codex P1 on #1117).
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, p_explosive, "
-        "       pred_bucket, max_proba, model_version, source, computed_at "
+        "       pred_bucket, max_proba, model_version, source, decision_rule, "
+        "       computed_at "
         "FROM magnitude_per_bar_predictions "
         "WHERE ticker = :ticker AND tf = :tf AND source = 'inference' "
+        "  AND decision_rule = 'lift' "
     )
     params = {"ticker": ticker.upper(), "tf": tf}
     if as_of is not None:
@@ -784,6 +790,7 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
         # #1117).
         pred_bucket_proba=float(row[_MAG_BUCKET_PROBA_COLS[bucket]]),
         max_proba=float(row["max_proba"]),
+        decision_rule=row.get("decision_rule"),
         model_version=row.get("model_version"),
         ts=ts.isoformat() if hasattr(ts, "isoformat") else ts,
         atr_20=atr_20,

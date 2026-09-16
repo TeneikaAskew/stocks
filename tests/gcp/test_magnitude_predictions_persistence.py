@@ -137,3 +137,26 @@ def test_the_inference_job_owns_the_predictions_table_ddl():
     from gcp.research.magnitude_engine import mag_inference as mi
     src = inspect.getsource(mi)
     assert "PREDICTIONS_DDL_CREATE" in src and "PREDICTIONS_DDL_INDEX" in src
+
+
+def test_predictions_ddl_carries_the_decision_rule_column():
+    """pred_bucket changed meaning on 2026-09-15 (argmax -> the served
+    decision rule) under the same column and model_version. The column
+    says which rule a row holds; the migrate statement adds it to an
+    existing table with 'argmax' as the truth for every row that predates
+    it (Codex P1 on #1117)."""
+    from gcp.research.magnitude_engine.mag_walk_forward import (
+        PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_MIGRATE,
+    )
+    assert "decision_rule VARCHAR(8)       NOT NULL DEFAULT 'argmax'" in PREDICTIONS_DDL_CREATE
+    assert "ADD COLUMN IF NOT EXISTS decision_rule" in PREDICTIONS_DDL_MIGRATE
+    assert "DEFAULT 'argmax'" in PREDICTIONS_DDL_MIGRATE
+
+
+def test_the_inference_job_tags_every_row_with_the_served_rule():
+    import inspect
+    from gcp.research.magnitude_engine import mag_inference as mi
+    src = inspect.getsource(mi._score_and_persist)
+    assert '"decision_rule": DECISION_RULE_LIFT' in src
+    main_src = inspect.getsource(mi.main)
+    assert "PREDICTIONS_DDL_MIGRATE" in main_src

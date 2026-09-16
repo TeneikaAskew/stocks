@@ -126,7 +126,17 @@ def _training_priors_from_sibling(bucket, ticker: str, tf: str):
         if not blob.name.endswith(f"/{CONTRACT_BLOB}"):
             continue
         sibling_run = blob.name[len(base):].split("/", 1)[0]
-        payload = json.loads(blob.download_as_text())
+        # Every candidate is judged on its own: a corrupt blob under a
+        # retired or blocked run skips that sibling rather than aborting
+        # the search and leaving the serving artifact unstamped (Codex P2
+        # on #1117). The reader's verdict on the serving artifact itself
+        # still comes from _load_model_and_version below.
+        try:
+            payload = json.loads(blob.download_as_text())
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
         if payload.get("class_priors_source") != CLASS_PRIORS_TRAINING_LABELS:
             continue
         if any(payload.get(k) != _AUDITED_LEGACY_CONTRACT[k]

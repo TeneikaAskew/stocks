@@ -170,7 +170,10 @@ def fetch_distribution() -> list[dict]:
     """Pull per-cell prediction distribution for the lookback window.
 
     Returns one row per (ticker, tf, model_version, pred_bucket) with
-    counts and averaged probabilities, plus `n_sessions`: the number of
+    counts and averaged probabilities (rows scored under the served
+    decision rule only, `decision_rule = 'lift'`; rows from before
+    2026-09-15 hold argmax and would mix two meanings of pred_bucket under
+    one model_version), plus `n_sessions`: the number of
     distinct ET sessions the CELL (ticker, tf, model_version) served in the
     window, repeated on each of its rows. It is a cell-level count, not a
     per-bucket one, so a bucket named on two of five days still reads five.
@@ -188,6 +191,7 @@ def fetch_distribution() -> list[dict]:
                    (ts AT TIME ZONE 'America/New_York')::date AS session
               FROM magnitude_per_bar_predictions
              WHERE source = 'inference'
+               AND decision_rule = 'lift'
                AND computed_at >= NOW() - make_interval(days => :days)
         ), cell_sessions AS (
             SELECT ticker, tf, model_version,
@@ -345,13 +349,15 @@ def _cell_key(row: dict) -> tuple[str, str, str]:
     return (row["ticker"], row["tf"], row["model_version"])
 
 
-def fetch_serving_versions() -> dict[tuple[str, str], str]:
+def fetch_serving_versions() -> tuple[dict[tuple[str, str], str], list[str]]:
     """The model version each (ticker, tf) is serving: the run id in its
     `magnitude-models/production/{T}/{tf}/LATEST` pointer, the same blob
-    mag_inference follows to pick what to score with. Cells with no pointer
-    are absent. Raises on any read failure; the caller records it and the
-    modal-dominance check does not run, visibly, rather than judging
-    versions it cannot place.
+    mag_inference follows to pick what to score with. Returns the map and
+    a list of per-cell errors. Cells with no pointer are absent from both;
+    a cell whose pointer is empty or unreadable is absent from the map and
+    named in the errors, so one bad cell cannot take the check away from
+    the others (Codex P2 on #1117). Raises only when the registry itself
+    cannot be reached; the caller records that and the check does not run.
 
     Read from the registry rather than inferred from the rows: the newest
     `computed_at` per version does not identify the serving one, because
@@ -368,6 +374,7 @@ def fetch_serving_versions() -> dict[tuple[str, str], str]:
     )
     bucket = gcs.Client().bucket(os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT))
     out: dict[tuple[str, str], str] = {}
+    errors: list[str] = []
     for ticker in TICKERS:
         for tf in TIMEFRAMES:
             name = f"magnitude-models/production/{ticker}/{tf}/LATEST"
@@ -375,14 +382,20 @@ def fetch_serving_versions() -> dict[tuple[str, str], str]:
                 run_id = bucket.blob(name).download_as_text().strip()
             except gapi.NotFound:
                 continue
+            except Exception as e:      # EXTERNAL: GCS -- surface per cell
+                errors.append(f"{ticker}:{tf} LATEST unreadable: "
+                              f"{type(e).__name__}: {e}")
+                continue
             # An empty pointer is a corrupt registry, not "nothing serving":
             # inference cannot resolve an artifact from it, and recording ""
             # would make the check skip every real version for the cell
-            # while cell-silence still saw fresh rows (Codex P2 on #1117).
+            # while cell-silence still saw fresh rows.
             if not run_id:
-                raise ValueError(f"gs://{bucket.name}/{name} is empty")
+                errors.append(f"{ticker}:{tf} LATEST is empty "
+                              f"(gs://{bucket.name}/{name})")
+                continue
             out[(ticker, tf)] = run_id
-    return out
+    return out, errors
 
 
 def check_modal_dominance(rows: list[dict], report: Report,
@@ -523,10 +536,12 @@ def main() -> int:
     # it would judge retired versions, so a failed registry read is an error
     # in the summary and the check is skipped, never run on a guess.
     try:
-        serving = fetch_serving_versions()
+        serving, registry_errors = fetch_serving_versions()
     except Exception as e:
         report.errors.append(f"fetch_serving_versions: {e}")
     else:
+        for err in registry_errors:
+            report.errors.append(f"fetch_serving_versions: {err}")
         check_modal_dominance(rows, report, serving)
     check_cell_silence(rows, report, EXPECTED_CELLS)
 

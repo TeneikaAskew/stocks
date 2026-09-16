@@ -492,6 +492,12 @@ class NeverPromoted(FileNotFoundError):
 CONTRACT_BLOB = "CONTRACT.json"
 
 
+# The value magnitude_per_bar_predictions.decision_rule carries on every row
+# the inference job writes: pred_bucket is the served decision (decide_bucket),
+# not argmax. Rows tagged 'argmax' predate 2026-09-15 and are excluded from
+# every live read (Codex P1 on #1117).
+DECISION_RULE_LIFT = "lift"
+
 # The only provenance the reader serves. contract_payload defaults to it and
 # contract_mismatch refuses anything else, so a backfill cannot stamp priors
 # measured from a different population without the reader noticing.
