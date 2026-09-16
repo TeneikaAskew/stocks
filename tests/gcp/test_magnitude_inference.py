@@ -392,6 +392,69 @@ def test_main_exits_1_when_every_cell_is_never_promoted(monkeypatch):
     assert rc == 1
 
 
+# ─────────────── withdrawn cells: skip, don't page (same as never-promoted) ──
+#
+# SPY:15m and QQQ:15m WERE promoted 2026-09-07, then withdrawn 2026-09-08
+# once the walk-forward gate caught their FAIL verdict (#1025). Every
+# inference run since raised the generic "corrupted publish"
+# FileNotFoundError for both, which the failure notifier turned into a
+# same-day "GCP job failed" alert + auto-issue the hourly reconciler then
+# closed as "recovered" (#1092/#1093/#1105/#1110/#1113/#1119/#1120,
+# 8 Sep - 16 Sep). A withdrawn cell is a known, diagnosed state exactly
+# like NeverPromoted — it just needs its own bucket so the summary line
+# doesn't misreport a pulled promotion as "awaiting first promotion".
+
+def test_main_skips_withdrawn_cells_without_error(monkeypatch, caplog):
+    """Withdrawn cells warn and skip; the run exits 0 and logs no ERROR
+    for them, so the failure notifier stays quiet."""
+    import logging as _logging
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:15m,QQQ:15m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ModelWithdrawn
+
+    def fake_load(ticker, tf):
+        if tf == "15m":
+            raise ModelWithdrawn(f"production model for {ticker}:{tf} was "
+                                  f"deliberately withdrawn")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=5), \
+         caplog.at_level(_logging.DEBUG, logger=mod.log.name):
+        rc = mod.main()
+
+    assert rc == 0
+    skip_records = [r for r in caplog.records
+                    if "SKIPPED (model withdrawn" in r.getMessage()]
+    assert len(skip_records) == 2
+    assert all(r.levelno == _logging.WARNING for r in skip_records), \
+        "the skip must be WARNING — ERROR is what pages the notifier"
+    assert not [r for r in caplog.records
+                if r.levelno >= _logging.ERROR], \
+        "a withdrawn-model skip must not produce any ERROR record"
+
+
+def test_main_exits_1_when_every_cell_is_withdrawn(monkeypatch):
+    """A fleet withdrawn on every cell writes nothing — the zero-output
+    guard still turns that into a hard failure, same as an all-
+    never-promoted fleet."""
+    monkeypatch.setenv("INFERENCE_CELLS", "SPY:15m,QQQ:15m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ModelWithdrawn
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version",
+                       side_effect=ModelWithdrawn("withdrawn")), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    assert rc == 1
+
+
 def test_main_majority_threshold_counts_servable_cells_only(monkeypatch):
     """2 skips + 2 real failures of 4 configured: every cell that COULD
     run failed, so the run must exit 1 — under the old arithmetic
@@ -507,6 +570,94 @@ def test_loader_keeps_hard_failure_when_an_unmarked_run_exists():
                            match="run artifacts exist") as excinfo:
             mod._load_model_and_version("SPY", "15m")
     assert not isinstance(excinfo.value, NeverPromoted)
+
+
+def _withdrawn_bucket(*, withdrawn_payload):
+    """A stub bucket whose LATEST pointer is missing but WITHDRAWN.json
+    exists at the cell's production prefix — the pulled-after-promotion
+    state (#1025), distinct from an empty or gate-blocked-only prefix."""
+    import json as _json
+
+    def make(name):
+        b = MagicMock()
+        if name == f"{_PFX}/WITHDRAWN.json":
+            b.exists.return_value = True
+            b.download_as_text.return_value = _json.dumps(withdrawn_payload)
+        else:
+            b.exists.return_value = False
+        return b
+    bucket = MagicMock()
+    bucket.blob.side_effect = make
+    client = MagicMock()
+    client.bucket.return_value = bucket
+    client.list_blobs.return_value = iter([])
+    return client
+
+
+def test_loader_treats_a_withdrawn_model_as_a_skip_not_a_hard_failure():
+    """A cell whose model was deliberately pulled (WITHDRAWN.json) after
+    promotion is a known, diagnosed state — not the corrupted-publish
+    FileNotFoundError the generic missing-LATEST branch raises. #1025:
+    SPY/15m and QQQ/15m were promoted then withdrawn 2026-09-08, and the
+    withdrawn run carries no PROMOTION_BLOCKED marker (it was never
+    gate-rejected), so only an explicit WITHDRAWN.json check catches it."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import (
+        ModelWithdrawn, NeverPromoted,
+    )
+
+    client = _withdrawn_bucket(withdrawn_payload={
+        "withdrawn_at": "2026-09-08T12:17:07Z",
+        "reason": "cell verdict was FAIL on gates 1 and 2",
+    })
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(ModelWithdrawn,
+                           match="deliberately") as excinfo:
+            mod._load_model_and_version("SPY", "15m")
+    assert not isinstance(excinfo.value, NeverPromoted)
+    # The marker answers the question outright — no need to paginate the
+    # cell's run directory to classify it.
+    assert not client.list_blobs.called
+
+
+def test_loader_names_the_withdrawal_reason_and_time():
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ModelWithdrawn
+
+    client = _withdrawn_bucket(withdrawn_payload={
+        "withdrawn_at": "2026-09-08T12:17:07Z",
+        "reason": "cell verdict was FAIL on gates 1 and 2",
+    })
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(ModelWithdrawn) as excinfo:
+            mod._load_model_and_version("SPY", "15m")
+    assert "2026-09-08T12:17:07Z" in str(excinfo.value)
+    assert "cell verdict was FAIL on gates 1 and 2" in str(excinfo.value)
+
+
+def test_loader_withdrawn_state_survives_a_malformed_marker():
+    """The marker's mere presence is what matters for classification; a
+    corrupt JSON body must not fall through to the hard corrupted-publish
+    error, it just can't be quoted verbatim."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ModelWithdrawn
+
+    def make(name):
+        b = MagicMock()
+        if name == f"{_PFX}/WITHDRAWN.json":
+            b.exists.return_value = True
+            b.download_as_text.return_value = "{not valid json"
+        else:
+            b.exists.return_value = False
+        return b
+    bucket = MagicMock()
+    bucket.blob.side_effect = make
+    client = MagicMock()
+    client.bucket.return_value = bucket
+
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(ModelWithdrawn):
+            mod._load_model_and_version("SPY", "15m")
 
 
 def test_load_recent_features_joins_levels_table(monkeypatch):

@@ -441,6 +441,30 @@ class NeverPromoted(FileNotFoundError):
     """
 
 
+class ModelWithdrawn(FileNotFoundError):
+    """A serving cell whose promoted model was pulled after the fact.
+
+    Distinct from NeverPromoted: this cell DID have a production model —
+    LATEST pointed at a real run — before an operator withdrew it, writing
+    WITHDRAWN.json at the top of the cell's production prefix rather than
+    deleting the run artifacts (#1025: SPY/15m and QQQ/15m were promoted
+    2026-09-07 on the distribution criterion alone, before the walk-forward
+    criterion existed, then withdrawn 2026-09-08 once that criterion caught
+    their FAIL verdict). The withdrawn run carries no PROMOTION_BLOCKED
+    marker — it was never gate-rejected, it WAS the live model — so without
+    this check it falls into the generic "corrupted publish"
+    FileNotFoundError below and re-pages the failure notifier on every
+    inference run for a state that is already fully diagnosed and has a
+    documented restore path in WITHDRAWN.json itself.
+
+    A prefix with run artifacts but neither a PROMOTION_BLOCKED marker nor
+    a WITHDRAWN.json is still the genuine corrupted-or-interrupted-publish
+    case and stays a hard FileNotFoundError. Subclasses FileNotFoundError so
+    existing except-clauses keep working (house rule, see ContractMissing
+    above).
+    """
+
+
 CONTRACT_BLOB = "CONTRACT.json"
 
 
