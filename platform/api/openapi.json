@@ -2025,6 +2025,17 @@
             ],
             "title": "Pred Bucket"
           },
+          "pred_bucket_proba": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pred Bucket Proba"
+          },
           "probabilities": {
             "anyOf": [
               {
@@ -4532,6 +4543,10 @@
             "title": "Pred Bucket Label",
             "type": "string"
           },
+          "pred_bucket_proba": {
+            "title": "Pred Bucket Proba",
+            "type": "number"
+          },
           "probabilities": {
             "$ref": "#/components/schemas/BucketProbabilities"
           },
@@ -4564,6 +4579,7 @@
           "probabilities",
           "pred_bucket",
           "pred_bucket_label",
+          "pred_bucket_proba",
           "max_proba",
           "model_version",
           "source",

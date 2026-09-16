@@ -285,3 +285,22 @@ def test_the_summary_json_never_carries_the_per_bar_predictions():
     assert pop_at < dump_at, (
         "the summary JSON would be serialised with _predictions still "
         "attached to every fold")
+
+
+def test_predictions_ts_is_bound_as_a_timestamp_not_text(fake_folds,
+                                                          engine_and_capture):
+    """Every cell of magnitude-engine-6hp7l (2026-09-15) logged SQLSTATE
+    42804, 'column "ts" is of type timestamp with time zone but expression
+    is of type character varying': the fold rows carry ts as str(datetime64)
+    and to_sql bound it as text. The table held no walk_forward rows at all.
+    The frame handed to to_sql must carry a tz-aware datetime."""
+    from gcp.research.magnitude_engine.mag_walk_forward import (
+        _persist_predictions_table,
+    )
+    mock_engine, captured = engine_and_capture
+    _persist_predictions_table(mock_engine, "IWM", "5m", fake_folds, "run-x")
+    assert captured, "to_sql was never called"
+    ts = captured[0]["ts"]
+    assert pd.api.types.is_datetime64tz_dtype(ts), ts.dtype
+    assert str(ts.dt.tz) == "UTC"
+    assert ts.iloc[0] == pd.Timestamp("2022-01-03 14:30:00+00:00")

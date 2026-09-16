@@ -98,6 +98,8 @@ LOW_SAMPLE_THRESHOLD = 30
 
 # Magnitude-engine bucket labels (matches platform/api/routers/magnitude.py).
 _MAG_BUCKET_LABELS = ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
+# Row column holding each bucket's probability, indexed by pred_bucket.
+_MAG_BUCKET_PROBA_COLS = ("p_tight", "p_normal", "p_expanded", "p_explosive")
 _MAG_USAGE = (
     "How BIG the next move is likely to be — not which way. The 15m magnitude "
     "model is validated (calibrated, ECE ~0.04; robustly beats the base rate on "
@@ -662,11 +664,16 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     (the latest row in the table). `ts` is the bar timestamp column in
     `magnitude_per_bar_predictions` (TIMESTAMPTZ).
     """
+    # source = 'inference' for the same reason _model_degeneracy filters:
+    # the walk-forward harness writes every phase0 fold's test predictions
+    # into this table, promoted or blocked, with `ts` up to the newest
+    # labelled bar, and the newest row by ts would otherwise be a research
+    # run's call rather than the served model's (Codex P1 on #1117).
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, p_explosive, "
         "       pred_bucket, max_proba, model_version, source, computed_at "
         "FROM magnitude_per_bar_predictions "
-        "WHERE ticker = :ticker AND tf = :tf "
+        "WHERE ticker = :ticker AND tf = :tf AND source = 'inference' "
     )
     params = {"ticker": ticker.upper(), "tf": tf}
     if as_of is not None:
@@ -743,6 +750,11 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
             "p_expanded": float(row["p_expanded"]),
             "p_explosive": float(row["p_explosive"]),
         },
+        # The served bucket's own probability. max_proba is the argmax
+        # bucket's (TIGHT's, on nearly every bar) and is kept for drift
+        # monitoring; it is not the confidence of size_class (Codex P1 on
+        # #1117).
+        pred_bucket_proba=float(row[_MAG_BUCKET_PROBA_COLS[bucket]]),
         max_proba=float(row["max_proba"]),
         model_version=row.get("model_version"),
         ts=ts.isoformat() if hasattr(ts, "isoformat") else ts,

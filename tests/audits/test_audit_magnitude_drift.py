@@ -38,11 +38,18 @@ NOW = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 def _row(ticker: str, tf: str, pred_bucket: int, n: int,
          *, avg_conf: float = 0.65, model: str = "magnitude-engine-test",
-         last_computed: datetime | None = None) -> dict:
-    """Build a fake distribution row matching fetch_distribution()'s shape."""
+         last_computed: datetime | None = None, n_sessions: int = 5) -> dict:
+    """Build a fake distribution row matching fetch_distribution()'s shape.
+
+    `n_sessions` is the cell-level count of distinct ET sessions in the
+    window (the same value on every row of a cell, as the SQL returns it).
+    The default of five means "a full week": a test that wants the
+    one-session incident shape has to say so.
+    """
     return {
         "ticker": ticker, "tf": tf, "model_version": model,
         "pred_bucket": pred_bucket, "n_predictions": n,
+        "n_sessions": n_sessions,
         "avg_conf": avg_conf,
         "avg_p_tight": 0.6, "avg_p_normal": 0.25,
         "avg_p_expanded": 0.1, "avg_p_explosive": 0.05,
@@ -58,11 +65,11 @@ def test_modal_dominance_high_fires_at_collapse():
     )
     # c49qf's shape at the size it was caught, two sessions in: 98% over
     # 156 bars. Since 2026-09-14 that is MEDIUM, named as over the ceiling
-    # on too short a sample; a week of the same shape is HIGH.
+    # on too few sessions; a week of the same shape is HIGH.
     rows = [
-        _row("IWM", "5m", 0, 153),  # TIGHT: 153/156 = 98% (the live incident shape)
-        _row("IWM", "5m", 2, 1),
-        _row("IWM", "5m", 3, 2),
+        _row("IWM", "5m", 0, 153, n_sessions=2),  # TIGHT: 153/156 = 98%
+        _row("IWM", "5m", 2, 1, n_sessions=2),
+        _row("IWM", "5m", 3, 2, n_sessions=2),
     ]
     r = Report()
     check_modal_dominance(rows, r)
@@ -73,9 +80,12 @@ def test_modal_dominance_high_fires_at_collapse():
     assert f.target == "IWM:5m"
     assert "TIGHT" in f.detail
     assert "98" in f.detail  # the 98% share appears in the message
-    assert "under the 390-bar (5-session) minimum for HIGH" in f.detail
+    assert "only 2 sessions (156 bars), under the 5-session minimum for HIGH" in f.detail
+    # Five post-warmup sessions: 5 x 75 = 375 bars. Under the old bar quota
+    # (5 x 78 = 390) this exact sample could never page, because inference
+    # drops the three warmup bars of every session (Codex on #1117).
     rows = [
-        _row("IWM", "5m", 0, 385), _row("IWM", "5m", 2, 3), _row("IWM", "5m", 3, 4),
+        _row("IWM", "5m", 0, 368), _row("IWM", "5m", 2, 3), _row("IWM", "5m", 3, 4),
     ]
     r = Report()
     check_modal_dominance(rows, r)
@@ -90,34 +100,83 @@ def test_a_calm_session_on_a_calibrated_model_does_not_page():
     rule the share moves with the session, so one session cannot be a
     collapse verdict."""
     from gcp.audit_magnitude_drift import Report, check_modal_dominance
-    rows = [_row("SPY", "5m", 0, 73, model="magnitude-engine-6hp7l"),
-            _row("SPY", "5m", 1, 2, model="magnitude-engine-6hp7l")]
+    rows = [_row("SPY", "5m", 0, 73, model="magnitude-engine-6hp7l", n_sessions=1),
+            _row("SPY", "5m", 1, 2, model="magnitude-engine-6hp7l", n_sessions=1)]
     r = Report()
     check_modal_dominance(rows, r)
     assert len(r.findings) == 1
     assert r.findings[0].severity == "MEDIUM"
-    assert "only 75 bars" in r.findings[0].detail
+    assert "only 1 session (75 bars)" in r.findings[0].detail
 
 
-def test_the_high_minimum_is_per_timeframe():
-    """Five sessions is 130 bars at 15m, not 390: a 15m cell must be able
-    to reach HIGH inside the 7-day window."""
+def test_the_high_minimum_is_sessions_not_a_bar_quota():
+    """Inference scores 75/23/10 bars per session at 5m/15m/30m, not
+    78/26/13: _load_recent_features drops the three warmup bars whose
+    prev3_candle is NaN. A 7-day window holds at most five sessions, so a
+    quota of 5 x 78 = 390 bars was unreachable and HIGH could never fire
+    (Codex on #1117). The minimum is a count of distinct sessions, which
+    the SQL measures, and the same at every timeframe."""
     from gcp.audit_magnitude_drift import (
-        Report, check_modal_dominance, _min_sample_for_high)
-    assert _min_sample_for_high("5m") == 390
-    assert _min_sample_for_high("15m") == 130
-    assert _min_sample_for_high("30m") == 65
-    rows = [_row("IWM", "15m", 0, 130)]
+        MIN_SAMPLE, MIN_SESSIONS_FOR_HIGH, Report, check_modal_dominance)
+    assert MIN_SESSIONS_FOR_HIGH == 5
+    for tf, per_session in (("5m", 75), ("15m", 23), ("30m", 10)):
+        rows = [_row("IWM", tf, 0, 5 * per_session, n_sessions=5)]
+        r = Report()
+        check_modal_dominance(rows, r)
+        assert r.findings[0].severity == "HIGH", (tf, r.findings[0].detail)
+        # Four sessions is MEDIUM however many bars they hold (at 30m four
+        # sessions is under MIN_SAMPLE, so give it the sample floor).
+        rows = [_row("IWM", tf, 0, max(4 * per_session, MIN_SAMPLE), n_sessions=4)]
+        r = Report()
+        check_modal_dominance(rows, r)
+        assert r.findings[0].severity == "MEDIUM", (tf, r.findings[0].detail)
+        assert "only 4 sessions" in r.findings[0].detail
+
+
+def test_only_the_serving_model_version_is_judged():
+    """Measured 2026-09-16, one day after SPY/QQQ/IWM 5m moved to 6hp7l:
+    c49qf's five sessions of rows (IWM 5m TIGHT on 340/375, 90.7%) were
+    still inside the 7-day window beside 6hp7l's one session. A HIGH on a
+    version that no longer serves is a page nobody can act on; the cell is
+    judged on the version with the newest inference write."""
+    from gcp.audit_magnitude_drift import Report, check_modal_dominance
+    old = NOW - timedelta(hours=30)
+    rows = [
+        _row("IWM", "5m", 0, 340, model="magnitude-engine-c49qf", last_computed=old),
+        _row("IWM", "5m", 3, 35, model="magnitude-engine-c49qf", last_computed=old),
+        _row("IWM", "5m", 0, 51, model="magnitude-engine-6hp7l", n_sessions=1),
+        _row("IWM", "5m", 2, 5, model="magnitude-engine-6hp7l", n_sessions=1),
+        _row("IWM", "5m", 3, 19, model="magnitude-engine-6hp7l", n_sessions=1),
+    ]
     r = Report()
     check_modal_dominance(rows, r)
-    assert r.findings[0].severity == "HIGH"
+    assert [f.detail for f in r.findings if "c49qf" in f.detail] == []
+    assert len(r.findings) == 1 and "6hp7l" in r.findings[0].detail
+    assert r.findings[0].severity == "MEDIUM"   # 51/75 = 68%
 
 
-def test_an_unknown_timeframe_raises_rather_than_guessing_the_sample():
+def test_a_row_without_a_session_count_fails_loud():
+    """The session count is what decides whether to page. A row shape that
+    lacks it is a query drift, not a zero-session cell."""
     import pytest as _pytest
-    from gcp.audit_magnitude_drift import _min_sample_for_high
-    with _pytest.raises(ValueError, match="bars-per-session"):
-        _min_sample_for_high("2h")
+    from gcp.audit_magnitude_drift import Report, check_modal_dominance
+    row = _row("IWM", "5m", 0, 375)
+    del row["n_sessions"]
+    with _pytest.raises(KeyError, match="n_sessions"):
+        check_modal_dominance([row], Report())
+
+
+def test_fetch_distribution_counts_sessions_in_eastern_time():
+    """Sessions are ET calendar dates (CLAUDE.md 3.9): a UTC date would
+    split no RTH session today, but the count has to be right by
+    construction, not by the clock. The count is per cell, so a bucket that
+    fired on two of five days still sees five."""
+    import inspect
+    from gcp import audit_magnitude_drift as mod
+    src = inspect.getsource(mod.fetch_distribution)
+    assert "AT TIME ZONE 'America/New_York'" in src
+    assert "COUNT(DISTINCT" in src and "n_sessions" in src
+    assert "source = 'inference'" in src
 
 
 def test_modal_dominance_medium_for_a_model_over_the_base_rate():

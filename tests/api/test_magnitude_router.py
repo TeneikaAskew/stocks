@@ -203,3 +203,58 @@ def test_latest_uses_computed_at_tiebreaker():
         "/latest must tie-break by computed_at; otherwise stale "
         "walk_forward rows can beat fresh inference rows"
     )
+
+
+# ──────────────────── inference-only live reads (Codex P1 on #1117) ────────
+
+def _row_df(pred_bucket: int, **over) -> pd.DataFrame:
+    row = {
+        "ticker": "IWM", "tf": "5m",
+        "ts": pd.Timestamp("2026-09-14 19:55:00", tz="UTC"),
+        "p_tight": 0.62, "p_normal": 0.24, "p_expanded": 0.06,
+        "p_explosive": 0.08,
+        "pred_bucket": pred_bucket, "max_proba": 0.62,
+        "model_version": "magnitude-engine-6hp7l",
+        "source": "inference",
+        "computed_at": pd.Timestamp("2026-09-15 21:22:19", tz="UTC"),
+    }
+    row.update(over)
+    return pd.DataFrame([row])
+
+
+@pytest.mark.parametrize("path", [
+    "/api/magnitude/IWM/5m/latest",
+    "/api/magnitude/IWM/5m/at/2026-09-14T19:55:00Z",
+])
+def test_live_reads_serve_inference_rows_only(path):
+    """The walk-forward harness writes every phase0 fold's test predictions
+    into the same table (source='walk_forward'), for blocked candidates too,
+    with ts up to the newest labelled bar. Ordering by ts/computed_at alone
+    would let a research run's call beat the served model's."""
+    app, mod = _app_with_router()
+    seen: list[str] = []
+
+    def capture(sql):
+        seen.append(sql)
+        return _row_df(3)
+
+    with patch.object(mod, "query_to_dataframe", side_effect=capture):
+        r = TestClient(app).get(path)
+    assert r.status_code == 200, r.text
+    assert len(seen) == 1
+    assert "source = 'inference'" in seen[0], seen[0]
+
+
+def test_response_carries_the_served_buckets_own_probability():
+    """pred_bucket is the decision (P >= 2x prior), so its probability is
+    usually NOT the row's maximum: EXPLOSIVE at 0.08 beside TIGHT at 0.62.
+    max_proba stays as the argmax metric the drift auditor averages."""
+    app, mod = _app_with_router()
+    with patch.object(mod, "query_to_dataframe", return_value=_row_df(3)):
+        data = TestClient(app).get("/api/magnitude/IWM/5m/latest").json()
+    assert data["pred_bucket_label"] == "EXPLOSIVE"
+    assert data["pred_bucket_proba"] == 0.08
+    assert data["max_proba"] == 0.62
+    with patch.object(mod, "query_to_dataframe", return_value=_row_df(0)):
+        data = TestClient(app).get("/api/magnitude/IWM/5m/latest").json()
+    assert data["pred_bucket_proba"] == 0.62 == data["max_proba"]

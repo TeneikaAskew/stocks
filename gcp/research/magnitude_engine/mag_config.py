@@ -492,10 +492,16 @@ class NeverPromoted(FileNotFoundError):
 CONTRACT_BLOB = "CONTRACT.json"
 
 
+# The only provenance the reader serves. contract_payload defaults to it and
+# contract_mismatch refuses anything else, so a backfill cannot stamp priors
+# measured from a different population without the reader noticing.
+CLASS_PRIORS_TRAINING_LABELS = "training_labels"
+
+
 def contract_payload(label_mode: str,
                      thresholds: tuple[float, ...],
                      class_priors: Sequence[float],
-                     class_priors_source: str = "training_labels",
+                     class_priors_source: str = CLASS_PRIORS_TRAINING_LABELS,
                      decision_lift_min: float = DECISION_LIFT_MIN) -> dict:
     """The label contract a model artifact was trained under.
 
@@ -513,8 +519,11 @@ def contract_payload(label_mode: str,
     least `decision_lift_min` times its prior. Without the priors an artifact
     cannot be served, because its probabilities could not be turned into a
     decision the consumer has been told the meaning of. `class_priors_source`
-    says where they came from ("training_labels" for a promoted model,
-    "walk_forward_test_labels" for a legacy artifact stamped by the backfill
+    says where they came from: "training_labels" is the only value the
+    reader serves. The 2026-09-15 backfill wrote "walk_forward_test_labels"
+    (priors from the held-out CSV, which omits the pre-2019 training rows;
+    Codex P2 on #1117) and those artifacts were re-stamped; contract_mismatch
+    refuses the value should one reappear. It was written by the backfill
     from its own prediction CSV).
     """
     priors = [float(p) for p in class_priors]
@@ -643,6 +652,21 @@ def contract_mismatch(payload: dict,
         mismatches.append(
             f"decision_lift_min={got_lift} (serving contract is "
             f"{float(DECISION_LIFT_MIN)})")
+    # The priors must be the TRAINING labels' frequencies: that is what the
+    # decision rule scales, and what the promoted model was fitted against.
+    # The first backfill (2026-09-15) measured them from the walk-forward
+    # prediction CSV instead, which holds only the held-out test bars
+    # (2019 onward) and omits every pre-2019 training row (Codex P2 on
+    # #1117). A contract that says so is refused until re-stamped from a
+    # training-label source; one that says nothing is refused for the same
+    # reason, since an unstated provenance cannot be checked.
+    got_source = payload.get("class_priors_source")
+    if got_source != CLASS_PRIORS_TRAINING_LABELS:
+        mismatches.append(
+            f"class_priors_source={got_source!r} (serving contract requires "
+            f"{CLASS_PRIORS_TRAINING_LABELS!r}: priors measured from anything "
+            f"but the training labels scale the decision rule by the wrong "
+            f"base rate; re-stamp via scripts/backfill_model_contracts.py)")
     if not mismatches:
         return None
     return "; ".join(mismatches)

@@ -1640,25 +1640,72 @@ def test_the_backfill_upgrades_a_legacy_contract_in_place():
     assert "_DECISION_KEYS" in body and "_LEGACY_KEYS" in body
     assert "already carries the decision rule" in body
     assert "disagrees with the audited history" in body
-    assert "no walk-forward prediction CSV" in body
+    assert "no sibling artifact under this cell carries training-label" in body
     assert '"upgraded" if existing else "wrote"' in body
+    # a contract stamped from test labels is upgraded, not left alone
+    assert 'existing.get("class_priors_source")' in body
 
 
-def test_the_backfill_measures_priors_rather_than_guessing_them():
-    """Priors are per-cell facts and cannot be a literal. They come from the
-    cell's own prediction CSV, and an artifact with no CSV is refused rather
-    than stamped with someone else's numbers."""
-    from scripts.backfill_model_contracts import _priors_from_predictions
-    csv_text = "fold,ts,true_bucket_idx\n" + "\n".join(
-        ["a,t,0"] * 64 + ["a,t,1"] * 27 + ["a,t,2"] * 7 + ["a,t,3"] * 2)
-    blob = MagicMock()
-    blob.exists.return_value = True
-    blob.download_as_text.return_value = csv_text
+def test_the_backfill_takes_priors_from_a_training_label_measurement():
+    """Priors are per-cell facts and cannot be a literal. The population the
+    decision rule scales by is the TRAINING label set; the prediction CSV
+    holds only the held-out test bars from 2019 on (Codex P2 on #1117). The
+    walk-forward writes its training-label priors into every CONTRACT.json,
+    promoted or blocked, so the newest sibling under the same label
+    contract is the measurement; a cell with none is refused."""
+    import json as _json
+    from datetime import datetime, timezone
+    from scripts.backfill_model_contracts import (
+        _AUDITED_LEGACY_CONTRACT, _training_priors_from_sibling)
+
+    def blob(name, payload, updated):
+        b = MagicMock()
+        b.name = name
+        b.download_as_text.return_value = _json.dumps(payload)
+        b.updated = datetime(2026, 9, *updated, tzinfo=timezone.utc)
+        return b
+    base = "magnitude-models/production/IWM/15m/"
+    same = {k: _AUDITED_LEGACY_CONTRACT[k]
+            for k in ("label_mode", "thresholds", "classes")}
     bucket = MagicMock()
-    bucket.blob.return_value = blob
-    got = _priors_from_predictions(bucket, "SPY", "5m", "magnitude-engine-x")
-    assert got == pytest.approx([0.64, 0.27, 0.07, 0.02])
-    bucket.blob.assert_called_with(
-        "research/magnitude_engine/phase0/spy_5m/predictions_magnitude-engine-x.csv")
-    blob.exists.return_value = False
-    assert _priors_from_predictions(bucket, "SPY", "5m", "magnitude-engine-x") is None
+    bucket.list_blobs.return_value = [
+        blob(base + "magnitude-engine-c49qf/CONTRACT.json",
+             {**same, "class_priors": [0.69, 0.25, 0.05, 0.01],
+              "class_priors_source": "walk_forward_test_labels"}, (15, 12)),
+        blob(base + "magnitude-engine-6hp7l/model.joblib", {}, (15, 21)),
+        blob(base + "magnitude-engine-6hp7l/CONTRACT.json",
+             {**same, "class_priors": [0.678, 0.2495, 0.0556, 0.0169],
+              "class_priors_source": "training_labels"}, (15, 21)),
+        blob(base + "magnitude-engine-older/CONTRACT.json",
+             {**same, "class_priors": [0.7, 0.2, 0.07, 0.03],
+              "class_priors_source": "training_labels"}, (10, 1)),
+        blob(base + "magnitude-engine-excursion/CONTRACT.json",
+             {**same, "label_mode": "excursion",
+              "class_priors": [0.4, 0.3, 0.2, 0.1],
+              "class_priors_source": "training_labels"}, (16, 1)),
+    ]
+    got = _training_priors_from_sibling(bucket, "IWM", "15m")
+    assert got is not None
+    priors, run, _ = got
+    assert run == "magnitude-engine-6hp7l"        # newest training-label sibling
+    assert priors == pytest.approx([0.678, 0.2495, 0.0556, 0.0169])
+    bucket.list_blobs.assert_called_with(prefix=base)
+    # only test-label or foreign-contract siblings: refused
+    bucket.list_blobs.return_value = bucket.list_blobs.return_value[:1] + \
+        bucket.list_blobs.return_value[4:]
+    assert _training_priors_from_sibling(bucket, "IWM", "15m") is None
+
+
+def test_the_reader_refuses_priors_that_are_not_training_labels():
+    """The 2026-09-15 backfill stamped six contracts from the walk-forward
+    test CSV. Those priors omit the pre-2019 training rows, so the decision
+    rule scaled by them is the wrong rule; the reader refuses the
+    provenance rather than serving it (Codex P2 on #1117)."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    why = contract_mismatch(_contract(class_priors_source="walk_forward_test_labels"))
+    assert why is not None and "class_priors_source" in why
+    assert "backfill_model_contracts" in why
+    payload = _contract()
+    del payload["class_priors_source"]
+    assert "class_priors_source" in contract_mismatch(payload)
+    assert contract_mismatch(_contract()) is None

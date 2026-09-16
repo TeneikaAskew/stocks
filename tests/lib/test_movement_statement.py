@@ -978,6 +978,39 @@ def test_expected_move_includes_atr_and_price():
     assert em["current_price"] == 218.4
 
 
+def test_expected_move_reads_inference_rows_only_and_names_the_served_probability():
+    """Codex P1 on #1117: the walk-forward harness writes phase0 fold
+    predictions (blocked candidates included) into the same table, so the
+    newest row by ts is not necessarily the served model's. And the served
+    bucket's probability is reported beside max_proba, which is the argmax
+    bucket's and reads as a confidence it is not."""
+    import pandas as pd
+    from lib.movement_statement import _build_expected_move
+    seen: list[str] = []
+
+    def fake_query(sql, params):
+        seen.append(sql)
+        if "magnitude_per_bar_predictions" in sql and "GROUP BY" not in sql:
+            return pd.DataFrame([{
+                "ticker": "IWM", "tf": "5m", "ts": pd.Timestamp("2026-09-14T19:55:00Z"),
+                "p_tight": 0.62, "p_normal": 0.24, "p_expanded": 0.06, "p_explosive": 0.08,
+                "pred_bucket": 3, "max_proba": 0.62,
+                "model_version": "magnitude-engine-6hp7l", "source": "inference",
+                "computed_at": pd.Timestamp("2026-09-15T21:22:19Z"),
+            }])
+        if "GROUP BY" in sql:
+            return pd.DataFrame([{"pred_bucket": 0, "n": 51}, {"pred_bucket": 3, "n": 19}])
+        return pd.DataFrame([{"atr_20": 0.4, "close": 240.0}])
+
+    em = _build_expected_move("IWM", "5m", fake_query)
+    assert em["status"] == "OK", em
+    assert em["size_class"] == "EXPLOSIVE"
+    assert em["pred_bucket_proba"] == 0.08
+    assert em["max_proba"] == 0.62
+    read = [q for q in seen if "magnitude_per_bar_predictions" in q and "GROUP BY" not in q]
+    assert read and "source = 'inference'" in read[0], read
+
+
 def test_expected_move_atr_none_when_features_missing():
     import pandas as pd
     from lib.movement_statement import _build_expected_move

@@ -425,6 +425,63 @@ class TestAnalysisScriptsUseTheDecisionRule:
         assert (proba.argmax(1) == 3).sum() == 0
         assert g["lift"] is not None
 
+    def test_bootstrap_resamples_are_scored_under_the_original_fold_prior(self):
+        """The substitute prior is a property of the ORIGINAL fold. Recomputing
+        it from each resample moved the decision threshold with every draw
+        (Codex on #1117): a draw that happened to hold more EXPLOSIVE bars
+        raised the bar those same bars had to clear."""
+        from scripts.bootstrap_gate_fragility import fold_gates, fold_prior
+        n = 200
+        # Original fold: 2% EXPLOSIVE, so the rule names it at P >= 0.04.
+        y = np.array([0] * 128 + [1] * 54 + [2] * 14 + [3] * 4)
+        proba = np.tile(_PRIORS, (n, 1)).astype(float)
+        proba[:, 3] = 0.06            # every bar clears 2 x 0.02, not 2 x 0.05
+        proba[:, 0] -= 0.04
+        prior = fold_prior(y)
+        assert prior[3] == pytest.approx(0.02)
+        # A resample that drew EXPLOSIVE bars five times over.
+        idx = np.concatenate([np.arange(0, 190), np.repeat(np.arange(196, 200), 5)])
+        sample = pd.DataFrame({
+            "fold": "f", "ts": "t", "true_bucket_idx": y[idx],
+            "pred_bucket_idx": 3, "max_proba": proba[idx].max(1),
+            "p_TIGHT": proba[idx, 0], "p_NORMAL": proba[idx, 1],
+            "p_EXPANDED": proba[idx, 2], "p_EXPLOSIVE": proba[idx, 3],
+        })
+        held = fold_gates(sample, "5m", prior=prior)
+        assert held["lift"] is not None       # named under the fold's own rule
+        recomputed = fold_gates(sample, "5m")   # the pre-fix behaviour
+        assert recomputed["lift"] is None      # 0.06 < 2 x 0.095: nothing named
+
+    def test_bootstrap_one_cell_passes_one_prior_per_fold(self, monkeypatch):
+        import scripts.bootstrap_gate_fragility as bs
+        rng = np.random.default_rng(3)
+        rows = []
+        for fold, seed in (("a", 1), ("b", 2)):
+            y = rng.choice(4, size=120, p=[0.64, 0.27, 0.07, 0.02])
+            proba = np.tile(_PRIORS, (120, 1))
+            rows.append(pd.DataFrame({
+                "fold": fold, "ts": "t", "true_bucket_idx": y,
+                "pred_bucket_idx": 0, "max_proba": 0.64,
+                "p_TIGHT": proba[:, 0], "p_NORMAL": proba[:, 1],
+                "p_EXPANDED": proba[:, 2], "p_EXPLOSIVE": proba[:, 3],
+            }))
+        preds = pd.concat(rows, ignore_index=True)
+        seen: dict[str, list] = {}
+        real = bs.fold_gates
+
+        def spy(fold_df, tf, prior=None):
+            seen.setdefault(fold_df["fold"].iloc[0], []).append(prior)
+            return real(fold_df, tf, prior=prior)
+
+        monkeypatch.setattr(bs, "fold_gates", spy)
+        bs.bootstrap_one_cell(preds, "5m", n_iter=7, seed=1)
+        for fold, group in preds.groupby("fold"):
+            expect = bs.fold_prior(group["true_bucket_idx"].to_numpy())
+            assert len(seen[fold]) == 8          # deterministic pass + 7 resamples
+            for got in seen[fold]:
+                assert got is not None
+                np.testing.assert_array_equal(got, expect)
+
     def test_bootstrap_constant_fold_has_no_lift(self):
         from scripts.bootstrap_gate_fragility import fold_gates
         n = 200

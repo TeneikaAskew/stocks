@@ -1242,15 +1242,100 @@ SPY 1 call / 0 hits. One session and four real EXPLOSIVE events: consistent
 with the walk-forward lift of 3-5×, not evidence beyond it.
 
 **Detector change shipped (same day).** `audit-magnitude-drift`'s HIGH
-tier now requires `MIN_SESSIONS_FOR_HIGH` (5) sessions of bars for the
-cell's timeframe (390 at 5m, 130 at 15m, 65 at 30m); a share over the 90%
-ceiling on a shorter sample is MEDIUM with the reason in the finding. This
-is what SPY 5m's calm session needed. A constant model is now MEDIUM for
-its first week and HIGH after; the render backstop covers the card in the
-meantime. An unknown timeframe raises rather than guessing the sample.
+tier now requires the share to hold across `MIN_SESSIONS_FOR_HIGH` (5)
+distinct sessions; a share over the 90% ceiling on fewer is MEDIUM with
+the reason in the finding. This is what SPY 5m's calm session needed. A
+constant model is now MEDIUM for its first week and HIGH after; the render
+backstop covers the card in the meantime. (As first shipped the rule was a
+bar quota, sessions times RTH bars per timeframe, 390 at 5m; §12 records
+why that number was unreachable and the correction.)
 
 Deployed the same day (base image `a4d72306` → `24f89de6…`, auditor
 generation 4). First run, `audit-magnitude-drift-x6hgq`: no HIGH findings;
 SPY 5m `6hp7l` MEDIUM with the reason in the finding; IWM 15m (`c49qf`,
 still a constant, 115 bars) crosses its 130-bar minimum on the next
 session and pages HIGH then, as it should.
+
+### 12. Review round on #1117 (2026-09-16): five findings, one latent write failure
+
+Codex reviewed the decision-rule PR at `153218c7` and filed five findings.
+Every one held against the code; working them surfaced a sixth defect that
+predates the PR. Each item names the fix and the test that pins it.
+
+**The auditor's HIGH tier could never fire.** The 2026-09-15 rule required
+`MIN_SESSIONS_FOR_HIGH × bars-per-session` bars (390 at 5m, 130 at 15m,
+65 at 30m). Inference drops the three warmup bars of every session
+(`_load_recent_features`, `prev3_candle` NaN), so a session contributes
+75/23/10 bars and a 7-day window tops out at 375/115/50: the quota was a
+claim about the calendar the data did not meet. `fetch_distribution` now
+counts distinct ET sessions per cell (`n_sessions`, named zone per §3.9)
+and `check_modal_dominance` gates HIGH on that count. Measured against the
+live table the same morning, the query returns five sessions for every
+`c49qf` cell and one for the `6hp7l` cells. Two consequences: a holiday
+week (four sessions) defers HIGH to the following week, and the check
+now judges only the model version each cell is SERVING (newest inference
+write), because the replaced `c49qf` rows sat in the window at 340/375 =
+90.7% on IWM 5m and would have paged HIGH on a model that no longer
+serves. `tests/audits/test_audit_magnitude_drift.py`.
+
+**Gate 5 moved its own threshold.** `bootstrap_gate_fragility.fold_gates`
+recomputed the substitute prior from each resample, so gate 4 was scored
+under a different lift bar on every draw. `fold_prior` is now computed
+once per original fold and passed into every resample and the
+deterministic pass. The 2026-09-15 gate-5 numbers (100% on the 5m cells,
+86.5 / 34.4 / 4.8% on SPY 15m / IWM 15m / SPY 30m) were produced under
+the moving rule and are not re-run here; the 5m promotions rest on gates
+1-4 and 6 as well and are unchanged. `tests/gcp/test_magnitude_gates.py`
+(`TestAnalysisScriptsUseTheDecisionRule`).
+
+**Walk-forward rows would beat the served model on the live reads, and
+never had, because the write always failed.** `_persist_predictions_table`
+writes every phase0 fold's test predictions, promoted or blocked, into
+`magnitude_per_bar_predictions` with `ts` up to the newest labelled bar.
+`/api/magnitude/{ticker}/{tf}/latest`, `/at/{ts}` and
+`_build_expected_move` ordered by `ts`/`computed_at` with no `source`
+filter, so the first successful walk-forward write would have served a
+blocked candidate's call. It never happened because the write has failed
+on every run since it was added: the fold rows carry `ts` as
+`str(datetime64)`, bound as VARCHAR, and Postgres refuses it into
+TIMESTAMPTZ (SQLSTATE 42804, logged nine times by `6hp7l`). The table
+holds zero `walk_forward` rows. Both are fixed: the three live reads take
+`source = 'inference'` only (the degeneracy backstop already did), and the
+writer parses `ts` to tz-aware UTC before binding.
+`tests/api/test_magnitude_router.py`, `tests/lib/test_movement_statement.py`,
+`tests/gcp/test_magnitude_predictions_persistence.py`.
+
+**`max_proba` beside a tail `pred_bucket` read as its confidence.** It is
+the argmax bucket's probability, TIGHT's on nearly every bar. The API and
+the expected-move block now carry `pred_bucket_proba`, the served bucket's
+own probability (EXPLOSIVE at 0.08 against a 0.026 prior is a call;
+`max_proba` on that row is 0.62). `max_proba` stays as the drift metric the
+auditor averages. OpenAPI snapshot regenerated; solyra's vendored copy,
+`MovementExpectedMove` type and dashboard mock updated on the same branch.
+
+**The stamped priors omitted every pre-2019 training row.** The 2026-09-15
+backfill measured `class_priors` from the walk-forward prediction CSV,
+which holds only the held-out test bars from 2019 on: for IWM 15m that is
+16,575 of 58,932 labels missing. The population the decision rule scales
+by is the full training label set, and the walk-forward records exactly
+that in every `CONTRACT.json` it writes, promoted or blocked
+(`class_priors_source: "training_labels"`), so `6hp7l` had already
+measured it for all nine cells on 2026-09-15. The backfill now takes the
+newest sibling artifact's training-label priors under the same label
+contract and records which run they came from (`class_priors_from_run`);
+a cell with none is refused. The reader (`contract_mismatch`) refuses any
+`class_priors_source` other than `training_labels`. Re-stamped with
+`--commit` the same morning, three cells (the ones still on `c49qf`):
+
+| cell | test-label priors (2026-09-15) | training-label priors (from `6hp7l`) |
+|---|---|---|
+| IWM 15m | 0.6868 / 0.2456 / 0.0523 / 0.0152 | 0.6780 / 0.2495 / 0.0556 / 0.0169 |
+| QQQ 30m | 0.7207 / 0.2176 / 0.0456 / 0.0160 | 0.7179 / 0.2208 / 0.0456 / 0.0157 |
+| IWM 30m | 0.7223 / 0.2201 / 0.0451 / 0.0125 | 0.7164 / 0.2241 / 0.0465 / 0.0130 |
+
+The EXPLOSIVE threshold on IWM 15m moves from 0.0305 to 0.0338. The
+`6hp7l` measurement is taken 19 days after `c49qf`'s training set closed
+(264 more rows out of 58,932), which the contract discloses by naming the
+run. The pre-restamp payloads are kept in the session scratchpad. All six
+serving artifacts verify under the new reader.
+`tests/gcp/test_magnitude_inference.py`.

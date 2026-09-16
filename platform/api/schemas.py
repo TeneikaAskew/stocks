@@ -531,6 +531,13 @@ class ExpectedMove(ApiModel):
     size_class: Optional[str] = None
     pred_bucket: Optional[int] = None
     probabilities: Optional[ExpectedMoveProbabilities] = None
+    # Probability of the served bucket (size_class). Present on every OK
+    # expected_move since 2026-09-16; null on the UNAVAILABLE envelopes.
+    pred_bucket_proba: Optional[float] = None
+    # Probability of the ARGMAX bucket, which is TIGHT on nearly every bar
+    # of a calibrated model: a drift-monitoring metric, not the confidence
+    # of size_class (Codex P1 on #1117). Kept for the auditor and for
+    # consumers that already read it.
     max_proba: Optional[float] = None
     # magnitude_predictions.model_version is VARCHAR(64) — the producer
     # (lib/movement_statement.py) passes the raw DB value straight through,

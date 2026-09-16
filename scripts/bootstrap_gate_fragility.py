@@ -48,7 +48,17 @@ from scripts._magnitude_analysis_helpers import (
     add_research_arg, load_predictions)
 
 
-def fold_gates(fold_df: pd.DataFrame, tf: str) -> dict:
+def fold_prior(y_true: np.ndarray) -> np.ndarray:
+    """A fold's truth distribution, one entry per LABEL_CLASSES. The
+    substitute for the training prior the CSV does not carry; computed ONCE
+    per original fold by the bootstrap and passed into every resample."""
+    counts = np.bincount(np.asarray(y_true), minlength=len(LABEL_CLASSES)).astype(float)
+    if counts.sum() == 0:
+        raise ValueError("fold_prior of an empty fold")
+    return counts / counts.sum()
+
+
+def fold_gates(fold_df: pd.DataFrame, tf: str, prior=None) -> dict:
     """Recompute the four per-fold gate inputs from a (resampled or
     original) fold's predictions+truth."""
     proba_cols = [f"p_{c}" for c in LABEL_CLASSES]
@@ -61,14 +71,19 @@ def fold_gates(fold_df: pd.DataFrame, tf: str) -> dict:
     classes = list(range(len(LABEL_CLASSES)))
 
     ll = float(log_loss(y_true, proba, labels=classes))
-    # We don't have y_train_idx for the base rate; recompute base log-loss
-    # from the FOLD's truth distribution (this is what's available from
-    # predictions alone). This is slightly different from what the
-    # harness recorded (which uses train-prior); for bootstrap
-    # comparison we hold the methodology constant across all bootstrap
-    # iterations — what matters is variance, not the absolute value.
-    prior = np.bincount(y_true, minlength=len(LABEL_CLASSES)).astype(float)
-    prior = prior / prior.sum() if prior.sum() > 0 else np.ones(len(LABEL_CLASSES)) / len(LABEL_CLASSES)
+    # We don't have y_train_idx for the base rate; the caller substitutes the
+    # ORIGINAL fold's truth distribution (fold_prior), computed once per fold
+    # and held fixed across every resample. Recomputing it from the resampled
+    # rows moved the decision threshold with each draw, so gate 4 was scored
+    # against a different rule on every iteration and the bootstrap measured
+    # threshold noise on top of sampling noise (Codex on #1117). This is
+    # slightly different from what the harness recorded (which uses the
+    # training prior); for bootstrap comparison the methodology is held
+    # constant across iterations -- what matters is variance, not the
+    # absolute value.
+    if prior is None:
+        prior = fold_prior(y_true)
+    prior = np.asarray(prior, dtype=float)
     base_proba = np.tile(prior, (len(y_true), 1))
     base_ll = float(log_loss(y_true, base_proba, labels=classes))
     beat = base_ll - ll
@@ -83,10 +98,9 @@ def fold_gates(fold_df: pd.DataFrame, tf: str) -> dict:
 
     # Gate 4 names EXPLOSIVE by the decision rule (P >= lift x prior), not
     # argmax, since 2026-09-14. The harness scales by the TRAINING fold's
-    # priors; those are not in the prediction CSV, so the fold's own truth
-    # distribution stands in, the same substitution already made for the
-    # base log-loss above and for the same reason: held constant across
-    # iterations, it is the variance that matters here.
+    # priors; those are not in the prediction CSV, so the original fold's
+    # own truth distribution stands in, the same substitution made for the
+    # base log-loss above and fixed per fold for the same reason.
     expl = explosive_lift(y_true, proba, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
                           class_priors=prior)
     lift = expl.get("lift")
@@ -111,11 +125,17 @@ def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1)
     iter_g_counts = []  # list of (g1, g2, g3, g4) each in [0..n_folds]
 
     fold_groups = {f: preds[preds["fold"] == f].reset_index(drop=True) for f in folds}
+    # One substitute prior per ORIGINAL fold, shared by its deterministic
+    # pass and all of its resamples (see fold_gates).
+    fold_priors = {f: fold_prior(g["true_bucket_idx"].to_numpy())
+                   for f, g in fold_groups.items() if len(g)}
 
     # Also keep the deterministic (no-resample) result for reference
     det_g = [0, 0, 0, 0]
     for f in folds:
-        g = fold_gates(fold_groups[f], tf)
+        if f not in fold_priors:
+            continue
+        g = fold_gates(fold_groups[f], tf, prior=fold_priors[f])
         if g is None:
             continue
         if g["beat"] > 0:        det_g[0] += 1
@@ -132,7 +152,7 @@ def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1)
                 continue
             idx = rng.integers(0, n, size=n)
             sample = g.iloc[idx]
-            r = fold_gates(sample, tf)
+            r = fold_gates(sample, tf, prior=fold_priors[f])
             if r is None:
                 continue
             if r["beat"] > 0:    gc[0] += 1

@@ -4,8 +4,12 @@
 Two jobs, one pass. Artifacts promoted before CONTRACT.json existed get one;
 artifacts stamped by the 2026-09-11 backfill, which carry the label contract
 but not the decision rule added on 2026-09-14 (`class_priors`,
-`decision_lift_min`), are upgraded in place. mag_inference refuses either
-kind until this has run.
+`decision_lift_min`), are upgraded in place -- as are the ones the
+2026-09-15 backfill stamped with priors measured from the walk-forward TEST
+labels (`class_priors_source: "walk_forward_test_labels"`), which omit the
+pre-2019 training rows (Codex P2 on #1117). mag_inference refuses every one
+of these until this has run; the priors it stamps now come from a sibling
+artifact's own training-label measurement (_training_priors_from_sibling).
 
 mag_inference refuses to score a model whose artifact does not state its own
 label contract (see mag_config.CONTRACT_BLOB). Artifacts promoted before that
@@ -57,7 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     TICKERS, TIMEFRAMES, CONTRACT_BLOB, ContractRejection,
-    GCS_BUCKET_DEFAULT,
+    GCS_BUCKET_DEFAULT, CLASS_PRIORS_TRAINING_LABELS,
 )
 from gcp.research.magnitude_engine import mag_inference  # noqa: E402
 
@@ -87,7 +91,6 @@ _AUDITED_LEGACY_CONTRACT = {
     # refuse an artifact stamped under the old bar rather than have this
     # script quietly restamp it with the new one.
     "decision_lift_min": 2.0,
-    "class_priors_source": "walk_forward_test_labels",
 }
 
 # The keys a contract needs to carry to be servable now. A contract written
@@ -98,29 +101,45 @@ _LEGACY_KEYS = ("label_mode", "thresholds", "classes")
 _DECISION_KEYS = ("class_priors", "decision_lift_min")
 
 
-def _priors_from_predictions(bucket, ticker: str, tf: str, run_id: str):
-    """The cell's class frequencies, measured from its own walk-forward
-    prediction CSV, or None when that CSV does not exist.
+def _training_priors_from_sibling(bucket, ticker: str, tf: str):
+    """The cell's training-label class frequencies under the audited label
+    contract, taken from the newest sibling artifact whose CONTRACT.json the
+    walk-forward itself wrote from its training labels; None when the cell
+    has no such artifact.
 
     Priors are per-cell facts, so unlike the rest of the contract they
-    cannot be a literal. The prediction CSV carries `true_bucket_idx` for
-    every test bar across all eight folds (2019 -> 2026), which is the same
-    population the promoted model's training labels come from; the source
-    is recorded in the contract so the provenance is explicit.
+    cannot be a literal. The first version of this script measured them
+    from the cell's walk-forward prediction CSV, which holds only the
+    held-out TEST bars (2019 onward) and omits every pre-2019 training row
+    (Codex P2 on #1117): 16,575 of IWM 15m's 58,932 labels. The population
+    the decision rule has to be scaled by is the full label set, and the
+    walk-forward records exactly that in every CONTRACT.json it writes
+    (`class_priors_source: "training_labels"`, promoted or blocked alike),
+    so a run under the same label contract is the measurement -- taken
+    days later than the legacy model's own training set (the same rows
+    plus the sessions since), which the stamped contract discloses by
+    naming the run it came from.
     """
-    import csv, io    # noqa: PLC0415
-    name = (f"research/magnitude_engine/phase0/{ticker.lower()}_{tf}/"
-            f"predictions_{run_id}.csv")
-    blob = bucket.blob(name)
-    if not blob.exists():
-        return None
-    counts = [0] * len(_AUDITED_LEGACY_CONTRACT["classes"])
-    for row in csv.DictReader(io.StringIO(blob.download_as_text())):
-        counts[int(row["true_bucket_idx"])] += 1
-    n = sum(counts)
-    if n == 0:
-        return None
-    return [c / n for c in counts]
+    base = f"magnitude-models/production/{ticker}/{tf}/"
+    best = None
+    for blob in bucket.list_blobs(prefix=base):
+        if not blob.name.endswith(f"/{CONTRACT_BLOB}"):
+            continue
+        sibling_run = blob.name[len(base):].split("/", 1)[0]
+        payload = json.loads(blob.download_as_text())
+        if payload.get("class_priors_source") != CLASS_PRIORS_TRAINING_LABELS:
+            continue
+        if any(payload.get(k) != _AUDITED_LEGACY_CONTRACT[k]
+               for k in _LEGACY_KEYS):
+            continue   # measured under another label contract; not this population
+        priors = payload.get("class_priors")
+        if (not isinstance(priors, list)
+                or len(priors) != len(_AUDITED_LEGACY_CONTRACT["classes"])
+                or not all(isinstance(x, (int, float)) for x in priors)):
+            continue
+        if best is None or blob.updated > best[2]:
+            best = ([float(x) for x in priors], sibling_run, blob.updated)
+    return best
 
 
 class _PointerMoved(RuntimeError):
@@ -231,7 +250,9 @@ def main() -> int:
             existing = None
             if blob.exists():
                 existing = json.loads(blob.download_as_text())
-                if all(existing.get(k) is not None for k in _DECISION_KEYS):
+                if (all(existing.get(k) is not None for k in _DECISION_KEYS)
+                        and existing.get("class_priors_source")
+                        == CLASS_PRIORS_TRAINING_LABELS):
                     print(f"{ticker}:{tf} run={run_id} — {CONTRACT_BLOB} "
                           f"already carries the decision rule, left alone")
                     skipped += 1
@@ -247,27 +268,32 @@ def main() -> int:
                           f"on {disagree}; not upgraded")
                     refused += 1
                     continue
-            priors = _priors_from_predictions(bucket, ticker, tf, run_id)
-            if priors is None:
+            found = _training_priors_from_sibling(bucket, ticker, tf)
+            if found is None:
                 print(f"{ticker}:{tf} run={run_id} — REFUSED: "
-                      f"no walk-forward prediction CSV to measure class "
-                      f"priors from; the decision rule cannot be stamped "
-                      f"without them")
+                      "no sibling artifact under this cell carries training-label "
+                      f"class priors for the audited contract; run the "
+                      f"walk-forward for the cell (its CONTRACT.json is "
+                      f"written whether or not it promotes) and re-run")
                 refused += 1
                 continue
+            priors, priors_run, _ = found
             payload = json.dumps({**_AUDITED_LEGACY_CONTRACT,
-                                  "class_priors": priors}, indent=2)
+                                  "class_priors": priors,
+                                  "class_priors_source": CLASS_PRIORS_TRAINING_LABELS,
+                                  "class_priors_from_run": priors_run},
+                                 indent=2)
             action = "upgraded" if existing else "wrote"
+            what = (f"{action} {CONTRACT_BLOB} (priors="
+                    f"{[round(p, 4) for p in priors]} from {priors_run})")
             if args.commit:
                 blob.upload_from_string(payload,
                                         content_type="application/json")
                 print(f"{ticker}:{tf} run={run_id} (spans {span[run_id]} "
-                      f"cells) — {action} {CONTRACT_BLOB} "
-                      f"(priors={[round(p, 4) for p in priors]})")
+                      f"cells) — {what}")
             else:
                 print(f"{ticker}:{tf} run={run_id} (spans {span[run_id]} "
-                      f"cells) — WOULD have {action} {CONTRACT_BLOB} "
-                      f"(priors={[round(p, 4) for p in priors]})")
+                      f"cells) — WOULD have {what}")
             written += 1
 
     verb = "wrote/upgraded" if args.commit else "would write/upgrade"

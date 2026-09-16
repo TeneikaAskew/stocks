@@ -102,28 +102,24 @@ MIN_SAMPLE = int(os.environ.get("DRIFT_MIN_SAMPLE", "50"))
 # check paged HIGH on a model that names EXPLOSIVE on 11-13% of bars over
 # eight years at 100% bootstrap (audit-magnitude-drift-d9kkm). Under argmax
 # that never happened, because argmax share did not move with the session.
-# So HIGH requires at least MIN_SESSIONS_FOR_HIGH sessions of bars for the
-# cell's timeframe; a >= 90% share on a shorter sample is reported as
-# MEDIUM with the reason, so it stays visible without paging. The cost is
-# that a genuinely constant model (c49qf's 100%) is MEDIUM for its first
-# week and HIGH after; the render backstop in lib/movement_statement.py
-# covers the user-facing card in the meantime.
+# So HIGH requires the share to hold across at least MIN_SESSIONS_FOR_HIGH
+# distinct sessions; a >= 90% share on fewer is reported as MEDIUM with the
+# reason, so it stays visible without paging.
+#
+# Sessions are COUNTED (distinct ET dates in fetch_distribution), not
+# inferred from a bar quota. The first version of this rule multiplied
+# sessions by RTH bars per timeframe (5 x 78 = 390 at 5m), and that number
+# was unreachable: inference drops the three warmup bars of every session
+# (mag_inference._load_recent_features, prev3_candle NaN), so a session
+# contributes 75/23/10 bars at 5m/15m/30m and a 7-day window tops out at
+# 375/115/50 (Codex on #1117). A quota derived from the calendar was a
+# claim about the data that the data did not meet.
+#
+# The cost is that a genuinely constant model (c49qf's 100%) is MEDIUM
+# until it has served five sessions inside the LOOKBACK_DAYS window, which
+# a holiday week defers to the following week; the render backstop in
+# lib/movement_statement.py covers the user-facing card in the meantime.
 MIN_SESSIONS_FOR_HIGH = int(os.environ.get("DRIFT_MIN_SESSIONS_FOR_HIGH", "5"))
-# RTH bars per session per timeframe. An unknown timeframe RAISES in
-# _min_sample_for_high rather than guessing: a guessed bar count is a
-# silent fallback on the number that decides whether to page.
-_BARS_PER_SESSION: dict[str, int] = {
-    "1m": 390, "5m": 78, "15m": 26, "30m": 13, "60m": 7, "4h": 2,
-}
-
-
-def _min_sample_for_high(tf: str) -> int:
-    try:
-        return MIN_SESSIONS_FOR_HIGH * _BARS_PER_SESSION[tf]
-    except KeyError as e:
-        raise ValueError(
-            f"no bars-per-session entry for timeframe {tf!r}; add it to "
-            f"_BARS_PER_SESSION rather than guessing the HIGH-tier sample") from e
 
 # Cell-silence freshness threshold. A cell counts as "alive" only if it
 # produced predictions within this many hours. Codex P2 caught the
@@ -174,24 +170,45 @@ def fetch_distribution() -> list[dict]:
     """Pull per-cell prediction distribution for the lookback window.
 
     Returns one row per (ticker, tf, model_version, pred_bucket) with
-    counts and averaged probabilities. Empty list on any query failure
-    (caught + logged into report.errors by the caller).
+    counts and averaged probabilities, plus `n_sessions`: the number of
+    distinct ET sessions the CELL (ticker, tf, model_version) served in the
+    window, repeated on each of its rows. It is a cell-level count, not a
+    per-bucket one, so a bucket named on two of five days still reads five.
+    Sessions are Eastern calendar dates (CLAUDE.md 3.9): a bar's UTC date
+    is the same today, but the check must be right by construction.
+    Empty list on any query failure (caught + logged into report.errors by
+    the caller).
     """
     from sqlalchemy import text
     engine = get_engine()
     sql = text("""
-        SELECT ticker, tf, model_version, pred_bucket,
+        WITH window_rows AS (
+            SELECT ticker, tf, model_version, pred_bucket, max_proba,
+                   p_tight, p_normal, p_expanded, p_explosive, computed_at,
+                   (ts AT TIME ZONE 'America/New_York')::date AS session
+              FROM magnitude_per_bar_predictions
+             WHERE source = 'inference'
+               AND computed_at >= NOW() - make_interval(days => :days)
+        ), cell_sessions AS (
+            SELECT ticker, tf, model_version,
+                   COUNT(DISTINCT session) AS n_sessions
+              FROM window_rows
+             GROUP BY ticker, tf, model_version
+        )
+        SELECT w.ticker, w.tf, w.model_version, w.pred_bucket,
                COUNT(*) AS n_predictions,
-               AVG(max_proba) AS avg_conf,
-               AVG(p_tight) AS avg_p_tight,
-               AVG(p_normal) AS avg_p_normal,
-               AVG(p_expanded) AS avg_p_expanded,
-               AVG(p_explosive) AS avg_p_explosive,
-               MAX(computed_at) AS last_computed
-          FROM magnitude_per_bar_predictions
-         WHERE source = 'inference'
-           AND computed_at >= NOW() - make_interval(days => :days)
-         GROUP BY ticker, tf, model_version, pred_bucket
+               AVG(w.max_proba) AS avg_conf,
+               AVG(w.p_tight) AS avg_p_tight,
+               AVG(w.p_normal) AS avg_p_normal,
+               AVG(w.p_expanded) AS avg_p_expanded,
+               AVG(w.p_explosive) AS avg_p_explosive,
+               MAX(w.computed_at) AS last_computed,
+               s.n_sessions
+          FROM window_rows w
+          JOIN cell_sessions s
+            ON s.ticker = w.ticker AND s.tf = w.tf
+           AND s.model_version = w.model_version
+         GROUP BY w.ticker, w.tf, w.model_version, w.pred_bucket, s.n_sessions
     """)
     with engine.connect() as conn:
         # SQLAlchemy 2.x Connection.execute() — statement positional, params
@@ -324,6 +341,9 @@ def _parse_last_computed(value) -> datetime | None:
     return None
 
 
+_NEVER = datetime.min.replace(tzinfo=timezone.utc)
+
+
 def _cell_key(row: dict) -> tuple[str, str, str]:
     return (row["ticker"], row["tf"], row["model_version"])
 
@@ -331,10 +351,10 @@ def _cell_key(row: dict) -> tuple[str, str, str]:
 def check_modal_dominance(rows: list[dict], report: Report) -> None:
     """Per (ticker, tf, model_version), compute the modal-class share.
 
-    HIGH: modal >= MODAL_DOMINANCE_HIGH on at least MIN_SESSIONS_FOR_HIGH
-          sessions of bars (collapsed model)
+    HIGH: modal >= MODAL_DOMINANCE_HIGH across at least MIN_SESSIONS_FOR_HIGH
+          distinct sessions (collapsed model)
     MEDIUM: modal >= MODAL_DOMINANCE_MED (worth eyeballing), or over the
-            HIGH ceiling on too short a sample to page
+            HIGH ceiling on too few sessions to page
     """
     if not rows:
         return
@@ -342,13 +362,36 @@ def check_modal_dominance(rows: list[dict], report: Report) -> None:
     for r in rows:
         by_cell.setdefault(_cell_key(r), []).append(r)
 
+    # Only the version each (ticker, tf) is SERVING is judged: the one whose
+    # newest inference write is most recent. A replaced model's rows stay in
+    # the window for LOOKBACK_DAYS after the pointer moves (measured
+    # 2026-09-16: c49qf's five sessions of IWM 5m rows sat beside 6hp7l's
+    # one), and paging on a model that no longer serves is a page nobody
+    # can act on. The rows themselves are unchanged; drift on the retired
+    # version is still in the distribution query for anyone reading it.
+    serving: dict[tuple[str, str], tuple] = {}
+    for (ticker, tf, mv), cell_rows in by_cell.items():
+        # last_computed is NOT NULL in the table; an unparseable value sorts
+        # oldest rather than raising inside a max() over the cell.
+        newest = max((_parse_last_computed(r["last_computed"]) or _NEVER)
+                     for r in cell_rows)
+        cur = serving.get((ticker, tf))
+        if cur is None or newest > cur[0]:
+            serving[(ticker, tf)] = (newest, mv)
+
     for cell, cell_rows in sorted(by_cell.items()):
+        ticker, tf, mv = cell
+        if serving[(ticker, tf)][1] != mv:
+            continue
         total = sum(r["n_predictions"] for r in cell_rows)
         if total < MIN_SAMPLE:
             continue
+        # Cell-level, identical on every row of the cell (fetch_distribution).
+        # A row without it is a query drift, and KeyError is the right
+        # failure: the number that decides whether to page cannot default.
+        n_sessions = int(cell_rows[0]["n_sessions"])
         modal = max(cell_rows, key=lambda r: r["n_predictions"])
         share = modal["n_predictions"] / total
-        ticker, tf, mv = cell
         target = f"{ticker}:{tf}"
         bucket_name = {0: "TIGHT", 1: "NORMAL", 2: "EXPANDED", 3: "EXPLOSIVE"}.get(
             modal["pred_bucket"], f"bucket-{modal['pred_bucket']}"
@@ -357,17 +400,17 @@ def check_modal_dominance(rows: list[dict], report: Report) -> None:
                   f"({share:.1%}, avg_conf={modal['avg_conf']:.3f}) "
                   f"over last {LOOKBACK_DAYS}d (model={mv})")
         if share >= MODAL_DOMINANCE_HIGH:
-            need = _min_sample_for_high(tf)
-            if total >= need:
+            if n_sessions >= MIN_SESSIONS_FOR_HIGH:
                 report.add(severity="HIGH", check="modal-dominance",
                            target=target, detail=detail)
             else:
+                noun = "session" if n_sessions == 1 else "sessions"
                 report.add(severity="MEDIUM", check="modal-dominance",
                            target=target,
                            detail=(f"{detail}; at or over the {MODAL_DOMINANCE_HIGH:.0%} "
-                                   f"ceiling but only {total} bars, under the "
-                                   f"{need}-bar ({MIN_SESSIONS_FOR_HIGH}-session) "
-                                   f"minimum for HIGH"))
+                                   f"ceiling but only {n_sessions} {noun} "
+                                   f"({total} bars), under the "
+                                   f"{MIN_SESSIONS_FOR_HIGH}-session minimum for HIGH"))
         elif share >= MODAL_DOMINANCE_MED:
             report.add(severity="MEDIUM", check="modal-dominance",
                        target=target, detail=detail)

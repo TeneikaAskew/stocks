@@ -129,8 +129,12 @@ CREATE TABLE IF NOT EXISTS magnitude_per_bar_predictions (
     p_normal      DOUBLE PRECISION NOT NULL,
     p_expanded    DOUBLE PRECISION NOT NULL,
     p_explosive   DOUBLE PRECISION NOT NULL,
-    -- Predicted bucket = argmax(probabilities). 0=TIGHT 1=NORMAL 2=EXPANDED 3=EXPLOSIVE.
+    -- The served DECISION (mag_pred_train.decide_bucket, 2026-09-14): the
+    -- highest bucket whose probability clears DECISION_LIFT_MIN x its class
+    -- prior, else TIGHT. 0=TIGHT 1=NORMAL 2=EXPANDED 3=EXPLOSIVE.
     pred_bucket   SMALLINT         NOT NULL,
+    -- max(probabilities): the ARGMAX bucket's probability, not pred_bucket's.
+    -- Drift-monitoring metric (audit_magnitude_drift averages it).
     max_proba     DOUBLE PRECISION NOT NULL,
     -- Provenance for reproducibility + drift detection.
     model_version VARCHAR(64)      NOT NULL,
@@ -369,6 +373,14 @@ def _persist_predictions_table(engine, ticker: str, tf: str,
         return
 
     df = pd.DataFrame(rows)
+    # `ts` arrives as str(numpy datetime64) from train_and_evaluate_fold.
+    # Bound as text it is a VARCHAR to Postgres, and the INSERT fails with
+    # SQLSTATE 42804 ("column ts is of type timestamp with time zone but
+    # expression is of type character varying") -- which is what every cell
+    # of magnitude-engine-6hp7l logged on 2026-09-15, and why the table
+    # held no walk_forward rows at all despite the writer existing since
+    # #597. Parse to tz-aware UTC so the bind matches the column.
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
     # Chunk size matters: pg8000's bind-param limit is 65535. With 13
     # columns/row, max-safe chunk is ~5000. We use 2000 for headroom and
     # to keep per-INSERT wall-clock under 5s.
