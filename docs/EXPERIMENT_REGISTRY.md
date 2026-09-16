@@ -346,7 +346,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 ## E-11 · MAG gate-6 — mechanism (event-conc, calendar decomp, naïve baseline)
 - **Engine/area:** magnitude (mechanism) · **Status:** validated · **Date:** 2026-05-28.
 - **Question:** does the EXPLOSIVE signal come from its claimed mechanism, or from calendar?
-- **Methods/results:** event-window concentration (`check_event_window_concentration.py`); model-vs-calendar decomposition (`model_vs_calendar_explosive_decomp.py`) — IWM 5m 3.09× cell-rate, 63% in top-10% cells; naïve DoW×30-min lookup (`naive_calendar_lookup_baseline.py`) passes gates 1–3, fails gate 4 by construction → calendar slot fully explains gates 1–3.
+- **Methods/results:** event-window concentration (`check_event_window_concentration.py`); model-vs-calendar decomposition (`model_vs_calendar_explosive_decomp.py`) — IWM 5m 3.09× cell-rate, 63% in top-10% cells; naïve DoW×30-min lookup (`naive_calendar_lookup_baseline.py`) passed gates 1–3 and failed gate 4 under argmax (it can never argmax EXPLOSIVE) → calendar slot fully explains gates 1–3. **Re-run 2026-09-16 under the E-26 decision rule** (P(EXPLOSIVE) ≥ 2× prior; `direction-probe-dcd6d/bk6xd/xdh45`): the lookup passes **all four gates** on SPY/QQQ/IWM 5m (g4 8/8, 8/8, 7/8; per-fold lift 2.2–3.4× against the promoted `6hp7l` models' 3.0–4.5×), so under the served rule the calendar slot explains gates 1–4 and the models' margin over it is the within-cell +0.5–1.0× lift. Results doc §12.
 - **Verdict:** ✅ "Phase 3" signal is a **calendar proxy**, not event causality.
 - **Artifacts:** the three scripts; `MAGNITUDE_ENGINE_RESULTS.md:284,336,374`.
 

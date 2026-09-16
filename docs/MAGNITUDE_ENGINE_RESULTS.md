@@ -376,7 +376,7 @@ phase_calendar model is NOT adding probabilistic edge over a (DoW,
 time-bucket) lookup table on those three gates.
 
 Gate 4 (EXPLOSIVE lift) is the only one where the model could plausibly
-add value. The naive lookup CANNOT pass gate 4 by architectural
+add value. (Under argmax, the rule in force when this was written. Re-run under the 2026-09-14 decision rule the naive lookup passes gate 4 on every promoted cell; see §12, 2026-09-16.) The naive lookup CANNOT pass gate 4 by architectural
 construction — EXPLOSIVE has 3% base rate, no calendar cell has it as
 modal bucket, the lookup never argmaxes EXPLOSIVE, lift is undefined
 every fold.
@@ -1403,3 +1403,57 @@ foreign lift bar) is never a source of priors; the earlier local
 run reading serving versions from the registry, reports the same four
 findings as `t5p82`: today the pointers and write recency agree, and the
 difference only shows across a rollback.
+
+**Fifth pass (Codex on `ee23d88b`, two P1s and three P2s).** The two
+P2s on the auditor and the backfill are per-cell error isolation
+(one empty or unreadable `LATEST` no longer takes the check away from the
+other cells; one corrupt sibling blob no longer aborts the priors search).
+The three findings that matter are below.
+
+*`pred_bucket` changed meaning under the same column.* Rows scored before
+2026-09-15 13:00 UTC hold argmax in `pred_bucket`; rows since hold the
+decision. 16,666 of the 17,387 inference rows are argmax-era, and
+`/at/{ts}` or an as-of replay into that period would have presented them
+as decisions. A `decision_rule` column (`'lift'` | `'argmax'`) now says
+which rule a row holds: the inference job writes `lift` and applies an
+idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS ... DEFAULT 'argmax'`,
+and every live read, the degeneracy backstop and the auditor take `lift`
+rows only. The one-time data migration, prepared in
+`scratchpad/decision_rule_migration.sql` for the session, is (1) the
+column add, (2) tag the 721 rows written under the rule before the column
+existed (`computed_at >= 2026-09-15 13:00 UTC`) as `lift`, and (3)
+recompute the 3,592 `c49qf` rows from their stored probabilities and each
+cell's training-label priors (the `6hp7l` contracts), which is exactly
+what inference would have produced, tagging them `lift`. Rows of the
+retired versions (`9bh24`, `j9dsk`, `zwn6n`, `rmcwj`, the `recal` runs)
+stay `argmax`: their label contracts are unknown and they are not served
+as decisions. **The migration has not run**: the session's permission
+classifier refused the `ALTER` as a shared-resource change, so it waits
+for the operator, and the inference job and API service must not be
+deployed with this code before it runs (the API would find no `lift`
+rows until the next inference write).
+
+*The calendar control, re-run under the decision rule (`direction-probe`
+`dcd6d` / `bk6xd` / `xdh45`, `naive_calendar_lookup_baseline.py`, 30-min
+buckets, `6hp7l` cutoffs).* The argmax-era claim was that a
+day-of-week × time-of-day lookup "cannot pass gate 4 by construction"
+because EXPLOSIVE is never a calendar cell's modal class. Under the lift
+rule a cell whose EXPLOSIVE rate is twice the prior makes the call, and
+the lookup passes all four gates on every promoted cell:
+
+| cell | naive lookup g1/g2/g3/g4 (of 8) | naive per-fold g4 lift | `6hp7l` per-fold g4 lift |
+|---|---|---|---|
+| SPY 5m | 7 / 7 / 8 / 8, cell pass | 2.89 2.96 3.19 2.80 2.40 2.87 3.36 2.26 | 3.41 3.46 3.04 2.98 3.95 3.33 3.29 3.41 |
+| QQQ 5m | 8 / 7 / 8 / 8, cell pass | 2.71 2.86 2.93 2.45 2.42 2.53 3.08 2.22 | 3.01 3.63 3.75 3.68 3.23 3.11 4.39 4.52 |
+| IWM 5m | 7 / 8 / 8 / 7, cell pass | 3.07 2.96 2.65 2.47 2.76 2.88 2.91 1.36 | 2.95 3.27 3.20 3.07 3.51 3.78 4.31 1.90 |
+
+So gates 1-4 no longer separate the promoted models from a calendar
+lookup. What the models add over the lookup is the within-cell margin,
+roughly +0.5 to +1.0 in realised lift per fold on SPY and QQQ and less
+on IWM, and whether even that margin is priced is gate 7's question. The
+E-11 verdict "calendar slot fully explains gates 1-3" becomes "gates 1-4".
+The promotion criteria (gates 1-4, then 5 and 6) were met by `6hp7l`
+exactly as recorded in §10; this re-run says the bar itself is one a
+calendar lookup clears, which is a statement about the bar, not about
+whether the models are calibrated. It reopens the product question of
+what the served size class is worth (open decisions doc).
