@@ -1,5 +1,7 @@
 # Structure Brief — Design Document
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 **Status:** dev-only PR queued. **Deploy is blocked** until Track B (execution-system backtest) and Track C (direction features R&D) both report verdicts, after which we decide together what final language the brief takes.
 
 ## What this is

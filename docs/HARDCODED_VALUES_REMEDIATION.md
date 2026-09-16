@@ -1,5 +1,7 @@
 # Hardcoded Values Remediation — Implementation Plan & Progress
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 ## Context
 
 The Live dashboard's ATR and StochRSI showed wrong values because the math

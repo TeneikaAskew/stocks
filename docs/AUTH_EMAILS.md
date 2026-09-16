@@ -1,5 +1,7 @@
 # Auth emails (Identity Platform / Firebase Auth)
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 Firebase sends four transactional emails for the Solyra login: email
 verification, password reset, "your sign-in email was changed", and "two-step
 verification was added". This doc is the runbook for the branded versions.

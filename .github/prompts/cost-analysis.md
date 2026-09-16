@@ -1,5 +1,7 @@
 # Prompt: regenerate docs/product/infrastructure/05-d-COST_ANALYSIS.md
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 You are an automated documentation agent. Regenerate `docs/product/infrastructure/05-d-COST_ANALYSIS.md` from the billing digests.
 
 **Output discipline (read this twice).** Produce the file with the **`write_file`** tool (`file_path: "docs/product/infrastructure/05-d-COST_ANALYSIS.md"`, given from the repository root, full markdown body). Never a bare `COST_ANALYSIS.md` at the root, never any other directory, and never a second copy. No stdout output, no preamble, no summary.

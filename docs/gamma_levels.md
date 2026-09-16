@@ -1,5 +1,7 @@
 # Gamma Levels — Taxonomy, Math, and Pipeline
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 This is the reference for how gamma exposure analytics work in this
 codebase. Read this when you want to understand: what King/Gate/Spot/Flip
 mean, why values look the way they do, and where the numbers come from.

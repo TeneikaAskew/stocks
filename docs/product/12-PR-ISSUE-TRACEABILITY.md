@@ -1,6 +1,6 @@
 # PR, Issue, and Audit Traceability
 
-**Last reviewed:** 2026-08-31 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-16 · **Owner:** TBD
 
 ## Coverage and method
 

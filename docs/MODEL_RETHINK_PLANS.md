@@ -1,5 +1,7 @@
 # Model Rethink — Build Plans (endorsed 2026-06-04)
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 Three models, derived from research reframings #2, #3, #6, #7. Plus the single
 insight that ties them together and dissolves the wall the magnitude project hit.
 

@@ -1,5 +1,7 @@
 # Dashboard Spec — Signal Quality & Backtest
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 **Generated 2026-05-02.** Closing the visibility gap on the central operator question: *"Is my signal quality good and stable?"*
 
 This is a **spec, not an implementation plan**. Every proposed query is grounded in a table that already exists per [05-c-DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md). The work is sequenced so each panel ships independently — no rip-and-replace.

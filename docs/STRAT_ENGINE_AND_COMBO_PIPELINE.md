@@ -1,5 +1,7 @@
 # Strat Engine & Combo Pipelines — Unified Complete Reference
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 **Unified record — merged 2026-06-10. Both parallel editions preserved in full, nothing dropped; where wording differs both are kept.**
 
 - **Part A — docs/ edition** (was `STRAT_ENGINE_AND_COMBO_PIPELINE.md`)

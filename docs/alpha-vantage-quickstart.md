@@ -1,5 +1,7 @@
 # Alpha Vantage Quick Start Guide
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 ## Setup (One-time)
 
 1. **Get API Key**: Visit https://www.alphavantage.co/support/#api-key

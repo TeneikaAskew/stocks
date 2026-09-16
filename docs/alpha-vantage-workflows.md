@@ -1,5 +1,7 @@
 # Alpha Vantage GitHub Actions Workflows
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 This document describes the automated GitHub Actions workflows for fetching Alpha Vantage data.
 
 ## Overview

@@ -1,5 +1,7 @@
 # Pre-market Brief Cards — What Produces Them & How Accurate They Are
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 A field guide to the cards on the **Pre-market brief** screen (the
 `Daily bias / FTFC / Strat 2U · 312_bull_reversal / RSI` header and the
 "TOP SETUP" card). Answers three questions: *what code produces each line,

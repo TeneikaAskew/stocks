@@ -1,5 +1,7 @@
 # Trading Application — Briefing Deck
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 **Compiled:** 2026-04-26 (refreshed post-PR-#99)
 **Scope:** Full-system reference covering architecture, data pipeline, infrastructure, plans executed, and operational runbook.
 **Audience:** Engineers, stakeholders, and future maintainers.

@@ -1,5 +1,7 @@
 # Failure Notifier Deployment Plan
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 Step-by-step guide to deploy the GCP Cloud Run Job failure notifier, which sends Discord alerts and creates GitHub issues whenever any Cloud Run Job fails.
 
 ## Architecture Overview

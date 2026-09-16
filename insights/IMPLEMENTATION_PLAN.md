@@ -1,5 +1,7 @@
 # Plan: AI Insights Tab — Multi-Agent Analyst Pipeline
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 **Target branch:** `claude/research-trading-agents-LFNT2` — branch from `main` at execution time (not from the current `feature/ui-redesign-clean`).
 
 ## Deliverable Docs (written as the first step of execution)

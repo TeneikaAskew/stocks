@@ -1,6 +1,6 @@
 # Data Architecture
 
-**Last reviewed:** 2026-09-14 · **Owner:** TBD
+**Last reviewed:** 2026-09-14 · **Last scanned:** 2026-09-16 · **Owner:** TBD
 
 **VERIFIED — CODE.** 64 relations declared in `gcp/schema.sql` (62 tables + 2 materialized
 views), extracted from **line-start, comment-stripped** `CREATE` statements.

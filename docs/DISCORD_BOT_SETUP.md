@@ -1,5 +1,7 @@
 # Discord Bot Setup Guide
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 End-to-end runbook for wiring a Discord bot + slash-command interactions endpoint to this repo's `discord-interactions` Cloud Run service. Follow top-to-bottom on a fresh app; jump to specific sections when re-bootstrapping.
 
 The slash commands this enables: `/replay`, `/watchlist`, `/validate`, `/backtest` — see [docs/plans/DISCORD_INTERACTIONS_PLAN.md](plans/DISCORD_INTERACTIONS_PLAN.md) for the design + per-command behaviour.

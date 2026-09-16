@@ -1,5 +1,7 @@
 # `gcp/queries/`
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 Reusable SQL queries for the `db-query.yml` GitHub Actions workflow.
 
 ## Why this directory exists

@@ -1,5 +1,7 @@
 # TradingAgents Research
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 **Source:** [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) · [trading-agents.ai](https://trading-agents.ai/) · arXiv 2412.20138
 **Date:** 2026-04-15
 **Purpose:** Evaluate the TradingAgents multi-agent framework for applicability to this trading dashboard's AI Insights tab. Decide what to copy, skip, and adapt.

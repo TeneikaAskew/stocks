@@ -1,0 +1,639 @@
+#!/usr/bin/env python3
+"""Audit documentation against the current repo, its issues and its PRs.
+
+Why this exists
+---------------
+Three existing tools already check documentation, and none of them checks the
+thing that rots fastest:
+
+* ``scripts/verify_docs_against_live.py`` compares docs to **live GCP**.
+* ``scripts/maintenance/check_generated_docs.py`` gates the monthly refresh on
+  **structure** — churn, headings, links, marker-block byte-equality.
+* ``scripts/maintenance/doc_inventory.py`` **counts** things deterministically.
+
+What nothing covered, in the words of PR #1111 about its own new test suite:
+
+    What it cannot check is whether a document's prose matches the code it
+    describes ... The suite says the registry is internally consistent, not
+    that it is true.
+
+This module closes the mechanical half of that gap: it reconciles documentation
+against the **repository** and against **issue/PR state**, and it records review
+provenance so a human (or the next run) knows which claims were last confirmed
+and against which commit. The judgment half — does this prose still describe
+this code — stays with the reviewer; this script hands them the worklist.
+
+Concretely, at the time it was written, 24 issues cited as live blockers in this
+repo's docs were already closed, and 102 of 139 living docs carried no review
+marker at all.
+
+Checks
+------
+``unclassified``   a doc under scope that ``docs/DOC_REGISTRY.md`` does not place
+``marker``         missing / malformed / future-dated / unknown-SHA review marker
+``closed-issue``   an issue cited on a "blocking"-shaped line that is CLOSED
+``dead-link``      a relative markdown link, or a backticked repo path, that
+                   resolves to nothing (the backtick case is where the rot
+                   actually lives and no link checker sees it)
+``changed-since``  the doc's declared code paths moved after its reviewed SHA
+``class-a``        a machine-owned doc whose owning job has not delivered
+
+Exit codes: 0 clean, 1 findings (so it can gate CI), 2 the run itself failed.
+A failed ``gh`` read is exit 2 and never a silent empty result (CLAUDE.md §3.7).
+
+Usage
+-----
+    python -m scripts.maintenance.docs_audit --json
+    python -m scripts.maintenance.docs_audit --check
+    python -m scripts.maintenance.docs_audit --stamp
+    python -m scripts.maintenance.docs_audit --stamp --verify docs/product/07-MODEL-REGISTRY.md
+    python -m scripts.maintenance.docs_audit --write-issues-snapshot issues.json
+    python -m scripts.maintenance.docs_audit --issues-snapshot issues.json --json
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import fnmatch
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+REPO = pathlib.Path(__file__).resolve().parents[2]
+OWNER = "TeneikaAskew"
+THIS_REPO = "stocks"
+SIBLING_REPO = "solyra"
+REGISTRY = "docs/DOC_REGISTRY.md"
+
+# U+00B7. The separator the existing `**Last reviewed:**` lines already use.
+DOT = "·"
+
+MARKER_RE = re.compile(
+    r"^\*\*Last reviewed:\*\*\s*(?P<date>\d{4}-\d{2}-\d{2}|unknown)"
+    r"(?:\s*·\s*\*\*Depth:\*\*\s*(?P<depth>verified|scanned))?"
+    r"(?:\s*·\s*\*\*Against:\*\*\s*`(?P<sha>[0-9a-f]{7,40})`)?"
+    r"(?:\s*·\s*\*\*Last scanned:\*\*\s*(?P<scanned>\d{4}-\d{2}-\d{2}))?"
+    r"(?P<rest>.*)$"
+)
+
+# Older human-review labels this script normalises onto `**Last reviewed:**`.
+# `Generated <date>` footers and `**Date:**` creation stamps are deliberately
+# NOT here: they are different facts with different owners.
+LEGACY_MARKER_RE = re.compile(
+    r"^\*\*(?:Last updated|Last Updated|Last refreshed|Last verified|Verified)"
+    r":?\*\*:?\s*(?P<date>\d{4}-\d{2}-\d{2})(?P<rest>.*)$"
+)
+
+# Everything a bare legacy line is allowed to carry after its date before the
+# line counts as content-bearing: sentence punctuation and an Owner field.
+_BARE_TAIL_RE = re.compile(r"^[.\s]*(?:\u00b7\s*\*\*Owner:\*\*[^\u00b7]*)?[.\s]*$")
+
+
+def legacy_tail_is_bare(rest: str) -> bool:
+    """Can this legacy marker be rewritten without losing anything?
+
+    Several legacy lines are not just a date. `05-j-GCP_IMPLEMENTATION_STATUS.md`
+    carries ~900 characters of deployment detail after its `**Last Updated**:`,
+    and `16-CONSOLIDATION-AUDIT.md` carries the baseline and follow-up PR links.
+    Normalising those in place deletes a paragraph of real content and reads in
+    the diff as a tidy one-line change. Only a bare line is rewritten; anything
+    else is reported for a human to merge.
+    """
+    return bool(_BARE_TAIL_RE.match(rest or ""))
+
+H1_RE = re.compile(r"^#\s+\S")
+
+# A reference only counts as a staleness finding when the surrounding line
+# presents it as live work. A changelog saying "fixed #123" is not a defect.
+BLOCKING_CUE_RE = re.compile(
+    r"blocking|blocked by|open issue|still open|outstanding|in progress|not started|pending",
+    re.I,
+)
+ISSUE_URL_RE = re.compile(
+    r"github\.com/" + OWNER + r"/(?P<repo>solyra|stocks)/(?P<kind>issues|pull)/(?P<num>\d+)"
+)
+MD_LINK_RE = re.compile(r"\[[^\]]*\]\((?P<target>[^)#\s]+)(?:#[^)\s]*)?\)")
+# A backticked path: has a slash and a file-ish extension, no spaces or globs.
+BACKTICK_PATH_RE = re.compile(r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,5})`")
+
+CODE_EXTS = {".py", ".ts", ".tsx", ".js", ".mjs", ".sql", ".sh", ".yml", ".yaml", ".json", ".md"}
+
+
+class AuditError(RuntimeError):
+    """The run itself could not be completed. Never degrades to empty results."""
+
+
+def run(cmd: list[str], *, cwd: pathlib.Path = REPO, check: bool = True) -> str:
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if check and proc.returncode != 0:
+        raise AuditError(f"{' '.join(cmd[:4])}... exited {proc.returncode}: {proc.stderr.strip()[:400]}")
+    return proc.stdout
+
+
+# ── registry ────────────────────────────────────────────────────────────────
+
+REGISTRY_HEADING = "## Registry"
+
+
+def _cell(raw: str) -> str:
+    """Strip markdown emphasis and code ticks without eating a trailing glob `*`.
+
+    `.strip("`* ")` looks right and is not: it turns the glob `docs/archive/*`
+    into `docs/archive/`, which then matches nothing and silently drops 100+
+    documents into "unclassified". Bold markers are removed as pairs instead.
+    """
+    text = raw.strip()
+    text = re.sub(r"^\*\*(.*?)\*\*$", r"\1", text).strip()
+    return text.strip("`").strip()
+
+
+def load_registry(text: str) -> list[dict]:
+    """Parse the pipe table under `## Registry` in docs/DOC_REGISTRY.md.
+
+    Only that section is read. The explanatory tables above it also start their
+    rows with A/B/C/D, and parsing those registered prose sentences as path
+    globs.
+
+    Columns: Class | Path glob | Declared code paths.
+    """
+    rows: list[dict] = []
+    in_registry = False
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if line.startswith("#"):
+            in_registry = line.startswith(REGISTRY_HEADING)
+            continue
+        if not in_registry or not line.startswith("|"):
+            continue
+        cells = [c for c in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        cls = _cell(cells[0]).upper()
+        if cls not in {"A", "B", "C", "D", "X"}:
+            continue
+        glob = _cell(cells[1])
+        if not glob or " " in glob and not glob.endswith(".md"):
+            continue
+        paths = []
+        if len(cells) > 2 and _cell(cells[2]) not in {"", "—", "-"}:
+            paths = [_cell(p) for p in cells[2].split(",") if _cell(p)]
+        rows.append({"cls": cls, "glob": glob, "code_paths": paths})
+    return rows
+
+
+def classify(doc: str, registry: list[dict]) -> tuple[str | None, list[str]]:
+    """Most specific match wins, so a file rule beats the directory rule."""
+    best: tuple[int, str, list[str]] | None = None
+    for row in registry:
+        if fnmatch.fnmatch(doc, row["glob"]):
+            score = len(row["glob"])
+            if best is None or score > best[0]:
+                best = (score, row["cls"], row["code_paths"])
+    return (best[1], best[2]) if best else (None, [])
+
+
+# ── markers ─────────────────────────────────────────────────────────────────
+
+def find_marker(lines: list[str]) -> tuple[int, dict] | None:
+    for i, line in enumerate(lines[:40]):
+        m = MARKER_RE.match(line.strip())
+        if m:
+            return i, {"date": m.group("date"), "depth": m.group("depth"),
+                       "sha": m.group("sha"), "scanned": m.group("scanned"), "legacy": False}
+        m = LEGACY_MARKER_RE.match(line.strip())
+        if m:
+            return i, {"date": m.group("date"), "depth": None, "sha": None,
+                       "scanned": None, "legacy": True,
+                       "bare": legacy_tail_is_bare(m.group("rest"))}
+    return None
+
+
+def h1_index(lines: list[str]) -> int | None:
+    """Index of the first H1.
+
+    Not a fixed line number on purpose: several docs open with an HTML comment
+    and carry their H1 on line 9, where a line-3 insert lands inside the
+    comment. A doc with no H1 is skipped by the caller entirely.
+    """
+    for i, line in enumerate(lines):
+        if H1_RE.match(line):
+            return i
+    return None
+
+
+def render_marker(date: str, depth: str | None, sha: str | None,
+                  scanned: str, owner: str | None, extras: list[str] | None = None) -> str:
+    """Two facts, kept apart on purpose.
+
+    `Last reviewed` is when someone last confirmed the claims, and it is only
+    ever moved by an actual review. `Last scanned` is when the mechanical
+    checks last ran, and it moves every week. Collapsing them lets a weekly
+    script overwrite a human's review date with its own automated pass, which
+    is the §3.11 failure ("a doc is a claim, not evidence") wearing a
+    freshness badge. `unknown` is the honest value for a doc nobody has
+    reviewed -- "I have not checked this" is a complete answer.
+    """
+    parts = [f"**Last reviewed:** {date}"]
+    if depth:
+        parts.append(f"**Depth:** {depth}")
+    if sha:
+        parts.append(f"**Against:** `{sha}`")
+    parts.append(f"**Last scanned:** {scanned}")
+    if owner:
+        parts.append(f"**Owner:** {owner}")
+    parts.extend(extras or [])
+    return f" {DOT} ".join(parts)
+
+
+OWNED_FIELDS = ("Last reviewed:", "Depth:", "Against:", "Last scanned:", "Owner:")
+
+
+def extra_segments(line: str) -> list[str]:
+    """Segments of an existing marker line this script does not own.
+
+    Four product docs carry real content on the marker line -- 09's
+    `**Trust status:** Production but needs remediation`, 10's `**Status:**
+    Incomplete`, and a planning caveat sentence each in 13 and 14. Rebuilding
+    the line from the fields the script knows about silently deletes them,
+    which is the same data loss as rewriting a legacy line, just on the
+    format the script does own.
+    """
+    out = []
+    for seg in line.split(DOT):
+        seg = seg.strip()
+        if not seg or any(seg.startswith(f"**{f}") for f in OWNED_FIELDS):
+            continue
+        out.append(seg)
+    return out
+
+
+def owner_of(lines: list[str], marker_idx: int | None) -> str | None:
+    if marker_idx is None:
+        return None
+    m = re.search(r"\*\*Owner:\*\*\s*([^·]+)", lines[marker_idx])
+    return m.group(1).strip() if m else None
+
+
+def stamp(text: str, date: str, depth: str, sha: str,
+          reviewed: bool = False) -> tuple[str, str]:
+    """Return (new_text, action). Never inserts into a doc with no H1.
+
+    `reviewed=False` (the default, and what a scheduled run does for most docs)
+    moves only `Last scanned` and leaves any existing review claim untouched.
+    """
+    lines = text.split("\n")
+    found = find_marker(lines)
+    owner = owner_of(lines, found[0] if found else None) or "TBD"
+    prev = found[1] if found else None
+
+    # A content-bearing legacy line is left exactly as it is. Rewriting it
+    # would delete the prose it carries; the audit reports it instead.
+    if prev and prev.get("legacy") and not prev.get("bare", True):
+        return text, "skipped-legacy-content"
+
+    if reviewed:
+        r_date, r_depth, r_sha = date, depth, sha
+    elif prev and prev["date"] != "unknown":
+        # Preserve the stronger, existing claim. A scan is not a review.
+        r_date = prev["date"]
+        r_depth = prev["depth"]
+        r_sha = prev["sha"]
+    else:
+        r_date, r_depth, r_sha = "unknown", None, None
+
+    extras = extra_segments(lines[found[0]]) if found and not prev.get("legacy") else []
+    marker = render_marker(r_date, r_depth, r_sha, date, owner, extras)
+    if found:
+        idx, _ = found
+        if lines[idx].strip() == marker:
+            return text, "unchanged"
+        lines[idx] = marker
+        return "\n".join(lines), "updated"
+    h1 = h1_index(lines)
+    if h1 is None:
+        return text, "skipped-no-h1"
+    # Target shape:  "# Title" / "" / marker / "" / body.
+    # Reuse the blank line the H1 already has rather than adding a second one.
+    if h1 + 1 < len(lines) and lines[h1 + 1].strip() == "":
+        lines[h1 + 2:h1 + 2] = [marker, ""]
+    else:
+        lines[h1 + 1:h1 + 1] = ["", marker]
+    return "\n".join(lines), "inserted"
+
+
+# ── github state ────────────────────────────────────────────────────────────
+
+def fetch_issue_states(repo: str) -> dict[int, dict]:
+    """One paginated read per repo, never one call per reference (Rule 0)."""
+    states: dict[int, dict] = {}
+    for page in range(1, 40):
+        out = run([
+            "gh", "api",
+            f"repos/{OWNER}/{repo}/issues?state=all&per_page=100&page={page}",
+            "--jq", '.[] | [.number, .state, (.state_reason // ""), '
+                    '(if .pull_request then "PR" else "ISSUE" end)] | @tsv',
+        ])
+        rows = [r for r in out.strip().split("\n") if r.strip()]
+        if not rows:
+            break
+        for row in rows:
+            parts = row.split("\t")
+            if len(parts) != 4:
+                continue
+            states[int(parts[0])] = {"state": parts[1], "reason": parts[2], "kind": parts[3]}
+    if not states:
+        raise AuditError(f"no issues returned for {repo}; refusing to report a clean run on no data")
+    return states
+
+
+# ── checks ──────────────────────────────────────────────────────────────────
+
+def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[dict]:
+    out = []
+    for n, line in enumerate(text.split("\n"), 1):
+        if not BLOCKING_CUE_RE.search(line):
+            continue
+        for m in ISSUE_URL_RE.finditer(line):
+            if m.group("kind") != "issues":
+                continue
+            repo, num = m.group("repo"), int(m.group("num"))
+            st = states.get(repo, {}).get(num)
+            if st is None:
+                out.append({"check": "closed-issue", "doc": doc, "line": n,
+                            "detail": f"{repo}#{num} could not be resolved", "severity": "P2"})
+            elif st["state"] == "closed":
+                reason = st.get("reason") or "completed"
+                out.append({"check": "closed-issue", "doc": doc, "line": n,
+                            "detail": f"{repo}#{num} is CLOSED ({reason}) but cited as live work",
+                            "severity": "P1" if reason != "not_planned" else "P2",
+                            "ref": f"{repo}#{num}", "reason": reason})
+    return out
+
+
+def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
+    out = []
+    base = pathlib.PurePosixPath(doc).parent
+    for n, line in enumerate(text.split("\n"), 1):
+        for m in MD_LINK_RE.finditer(line):
+            tgt = m.group("target")
+            if tgt.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            resolved = str((base / tgt)) if not tgt.startswith("/") else tgt.lstrip("/")
+            norm = str(pathlib.PurePosixPath(resolved))
+            try:
+                norm = str(pathlib.PurePosixPath(*pathlib.PurePosixPath(norm).parts))
+            except Exception:
+                pass
+            if norm not in tracked and not (REPO / norm).exists():
+                out.append({"check": "dead-link", "doc": doc, "line": n,
+                            "detail": f"relative link -> {tgt}", "severity": "P2"})
+        for m in BACKTICK_PATH_RE.finditer(line):
+            p = m.group("path")
+            if pathlib.PurePosixPath(p).suffix not in CODE_EXTS:
+                continue
+            if p in tracked or (REPO / p).exists():
+                continue
+            # Only flag paths that look like they belong to THIS repo's layout,
+            # so a deliberate cross-repo citation is not reported as rot.
+            root = p.split("/", 1)[0]
+            if root in TOP_LEVEL_DIRS:
+                out.append({"check": "dead-link", "doc": doc, "line": n,
+                            "detail": f"backticked path -> {p}", "severity": "P2"})
+    return out
+
+
+def check_changed_since(doc: str, sha: str | None, code_paths: list[str]) -> list[dict]:
+    if not sha or not code_paths:
+        return []
+    try:
+        out = run(["git", "log", "--oneline", "--diff-filter=M", f"{sha}..origin/main",
+                   "--"] + code_paths, check=False)
+    except AuditError:
+        return []
+    commits = [c for c in out.strip().split("\n") if c.strip()]
+    if not commits:
+        return []
+    return [{"check": "changed-since", "doc": doc,
+             "detail": f"{len(commits)} content commit(s) to {', '.join(code_paths)} since {sha}",
+             "severity": "P2", "commits": commits[:10]}]
+
+
+TOP_LEVEL_DIRS: set[str] = set()
+
+# The job that owns the Class A docs, and the PR title it opens.
+OWNING_JOB = {
+    "workflow": "refresh-architecture-docs.yml",
+    "pr_title_re": re.compile(r"architecture doc refresh", re.I),
+    "docs": [
+        "docs/product/infrastructure/05-a-ARCHITECTURE.md",
+        "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
+        "docs/product/infrastructure/05-d-COST_ANALYSIS.md",
+        "README.md",
+    ],
+}
+GENERATED_RE = re.compile(r"Generated (\d{4}-\d{2}-\d{2})")
+
+
+def check_owning_job(today: str) -> list[dict]:
+    """Did the job that owns the Class A docs actually deliver?
+
+    A `Generated <date>` stamp records that a job RAN, not that its output ever
+    reached main. On 2026-09-16 the September refresh PR (#1060) had been open
+    and unmerged for 8 days and three earlier "refresh failed" PRs were closed
+    without merging, while the docs still advertised `Generated 2026-09-07`.
+    Nothing was watching that gap; this is the check that watches it.
+    """
+    findings: list[dict] = []
+    try:
+        runs = run([
+            "gh", "api",
+            f"repos/{OWNER}/{THIS_REPO}/actions/workflows/{OWNING_JOB['workflow']}/runs?per_page=10",
+            "--jq", '.workflow_runs[] | [.conclusion, .created_at] | @tsv',
+        ])
+        prs = run([
+            "gh", "api", f"repos/{OWNER}/{THIS_REPO}/pulls?state=all&per_page=100",
+            "--jq", '.[] | [.number, .state, (.merged_at // ""), .created_at, .title] | @tsv',
+        ])
+    except AuditError as exc:
+        return [{"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P2",
+                 "detail": f"could not read the owning job's state: {exc}"}]
+
+    recent = [r.split("\t") for r in runs.strip().split("\n") if r.strip()]
+    if recent and recent[0][0] not in {"success", ""}:
+        findings.append({"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P1",
+                         "detail": f"last run concluded {recent[0][0]} at {recent[0][1]}"})
+
+    owned_prs = []
+    for row in prs.strip().split("\n"):
+        parts = row.split("\t")
+        if len(parts) >= 5 and OWNING_JOB["pr_title_re"].search(parts[4]):
+            owned_prs.append({"num": parts[0], "state": parts[1], "merged": parts[2],
+                              "created": parts[3], "title": parts[4]})
+    for pr in owned_prs[:6]:
+        if pr["merged"]:
+            continue
+        age = (datetime.date.fromisoformat(today)
+               - datetime.date.fromisoformat(pr["created"][:10])).days
+        if pr["state"] == "open":
+            findings.append({"check": "class-a", "doc": "|".join(OWNING_JOB["docs"][:2]),
+                             "severity": "P1",
+                             "detail": f"refresh PR #{pr['num']} open and unmerged for {age}d "
+                                       f"-- the Generated stamp on the Class A docs is not current"})
+        else:
+            findings.append({"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P2",
+                             "detail": f"refresh PR #{pr['num']} was closed without merging "
+                                       f"({pr['title'][:60]})"})
+
+    for doc in OWNING_JOB["docs"]:
+        path = REPO / doc
+        if not path.exists():
+            continue
+        stamps = GENERATED_RE.findall(path.read_text(encoding="utf-8", errors="replace"))
+        if not stamps:
+            continue
+        newest = max(stamps)
+        age = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(newest)).days
+        if age > 40:
+            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
+                             "detail": f"Generated {newest} is {age}d old; the refresh is monthly"})
+    return findings
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true", help="machine-readable findings on stdout")
+    ap.add_argument("--check", action="store_true", help="exit 1 when any finding is reported")
+    ap.add_argument("--stamp", action="store_true", help="write review markers in place")
+    ap.add_argument("--verify", nargs="*", default=[], metavar="PATH",
+                    help="mark these docs Depth: verified (default is scanned)")
+    ap.add_argument("--since", metavar="SHA", help="override the reviewed-against SHA")
+    ap.add_argument("--issues-snapshot", metavar="FILE", help="read issue state from FILE (offline)")
+    ap.add_argument("--write-issues-snapshot", metavar="FILE", help="save the issue state read")
+    ap.add_argument("--date", metavar="YYYY-MM-DD", help="override today's date (tests)")
+    args = ap.parse_args(argv)
+
+    today = args.date or datetime.date.today().isoformat()
+    head = args.since or run(["git", "rev-parse", "--short", "origin/main"]).strip()
+
+    reg_path = REPO / REGISTRY
+    if not reg_path.exists():
+        print(f"error: {REGISTRY} not found; every doc would be unclassified", file=sys.stderr)
+        return 2
+    registry = load_registry(reg_path.read_text(encoding="utf-8"))
+
+    tracked = set(run(["git", "ls-tree", "-r", "origin/main", "--name-only"]).strip().split("\n"))
+    TOP_LEVEL_DIRS.update(p.split("/", 1)[0] for p in tracked if "/" in p)
+    docs = sorted(p for p in tracked if p.endswith(".md"))
+
+    if args.issues_snapshot:
+        raw = json.loads(pathlib.Path(args.issues_snapshot).read_text(encoding="utf-8"))
+        states = {r: {int(k): v for k, v in d.items()} for r, d in raw.items()}
+    else:
+        states = {THIS_REPO: fetch_issue_states(THIS_REPO), SIBLING_REPO: fetch_issue_states(SIBLING_REPO)}
+    if args.write_issues_snapshot:
+        pathlib.Path(args.write_issues_snapshot).write_text(
+            json.dumps({r: {str(k): v for k, v in d.items()} for r, d in states.items()}, indent=1),
+            encoding="utf-8")
+
+    findings: list[dict] = []
+    if not args.issues_snapshot:
+        findings += check_owning_job(today)
+    stamped: list[dict] = []
+    verify = {v.lstrip("./") for v in args.verify}
+    counts = {"A": 0, "B": 0, "C": 0, "D": 0, "X": 0, "unclassified": 0}
+
+    for doc in docs:
+        cls, code_paths = classify(doc, registry)
+        if cls is None:
+            counts["unclassified"] += 1
+            findings.append({"check": "unclassified", "doc": doc, "severity": "P2",
+                             "detail": "no rule in docs/DOC_REGISTRY.md covers this doc"})
+            continue
+        counts[cls] += 1
+        # X is a deliberate exclusion, B is a frozen snapshot. Both are silent.
+        # Keeping them distinct from "unclassified" matters: unclassified means
+        # the registry has a gap, and that is a finding worth acting on.
+        if cls in {"B", "X"}:
+            continue
+
+        text = (REPO / doc).read_text(encoding="utf-8", errors="replace")
+        lines = text.split("\n")
+        found = find_marker(lines)
+
+        # Class C is deliberately exempt from the content checks, not merely
+        # exempt from rewriting. A 2026-04 changelog citing an issue that has
+        # since closed, or a path that has since moved, was TRUE on its date --
+        # reporting it produces a backlog nobody can action without destroying
+        # the record. Running these checks over dated records inflated the
+        # closed-issue count from 24 to 29 and dead links from 302 to 649,
+        # entirely with findings whose only correct resolution is "leave it".
+        if cls == "C":
+            continue
+
+        findings += check_closed_issues(doc, text, states)
+        findings += check_dead_links(doc, text, tracked)
+
+        if cls != "D":
+            continue
+
+        if found is None:
+            findings.append({"check": "marker", "doc": doc, "severity": "P2",
+                             "detail": "no review marker"})
+        else:
+            info = found[1]
+            if info["legacy"]:
+                findings.append({"check": "marker", "doc": doc, "severity": "P3",
+                                 "detail": f"legacy label, date {info['date']}; normalise to Last reviewed"})
+            if info["date"] > today:
+                findings.append({"check": "marker", "doc": doc, "severity": "P1",
+                                 "detail": f"review date {info['date']} is in the future"})
+            if info["sha"]:
+                ok = subprocess.run(["git", "merge-base", "--is-ancestor", info["sha"], "origin/main"],
+                                    cwd=REPO, capture_output=True).returncode == 0
+                if not ok:
+                    findings.append({"check": "marker", "doc": doc, "severity": "P2",
+                                     "detail": f"reviewed-against {info['sha']} is not an ancestor of origin/main"})
+            findings += check_changed_since(doc, info["sha"], code_paths)
+
+        if args.stamp:
+            reviewed = doc in verify
+            new, action = stamp(text, today, "verified" if reviewed else "scanned",
+                                head, reviewed=reviewed)
+            if action in {"inserted", "updated"}:
+                (REPO / doc).write_text(new, encoding="utf-8")
+            stamped.append({"doc": doc, "action": action,
+                            "depth": "verified" if reviewed else "scan-only"})
+
+    report = {
+        "date": today, "head": head, "docs": len(docs), "classes": counts,
+        "findings": findings, "stamped": stamped,
+        "summary": {k: sum(1 for f in findings if f["check"] == k)
+                    for k in sorted({f["check"] for f in findings})},
+    }
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(f"docs {len(docs)}  classes {counts}  head {head}")
+        for k, v in report["summary"].items():
+            print(f"  {k}: {v}")
+        for f in findings:
+            loc = f":{f['line']}" if f.get("line") else ""
+            print(f"  [{f['severity']}] {f['check']}: {f['doc']}{loc} — {f['detail']}")
+        if stamped:
+            acted = [s for s in stamped if s["action"] != "unchanged"]
+            print(f"  stamped: {len(acted)} changed, {len(stamped) - len(acted)} unchanged")
+
+    if args.check and findings:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except AuditError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)

@@ -10,7 +10,7 @@
 # PART A — Research Compendium (data-science log)
 
 **Status:** living master index for the trading-research program.
-**Last updated:** 2026-06-05.
+**Last reviewed:** 2026-06-05 · **Last scanned:** 2026-09-16 · **Owner:** TBD
 **Scope:** the directional/structure/magnitude research stack on the liquid index
 ETFs (IWM, SPY, QQQ; SPX daily-only) plus the production analysis/signal models.
 

@@ -1,5 +1,7 @@
 # Setup — auto-doc refresh workflow
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 One-time setup for `.github/workflows/refresh-architecture-docs.yml`. After this is done, the workflow runs itself on the 1st of every month and opens a PR if anything substantive changed.
 
 > **Skip this if you don't care about auto-docs.** The repo works fine without the workflow firing — you'd just have to regenerate the docs manually using the prompts in `.github/prompts/`.

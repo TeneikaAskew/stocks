@@ -1,5 +1,7 @@
 # Archived P7 modeling scripts
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 **Quarantined 2026-05-26** per user instruction. These were the modeling
 pipeline from the prior P7 audit session (see
 `docs/research/2026-05-25/P7_final_cost_finding.md`). The verdict

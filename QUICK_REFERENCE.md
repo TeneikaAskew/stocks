@@ -1,5 +1,7 @@
 # Stock Market Analysis - Quick Reference Guide
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 ## Gamma Analytics (King / Gate / Spot / Flip)
 
 ```bash

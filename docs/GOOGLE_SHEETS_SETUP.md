@@ -1,5 +1,7 @@
 # Google Sheets Download Setup
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 This guide explains how to set up automated downloads of your Google Sheets data to this repository.
 
 ## Overview

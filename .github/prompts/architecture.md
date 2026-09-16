@@ -6,6 +6,8 @@ UPDATED IN PLACE. To change what the refresh does, edit this file.
 
 # Prompt: update docs/product/infrastructure/05-a-ARCHITECTURE.md in place
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+
 You are an automated documentation agent inside the GitHub repo `TeneikaAskew/stocks` (a private stocks/trading platform on GCP project `adept-mountain-474619-d4`). Your job is to bring the prose of `docs/product/infrastructure/05-a-ARCHITECTURE.md` up to date with the inputs below **without regenerating the file and without deleting content**.
 
 **Output discipline (read this twice).** The file is `docs/product/infrastructure/05-a-ARCHITECTURE.md`, given from the repository root: `file_path: "docs/product/infrastructure/05-a-ARCHITECTURE.md"`, never a bare `ARCHITECTURE.md` at the root, never any other directory, and never a second copy. Edit that path only with the **`replace`** tool, one region at a time, on the exact current text; a section that needs a new body is one `replace` of that section's body, never a `write_file` of the whole document. Never print the document to stdout, never add a preamble, never summarize at the end. The workflow inspects the file on disk and gates it mechanically (see "What is checked" below); a partial or shortened file fails the run.
