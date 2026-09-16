@@ -1352,3 +1352,16 @@ withheld. The literal is asserted equal to the auditor's
 `MIN_SESSIONS_FOR_HIGH` in the tests, the same discipline as the shared
 90% ceiling. `tests/lib/test_movement_statement.py`
 (`test_one_calm_session_is_insufficient_evidence_not_collapse`).
+
+**Deployed the same morning.** Research image `sha256:a0366260…`
+(`magnitude-engine` gen 178, `magnitude-inference` gen 13), base image
+`sha256:3eecbe92…` (`audit-magnitude-drift` gen 5). Verification runs:
+`magnitude-inference-l9cz5` verified all four serving contracts, IWM 15m
+under the re-stamped priors, and wrote the 2026-09-15 session at 75 bars
+per 5m cell and 23 for IWM 15m, the post-warmup counts the session rule
+was built on. `audit-magnitude-drift-t5p82`, the first run under the
+session rule: HIGH on IWM 15m `c49qf` (TIGHT on 138/138 bars over six
+sessions, the constant model that the bar quota could never have paged
+and that open decision (a) is about), SPY 5m `6hp7l` MEDIUM at 146/150
+with "only 2 sessions" in the reason, IWM and QQQ 5m MEDIUM at 81-83%.
+The retired `c49qf` 5m rows still in the window were not judged.
