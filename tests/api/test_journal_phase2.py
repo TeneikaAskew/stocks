@@ -82,6 +82,46 @@ def test_take_profits_capped_at_three(client_local_owner):
     assert r.status_code == 422
 
 
+# ── Zero entry price: uncomputable return stays null (Rule 3.7) ─────────────
+# `_return_pct` used to fabricate 0.0 when entry == 0 — a value the caller
+# cannot distinguish from a genuinely flat trade, exactly the silent-fallback
+# shape Rule 3.7 forbids on a financial field. The uncomputable return is
+# None end-to-end; `_derive_status` maps the closed-with-unknown-return
+# trade to 'closed'. (Surfaced by Codex on solyra #66, whose journal mock
+# mirrors this helper.)
+
+
+def test_return_pct_zero_entry_is_none_not_fabricated_zero():
+    assert journal_module._return_pct("CALL", 0.0, 5.0) is None
+    assert journal_module._return_pct("PUT", 0.0, 5.0) is None
+
+
+def test_zero_entry_closed_create_keeps_return_null_and_status_closed(client_local_owner):
+    r = _create(
+        client_local_owner,
+        entry_price=0.0,
+        exit_date="2026-07-02",
+        exit_time="14:00",
+        exit_price=5.0,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["return_pct"] is None
+    assert body["status"] == "closed"
+
+
+def test_zero_entry_patch_close_keeps_return_null_and_status_closed(client_local_owner):
+    created = _create(client_local_owner, entry_price=0.0).json()
+    r = client_local_owner.patch(
+        f"/api/journal/trades/{created['id']}",
+        json={"exit_date": "2026-07-02", "exit_time": "10:45", "exit_price": 5.0},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["return_pct"] is None
+    assert body["status"] == "closed"
+
+
 # ── PATCH close ──────────────────────────────────────────────────────────────
 
 

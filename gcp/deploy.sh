@@ -553,9 +553,27 @@ deploy_insight_pipeline() {
     admin_token="$(_secret admin-token 2>/dev/null || true)"
     admin_env="${ENV_STRING}${admin_token:+,ADMIN_TOKEN=${admin_token}}"
 
+    # 4Gi, raised from 2Gi on 2026-09-15 after the first real auto-refresh
+    # fan-out OOM-killed two of three children. Measured: NVDA and AMD both
+    # pinned run.googleapis.com/container/memory/utilizations at bucket 100
+    # (>=100% of 2Gi) for three consecutive minutes and were killed with
+    # signal 9; AVGO finished in the same run. The daily SPY/IWM/QQQ batch
+    # has never OOM'd, which is why this went unseen — auto-refresh ranks the
+    # top-N out of a ~16-ticker pool and reaches much heavier option chains.
+    #
+    # 4Gi is a doubling per CLAUDE.md Rule 0.5, NOT a measured requirement:
+    # the utilization metric is censored at the limit, so it proves the
+    # containers reached 2048 MiB, never how much they wanted. Verify by
+    # re-running NVDA and reading the now-uncensored peak; raise again if it
+    # lands above ~50%.
+    #
+    # --memory must be on BOTH paths. The job already exists, so `create`
+    # fails and `update` is what actually runs; before this change `update`
+    # passed no --memory at all, and a change to the `create` line alone
+    # would have silently no-op'd against the live job forever.
     gcloud run jobs create insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 2Gi --cpu 1 --max-retries 1 \
+        --memory 4Gi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.insight_pipeline_job" \
@@ -564,6 +582,7 @@ deploy_insight_pipeline() {
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi \
         --command "python,-m,gcp.insight_pipeline_job" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${admin_env}" \
@@ -869,6 +888,61 @@ setup_insight_tasks_queue() {
         --max-attempts 2 \
         --max-concurrent-dispatches 5 \
         --quiet 2>/dev/null || echo "  insight-pipeline-queue: already exists"
+
+    # The scheduled insight-pipeline batch now fans out one Cloud Tasks
+    # message per ticker, so the JOB's own identity enqueues — previously
+    # only the API service did. Verified 2026-09-14: trading-runner@ held
+    # no cloudtasks role at project level. actAs for the task's oauth_token
+    # is already covered by a service-account-level
+    # roles/iam.serviceAccountUser binding on the SA itself.
+    #
+    # CHECK, then try, then print — never an unconditional setIamPolicy.
+    # setIamPolicy on the project is owner-only, and the documented deploy
+    # identity here is claude-web@ with roles/editor, which cannot do it
+    # (same limitation _schedule_min_instances handles below). Under
+    # `set -euo pipefail` an unconditional binding call would abort every
+    # routine `deploy.sh insights` run before the jobs were updated.
+    #
+    # Missing the grant is not fatal to the DEPLOY, so warn loudly and carry
+    # on rather than blocking on an owner-only action. It is not harmless at
+    # RUNTIME though, and the two consumers differ: insight-pipeline's
+    # _dispatch_fanout falls back to running those tickers in-process and
+    # still writes every report, while auto_refresh_top_n deliberately has no
+    # such fallback and exits 1 when it dispatched nothing it had work for
+    # (bc27284, from the #1094 review). Keep the warning below in step with
+    # that asymmetry — it described only the first half until 2026-09-15.
+    local enq_policy
+    if ! enq_policy=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+            --flatten="bindings[].members" \
+            --filter="bindings.role=roles/cloudtasks.enqueuer AND bindings.members=serviceAccount:${SA_EMAIL}" \
+            --format="value(bindings.role)" 2>/dev/null); then
+        echo "  WARNING: cannot read project IAM policy; skipping the" >&2
+        echo "           cloudtasks.enqueuer check. If the binding is absent the" >&2
+        echo "           daily batch falls back to its in-process loop." >&2
+        return 0
+    fi
+    if [ -n "${enq_policy}" ]; then
+        echo "  cloudtasks.enqueuer: already granted to ${SA_EMAIL}"
+        return 0
+    fi
+    if gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+            --member="serviceAccount:${SA_EMAIL}" \
+            --role=roles/cloudtasks.enqueuer \
+            --condition=None \
+            --quiet >/dev/null 2>&1; then
+        echo "  cloudtasks.enqueuer: granted to ${SA_EMAIL}"
+        return 0
+    fi
+    echo "  WARNING: ${SA_EMAIL} lacks roles/cloudtasks.enqueuer and this" >&2
+    echo "           identity cannot grant it. Two DIFFERENT consequences:" >&2
+    echo "             insight-pipeline  — falls back to running tickers" >&2
+    echo "                                 in-process (correct, slower)." >&2
+    echo "             auto-refresh-top-n — has NO in-process fallback and" >&2
+    echo "                                 exits 1 on every run, by design." >&2
+    echo "           A project owner can enable it with:" >&2
+    echo "           gcloud projects add-iam-policy-binding ${PROJECT_ID} \\" >&2
+    echo "             --member=serviceAccount:${SA_EMAIL} \\" >&2
+    echo "             --role=roles/cloudtasks.enqueuer --condition=None" >&2
 }
 
 # Sensitive values are passed via Cloud Run --set-secrets so they never
@@ -3517,13 +3591,23 @@ deploy_param_sweep() {
 }
 
 
-# ── Earnings playability calibration sweep (on-demand Cloud Run Job) ──────────
+# ── Earnings playability calibration sweep (Cloud Run Job) ────────────────────
 # Sweeps (min_nq, lookback_quarters) over the playability backtest and
 # auto-applies the best combo to earnings_calibration, which the
-# premarket brief reads. Sibling to param-sweep.
+# premarket brief reads. Sibling to param-sweep. Also rewrites
+# earnings_options_strategy_winners, whose calculation_date is what
+# earnings-long-watchlist's freshness gate reads.
 #
-# On-demand only: `gcloud run jobs execute earnings-sweep --region us-east1`.
-# The sweep is formula-eval over ~21k earnings_reactions rows — light.
+# Scheduled weekly (earnings-sweep-sunday, Sun 20:30 ET, with an
+# --options-insights args override — the bare sweep does NOT write the
+# winners table) since 2026-09-14: it ran on-demand only, while the
+# watchlist's gate accepts "at most one missed weekly refresh"
+# (MAX_SOURCE_AGE_DAYS=14) — so every second week without a manual sweep,
+# the Sunday watchlist failed closed on a stale snapshot (issue #1091 was
+# this). Manual runs still work the same way:
+# `gcloud run jobs execute earnings-sweep --region us-east1`
+# (add --args="--options-insights" to also refresh the winners snapshot).
+# The bare sweep is formula-eval over ~21k earnings_reactions rows — light.
 deploy_earnings_sweep() {
     echo "Deploying earnings-sweep job..."
     # Memory bumped from 1Gi → 4Gi on 2026-05-21 when the PR-B options-join
@@ -4222,6 +4306,72 @@ _schedule_with_args() {
         --quiet 2>/dev/null || echo "  ${NAME}: already exists"
 }
 
+# Verified variant of _schedule_with_args, for triggers whose container args
+# ARE the contract (earnings-sweep-sunday: a bare sweep never writes the
+# winners table the watchlist's freshness gate reads). _schedule_with_args'
+# `|| echo "already exists"` swallows real creation failures and never
+# updates an existing entry, so a trigger created before an args change
+# would keep firing the OLD args forever. This helper updates-or-creates
+# (same shape as _schedule_verified) and then reads back schedule, uri,
+# state AND the decoded request body, returning nonzero on any mismatch so
+# deploy_schedulers counts it into SCHEDULER_FAILURES.
+_schedule_with_args_verified() {
+    local NAME=$1 CRON=$2 JOB=$3 uri live live_body
+    shift 3
+    local ARGS_JSON='['
+    local first=1
+    for a in "$@"; do
+        [ ${first} -eq 1 ] || ARGS_JSON+=','
+        ARGS_JSON+='"'"${a}"'"'
+        first=0
+    done
+    ARGS_JSON+=']'
+    local BODY='{"overrides":{"containerOverrides":[{"args":'"${ARGS_JSON}"'}]}}'
+    uri=$(_job_uri "${JOB}")
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: update of ${NAME} failed" >&2; return 1; }
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: create of ${NAME} failed" >&2; return 1; }
+    fi
+    live=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(schedule,httpTarget.uri,state)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read back ${NAME}" >&2; return 1; }
+    if [ "${live}" != "${CRON}"$'\t'"${uri}"$'\t'"ENABLED" ]; then
+        echo "  ERROR: ${NAME} read back as [${live//$'\t'/ | }], expected [${CRON} | ${uri} | ENABLED]" >&2
+        return 1
+    fi
+    # The body carries the args override — verify it round-tripped. describe
+    # returns it base64-encoded; decode via python3 (BSD and GNU base64 take
+    # different flags, python3 is already a dependency of this script).
+    live_body=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(httpTarget.body)" 2>/dev/null \
+        | python3 -c 'import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())') \
+        || { echo "  ERROR: cannot read back ${NAME} body" >&2; return 1; }
+    if [ "${live_body}" != "${BODY}" ]; then
+        echo "  ERROR: ${NAME} body read back as [${live_body}], expected [${BODY}]" >&2
+        return 1
+    fi
+    echo "  ${NAME}: verified ${CRON} args=${ARGS_JSON}"
+}
+
 deploy_schedulers() {
     echo "Creating Cloud Scheduler triggers..."
     # Set by any verified entry that failed to converge; the function then
@@ -4567,6 +4717,22 @@ deploy_schedulers() {
     # Sunday 7pm ET — long-side "Next NVAX" watchlist (PR-B follow-up).
     # Fires after the refresh chain so the data is current.
     _schedule "earnings-long-watchlist-sunday"    "45 19 * * 0"  "earnings-long-watchlist"
+    # Sunday 8:30pm ET — playability calibration sweep, AFTER the whole
+    # refresh chain (19:15/19:30/19:45) so it calibrates on that evening's
+    # reactions. --options-insights is REQUIRED here, not decoration: the
+    # bare sweep never touches earnings_options_strategy_winners (only the
+    # insights mode persists it — scripts/calibrate_earnings.py:306-308),
+    # and that table's calculation_date is what earnings-long-watchlist's
+    # freshness gate reads. With a weekly insights run the snapshot is at
+    # most ~7 days old at every 19:45 watchlist fire, half the gate's
+    # 14-day cap; unscheduled, the gate failed closed every second week
+    # (issue #1091). Manual plain-sweep runs keep their behavior — the
+    # override rides only this trigger. ~5-15 min at 2cpu/4Gi (the
+    # options-join is what the 4Gi bump was sized for) ≈ $0.05/run,
+    # ~$0.25/mo.
+    _schedule_with_args_verified "earnings-sweep-sunday"   "30 20 * * 0"  "earnings-sweep" \
+        "--options-insights" \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
     # Earnings frontend data prep (mat view refreshes + upcoming rebuild).
     # Weekly: Sun 8:00 PM ET — REFRESH MATERIALIZED VIEW × 2 after the
     #   refresh chain (7:00/7:15/7:30/7:45 PM) finishes its source-data
@@ -5052,6 +5218,9 @@ case "${1:-help}" in
         deploy_signal_quality_alarm
         deploy_signal_replay
         deploy_indicator_correlation
+        # Scheduled since 2026-09-14 (earnings-sweep-sunday) — a fresh
+        # project must create the job before that trigger can fire it.
+        deploy_earnings_sweep
         deploy_weekly_pg_dump
         deploy_notifier
         # Slash-command service + the jobs it dispatches (#831). Needs the

@@ -11,11 +11,16 @@ One function per analyst section plus a catalyst lookup and a
 journal-memory retrieval. Each returns a dict that's trivially
 JSON-serializable for embedding in a prompt.
 
-All DB access goes through `gcp.database.query_to_dataframe`, which
+Most DB access goes through `gcp.database.query_to_dataframe`, which
 returns an empty DataFrame on failure — summarizers degrade to
 `{'available': False, 'reason': ...}` rather than raising. The
 orchestrator passes degraded bundles to analysts with a clear flag
 so the final report can mark which sections were missing.
+
+`retrieve_similar_journal` is the exception: it goes through
+`_query_strict` and raises, because it returns a list rather than an
+availability envelope, so a swallowed failure is indistinguishable
+from "no similar trades" (CLAUDE.md Rule 3.7). Its caller handles it.
 """
 
 from __future__ import annotations
@@ -42,6 +47,23 @@ def _query(sql: str, params: Optional[dict] = None):
     return query_to_dataframe(sql, params or {})
 
 
+def _query_strict(sql: str, params: Optional[dict] = None):
+    """Non-swallowing sibling of ``_query`` — raises on any DB failure.
+
+    ``query_to_dataframe`` returns an empty DataFrame on error, which a
+    caller cannot tell apart from "matched no rows". That is how a
+    malformed pgvector cast in ``retrieve_similar_journal`` went
+    unnoticed for the whole of Cloud Logging's 30-day retention —
+    3 failures per insight-pipeline run, every weekday, all of them
+    reading as "this ticker has no similar journal entries"
+    (CLAUDE.md Rule 3.7). Callers on this path have their own handler
+    and would rather see the exception.
+    """
+    from gcp.database import query_to_dataframe_strict
+
+    return query_to_dataframe_strict(sql, params or {})
+
+
 def _scalar(row, col, cast=float, digits: Optional[int] = None):
     """Null-safe scalar extraction from a pandas Series row."""
     val = row.get(col)
@@ -58,6 +80,20 @@ def _scalar(row, col, cast=float, digits: Optional[int] = None):
 
 def _unavailable(reason: str) -> dict:
     return {"available": False, "reason": reason}
+
+
+def _chain_snapshot_date(df) -> date_type:
+    """The loaded chain's OWN snapshot_date, as a `date`.
+
+    Both the REALTIME and EOD phases select `snapshot_date`, so this is
+    always available once a chain has been loaded — which is why the
+    "latest" sentinel it replaced was never necessary. That sentinel was
+    bound straight to a Postgres DATE parameter downstream
+    (`options_greeks.get_rate_and_yield`) and rejected with SQLSTATE
+    22007, dropping `gamma_flip` from every live report.
+    """
+    raw = df["snapshot_date"].iloc[0]
+    return raw.date() if hasattr(raw, "date") else pd.to_datetime(raw).date()
 
 
 # Maximum trading-day gap between an options chain's snapshot_date and the
@@ -183,6 +219,13 @@ def summarize_market_context(
         "       pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr "
         "FROM market_data_daily "
         "WHERE ticker = :ticker "
+        # Skip the pre-market placeholder. `date < :as_of` used to be the
+        # only thing keeping it out, so on a LIVE run (as_of=None, no date
+        # bound) `ORDER BY date DESC` selected it and every daily column
+        # came back NULL. Asking the data rather than the date also covers
+        # the replay path, where an as_of whose prior row is itself a
+        # placeholder would still have picked NULLs.
+        "  AND close IS NOT NULL "
         + (f"AND date {daily_op} :as_of " if as_of else "")
         + "ORDER BY date DESC LIMIT 1"
     )
@@ -191,29 +234,37 @@ def summarize_market_context(
         params["as_of"] = str(as_of)
     df = _query(daily_sql, params)
     if df.empty:
-        return _unavailable(f"no market_data_daily row for {ticker}")
+        # Names the predicate, not a guess at why it failed: this is
+        # equally "we have never fetched this ticker" and "the only row
+        # is today's pre-market placeholder".
+        return _unavailable(f"no market_data_daily row with a close for {ticker}")
 
     row = df.iloc[0]
 
-    # On replay, overlay today's pre_* columns (today's row exists at
-    # 8:45 AM ET via the premarket fetcher, with daily OHLC still NULL).
-    if as_of:
-        pm_df = _query(
-            "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
-            "       pre_range_atr "
-            "FROM market_data_daily "
-            "WHERE ticker = :ticker AND date = :as_of LIMIT 1",
-            {"ticker": ticker.upper(), "as_of": str(as_of)},
-        )
-        if not pm_df.empty:
-            pm_row = pm_df.iloc[0]
-            row = row.copy()
-            for col in (
-                "pre_high", "pre_low", "pre_vwap", "pre_volume",
-                "gap_pct", "pre_range_atr",
-            ):
-                if col in pm_row.index:
-                    row[col] = pm_row[col]
+    # Overlay the pre_* columns from the CURRENT day's row. The daily
+    # query above deliberately reads the last completed bar, whose pre_*
+    # are a day old; the 8:30 AM ET fetcher has already written today's.
+    # Replay pins that row by date, live takes the newest — which is the
+    # placeholder when one exists and otherwise the same row we just
+    # read, making the overlay a no-op.
+    pm_df = _query(
+        "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
+        "       pre_range_atr "
+        "FROM market_data_daily "
+        "WHERE ticker = :ticker "
+        + ("AND date = :as_of " if as_of else "")
+        + "ORDER BY date DESC LIMIT 1",
+        params,
+    )
+    if not pm_df.empty:
+        pm_row = pm_df.iloc[0]
+        row = row.copy()
+        for col in (
+            "pre_high", "pre_low", "pre_vwap", "pre_volume",
+            "gap_pct", "pre_range_atr",
+        ):
+            if col in pm_row.index:
+                row[col] = pm_row[col]
 
     close = _scalar(row, "close", digits=2)
     ema_20 = _scalar(row, "ema_20", digits=2)
@@ -226,6 +277,12 @@ def summarize_market_context(
     above_200 = None
     if close is not None and sma_200 is not None:
         above_200 = close > sma_200
+    # AUDIT-2026-05-13: silent fallback — `or 0` on a financial field. See
+    # docs/audits/FALLBACK_AUDIT_2026-05-13.md §13, `lib/agents/` row. A
+    # missing price_vs_ema20 is classified "ranging", so "unknown" reads as
+    # "flat". Not fixed here: `regime` is a required string with no
+    # unavailable member, so the fix is a schema change with its own
+    # consumers.
     if above_200 is True and (price_vs_ema20 or 0) > 0:
         regime = "trending_up"
     elif above_200 is False and (price_vs_ema20 or 0) < 0:
@@ -536,8 +593,7 @@ def summarize_options_flow(
     if df.empty:
         return _unavailable(f"no etf_options_snapshots for {ticker}")
 
-    chain_date_raw = df["snapshot_date"].iloc[0]
-    chain_date = chain_date_raw.date() if hasattr(chain_date_raw, "date") else pd.to_datetime(chain_date_raw).date()
+    chain_date = _chain_snapshot_date(df)
     stale_reason = _check_chain_freshness(chain_date, as_of)
     if stale_reason:
         return _unavailable(stale_reason)
@@ -692,11 +748,7 @@ def summarize_gamma_levels(
 
         # Tier the EOD snapshot into eod_fallback / stale_fallback /
         # hard-stale based on trading-day gap.
-        chain_date_raw = df["snapshot_date"].iloc[0]
-        chain_date = (
-            chain_date_raw.date() if hasattr(chain_date_raw, "date")
-            else pd.to_datetime(chain_date_raw).date()
-        )
+        chain_date = _chain_snapshot_date(df)
         target = as_of if as_of else date_type.today()
         if isinstance(target, datetime):
             target = target.date()
@@ -742,7 +794,12 @@ def summarize_gamma_levels(
             "last": row.get("last_price"),
         })
 
-    snapshot_date = str(as_of) if as_of else "latest"
+    # The CHAIN's date, not the request's. `gamma.build_summary` forwards
+    # this to `get_rate_and_yield`, which binds it to a DATE column, so it
+    # has to be a real date — and it has to be the snapshot's own day, since
+    # an EOD chain from Tuesday must be re-curved with Tuesday's r/q rather
+    # than the rates of whatever day happens to be asking.
+    snapshot_date = _chain_snapshot_date(df).isoformat()
     summary = gamma.build_summary(
         ticker=ticker,
         snapshot_date=snapshot_date,
@@ -1537,18 +1594,23 @@ def retrieve_similar_journal(
 
     # psycopg2 has no native pgvector adapter; serialize to text literal.
     vec_literal = format_vector_literal(query_embedding)
+    # CAST(:vec AS vector), never `:vec::vector` — SQLAlchemy's text()
+    # parser reads the first colon of `::` as part of the parameter name,
+    # declares a phantom `ve`, and leaves `:vec::vector` verbatim in the
+    # statement. Postgres then rejects the whole thing with SQLSTATE 42601,
+    # 'syntax error at or near ":"'.
     sql = (
         "SELECT id::text AS id, ticker, direction, return_pct, "
-        "       (embedding <=> :vec::vector) AS cosine_distance "
+        "       (embedding <=> CAST(:vec AS vector)) AS cosine_distance "
         "FROM journal_entries "
         # Per-user privacy: never surface a user-owned (private) journal entry in
         # the GLOBAL insights reflection — only owner-less (legacy/system) rows
         # feed the cross-user memory. Per-user insights are a separate follow-up.
         "WHERE embedding IS NOT NULL AND ticker = :ticker AND user_email IS NULL "
-        "ORDER BY embedding <=> :vec::vector ASC "
+        "ORDER BY embedding <=> CAST(:vec AS vector) ASC "
         "LIMIT :k"
     )
-    df = _query(sql, {"vec": vec_literal, "ticker": ticker.upper(), "k": k})
+    df = _query_strict(sql, {"vec": vec_literal, "ticker": ticker.upper(), "k": k})
     if df.empty:
         return []
     out: list[JournalRef] = []

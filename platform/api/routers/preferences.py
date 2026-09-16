@@ -78,7 +78,7 @@ class PreferencesUpdate(BaseModel):
     density: Optional[Literal["comfy", "default", "dense"]] = None
     accent: Optional[
         Literal[
-            "blue", "amber", "violet", "cyan", "teal", "pink",
+            "dawn", "blue", "amber", "violet", "cyan", "teal", "pink",
             "magenta", "orange", "yellow", "indigo", "rose",
         ]
     ] = None

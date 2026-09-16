@@ -14,9 +14,22 @@ land fresh data and before premarket-brief at 8:30. The job:
      `insight-pipeline` Cloud Run job in on-demand mode (same path
      the UI's refresh button uses).
 
-Cost control: the only knob is N. With max-concurrent-dispatches=5 on
-the Cloud Tasks queue, top-3 reports run in parallel and finish in
-~90s — comfortably before the premarket-brief at 8:30.
+Cost control: the only knob is N, and it is bounded. N above
+`insight_tasks.FANOUT_MAX_TICKERS` is clamped with a WARNING, because
+every enqueued ticker becomes its own Cloud Run execution against one
+Vertex quota and the queue does not throttle that — `jobs.run` returns
+an Operation as soon as the execution is created, freeing the dispatch
+slot immediately. Top-3 reports run in parallel and finish in ~90s,
+comfortably before the premarket-brief at 8:30.
+
+Exit codes:
+  0 — dispatched. Covers DISPATCH, not reports: each child owns its own
+      outcome in `insight_runs` from there. An all-cached run is also 0,
+      since a warm cache is the outcome this job exists to produce.
+  1 — dispatched nothing it had work for. This job has no in-process
+      fallback (unlike insight-pipeline's `_dispatch_fanout`), so a green
+      run producing zero reports would be indistinguishable from success.
+  2 — misconfigured (negative N). Rejected before the ranker runs.
 
 Usage:
     python -m gcp.auto_refresh_top_n              # production
@@ -27,7 +40,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -39,12 +51,20 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.agents.ranker import rank_tickers  # noqa: E402
+from gcp.insight_tasks import FANOUT_MAX_TICKERS, EnqueueOutcome, enqueue_insight_task  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 )
+
 logger = logging.getLogger("auto-refresh-top-n")
+
+# Documented in docs/plans/MORNING_RUN_PROTECTION_PLAN.md alongside
+# run_kind='auto_refresh'. Forwarded on every enqueue so the child can
+# classify itself; the prefix (not the exact string) is what
+# _resolve_run_kind_and_update matches.
+AUTO_REFRESH_TRIGGERED_BY = "cron:auto-refresh-top-n"
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +80,7 @@ def _is_cached_today(ticker: str) -> bool:
     ticker with today's UTC date — meaning a fresh report exists and
     we'd be wasting LLM budget to re-run."""
     try:
-        from gcp.database import connect
+        from lib.agents.model_routing import connect
 
         conn = connect()
         try:
@@ -70,6 +90,11 @@ def _is_cached_today(ticker: str) -> bool:
                 SELECT 1 FROM insight_reports
                 WHERE ticker = %s
                   AND as_of::date = (NOW() AT TIME ZONE 'UTC')::date
+                  -- A backfill row for today would otherwise count as the
+                  -- cache hit, skipping live generation, while the live-only
+                  -- API query cannot serve that row: the ticker ends the day
+                  -- with no visible report (Codex on #1098 round 2).
+                  AND run_kind = 'live'
                 LIMIT 1
                 """,
                 (ticker.upper(),),
@@ -87,7 +112,7 @@ def _is_cached_today(ticker: str) -> bool:
 def _insert_queued_run(ticker: str, trigger: str) -> str:
     """Insert a `queued` row in insight_runs and return its id.
     Mirrors platform.api.routers.insights._insert_run."""
-    from gcp.database import connect
+    from lib.agents.model_routing import connect
 
     conn = connect()
     run_id = str(uuid4())
@@ -106,62 +131,33 @@ def _insert_queued_run(ticker: str, trigger: str) -> str:
     return run_id
 
 
-def _enqueue_cloud_task(run_id: str, ticker: str) -> bool:
-    """Enqueue a Cloud Tasks message that runs the insight-pipeline
-    Cloud Run job with INSIGHT_RUN_ID + INSIGHT_TICKER env overrides.
+def _mark_run_failed(run_id: str, error: str) -> None:
+    """Close out a `queued` row whose enqueue never landed.
 
-    Mirrors platform.api.routers.insights._enqueue_cloud_task. Returns
-    True on success, False on any failure (so the orchestrator can
-    log + skip without blocking the other tickers).
+    Mirrors gcp.insight_pipeline_job._transition's 'failed' branch. Raises
+    nothing the caller must handle differently from any other ticker: a
+    failure here is logged and the batch continues, because the enqueue
+    failure it is recording has already been counted.
     """
-    try:
-        from google.cloud import tasks_v2  # type: ignore
-    except ImportError:
-        logger.error("google-cloud-tasks not installed — cannot enqueue")
-        return False
+    from lib.agents.model_routing import connect
 
-    project = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
-    region = os.environ.get("GCP_REGION", "us-east1")
-    queue = os.environ.get("INSIGHT_TASKS_QUEUE", "insight-pipeline-queue")
-    sa_email = os.environ.get(
-        "INSIGHT_TASKS_SERVICE_ACCOUNT",
-        f"trading-runner@{project}.iam.gserviceaccount.com",
-    )
-    job_url = (
-        f"https://{region}-run.googleapis.com/apis/run.googleapis.com/v1/"
-        f"namespaces/{project}/jobs/insight-pipeline:run"
-    )
     try:
-        client = tasks_v2.CloudTasksClient()
-        parent = client.queue_path(project, region, queue)
-        body = json.dumps(
-            {
-                "overrides": {
-                    "containerOverrides": [
-                        {
-                            "env": [
-                                {"name": "INSIGHT_RUN_ID", "value": run_id},
-                                {"name": "INSIGHT_TICKER", "value": ticker},
-                            ]
-                        }
-                    ]
-                }
-            }
-        ).encode()
-        task = {
-            "http_request": {
-                "http_method": tasks_v2.HttpMethod.POST,
-                "url": job_url,
-                "headers": {"Content-Type": "application/json"},
-                "body": body,
-                "oauth_token": {"service_account_email": sa_email},
-            }
-        }
-        client.create_task(parent=parent, task=task)
-        return True
+        conn = connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE insight_runs
+                SET status='failed', finished_at=NOW(), error=%s
+                WHERE id=%s
+                """,
+                (error, run_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     except Exception as exc:
-        logger.error("Cloud Tasks enqueue failed for %s: %s", ticker, exc)
-        return False
+        logger.error("could not mark run %s failed: %s", run_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +189,22 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Validate before anything costs money. A negative N is unambiguously a
+    # misconfiguration, and Python's slicing would read it as "all but the
+    # last |N|" — `ranked[:-1]` is 19 tickers against the default ranker
+    # limit, straight through the FANOUT_MAX_TICKERS ceiling below. Clamping
+    # it to 0 instead would turn a typo into a silent no-op, which is the
+    # failure this job was just fixed for. Exit 2 marks a config error,
+    # distinct from 1 (dispatched nothing it had work for).
+    if args.top_n < 0:
+        logger.error(
+            "top_n=%d is negative; refusing to run. Slicing a negative N "
+            "selects every ranked ticker but the last, which would bypass "
+            "FANOUT_MAX_TICKERS=%d entirely. Use 0 to disable pre-warming.",
+            args.top_n, FANOUT_MAX_TICKERS,
+        )
+        return 2
+
     started = datetime.now(tz=timezone.utc)
     logger.info("auto-refresh-top-n starting at %s", started.isoformat())
     logger.info("  top_n=%d ranker_limit=%d filter=%s dry_run=%s",
@@ -222,8 +234,26 @@ def main() -> int:
         logger.info("no ranked tickers — exiting cleanly")
         return 0
 
-    # 2. Pick top-N
-    top = ranked[: args.top_n]
+    # 2. Pick top-N, bounded by the shared fan-out ceiling.
+    #
+    # Every enqueued ticker becomes its own Cloud Run execution, and they all
+    # hit one Vertex quota — the 429 pressure this PR started from. The
+    # scheduled pipeline answers an oversized batch by running it in-process;
+    # this job has no in-process path (deliberately — see the exit-code note
+    # below), so it clamps and says so. Delivering the highest-ranked N is
+    # this job's purpose; delivering all of them at once is not worth
+    # recreating the failure mode.
+    effective_top_n = min(args.top_n, FANOUT_MAX_TICKERS)
+    if effective_top_n < args.top_n:
+        logger.warning(
+            "top_n=%d exceeds FANOUT_MAX_TICKERS=%d; pre-warming the top %d "
+            "only. %d enqueues would become %d concurrent executions against "
+            "one Vertex quota. Raise the ceiling in gcp/insight_tasks.py if "
+            "the quota genuinely supports it.",
+            args.top_n, FANOUT_MAX_TICKERS, effective_top_n,
+            args.top_n, args.top_n,
+        )
+    top = ranked[:effective_top_n]
     logger.info("top-%d: %s", len(top),
                 [f"{r['ticker']}({r['score']:.2f})" for r in top])
 
@@ -231,6 +261,9 @@ def main() -> int:
     enqueued: list[tuple[str, str]] = []
     skipped_cached: list[str] = []
     enqueue_failures: list[str] = []
+    # Tracked apart from failures: an unknown outcome is not a failure,
+    # and counting it as one would under-report tickers that may have run.
+    unknown_outcomes: list[str] = []
 
     for entry in top:
         ticker = entry["ticker"]
@@ -244,27 +277,84 @@ def main() -> int:
             continue
 
         try:
-            run_id = _insert_queued_run(ticker, trigger="auto_refresh")
+            # 'on_demand', not 'auto_refresh': insight_runs_trigger_check
+            # permits only on_demand/scheduled/local_dev/manual_batch/
+            # cache_hit/replay_refresh (verified against the live
+            # constraint 2026-09-14), so 'auto_refresh' failed the insert
+            # outright. 'on_demand' is also what this module's header says
+            # it intends -- runs that "look identical to UI-triggered runs
+            # (same trigger string)" -- and the UI path inserts 'on_demand'
+            # at platform/api/routers/insights.py:832.
+            run_id = _insert_queued_run(ticker, trigger="on_demand")
         except Exception as exc:
             logger.error("  %s: insert_run failed: %s", ticker, exc)
             enqueue_failures.append(ticker)
             continue
 
-        if _enqueue_cloud_task(run_id, ticker):
+        outcome = enqueue_insight_task(
+            run_id,
+            ticker,
+            # Container overrides replace the child's env, so this is the
+            # only thing that tells the child it was pre-warmed rather than
+            # hand-run. _resolve_run_kind_and_update maps it to
+            # run_kind='auto_refresh', the value MORNING_RUN_PROTECTION_PLAN
+            # defines for this producer.
+            triggered_by=AUTO_REFRESH_TRIGGERED_BY,
+        )
+        if outcome == EnqueueOutcome.ENQUEUED:
             enqueued.append((ticker, run_id))
             logger.info("  %s: enqueued run_id=%s", ticker, run_id)
-        else:
+        elif outcome == EnqueueOutcome.NOT_ENQUEUED:
+            # Definitively refused, so the row inserted 'queued' a moment
+            # ago will never be picked up. Close it out: leaving it queued
+            # shows operators and the UI a permanently pending run while
+            # the job exits 0 and Cloud Run never retries.
+            _mark_run_failed(run_id, "Cloud Tasks enqueue failed")
             enqueue_failures.append(ticker)
+        else:
+            # UNKNOWN: a child may be running this right now. Marking it
+            # failed would label a live run dead, so leave it queued and
+            # count it separately from a real failure.
+            unknown_outcomes.append(ticker)
+            logger.error(
+                "  %s: enqueue outcome unknown for run_id=%s - left queued, "
+                "not marked failed (a child may be running it)",
+                ticker, run_id,
+            )
 
     # 4. Summary
     logger.info(
-        "summary: enqueued=%d cached_skipped=%d failed=%d total_top_n=%d",
-        len(enqueued), len(skipped_cached), len(enqueue_failures), len(top),
+        "summary: enqueued=%d cached_skipped=%d failed=%d unknown=%d "
+        "total_top_n=%d",
+        len(enqueued), len(skipped_cached), len(enqueue_failures),
+        len(unknown_outcomes), len(top),
     )
 
-    # Exit 0 even on partial failures — one ticker's enqueue failure
-    # shouldn't block the others. The cron retry policy handles
-    # whole-job failures; per-ticker failures are visible in the logs.
+    # Partial failure still exits 0: one ticker's enqueue failure must not
+    # fail the run for the others, and per-ticker state is in insight_runs.
+    #
+    # A run that dispatched NOTHING it had work for is different, and must
+    # not report success. `setup_insight_tasks_queue` is deliberately
+    # non-fatal when it cannot grant roles/cloudtasks.enqueuer (setIamPolicy
+    # is owner-only and the documented deploy identity holds roles/editor),
+    # so a deploy can succeed with the binding absent. insight-pipeline
+    # survives that — `_dispatch_fanout` hands NOT_ENQUEUED tickers back and
+    # runs them in-process — but this job has no such fallback: it marks each
+    # run failed and moves on. Returning 0 from there tells Cloud Scheduler
+    # the pre-warm succeeded while producing zero reports, which is the exact
+    # shape of the 30-day `enqueued=0` outage this module was just fixed for.
+    # UNKNOWN does not count as a failure: a child may be running that ticker.
+    if enqueue_failures and not enqueued and not unknown_outcomes:
+        logger.error(
+            "dispatched nothing: all %d ticker(s) refused (%s). Most likely "
+            "trading-runner@ is missing roles/cloudtasks.enqueuer — "
+            "gcp/deploy.sh prints the owner command it cannot run itself. "
+            "Exiting non-zero so this surfaces as a failed execution rather "
+            "than a green run that produced no reports.",
+            len(enqueue_failures), ", ".join(enqueue_failures),
+        )
+        return 1
+
     return 0
 
 

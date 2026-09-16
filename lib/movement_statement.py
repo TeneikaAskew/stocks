@@ -405,7 +405,12 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
     sql = (
         "SELECT analysis_date, price, "
         + ", ".join(f"{s}_{k}_price" for s in ("calls", "puts") for k in _REACH_SLOTS)
-        + " FROM premarket_analysis WHERE ticker = :ticker AND analysis_date = :d LIMIT 1"
+        + " FROM premarket_analysis WHERE ticker = :ticker AND analysis_date = :d"
+        # run_kind='live': these slot assignments annotate the LIVE
+        # ladder with reach-rate tiers, so a replay brief that overwrote
+        # today's row would drive the annotation even though the
+        # dashboard hides it (Codex on #1098 round 2).
+        + " AND run_kind = 'live' LIMIT 1"
     )
     params: dict = {"ticker": ticker.upper(), "d": session_date}
     try:

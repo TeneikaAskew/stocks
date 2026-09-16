@@ -6,7 +6,7 @@
 
 | | Count | Method |
 |---|---|---|
-| Open issues mapped | **121 of 121 (100%)** | `list_issues` (state OPEN), classified by label and title prefix. Reconciled 2026-08-31; #943 security exposure and automated failure #944 included |
+| Open issues mapped | **121 of 121 (100%) at the 2026-08-31 snapshot** | `list_issues` (state OPEN), classified by label and title prefix. Reconciled 2026-08-31; the dated updates below carry the deltas since — **115 open as of 2026-09-14** — and the per-capability map further down is the 2026-08-31 snapshot pending the next regeneration |
 | Significant PRs mapped | **151** | `list_pull_requests` (state closed, 4 pages, #184–#932) |
 
 > **Why PR lineage came from the API, not `git log`.** The working clone is **shallow**
@@ -47,6 +47,8 @@ Both are correct; they count different sets. Re-reconciled 2026-09-03 after the 
 
 **Update 2026-09-03 (frontend split follow-through):** after the #957 split, [#683](https://github.com/TeneikaAskew/stocks/issues/683)/[#685](https://github.com/TeneikaAskew/stocks/issues/685) moved to [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26)/[solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) and canonical [#868](https://github.com/TeneikaAskew/stocks/issues/868) moved to [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28); all three stocks records are closed as not planned with the work still open in solyra. Post-audit #958 closed completed and follow-up [#971](https://github.com/TeneikaAskew/stocks/issues/971) opened for the live-connectivity coverage remainder. The canonical inventory stays 104, with #868's slot now tracked cross-repo.
 
+**Update 2026-09-14 (full reverification):** every open issue was reverified against `origin/main` at `ee565e4` — see the manifest's "Full reverification against origin/main (2026-09-14)" section in `docs/audit/2026-08-27/issue-reconciliation.md` for per-issue classifications. Changes since the table above: canonical [#861](https://github.com/TeneikaAskew/stocks/issues/861) (via #1005) and [#841](https://github.com/TeneikaAskew/stocks/issues/841) closed earlier in September; pre-audit [#717](https://github.com/TeneikaAskew/stocks/issues/717) closed as duplicate of #716; ten more canonical issues closed with verification evidence on 2026-09-14 (#820, #825, #829, #831, #833, #838, #843, #898, #900, #904) plus post-audit #1019 (superseded by #1049); and eleven new post-audit issues opened (#1017, #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, and [#1095](https://github.com/TeneikaAskew/stocks/issues/1095), the 2026-09-14 provenance audit extending #820's class to three more API-served tables). The ledger is now: **115 open = 91 canonical in stocks + 10 pre-audit + 14 post-audit**, and the canonical inventory stands at 105 filed, 13 resolved, 1 relocated, **92 open (91 stocks + solyra#28)**.
+
 The 13 pre-audit issues excluded from the canonical set are
 [#249](https://github.com/TeneikaAskew/stocks/issues/249),
 [#285](https://github.com/TeneikaAskew/stocks/issues/285),
@@ -57,11 +59,13 @@ The 13 pre-audit issues excluded from the canonical set are
 [#685](https://github.com/TeneikaAskew/stocks/issues/685) (moved to [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) 2026-09-03),
 [#701](https://github.com/TeneikaAskew/stocks/issues/701),
 [#716](https://github.com/TeneikaAskew/stocks/issues/716),
-[#717](https://github.com/TeneikaAskew/stocks/issues/717),
+[#717](https://github.com/TeneikaAskew/stocks/issues/717) (closed 2026-09-11 as duplicate of #716, whose item 1 now carries the return-unit defect),
 [#722](https://github.com/TeneikaAskew/stocks/issues/722),
 [#784](https://github.com/TeneikaAskew/stocks/issues/784) and
-[#808](https://github.com/TeneikaAskew/stocks/issues/808). They are real open work and remain
-mapped here even though no delivery stream owns them — a gap worth an explicit decision.
+[#808](https://github.com/TeneikaAskew/stocks/issues/808). Ten of the thirteen remain real open
+work mapped here even though no delivery stream owns them — a gap worth an explicit decision;
+the other three (#683/#685 moved to solyra, #717 closed as duplicate) are retained as
+historical entries only.
 
 ### Closed duplicate records retained from PR #924
 
@@ -190,7 +194,18 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 ## Full open-issue map by capability
 
-Every open issue appears exactly once. **No range notation** — the previous revision wrote
+> **Last regenerated for the 2026-08-31 reconciliation, with the 2026-09-03 cross-repo
+> edits applied (#971 added; the #683/#685 rows re-pointed at solyra#26/#27); not
+> regenerated since.** As of 2026-09-03 every then-open issue appeared exactly once.
+> The dated updates above list the deltas since: fourteen of the rows below are now
+> closed (canonical #820, #825, #829, #831, #833, #838, #841, #843, #861, #898, #900,
+> #904, and ops records #930/#944), #868's row points at solyra#28, #717 closed as
+> duplicate, and the eleven issues opened after 2026-09-03 that remain open (#1017,
+> #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, #1095) are not mapped
+> here at all (#958 and #1019 also postdate the map but have closed again).
+> Cross-check the updates before treating a row as a live blocker.
+
+**No range notation** — the previous revision wrote
 `#829–#850`, which reads as 22 issues while naming six. Ranges are replaced with explicit lists.
 
 ### FEAT-REPLAY-001 — Replay / backtest / evaluation (21 open)
@@ -435,6 +450,8 @@ Every open issue appears exactly once. **No range notation** — the previous re
 | [#490](https://github.com/TeneikaAskew/stocks/pull/490) | docs(audits): silent-fallback inventory + Rule 3.7 + fallback-guard agent |
 | [#511](https://github.com/TeneikaAskew/stocks/pull/511) | Add four review agents and wire all five delegated reviewers into pre-deploy-check |
 | [#864](https://github.com/TeneikaAskew/stocks/pull/864) | feat: add GitHub REST bridge workflow for blocked API surfaces |
+| [#820](https://github.com/TeneikaAskew/stocks/pull/820) | `run_kind` provenance on `signal_alerts` + `trades`; deleted the script that wrote 844 simulated rows into production |
+| [#1098](https://github.com/TeneikaAskew/stocks/pull/1098) | `run_kind` on the three remaining API-served tables + `tests/meta/test_production_writers.py`: a writer allowlist, a live-only-reader list, freshness predicates and conflict-clause coverage, each mutation-checked, so a new writer or a dropped filter fails CI rather than being found an audit later |
 
 These encode the repository's incident-derived rules. [01](01-PRODUCT-REQUIREMENTS.md) now
 carries a `REQ-` equivalent for each, so the plan and the enforcement agents cannot drift apart.

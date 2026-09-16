@@ -10,9 +10,28 @@ This job is invoked two ways:
    and upserts an InsightReport into Cloud SQL.
 
 2. **Scheduled** — invoked without `INSIGHT_RUN_ID` to run the daily
-   batch. In that mode it iterates the tickers in `INSIGHT_TICKERS`
-   (comma-separated, defaults to `SPY,IWM,QQQ`), inserts a new
-   `insight_runs` row per ticker, and executes them sequentially.
+   batch. It resolves the tickers (`INSIGHT_TICKERS`, else the
+   watchlist, else `SPY,IWM,QQQ`), inserts a `queued` `insight_runs`
+   row per ticker, and fans each one out as its own Cloud Tasks
+   message back into mode 1 above, so the tickers run as parallel
+   executions rather than a sequential in-process loop.
+
+   Fan-out is about isolation more than speed. Under the old loop a
+   single ticker's failure was contained only by a `try/except`: on
+   2026-09-11 a transient Vertex 429 killed SPY at the judge node while
+   IWM and QQQ had already been written, and the job still exited 0.
+   One execution per ticker gives each its own task timeout and its own
+   Cloud Run retry. Note that the queue does NOT throttle the resulting
+   workloads: `max-concurrent-dispatches` bounds in-flight dispatch
+   requests, and `jobs.run` returns as soon as the execution exists, so
+   the slot frees immediately. Concurrency is bounded by refusing to fan
+   out a batch larger than FANOUT_MAX_TICKERS instead.
+
+   Set `INSIGHT_FANOUT=0` to revert to the sequential loop without a
+   redeploy. An enqueue the server definitively refused falls back to
+   running that ticker in-process, so an outage costs throughput rather
+   than reports; an enqueue whose outcome is UNKNOWN does not, because a
+   child may already be running it.
 
 Every run ends with exit 0 or exit 1; Cloud Run's retry policy takes
 over from there. The job never raises — it catches top-level
@@ -41,6 +60,11 @@ from uuid import uuid4
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from gcp.insight_tasks import (  # noqa: E402
+    FANOUT_MAX_TICKERS as _FANOUT_MAX_TICKERS,
+    EnqueueOutcome,
+    enqueue_insight_task,
+)
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
@@ -191,15 +215,42 @@ def _transition(
     *,
     error: str | None = None,
     report_id: str | None = None,
-) -> None:
+) -> bool:
+    """Move a run to `status`. Returns whether this caller made the move.
+
+    Only the 'running' transition can return False, and it is the claim
+    that makes a redelivered launch safe. Two things can start a SECOND
+    execution carrying the SAME run_id, and the deterministic task name
+    fixes neither because it only deduplicates `create_task`:
+
+      * Cloud Tasks retries the HTTP target POST (queue is --max-attempts 2).
+        `jobs.run` creates the execution and returns an Operation, so a
+        lost response after a successful launch is indistinguishable from
+        a failed one, and the retry launches a second execution.
+      * Cloud Run retries the task itself (job is --max-retries 1).
+
+    Unclaimed, both executions run the paid pipeline, append their own
+    insight_reports_history row, and race the final status. The DB row is
+    the only state both can see, so the claim is a compare-and-swap on it:
+    exactly one UPDATE matches and the loser stands down.
+
+    'failed' is claimable so Cloud Run's own retry-after-failure still
+    works. 'running' deliberately is NOT: a crashed execution leaves a
+    visibly stuck row, which is better than a second one silently
+    duplicating work we cannot prove has stopped. (Codex, PR #1094.)
+    """
     conn = connect()
     try:
         cur = conn.cursor()
         if status == "running":
             cur.execute(
-                "UPDATE insight_runs SET status='running', started_at=NOW() WHERE id=%s",
+                "UPDATE insight_runs SET status='running', started_at=NOW() "
+                "WHERE id=%s AND status IN ('queued', 'failed')",
                 (run_id,),
             )
+            claimed = cur.rowcount == 1
+            conn.commit()
+            return claimed
         elif status == "done":
             cur.execute(
                 """
@@ -221,6 +272,9 @@ def _transition(
         conn.commit()
     finally:
         conn.close()
+    # done/failed are unconditional and always "applied"; only the
+    # 'running' claim above can decline.
+    return True
 
 
 def _resolve_run_kind_and_update(arg_update: bool) -> tuple[bool, str]:
@@ -233,13 +287,26 @@ def _resolve_run_kind_and_update(arg_update: bool) -> tuple[bool, str]:
       1. arg_update=True OR INSIGHT_UPDATE=true → ('manual_update', True)
       2. INSIGHT_AS_OF set (replay) → ('replay_refresh', True)
       3. INSIGHT_TRIGGERED_BY starts with 'cloud-scheduler' → ('scheduled', False)
-      4. otherwise → ('manual_replay', False)
+      4. INSIGHT_TRIGGERED_BY starts with 'cron:auto-refresh' → ('auto_refresh', False)
+      5. otherwise → ('manual_replay', False)
+
+    Branch 4 is the run_kind docs/plans/MORNING_RUN_PROTECTION_PLAN.md
+    defines for auto_refresh_top_n, with 'cron:auto-refresh-top-n' as its
+    documented triggered_by. Without it the pre-warm's children fall
+    through to 'manual_replay' and are indistinguishable from a hand-run
+    replay in insight_reports_history -- which is the only place that
+    producer was still identifiable once its insight_runs.trigger had to
+    become 'on_demand' to satisfy the check constraint (Codex, PR #1094).
+    run_kind is VARCHAR(20) with no check constraint, so extending the
+    set here needs no migration.
     """
     if arg_update or os.environ.get('INSIGHT_UPDATE') == 'true':
         return True, 'manual_update'
     if os.environ.get('INSIGHT_AS_OF'):
         return True, 'replay_refresh'
     triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY', '')
+    if triggered_by.startswith('cron:auto-refresh'):
+        return False, 'auto_refresh'
     if triggered_by.startswith('cloud-scheduler'):
         return False, 'scheduled'
     return False, 'manual_replay'
@@ -281,6 +348,27 @@ def _insert_report_history(report: InsightReport, insight_run_id: str,
         conn.close()
 
 
+def _canonical_run_kind() -> str:
+    """Provenance for the canonical insight_reports row.
+
+    The operational `run_kind` threaded through _run_one ('scheduled',
+    'manual_update', ...) describes HOW a run was triggered and lands in
+    insight_reports_history. This is the three-value DATA taxonomy shared
+    with trades, signal_alerts and premarket_analysis, which is what the
+    routers filter on. An INSIGHT_AS_OF run reconstructs a past day's
+    report from that day's data: real analysis, but not the report that
+    was published then, so /api/insights must not serve it as one
+    (audit 2026-09-14).
+
+    Blank and whitespace-only are "no override": parse_as_of returns None
+    for them and the pipeline generates a current live report, so testing
+    the raw env var for truthiness would stamp that live report 'replay'
+    and the new live-only readers would hide it (Codex on #1098 round 4).
+    """
+    raw = os.environ.get('INSIGHT_AS_OF')
+    return 'replay' if raw and raw.strip() else 'live'
+
+
 def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optional[str]:
     """Write to insight_reports.
 
@@ -301,14 +389,19 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                 """
                 INSERT INTO insight_reports
                     (id, ticker, as_of, report, model_versions, cost_usd,
-                     per_role_cost, latency_ms)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
+                     per_role_cost, latency_ms, run_kind)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
                 ON CONFLICT (ticker, as_of) DO UPDATE
                 SET report = EXCLUDED.report,
                     model_versions = EXCLUDED.model_versions,
                     cost_usd = EXCLUDED.cost_usd,
                     per_role_cost = EXCLUDED.per_role_cost,
-                    latency_ms = EXCLUDED.latency_ms
+                    latency_ms = EXCLUDED.latency_ms,
+                    -- Provenance rides the overwrite. Without it an as-of
+                    -- replay overwriting a live row left the row reading 'live'
+                    -- with replay content, which the live-only reader then serves
+                    -- as current; the reverse hid newly live content (Codex, #1098).
+                    run_kind = EXCLUDED.run_kind
                 RETURNING id::text
                 """,
                 (
@@ -318,6 +411,7 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                     report.run_cost_usd,
                     json.dumps(report.per_role_cost),
                     report.run_latency_ms,
+                    _canonical_run_kind(),
                 ),
             )
             returned = cur.fetchone()
@@ -332,9 +426,23 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
             """
             INSERT INTO insight_reports
                 (id, ticker, as_of, report, model_versions, cost_usd,
-                 per_role_cost, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
-            ON CONFLICT (ticker, as_of) DO NOTHING
+                 per_role_cost, latency_ms, run_kind)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
+            -- Protect an existing LIVE row, but replace a non-live one.
+            -- DO NOTHING alone deadlocked with the cache fix: once a
+            -- backfill row held today's key, _is_cached_today correctly
+            -- asked for a live refresh, this insert then did nothing, the
+            -- run was marked done against the non-live row's id, and the
+            -- live-only reader still had no row to serve. The ticker ended
+            -- the day with no report at all (Codex on #1098 round 3).
+            ON CONFLICT (ticker, as_of) DO UPDATE
+            SET report = EXCLUDED.report,
+                model_versions = EXCLUDED.model_versions,
+                cost_usd = EXCLUDED.cost_usd,
+                per_role_cost = EXCLUDED.per_role_cost,
+                latency_ms = EXCLUDED.latency_ms,
+                run_kind = EXCLUDED.run_kind
+            WHERE insight_reports.run_kind <> 'live'
             RETURNING id::text
             """,
             (
@@ -344,6 +452,7 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                 report.run_cost_usd,
                 json.dumps(report.per_role_cost),
                 report.run_latency_ms,
+                _canonical_run_kind(),
             ),
         )
         returned = cur.fetchone()
@@ -403,7 +512,16 @@ async def _run_one(
         f" as_of={as_of}" if as_of else "",
         allow_update, run_kind,
     )
-    _transition(run_id, "running")
+    if not _transition(run_id, "running"):
+        # Another execution owns this run_id. Returning True rather than
+        # False on purpose: nothing failed, and exiting non-zero here would
+        # make Cloud Run retry the loser of the race over and over.
+        logger.warning(
+            "[run_id=%s] %s is already claimed by another execution "
+            "(redelivered task or job retry) — standing down, not re-running it",
+            run_id, ticker,
+        )
+        return True
     try:
         snapshot = load_routes_snapshot()
         report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
@@ -429,6 +547,98 @@ async def _run_one(
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
+
+
+def _update_explicitly_requested(arg_update: bool) -> bool:
+    """Whether an update was asked for OUTRIGHT, as opposed to implied.
+
+    Mirrors the highest-precedence branch of
+    `_resolve_run_kind_and_update`. A replay (`INSIGHT_AS_OF`) also
+    resolves allow_update=True, but for a different reason and with a
+    different run_kind, and a child re-derives that from the forwarded
+    cutoff on its own. Only the outright request travels as
+    INSIGHT_UPDATE.
+    """
+    return bool(arg_update or os.environ.get("INSIGHT_UPDATE") == "true")
+
+
+# Bound on concurrent executions, shared with auto_refresh_top_n. Defined in
+# gcp/insight_tasks.py because it constrains the queue and the Vertex quota
+# behind it, not this module: a second copy here would drift from the other
+# producer's. Re-exported at module level so `job.FANOUT_MAX_TICKERS` keeps
+# resolving for existing callers and tests.
+FANOUT_MAX_TICKERS = _FANOUT_MAX_TICKERS
+
+
+def _fanout_enabled() -> bool:
+    """Whether the scheduled batch fans out one execution per ticker.
+
+    On by default. `INSIGHT_FANOUT=0` reverts to the in-process loop
+    without a redeploy — the Cloud Scheduler body can pass it as a
+    container override, so reverting is a scheduler edit, not a build.
+    """
+    raw = os.environ.get("INSIGHT_FANOUT", "1").strip().lower()
+    return raw not in ("0", "false", "no")
+
+
+def _dispatch_fanout(
+    tickers: list[str],
+    *,
+    trigger: str,
+    as_of: Optional[Union[date, datetime]],
+    force_update: bool,
+    triggered_by: Optional[str],
+) -> list[tuple[str, str]]:
+    """Enqueue one Cloud Tasks message per ticker.
+
+    Returns the `(run_id, ticker)` pairs whose enqueue FAILED so the
+    caller can run those in-process. A successfully enqueued ticker is
+    picked up by a separate `insight-pipeline` execution in on-demand
+    mode, which owns its own queued -> running -> done|failed
+    transitions from there.
+
+    The `insight_runs` row is inserted BEFORE the enqueue. A row whose
+    enqueue was definitively refused is handed back to the caller and
+    executed with that same id, so the run is never orphaned and never
+    duplicated.
+
+    Only NOT_ENQUEUED is handed back. An UNKNOWN outcome means a child
+    may already be running that ticker, so running it here too would put
+    two pipelines on one run_id; it is left queued and logged instead.
+    """
+    # date.isoformat() and datetime.isoformat() both round-trip through
+    # parse_as_of (10-char date vs tz-aware datetime).
+    as_of_iso = as_of.isoformat() if as_of is not None else None
+    failed: list[tuple[str, str]] = []
+    unknown = 0
+    for ticker in tickers:
+        run_id = _insert_run(ticker, trigger=trigger)
+        outcome = enqueue_insight_task(
+            run_id,
+            ticker,
+            as_of_iso=as_of_iso,
+            triggered_by=triggered_by,
+            force_update=force_update,
+        )
+        if outcome == EnqueueOutcome.ENQUEUED:
+            logger.info("[run_id=%s] enqueued %s for parallel execution", run_id, ticker)
+        elif outcome == EnqueueOutcome.NOT_ENQUEUED:
+            failed.append((run_id, ticker))
+        else:
+            # Deliberately neither retried nor marked failed: the row may
+            # be genuinely queued, and 'queued' is the honest state for
+            # "not yet known to have started".
+            unknown += 1
+            logger.error(
+                "[run_id=%s] %s enqueue outcome unknown - left queued, NOT run "
+                "in-process. Re-run it on demand once you can confirm no child ran.",
+                run_id, ticker,
+            )
+    logger.info(
+        "fan-out dispatched: %d/%d enqueued, %d falling back in-process, %d unknown",
+        len(tickers) - len(failed) - unknown, len(tickers), len(failed), unknown,
+    )
+    return failed
 
 
 async def _run_on_demand(allow_update_arg: bool = False) -> int:
@@ -522,20 +732,62 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
     allow_update, run_kind = _resolve_run_kind_and_update(allow_update_arg)
     triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY')
 
-    any_failures = False
-    for ticker in tickers:
-        run_id = _insert_run(ticker, trigger=trigger)
-        ok = await _run_one(
-            run_id, ticker, as_of=as_of,
-            allow_update=allow_update, run_kind=run_kind,
+    # Fan out unless disabled, unless there is only one ticker (a lone
+    # ticker would pay a container start to save nothing), or unless the
+    # batch is larger than FANOUT_MAX_TICKERS.
+    pending: Optional[list[tuple[str, str]]] = None
+    if _fanout_enabled() and len(tickers) > FANOUT_MAX_TICKERS:
+        logger.warning(
+            "fan-out skipped: %d tickers exceeds FANOUT_MAX_TICKERS=%d; "
+            "running in-process so the batch cannot launch that many "
+            "concurrent executions at the LLM provider",
+            len(tickers), FANOUT_MAX_TICKERS,
+        )
+    elif _fanout_enabled() and len(tickers) > 1:
+        pending = _dispatch_fanout(
+            tickers, trigger=trigger, as_of=as_of,
+            force_update=_update_explicitly_requested(allow_update_arg),
             triggered_by=triggered_by,
         )
-        if not ok:
-            any_failures = True
+        if pending:
+            logger.warning(
+                "Cloud Tasks enqueue failed for %d of %d ticker(s) (%s) - "
+                "running those in-process so the batch still completes",
+                len(pending), len(tickers), ",".join(t for _, t in pending),
+            )
+
+    any_failures = False
+    if pending is None:
+        # Sequential mode: insert each run row immediately before
+        # executing it, as this job did before fan-out existed.
+        for ticker in tickers:
+            run_id = _insert_run(ticker, trigger=trigger)
+            ok = await _run_one(
+                run_id, ticker, as_of=as_of,
+                allow_update=allow_update, run_kind=run_kind,
+                triggered_by=triggered_by,
+            )
+            if not ok:
+                any_failures = True
+    else:
+        # Enqueue-failure fallback: rows already exist, reuse their ids.
+        for run_id, ticker in pending:
+            ok = await _run_one(
+                run_id, ticker, as_of=as_of,
+                allow_update=allow_update, run_kind=run_kind,
+                triggered_by=triggered_by,
+            )
+            if not ok:
+                any_failures = True
     # Scheduled runs exit 0 even on partial failure — one ticker's
     # failure shouldn't block the other two from being reported as
     # "done" to Cloud Scheduler. The insight_runs table carries the
     # per-ticker error text for the admin to investigate.
+    #
+    # Under fan-out this exit code covers DISPATCH only: the children
+    # run in their own executions and report their own status, so a
+    # green dispatcher no longer implies three written reports. Per
+    # ticker state lives in insight_runs either way.
     if any_failures:
         logger.warning("scheduled run completed with at least one failure")
     return 0

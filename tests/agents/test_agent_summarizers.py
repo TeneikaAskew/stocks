@@ -30,6 +30,9 @@ def patch_query(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    # retrieve_similar_journal uses the non-swallowing sibling; a fixture
+    # is exempt from Rule 3.7, so both wrappers get the same canned data.
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
     return set_result
 
 
@@ -80,7 +83,13 @@ def test_market_context_trending_down(patch_query):
 
 def test_market_context_unavailable_when_empty(patch_query):
     out = summarizers.summarize_market_context("SPY")  # no patched result
-    assert out == {"available": False, "reason": "no market_data_daily row for SPY"}
+    # The reason names the query's predicate — a row with a close — because
+    # "no rows at all" and "only a pre-market placeholder" are the same
+    # answer here and guessing between them would be a claim, not a fact.
+    assert out == {
+        "available": False,
+        "reason": "no market_data_daily row with a close for SPY",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -938,3 +947,297 @@ def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
                             lambda *a, **k: {"available": False, "reason": "stub"})
     summarizers.build_context_bundle("SPY", inclusive_today=False)
     assert calls["inclusive_today"] is False
+
+
+# ---------------------------------------------------------------------------
+# Regression: the snapshot_date handed to lib.gamma must be a real date.
+#
+# `summarize_gamma_levels` used to pass the literal string "latest" whenever
+# `as_of` was None — which is every live insight-pipeline run. That string
+# travels into `gamma.build_summary` -> `options_greeks.get_rate_and_yield`,
+# where it is bound to a Postgres DATE parameter:
+#
+#   invalid input syntax for type date: "latest"   (SQLSTATE 22007)
+#
+# `get_rate_and_yield` raises RateLookupError, `gamma.py` catches it and sets
+# `gamma_flip = None`, so every live report shipped with the BS-recurved
+# zero-gamma level — the regime divider — silently missing. Measured in
+# production: 3 occurrences per insight-pipeline run, every weekday since
+# the strict rate lookup landed (#994).
+# ---------------------------------------------------------------------------
+
+
+def _capture_build_summary_date(monkeypatch):
+    """Record the snapshot_date `summarize_gamma_levels` forwards to gamma."""
+    from lib import gamma as gamma_mod
+
+    seen: dict[str, object] = {}
+    real = gamma_mod.build_summary
+
+    def spy(*, ticker, snapshot_date, options, **kwargs):
+        seen["snapshot_date"] = snapshot_date
+        return real(ticker=ticker, snapshot_date=snapshot_date,
+                    options=options, **kwargs)
+
+    monkeypatch.setattr(gamma_mod, "build_summary", spy)
+    return seen
+
+
+def _recent_business_day() -> date:
+    """Yesterday-or-earlier business day, so the freshness tier stays 'fresh'.
+
+    as_of=None makes summarize_gamma_levels measure staleness against
+    date.today(), so a fixed fixture date would age into hard-stale.
+    """
+    import numpy as _np
+
+    return _np.busday_offset(date.today(), -1, roll="backward").astype(date)
+
+
+def test_gamma_levels_forwards_a_parseable_date_when_as_of_is_none(
+    patch_query, monkeypatch
+):
+    """as_of=None (the live path) must still yield an ISO date, not a sentinel."""
+    chain_date = _recent_business_day()
+    patch_query("market_session = 'EOD'", _eod_chain_fixture(chain_date))
+    seen = _capture_build_summary_date(monkeypatch)
+
+    out = summarizers.summarize_gamma_levels("SPY")
+
+    assert out["available"] is True
+    forwarded = seen["snapshot_date"]
+    # The contract get_rate_and_yield depends on: bindable as a DATE.
+    assert date.fromisoformat(str(forwarded)[:10]) == chain_date
+
+
+def test_gamma_levels_uses_the_chain_date_not_the_request_date(
+    patch_query, monkeypatch
+):
+    """An EOD chain is re-curved with ITS OWN day's r/q, not the request's.
+
+    A Wednesday run reading Tuesday's chain must price that chain against
+    Tuesday's rates — the snapshot and the rate have to describe the same day.
+    """
+    chain_date = date(2026, 5, 12)
+    patch_query("market_session = 'EOD'", _eod_chain_fixture(chain_date))
+    seen = _capture_build_summary_date(monkeypatch)
+
+    summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+
+    assert str(seen["snapshot_date"])[:10] == "2026-05-12"
+
+
+def test_gamma_levels_realtime_forwards_the_snapshot_date(patch_query, monkeypatch):
+    """The REALTIME phase must supply a date too — it skips the EOD branch."""
+    realtime_df = _eod_chain_fixture(date(2026, 5, 13))
+    realtime_df["snapshot_ts"] = pd.Timestamp("2026-05-13 14:32:00", tz="UTC")
+    patch_query("market_session = 'REALTIME'", realtime_df)
+    seen = _capture_build_summary_date(monkeypatch)
+
+    summarizers.summarize_gamma_levels("SPY")
+
+    assert date.fromisoformat(str(seen["snapshot_date"])[:10]) == date(2026, 5, 13)
+
+
+# ---------------------------------------------------------------------------
+# Regression: the reflection-memory query must be a legal bound statement.
+#
+# `:vec::vector` is not a cast of the bind parameter — SQLAlchemy's text()
+# parser reads `:vec:` and keeps `:vec::vector` verbatim in the SQL while
+# declaring a phantom parameter named `ve`. Postgres then sees a literal
+# colon and rejects the whole statement:
+#
+#   syntax error at or near ":"   (SQLSTATE 42601, position 77)
+#
+# `_query` swallows that (CLAUDE.md Rule 3.7), so retrieve_similar_journal
+# returned [] and every insight report lost its journal reflection section
+# with no visible failure. Measured: 3 per insight-pipeline run, every
+# weekday. `CAST(:vec AS vector)` is the spelling text() parses correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_similar_journal_sql_binds_every_parameter(patch_query):
+    """The emitted SQL must declare exactly the params the call supplies."""
+    import sqlalchemy
+
+    captured: dict[str, object] = {}
+
+    def capture(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return pd.DataFrame()
+
+    import lib.agents.summarizers as mod
+    orig = mod._query_strict
+    mod._query_strict = capture
+    try:
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
+    finally:
+        mod._query_strict = orig
+
+    stmt = sqlalchemy.text(str(captured["sql"]))
+    assert set(stmt._bindparams) == set(captured["params"]), (
+        "bind parameters parsed out of the SQL must match the params passed in"
+    )
+
+
+def test_retrieve_similar_journal_sql_leaves_no_literal_placeholder(patch_query):
+    """Compiling must consume every ':name' — a leftover is the 42601."""
+    import sqlalchemy
+    from sqlalchemy.dialects import postgresql
+
+    captured: dict[str, object] = {}
+
+    def capture(sql, params=None):
+        captured["sql"] = sql
+        return pd.DataFrame()
+
+    import lib.agents.summarizers as mod
+    orig = mod._query_strict
+    mod._query_strict = capture
+    try:
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
+    finally:
+        mod._query_strict = orig
+
+    compiled = str(
+        sqlalchemy.text(str(captured["sql"])).compile(
+            dialect=postgresql.dialect(paramstyle="format")
+        )
+    )
+    assert ":vec" not in compiled
+    assert compiled.count("%s") == 4, (
+        f"expected vec twice plus ticker and k, got: {compiled}"
+    )
+
+
+def test_retrieve_similar_journal_surfaces_db_failure(monkeypatch):
+    """A DB failure must raise, not read as 'no similar trades'.
+
+    The swallowing `_query` is what let the malformed cast above look like
+    an empty result for a week. The orchestrator wraps this call in its own
+    handler, so raising here costs nothing and names the failure in the log.
+    """
+    def boom(sql, params=None):
+        raise RuntimeError("Cloud SQL unreachable")
+
+    monkeypatch.setattr(summarizers, "_query_strict", boom)
+    with pytest.raises(RuntimeError, match="Cloud SQL unreachable"):
+        summarizers.retrieve_similar_journal("SPY", [0.1] * 768, k=5)
+
+
+# ---------------------------------------------------------------------------
+# Regression: the live path must not read the pre-market placeholder row.
+#
+# The daily fetcher writes a row for the current trading day at ~8:30 ET
+# carrying only the pre_* columns; open/high/low/close/volume and every
+# indicator are NULL until the 11 PM ET fetcher fills them. The replay path
+# already avoids that row (`date < :as_of`) and PR #323 taught
+# summarize_backtest_metrics to walk back past it — but the LIVE path
+# (as_of=None) applies no date bound at all, so `ORDER BY date DESC LIMIT 1`
+# selects the placeholder and every daily field comes back None.
+#
+# Downstream that becomes `float(None or None or 0.0)` in
+# trade_planner.context_from_bundle, `safe_atr()` returns `0.0 * 0.01`, and
+# the first `/ atr` raises. Measured in production: "deterministic plan
+# compute failed: float division by zero", 3 per insight-pipeline run, every
+# weekday — leaving persona_plans empty and handing the report's headline
+# entry/stop/targets back to the LLM, which is the exact hallucination
+# surface compute_persona_plans exists to close.
+# ---------------------------------------------------------------------------
+
+
+def _placeholder_row(d: date) -> dict:
+    """Today's 8:30 ET row: pre_* populated, everything else NULL."""
+    return {
+        "date": d, "open": None, "high": None, "low": None, "close": None,
+        "volume": None, "sma_200": None, "ema_20": None, "ema_50": None,
+        "rsi_14": None, "macd": None, "macd_signal": None,
+        "macd_histogram": None, "bb_upper": None, "bb_lower": None,
+        "bb_pct": None, "atr_14": None, "rvol": None, "volatility_20d": None,
+        "price_vs_ema20": None,
+        "pre_high": 766.18, "pre_low": 757.77, "pre_vwap": 759.37,
+        "pre_volume": 4_200_000, "gap_pct": -0.649, "pre_range_atr": 0.4,
+    }
+
+
+def _completed_row(d: date) -> dict:
+    """Yesterday's finished bar."""
+    return {
+        "date": d, "open": 762.0, "high": 766.0, "low": 760.0, "close": 764.29,
+        "volume": 71_000_000, "sma_200": 714.23, "ema_20": 760.1,
+        "ema_50": 750.0, "rsi_14": 58.0, "macd": 1.2, "macd_signal": 0.9,
+        "macd_histogram": 0.3, "bb_upper": 772.0, "bb_lower": 748.0,
+        "bb_pct": 0.66, "atr_14": 6.21, "rvol": 1.05, "volatility_20d": 0.14,
+        "price_vs_ema20": 0.005,
+        "pre_high": 758.0, "pre_low": 752.0, "pre_vwap": 755.0,
+        "pre_volume": 3_000_000, "gap_pct": 0.11, "pre_range_atr": 0.2,
+    }
+
+
+def _market_query_router(monkeypatch, *, placeholder_present: bool):
+    """Stand in for market_data_daily with a placeholder row on top.
+
+    Serves whichever row the SQL actually asks for, so the test measures
+    the query's selectivity rather than a canned answer.
+    """
+    today, yesterday = date(2026, 9, 14), date(2026, 9, 11)
+    rows = [_completed_row(yesterday)]
+    if placeholder_present:
+        rows.append(_placeholder_row(today))
+
+    def fake_query(sql: str, params=None):
+        if "market_data_daily" not in sql:
+            return pd.DataFrame()
+        frame = pd.DataFrame(rows).sort_values("date", ascending=False)
+        if "close IS NOT NULL" in sql:
+            frame = frame[frame["close"].notna()]
+        if params and "as_of" in params:
+            as_of = pd.to_datetime(params["as_of"]).date()
+            if "date = :as_of" in sql:
+                frame = frame[frame["date"] == as_of]
+            elif "date < :as_of" in sql:
+                frame = frame[frame["date"] < as_of]
+            elif "date <= :as_of" in sql:
+                frame = frame[frame["date"] <= as_of]
+        return frame.head(1).reset_index(drop=True)
+
+    monkeypatch.setattr(summarizers, "_query", fake_query)
+
+
+def test_market_context_live_skips_the_premarket_placeholder(monkeypatch):
+    """as_of=None must return yesterday's completed bar, not today's NULLs."""
+    _market_query_router(monkeypatch, placeholder_present=True)
+
+    out = summarizers.summarize_market_context("SPY")
+
+    assert out["available"] is True
+    assert out["close"] == 764.29
+    assert out["atr_14"] == 6.21
+    assert out["sma_200"] == 714.23
+    assert out["date"].startswith("2026-09-11")
+
+
+def test_market_context_live_still_takes_premarket_from_todays_row(monkeypatch):
+    """The pre_* overlay is the whole reason today's row is read at all.
+
+    A day-old pre_high is worse than none — the docstring's replay
+    contract says so, and the live path owes the same guarantee.
+    """
+    _market_query_router(monkeypatch, placeholder_present=True)
+
+    out = summarizers.summarize_market_context("SPY")
+
+    assert out["premarket"]["pre_high"] == 766.18
+    assert out["premarket"]["pre_low"] == 757.77
+    assert out["premarket"]["gap_pct"] == -0.649
+
+
+def test_market_context_live_unchanged_when_no_placeholder_exists(monkeypatch):
+    """Before the 8:30 fetcher runs, the latest row IS the completed bar."""
+    _market_query_router(monkeypatch, placeholder_present=False)
+
+    out = summarizers.summarize_market_context("SPY")
+
+    assert out["close"] == 764.29
+    assert out["premarket"]["pre_high"] == 758.0

@@ -34,6 +34,7 @@ stay ``str`` so a mis-set variable cannot turn a working route into a 500.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -153,7 +154,9 @@ class ChartVoterCondition(ApiModel):
 
 
 class ChartVoterSide(ApiModel):
-    direction: str
+    # Provably closed: lib/chart_voter.py builds exactly {"direction": "CALL"}
+    # and {"direction": "PUT"} — nothing else constructs this model.
+    direction: Literal["CALL", "PUT"]
     conditions: list[ChartVoterCondition]
     met_count: int
     total_count: int
@@ -163,7 +166,8 @@ class ChartVoterSide(ApiModel):
 class ChartVoter(ApiModel):
     call: ChartVoterSide
     put: ChartVoterSide
-    firing: Optional[str] = None
+    # Provably closed: lib/chart_voter.py sets "CALL" / "PUT" / None only.
+    firing: Optional[Literal["CALL", "PUT"]] = None
 
 
 class IndicatorsResponse(ApiModel):
@@ -194,9 +198,12 @@ class FirebaseWebConfig(ApiModel):
 
 
 class RuntimeConfigResponse(ApiModel):
-    # Any lowercased AUTH_MODE value; a Literal here would 500 the app's boot
-    # request on a mis-set environment.
-    authMode: str
+    # The three modes api/auth.py implements. api.auth now validates
+    # AUTH_MODE at import and refuses to START on anything else (an
+    # unrecognized mode silently no-opped the middleware — fail-open), so a
+    # running service can only ever hold one of these values and the
+    # Literal cannot 500 a boot request the way a mis-set env once could.
+    authMode: Literal["open", "firebase", "iap"]
     firebase: Optional[FirebaseWebConfig] = None
 
 
@@ -525,8 +532,15 @@ class ExpectedMove(ApiModel):
     pred_bucket: Optional[int] = None
     probabilities: Optional[ExpectedMoveProbabilities] = None
     max_proba: Optional[float] = None
-    model_version: Any = None
-    ts: Any = None
+    # magnitude_predictions.model_version is VARCHAR(64) — the producer
+    # (lib/movement_statement.py) passes the raw DB value straight through,
+    # so string-or-null is the whole wire domain. `ts` arrives as a
+    # datetime from the SQL row and FastAPI ISO-stringifies it; the Union
+    # keeps that path valid while declaring the wire type (a bare `Any`
+    # generated `unknown` on the solyra side and defeated its widening
+    # check — its issue #56).
+    model_version: Optional[str] = None
+    ts: Optional[Union[datetime, str]] = None
     atr_20: Optional[float] = None
     current_price: Optional[float] = None
     usage_guidance: Optional[str] = None
@@ -539,10 +553,15 @@ class Regime(ApiModel):
     role: Optional[str] = None
     regime: Optional[str] = None
     mood: Optional[str] = None
-    gamma_flip: Any = None
-    total_gex: Any = None
-    data_source: Any = None
-    snapshot_ts: Any = None
+    # The producer (lib/movement_statement._build_regime) passes the gamma
+    # summary's numeric flip/GEX and vendor string straight through; the
+    # bare `Any`s generated `unknown` on the solyra side and defeated its
+    # widening check (its issue #56). snapshot_ts, like ExpectedMove.ts,
+    # may be a datetime the encoder ISO-stringifies — hence the Union.
+    gamma_flip: Optional[float] = None
+    total_gex: Optional[float] = None
+    data_source: Optional[str] = None
+    snapshot_ts: Optional[Union[datetime, str]] = None
     reason: Optional[str] = None
 
 
@@ -581,6 +600,9 @@ class SignalRow(ApiModel):
     conditions_met: Any = None
     return_pct: Optional[float] = None
     ticker: str
+    # 'live' | 'replay' | 'backfill' — disclosed, deliberately not filtered.
+    # See the note in routers/signals.py.
+    run_kind: Optional[str] = None
 
 
 class SignalsResponse(ApiModel):
@@ -614,6 +636,12 @@ class SimilarMatch(ApiModel):
     return_pct: Optional[float] = None
     return_5min: Optional[float] = None
     return_20min: Optional[float] = None
+    # Disclosed for the same reason as SignalRow.run_kind: this endpoint
+    # returns individual historical_signals rows, and the decision not to
+    # filter the corpus only holds if a consumer can see which rows are
+    # backfilled. The first revision added the field to the list endpoint
+    # and missed this one (Codex on #1098).
+    run_kind: Optional[str] = None
 
 
 class SimilarResponse(ApiModel):
@@ -1157,11 +1185,21 @@ class MineStyleProfile(ApiModel):
     total: int
 
 
+class MineStyleAggregateMetrics(ApiModel):
+    """The keys the frontend's style panel renders, typed but optional:
+    lib/walk_forward._aggregate_metrics only emits avg_*/std_* keys the
+    folds actually produced, so none of these are guaranteed present. Every
+    other fold metric passes through untyped (ApiModel allows extras)."""
+
+    avg_expectancy_pct: Optional[float] = None
+    avg_win_rate: Optional[float] = None
+    total_trades_all_folds: Optional[int] = None
+    total_folds: Optional[int] = None
+
+
 class MineStyleSuccess(ApiModel):
     profile: MineStyleProfile
-    # avg_*/std_* for every fold metric plus total_folds and
-    # total_trades_all_folds; the key set varies per request.
-    aggregate_metrics: dict[str, float]
+    aggregate_metrics: MineStyleAggregateMetrics
     stability_score: float
     staged: bool
 
@@ -1261,11 +1299,21 @@ class SignalContribution(ApiModel):
     raw: dict[str, Any]
 
 
+# Provably closed: every add_catalyst() call in lib/agents/ranker/candidates.py
+# passes one of these seven literals, and /api/insights/watchlist ranks fresh
+# per request (nothing stored can carry a legacy kind). Keep in sync with the
+# producer and with solyra's src/types/watchlist.ts CatalystType.
+CatalystKind = Literal[
+    "earnings", "sec_8k", "insider", "top_mover",
+    "economic_event", "watchlist", "manual",
+]
+
+
 class RankedTicker(ApiModel):
     ticker: str
     score: float
     pct_of_max: float
-    catalyst_types: list[str]
+    catalyst_types: list[CatalystKind]
     catalyst_metadata: dict[str, list[dict[str, Any]]]
     score_breakdown: list[SignalContribution]
 
@@ -1293,6 +1341,15 @@ class InsightHistoryRow(ApiModel):
     conviction: Optional[str] = None
     thesis: Optional[str] = None
     cost_usd: Optional[float] = None
+    # 'live' | 'replay' | 'backfill'. The History tab is the one insights
+    # surface that legitimately WANTS backfilled reports — that is what
+    # scripts/generate_historical_report.py exists to populate — so it is
+    # not filtered to live. It is disclosed instead: 70 of 807 production
+    # rows were generated after the fact (measured 2026-09-14) and the tab
+    # presented them identically to a report published that morning. An
+    # unread field is not disclosure (CLAUDE.md §3.7.1), so the UI must
+    # label a non-live row.
+    run_kind: Optional[str] = None
 
 
 class InsightHistoryResponse(ApiModel):

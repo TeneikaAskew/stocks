@@ -582,6 +582,16 @@ async def run_insight_pipeline(
     except Exception as exc:
         logger.warning("deterministic plan compute failed: %s", exc)
         persona_plans = []
+        # Record it on the REPORT, not only in the log. An empty
+        # persona_plans silently hands the headline entry/stop/targets
+        # back to the LLM a few lines below — the ARM 4/20 $237.68
+        # hallucination surface this planner exists to close — and
+        # nothing downstream could tell that apart from a deterministic
+        # plan. `failed_sections` is the channel the bundle's own
+        # degraded sections already use.
+        if "persona_plans" not in failed_sections:
+            failed_sections.append("persona_plans")
+        failed_reasons["persona_plans"] = f"{type(exc).__name__}: {exc}"
 
     # Surface the trigger regime at the top level so brief / Discord
     # consumers can render different copy without iterating into

@@ -7,7 +7,8 @@ Cloud SQL's insight_reports table. The refresh endpoint enqueues a
 run; clients poll /runs/{run_id} until status='done'.
 
 In production, refresh dispatches a Cloud Tasks message to the
-Cloud Run job (gcp/insight_pipeline_job.py). In local dev, it falls
+Cloud Run job (gcp/insight_pipeline_job.py) via the shared
+gcp.insight_tasks.enqueue_insight_task. In local dev, it falls
 back to FastAPI BackgroundTasks so you can exercise the full path
 without spinning up infrastructure.
 """
@@ -21,7 +22,7 @@ import os
 import sys
 from datetime import date, datetime, time, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 from uuid import UUID, uuid4
 
 from typing import Generator
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from gcp.insight_tasks import EnqueueOutcome, enqueue_insight_task  # noqa: E402
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
@@ -70,10 +72,19 @@ def _watchlist_owner(request: Request) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Provably closed: insight_runs.status is written only by this router
+# (INSERT 'queued', _update_run_status transitions to running/done/failed)
+# and by discord_interactions' cache-hit audit rows ('done'). Declaring the
+# set makes a rogue stored value fail loud at serialization instead of
+# serving as junk, and gives solyra's generated types the union its
+# hand-written RunStatus/RefreshResponse already claim (its issue #56).
+RunState = Literal["queued", "running", "done", "failed"]
+
+
 class RunStatus(BaseModel):
     id: str
     ticker: str
-    status: str
+    status: RunState
     trigger: str
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
@@ -84,7 +95,7 @@ class RunStatus(BaseModel):
 class RefreshResponse(BaseModel):
     run_id: str
     ticker: str
-    status: str = "queued"
+    status: RunState = "queued"
     as_of: Optional[str] = None
 
 
@@ -131,6 +142,13 @@ class ReportEnvelope(BaseModel):
     model_versions: dict
     cost_usd: Optional[float] = None
     latency_ms: Optional[int] = None
+    # 'live' | 'replay' | 'backfill'. The by-ID route deliberately serves
+    # non-live rows, so it must say so. I argued on #1098 that the id could
+    # only come from the history list, which discloses run_kind; that was
+    # incomplete — /api/insights/runs/{run_id} also returns report_id,
+    # including for an as_of replay, and a client can call the ID route
+    # directly (Codex, round 3).
+    run_kind: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -205,9 +223,9 @@ def _fetch_latest_report(
             cur.execute(
                 """
                 SELECT id::text, ticker, as_of, report, model_versions,
-                       cost_usd, latency_ms
+                       cost_usd, latency_ms, run_kind
                 FROM insight_reports
-                WHERE ticker = %s
+                WHERE ticker = %s AND run_kind = 'live'
                 ORDER BY as_of DESC
                 LIMIT 1
                 """,
@@ -217,9 +235,9 @@ def _fetch_latest_report(
             cur.execute(
                 """
                 SELECT id::text, ticker, as_of, report, model_versions,
-                       cost_usd, latency_ms
+                       cost_usd, latency_ms, run_kind
                 FROM insight_reports
-                WHERE ticker = %s AND as_of <= %s
+                WHERE ticker = %s AND run_kind = 'live' AND as_of <= %s
                 ORDER BY as_of DESC
                 LIMIT 1
                 """,
@@ -238,8 +256,12 @@ def _fetch_report_by_id(report_id: str) -> Optional[dict]:
         cur.execute(
             """
             SELECT id::text, ticker, as_of, report, model_versions,
-                   cost_usd, latency_ms
+                   cost_usd, latency_ms, run_kind
             FROM insight_reports
+            -- Deliberately NOT filtered to run_kind='live': the caller named
+            -- one row by id, so returning it is not a silent substitution the
+            -- way an unfiltered "latest for this ticker" would be. The id
+            -- comes from the history list, which discloses run_kind.
             WHERE id = %s
             """,
             (report_id,),
@@ -261,6 +283,7 @@ def _row_to_envelope(row) -> Optional[dict]:
         "model_versions": row[4],
         "cost_usd": float(row[5]) if row[5] is not None else None,
         "latency_ms": row[6],
+        "run_kind": row[7],
     }
 
 
@@ -274,7 +297,7 @@ def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
                    report->>'direction' AS direction,
                    report->>'conviction' AS conviction,
                    report->>'thesis' AS thesis,
-                   cost_usd
+                   cost_usd, run_kind
             FROM insight_reports
             WHERE ticker = %s
             ORDER BY as_of DESC
@@ -293,6 +316,7 @@ def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
             "conviction": r[3],
             "thesis": r[4],
             "cost_usd": float(r[5]) if r[5] is not None else None,
+            "run_kind": r[6],
         }
         for r in rows
     ]
@@ -384,8 +408,18 @@ def _update_run_status(
         conn.close()
 
 
-def _upsert_report(report: InsightReport) -> str:
-    """Upsert the report and return its row id."""
+def _upsert_report(report: InsightReport, as_of: Optional[Union[date, datetime]] = None) -> str:
+    """Upsert the report and return its row id.
+
+    ``as_of`` is the cutoff the caller asked for, and it decides provenance.
+    An earlier revision hardcoded 'live' on the reasoning that this is the
+    on-demand endpoint, so the row is generated now for now. That was wrong:
+    POST /api/insights/report/{ticker}/refresh accepts ``?as_of=``, and this
+    writer runs for it both in local dev and in the production
+    BackgroundTasks fallback when Cloud Tasks enqueueing fails. A
+    reconstructed historical report stamped 'live' is served as the current
+    one by the live-only query this PR adds (Codex on #1098).
+    """
     conn = connect()
     row_id = str(uuid4())
     try:
@@ -394,14 +428,19 @@ def _upsert_report(report: InsightReport) -> str:
             """
             INSERT INTO insight_reports
                 (id, ticker, as_of, report, model_versions, cost_usd,
-                 per_role_cost, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
+                 per_role_cost, latency_ms, run_kind)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s)
             ON CONFLICT (ticker, as_of) DO UPDATE
             SET report = EXCLUDED.report,
                 model_versions = EXCLUDED.model_versions,
                 cost_usd = EXCLUDED.cost_usd,
                 per_role_cost = EXCLUDED.per_role_cost,
-                latency_ms = EXCLUDED.latency_ms
+                latency_ms = EXCLUDED.latency_ms,
+                -- Provenance rides the overwrite. Without it an as-of
+                -- replay overwriting a live row left the row reading 'live'
+                -- with replay content, which the live-only reader then serves
+                -- as current; the reverse hid newly live content (Codex, #1098).
+                run_kind = EXCLUDED.run_kind
             RETURNING id::text
             """,
             (
@@ -413,6 +452,7 @@ def _upsert_report(report: InsightReport) -> str:
                 report.run_cost_usd,
                 json.dumps(report.per_role_cost),
                 report.run_latency_ms,
+                'replay' if as_of is not None else 'live',
             ),
         )
         returned = cur.fetchone()
@@ -439,7 +479,7 @@ async def _execute_pipeline(
     try:
         snapshot = load_routes_snapshot()
         report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
-        report_id = _upsert_report(report)
+        report_id = _upsert_report(report, as_of=as_of)
         _update_run_status(run_id, "done", report_id=report_id)
     except Exception as exc:
         logger.exception("pipeline run %s failed", run_id)
@@ -833,12 +873,22 @@ def refresh_insight_report(
     if _is_local_dev():
         background_tasks.add_task(_sync_run, run_id, ticker_up, parsed_as_of)
     else:
-        enqueued = _enqueue_cloud_task(run_id, ticker_up, as_of_iso=as_of)
-        if not enqueued:
+        outcome = enqueue_insight_task(run_id, ticker_up, as_of_iso=as_of)
+        if outcome == EnqueueOutcome.NOT_ENQUEUED:
             logger.warning(
-                "Cloud Tasks enqueue unavailable — falling back to BackgroundTasks"
+                "Cloud Tasks enqueue refused — falling back to BackgroundTasks"
             )
             background_tasks.add_task(_sync_run, run_id, ticker_up, parsed_as_of)
+        elif outcome == EnqueueOutcome.UNKNOWN:
+            # Deliberately no fallback. A queued child may already be
+            # running this run_id, and a BackgroundTask alongside it would
+            # race its status transitions and double its history rows. The
+            # response still says "queued", which is accurate: it may be.
+            logger.error(
+                "Cloud Tasks enqueue outcome unknown for run_id=%s (%s) — "
+                "no BackgroundTasks fallback, a child may be running it",
+                run_id, ticker_up,
+            )
 
     return RefreshResponse(
         run_id=run_id,
@@ -846,68 +896,6 @@ def refresh_insight_report(
         status="queued",
         as_of=str(parsed_as_of) if parsed_as_of else None,
     )
-
-
-def _enqueue_cloud_task(
-    run_id: str,
-    ticker: str,
-    as_of_iso: Optional[str] = None,
-) -> bool:
-    """Submit a Cloud Tasks message that runs the insight-pipeline
-    Cloud Run job with INSIGHT_RUN_ID / INSIGHT_TICKER env overrides.
-
-    Returns True on successful enqueue, False on any failure (so the
-    caller can fall back to BackgroundTasks).
-    """
-    try:
-        from google.cloud import tasks_v2  # type: ignore
-    except ImportError:
-        return False
-
-    project = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
-    region = os.environ.get("GCP_REGION", "us-east1")
-    queue = os.environ.get("INSIGHT_TASKS_QUEUE", "insight-pipeline-queue")
-    sa_email = os.environ.get(
-        "INSIGHT_TASKS_SERVICE_ACCOUNT",
-        f"trading-runner@{project}.iam.gserviceaccount.com",
-    )
-    job_url = (
-        f"https://{region}-run.googleapis.com/apis/run.googleapis.com/v1/"
-        f"namespaces/{project}/jobs/insight-pipeline:run"
-    )
-
-    try:
-        client = tasks_v2.CloudTasksClient()
-        parent = client.queue_path(project, region, queue)
-        env_vars = [
-            {"name": "INSIGHT_RUN_ID", "value": run_id},
-            {"name": "INSIGHT_TICKER", "value": ticker},
-        ]
-        if as_of_iso:
-            env_vars.append({"name": "INSIGHT_AS_OF", "value": as_of_iso})
-        body = json.dumps(
-            {
-                "overrides": {
-                    "containerOverrides": [
-                        {"env": env_vars}
-                    ]
-                }
-            }
-        ).encode()
-        task = {
-            "http_request": {
-                "http_method": tasks_v2.HttpMethod.POST,
-                "url": job_url,
-                "headers": {"Content-Type": "application/json"},
-                "body": body,
-                "oauth_token": {"service_account_email": sa_email},
-            }
-        }
-        client.create_task(parent=parent, task=task)
-        return True
-    except Exception as exc:  # network, auth, queue-missing, etc.
-        logger.warning("Cloud Tasks enqueue failed: %s", exc)
-        return False
 
 
 def _sync_run(

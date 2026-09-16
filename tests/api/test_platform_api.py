@@ -463,8 +463,11 @@ class TestJournalCRUD:
         # PUT inverts → +1.0 (the trader profited)
         assert data["return_pct"] == 1.0
 
-    def test_post_zero_entry_price_returns_zero_pct(self, client, monkeypatch):
-        """Defensive: never divide by zero."""
+    def test_post_zero_entry_price_returns_null_pct(self, client, monkeypatch):
+        """A zero entry price makes the percentage uncomputable: the return
+        is None with status 'closed', never a fabricated 0.0 a caller
+        cannot distinguish from a genuinely flat trade (Rule 3.7). This
+        test used to pin the fabricated-zero behavior."""
         self._patch_cloud_sql(monkeypatch, query_returns=pd.DataFrame([{"id": "z"}]))
         body = {
             "ticker": "IWM", "direction": "CALL",
@@ -474,7 +477,9 @@ class TestJournalCRUD:
             "exit_price": 5.0,
         }
         r = client.post("/api/journal/trades", json=body)
-        assert r.json()["return_pct"] == 0.0
+        data = r.json()
+        assert data["return_pct"] is None
+        assert data["status"] == "closed"
 
     def test_delete_round_trip_cloud_sql(self, client, monkeypatch):
         """DELETE issues a single SQL DELETE keyed on id + the signed-in owner."""
