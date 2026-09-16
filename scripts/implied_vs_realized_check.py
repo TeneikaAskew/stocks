@@ -278,7 +278,16 @@ def main():
         else:
             test_end = str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
         fold_label = f"{cut}..{test_end}"
-        fold_data = join[join["fold"] == fold_label]
+        if i + 1 < len(cutoffs):
+            fold_data = join[join["fold"] == fold_label]
+        else:
+            # The last fold is open-ended: the harness labels it with the
+            # day after ITS dataset's newest bar, and this script recomputes
+            # the label from TODAY'S dataset, so the two drift apart one day
+            # after the run and the fold silently reports NO_COVERAGE
+            # (measured 2026-09-16 on the 6hp7l CSVs: 0 of 13k bars joined).
+            # Match the fold by its start instead.
+            fold_data = join[join["fold"].str.startswith(f"{cut}..")]
         n_pe = len(fold_data)
         fold_with_iv = fold_data[fold_data["atm_iv"].notna()]
         n_iv = len(fold_with_iv)

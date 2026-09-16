@@ -496,6 +496,16 @@ class TestAnalysisScriptsUseTheDecisionRule:
                 assert got is not None
                 np.testing.assert_array_equal(got, expect)
 
+    def test_gate7_matches_the_open_ended_last_fold_by_prefix(self):
+        """implied_vs_realized_check relabels folds from today's dataset; the
+        harness labelled the last fold with the day after ITS newest bar.
+        One day later the labels differ and the fold reported NO_COVERAGE
+        (2026-09-16, 6hp7l). The last fold joins by its start date."""
+        import inspect
+        from scripts import implied_vs_realized_check as g7
+        src = inspect.getsource(g7.main)
+        assert 'join["fold"].str.startswith(f"{cut}..")' in src
+
     def test_bootstrap_constant_fold_has_no_lift(self):
         from scripts.bootstrap_gate_fragility import fold_gates
         n = 200

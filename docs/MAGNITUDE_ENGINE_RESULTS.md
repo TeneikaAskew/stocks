@@ -518,6 +518,9 @@ Per-fold ratios (IWM 5m sample):
 
 **Gate 7 verdict**: **FAIL on every cell.** Zero of 23 IV-covered folds
 across all three 5m-passing cells crossed the 1.25 ratio threshold.
+(Computed on argmax-EXPLOSIVE bars. Re-run 2026-09-16 on the decision-rule
+population, roughly 100× more called bars per fold: 0 of 21, mean ratio
+0.68-0.75. §12.)
 The highest single-fold ratio was 1.23 (SPY 5m, 2020 COVID regime) —
 still under the bar.
 
@@ -1457,3 +1460,40 @@ exactly as recorded in §10; this re-run says the bar itself is one a
 calendar lookup clears, which is a statement about the bar, not about
 whether the models are calibrated. It reopens the product question of
 what the served size class is worth (open decisions doc).
+
+*Gate 7, re-run on the decision-rule population (`direction-probe`
+`cb4zw` / `m68nf` / `wtcqd`, `implied_vs_realized_check.py`, `6hp7l`
+predictions, same pre-set bar: ratio ≥ 1.25 in ≥ 6 IV-covered folds).*
+The May verdict was computed on argmax-EXPLOSIVE bars, roughly a dozen
+per fold; the decision rule names EXPLOSIVE on 1,400 to 3,200 test bars
+per fold, so the population the ratio is conditional on changed and the
+verdict had to be re-established, not retained.
+
+| cell | folds w/ IV coverage | passing gate 7 | per-fold realised/implied | mean ratio |
+|---|---|---|---|---|
+| SPY 5m | 7/8 | **0/7** | 0.60 0.84 0.53 0.74 0.72 0.72 0.66 | 0.69 |
+| QQQ 5m | 7/8 | **0/7** | 0.40 0.78 0.65 0.82 0.67 0.73 0.70 | 0.68 |
+| IWM 5m | 7/8 | **0/7** | 0.50 0.76 0.77 0.77 0.78 0.81 0.86 | 0.75 |
+
+**Gate 7 verdict under the decision rule: FAIL on every cell**, 0 of 21
+IV-covered folds, and further under the bar than in May (0.83-0.92 mean
+ratio then; 0.68-0.75 now). Realised moves on the called bars average
+two thirds of the straddle-implied move: the broader population the
+rule names is priced at least as fully as the narrow argmax set was.
+The project verdict at the top of this document stands. The 2026 fold
+reported no coverage on all three cells for a script reason, not a data
+one: the harness labels the open-ended last fold with the day after its
+own dataset's newest bar, and the check recomputes that label from
+today's dataset, so the labels differed by one day and 0 of the fold's
+13k bars joined. Fixed in the script (the last fold now matches by its
+start date); a re-run for that one fold cannot move the verdict (six
+passing folds would be needed) and is folded into the next research
+image build.
+
+The three findings together: the promoted `6hp7l` models are calibrated
+(gates 1-4, 5, 6) and correctly name the session's large bars (§11),
+but a calendar table clears the same gates 1-4, the models' margin over
+it is +0.5 to +1.0× within-cell lift, and on the bars the rule names the
+market already prices a larger move than is realised. The Expected-Move
+card's honest reading is "how big the next bar is likely to be relative
+to normal", never a trade.

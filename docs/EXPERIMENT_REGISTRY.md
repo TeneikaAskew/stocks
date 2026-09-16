@@ -355,7 +355,8 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Question:** on EXPLOSIVE bars, does the realized move beat the option-implied move?
 - **Method:** realized `|next_open−next_close|` vs `spot × ATM_IV × √(5/98280)`; ratio ≥ **1.25** in ≥6 IV-covered folds.
 - **Results:** **0/23 IV-covered folds pass**; mean ratio 0.83–0.92; best 1.23 (SPY 5m 2020). Within-cell boost is calendar + vol-clustering (priced).
-- **Verdict:** ❌ closed the magnitude project (2026-05-29). The empirical VRP/cost gate.
+- **Re-run 2026-09-16 (E-26 decision rule, `6hp7l` predictions, `direction-probe-cb4zw/m68nf/wtcqd`):** the called population is ~100× larger per fold (1.4k–3.2k bars) and the verdict is the same or worse: **0/21 IV-covered folds pass**, mean ratio 0.68–0.75, best fold 0.86 (IWM 2025). Results doc §12.
+- **Verdict:** ❌ closed the magnitude project (2026-05-29); re-established under the served decision rule 2026-09-16. The empirical VRP/cost gate.
 - **Artifacts:** `scripts/implied_vs_realized_check.py`; `MAGNITUDE_ENGINE_RESULTS.md:444`.
 
 ## E-13 · MAG-SIZE `excursion` label
