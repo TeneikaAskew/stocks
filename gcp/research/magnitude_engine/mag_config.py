@@ -581,6 +581,19 @@ def contract_mismatch(payload: dict,
         if isinstance(val, (str, bytes)) or not isinstance(val, (list, tuple)):
             raise ValueError(
                 f"{CONTRACT_BLOB} {key}={val!r} is not a JSON array")
+    # JSON booleans are ints to float(): [true, false, false, false] would
+    # read as priors (1, 0, 0, 0), pass every distribution check, and make
+    # three buckets unnameable so the model serves TIGHT on every row
+    # (Codex P2 on #1117). A boolean is not a number in a contract.
+    for key in ("thresholds", "class_priors"):
+        if any(isinstance(v, bool) for v in payload[key]):
+            raise ValueError(
+                f"{CONTRACT_BLOB} {key}={payload[key]!r} is not a list of "
+                f"numbers: contains a boolean")
+    if isinstance(payload["decision_lift_min"], bool):
+        raise ValueError(
+            f"{CONTRACT_BLOB} decision_lift_min="
+            f"{payload['decision_lift_min']!r} is not a number: boolean")
     # Fail CLOSED, like the decode guard in mag_inference and for the same
     # reason. This clause was (TypeError, ValueError) and a JSON integer of
     # 400 digits -- valid JSON, under the 3.11 int-digit limit -- makes

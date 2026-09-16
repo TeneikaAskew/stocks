@@ -1613,6 +1613,11 @@ def test_a_contract_under_a_different_lift_bar_is_refused():
     ([0.5, 0.5, 0.5, 0.5], "sum to"),
     ([0.9, 0.2, -0.1, 0.0], "probabilities in"),
     ([0.64, 0.27, 0.09], "one per class"),
+    # JSON booleans coerce to 1.0 / 0.0 and would pass every distribution
+    # check as priors (1, 0, 0, 0): three unnameable buckets, TIGHT on every
+    # row (Codex P2 on #1117)
+    ([True, False, False, False], "boolean"),
+    ([0.64, 0.27, 0.07, True], "boolean"),
     (["a", "b", "c", "d"], "not a list of numbers"),
     ("0.64,0.27,0.07,0.02", "not a JSON array"),
 ])
@@ -1622,13 +1627,20 @@ def test_priors_that_are_not_a_distribution_are_malformed(priors, why):
         contract_mismatch(_contract(class_priors=priors))
 
 
-@pytest.mark.parametrize("lift", [1.0, 0.5, 0.0, -2.0, "two", float("nan")])
+@pytest.mark.parametrize("lift", [1.0, 0.5, 0.0, -2.0, "two", float("nan"), True])
 def test_a_lift_bar_at_or_under_one_is_malformed(lift):
     """A bar at or under 1.0 would name a bucket at or BELOW its base rate;
-    that is not a decision rule, it is a bug, and it fails closed."""
+    that is not a decision rule, it is a bug, and it fails closed. A JSON
+    boolean is not a number either, however it would coerce."""
     from gcp.research.magnitude_engine.mag_config import contract_mismatch
     with pytest.raises(ValueError, match="decision_lift_min"):
         contract_mismatch(_contract(decision_lift_min=lift))
+
+
+def test_boolean_thresholds_are_malformed():
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="boolean"):
+        contract_mismatch(_contract(thresholds=[0.5, True, 1.5]))
 
 
 def test_the_backfill_upgrades_a_legacy_contract_in_place():

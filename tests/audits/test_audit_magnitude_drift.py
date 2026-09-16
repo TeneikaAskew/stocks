@@ -57,6 +57,13 @@ def _row(ticker: str, tf: str, pred_bucket: int, n: int,
     }
 
 
+def _serving(rows: list[dict]) -> dict[tuple[str, str], str]:
+    """A LATEST map in which every version present in `rows` serves its
+    cell: the shape fetch_serving_versions returns, for tests that are not
+    about which version serves."""
+    return {(r["ticker"], r["tf"]): r["model_version"] for r in rows}
+
+
 def test_modal_dominance_high_fires_at_collapse():
     """The bug-class signature: one bucket dominates >=90% of bars (the
     promotion gate's collapse ceiling, shared so the two cannot disagree)."""
@@ -72,7 +79,7 @@ def test_modal_dominance_high_fires_at_collapse():
         _row("IWM", "5m", 3, 2, n_sessions=2),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     f = r.findings[0]
     assert f.severity == "MEDIUM"
@@ -88,7 +95,7 @@ def test_modal_dominance_high_fires_at_collapse():
         _row("IWM", "5m", 0, 368), _row("IWM", "5m", 2, 3), _row("IWM", "5m", 3, 4),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert r.findings[0].severity == "HIGH", r.findings[0].detail
     assert "minimum for HIGH" not in r.findings[0].detail
 
@@ -103,7 +110,7 @@ def test_a_calm_session_on_a_calibrated_model_does_not_page():
     rows = [_row("SPY", "5m", 0, 73, model="magnitude-engine-6hp7l", n_sessions=1),
             _row("SPY", "5m", 1, 2, model="magnitude-engine-6hp7l", n_sessions=1)]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     assert r.findings[0].severity == "MEDIUM"
     assert "only 1 session (75 bars)" in r.findings[0].detail
@@ -122,13 +129,13 @@ def test_the_high_minimum_is_sessions_not_a_bar_quota():
     for tf, per_session in (("5m", 75), ("15m", 23), ("30m", 10)):
         rows = [_row("IWM", tf, 0, 5 * per_session, n_sessions=5)]
         r = Report()
-        check_modal_dominance(rows, r)
+        check_modal_dominance(rows, r, _serving(rows))
         assert r.findings[0].severity == "HIGH", (tf, r.findings[0].detail)
         # Four sessions is MEDIUM however many bars they hold (at 30m four
         # sessions is under MIN_SAMPLE, so give it the sample floor).
         rows = [_row("IWM", tf, 0, max(4 * per_session, MIN_SAMPLE), n_sessions=4)]
         r = Report()
-        check_modal_dominance(rows, r)
+        check_modal_dominance(rows, r, _serving(rows))
         assert r.findings[0].severity == "MEDIUM", (tf, r.findings[0].detail)
         assert "only 4 sessions" in r.findings[0].detail
 
@@ -138,7 +145,7 @@ def test_only_the_serving_model_version_is_judged():
     c49qf's five sessions of rows (IWM 5m TIGHT on 340/375, 90.7%) were
     still inside the 7-day window beside 6hp7l's one session. A HIGH on a
     version that no longer serves is a page nobody can act on; the cell is
-    judged on the version with the newest inference write."""
+    judged on the version its LATEST pointer names."""
     from gcp.audit_magnitude_drift import Report, check_modal_dominance
     old = NOW - timedelta(hours=30)
     rows = [
@@ -149,10 +156,44 @@ def test_only_the_serving_model_version_is_judged():
         _row("IWM", "5m", 3, 19, model="magnitude-engine-6hp7l", n_sessions=1),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, {("IWM", "5m"): "magnitude-engine-6hp7l"})
     assert [f.detail for f in r.findings if "c49qf" in f.detail] == []
     assert len(r.findings) == 1 and "6hp7l" in r.findings[0].detail
     assert r.findings[0].severity == "MEDIUM"   # 51/75 = 68%
+    # The registry, not recency, decides: after a rollback the older
+    # version's rows are the newest writes, and it is still the one to judge
+    # only while LATEST names it (Codex P2 on #1117).
+    r = Report()
+    check_modal_dominance(rows, r, {("IWM", "5m"): "magnitude-engine-c49qf"})
+    assert len(r.findings) == 1 and "c49qf" in r.findings[0].detail
+    assert r.findings[0].severity == "HIGH"
+    # A cell with rows but no pointer serves nothing and is not judged.
+    r = Report()
+    check_modal_dominance(rows, r, {})
+    assert r.findings == []
+
+
+def test_serving_versions_come_from_the_registry_not_from_recency():
+    """fetch_serving_versions reads each cell's LATEST pointer, the blob
+    mag_inference follows; main() records a failed read as an error and
+    skips the check rather than judging on a guess."""
+    import inspect
+    from unittest.mock import patch
+    from gcp import audit_magnitude_drift as mod
+    src = inspect.getsource(mod.fetch_serving_versions)
+    assert "magnitude-models/production/" in src and "LATEST" in src
+    assert "last_computed" not in inspect.getsource(mod.check_modal_dominance)
+    main_src = inspect.getsource(mod.main)
+    assert "fetch_serving_versions()" in main_src
+    assert 'report.errors.append(f"fetch_serving_versions: {e}")' in main_src
+    with patch.object(mod, "fetch_distribution", return_value=[_row("IWM", "5m", 0, 375)]), \
+         patch.object(mod, "fetch_serving_versions", side_effect=RuntimeError("gcs down")), \
+         patch.object(mod, "fetch_join_coverage", return_value=[]), \
+         patch.object(mod, "post_to_discord") as post:
+        mod.main()
+    summary = post.call_args[0][0]
+    assert "fetch_serving_versions: gcs down" in summary
+    assert "modal-dominance" not in summary
 
 
 def test_a_row_without_a_session_count_fails_loud():
@@ -163,7 +204,7 @@ def test_a_row_without_a_session_count_fails_loud():
     row = _row("IWM", "5m", 0, 375)
     del row["n_sessions"]
     with _pytest.raises(KeyError, match="n_sessions"):
-        check_modal_dominance([row], Report())
+        check_modal_dominance([row], Report(), _serving([row]))
 
 
 def test_fetch_distribution_counts_sessions_in_eastern_time():
@@ -195,7 +236,7 @@ def test_modal_dominance_medium_for_a_model_over_the_base_rate():
         _row("IWM", "15m", 3, 6),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     assert r.findings[0].severity == "MEDIUM"
 
@@ -212,7 +253,7 @@ def test_modal_dominance_medium_fires_55_to_90():
         _row("QQQ", "5m", 3, 5),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     assert r.findings[0].severity == "MEDIUM"
 
@@ -229,7 +270,7 @@ def test_modal_dominance_no_finding_when_distribution_healthy():
         _row("SPY", "5m", 3, 10),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert r.findings == []
 
 
@@ -243,7 +284,7 @@ def test_modal_dominance_skips_below_min_sample():
         _row("IWM", "5m", 0, 40),   # only 40 rows total — below MIN_SAMPLE=50
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert r.findings == []
 
 
@@ -264,7 +305,7 @@ def test_modal_dominance_per_cell_isolation():
         _row("QQQ", "5m", 3, 15),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     assert r.findings[0].target == "IWM:5m"
 

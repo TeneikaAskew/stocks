@@ -1365,3 +1365,25 @@ sessions, the constant model that the bar quota could never have paged
 and that open decision (a) is about), SPY 5m `6hp7l` MEDIUM at 146/150
 with "only 2 sessions" in the reason, IWM and QQQ 5m MEDIUM at 81-83%.
 The retired `c49qf` 5m rows still in the window were not judged.
+
+**Third pass (Codex on `1c61c6be`, four P2s).** (1) With the `ts` bind
+fixed, the walk-forward's per-bar SQL write would have landed ~140k rows
+per cell per phase0 run, over a million for a nine-cell dispatch, with no
+reader (every live read and the auditor filter to `source='inference'`),
+no retention, and each run's history inside the auditor's scan window.
+The write is removed rather than fixed: the per-bar CSV in GCS is the
+evidence gates 5-7 read, and `magnitude_per_bar_predictions` is the
+inference job's table. (2) The auditor's "serving version" was inferred
+from the newest `computed_at` per version, which the inference upsert
+does not advance on re-scoring; after a rollback and restore it would
+have kept judging the rolled-back model until a new bar arrived. It now
+reads each cell's `LATEST` pointer, the blob inference follows, and a
+failed registry read is an error in the summary with the check skipped,
+never run on a guess. (3) `contract_mismatch` coerced JSON booleans to
+numbers: `[true, false, false, false]` read as priors (1, 0, 0, 0),
+passed every distribution check and would have served TIGHT on every
+row; booleans are refused in priors, thresholds and the lift bar. (4)
+`MAG_CLASS_WEIGHT_POWER` accepted any finite number while
+`resolve_class_weight` clamps outside [0, 1], so `--class-weight-power=10`
+would have trained balanced with the summary recording 10; values outside
+[0, 1] are refused.

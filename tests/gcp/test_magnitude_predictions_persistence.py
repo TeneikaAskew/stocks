@@ -1,10 +1,14 @@
-"""Phase A regression tests: per-bar predictions persistence.
+"""Per-bar predictions: where they live and where they must not.
 
-Pins the contract of magnitude_per_bar_predictions persistence wired
-into mag_walk_forward.
-
-We mock the SQLAlchemy engine so we don't need a live Cloud SQL —
-focus is on the row-shape + filtering contract.
+magnitude_per_bar_predictions is written by the live inference job only.
+The walk-forward harness keeps its per-bar predictions in the GCS CSV
+(gates 5-7 read it) and never writes them to Cloud SQL: the copy would
+be ~140k unread rows per cell per phase0 run, with no reader (every live
+read and the auditor filter to source='inference') and no retention, and
+each run's history would sit in the auditor's scan window (Codex P2 on
+#1117). Its write had in fact never succeeded (SQLSTATE 42804 on every
+6hp7l cell, ts bound as VARCHAR). These tests pin the DDL the inference
+job applies and the absence of the harness write.
 """
 from __future__ import annotations
 
@@ -67,156 +71,6 @@ def _restore_stubbed_modules():
     _STUBBED_BY_THIS_MODULE.clear()
 
 
-@pytest.fixture
-def fake_folds():
-    """Two folds, each with 3 per-bar predictions in the documented
-    tuple shape."""
-    fold_a_preds = [
-        # (fold_label, ts_str, true_idx, pred_idx, max_proba,
-        #  p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE)
-        ("2022..2023", "2022-01-03 14:30:00+00:00", 1, 2, 0.55,
-         0.10, 0.30, 0.55, 0.05),
-        ("2022..2023", "2022-01-03 14:35:00+00:00", 0, 0, 0.62,
-         0.62, 0.30, 0.05, 0.03),
-        ("2022..2023", "2022-01-03 14:40:00+00:00", 3, 3, 0.71,
-         0.05, 0.10, 0.14, 0.71),
-    ]
-    fold_b_preds = [
-        ("2023..2024", "2023-01-03 14:30:00+00:00", 1, 1, 0.48,
-         0.20, 0.48, 0.27, 0.05),
-    ]
-    return [
-        {"fold": "2022..2023", "_predictions": fold_a_preds,
-         "predictions_columns": ["fold", "ts", "true_bucket_idx",
-                                  "pred_bucket_idx", "max_proba",
-                                  "p_TIGHT", "p_NORMAL",
-                                  "p_EXPANDED", "p_EXPLOSIVE"]},
-        {"fold": "2023..2024", "_predictions": fold_b_preds,
-         "predictions_columns": ["fold", "ts", "true_bucket_idx",
-                                  "pred_bucket_idx", "max_proba",
-                                  "p_TIGHT", "p_NORMAL",
-                                  "p_EXPANDED", "p_EXPLOSIVE"]},
-    ]
-
-
-def _capture_to_sql():
-    """Return a (mock_engine, captured_dfs) tuple where every df.to_sql
-    call's data is appended to captured_dfs."""
-    captured: list[pd.DataFrame] = []
-    mock_conn = MagicMock()
-    mock_engine = MagicMock()
-    mock_engine.begin.return_value.__enter__.return_value = mock_conn
-
-    original_to_sql = pd.DataFrame.to_sql
-    def fake_to_sql(self, name, con, *args, **kw):
-        if name == "magnitude_per_bar_predictions":
-            captured.append(self.copy())
-    with patch.object(pd.DataFrame, "to_sql", fake_to_sql):
-        yield mock_engine, captured
-
-
-@pytest.fixture
-def engine_and_capture():
-    """Yield (mock_engine, list_to_be_filled_with_to_sql_dataframes)."""
-    gen = _capture_to_sql()
-    yield next(gen)
-
-
-# ──────────────────── persistence shape ────────────────────
-
-def test_predictions_persisted_with_expected_schema(fake_folds,
-                                                    engine_and_capture):
-    """Verify each persisted row carries the expected per-bar columns."""
-    mock_engine, captured = engine_and_capture
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-    mwf._persist_predictions_table(mock_engine, "IWM", "5m",
-                                    fake_folds, run_id="test-run-1")
-
-    assert len(captured) == 1, "to_sql should be called exactly once"
-    df = captured[0]
-    assert len(df) == 4, "3 + 1 per-bar rows from 2 folds"
-    required = {
-        "ticker", "tf", "ts",
-        "p_tight", "p_normal", "p_expanded", "p_explosive",
-        "pred_bucket", "max_proba",
-        "model_version", "fold_label", "source",
-    }
-    assert required.issubset(df.columns), \
-        f"missing columns: {required - set(df.columns)}"
-
-
-def test_predictions_carry_run_id_as_model_version(fake_folds,
-                                                   engine_and_capture):
-    """model_version must equal run_id so a later run with a different
-    model can coexist with the original."""
-    mock_engine, captured = engine_and_capture
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-    mwf._persist_predictions_table(mock_engine, "IWM", "5m",
-                                    fake_folds, run_id="2026-06-02-IWM-5m-v1")
-
-    df = captured[0]
-    assert (df["model_version"] == "2026-06-02-IWM-5m-v1").all()
-
-
-def test_predictions_source_is_walk_forward(fake_folds, engine_and_capture):
-    """Walk-forward-emitted rows must be tagged source='walk_forward' so
-    Phase B's live-inference rows can be distinguished."""
-    mock_engine, captured = engine_and_capture
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-    mwf._persist_predictions_table(mock_engine, "IWM", "5m",
-                                    fake_folds, run_id="test-run")
-    df = captured[0]
-    assert (df["source"] == "walk_forward").all()
-
-
-def test_predictions_probabilities_match_input_tuples(fake_folds,
-                                                      engine_and_capture):
-    """Verify the unpacking from the tuple shape into columns is correct
-    — the 3rd row of fold A is the EXPLOSIVE example (p_explosive=0.71)."""
-    mock_engine, captured = engine_and_capture
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-    mwf._persist_predictions_table(mock_engine, "IWM", "5m",
-                                    fake_folds, run_id="t")
-    df = captured[0]
-    row = df[df["ts"] == "2022-01-03 14:40:00+00:00"].iloc[0]
-    assert row["p_explosive"] == 0.71
-    assert row["p_tight"] == 0.05
-    assert row["pred_bucket"] == 3
-    assert row["max_proba"] == 0.71
-
-
-def test_predictions_drops_no_predictions_folds(engine_and_capture):
-    """Folds without `_predictions` (e.g. SKIP_THIN) are silently skipped,
-    not raising or producing junk rows."""
-    folds = [
-        {"fold": "skipped", "_predictions": None},
-        {"fold": "empty", "_predictions": []},
-        {"fold": "ok", "_predictions": [
-            ("ok", "2024-01-01 14:30:00", 0, 0, 0.55,
-             0.55, 0.30, 0.10, 0.05)
-        ]},
-    ]
-    mock_engine, captured = engine_and_capture
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-    mwf._persist_predictions_table(mock_engine, "IWM", "5m", folds,
-                                    run_id="t")
-    assert len(captured) == 1
-    assert len(captured[0]) == 1
-
-
-def test_no_predictions_no_insert(engine_and_capture):
-    """If no fold has any predictions, skip the INSERT entirely (don't
-    open a tx just to do nothing)."""
-    mock_engine, captured = engine_and_capture
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-    mwf._persist_predictions_table(mock_engine, "IWM", "5m",
-                                    [{"fold": "a", "_predictions": []}],
-                                    run_id="t")
-    assert len(captured) == 0
-    # begin() shouldn't be called either
-    mock_engine.begin.assert_not_called()
-
-
 # ──────────────────── DDL contract ────────────────────
 
 def test_predictions_ddl_contains_primary_key():
@@ -231,7 +85,7 @@ def test_predictions_ddl_contains_primary_key():
 
 
 def test_predictions_ddl_has_source_column():
-    """source column distinguishes walk_forward vs inference rows."""
+    """source column: 'inference' on every row; live reads filter on it."""
     from gcp.research.magnitude_engine.mag_walk_forward import (
         PREDICTIONS_DDL_CREATE,
     )
@@ -249,30 +103,6 @@ def test_predictions_ddl_index_exists():
     assert "ts DESC" in PREDICTIONS_DDL_INDEX
 
 
-def test_the_walk_forward_pop_happens_after_the_sql_persist():
-    """`_persist_predictions_table` reads `_predictions` off each fold dict.
-
-    The CSV-harvest loop pops that key so it cannot bloat the summary JSON.
-    If the pop runs BEFORE the SQL persist, every fold arrives empty, the
-    persist logs "no per-bar predictions to persist" and returns, and the
-    walk-forward half of magnitude_per_bar_predictions is silently never
-    written. Measured on 2026-09-14: the table held 16,666 rows, all
-    source='inference' and zero source='walk_forward', while the GCS CSVs
-    for the same runs were complete -- the CSV write reads the harvested
-    list, so only the SQL consumer starved.
-    """
-    import inspect
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-
-    src = inspect.getsource(mwf.walk_forward)
-    pop_at = src.index('f.pop("_predictions"')
-    persist_at = src.index("_persist_predictions_table(engine")
-    assert persist_at < pop_at, (
-        "_predictions is popped off the folds before "
-        "_persist_predictions_table reads them; the SQL write silently "
-        "receives zero rows")
-
-
 def test_the_summary_json_never_carries_the_per_bar_predictions():
     """The pop must still happen before the summary is serialised -- moving
     it later must not reintroduce the bloat it exists to prevent."""
@@ -287,20 +117,23 @@ def test_the_summary_json_never_carries_the_per_bar_predictions():
         "attached to every fold")
 
 
-def test_predictions_ts_is_bound_as_a_timestamp_not_text(fake_folds,
-                                                          engine_and_capture):
-    """Every cell of magnitude-engine-6hp7l (2026-09-15) logged SQLSTATE
-    42804, 'column "ts" is of type timestamp with time zone but expression
-    is of type character varying': the fold rows carry ts as str(datetime64)
-    and to_sql bound it as text. The table held no walk_forward rows at all.
-    The frame handed to to_sql must carry a tz-aware datetime."""
-    from gcp.research.magnitude_engine.mag_walk_forward import (
-        _persist_predictions_table,
-    )
-    mock_engine, captured = engine_and_capture
-    _persist_predictions_table(mock_engine, "IWM", "5m", fake_folds, "run-x")
-    assert captured, "to_sql was never called"
-    ts = captured[0]["ts"]
-    assert pd.api.types.is_datetime64tz_dtype(ts), ts.dtype
-    assert str(ts.dt.tz) == "UTC"
-    assert ts.iloc[0] == pd.Timestamp("2022-01-03 14:30:00+00:00")
+def test_the_harness_never_writes_per_bar_rows_to_cloud_sql():
+    """The per-bar CSV in GCS is the harness's evidence; the SQL table is
+    the inference job's. A write here is ~140k unread rows per cell per run
+    and a scan-window tax on the auditor (Codex P2 on #1117)."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    src = inspect.getsource(mwf)
+    assert "_persist_predictions_table" not in src
+    assert 'to_sql("magnitude_per_bar_predictions"' not in src
+    assert "INSERT INTO magnitude_per_bar_predictions" not in src
+    wf = inspect.getsource(mwf.walk_forward)
+    assert "predictions_{run_id}.csv" in wf          # the CSV is still written
+    assert "execute_sql(PREDICTIONS_DDL" not in wf   # and the table is inference's to create
+
+
+def test_the_inference_job_owns_the_predictions_table_ddl():
+    import inspect
+    from gcp.research.magnitude_engine import mag_inference as mi
+    src = inspect.getsource(mi)
+    assert "PREDICTIONS_DDL_CREATE" in src and "PREDICTIONS_DDL_INDEX" in src

@@ -341,20 +341,58 @@ def _parse_last_computed(value) -> datetime | None:
     return None
 
 
-_NEVER = datetime.min.replace(tzinfo=timezone.utc)
-
-
 def _cell_key(row: dict) -> tuple[str, str, str]:
     return (row["ticker"], row["tf"], row["model_version"])
 
 
-def check_modal_dominance(rows: list[dict], report: Report) -> None:
-    """Per (ticker, tf, model_version), compute the modal-class share.
+def fetch_serving_versions() -> dict[tuple[str, str], str]:
+    """The model version each (ticker, tf) is serving: the run id in its
+    `magnitude-models/production/{T}/{tf}/LATEST` pointer, the same blob
+    mag_inference follows to pick what to score with. Cells with no pointer
+    are absent. Raises on any read failure; the caller records it and the
+    modal-dominance check does not run, visibly, rather than judging
+    versions it cannot place.
+
+    Read from the registry rather than inferred from the rows: the newest
+    `computed_at` per version does not identify the serving one, because
+    the inference upsert preserves a row's first-insert time. After a
+    rollback and restore, the restored model's rescoring of bars it had
+    already scored advances nothing, so recency kept pointing at the
+    rolled-back version until a genuinely new bar arrived (Codex P2 on
+    #1117).
+    """
+    from google.cloud import storage as gcs
+    from google.api_core import exceptions as gapi
+    from gcp.research.magnitude_engine.mag_config import (
+        GCS_BUCKET_DEFAULT, TICKERS, TIMEFRAMES,
+    )
+    bucket = gcs.Client().bucket(os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT))
+    out: dict[tuple[str, str], str] = {}
+    for ticker in TICKERS:
+        for tf in TIMEFRAMES:
+            blob = bucket.blob(f"magnitude-models/production/{ticker}/{tf}/LATEST")
+            try:
+                out[(ticker, tf)] = blob.download_as_text().strip()
+            except gapi.NotFound:
+                continue
+    return out
+
+
+def check_modal_dominance(rows: list[dict], report: Report,
+                          serving: dict[tuple[str, str], str]) -> None:
+    """Per (ticker, tf), compute the modal-class share of the SERVING
+    model version (`serving`, from fetch_serving_versions).
 
     HIGH: modal >= MODAL_DOMINANCE_HIGH across at least MIN_SESSIONS_FOR_HIGH
           distinct sessions (collapsed model)
     MEDIUM: modal >= MODAL_DOMINANCE_MED (worth eyeballing), or over the
             HIGH ceiling on too few sessions to page
+
+    Only the serving version is judged. A replaced model's rows stay in the
+    window for LOOKBACK_DAYS after the pointer moves (measured 2026-09-16:
+    c49qf's five sessions of IWM 5m rows sat beside 6hp7l's one), and
+    paging on a model that no longer serves is a page nobody can act on.
+    A cell with rows but no pointer is likewise skipped: nothing serves it.
     """
     if not rows:
         return
@@ -362,26 +400,9 @@ def check_modal_dominance(rows: list[dict], report: Report) -> None:
     for r in rows:
         by_cell.setdefault(_cell_key(r), []).append(r)
 
-    # Only the version each (ticker, tf) is SERVING is judged: the one whose
-    # newest inference write is most recent. A replaced model's rows stay in
-    # the window for LOOKBACK_DAYS after the pointer moves (measured
-    # 2026-09-16: c49qf's five sessions of IWM 5m rows sat beside 6hp7l's
-    # one), and paging on a model that no longer serves is a page nobody
-    # can act on. The rows themselves are unchanged; drift on the retired
-    # version is still in the distribution query for anyone reading it.
-    serving: dict[tuple[str, str], tuple] = {}
-    for (ticker, tf, mv), cell_rows in by_cell.items():
-        # last_computed is NOT NULL in the table; an unparseable value sorts
-        # oldest rather than raising inside a max() over the cell.
-        newest = max((_parse_last_computed(r["last_computed"]) or _NEVER)
-                     for r in cell_rows)
-        cur = serving.get((ticker, tf))
-        if cur is None or newest > cur[0]:
-            serving[(ticker, tf)] = (newest, mv)
-
     for cell, cell_rows in sorted(by_cell.items()):
         ticker, tf, mv = cell
-        if serving[(ticker, tf)][1] != mv:
+        if serving.get((ticker, tf)) != mv:
             continue
         total = sum(r["n_predictions"] for r in cell_rows)
         if total < MIN_SAMPLE:
@@ -491,7 +512,15 @@ def main() -> int:
         report.errors.append(f"fetch_distribution: {e}")
         rows = []
 
-    check_modal_dominance(rows, report)
+    # The check needs to know which version each cell serves; without that
+    # it would judge retired versions, so a failed registry read is an error
+    # in the summary and the check is skipped, never run on a guess.
+    try:
+        serving = fetch_serving_versions()
+    except Exception as e:
+        report.errors.append(f"fetch_serving_versions: {e}")
+    else:
+        check_modal_dominance(rows, report, serving)
     check_cell_silence(rows, report, EXPECTED_CELLS)
 
     # Feature-join coverage — the movement-statement sizing calculator reads

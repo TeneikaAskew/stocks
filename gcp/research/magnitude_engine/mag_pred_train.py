@@ -336,6 +336,15 @@ def class_weight_power() -> float:
             f"MAG_CLASS_WEIGHT_POWER={raw!r} is not a number") from e
     if not np.isfinite(alpha):
         raise ValueError(f"MAG_CLASS_WEIGHT_POWER={raw!r} is not finite")
+    # resolve_class_weight clamps: >= 1 is 'balanced', <= 0 is unweighted.
+    # A value outside [0, 1] would therefore train under a different
+    # exponent than the one recorded in the summary, which is the unrecorded
+    # configuration this function exists to end (Codex P2 on #1117).
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(
+            f"MAG_CLASS_WEIGHT_POWER={raw!r} is outside [0, 1]; 0 is "
+            f"unweighted, 1 is balanced, and anything beyond would be "
+            f"clamped to one of those while the summary recorded {alpha}")
     return alpha
 
 

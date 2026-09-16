@@ -109,12 +109,10 @@ CREATE INDEX IF NOT EXISTS ix_mwfr_cell ON
     magnitude_walk_forward_results (phase, ticker, tf, computed_at DESC)
 """
 
-# Per-bar predictions table — added 2026-06-02 to operationalize the
-# research artifact. Walk-forward already produces (ticker, tf, ts,
-# p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE, pred_bucket, max_proba)
-# per scored bar; this DDL gives them a queryable home so the live
-# inference job (mag_inference.py) and the FastAPI consumer route can
-# read them.
+# Per-bar predictions table — added 2026-06-02. Written by the live
+# inference job (mag_inference.py) only; the FastAPI route and the movement
+# statement read it. The DDL lives here beside the results table and is
+# applied by mag_inference.
 #
 # Gate-7 caveat: predictions are a SIZING / FILTERING / STRIKE-SELECTION
 # signal, not a standalone non-directional trade signal. See
@@ -139,7 +137,12 @@ CREATE TABLE IF NOT EXISTS magnitude_per_bar_predictions (
     -- Provenance for reproducibility + drift detection.
     model_version VARCHAR(64)      NOT NULL,
     fold_label    VARCHAR(32),     -- NULL for live-inference rows
-    source        VARCHAR(16)      NOT NULL,  -- 'walk_forward' | 'inference'
+    -- 'inference' on every row. 'walk_forward' was the harness's intended
+    -- value, but its write never succeeded (ts bound as VARCHAR, SQLSTATE
+    -- 42804, 2026-06 to 2026-09) and was removed on 2026-09-16 rather than
+    -- fixed: the per-bar CSV in GCS is the evidence, and the SQL copy would
+    -- have been ~140k unread rows per cell per run. Live reads filter on it.
+    source        VARCHAR(16)      NOT NULL,
     computed_at   TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
     PRIMARY KEY (ticker, tf, ts, model_version)
 )
@@ -326,70 +329,6 @@ def _persist_results_table(engine, phase: str, ticker: str, tf: str,
         df.to_sql("magnitude_walk_forward_results", conn,
                    if_exists="append", index=False, method="multi")
     log.info("persisted %d folds to magnitude_walk_forward_results", len(df))
-
-
-def _persist_predictions_table(engine, ticker: str, tf: str,
-                                folds: list[dict], run_id: str) -> None:
-    """Flush per-bar predictions from all folds into
-    magnitude_per_bar_predictions.
-
-    The fold dicts carry `_predictions` rows shaped as:
-        (fold_label, ts_str, true_bucket_idx, pred_bucket_idx,
-         max_proba, p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE)
-
-    We drop `true_bucket_idx` (the table is for inference; ground-truth
-    lives in the source bars) and shape into the table schema.
-
-    `model_version = run_id` ties every row to the specific
-    walk-forward execution that produced it. The PRIMARY KEY
-    (ticker, tf, ts, model_version) lets a later run from a different
-    model coexist with the original for A/B comparison.
-
-    Idempotent on re-run because the run_id changes; the same
-    walk-forward dispatch re-using the same run_id would conflict, which
-    is the intended safety net (operator must bump run_id to overwrite).
-    """
-    rows: list[dict] = []
-    for f in folds:
-        fold_label = f.get("fold", "?")
-        for r in (f.get("_predictions") or []):
-            # Unpack: (fold_label_x, ts, _true_idx, pred_idx, max_proba,
-            #          p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE)
-            _fl, ts_str, _true_idx, pred_idx, max_p, p_t, p_n, p_e, p_x = r
-            rows.append({
-                "ticker": ticker, "tf": tf,
-                "ts": ts_str,
-                "p_tight": p_t, "p_normal": p_n,
-                "p_expanded": p_e, "p_explosive": p_x,
-                "pred_bucket": int(pred_idx),
-                "max_proba": float(max_p),
-                "model_version": run_id,
-                "fold_label": fold_label,
-                "source": "walk_forward",
-            })
-
-    if not rows:
-        log.info("no per-bar predictions to persist (folds=%d)", len(folds))
-        return
-
-    df = pd.DataFrame(rows)
-    # `ts` arrives as str(numpy datetime64) from train_and_evaluate_fold.
-    # Bound as text it is a VARCHAR to Postgres, and the INSERT fails with
-    # SQLSTATE 42804 ("column ts is of type timestamp with time zone but
-    # expression is of type character varying") -- which is what every cell
-    # of magnitude-engine-6hp7l logged on 2026-09-15, and why the table
-    # held no walk_forward rows at all despite the writer existing since
-    # #597. Parse to tz-aware UTC so the bind matches the column.
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    # Chunk size matters: pg8000's bind-param limit is 65535. With 13
-    # columns/row, max-safe chunk is ~5000. We use 2000 for headroom and
-    # to keep per-INSERT wall-clock under 5s.
-    with engine.begin() as conn:
-        df.to_sql("magnitude_per_bar_predictions", conn,
-                  if_exists="append", index=False,
-                  method="multi", chunksize=2000)
-    log.info("persisted %d per-bar predictions to magnitude_per_bar_predictions",
-             len(df))
 
 
 def promotion_verdict(y_proba: np.ndarray, class_priors: np.ndarray) -> dict:
@@ -898,12 +837,9 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
              gates["g4_lift_pass_folds"], "PASS" if gates["g4_pass"] else "FAIL")
     log.info("=" * 70)
 
-    # Harvest predictions for the per-cell CSV. They are NOT removed from
-    # the fold dicts here: _persist_predictions_table reads `_predictions`
-    # off each fold further down, so popping at this point starved the SQL
-    # write of every row while the CSV stayed complete (the CSV reads the
-    # harvested list). The pop happens after that call, just before the
-    # summary is serialised -- see _drop_predictions_from_folds below.
+    # Harvest predictions for the per-cell CSV, the one durable home of the
+    # per-bar rows. They come off the fold dicts just before the summary is
+    # serialised (below), never earlier.
     pred_columns = None
     pred_rows: list[tuple] = []
     for f in folds:
@@ -959,8 +895,6 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     try:
         execute_sql(RESULTS_DDL_CREATE)
         execute_sql(RESULTS_DDL_INDEX)
-        execute_sql(PREDICTIONS_DDL_CREATE)
-        execute_sql(PREDICTIONS_DDL_INDEX)
     except Exception as e:
         # Race on CREATE/INDEX — fine, table will already exist by the
         # time we try to insert.
@@ -985,13 +919,14 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                      "GCS under _research/%s/", research, research)
         else:
             _persist_results_table(engine, phase, ticker, tf, folds, run_id)
-            # Per-bar predictions go here BEFORE the pop loop below drops
-            # `_predictions` from each fold dict. Skipped on phase != 'phase0'
-            # to avoid duplicating identical rows across phases (phases share
-            # the same backbone features in our config; only phase0's per-bar
-            # output is canonical for live consumers).
-            if phase == "phase0":
-                _persist_predictions_table(engine, ticker, tf, folds, run_id)
+            # Per-bar predictions are NOT written to magnitude_per_bar_
+            # predictions. The GCS CSV above is the evidence (gates 5-7 read
+            # it); the SQL copy would add ~140k rows per cell per phase0 run,
+            # over a million for a nine-cell dispatch, with no reader (every
+            # live read and the auditor filter to source='inference') and no
+            # retention, and each run's history would sit in the auditor's
+            # computed_at scan window (Codex P2 on #1117). The write had in
+            # fact never succeeded (see the DDL comment on `source`).
     except Exception as e:
         # Hard failure — log loud, but DON'T fail the task because GCS
         # persistence is the canonical output anyway.
@@ -1021,9 +956,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf,
             label_mode=label_mode, thresholds=thresholds)
-    # Only now that both consumers (the CSV harvest above and
-    # _persist_predictions_table) have read them do the per-bar rows come
-    # off the folds -- they would otherwise bloat the summary JSON by
+    # Only now that the CSV harvest above has read them do the per-bar rows
+    # come off the folds -- they would otherwise bloat the summary JSON by
     # orders of magnitude.
     for f in folds:
         f.pop("_predictions", None)

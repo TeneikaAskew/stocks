@@ -359,7 +359,21 @@ class TestClassWeightPower:
             with pytest.raises(ValueError, match="MAG_CLASS_WEIGHT_POWER"):
                 class_weight_power()
 
-    def test_the_run_summary_records_it(self):
+    @pytest.mark.parametrize("bad", ["10", "1.5", "-0.5", "-1"])
+    def test_a_value_outside_zero_to_one_raises(self, monkeypatch, bad):
+        """resolve_class_weight clamps >= 1 to 'balanced' and <= 0 to
+        unweighted, so `--class-weight-power=10` would train balanced while
+        the summary recorded 10 (Codex P2 on #1117). The bounds are part of
+        the value's meaning, so 0 and 1 stay valid."""
+        from gcp.research.magnitude_engine.mag_pred_train import class_weight_power
+        monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", bad)
+        with pytest.raises(ValueError, match="outside \\[0, 1\\]"):
+            class_weight_power()
+        for ok in ("0", "1", "0.75"):
+            monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", ok)
+            assert class_weight_power() == float(ok)
+
+
         """Every summary before 2026-09-14 lacked it, which is why c49qf's
         setting is unrecoverable."""
         import inspect
