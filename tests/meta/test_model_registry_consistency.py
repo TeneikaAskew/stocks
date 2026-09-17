@@ -20,7 +20,15 @@ contract the test explicitly permitted violating. All six are closed below, and
 two invariants the first version lacked were added (§9). The lesson worth
 keeping: a gate needs reading adversarially by someone other than its author.
 
-This pins the parts a machine can settle offline. Ten invariants:
+A third round found three more, all of the same shape -- a check that verified
+what was present and never asked what was absent: the scheduler-completeness
+check matched model words in job names and so never saw `signal-monitor`, the
+job that fires four registered models; the family check `continue`d past every
+id in an allowlist of unparsed ledger sections; and total omission of a
+single-engine experiment from both ownership tables was checked by nothing.
+Closed in §8 and §9.
+
+This pins the parts a machine can settle offline. Eleven invariants:
 
 1. Every repo-rooted code path the registry cites exists.
 2. Every relative markdown link in `docs/product/*.md` resolves.
@@ -38,6 +46,11 @@ This pins the parts a machine can settle offline. Ten invariants:
 7. `Last reviewed` is no older than the newest date in the document's own body.
 8. The experiment-to-model join agrees with the ledger — see section 8 below,
    which is where the three findings on PR #1111's second review landed.
+9. Every experiment id the ledger declares is on a model's row or in the
+   ownerless table, so a single-engine experiment cannot vanish silently.
+10. Every scheduled model-bearing job is in the scheduler table, including
+    the ones whose name carries no model word (`signal-monitor`).
+11. `Rec` cells come from the declared vocabulary.
 
 What it deliberately does NOT do:
 
@@ -275,7 +288,8 @@ def test_jobs_claimed_unscheduled_really_are():
 
 def test_scheduled_count_prose_matches_the_table():
     section = _run_section()
-    words = {"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+    words = {"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+             "eleven": 11, "twelve": 12}
     m = re.search(r"\b(\w+) model-bearing jobs are on a Cloud Scheduler cron", section)
     assert m, "the scheduled-count sentence changed shape"
     stated = words.get(m.group(1).lower())
@@ -426,13 +440,35 @@ LEDGER = REPO / "docs" / "EXPERIMENT_REGISTRY.md"
 
 #: Ledger sections whose shape `_ledger_engine_area()` cannot parse because they
 #: are session blocks or tables rather than `## E-nn` entries with an immediate
-#: `- **Engine/area:**` line. Listed explicitly so an experiment outside this set
-#: that the parser cannot classify FAILS rather than being skipped.
-UNPARSED_LEDGER_SECTIONS = frozenset({
-    "E-24",  # data-quality remediation, narrative section
-    "E-26", "E-27", "E-28", "E-29", "E-30", "E-31", "E-33",  # 2026-07-06 session table
-    "E-34",  # direction Phase 2, prose section
-})
+#: `- **Engine/area:**` line. The first version of this list was a frozenset
+#: that `continue`d past every id in it -- so the allowlist replaced a silent
+#: skip on unknown ids with a silent skip on every KNOWN exceptional id, and
+#: adding E-34 to MODEL-TYPE-001 passed although the ledger describes E-34 as
+#: direction and size work. Each id now carries the scope the ledger's prose
+#: states, so it goes through the same family check as a parsed entry.
+#:
+#: Scopes are read from `docs/EXPERIMENT_REGISTRY.md`, not inferred:
+#:   * E-24 (`:637`) is the strat_features column audit + gamma rename, fixes
+#:     consumed by both engines and the gamma model -- cross-cutting.
+#:   * E-26..E-31, E-33 are the 2026-07-06 session (`:1190`). Its table scores
+#:     EXPLOSIVE-bucket precision (the magnitude target) for E-26, E-27, E-28,
+#:     E-29, E-31 and E-33; E-30 is the single-bar call/put probe, which the
+#:     reconciliation (`:1245`) says "re-tread[s] the direction program".
+#:   * E-34 (`:1266`) is the direction program's Phase 2, whose baseline anchor
+#:     scores TYPE, SIZE and DIRECTION; the registry cites its SIZE arm on MAG.
+#: Do NOT use the word `both` here: in this file `both` means strat+magnitude
+#: and drives `test_experiments_spanning_both_engines_appear_on_both_models`.
+LEDGER_SCOPE_OVERRIDES: dict[str, str] = {
+    "E-24": "cross-cutting (data quality)",
+    "E-26": "magnitude (vol-regime features)",
+    "E-27": "magnitude (time-of-day features)",
+    "E-28": "magnitude (forward-window range)",
+    "E-29": "magnitude (regression head)",
+    "E-30": "direction (single-bar excursion)",
+    "E-31": "magnitude (external-data joins)",
+    "E-33": "magnitude (feature-family ablation)",
+    "E-34": "direction / magnitude (SIZE arm)",
+}
 
 
 def _expand_experiment_ranges(text: str) -> set[str]:
@@ -505,6 +541,49 @@ def test_experiments_spanning_both_engines_appear_on_both_models():
     )
 
 
+def _ledger_ids() -> set[str]:
+    """Every experiment id the ledger declares: `## E-nn` headings plus the
+    ids named in a session header such as
+    `# 2026-07-06 SESSION ... (E-26 ... E-31, E-33 + P0.1)`, ranges expanded."""
+    text = LEDGER.read_text()
+    ids = set(re.findall(r"^## (E-\d+)", text, re.M))
+    for m in re.finditer(r"^# [^\n]*\(([^)]*E-\d+[^)]*)\)", text, re.M):
+        ids |= _expand_experiment_ranges(m.group(1))
+    return ids
+
+
+def _ownerless_rows() -> list[str]:
+    """The raw Experiments cell of each row in the ownerless table."""
+    body = REGISTRY.read_text().split("### Experiments with no `MODEL-*` owner", 1)[1]
+    body = body.split("\n###", 1)[0]
+    return [m.group(1) for m in re.finditer(r"^\| ([^|]*E-\d+[^|]*) \|", body, re.M)]
+
+
+def test_every_ledger_experiment_is_owned_or_explicitly_ownerless():
+    """Total omission of a single-engine experiment.
+
+    The only omission check before this was built from experiments scoped
+    `both`, so deleting E-01 from MODEL-TYPE-001 left every test green: the
+    family check examines only ids that remain cited, and the ownerless table
+    was never read for coverage. The registry's stated goal is that every
+    experiment is attached to its owner or explicitly listed as ownerless;
+    this asserts exactly that, with `E-09...E-15`-style ranges expanded."""
+    ledger = _ledger_ids()
+    assert len(ledger) >= 30, f"only {len(ledger)} ids parsed from the ledger — shape change?"
+    owned: set[str] = set()
+    for cell in _traceability_rows().values():
+        owned |= _expand_experiment_ranges(cell)
+    ownerless: set[str] = set()
+    for cell in _ownerless_rows():
+        ownerless |= _expand_experiment_ranges(cell)
+    assert ownerless, "no ownerless rows parsed — did the table shape change?"
+    missing = sorted(ledger - owned - ownerless, key=lambda e: int(e[2:]))
+    assert not missing, (
+        f"experiments in the ledger that no model owns and the ownerless table "
+        f"does not list: {missing}. Attach each to its owner or record it as ownerless."
+    )
+
+
 def test_cited_experiments_match_the_models_engine():
     """An experiment on a model's row should belong to that model's family, or
     be explicitly qualified in the cell (an arm, a cross-cutting test)."""
@@ -515,14 +594,13 @@ def test_cited_experiments_match_the_models_engine():
         if engine is None:
             continue
         for exp in re.findall(r"E-\d+", cell):
-            a = area.get(exp)
+            # Do NOT skip. A silent `continue` here left E-24, E-34 and the
+            # E-26..E-33 session outside the family check entirely, and would
+            # accept a typo'd or nonexistent id as valid. Sections whose shape
+            # the parser cannot read carry an explicit scope instead, and go
+            # through the same check as everything else.
+            a = area.get(exp) or LEDGER_SCOPE_OVERRIDES.get(exp)
             if a is None:
-                # Do NOT skip. A silent `continue` here left E-24, E-34 and the
-                # E-26..E-33 session outside the family check entirely, and would
-                # accept a typo'd or nonexistent id as valid. Sections whose shape
-                # the parser cannot read must be listed explicitly.
-                if exp in UNPARSED_LEDGER_SECTIONS:
-                    continue
                 wrong.append(f"{model} cites {exp}, which has no Engine/area in the ledger")
                 continue
             if engine in a or a.startswith(("both", "cross-cutting", "precursor")):
@@ -606,21 +684,44 @@ MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds
                  "regime-combo", "audit-walkforward", "audit-brief-bias",
                  "p2-build-gamma-levels", "audit-magnitude-drift")
 
+#: Model-bearing jobs whose NAME carries no model word, matched exactly. The
+#: substring list above let the principal one through: `signal-monitor` is
+#: scheduled at `gcp/deploy.sh:4481` and its `_evaluate_strategies_for_bar`
+#: (`gcp/signal_monitor.py:1048`) runs MODEL-MOM-001 (`MOMENTUM.evaluate`),
+#: MODEL-MR-001 (`lib.signals.evaluate_signal`), MODEL-AGREE-001
+#: (`detect_agreement`) and MODEL-BRIEF-001 (`get_premarket_bias`), yet the
+#: table claimed eight model-bearing crons and omitted it. Its EOD resolver
+#: replays `SignalMonitor._check_exits` (`gcp/signal_monitor_eod_resolver.py:16`),
+#: which is MODEL-EXIT-001's policy.
+MODEL_BEARING_JOBS = frozenset({"signal-monitor", "signal-monitor-eod-resolver"})
+
+
+def _is_model_bearing(job: str) -> bool:
+    return job in MODEL_BEARING_JOBS or any(k in job for k in MODEL_BEARING)
+
 
 def test_every_scheduled_model_bearing_job_is_listed():
     """Completeness, not just correctness of the rows that are present."""
     listed = {job for _, _, job in re.findall(
         r"^\| `([a-z0-9-]+)` \| `([^`]+)` \| `([a-z0-9-]+)` \|", _run_section(), re.M)}
     scheduled = {job for _, job in _declared_schedulers().values()}
-    missing = sorted(
-        j for j in scheduled
-        if any(k in j for k in MODEL_BEARING) and j not in listed
-    )
+    missing = sorted(j for j in scheduled if _is_model_bearing(j) and j not in listed)
     assert not missing, (
         f"model-bearing jobs on a cron but absent from the table: {missing}. "
         "This is how audit-brief-bias-weekly was missed one round after the "
-        "gamma omission was 'gated'."
+        "gamma omission was 'gated', and how signal-monitor -- the job that "
+        "fires four registered models -- was missed the round after that."
     )
+
+
+def test_the_live_signal_monitor_is_classified_model_bearing():
+    """Pins the classification itself, so the exact-match set cannot be
+    emptied without a failure. `signal-monitor` must be on a cron in
+    deploy.sh (or the registry's whole premise about the live path is wrong)
+    and must count as model-bearing."""
+    scheduled = {job for _, job in _declared_schedulers().values()}
+    assert "signal-monitor" in scheduled, "signal-monitor is no longer scheduled in gcp/deploy.sh"
+    assert _is_model_bearing("signal-monitor")
 
 
 def test_rec_cells_use_the_declared_vocabulary():
