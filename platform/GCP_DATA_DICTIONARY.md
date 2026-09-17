@@ -1,6 +1,6 @@
 # GCP Data Dictionary — Trading Platform
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 > Maps every frontend page of the React trading platform (`platform/src/`) to the
 > GCP resources that back it: FastAPI endpoints (`platform/api/`), Cloud SQL tables

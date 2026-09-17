@@ -1,6 +1,6 @@
 # Product Requirements and Definition of Done
 
-**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 Requirements are **PROPOSED — TARGET** unless marked otherwise. They state intent; they do not
 claim implementation. Each is written to be testable — a reviewer should be able to name the

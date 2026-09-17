@@ -1,6 +1,6 @@
 # Feature-Adoption Roadmap — "Stock Insights"
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Goal (user's words):** *take what I like from other platforms and make it my own.*
 

@@ -1,6 +1,6 @@
 # AI / LLM Agent Architecture
 
-**Last reviewed:** 2026-08-30 · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** 2026-08-30 · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 ## Current graph — VERIFIED — CODE
 

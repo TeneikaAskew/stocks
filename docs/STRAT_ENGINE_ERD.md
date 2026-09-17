@@ -1,6 +1,6 @@
 # Strat Directionality Engine — Entity-Relationship Diagram
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Companion:** [`STRAT_ENGINE_ERD.drawio`](./STRAT_ENGINE_ERD.drawio) (open in drawio.com / VS Code drawio extension)
 **Sibling:** [`STRAT_ENGINE_ARCHITECTURE.md`](./STRAT_ENGINE_ARCHITECTURE.md) (layers + flow)

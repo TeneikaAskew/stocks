@@ -1,6 +1,6 @@
 # TradingView Pine Scripts Documentation
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 This directory contains custom TradingView Pine Script indicators for trading analysis and automation. All scripts are written in Pine Script v6.
 

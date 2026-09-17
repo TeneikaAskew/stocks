@@ -1,6 +1,6 @@
 # Gamma Levels Overlay v2
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 Pine Script v6 indicator that overlays King / Gate / Flip levels on any
 TradingView chart. Companion to the gamma analytics produced by

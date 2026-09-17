@@ -1,6 +1,6 @@
 # Prompt: regenerate docs/product/infrastructure/05-d-COST_ANALYSIS.md
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 You are an automated documentation agent. Regenerate `docs/product/infrastructure/05-d-COST_ANALYSIS.md` from the billing digests.
 

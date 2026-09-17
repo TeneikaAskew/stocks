@@ -1,6 +1,6 @@
 # Dashboard Spec — Signal Quality & Backtest
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Generated 2026-05-02.** Closing the visibility gap on the central operator question: *"Is my signal quality good and stable?"*
 

@@ -1,6 +1,6 @@
 # Execution-System Backtest (Track B reference artifact)
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Status: FAIL — DO NOT REVIVE WITHOUT NEW EVIDENCE.**
 See [`docs/EXEC_BACKTEST_RESULTS.md`](../../docs/EXEC_BACKTEST_RESULTS.md) for the per-cell, per-fold verdict tables.

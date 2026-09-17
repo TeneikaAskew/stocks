@@ -1,6 +1,6 @@
 # Strat Engine — Operations Manual
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Status: ON THE SHELF.** The strat-engine candle-type prediction model is finalized as a production-grade deliverable. It is callable on demand. **It is NOT activated** — no schedulers, no user-facing routes, no live brief integration. The deploy gate at the bottom of this doc defines what would need to be true to activate any production trigger.
 

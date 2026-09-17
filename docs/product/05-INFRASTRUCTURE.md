@@ -1,6 +1,6 @@
 # Infrastructure Plan
 
-**Last reviewed:** 2026-08-30 · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** 2026-08-30 · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **VERIFIED — CODE.** Parsed from `gcp/deploy.sh` at `d335f2f` by resolving each
 `deploy_*()` function body, so flags built into a `common_flags=( ... )` bash array are

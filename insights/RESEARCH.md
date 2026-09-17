@@ -1,6 +1,6 @@
 # TradingAgents Research
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Source:** [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) · [trading-agents.ai](https://trading-agents.ai/) · arXiv 2412.20138
 **Date:** 2026-04-15

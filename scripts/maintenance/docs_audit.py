@@ -163,6 +163,34 @@ def run(cmd: list[str], *, cwd: pathlib.Path = REPO,
     return proc.stdout
 
 
+# ── the base ref ────────────────────────────────────────────────────────────
+
+BASE_REF_CANDIDATES = ("origin/main", "main", "HEAD")
+
+
+def resolve_base_ref(candidates: tuple[str, ...] = BASE_REF_CANDIDATES) -> str:
+    """The ref this run audits against: the first candidate git can resolve.
+
+    Hard-coding `origin/main` made every documented invocation abort with exit
+    2 in a detached or shallow checkout -- including the actions/checkout case
+    this module's own `run()` docstring describes. `--since` did not work
+    around it either, because the ls-tree, ancestry and drift reads named the
+    ref separately.
+
+    Falling back is not a silent fallback: the ref actually used is reported in
+    the run's output, so a run against `HEAD` can never be mistaken for a run
+    against the trunk. What would be a fallback is inventing an answer when no
+    ref resolves, so that raises.
+    """
+    for ref in candidates:
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
+                          cwd=REPO, capture_output=True).returncode == 0:
+            return ref
+    raise AuditError(
+        f"none of {', '.join(candidates)} resolves in this checkout; there is "
+        "nothing to audit against")
+
+
 # ── registry ────────────────────────────────────────────────────────────────
 
 REGISTRY_HEADING = "## Registry"
@@ -220,6 +248,23 @@ def load_registry(text: str) -> list[dict]:
     return rows
 
 
+def document_set(tracked: set[str], registry: list[dict]) -> list[str]:
+    """Every file this audit treats as a document.
+
+    Markdown, plus any file the registry names outright. The two
+    `Architecture*.drawio` companions are Class A with `all` ownership and
+    `owned_lines` has a branch for them, but a bare `.md` filter dropped them
+    before classification -- so the refresh could lose one and the audit that
+    exists to notice would not.
+
+    Glob rows are deliberately not expanded: `docs/archive/*` is a directory
+    rule, and running the content checks over every file beneath it is a
+    different and much larger question.
+    """
+    named = {r["glob"] for r in registry if not any(c in r["glob"] for c in "*?[")}
+    return sorted(p for p in tracked if p.endswith(".md") or p in named)
+
+
 def classify(doc: str, registry: list[dict]) -> tuple[str | None, list[str], list[str]]:
     """Most specific match wins, so a file rule beats the directory rule."""
     best: tuple[int, dict] | None = None
@@ -249,7 +294,7 @@ def doc_lines(text: str) -> list[str]:
     return text[:-1].split("\n") if text.endswith("\n") else text.split("\n")
 
 
-def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str | None]:
+def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str | None, list[str], bool]:
     """Which 1-based lines a job writes, which specs matched nothing, and the prompt.
 
     The spec grammar is deliberately tiny, because the registry is read by
@@ -262,6 +307,8 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
     ``prose:PATH``     everything not otherwise claimed is model-written, by
                        the prompt at PATH. Declaring it is what distinguishes
                        "a model owns this prose" from "nobody owns it".
+    ``exhaustive``     the file is wholly machine-owned: ANY line outside the
+                       declared regions is a defect, not expected prose.
 
     A spec that matches nothing is returned as unmatched rather than ignored:
     a renderer that stopped emitting a block leaves the registry claiming
@@ -271,7 +318,9 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
     lines = doc_lines(text)
     owned: set[int] = set()
     unmatched: list[str] = []
+    orphans: list[str] = []
     prompt: str | None = None
+    exhaustive = False
 
     for spec in specs:
         hit = False
@@ -279,6 +328,11 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
             owned.update(range(1, len(lines) + 1))
             hit = bool(lines)
         elif spec == "inventory:*":
+            # Every block has to balance, not just one of them. Treating the
+            # wildcard as satisfied by the first valid pair let a renderer drop
+            # a whole block, or emit a start with no end, while the remaining
+            # pairs kept `hit` true -- and in a `prose:` file the abandoned
+            # span then routes silently as model prose.
             open_at: dict[str, int] = {}
             for n, line in enumerate(lines, 1):
                 m = INVENTORY_RE.search(line)
@@ -286,10 +340,17 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
                     continue
                 name = m.group("name")
                 if m.group("edge") == "start":
+                    if name in open_at:
+                        orphans.append(f"inventory:{name} opened twice (lines "
+                                       f"{open_at[name]} and {n})")
                     open_at[name] = n
                 elif name in open_at:
                     owned.update(range(open_at.pop(name), n + 1))
                     hit = True
+                else:
+                    orphans.append(f"inventory:{name} ends at line {n} with no start")
+            for name, n in sorted(open_at.items(), key=lambda kv: kv[1]):
+                orphans.append(f"inventory:{name} starts at line {n} with no end")
         elif spec.startswith("mark:"):
             name = spec[5:]
             begin = re.compile(rf"<!--\s*BEGIN {re.escape(name)}\s*-->")
@@ -305,6 +366,9 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
                 if pat.search(line):
                     owned.add(n)
                     hit = True
+        elif spec == "exhaustive":
+            exhaustive = True
+            hit = True
         elif spec.startswith("prose:"):
             prompt = spec[6:]
             hit = True
@@ -313,7 +377,7 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
             continue
         if not hit:
             unmatched.append(spec)
-    return owned, unmatched, prompt
+    return owned, unmatched, prompt, orphans, exhaustive
 
 
 def unowned_spans(text: str, owned: set[int]) -> list[tuple[int, int]]:
@@ -343,35 +407,88 @@ def region_of(line: int, owned: set[int], prompt: str | None) -> str:
     return "model-prose" if prompt else "unowned"
 
 
-def check_regions(doc: str, text: str, specs: list[str]) -> tuple[list[dict], set[int], str | None]:
+def check_regions(doc: str, text: str, specs: list[str]) -> tuple[list[dict], set[int], str | None, dict]:
+    """Findings, the owned line set, the prompt, and the region map.
+
+    The unowned complement is **not** a finding. It is the expected shape of a
+    mixed Class A document -- README's prose, INVESTMENT_MODELS_SUMMARY's
+    hand-merged record -- and emitting a P2 for each span meant those three
+    documents produced ten permanent findings that no amount of reviewing could
+    clear, so `--check` could never go green and the gate was worthless. The
+    spans are what the run uses to route and to stamp; they are reported as a
+    `regions` map, not as defects.
+
+    What IS a finding is a declared region that no longer exists, or a document
+    the registry cannot describe at all. Those mean the map itself is wrong.
+    """
     if not specs:
         return ([{"check": "unowned", "doc": doc, "severity": "P2",
                   "detail": "Class A doc with no generated regions declared; "
                             "the registry cannot say which lines a job writes"}],
-                set(), None)
-    owned, unmatched, prompt = owned_lines(text, specs)
+                set(), None, {})
+    owned, unmatched, prompt, orphans, exhaustive = owned_lines(text, specs)
     out = [{"check": "unowned", "doc": doc, "severity": "P1",
             "detail": f"declared region `{spec}` matched nothing -- a renderer "
                       f"stopped emitting it, or the registry is stale"}
            for spec in unmatched]
-    if prompt is None:
-        total = 0
-        for lo, hi in unowned_spans(text, owned):
-            total += hi - lo + 1
-            out.append({"check": "unowned", "doc": doc, "line": lo, "severity": "P2",
-                        "detail": f"lines {lo}-{hi} ({hi - lo + 1}) are in no generated "
-                                  f"region: no job writes them, audit as Class D"})
-        if total:
-            out.append({"check": "unowned", "doc": doc, "severity": "P2",
-                        "detail": f"{total} of {len(doc_lines(text))} lines are hand-written "
-                                  f"prose inside a doc labelled machine-owned"})
-    return out, owned, prompt
+    out += [{"check": "unowned", "doc": doc, "severity": "P1",
+             "detail": f"unbalanced generated region: {o}"} for o in orphans]
+    spans = [] if prompt else unowned_spans(text, owned)
+    # A doc declared `exhaustive` has no legitimate complement: it is wholly
+    # machine-owned, so anything outside the regions is content a regeneration
+    # will discard with nobody able to say what it was. The opposite of a mixed
+    # doc, where the complement is the hand-written half and reporting it makes
+    # --check permanently red.
+    if exhaustive:
+        out += [{"check": "unowned", "doc": doc, "line": lo, "severity": "P1",
+                 "detail": f"lines {lo}-{hi} sit outside every declared region of a "
+                           "wholly machine-owned file; the next regeneration will "
+                           "discard them"} for lo, hi in spans]
+    region_map = {
+        "lines": len(doc_lines(text)),
+        "generated": len(owned),
+        "prompt": prompt,
+        "unowned_spans": [[lo, hi] for lo, hi in spans],
+        "unowned_lines": sum(hi - lo + 1 for lo, hi in spans),
+    }
+    return out, owned, prompt, region_map
 
 
 # ── markers ─────────────────────────────────────────────────────────────────
 
+def marker_window(lines: list[str], limit: int = 40) -> range:
+    """Where a DOCUMENT-level marker may live: after the H1, before §2.
+
+    Scanning the first 40 lines flatly let section metadata stand in for the
+    document's provenance. `docs/RESEARCH_COMPENDIUM.md` opens with its real H1
+    on line 1, then `# PART A` on line 10 with that part's own date on line 13 --
+    which the audit accepted as the whole document's review marker, so Part B
+    was never covered and no marker was ever inserted after the real H1.
+    """
+    h1 = h1_index(lines)
+    if h1 is None:
+        return range(0, min(limit, len(lines)))
+    stop = len(lines)
+    for j in range(h1 + 1, min(h1 + 1 + limit, len(lines))):
+        if lines[j].startswith("#"):
+            stop = j
+            break
+    return range(h1 + 1, min(stop, h1 + 1 + limit, len(lines)))
+
+
+def is_future_date(date: str, today: str) -> bool:
+    """Is this marker date actually in the future?
+
+    "unknown" sorts after any date beginning with a digit, so the unguarded
+    comparison reported every never-reviewed document as future-dated -- 77 of
+    them on the tree this landed against, which alone kept --check red.
+    """
+    return date != "unknown" and date > today
+
+
 def find_marker(lines: list[str]) -> tuple[int, dict] | None:
-    for i, line in enumerate(lines[:40]):
+    for i in marker_window(lines):
+        line = lines[i]
         m = MARKER_RE.match(line.strip())
         if m:
             return i, {"date": m.group("date"), "depth": m.group("depth"),
@@ -578,7 +695,8 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     return out
 
 
-def check_changed_since(doc: str, sha: str | None, code_paths: list[str]) -> list[dict]:
+def check_changed_since(doc: str, sha: str | None, code_paths: list[str],
+                        base_ref: str = "origin/main") -> list[dict]:
     if not sha or not code_paths:
         return []
     # `git log` exits 0 with empty output when the range holds no commits, so
@@ -586,7 +704,11 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str]) -> lis
     # have exits 128, and swallowing that reported "nothing changed since
     # <sha>" for a commit that was never read. The marker check reports an
     # unknown SHA separately, so this one aborts.
-    out = run(["git", "log", "--oneline", "--diff-filter=M", f"{sha}..origin/main",
+    # AMD, not M: a declared path GAINING a module or LOSING one changes the
+    # documented surface just as much as editing one, and `M` alone queued
+    # neither. Renames stay excluded -- that is what the filter is for, so the
+    # 2026-09-07 file-move wave does not flag every document.
+    out = run(["git", "log", "--oneline", "--diff-filter=AMD", f"{sha}..{base_ref}",
                "--"] + code_paths)
     commits = [c for c in out.strip().split("\n") if c.strip()]
     if not commits:
@@ -647,8 +769,14 @@ def check_owning_job(today: str) -> list[dict]:
         if len(parts) >= 5 and OWNING_JOB["pr_title_re"].search(parts[4]):
             owned_prs.append({"num": parts[0], "state": parts[1], "merged": parts[2],
                               "created": parts[3], "title": parts[4]})
+    # A closed-unmerged attempt that a LATER refresh superseded is history, not
+    # a live defect. Reporting #963/#1012/#1021 forever kept --check red with
+    # findings whose only remedy would be reviving obsolete PRs.
+    delivered = max((pr["merged"] for pr in owned_prs if pr["merged"]), default="")
     for pr in owned_prs[:6]:
         if pr["merged"]:
+            continue
+        if delivered and pr["created"] < delivered:
             continue
         age = (datetime.date.fromisoformat(today)
                - datetime.date.fromisoformat(pr["created"][:10])).days
@@ -691,7 +819,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     today = args.date or datetime.date.today().isoformat()
-    head = args.since or run(["git", "rev-parse", "--short", "origin/main"]).strip()
+    base_ref = resolve_base_ref()
+    head = args.since or run(["git", "rev-parse", "--short", base_ref]).strip()
 
     reg_path = REPO / REGISTRY
     if not reg_path.exists():
@@ -699,9 +828,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     registry = load_registry(reg_path.read_text(encoding="utf-8"))
 
-    tracked = set(run(["git", "ls-tree", "-r", "origin/main", "--name-only"]).strip().split("\n"))
+    tracked = set(run(["git", "ls-tree", "-r", base_ref, "--name-only"]).strip().split("\n"))
     TOP_LEVEL_DIRS.update(p.split("/", 1)[0] for p in tracked if "/" in p)
-    docs = sorted(p for p in tracked if p.endswith(".md"))
+    docs = document_set(tracked, registry)
 
     if args.issues_snapshot:
         raw = json.loads(pathlib.Path(args.issues_snapshot).read_text(encoding="utf-8"))
@@ -714,6 +843,7 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8")
 
     findings: list[dict] = []
+    region_maps: dict[str, dict] = {}
     if not args.issues_snapshot:
         findings += check_owning_job(today)
     stamped: list[dict] = []
@@ -757,8 +887,10 @@ def main(argv: list[str] | None = None) -> int:
         prompt: str | None = None
         stampable = cls == "D"
         if cls == "A":
-            reg_findings, owned, prompt = check_regions(doc, text, regions)
+            reg_findings, owned, prompt, region_map = check_regions(doc, text, regions)
             findings += reg_findings
+            if region_map:
+                region_maps[doc] = region_map
             stampable = prompt is None and bool(unowned_spans(text, owned))
 
         content = check_closed_issues(doc, text, states) + check_dead_links(doc, text, tracked)
@@ -778,16 +910,16 @@ def main(argv: list[str] | None = None) -> int:
             if info["legacy"]:
                 findings.append({"check": "marker", "doc": doc, "severity": "P3",
                                  "detail": f"legacy label, date {info['date']}; normalise to Last reviewed"})
-            if info["date"] > today:
+            if is_future_date(info["date"], today):
                 findings.append({"check": "marker", "doc": doc, "severity": "P1",
                                  "detail": f"review date {info['date']} is in the future"})
             if info["sha"]:
-                ok = subprocess.run(["git", "merge-base", "--is-ancestor", info["sha"], "origin/main"],
+                ok = subprocess.run(["git", "merge-base", "--is-ancestor", info["sha"], base_ref],
                                     cwd=REPO, capture_output=True).returncode == 0
                 if not ok:
                     findings.append({"check": "marker", "doc": doc, "severity": "P2",
-                                     "detail": f"reviewed-against {info['sha']} is not an ancestor of origin/main"})
-            findings += check_changed_since(doc, info["sha"], code_paths)
+                                     "detail": f"reviewed-against {info['sha']} is not an ancestor of {base_ref}"})
+            findings += check_changed_since(doc, info["sha"], code_paths, base_ref)
 
         if args.stamp:
             # Never write a marker into a generated region. The marker goes
@@ -809,7 +941,8 @@ def main(argv: list[str] | None = None) -> int:
                             "depth": "verified" if reviewed else "scan-only"})
 
     report = {
-        "date": today, "head": head, "docs": len(docs), "classes": counts,
+        "date": today, "base_ref": base_ref, "head": head, "docs": len(docs),
+        "classes": counts, "regions": region_maps,
         "findings": findings, "stamped": stamped,
         "summary": {k: sum(1 for f in findings if f["check"] == k)
                     for k in sorted({f["check"] for f in findings})},
@@ -818,7 +951,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(report, indent=2))
     else:
-        print(f"docs {len(docs)}  classes {counts}  head {head}")
+        print(f"docs {len(docs)}  classes {counts}  head {head} ({base_ref})")
+        for d, rm in sorted(region_maps.items()):
+            if rm["unowned_lines"]:
+                print(f"  region: {d} — {rm['unowned_lines']} of {rm['lines']} lines "
+                      f"hand-written (audit as Class D)")
         for k, v in report["summary"].items():
             print(f"  {k}: {v}")
         for f in findings:

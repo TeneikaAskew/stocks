@@ -7,6 +7,7 @@ red, then reverted.
 from __future__ import annotations
 
 import datetime
+import inspect
 
 import pytest
 
@@ -125,7 +126,7 @@ def test_inventory_blocks_are_owned_and_the_prose_around_them_is_not():
     05-e-API.md is 160 lines of which 130 are inventory blocks; treating the
     file as owned hid the other 30 from every audit while no job wrote them.
     """
-    owned, unmatched, prompt = m.owned_lines(INVENTORY_DOC, ["inventory:*"])
+    owned, unmatched, prompt, _, _ = m.owned_lines(INVENTORY_DOC, ["inventory:*"])
     assert unmatched == [] and prompt is None
     assert owned == {5, 6, 7, 8}
     assert m.unowned_spans(INVENTORY_DOC, owned) == [(1, 4), (9, 10)]
@@ -138,10 +139,34 @@ def test_a_declared_region_that_matches_nothing_is_a_finding():
     exists to catch, one level up: the registry would claim coverage that no
     longer exists and the span would never be audited.
     """
-    _, unmatched, _ = m.owned_lines(INVENTORY_DOC, ["inventory:*", "mark:gone"])
+    _, unmatched, _, _, _ = m.owned_lines(INVENTORY_DOC, ["inventory:*", "mark:gone"])
     assert unmatched == ["mark:gone"]
-    findings, _, _ = m.check_regions("d.md", INVENTORY_DOC, ["inventory:*", "mark:gone"])
+    findings, _, _, _ = m.check_regions("d.md", INVENTORY_DOC, ["inventory:*", "mark:gone"])
     assert any(f["severity"] == "P1" and "matched nothing" in f["detail"] for f in findings)
+
+
+def test_a_doc_whose_blocks_all_balance_reports_no_orphans():
+    _, _, _, orphans, _ = m.owned_lines(INVENTORY_DOC, ["inventory:*"])
+    assert orphans == []
+
+
+def test_an_exhaustive_doc_reports_its_complement_as_a_defect():
+    """`exhaustive` is the opposite declaration to a mixed Class A doc.
+
+    A wholly machine-owned file has no legitimate hand-written half, so a line
+    outside its regions is content the next regeneration discards with nobody
+    able to say what it was.
+    """
+    doc = "<!-- BEGIN gen -->\nx\n<!-- END gen -->\nA note that will not survive.\n"
+    findings, _, _, _ = m.check_regions("owned.md", doc, ["mark:gen", "exhaustive"])
+    assert any(f["severity"] == "P1" and "wholly machine-owned" in f["detail"] for f in findings)
+
+
+def test_a_mixed_doc_without_exhaustive_keeps_its_complement_silent():
+    doc = "<!-- BEGIN gen -->\nx\n<!-- END gen -->\nExpected hand-written prose.\n"
+    findings, _, _, rm = m.check_regions("mixed.md", doc, ["mark:gen"])
+    assert findings == []
+    assert rm["unowned_lines"] == 1
 
 
 def test_prose_spec_claims_the_remainder_so_nothing_reads_as_unowned():
@@ -151,7 +176,7 @@ def test_prose_spec_claims_the_remainder_so_nothing_reads_as_unowned():
     nobody owns, and the freshness PR would start editing text the next refresh
     overwrites.
     """
-    findings, owned, prompt = m.check_regions(
+    findings, owned, prompt, _ = m.check_regions(
         "05-a.md", INVENTORY_DOC, ["inventory:*", "prose:.github/prompts/architecture.md"])
     assert prompt == ".github/prompts/architecture.md"
     assert not [f for f in findings if "no generated region" in f["detail"]]
@@ -160,9 +185,44 @@ def test_prose_spec_claims_the_remainder_so_nothing_reads_as_unowned():
 
 
 def test_unowned_lines_route_to_the_document_itself():
-    _, owned, prompt = m.check_regions("05-e.md", INVENTORY_DOC, ["inventory:*"])
+    _, owned, prompt, _ = m.check_regions("05-e.md", INVENTORY_DOC, ["inventory:*"])
     assert m.region_of(1, owned, prompt) == "unowned"
     assert m.region_of(6, owned, prompt) == "generated"
+
+
+def test_the_unowned_complement_is_reported_as_a_map_not_as_defects():
+    """A mixed Class A doc's hand-written prose is its expected shape.
+
+    Emitting a P2 per span gave README, INVESTMENT_MODELS_SUMMARY and 05-e ten
+    permanent findings that no amount of reviewing could clear, so --check
+    could never return 0 and the gate was worthless. The spans still drive
+    routing and stamping; they are just not defects.
+    """
+    findings, _, _, region_map = m.check_regions("05-e.md", INVENTORY_DOC, ["inventory:*"])
+    assert findings == []
+    assert region_map["unowned_spans"] == [[1, 4], [9, 10]]
+    assert region_map["unowned_lines"] == 6
+    assert region_map["generated"] == 4
+
+
+def test_an_unbalanced_inventory_block_is_a_finding_even_when_others_pair_up():
+    """One valid pair must not vouch for the rest of the wildcard.
+
+    A renderer that drops a block, or emits a start with no end, leaves a span
+    that in a `prose:` file then routes silently as model prose.
+    """
+    doc = ("<!-- inventory:a:start -->\nx\n<!-- inventory:a:end -->\n"
+           "<!-- inventory:b:start -->\ny\n")
+    _, _, _, orphans, _ = m.owned_lines(doc, ["inventory:*"])
+    assert orphans == ["inventory:b starts at line 4 with no end"]
+    findings, _, _, _ = m.check_regions("05-a.md", doc, ["inventory:*"])
+    assert any(f["severity"] == "P1" and "unbalanced" in f["detail"] for f in findings)
+
+
+def test_an_orphan_end_marker_is_a_finding():
+    doc = "prose\n<!-- inventory:a:end -->\n<!-- inventory:b:start -->\nz\n<!-- inventory:b:end -->\n"
+    _, _, _, orphans, _ = m.owned_lines(doc, ["inventory:*"])
+    assert orphans == ["inventory:a ends at line 2 with no start"]
 
 
 def test_class_a_doc_with_no_declared_regions_is_a_finding_not_a_free_pass():
@@ -171,7 +231,7 @@ def test_class_a_doc_with_no_declared_regions_is_a_finding_not_a_free_pass():
     That is the Rule 3.7 shape: the absence of information becoming a
     permissive default nobody can distinguish from a deliberate one.
     """
-    findings, owned, prompt = m.check_regions("d.md", INVENTORY_DOC, [])
+    findings, owned, prompt, _ = m.check_regions("d.md", INVENTORY_DOC, [])
     assert owned == set() and prompt is None
     assert findings and "no generated regions declared" in findings[0]["detail"]
 
@@ -179,14 +239,14 @@ def test_class_a_doc_with_no_declared_regions_is_a_finding_not_a_free_pass():
 def test_line_specs_own_individual_lines():
     """README's badges are five scattered lines, not a block."""
     doc = "# T\n\n![a](https://img.shields.io/badge/x-blue)\n\nProse.\n"
-    owned, unmatched, _ = m.owned_lines(doc, [r"line:img\.shields\.io"])
+    owned, unmatched, _, _, _ = m.owned_lines(doc, [r"line:img\.shields\.io"])
     assert owned == {3} and unmatched == []
 
 
 def test_mark_pair_owns_the_calibration_table_only():
     """refresh_calibration_table.py replaces one marked table in 1,247 lines."""
     doc = "# T\n\nProse.\n<!-- BEGIN tbl -->\n| a |\n<!-- END tbl -->\nMore prose.\n"
-    owned, unmatched, _ = m.owned_lines(doc, ["mark:tbl"])
+    owned, unmatched, _, _, _ = m.owned_lines(doc, ["mark:tbl"])
     assert owned == {4, 5, 6} and unmatched == []
 
 
@@ -205,8 +265,46 @@ def test_blank_only_gaps_between_generated_blocks_are_not_reported_as_prose():
     """A blank line between two rendered tables is not undocumented prose."""
     doc = "<!-- inventory:a:start -->\nx\n<!-- inventory:a:end -->\n\n" \
           "<!-- inventory:b:start -->\ny\n<!-- inventory:b:end -->\n"
-    owned, _, _ = m.owned_lines(doc, ["inventory:*"])
+    owned, _, _, _, _ = m.owned_lines(doc, ["inventory:*"])
     assert m.unowned_spans(doc, owned) == []
+
+
+# ── the base ref ────────────────────────────────────────────────────────────
+
+def test_base_ref_falls_back_when_origin_main_is_absent():
+    """A shallow or detached checkout has no origin/main and must still audit.
+
+    Hard-coding it aborted every documented invocation with exit 2 before
+    reading a single document -- the actions/checkout case this module's own
+    run() docstring describes. --since did not work around it either, because
+    ls-tree, ancestry and drift named the ref separately.
+    """
+    assert m.resolve_base_ref(("definitely-not-a-ref", "HEAD")) == "HEAD"
+
+
+def test_base_ref_prefers_the_trunk_when_it_is_there():
+    assert m.resolve_base_ref(("HEAD", "definitely-not-a-ref")) == "HEAD"
+    assert m.resolve_base_ref(("origin/main", "HEAD")) == "origin/main"
+
+
+def test_no_resolvable_ref_raises_rather_than_guessing():
+    """Falling back to a ref is fine; inventing one is the silent fallback."""
+    with pytest.raises(m.AuditError, match="nothing to audit against"):
+        m.resolve_base_ref(("no-such-ref-a", "no-such-ref-b"))
+
+
+# ── drift ───────────────────────────────────────────────────────────────────
+
+def test_drift_filter_covers_additions_and_deletions_not_just_edits():
+    """A declared path GAINING or LOSING a module is drift.
+
+    `--diff-filter=M` alone queued neither, so a new module under `lib` or a
+    deleted one under `platform/api` left the describing document unflagged.
+    Renames stay excluded, which is what the filter is for.
+    """
+    src = inspect.getsource(m.check_changed_since)
+    assert "--diff-filter=AMD" in src
+    assert "--diff-filter=M\"" not in src
 
 
 # ── markers ─────────────────────────────────────────────────────────────────
@@ -285,6 +383,28 @@ def test_marker_goes_after_the_h1_not_at_a_fixed_line():
     h1 = lines.index("# Title")
     assert lines[h1 + 2].startswith("**Last reviewed:**")
     assert "Last reviewed" not in "\n".join(lines[:h1])
+
+
+def test_a_later_sections_date_is_not_the_documents_review_marker():
+    """RESEARCH_COMPENDIUM.md opens with its real H1, then `# PART A` with its
+    own date on line 13. A flat 40-line scan accepted that as the whole
+    document's provenance, so Part B was never covered and no marker was ever
+    inserted after the real H1.
+    """
+    doc = ("# Research Compendium\n\nIntro.\n\n"
+           "# PART A\n\n**Last reviewed:** 2026-06-05 · **Owner:** TBD\n\nBody.\n")
+    assert m.find_marker(doc.split("\n")) is None
+    new, action = m.stamp(doc, "2026-09-17", "scanned", "abc1234")
+    assert action == "inserted"
+    lines = new.split("\n")
+    assert lines[2].startswith("**Last reviewed:** unknown")
+    assert "**Last reviewed:** 2026-06-05" in new  # Part A's own date survives
+
+
+def test_a_marker_in_the_documents_own_first_section_is_still_found():
+    doc = "# Title\n\n**Last reviewed:** 2026-08-31 · **Owner:** TBD\n\n## Next\n"
+    found = m.find_marker(doc.split("\n"))
+    assert found is not None and found[1]["date"] == "2026-08-31"
 
 
 def test_doc_without_an_h1_is_skipped_not_guessed():
@@ -447,6 +567,64 @@ def test_changed_since_aborts_on_an_unknown_sha_rather_than_reporting_no_drift()
     """
     with pytest.raises(m.AuditError):
         m.check_changed_since("d.md", "0000000", ["lib"])
+
+
+def test_a_failed_refresh_superseded_by_a_later_delivery_is_not_reported(monkeypatch):
+    """#963/#1012/#1021 failed, then a later refresh merged. They are history.
+
+    Reporting them forever kept --check red with findings whose only remedy
+    would be reviving obsolete PRs.
+    """
+    prs = "\n".join([
+        "1060\tclosed\t2026-09-10T00:00:00Z\t2026-09-08T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
+        "1021\tclosed\t\t2026-09-05T00:00:00Z\tFix: Monthly architecture doc refresh failed",
+        "963\tclosed\t\t2026-08-20T00:00:00Z\tFix: Monthly architecture doc refresh failed",
+    ])
+    monkeypatch.setattr(m, "run", lambda cmd, **k: "success\t2026-09-10T00:00:00Z\n"
+                        if "runs?" in " ".join(cmd) else prs)
+    findings = m.check_owning_job("2026-09-17")
+    assert [f for f in findings if "963" in f["detail"] or "1021" in f["detail"]] == []
+
+
+def test_a_failed_refresh_with_no_later_delivery_is_still_reported(monkeypatch):
+    """The supersede rule must not swallow the case the check exists for."""
+    prs = "\n".join([
+        "1060\topen\t\t2026-09-08T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
+        "1021\tclosed\t\t2026-09-05T00:00:00Z\tFix: Monthly architecture doc refresh failed",
+    ])
+    monkeypatch.setattr(m, "run", lambda cmd, **k: "success\t2026-09-10T00:00:00Z\n"
+                        if "runs?" in " ".join(cmd) else prs)
+    findings = m.check_owning_job("2026-09-17")
+    assert any("1060" in f["detail"] and f["severity"] == "P1" for f in findings)
+    assert any("1021" in f["detail"] for f in findings)
+
+
+def test_registered_non_markdown_artifacts_are_in_the_document_set():
+    """The .drawio companions are Class A with `all` ownership.
+
+    A bare `.md` filter dropped them before classification, so the refresh
+    could lose one and the audit that exists to notice would not.
+    """
+    rows = m.load_registry(REGISTRY + "| A | Architecture.drawio | gcp/deploy.sh | all |\n")
+    tracked = {"README.md", "Architecture.drawio", "docs/archive/note.png", "src/app.ts"}
+    docs = m.document_set(tracked, rows)
+    assert "Architecture.drawio" in docs
+    assert "README.md" in docs
+    # A glob row is a directory rule, not a licence to audit every file under it.
+    assert "docs/archive/note.png" not in docs
+    assert "src/app.ts" not in docs
+    assert m.classify("Architecture.drawio", rows) == ("A", ["gcp/deploy.sh"], ["all"])
+
+
+def test_unknown_is_not_a_future_review_date():
+    """"unknown" > "2026-09-17" lexicographically.
+
+    The unguarded comparison reported every newly stamped, never-reviewed
+    document as P1 future-dated -- 77 of them -- so --check could not go green.
+    """
+    assert m.is_future_date("unknown", "2026-09-17") is False
+    assert m.is_future_date("2026-09-18", "2026-09-17") is True
+    assert m.is_future_date("2026-09-16", "2026-09-17") is False
 
 
 def test_a_failed_github_read_aborts_rather_than_reporting_clean():

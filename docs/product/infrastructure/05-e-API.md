@@ -1,6 +1,6 @@
 # Platform API Reference
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 The FastAPI app in [`platform/api/main.py`](../../../platform/api/main.py) is deployed twice from one image as `solyra-api-prod` (IAP) and `solyra-api-staging` (public, Firebase login); the services, the auth model and the deploy path are in [ARCHITECTURE.md §7](05-a-ARCHITECTURE.md#7-cloud-run-services-auth-and-the-api). The tables below are rendered from the router files by `scripts/maintenance/doc_inventory.py` on every monthly refresh and must not be edited by hand; run `python -m scripts.maintenance.doc_inventory --insert docs/product/infrastructure/05-e-API.md` to update them now.
 

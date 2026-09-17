@@ -1,6 +1,6 @@
 # Infrastructure Notes
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 Running log of infrastructure decisions, deferred cost/capacity upgrades, and
 performance observations that are worth revisiting but not urgent.

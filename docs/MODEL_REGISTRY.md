@@ -1,6 +1,6 @@
 # Model Registry — Unified (Strat / Magnitude / Direction)
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Unified record — merged 2026-06-10. Two parallel editions grew on different branches; BOTH are preserved here in full, nothing dropped. Where they describe the same model/experiment with different wording, both wordings are kept.**
 

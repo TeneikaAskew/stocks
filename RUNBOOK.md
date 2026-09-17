@@ -1,6 +1,6 @@
 # Disaster Recovery Runbook
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Audience:** the one person operating this system, under pressure, at 3 AM. Practical not exhaustive.
 **Generated 2026-05-02** from `gcp_inventory.json`, `gcp/deploy.sh`, [05-a-ARCHITECTURE.md](docs/product/infrastructure/05-a-ARCHITECTURE.md), and [05-c-DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md). Numbers below were derived from live `gcloud` checks at generation time, not invented.

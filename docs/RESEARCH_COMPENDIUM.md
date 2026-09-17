@@ -1,5 +1,7 @@
 # Research Compendium — Unified (Every Model · Every Experiment · Every Result)
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+
 **Unified record — merged 2026-06-10. Two parallel editions grew on different branches; BOTH are preserved here in full, nothing dropped. Where they describe the same model/experiment with different wording, both wordings are kept.**
 
 - **Part A — Research Compendium (data-science log)** (was `RESEARCH_COMPENDIUM.md`)
@@ -10,7 +12,7 @@
 # PART A — Research Compendium (data-science log)
 
 **Status:** living master index for the trading-research program.
-**Last reviewed:** 2026-06-05 · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last updated:** 2026-06-05.
 **Scope:** the directional/structure/magnitude research stack on the liquid index
 ETFs (IWM, SPY, QQQ; SPX daily-only) plus the production analysis/signal models.
 

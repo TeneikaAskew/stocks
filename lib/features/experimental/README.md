@@ -1,6 +1,6 @@
 # Direction Features R&D (Track C reference artifact)
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 **Status: FAIL — 3 of 4 families tested, all FAIL. 4th INFEASIBLE in the time-box. DO NOT REVIVE WITHOUT NEW DATA.**
 See [`docs/DIRECTION_FEATURES_R&D.md`](../../../docs/DIRECTION_FEATURES_R&D.md) for per-family per-fold verdict tables.

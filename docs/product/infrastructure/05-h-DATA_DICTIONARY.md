@@ -1,6 +1,6 @@
 # Data Dictionary — Cloud SQL `trading` dataset
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 Generated 2026-06-09 (post gamma-rename migration) from live `information_schema.columns` (81 tables, 2,745 columns). Type + nullability for every column; category, producing code, grain, and per-column formula notes for the analytical tables. NULL semantics: per CLAUDE.md §3.7, financial fields use NULL (not 0, not NaN) for missing — see `docs/audits/NAN_AUDIT_2026-06-09.md` for columns with residual float8-NaN to remediate. The gamma `flip_price`→`gamma_balance_price` rename + true BS `gamma_flip` addition is live here.
 

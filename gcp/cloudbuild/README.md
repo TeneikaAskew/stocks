@@ -1,6 +1,6 @@
 # Cloud Build inline configs
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
 
 These YAML files are the inline `build` configs for the Cloud Build
 triggers that replace some of the GitHub Actions workflows in this
