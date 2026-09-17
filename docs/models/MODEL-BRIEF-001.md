@@ -3,7 +3,7 @@
 **Code:** `lib/strategies/brief_bias.py` (266 lines), `lib/movement_statement.py` (1004 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-16
+**Doc health:** CURRENT · **Last verified:** 2026-09-17
 
 > **Scope of this document.** It records what the code does, read from the source and
 > its tests. Where the code does not record *why* a value was chosen, this document says
@@ -21,8 +21,15 @@ signals actually outperform brief-opposed ones, this layer is read-only and pure
 informational."*
 
 **Movement statement** assembles one structured object that the website, Discord and any
-other surface render identically. The source describes itself as *"the SINGLE SOURCE OF
-TRUTH for the movement statement"* and as **feature-flagged, NOT user-facing**.
+other surface render identically; the source describes itself as *"the SINGLE SOURCE OF
+TRUTH for the movement statement"*. It **is user-facing**: `GET /api/movement-statement`
+(`platform/api/routers/dashboard.py:530-545`) returns the assembled statement for the React
+Movement Read card whenever the flag is on, and the deployed flag is on — see
+[Live gating](#live-gating). The module header at `lib/movement_statement.py:1-7` still
+reads *"PHASE 2 (feature-flagged, NOT user-facing) ... Nothing here renders to users"*.
+That header describes the phase the module was written in, not the deployment; it is stale
+in the same way as the strategy docstrings recorded under DOC-18, and this document does
+not repeat it as current behaviour.
 
 ## Bias values
 
@@ -75,8 +82,21 @@ exists so a missing brief cannot read as agreement, which is a deliberate applic
 CLAUDE.md Rule 3.7. The visibility-only posture is also explained: there is not yet
 evidence that brief-aligned signals outperform brief-opposed ones.
 
-**UNKNOWN:** the `(\d)/5` setup-strength scale itself, and what threshold on it would
-make the bias actionable, are not recorded.
+**The actionable threshold is recorded; its rationale is not.** The `(N/5)` in the
+brief's `signal_status` is the five-factor mean-reversion score from
+`lib.signals.check_call_conditions` / `check_put_conditions` (`gcp/premarket_brief.py:28`,
+`:1174-1175`), and `_resolve_signal_status` (`:1767`) turns it into text with two
+thresholds read at `:999-1000`:
+
+| Threshold | Default | Source | Status text | `classify` reads it as |
+|---|---|---|---|---|
+| `SignalConfig.premarket_signal_threshold` | **3** | `lib/config.py:490` | `CALL setup (N/5)` / `PUT setup (N/5)` (`premarket_brief.py:1814-1815`) | `CALL` / `PUT` (subject to the FTFC check above) |
+| `SignalConfig.premarket_building_threshold` | **2** | `lib/config.py:491` | `CALL building (N/5)` / `PUT building (N/5)` (`:1816-1817`) | `NEUTRAL` ("building") |
+| below both | — | — | `No signal` | `NEUTRAL` |
+
+So a brief becomes a CALL or PUT bias at a score of 3 of 5. Both values can be overridden
+from the loaded config (`lib/config.py:870-871`). **UNKNOWN:** why 3 and 2 — neither
+constant carries a derivation in code or tests.
 
 ## Tests
 

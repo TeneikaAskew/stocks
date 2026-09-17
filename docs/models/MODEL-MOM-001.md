@@ -4,7 +4,7 @@
 `lib/strategies/config.py` ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-16
+**Doc health:** CURRENT · **Last verified:** 2026-09-17
 
 > **Read from the scoring functions, not the module docstring.** The first version of this
 > document was assembled from `momentum.py`'s module docstring and was wrong in three ways
@@ -59,7 +59,14 @@ before treating a calibrated range as validated.
 
 | Symbol | Role |
 |---|---|
-| `MomentumStrategy` | The canonical implementation. `lib/trading_analysis.py`'s `MarketAnalyzer.generate_technical_signals` is a back-compat wrapper that delegates here |
+| `MomentumStrategy` (`lib/strategies/momentum.py`) | The live implementation: `gcp/signal_monitor.py:1095` calls `MOMENTUM.evaluate` on every bar |
+| `MarketAnalyzer.generate_technical_signals` (`lib/trading_analysis.py:784-918`) | **A second, inline implementation — not a wrapper.** It neither imports nor calls `MomentumStrategy`; it scores its own seven conditions in its own loop with its own literals, `min_conditions = 5` and `min_core_conditions = 2` (`:896-897`), and resolves a both-eligible bar by strict comparison with a tie firing nothing (`:904-912`), mirroring `MomentumStrategy.evaluate` (`:217-223`). Historical-signal callers still invoke it directly |
+
+An earlier revision of this document called the `MarketAnalyzer` path "a back-compat wrapper
+that delegates here". It does not delegate; it duplicates, and the two must be kept in
+parity by hand. That is the debt [#285](https://github.com/TeneikaAskew/stocks/issues/285)
+tracks ("decommission `lib/trading_analysis.py` momentum inline path or route through
+`MomentumStrategy`"), open as of 2026-09-17.
 
 ## Rationale
 
@@ -69,8 +76,15 @@ before treating a calibrated range as validated.
   score-bucket walk-forward"*. That is a real derivation, though this document has not
   re-measured it.
 - **Dropping StochRSI** — derived, with the 72.2% fire-rate measurement quoted above.
-- **Relaxing `consecutive_up` from 3-of-3 to 3-of-5** — recorded as Phase 0.7.2, no
-  measurement given.
+- **`consecutive_up` is strict 3-of-3, and the reversion is measured.** `_check_call_conditions`
+  reads `Consecutive_Up >= CONSECUTIVE_PERIODS` (`momentum.py:78`) — the 3-bar column, not the
+  5-bar `Consecutive_Up_5` that `lib/indicators.py:1141` still computes. The Phase 0.7.2
+  3-of-5 relaxation (`CONSECUTIVE_WINDOW = 5`, `CONSECUTIVE_THRESHOLD = 3`, `config.py:61-62`)
+  was reverted, and `config.py:101-103` records why: *"PR-1's walk-forward showed the 3-of-5
+  relaxation regressed mean returns on both datasets while inflating fire counts ~3x"*. The
+  two constants survive in `config.py` with no reader outside that file, and the function
+  docstring at `momentum.py:57` / `:121` still says "relaxed ... to 3-of-5" — a further stale
+  line, added to DOC-18.
 
 **UNKNOWN — not recorded in code or tests:** the `(25, 50)` RSI band, `MIN_CORE_CONDITIONS = 2`,
 and the three newer thresholds `1.2` / `1.15` / `5.0`. Each is stated as a constant with a
@@ -83,9 +97,11 @@ not tracked the code. It lists five conditions including `StochRSI < 80`, which 
 dropped, and omits the three that were added. The **function** docstring at `:55-74` is
 current and records each change.
 
-Worse, that function docstring contains its own stale line — *"Seven conditions total;
-min_conditions=3 still gates fires"* (`:67`) — while `config.py:108` sets
-`MIN_CONDITIONS_MOMENTUM = 5`. Prefer `config.py` and the scoring body over either docstring.
+Worse, that function docstring contains two stale lines of its own — *"Seven conditions total;
+min_conditions=3 still gates fires"* (`:67`) while `config.py:108` sets
+`MIN_CONDITIONS_MOMENTUM = 5`, and *"relaxed `consecutive_up` from 3-of-3 to 3-of-5"* (`:57`)
+while the body reads the 3-of-3 column (`:78`) and `config.py:101-103` records the reversion.
+Prefer `config.py` and the scoring body over either docstring.
 
 Recorded as DOC-18 in
 [07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
