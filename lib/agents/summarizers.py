@@ -1250,6 +1250,31 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
     stands that morning, and the leak being closed is future edits, not
     same-day ones.
 
+    **This resolution is approximate, and the limit is structural.**
+    ``watchlists`` is ``PRIMARY KEY (user_id, ticker)``, so it holds
+    current state plus a first-add timestamp, not a membership history.
+    Both re-add paths -- ``gcp/fetchers/_watchlist.py`` and
+    ``gcp/discord_interactions/main.py``, each an
+    ``ON CONFLICT (user_id, ticker) DO UPDATE SET removed_at = NULL`` --
+    clear the removal without touching ``added_at``, which erases the
+    interval. So what the predicate above can and cannot do:
+
+    * catches a ticker whose add is after the cutoff (the MCK case);
+    * catches a ticker removed before the cutoff and never re-added
+      (the MSFT and SPX cases);
+    * **cannot** reconstruct a removal interval that a later re-add
+      erased. Added Jan, removed Mar, re-added Jun reads as present all
+      along, so a replay of Apr wrongly includes it.
+
+    That last case is not detectable from the table -- the evidence is
+    gone, not hidden -- so this docstring is the only record of it.
+    Fixing it needs immutable membership intervals, i.e. a schema change
+    plus both write paths, which is larger than this PR (Codex P2 on
+    ``43a28c9``, raised as a follow-up). The predicate is still a strict
+    improvement on asking whether a row is active *now*; it is just not
+    the complete as-of resolution the paragraph above might suggest on
+    its own.
+
     The universe is an ``EXISTS`` semi-join scoped to one owner, not a
     ``JOIN``. ``watchlists`` is ``PRIMARY KEY (user_id, ticker)`` and holds
     every signed-in user's list beside the shared ``default`` one, so a
