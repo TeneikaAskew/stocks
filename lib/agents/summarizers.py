@@ -1227,9 +1227,28 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
       is observable rather than silent.
     * **Correctness.** The unbounded universe included ``^VIX``,
       ``^VIX3M`` and ``^VVIX``. A volatility index is not an analog for
-      an equity's gap-and-volume setup. ``left(ticker, 1) <> '^'`` keeps
-      that true even if an index is added to the watchlist for the
-      signal monitor, which is a legitimate reason to put one there.
+      an equity's gap-and-volume setup. Peers must match the target's
+      asset class, which keeps that true even if an index is added to the
+      watchlist for the signal monitor -- a legitimate reason to put one
+      there. Excluding carets *unconditionally* would be wrong in the
+      other direction: an index target would then be compared against
+      equities only (Codex P2 on ``1069e50``).
+
+    Membership is resolved **at the cutoff**, not "active now". The bar
+    predicate was already cutoff-relative while ``removed_at IS NULL``
+    asked about today, so an ``INSIGHT_AS_OF`` replay took its analog
+    universe from the current watchlist: a ticker added after the replay
+    date leaked in, one removed after it vanished, and re-running the same
+    date could return different statistics because someone edited the
+    watchlist in between. That is the #822 look-ahead class arriving
+    through a config table instead of through bars (Codex P2 on
+    ``1069e50``). The live table has the mutation history to show it --
+    MSFT removed 2026-04-28, SPX removed 2026-04-30, MCK added
+    2026-05-04 -- so a 2026-04-29 replay must see SPX and must not see
+    MCK. The boundary is deliberately the cutoff *day* rather than
+    ``cutoff - 1``: a live run's universe should be the watchlist as it
+    stands that morning, and the leak being closed is future edits, not
+    same-day ones.
 
     The universe is an ``EXISTS`` semi-join scoped to one owner, not a
     ``JOIN``. ``watchlists`` is ``PRIMARY KEY (user_id, ticker)`` and holds
@@ -1268,12 +1287,13 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
         "SELECT m.ticker, m.date, m.open, m.high, m.low, m.close, m.volume "
         "FROM market_data_daily m "
         "WHERE m.ticker <> :ticker "
-        "  AND left(m.ticker, 1) <> '^' "
+        "  AND (left(m.ticker, 1) = '^') = (left(:ticker, 1) = '^') "
         f"  AND m.date {daily_op} CAST(:cutoff AS date) "
         "  AND EXISTS (SELECT 1 FROM watchlists w "
         "               WHERE w.ticker = m.ticker "
         "                 AND w.user_id = :watchlist_owner "
-        "                 AND w.removed_at IS NULL) "
+        "                 AND w.added_at < CAST(:cutoff AS date) + 1 "
+        "                 AND (w.removed_at IS NULL OR w.removed_at >= CAST(:cutoff AS date))) "
         "ORDER BY m.ticker ASC, m.date ASC",
         {"ticker": target_ticker.upper(), "cutoff": cutoff,
          "watchlist_owner": DEFAULT_USER_ID},

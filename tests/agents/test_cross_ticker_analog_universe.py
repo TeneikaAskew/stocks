@@ -165,19 +165,58 @@ def test_the_universe_is_scoped_to_one_watchlist_owner(capture):
     )
 
 
-def test_the_cross_ticker_pull_excludes_index_symbols(capture):
-    """A volatility index is not an analog for an equity's setup.
+def test_peers_match_the_targets_asset_class(capture):
+    """Codex P2 on `1069e50`. An unconditional caret exclusion is wrong
+    in one direction.
 
-    ^VIX, ^VIX3M and ^VVIX were all in the unbounded universe. They are
-    legitimately on the watchlist for the signal monitor, so the join
-    alone does not exclude them.
+    ^VIX, ^VIX3M and ^VVIX were all in the unbounded universe, and a
+    volatility index is not an analog for an equity's gap-and-volume
+    setup. But excluding carets *unconditionally* means that when the
+    target is itself an index with sparse same-ticker matches, every
+    index peer is dropped and only equities remain -- the same cross-asset
+    comparison, inverted. Match the target's class instead.
+
+    Reachability, measured 2026-09-17: the `default` watchlist holds no
+    caret ticker, so this predicate is a no-op today and the defect is
+    latent. `SPX` was watchlisted (and removed 2026-04-30), so index-like
+    symbols do get added.
     """
     summarizers.summarize_backtest_metrics("TGT")
     sql = _cross_sql(capture)
-    assert "left(m.ticker, 1) <> '^'" in sql, (
-        "index symbols (^VIX, ^VIX3M, ^VVIX) are not excluded from the "
-        "analog universe."
+    assert "(left(m.ticker, 1) = '^') = (left(:ticker, 1) = '^')" in sql, (
+        "the asset-class predicate is not relative to the target, so an "
+        "index target would be compared against equities only."
     )
+
+
+def test_the_universe_resolves_membership_at_the_cutoff(capture):
+    """Codex P2 on `1069e50`. Future config must not leak into a replay.
+
+    The bar predicate is cutoff-relative but `removed_at IS NULL` asked
+    whether a row is active NOW, so an `INSIGHT_AS_OF` replay resolved its
+    analog universe from today's watchlist. A ticker added after the
+    cutoff leaked in; one removed after it vanished. Re-running the same
+    historical date could therefore return different analog statistics
+    purely because someone edited the watchlist in between -- the #822
+    look-ahead class, reintroduced through a config table rather than
+    through bars.
+
+    Demonstrable on the live table, which has real mutation history:
+    MSFT removed 2026-04-28, SPX removed 2026-04-30, MCK added 2026-05-04.
+    A replay of 2026-04-29 should see SPX and must not see MCK.
+    """
+    summarizers.summarize_backtest_metrics(
+        "TGT", as_of=datetime.date(2024, 9, 1))
+    sql = _cross_sql(capture)
+    assert "w.added_at" in sql, (
+        "the universe does not bound `added_at` by the cutoff, so tickers "
+        "watchlisted after the replay date leak into it."
+    )
+    assert "w.removed_at IS NULL OR w.removed_at" in sql, (
+        "the universe still asks whether a row is active now rather than "
+        "whether it was active at the cutoff."
+    )
+    assert "w.removed_at IS NULL AND" not in sql
 
 
 def test_the_unbounded_form_is_gone(capture):
