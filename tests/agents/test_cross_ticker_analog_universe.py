@@ -76,29 +76,92 @@ def capture(monkeypatch):
     return seen
 
 
-def _cross_sql(seen) -> str:
-    matches = [s for s, _ in seen if "watchlists" in s or "ticker <> :ticker" in s]
+def _cross_call(seen) -> tuple[str, dict]:
+    matches = [(s, p) for s, p in seen
+               if "watchlists" in s or "ticker <> :ticker" in s]
     assert matches, "the cross-ticker pull never ran; the test data no longer forces expansion"
     return matches[-1]
+
+
+def _cross_sql(seen) -> str:
+    return _cross_call(seen)[0]
 
 
 def test_the_cross_ticker_pull_is_bounded_by_the_watchlist(capture):
     """Red before the fix: the query named no universe at all.
 
-    This is the whole fix. Without the join the query's cost scales with
+    This is the whole fix. Without a universe the query's cost scales with
     how many tickers happen to exist in market_data_daily, which is the
     shape CLAUDE.md Rule 3.8 forbids.
     """
     summarizers.summarize_backtest_metrics("TGT")
     sql = _cross_sql(capture)
-    assert "JOIN watchlists" in sql, (
-        "the cross-ticker analog pull does not join `watchlists`, so its "
-        "universe is every ticker in market_data_daily (2,609 on "
+    assert "watchlists" in sql, (
+        "the cross-ticker analog pull does not bound its universe by "
+        "`watchlists`, so it is every ticker in market_data_daily (2,609 on "
         "2026-09-16, 5,597,928 rows, 2.93 GiB in pandas)."
     )
     assert "w.removed_at IS NULL" in sql, (
-        "the watchlist join does not filter removed_at, so tickers removed "
-        "from the watchlist stay in the analog universe forever."
+        "the universe does not filter removed_at, so tickers removed from "
+        "the watchlist stay in the analog universe forever."
+    )
+
+
+def test_the_universe_cannot_fan_out_when_two_users_watch_one_ticker(capture):
+    """Codex P1 on `c75c22c`. Verified against the schema before fixing.
+
+    `watchlists` is `PRIMARY KEY (user_id, ticker)`, and its own schema
+    comment says 'default' is the shared list driving the brief/insight/
+    signal jobs while "a signed-in user's rows are owned by their verified
+    email". So one ticker can hold one row per user, and a plain
+    `JOIN watchlists` returns every market-data bar once per subscriber.
+
+    That is silent corruption, not an error: `_engineer` below groups by
+    ticker and calls `.diff()`, `.rolling()`, `.ewm()` and `.shift(-n)` on
+    the group, so duplicated dates are consumed as consecutive sessions.
+    Every feature and every forward return is computed over a doubled
+    series, and the analog statistics get weighted by subscriber count.
+
+    Measured on production 2026-09-17: 16 active rows, 16 distinct tickers,
+    1 distinct user. The defect is latent, which is exactly why it would
+    have shipped. It fires the first time any signed-in user watches a
+    ticker `default` already watches.
+
+    A semi-join cannot multiply rows whatever the owner scoping later
+    becomes, so that is what is pinned here rather than the scoping alone.
+    """
+    summarizers.summarize_backtest_metrics("TGT")
+    sql = _cross_sql(capture)
+    assert "EXISTS" in sql, (
+        "the cross-ticker universe is not a semi-join, so a ticker watched "
+        "by N users multiplies that ticker's bars N times."
+    )
+    assert "JOIN watchlists" not in sql, (
+        "a row-multiplying `JOIN watchlists` is back; use EXISTS so the "
+        "universe filters rather than joins."
+    )
+
+
+def test_the_universe_is_scoped_to_one_watchlist_owner(capture):
+    """The analog set must not change when a stranger adds a ticker.
+
+    `watchlists` holds every signed-in user's list alongside the shared
+    `default` one. Reading all owners would let any user silently alter the
+    forward-return statistics the insight reports are built on. The
+    canonical read (`gcp/fetchers/_watchlist.py:91`) is owner-scoped and
+    defaults to DEFAULT_USER_ID; this matches it.
+    """
+    from gcp.fetchers._watchlist import DEFAULT_USER_ID
+
+    summarizers.summarize_backtest_metrics("TGT")
+    sql, params = _cross_call(capture)
+    assert "w.user_id = :watchlist_owner" in sql, (
+        "the cross-ticker universe is not scoped to a single watchlist "
+        "owner, so it is the union of every user's list."
+    )
+    assert params.get("watchlist_owner") == DEFAULT_USER_ID, (
+        f"owner bound to {params.get('watchlist_owner')!r}, expected "
+        f"DEFAULT_USER_ID ({DEFAULT_USER_ID!r})"
     )
 
 

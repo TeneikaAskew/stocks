@@ -1231,6 +1231,17 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
       that true even if an index is added to the watchlist for the
       signal monitor, which is a legitimate reason to put one there.
 
+    The universe is an ``EXISTS`` semi-join scoped to one owner, not a
+    ``JOIN``. ``watchlists`` is ``PRIMARY KEY (user_id, ticker)`` and holds
+    every signed-in user's list beside the shared ``default`` one, so a
+    join returns each bar once per subscriber. The per-ticker pipeline
+    below then reads those duplicate dates as consecutive sessions --
+    ``.diff()``, ``.rolling()``, ``.ewm()`` and the ``shift(-n)`` forward
+    returns are all computed over a doubled series, and analog statistics
+    get weighted by subscriber count. Nothing raises; the numbers are just
+    wrong. Measured 2026-09-17 the table held 16 active rows across 1 user,
+    so this was latent rather than firing (Codex P1 on ``c75c22c``).
+
     Deliberately NOT done: no ``LIMIT``. Truncating an analog sample
     biases it — ``ORDER BY ticker`` means a LIMIT would silently keep
     only the alphabetically-early names. The bound belongs on the
@@ -1249,15 +1260,23 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
     # Same operator as the same-ticker pull, or the as-of bar leaks back
     # in through the analogs (#822).
     daily_op = "<=" if inclusive_today else "<"
+    # Lazy, matching `_query` above: keeps `gcp` off this module's import
+    # path. Precedent: lib/agents/ranker/candidates.py:246.
+    from gcp.fetchers._watchlist import DEFAULT_USER_ID
+
     df = _query(
         "SELECT m.ticker, m.date, m.open, m.high, m.low, m.close, m.volume "
         "FROM market_data_daily m "
-        "JOIN watchlists w ON w.ticker = m.ticker AND w.removed_at IS NULL "
         "WHERE m.ticker <> :ticker "
         "  AND left(m.ticker, 1) <> '^' "
         f"  AND m.date {daily_op} CAST(:cutoff AS date) "
+        "  AND EXISTS (SELECT 1 FROM watchlists w "
+        "               WHERE w.ticker = m.ticker "
+        "                 AND w.user_id = :watchlist_owner "
+        "                 AND w.removed_at IS NULL) "
         "ORDER BY m.ticker ASC, m.date ASC",
-        {"ticker": target_ticker.upper(), "cutoff": cutoff},
+        {"ticker": target_ticker.upper(), "cutoff": cutoff,
+         "watchlist_owner": DEFAULT_USER_ID},
     )
     if df is None or df.empty:
         # Not a fallback: the caller skips cross-ticker analogs and says so
