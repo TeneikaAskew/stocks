@@ -58,10 +58,16 @@ outputs are comparable with production rather than with a parallel implementatio
 
 ## Rationale
 
-**Partly recorded.** The choice to route through the production indicator path *is*
-explained, with the rule it implements. The sample-size floors are not: `10` total and
-`5` per direction carry no derivation, and `_WARMUP_BARS = 14` is consistent with a
-14-period RSI but the source does not say that is why.
+**Partly recorded, and the sample floors are among the recorded parts.** The choice to
+route through the production indicator path *is* explained, with the rule it implements.
+So are both floors, at `style_miner.py:105-112`: `_MIN_TOTAL_ENTRIES = 10` is tied to the
+*"spec §8 / Task 4.3 endpoint contract (need >= 10 closed trades)"*, and
+`_MIN_DIRECTION_ENTRIES` is derived as half of it because *"denominators of 1-4 are too
+coarse to call the result a style rather than noise"*. An earlier revision of this
+document said both carried no derivation, which discarded recorded provenance.
+
+**UNKNOWN:** `_WARMUP_BARS = 14` is consistent with a 14-period RSI, but the source does
+not say that is why.
 
 Mined profiles are walk-forward validated through
 [MODEL-CALIB-001](MODEL-CALIB-001.md)'s machinery

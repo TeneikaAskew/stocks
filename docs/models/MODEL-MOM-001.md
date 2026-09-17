@@ -59,7 +59,8 @@ before treating a calibrated range as validated.
 
 | Symbol | Role |
 |---|---|
-| `MomentumStrategy` | The canonical implementation. `lib/trading_analysis.py`'s `MarketAnalyzer.generate_technical_signals` is a back-compat wrapper that delegates here |
+| `MomentumStrategy` | The class used by the live path |
+| `MarketAnalyzer.generate_technical_signals` | **A second, independent implementation** — `lib/trading_analysis.py:784-918` scores momentum in its own loop and never imports `MomentumStrategy`. Historical-signal callers still invoke it directly, so the two must be kept in parity by hand. This is the duplicate path tracked by [#285](https://github.com/TeneikaAskew/stocks/issues/285) |
 
 ## Rationale
 
@@ -69,8 +70,11 @@ before treating a calibrated range as validated.
   score-bucket walk-forward"*. That is a real derivation, though this document has not
   re-measured it.
 - **Dropping StochRSI** — derived, with the 72.2% fire-rate measurement quoted above.
-- **Relaxing `consecutive_up` from 3-of-3 to 3-of-5** — recorded as Phase 0.7.2, no
-  measurement given.
+- **`consecutive_up` is strict 3-of-3, and that is a reversion** — the 3-of-5 relaxation
+  was tried and rolled back. `config.py:101-103` records the measurement: PR-1's
+  walk-forward *"showed the 3-of-5 relaxation regressed mean returns on both datasets
+  while inflating fire counts ~3x"*. An earlier revision of this document called the
+  relaxation current and said no measurement was given; both were wrong.
 
 **UNKNOWN — not recorded in code or tests:** the `(25, 50)` RSI band, `MIN_CORE_CONDITIONS = 2`,
 and the three newer thresholds `1.2` / `1.15` / `5.0`. Each is stated as a constant with a

@@ -25,9 +25,11 @@ Per bar, per ticker: whether a CALL or PUT mean-reversion signal is eligible to 
 Unlike [MODEL-MOM-001](MODEL-MOM-001.md) there is **no core-condition requirement** — any
 three of the five suffice.
 
-**Tie-break:** when both sides clear the gate, CALL wins
-(`call_score >= MIN_CONDITIONS and call_score >= put_score`, `:160`). PUT fires only when it
-clears and CALL does not (`:164`).
+**When both sides clear the gate the higher score wins; CALL wins only a tie.**
+`:160` reads `call_score >= MIN_CONDITIONS and call_score >= put_score`, so with
+`call_score=3` and `put_score=4` that test is false and the `elif` at `:164` emits **PUT**.
+An earlier revision said CALL always wins, which misstated production for every bar where
+the put side scores higher.
 
 ## The five scored conditions (CALL; PUT mirrors)
 
@@ -54,7 +56,8 @@ momentum module records.
 
 | Symbol | Role |
 |---|---|
-| `MeanReversionStrategy` | The canonical implementation. `lib/signals.py` is now a thin shim re-exporting from here |
+| `lib.signals.evaluate_signal` | **The live implementation.** `SignalMonitor._evaluate_strategies_for_bar` calls this, not the class below. It applies the runtime `SignalConfig.min_conditions`, the per-ticker consecutive-period override, and the disabled-condition and direction kill switches — gates that decide real fires and that `MeanReversionStrategy` does not carry |
+| `MeanReversionStrategy` | The class form of the same scoring rules. **Not on the production fire path.** An earlier revision called it canonical and `lib/signals.py` a thin re-export; `lib/signals.py:178` defines its own `evaluate_signal` |
 
 ## Rationale
 

@@ -1,6 +1,6 @@
 # Model and Algorithm Registry
 
-**Last reviewed:** 2026-09-16 · **Owner:** TBD
+**Last reviewed:** 2026-09-17 · **Owner:** TBD
 
 Covers deterministic rules, heuristics, statistical systems, trained estimators and LLM
 nodes — a model is anything that produces a decision, not only a fitted estimator.
@@ -118,7 +118,7 @@ are **Experimental**; none has promotion evidence.
 | Failed | 1 (MODEL-DIR-001) |
 | Shadow | 1 (MODEL-TYPE-001) |
 | Research | 3 |
-| Experimental | 3 + 7 LLM node groups |
+| Experimental | 4 (MODEL-BRIEF-001, MODEL-EARN-001, MODEL-RANK-001, MODEL-STYLE-001) + 7 LLM node groups |
 
 **No model in this repository currently meets the promotion bar.** Two carry explicit
 recorded FAIL/DEAD-END verdicts ([#575](https://github.com/TeneikaAskew/stocks/pull/575),
@@ -211,7 +211,17 @@ governance. Each is real work with a real verdict that no row above claims.
 
 ### Which of these actually run
 
-Of the 68 Cloud Run Jobs declared in `gcp/deploy.sh`, eight model-bearing jobs are on a Cloud Scheduler cron; the rest of the research surface is on-demand only.
+Of the 68 Cloud Run Jobs declared in `gcp/deploy.sh`, **fourteen** scheduler entries target a
+job that executes code cited in a `MODEL-*` row above; the rest of the research surface is
+on-demand only. That inclusion rule is the definition of "model-bearing" here, and it is what
+the test enforces.
+
+> **This count was `eight` until 2026-09-17, and the eight omitted the live fire path.**
+> `signal-monitor-daily` runs `gcp/signal_monitor.py`, which evaluates MODEL-MOM-001,
+> MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 and MODEL-BRIEF-001 every trading morning —
+> the single most consequential model-bearing job in the repo, and it was missing from the
+> table that exists to name them. Found in review, not by the gate that was supposed to
+> catch exactly this.
 The live fleet is larger — see [05-INFRASTRUCTURE](05-INFRASTRUCTURE.md) for the
 declared-versus-live reconciliation.
 
@@ -225,6 +235,12 @@ declared-versus-live reconciliation.
 | `calibrate-thresholds-quarterly` | `0 2 1 1,4,7,10 *` | `calibrate-thresholds` | MODEL-CALIB-001 |
 | `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-GAMMA-001 |
 | `audit-brief-bias-weekly` | `0 10 * * 0` | `audit-brief-bias` | MODEL-BRIEF-001 audit |
+| `signal-monitor-daily` | `25 9 * * 1-5` | `signal-monitor` | **the live fire path** — MODEL-STRAT-001, MODEL-FTFC-001, MODEL-LEVEL-001, MODEL-IND-001, MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001, MODEL-BRIEF-001 |
+| `orb-15m-alert` | `45 9 * * 1-5` | `signal-monitor` | MODEL-IND-001 (opening range) |
+| `orb-30m-alert` | `0 10 * * 1-5` | `signal-monitor` | MODEL-IND-001 (opening range) |
+| `signal-monitor-eod-resolver-daily` | `30 16 * * 1-5` | `signal-monitor-eod-resolver` | MODEL-EXIT-001 outcomes |
+| `realtime-gex-daily` | `0 17 * * 1-5` | `build-realtime-gex` | MODEL-GAMMA-001 |
+| `refresh-earnings-views-weekly` | `0 20 * * 0` | `refresh-earnings-views` | MODEL-EARN-001 |
 
 `direction-baseline`, `direction-phase2`, `direction-probe`, `direction-importance`
 and `param-sweep` are deployed but **unscheduled**;
@@ -302,6 +318,8 @@ here — that one belongs to code defects and is owned by
 | DOC-16 | `07` (this file) | E-19 assigned only to MODEL-MAG-001 → its ledger entry is `Engine/area: both (integrity)` and it names `strat_leakage_audit.py`; the integrity evidence underwriting the TYPE verdict was missing from TYPE's row | omission | **M** | MODEL-TYPE-001, MODEL-MAG-001 |
 | DOC-17 | `07` (this file) | E-26 / E-31 / E-33 listed beside committed modules → the ledger records their results as from a scratch harness, *“not committed to the repo”* (`EXPERIMENT_REGISTRY.md:1260`); `phase2_features.py` belongs to E-34. The table implied code that reproduces them | dead-path | **M** | MODEL-FEAT-X |
 | DOC-14 | Whole corpus | Git dates are unusable as a freshness signal: this is a shallow clone whose graft `4df291d` (2026-09-07) has no parent, so **187 of 220** docs show exactly one commit on that date regardless of when they were written | stamp | **M** | — |
+| DOC-20 | `07` (this file) | The scheduler table claimed **eight** model-bearing cron jobs and omitted `signal-monitor-daily` — the live fire path running MODEL-MOM/MR/AGREE/EXIT/BRIEF every trading morning, plus the two ORB triggers, the EOD resolver, `realtime-gex-daily` and `refresh-earnings-views-weekly`. The real count by the stated rule is **fourteen** | omission | **H** | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001, MODEL-BRIEF-001, MODEL-IND-001, MODEL-GAMMA-001, MODEL-EARN-001 |
+| DOC-21 | `docs/models/*` (second round) | Eleven further errors in the reference docs, same class as DOC-19: thresholds labelled UNKNOWN that the source records (STYLE's sample floors, BRIEF's actionable threshold), a "canonical" implementation production does not call (`MeanReversionStrategy` vs `lib.signals.evaluate_signal`), a delegating wrapper that is a second implementation (`MarketAnalyzer.generate_technical_signals`), a reverted relaxation described as current (momentum 3-of-5), a tie-break that only applies on ties, two independent systems merged into one model record (MODEL-CALIB-001), and three EARN claims contradicted by source | contradiction | **H** | six models |
 
 ### Disposition
 
@@ -309,6 +327,8 @@ here — that one belongs to code defects and is owned by
 |---|---|---|
 | DOC-18 | **FIXED HERE** in the docs, **FLAGGED** at source | The reference docs now warn about each stale docstring and say which source to trust. Correcting the docstrings themselves touches `lib/strategies/` and belongs in a code PR, not this docs PR |
 | DOC-19 | **FIXED HERE** | All six rewritten from the scoring functions, every condition and constant quoted with its `file:line`. Found by review, not by me — see the note under [How this registry is kept honest](#how-this-registry-is-kept-honest) |
+| DOC-20 | **FIXED HERE** | Six rows added, the count corrected to fourteen with the inclusion rule stated, and `MODEL_BEARING` in the test extended so the completeness gate can see the fire path. The gate reported green throughout because its substring list never named `signal-monitor` |
+| DOC-21 | **FIXED HERE** | All eleven rewritten against the cited `file:line`. Two recurring habits produced them: labelling a constant undocumented without reading the comment block above it, and naming a class canonical without checking which implementation the scheduled job calls |
 | DOC-15, DOC-16, DOC-17 | **FIXED HERE** | Found by review, not by this audit — all three were verified against `EXPERIMENT_REGISTRY.md` and `EXEC_BACKTEST_RESULTS.md` before being corrected, and the join is now gated by `tests/meta/test_model_registry_consistency.py` |
 | DOC-01…DOC-05 | **FIXED HERE** | Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit |
 | DOC-07, DOC-08, DOC-13 (registry half), DOC-14 | **FIXED HERE** | Labelled in place with the measured reality; no result was rewritten |

@@ -15,18 +15,30 @@
 
 ## What it decides
 
-Per-ticker parameter thresholds, written into the `ticker_calibration` table, which
-[MODEL-MOM-001](MODEL-MOM-001.md), [MODEL-MR-001](MODEL-MR-001.md) and the live signal
-monitor then read as their operating configuration.
+**This registry row covers two independent systems, and they should not be read as one.**
+An earlier revision of this document merged them, which let the scheduled percentile
+calibrator inherit the other system's algorithm, evidence and invalidation rationale.
 
-Implements **anchored walk-forward**: an expanding training window with a fixed test
-window, sliding forward one test period at a time.
+| | **Percentile calibrator** | **Walk-forward parameter sweep** |
+|---|---|---|
+| Entry point | `scripts/calibrate_thresholds.py` | `scripts/run_param_sweep.py` |
+| Scheduled? | **Yes** — `calibrate-thresholds-quarterly`, `0 2 1 1,4,7,10 *` | No — run by hand |
+| Algorithm | ATR / RVOL / RSI distributions over a **rolling 60-day** bar history | **Anchored walk-forward** via `WalkForwardValidator`, winner by `select_calibration_winner` |
+| Writes | `ticker_calibration` | `exit_config_overrides` |
+| Read by | [MODEL-MOM-001](MODEL-MOM-001.md), [MODEL-MR-001](MODEL-MR-001.md), the live signal monitor | the live exit path ([MODEL-EXIT-001](../product/07-MODEL-REGISTRY.md)) |
+| Implicated by #813 / #817 | No | **Yes** |
+
+`scripts/calibrate_thresholds.py` does not import `WalkForwardValidator` at all. The
+**Invalidated** status and the findings below belong to the walk-forward sweep; the
+percentile calibrator has its own, separate question — whether a rolling 60-day
+percentile is the right operating threshold — which no experiment in the ledger asks.
 
 ## Entry points
 
 | Symbol | Role |
 |---|---|
-| `WalkForwardValidator` | The anchored walk-forward driver |
+| `calibrate_thresholds.main` | The **scheduled** percentile calibrator (`scripts/calibrate_thresholds.py`) |
+| `WalkForwardValidator` | The anchored walk-forward driver — used by `scripts/run_param_sweep.py`, **not** by the scheduled job |
 | `WalkForwardResult` | Per-fold result record |
 | `profile_to_signal_config` | Converts a mined profile (see [MODEL-STYLE-001](MODEL-STYLE-001.md)) into `SignalConfig` |
 | `select_calibration_winner` | Picks the winning parameter set across folds |

@@ -22,7 +22,10 @@ informational."*
 
 **Movement statement** assembles one structured object that the website, Discord and any
 other surface render identically. The source describes itself as *"the SINGLE SOURCE OF
-TRUTH for the movement statement"* and as **feature-flagged, NOT user-facing**.
+TRUTH for the movement statement"*. That module header also calls it **NOT user-facing**,
+and that part is now stale: `platform/deploy.sh:177` ships the flag `true` and
+`platform/api/routers/dashboard.py:530-545` exposes the enabled endpoint that the React
+Movement Read card consumes. It is feature-flagged and the flag is on.
 
 ## Bias values
 
@@ -75,8 +78,14 @@ exists so a missing brief cannot read as agreement, which is a deliberate applic
 CLAUDE.md Rule 3.7. The visibility-only posture is also explained: there is not yet
 evidence that brief-aligned signals outperform brief-opposed ones.
 
-**UNKNOWN:** the `(\d)/5` setup-strength scale itself, and what threshold on it would
-make the bias actionable, are not recorded.
+**The actionable threshold is recorded**, and an earlier revision wrongly said it was not:
+`SignalConfig.premarket_signal_threshold` defaults to **3** and
+`premarket_building_threshold` to **2** (`lib/config.py:490-491`), and
+`gcp/premarket_brief.py:999-1000` reads both to produce the setup status that `classify`
+parses. A score of 3+/5 is a setup; 2 is "building"; below that is no signal.
+
+**UNKNOWN:** why 3 and 2 are the right cut-points, and how the `(\d)/5` scale itself was
+constructed, are not recorded.
 
 ## Tests
 

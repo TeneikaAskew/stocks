@@ -275,8 +275,10 @@ def test_jobs_claimed_unscheduled_really_are():
 
 def test_scheduled_count_prose_matches_the_table():
     section = _run_section()
-    words = {"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
-    m = re.search(r"\b(\w+) model-bearing jobs are on a Cloud Scheduler cron", section)
+    words = {"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+             "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+             "fifteen": 15, "sixteen": 16}
+    m = re.search(r"\b\**(\w+)\**\s+scheduler entries target", section)
     assert m, "the scheduled-count sentence changed shape"
     stated = words.get(m.group(1).lower())
     assert stated is not None, f"unhandled number word: {m.group(1)}"
@@ -428,11 +430,24 @@ LEDGER = REPO / "docs" / "EXPERIMENT_REGISTRY.md"
 #: are session blocks or tables rather than `## E-nn` entries with an immediate
 #: `- **Engine/area:**` line. Listed explicitly so an experiment outside this set
 #: that the parser cannot classify FAILS rather than being skipped.
-UNPARSED_LEDGER_SECTIONS = frozenset({
-    "E-24",  # data-quality remediation, narrative section
-    "E-26", "E-27", "E-28", "E-29", "E-30", "E-31", "E-33",  # 2026-07-06 session table
-    "E-34",  # direction Phase 2, prose section
-})
+#: Ledger sections whose shape `_ledger_engine_area()` cannot parse. An allowlist that
+#: merely SKIPPED these left the family invariant unenforced for every id in it -- the
+#: silent-skip bug moved rather than closed. So each carries its engine scope here,
+#: read from its ledger section by hand, and the family check uses it like any parsed
+#: one. Adding an id without a scope fails.
+#: Scopes read from each section, NOT inferred from the id. The 2026-07-06 session
+#: (E-26..E-31, E-33) is a MAGNITUDE session -- its harness states the metric as "OOS
+#: EXPLOSIVE (top-bucket) precision" against the "single-bar body magnitude (current
+#: production target)" baseline. Only E-30 ("Directional excursion") is directional.
+#: A first pass at this map guessed "direction" for most of them from the surrounding
+#: direction_program prose and was wrong; the scopes below are read from the rows.
+UNPARSED_LEDGER_SECTIONS = {
+    "E-24": "gamma (data quality)",
+    "E-26": "magnitude", "E-27": "magnitude", "E-28": "magnitude",
+    "E-29": "magnitude", "E-30": "direction", "E-31": "magnitude",
+    "E-33": "magnitude",
+    "E-34": "both (direction + magnitude SIZE arm)",
+}
 
 
 def _expand_experiment_ranges(text: str) -> set[str]:
@@ -521,10 +536,11 @@ def test_cited_experiments_match_the_models_engine():
                 # E-26..E-33 session outside the family check entirely, and would
                 # accept a typo'd or nonexistent id as valid. Sections whose shape
                 # the parser cannot read must be listed explicitly.
-                if exp in UNPARSED_LEDGER_SECTIONS:
+                a = UNPARSED_LEDGER_SECTIONS.get(exp)
+                if a is None:
+                    wrong.append(f"{model} cites {exp}, which has no Engine/area in the ledger")
                     continue
-                wrong.append(f"{model} cites {exp}, which has no Engine/area in the ledger")
-                continue
+                # fall through: an exceptional section is checked like a parsed one.
             if engine in a or a.startswith(("both", "cross-cutting", "precursor")):
                 continue
             # Anything else needs a parenthetical saying which arm applies.
@@ -533,6 +549,34 @@ def test_cited_experiments_match_the_models_engine():
     assert not wrong, (
         f"experiment/model family mismatches without a qualifying note: {wrong}. "
         "Either the experiment is on the wrong row, or the cell should say which arm applies."
+    )
+
+
+def test_every_ledger_experiment_is_owned_or_explicitly_ownerless():
+    """Coverage, not just correctness of the ids that happen to be cited.
+
+    The both-engines check only looks at experiments scoped `both`, and the family
+    check only looks at ids a row still cites -- so deleting a single-engine id such
+    as E-01 from MODEL-TYPE-001 left every test green. The registry's stated goal is
+    that every experiment is attached to its owner or listed as ownerless, and until
+    this test that goal was unenforced in both directions.
+    """
+    body = LEDGER.read_text()
+    ledger = set(re.findall(r"^## (E-\d+)", body, re.M))
+    ledger |= set(re.findall(r"^\| \**(E-\d+)\** \|", body, re.M))
+    assert len(ledger) >= 30, f"only {len(ledger)} ledger ids parsed -- did its shape change?"
+
+    text = REGISTRY.read_text()
+    owned = set()
+    for cell in _traceability_rows().values():
+        owned |= _expand_experiment_ranges(cell)
+    owned |= _expand_experiment_ranges(
+        text.split("### Experiments with no", 1)[1].split("\n##", 1)[0])
+
+    missing = sorted(ledger - owned, key=lambda x: int(x.split("-")[1]))
+    assert not missing, (
+        f"ledger experiments attached to no model and not listed as ownerless: {missing}. "
+        "Every experiment is either evidence for a model or explicitly nobody's."
     )
 
 
@@ -602,9 +646,15 @@ def test_docs_citing_solyra_paths_explain_the_split():
 #: Jobs whose name marks them as model-bearing: they train, score, or audit a
 #: model. A scheduled job matching this and absent from the table is the
 #: `audit-brief-bias-weekly` omission repeating.
+#: A job is model-bearing when it executes code cited in a MODEL-* row. The live
+#: fire path was missing from this tuple until 2026-09-17, so the completeness
+#: check reported green while the registry omitted `signal-monitor` -- the job that
+#: evaluates MOM, MR, AGREE, EXIT and BRIEF every trading morning. A substring list
+#: is only as complete as its author; that is the standing weakness here.
 MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds",
                  "regime-combo", "audit-walkforward", "audit-brief-bias",
-                 "p2-build-gamma-levels", "audit-magnitude-drift")
+                 "p2-build-gamma-levels", "audit-magnitude-drift",
+                 "signal-monitor", "build-realtime-gex", "refresh-earnings-views")
 
 
 def test_every_scheduled_model_bearing_job_is_listed():

@@ -15,8 +15,13 @@ A **playability score** per upcoming earnings event, a **quintile** and confiden
 derived from it, and an **archetype** tag. Consumed by the pre-market brief's playbook
 section, the watchlist UI, and the weekly long-side watchlist job.
 
-Per CLAUDE.md's "`lib/` is the shared backend spine", every consumer reads this one
-implementation rather than reimplementing the formula.
+CLAUDE.md's "`lib/` is the shared backend spine" is the intent, but **it does not hold for
+the archetype tag**: `gcp/refresh_earnings_views.py::_derive_archetype` reimplements the
+thresholds instead of calling `classify_archetype`, and the two **disagree** — with
+consistency data missing it returns `reversal_play` where the canonical function returns
+`quiet`. That job writes the table the watchlist UI reads, so the divergence is
+user-visible. Either route it through the shared helper or treat this as a second
+implementation to keep in parity.
 
 ## The formula (locked in Phase 0.5)
 
@@ -39,7 +44,7 @@ typical_daily_return = median(|daily_return_pct|) over last 60d
 | Q4 | `28.2–41.9` | 51.7% | ✅ SOLID | standard sizing |
 | Q3 | `21.2–28.2` | 46.5% | 🟡 OK | small position only |
 | Q2 | `15.7–21.2` | 42.9% | ❓ WEAK | paper / watch |
-| Q1 | `< 15.7` | 34.8% | 🚫 SKIP | below baseline; the brief drops these rows |
+| Q1 | `< 15.7` | 34.8% | 🚫 SKIP | below baseline; routed to `low_conviction`, not dropped |
 
 Boundaries are midpoints between adjacent quintile-average scores, so a score landing
 exactly on an average maps to that quintile.
@@ -82,11 +87,14 @@ All environment variables; defaults are the Phase 0.5 locked values.
 
 ## Rationale
 
-**RECORDED — the only one of the seven with a derivation in source.** The quintile
-boundaries are *"calibrated against the 21,592-prediction backtest
+**RECORDED — the quintile calibration is the best-evidenced threshold set in these seven
+documents.** (It is not the only one with any derivation: MODEL-MOM-001 records a
+walk-forward behind its score floor and a measured 72.2% fire rate behind dropping
+StochRSI, and MODEL-MR-001 records the 84.6% rate behind dropping EMA proximity.)
+The quintile boundaries are *"calibrated against the 21,592-prediction backtest
 (`scripts/backtest_playability.py`, 2026-05-14)"*, and the per-quintile hit rates above
 are quoted from that calibration. The monotonic 34.8% → 58.9% progression is what
-justifies the Q1-drop and the size-up-at-Q5 guidance.
+justifies demoting Q1 to low conviction and sizing up at Q5.
 
 Two caveats a reader should carry:
 
