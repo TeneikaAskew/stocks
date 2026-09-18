@@ -1,6 +1,6 @@
 # Investment Models & Code Summary — Unified (IWM · QQQ · SPY · SPX)
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 **Unified record — merged 2026-06-10. Both parallel editions preserved in full, nothing dropped; where wording differs both are kept.**
 

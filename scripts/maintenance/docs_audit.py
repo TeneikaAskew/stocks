@@ -57,7 +57,9 @@ reports the complement. Findings in an unowned span are ordinary Class D work;
 findings in a generated span route to the renderer or the prompt that writes it,
 and are never edited in place.
 
-Exit codes: 0 clean, 1 findings (so it can gate CI), 2 the run itself failed.
+Exit codes: 0 clean, 1 a P1/P2 finding (so it can gate CI), 2 the run itself
+failed. P3 is the standing worklist -- unreviewed documents and legacy marker
+lines awaiting a human -- reported but never gating.
 A failed ``gh`` read is exit 2 and never a silent empty result (CLAUDE.md §3.7).
 
 Usage
@@ -165,7 +167,15 @@ def run(cmd: list[str], *, cwd: pathlib.Path = REPO,
 
 # ── the base ref ────────────────────────────────────────────────────────────
 
-BASE_REF_CANDIDATES = ("origin/main", "main", "HEAD")
+# HEAD first, deliberately. The audit READS THE WORKING TREE, so the revision
+# it reviews is this branch's, not the trunk's. Enumerating and stamping
+# `origin/main` instead had two consequences, both measured on this branch:
+# a document added here (`docs/DOC_REGISTRY.md`) was absent from `ls-tree
+# origin/main` and so was never classified, marked or link-checked at all; and
+# every document stamped here recorded a SHA that predates this branch, so the
+# branch's own code changes land in `<stamped>..origin/main` and mark the
+# freshly reviewed documents stale the moment it merges.
+BASE_REF_CANDIDATES = ("HEAD", "origin/main", "main")
 
 
 def _ref_exists(ref: str) -> bool:
@@ -175,7 +185,7 @@ def _ref_exists(ref: str) -> bool:
 
 def resolve_base_ref(candidates: tuple[str, ...] = BASE_REF_CANDIDATES,
                      exists=_ref_exists) -> str:
-    """The ref this run audits against: the first candidate git can resolve.
+    """The revision this run reviews: the first candidate git can resolve.
 
     Hard-coding `origin/main` made every documented invocation abort with exit
     2 in a detached or shallow checkout -- including the actions/checkout case
@@ -253,6 +263,44 @@ def load_registry(text: str) -> list[dict]:
     return rows
 
 
+def check_registry_paths(tracked: set[str], registry: list[dict]) -> list[dict]:
+    """Every explicit registry declaration must name something that exists.
+
+    Two silent failures, both measured on this tree:
+
+    * An exactly-named Class A artefact that has been DELETED is absent from
+      `tracked`, so `document_set` never yields it and the audit reports no
+      missing document -- the loss of a refresh-owned `.drawio` is invisible to
+      the check written to notice it.
+    * A declared code path that does not exist makes the drift check vacuous:
+      `git log -- lib/options` exits 0 with empty output, so the four options
+      documents citing it can never be queued for re-review no matter what the
+      options implementation does.
+
+    Both are the same shape -- a declaration that resolves to nothing, read as
+    "nothing to report" rather than "this declaration is wrong".
+    """
+    dirs = set()
+    for path in tracked:
+        parts = path.split("/")
+        for i in range(1, len(parts)):
+            dirs.add("/".join(parts[:i]))
+
+    out: list[dict] = []
+    for row in registry:
+        glob = row["glob"]
+        if not any(c in glob for c in "*?[") and glob not in tracked:
+            out.append({"check": "registry", "doc": glob, "severity": "P1",
+                        "detail": "registry names this document exactly, but it is not in "
+                                  "the audited tree -- it was deleted, moved, or never existed"})
+        for cp in row["code_paths"]:
+            if cp not in tracked and cp not in dirs:
+                out.append({"check": "registry", "doc": glob, "severity": "P2",
+                            "detail": f"declared code path `{cp}` does not exist, so the "
+                                      "drift check for this document can never fire"})
+    return out
+
+
 def document_set(tracked: set[str], registry: list[dict]) -> list[str]:
     """Every file this audit treats as a document.
 
@@ -296,10 +344,16 @@ def doc_lines(text: str) -> list[str]:
     higher than the file, which is exactly the kind of off-by-one that makes a
     measurement untrustworthy.
     """
+    if not text:
+        # `"".split("\n")` is `[""]`, one phantom line. A truncated zero-byte
+        # Architecture.drawio then let the `all` region claim line 1 and pass
+        # validation, so the loss of a generated artefact looked like success.
+        return []
     return text[:-1].split("\n") if text.endswith("\n") else text.split("\n")
 
 
-def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str | None, list[str], bool]:
+def owned_lines(text: str, specs: list[str], prompt_exists=None
+               ) -> tuple[set[int], list[str], str | None, list[str], bool]:
     """Which 1-based lines a job writes, which specs matched nothing, and the prompt.
 
     The spec grammar is deliberately tiny, because the registry is read by
@@ -357,20 +411,39 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
             for name, n in sorted(open_at.items(), key=lambda kv: kv[1]):
                 orphans.append(f"inventory:{name} starts at line {n} with no end")
         elif spec.startswith("mark:"):
+            # Every occurrence, not the first. `next(...)` validated one pair
+            # and set hit, so a duplicate or unmatched marker left a generated
+            # block classified as hand-written complement -- and because
+            # refresh_calibration_table._replace_section also rewrites only the
+            # first pair, a stale duplicate could persist indefinitely.
             name = spec[5:]
             begin = re.compile(rf"<!--\s*BEGIN {re.escape(name)}\s*-->")
             end = re.compile(rf"<!--\s*END {re.escape(name)}\s*-->")
-            lo = next((n for n, l in enumerate(lines, 1) if begin.search(l)), None)
-            hi = next((n for n, l in enumerate(lines, 1) if end.search(l)), None)
-            if lo and hi and hi >= lo:
-                owned.update(range(lo, hi + 1))
-                hit = True
+            starts = [n for n, l in enumerate(lines, 1) if begin.search(l)]
+            ends = [n for n, l in enumerate(lines, 1) if end.search(l)]
+            if len(starts) > 1 or len(ends) > 1:
+                orphans.append(f"{name} appears {len(starts)}x BEGIN / {len(ends)}x END; "
+                               "exactly one balanced pair is expected")
+            for lo, hi in zip(starts, ends):
+                if hi >= lo:
+                    owned.update(range(lo, hi + 1))
+                    hit = True
+            if len(starts) != len(ends):
+                orphans.append(f"{name} has {len(starts)} BEGIN and {len(ends)} END markers")
         elif spec.startswith("line:"):
             pat = re.compile(spec[5:])
             for n, line in enumerate(lines, 1):
                 if pat.search(line):
                     owned.add(n)
                     hit = True
+        elif spec.startswith("prose:") and prompt_exists is not None \
+                and not prompt_exists(spec[6:]):
+            # A misspelled or deleted prompt path silently claimed the entire
+            # complement: spans suppressed, stamping disabled, and findings
+            # routed to an owner that is not there -- the exact silent
+            # ownership gap the region map exists to prevent.
+            unmatched.append(spec)
+            continue
         elif spec == "exhaustive":
             exhaustive = True
             hit = True
@@ -412,7 +485,8 @@ def region_of(line: int, owned: set[int], prompt: str | None) -> str:
     return "model-prose" if prompt else "unowned"
 
 
-def check_regions(doc: str, text: str, specs: list[str]) -> tuple[list[dict], set[int], str | None, dict]:
+def check_regions(doc: str, text: str, specs: list[str], prompt_exists=None
+                  ) -> tuple[list[dict], set[int], str | None, dict]:
     """Findings, the owned line set, the prompt, and the region map.
 
     The unowned complement is **not** a finding. It is the expected shape of a
@@ -431,7 +505,7 @@ def check_regions(doc: str, text: str, specs: list[str]) -> tuple[list[dict], se
                   "detail": "Class A doc with no generated regions declared; "
                             "the registry cannot say which lines a job writes"}],
                 set(), None, {})
-    owned, unmatched, prompt, orphans, exhaustive = owned_lines(text, specs)
+    owned, unmatched, prompt, orphans, exhaustive = owned_lines(text, specs, prompt_exists)
     out = [{"check": "unowned", "doc": doc, "severity": "P1",
             "detail": f"declared region `{spec}` matched nothing -- a renderer "
                       f"stopped emitting it, or the registry is stale"}
@@ -759,9 +833,12 @@ def check_owning_job(today: str) -> list[dict]:
             "gh", "api", f"repos/{OWNER}/{THIS_REPO}/pulls?state=all&per_page=100",
             "--jq", '.[] | [.number, .state, (.merged_at // ""), .created_at, .title] | @tsv',
         ])
-    except AuditError as exc:
-        return [{"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P2",
-                 "detail": f"could not read the owning job's state: {exc}"}]
+    except AuditError:
+        # Do NOT convert this into a finding. A finding means "the docs are
+        # stale"; this means "the audit never learned whether they are", and
+        # collapsing the two let a default run exit 0 and a --check run exit 1
+        # -- neither of which is the documented exit 2 for an incomplete audit.
+        raise
 
     recent = [r.split("\t") for r in runs.strip().split("\n") if r.strip()]
     if recent and recent[0][0] not in {"success", ""}:
@@ -824,6 +901,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     today = args.date or datetime.date.today().isoformat()
+    # The revision being reviewed: what gets enumerated, diffed against and
+    # stamped. One value, so the marker can never name a commit whose contents
+    # the run did not read.
     base_ref = resolve_base_ref()
     head = args.since or run(["git", "rev-parse", "--short", base_ref]).strip()
 
@@ -847,7 +927,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps({r: {str(k): v for k, v in d.items()} for r, d in states.items()}, indent=1),
             encoding="utf-8")
 
-    findings: list[dict] = []
+    findings: list[dict] = check_registry_paths(tracked, registry)
     region_maps: dict[str, dict] = {}
     if not args.issues_snapshot:
         findings += check_owning_job(today)
@@ -892,7 +972,8 @@ def main(argv: list[str] | None = None) -> int:
         prompt: str | None = None
         stampable = cls == "D"
         if cls == "A":
-            reg_findings, owned, prompt, region_map = check_regions(doc, text, regions)
+            reg_findings, owned, prompt, region_map = check_regions(
+                doc, text, regions, prompt_exists=lambda p: p in tracked)
             findings += reg_findings
             if region_map:
                 region_maps[doc] = region_map
@@ -924,6 +1005,25 @@ def main(argv: list[str] | None = None) -> int:
                 if not ok:
                     findings.append({"check": "marker", "doc": doc, "severity": "P2",
                                      "detail": f"reviewed-against {info['sha']} is not an ancestor of {base_ref}"})
+            # A marker with `unknown` or no `Against` satisfies the
+            # missing-marker check while supporting no drift check at all:
+            # check_changed_since gets None and returns nothing, so --stamp
+            # could clear the finding without anyone reviewing the document.
+            # Say what is still owed instead of going quiet.
+            if info["date"] == "unknown" or not info["sha"]:
+                missing = []
+                if info["date"] == "unknown":
+                    missing.append("never reviewed")
+                if not info["sha"]:
+                    missing.append("no reviewed-against SHA, so drift cannot be checked")
+                # P3, and --check does not gate on P3. The finding must exist
+                # -- otherwise --stamp clears the missing-marker report without
+                # anyone having reviewed anything -- but 98 never-reviewed
+                # documents must not hold the gate red forever, which is the
+                # same objection that took the unowned complement out of
+                # `findings`. It is a worklist, and the worklist is the point.
+                findings.append({"check": "marker", "doc": doc, "severity": "P3",
+                                 "detail": "incomplete provenance: " + "; ".join(missing)})
             findings += check_changed_since(doc, info["sha"], code_paths, base_ref)
 
         if args.stamp:
@@ -970,7 +1070,11 @@ def main(argv: list[str] | None = None) -> int:
             acted = [s for s in stamped if s["action"] != "unchanged"]
             print(f"  stamped: {len(acted)} changed, {len(stamped) - len(acted)} unchanged")
 
-    if args.check and findings:
+    # --check gates on P1 and P2. P3 is the standing worklist: legacy lines a
+    # human must merge, and documents nobody has reviewed yet. Both are real
+    # and both are reported; neither is a reason to fail a build, and a gate
+    # that can never go green is not a gate.
+    if args.check and [f for f in findings if f["severity"] in {"P1", "P2"}]:
         return 1
     return 0
 

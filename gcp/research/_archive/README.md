@@ -1,6 +1,6 @@
 # Archived P7 modeling scripts
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 **Quarantined 2026-05-26** per user instruction. These were the modeling
 pipeline from the prior P7 audit session (see

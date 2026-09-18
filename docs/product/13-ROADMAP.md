@@ -1,6 +1,6 @@
 # Dependency-Driven Roadmap
 
-**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-17 · **Owner:** TBD · Dates, releases and owners are **TBD**. Status is planning
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-18 · **Owner:** TBD · Dates, releases and owners are **TBD**. Status is planning
 status, never a production claim.
 
 Sequenced by **dependency**, not severity: a CRITICAL issue whose fix cannot be validated

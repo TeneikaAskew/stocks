@@ -1,6 +1,6 @@
 # Setup — auto-doc refresh workflow
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 One-time setup for `.github/workflows/refresh-architecture-docs.yml`. After this is done, the workflow runs itself on the 1st of every month and opens a PR if anything substantive changed.
 

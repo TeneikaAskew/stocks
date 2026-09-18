@@ -1,6 +1,6 @@
 # Work Breakdown Structure
 
-**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-17 · **Owner:** TBD · Owners, estimates and target releases are **TBD** until assigned.
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-18 · **Owner:** TBD · Owners, estimates and target releases are **TBD** until assigned.
 
 Each epic decomposes **EPIC → capability → requirement → issue → PR evidence → code → test
 deliverable**. The PR column carries real numbers or an explicit `UNKNOWN`; the previous revision

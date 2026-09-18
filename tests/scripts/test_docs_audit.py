@@ -322,6 +322,76 @@ def test_drift_filter_covers_additions_and_deletions_not_just_edits():
     assert "--diff-filter=M\"" not in src
 
 
+# ── what gates and what does not ────────────────────────────────────────────
+
+def test_check_gates_on_p1_and_p2_but_not_p3():
+    """A gate that can never go green is not a gate.
+
+    Incomplete provenance has to be REPORTED -- otherwise --stamp clears the
+    missing-marker finding with nobody having reviewed anything -- but 98
+    never-reviewed documents must not hold a build red forever. That is the
+    same objection that moved the unowned complement out of `findings`.
+    """
+    gating = [f for f in [{"severity": "P3"}, {"severity": "P3"}]
+              if f["severity"] in {"P1", "P2"}]
+    assert gating == []
+    src = inspect.getsource(m.main)
+    assert 'f["severity"] in {"P1", "P2"}' in src
+
+
+def test_incomplete_provenance_is_p3_not_p2():
+    """It is a worklist item, not a defect blocking a build."""
+    src = inspect.getsource(m.main)
+    i = src.index("incomplete provenance")
+    assert '"severity": "P3"' in src[max(0, i - 400):i]
+
+
+# ── the registry must name real things ──────────────────────────────────────
+
+def test_a_deleted_registry_named_document_is_reported():
+    """An exactly-named Class A artefact that is GONE must be a finding.
+
+    `document_set` is a predicate over files that still exist, so a deleted
+    Architecture.drawio simply never appeared -- the audit written to notice
+    the loss of a refresh-owned artefact reported nothing.
+    """
+    rows = m.load_registry(REGISTRY + "| A | Architecture.drawio | gcp/deploy.sh | all |\n")
+    out = m.check_registry_paths({"README.md", "gcp/deploy.sh"}, rows)
+    assert any(f["doc"] == "Architecture.drawio" and f["severity"] == "P1" for f in out)
+
+
+def test_a_present_registry_named_document_is_not_reported():
+    rows = m.load_registry(REGISTRY + "| A | Architecture.drawio | gcp/deploy.sh | all |\n")
+    out = m.check_registry_paths({"README.md", "Architecture.drawio", "gcp/deploy.sh"}, rows)
+    assert [f for f in out if f["doc"] == "Architecture.drawio"] == []
+
+
+def test_a_declared_code_path_that_does_not_exist_is_reported():
+    """`git log -- lib/options` exits 0 with empty output.
+
+    So four options documents declared a path that does not exist and could
+    never be queued for re-review, no matter what the options code did. A
+    vacuous check reads exactly like a passing one.
+    """
+    rows = m.load_registry(REGISTRY + "| D | docs/opt.md | lib/options |  |\n")
+    out = m.check_registry_paths({"docs/opt.md", "lib/options_greeks.py"}, rows)
+    assert any("lib/options" in f["detail"] and "never fire" in f["detail"] for f in out)
+
+
+def test_a_declared_directory_prefix_counts_as_existing():
+    """`lib` is a real declaration even though no file is named exactly `lib`."""
+    rows = m.load_registry(REGISTRY + "| D | docs/x.md | lib |  |\n")
+    out = m.check_registry_paths({"docs/x.md", "lib/indicators.py"}, rows)
+    assert [f for f in out if f["doc"] == "docs/x.md"] == []
+
+
+def test_the_reviewed_revision_prefers_head_over_the_trunk():
+    """The audit reads the WORKING TREE, so the revision it reviews is this
+    branch's. Stamping origin/main recorded a commit whose contents were never
+    read, and enumerating it hid every document the branch adds."""
+    assert m.BASE_REF_CANDIDATES[0] == "HEAD"
+
+
 # ── markers ─────────────────────────────────────────────────────────────────
 
 def test_marker_roundtrips_through_the_parser():
@@ -640,6 +710,59 @@ def test_unknown_is_not_a_future_review_date():
     assert m.is_future_date("unknown", "2026-09-17") is False
     assert m.is_future_date("2026-09-18", "2026-09-17") is True
     assert m.is_future_date("2026-09-16", "2026-09-17") is False
+
+
+def test_an_owning_job_read_failure_aborts_instead_of_becoming_a_finding(monkeypatch):
+    """"The docs are stale" and "I never learned whether they are" differ.
+
+    Collapsing them let a default run exit 0 and a --check run exit 1, neither
+    of which is the documented exit 2 for an incomplete audit, so a caller
+    could not tell a stale document from an audit that never ran.
+    """
+    def boom(cmd, **k):
+        raise m.AuditError("gh: authentication failed")
+    monkeypatch.setattr(m, "run", boom)
+    with pytest.raises(m.AuditError, match="authentication"):
+        m.check_owning_job("2026-09-18")
+
+
+def test_zero_byte_generated_artifact_has_no_lines():
+    """`"".split("\\n")` is `[""]`, one phantom line, which let an `all` region
+    claim line 1 of a truncated file and report a successful match."""
+    assert m.doc_lines("") == []
+    owned, unmatched, _, _, _ = m.owned_lines("", ["all"])
+    assert owned == set()
+    assert unmatched == ["all"]
+
+
+def test_every_mark_occurrence_is_validated_not_just_the_first():
+    """A duplicate pair left a generated block classed as hand-written prose,
+    and refresh_calibration_table rewrites only the first pair, so the stale
+    duplicate would persist indefinitely."""
+    doc = "<!-- BEGIN t -->\na\n<!-- END t -->\n<!-- BEGIN t -->\nb\n<!-- END t -->\n"
+    _, _, _, orphans, _ = m.owned_lines(doc, ["mark:t"])
+    assert any("2x BEGIN" in o for o in orphans)
+
+
+def test_an_unbalanced_mark_pair_is_reported():
+    doc = "<!-- BEGIN t -->\na\n"
+    _, _, _, orphans, _ = m.owned_lines(doc, ["mark:t"])
+    assert any("1 BEGIN and 0 END" in o for o in orphans)
+
+
+def test_a_prose_owner_that_does_not_exist_owns_nothing():
+    """A misspelled or deleted prompt silently claimed the whole complement:
+    spans suppressed, stamping disabled, findings routed to an absent owner."""
+    owned, unmatched, prompt, _, _ = m.owned_lines(
+        "x\n", ["prose:.github/prompts/gone.md"], prompt_exists=lambda p: False)
+    assert unmatched == ["prose:.github/prompts/gone.md"]
+    assert prompt is None
+
+
+def test_a_prose_owner_that_exists_still_claims_the_remainder():
+    _, unmatched, prompt, _, _ = m.owned_lines(
+        "x\n", ["prose:.github/prompts/architecture.md"], prompt_exists=lambda p: True)
+    assert unmatched == [] and prompt == ".github/prompts/architecture.md"
 
 
 def test_a_failed_github_read_aborts_rather_than_reporting_clean():

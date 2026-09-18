@@ -1,6 +1,6 @@
 # Strat Directionality Engine
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 Movement prediction only — **no money in v1.** For a given ticker, at the
 close of each bar, output `P(next bar is 1 / 2U / 2D / 3)` per timeframe,

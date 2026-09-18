@@ -1,6 +1,6 @@
 # Security, Authentication, Authorization, Tenancy
 
-**Last reviewed:** 2026-09-04 · **Last scanned:** 2026-09-17 · **Owner:** TBD · **Trust status:** Production but needs remediation
+**Last reviewed:** 2026-09-04 · **Last scanned:** 2026-09-18 · **Owner:** TBD · **Trust status:** Production but needs remediation
 
 > 2026-09-04 refresh: admin authorization is now role-based (the shared
 > `X-Admin-Token` gate is gone), the open-path list split into exact vs

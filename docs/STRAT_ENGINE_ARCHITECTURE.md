@@ -1,6 +1,6 @@
 # Strat Directionality Engine — Architecture
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 **Status:** v1 in progress (M2 LOCKED for IWM 15m, calibration=sigmoid cv=3)
 **Companions:**

@@ -1,6 +1,6 @@
 # Magnitude Engine
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 Research-only model that predicts the **magnitude bucket** of the next
 bar's `|close - open|` move in ATR-20 multiples. Companion to (not

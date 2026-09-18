@@ -1,6 +1,6 @@
 # Documentation registry
 
-**Last reviewed:** 2026-09-16 · **Depth:** verified · **Against:** `aa60569` · **Owner:** TBD
+**Last reviewed:** 2026-09-16 · **Depth:** verified · **Against:** `aa60569` · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 Which documents this repo maintains, who owns each one, and what code each one
 describes. `scripts/maintenance/docs_audit.py` reads the table below; the prose
@@ -203,12 +203,12 @@ renames are ignored, so a file-move wave does not flag every document.
 | D | docs/CLAUDE_CODE_ON_WEB.md | .claude, .github/workflows |  |
 | D | docs/claude-code-codespaces-auth.md | |  |
 | D | docs/storage_overview.md | gcp/schema.sql |  |
-| D | docs/gamma_levels.md | lib/options |  |
+| D | docs/gamma_levels.md | lib/options_greeks.py, lib/options_intraday.py |  |
 | D | docs/premarket_brief_cards.md | gcp/premarket_brief.py |  |
 | D | docs/indicator_updates_summary.md | lib/indicators.py |  |
-| D | docs/options_chain_guide.md | lib/options |  |
-| D | docs/QUICK_START_OPTIONS.md | lib/options |  |
-| D | docs/README_OPTIONS.md | lib/options |  |
+| D | docs/options_chain_guide.md | lib/options_greeks.py, platform/api/routers/options.py |  |
+| D | docs/QUICK_START_OPTIONS.md | lib/options_greeks.py, lib/options_intraday.py |  |
+| D | docs/README_OPTIONS.md | lib/options_greeks.py, lib/options_exec_backtest |  |
 | D | docs/alpha-vantage-*.md | gcp/fetchers |  |
 | D | docs/quick_reference_card.md | |  |
 | D | docs/trading_rules_and_alerts.md | alert_config.json |  |
@@ -241,4 +241,3 @@ renames are ignored, so a file-move wave does not flag every document.
 | X | .claude/agents/*.md | |  |
 | X | .claude/commands/*.md | |  |
 | X | .github/pull_request_template.md | |  |
-| X | AGENTS.md | |  |

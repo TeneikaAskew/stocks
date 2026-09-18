@@ -1,6 +1,6 @@
 # ENTITY-RELATIONSHIP DIAGRAM (ERD)
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 > **Companion to** [`05-a-ARCHITECTURE.md`](05-a-ARCHITECTURE.md) (system overview), [`FRONTEND.md`](https://github.com/TeneikaAskew/solyra/blob/main/FRONTEND.md) (React app — now in the solyra repo), and [`05-a-ARCHITECTURE.md` §5](05-a-ARCHITECTURE.md#5-schema-catalog) (schema catalog).
 > **Source of truth:** [`gcp/schema.sql`](../../../gcp/schema.sql) (2,575 lines, 44 `CREATE TABLE` statements).

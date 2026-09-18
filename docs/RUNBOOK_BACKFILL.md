@@ -1,6 +1,6 @@
 # Runbook — Backfilling `market_data_daily` (and any other date-driven fetcher)
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 **Audience:** anyone running a one-shot backfill of a Cloud Run Job that
 takes `--date=YYYY-MM-DD` as input.

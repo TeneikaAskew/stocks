@@ -1,6 +1,6 @@
 # Storage & Maintenance Overview
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 **TL;DR**: Cloud SQL is essentially self-managing for this platform's size.
 Storage costs ~$3–5/month for each ~20 GB we add. No active maintenance
