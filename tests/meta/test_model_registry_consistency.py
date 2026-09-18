@@ -346,7 +346,6 @@ def _vocab(pattern: str) -> set[str]:
 
 def test_status_cells_use_the_declared_vocabulary():
     allowed = _vocab(r"\*\*Model status:\*\*([^\n]*(?:\n[^\n*]*)*?)\.")
-    allowed |= {"Production but needs remediation", "Broken"}  # capability-status spellings in use
     text = REGISTRY.read_text()
     bad = []
     for table in ("## Deterministic and heuristic systems", "## Learned models"):
@@ -358,6 +357,25 @@ def test_status_cells_use_the_declared_vocabulary():
             if status not in allowed:
                 bad.append(f"{cells[1]}: {status!r}")
     assert not bad, f"status values outside the README vocabulary: {bad} (allowed: {sorted(allowed)})"
+
+
+def test_concern_ids_are_unique():
+    """One DOC id, one finding.
+
+    The merge of two parallel fixes renumbered one row onto an id the other
+    side already used, so DOC-23 named both the earnings-archetype divergence
+    and the mean-reversion duplicate, and two model docs cited the same id for
+    different things. `test_every_non_current_doc_cell_names_a_finding` missed
+    it because it collects ids into a SET -- a duplicate is invisible to
+    membership. This PR exists because of E-24/E-25 collisions in the
+    experiment ledger; committing one in its own register is the same defect.
+    """
+    text = REGISTRY.read_text()
+    findings = text[text.index("### Findings"):text.index("### Disposition")]
+    ids = re.findall(r"^\|\s*(DOC-\d+)", findings, re.M)
+    assert len(ids) >= 20, f"only {len(ids)} findings parsed -- did the table change shape?"
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    assert not dupes, f"the same DOC id names more than one finding: {dupes}"
 
 
 def test_doc_health_cells_use_the_declared_vocabulary():

@@ -16,10 +16,17 @@
 
 ## What it decides
 
-Per-ticker ATR / RVOL / RSI thresholds, computed as distributions over a **rolling 60-day**
-bar history and upserted into `ticker_calibration`, which
-[MODEL-MOM-001](MODEL-MOM-001.md), [MODEL-MR-001](MODEL-MR-001.md) and the live signal
-monitor read as their operating configuration.
+Per-ticker ATR / RVOL / RSI distributions over a **rolling 60-day** bar history, upserted
+into `ticker_calibration`.
+
+**Most of what it writes is never read.** The only production consumer is
+`lib/strategies/calibration.py`, and it selects **`rsi_p10` … `rsi_p90`** alone, deriving the
+CALL range from `(rsi_p10, rsi_p50)` and the PUT range from `(rsi_p50, rsi_p90)` for
+[MODEL-MOM-001](MODEL-MOM-001.md) and [MODEL-MR-001](MODEL-MR-001.md). `threshold_clean`,
+`threshold_wrong`, `threshold_noise`, `rvol_min`, `rvol_max` and the ATR medians are written
+and tested but no fire path consumes them. An earlier revision said the strategies read its
+ATR, RVOL and RSI thresholds as operating configuration, which overstated the reach of a
+scheduled job by most of its output.
 
 It is **not** a walk-forward system. `scripts/calibrate_thresholds.py` does not import
 `WalkForwardValidator`:

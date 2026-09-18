@@ -75,7 +75,7 @@ the score:
 | Gate | Where | Value |
 |---|---|---|
 | Score floor | `SignalConfig.min_conditions`, not the module constant | default **3** (`lib/config.py:425`), overridable from config |
-| Consecutive window | `get_consecutive_periods(ticker)` (`lib/strategies/exit_config_overrides.py:220`) | Tier A `exit_config_overrides.consecutive_periods`, written by the walk-forward sweep ([MODEL-CALIB-001](MODEL-CALIB-001.md)); Tier B `SignalConfig.consecutive_periods = 3` (`lib/config.py:426`) |
+| Consecutive window | `get_consecutive_periods(ticker)` (`lib/strategies/exit_config_overrides.py:220`) | Tier A `exit_config_overrides.consecutive_periods`, written by the walk-forward sweep ([MODEL-SWEEP-001](MODEL-SWEEP-001.md), status **Invalidated**); Tier B `SignalConfig.consecutive_periods = 3` (`lib/config.py:426`) |
 | Condition kill switch | `exit_config_overrides.disabled_conditions` | matching names are stripped from `call_conds` / `put_conds` and the scores decremented **before** the floor is compared (`lib/signals.py:311-314`) |
 | Direction kill switch | `get_disabled_directions(ticker)` (`lib/signals.py:315`, `exit_config_overrides.py:237`) | a disabled side cannot fire even if it clears the floor (`:333-344`) |
 | Fail-closed | malformed `disabled_conditions` (`:290`, `:306`) or a resolver failure (`:329`) | **no mean-reversion signal for that bar** — `return None`, logged, per CLAUDE.md Rule 3.7 |

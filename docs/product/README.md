@@ -94,8 +94,11 @@ documentation. Where deployment config and source defaults disagree, **both** ar
 
 **Capability status:** Production · Production but needs remediation · Shadow · Experimental ·
 Research · Incomplete · Planned · Deprecated · Dormant · Broken · Retire candidate.  
-**Model status:** Production · Shadow · Experimental · Research · Failed · Retest Required ·
-Invalidated · Archived · Retired.  
+**Model status:** Production · Production but needs remediation · Shadow · Experimental ·
+Research · Failed · Retest Required · Invalidated · Broken · Archived · Retired.
+*(`Production but needs remediation` and `Broken` were in use on model rows while declared
+only on the capability ladder; the consistency test silently allowed them. Declared here
+2026-09-18 so the published vocabulary matches the rows and the gate can be strict.)*  
 **Doc health** — whether a model's documentation still agrees with its code, which none of the
 ladders above express: `CURRENT` (a doc states the model's behaviour and nothing in the code
 contradicts it) · `UNVERIFIED` (documented, but the claim has not been checked against the

@@ -62,9 +62,15 @@ This model predates that gate and does not use it.
 
 ## No experiment evaluates this system
 
-**There is no `E-` id for MODEL-CALIB-001** in
+**There is no `E-` id for MODEL-SWEEP-001** in
 [EXPERIMENT_REGISTRY](../EXPERIMENT_REGISTRY.md). That absence is itself the finding: the
-system that writes thresholds into production has never been evaluated in the ledger.
+sweep writes `exit_config_overrides` — the configuration that gates live fires — and no
+experiment in the ledger evaluates it. Its `Invalidated` status rests on the three audit
+findings below, not on a ledger result.
+
+(The percentile calibrator, [MODEL-CALIB-001](MODEL-CALIB-001.md), has the same gap for its
+own separate reason. This section was copied from that document when the two were split and
+initially still described it; corrected 2026-09-18.)
 
 E-20 is *not* its evidence — E-20 asks whether sigmoid or isotonic post-hoc calibration
 improves a LightGBM model's probability ECE, with artifacts in `strat_config.py` and

@@ -31,7 +31,7 @@ but not on missing data:
 
 So a watchlist row can carry `reversal_play` for a name whose canonical archetype is
 `quiet`, and the brief and the watchlist can disagree on the same ticker on the same
-morning. No issue tracks this; recorded as DOC-22 in
+morning. No issue tracks this; recorded as DOC-24 in
 [07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
 This document does not change the job's behaviour — routing the refresh through
 `classify_archetype` is a code change for a code PR.
@@ -98,6 +98,16 @@ All environment variables; defaults are the Phase 0.5 locked values.
 | `BRIEF_CONDITIONAL_THRESHOLD` | 0.75 | — |
 | `BRIEF_CONDITIONAL_MIN_SAMPLE` | 3 | — |
 | `BRIEF_REACTION_MIN_NQ` | 12 | — |
+| `RECOMMEND_LONG_ONLY` | **`true` in production** | `true` / `false` |
+
+**`RECOMMEND_LONG_ONLY` changes what the model recommends, and it is on.**
+`gcp/deploy.sh:1061-1066` sets it `true` for the deployed job, read by
+`lib/earnings_reactions.py:404-410`. With it on, `recommended_structure` never returns the
+default iron condor: it returns a long straddle, long call or long put, and `SKIP` when the
+implied move exceeds 15%. The deploy comment records the reason as an owner preference
+(*"I would always buy them sell"*, 2026-05-22), not a measured result. An earlier revision
+listed the knobs without it, so the document described a recommendation policy production
+does not run.
 
 ## Entry points
 

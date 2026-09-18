@@ -13,7 +13,15 @@
 ## What it decides
 
 Derives a user's trading-style condition profile from their **labeled journal entries**,
-producing a `StyleProfile` that converts directly into engine configuration.
+producing a `StyleProfile` that is converted into a `SignalConfig` **for offline validation
+only**.
+
+`profile_to_signal_config` is called solely inside `WalkForwardValidator.run_profile`. The
+endpoint writes results to `user_style_results` and candidate cards to
+**`playbook_cards_staging`**, and `PLAYBOOK_USER_CARDS = False`
+(`platform/api/routers/backtest.py:613`) — the live playbook reads `playbook_cards`, never the
+staging table. No mined profile controls a production signal today. An earlier revision said
+the profile "converts directly into engine configuration", which read as a live path.
 
 ## The condition vocabulary
 

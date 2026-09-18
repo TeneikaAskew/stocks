@@ -20,6 +20,13 @@ used to gate or modify scores yet — until we have enough data on whether brief
 signals actually outperform brief-opposed ones, this layer is read-only and purely
 informational."*
 
+**That is true of the bias tag and not of the whole payload.** The same resolver returns
+`premarket_analysis.ftfc_score`, and `SignalMonitor` passes it to `Strat.get_strat_bonus`
+(`gcp/signal_monitor.py:1287-1296`), whose result is added to `raw_score` and so reaches
+position size and strength — the comment there records a configured penalty for counter-FTFC
+fires. Quoting the module's "not used to gate or modify scores" line without that distinction
+hides a live scoring effect of the brief payload.
+
 **Movement statement** assembles one structured object. The source describes itself as
 *"the SINGLE SOURCE OF TRUTH for the movement statement"* and says the website, Discord and
 other surfaces **will** render it identically — that is stated intent, not current wiring.
