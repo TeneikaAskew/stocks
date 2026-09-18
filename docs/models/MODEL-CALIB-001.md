@@ -28,6 +28,15 @@ and tested but no fire path consumes them. An earlier revision said the strategi
 ATR, RVOL and RSI thresholds as operating configuration, which overstated the reach of a
 scheduled job by most of its output.
 
+**The `threshold_clean` / `_wrong` / `_noise` columns are stranded more sharply than "no fire
+path reads them" conveys.** The one system in this repository that classifies signals as clean,
+wrong or noise — by those exact names — is [MODEL-QUAL-001](MODEL-QUAL-001.md)
+(`scripts/signal_quality_report.py`), and it uses **module-level constants of its own**,
+`CLEAN_THRESHOLD = 0.005` and `NOISE_THRESHOLD = 0.003` (`:69-70`), classifying every ticker at
+the same cut-points. It never queries `ticker_calibration`. So a per-ticker calibration is
+computed quarterly, drift-checked, refused above 3σ, and then ignored by its only conceptual
+consumer. Recorded 2026-09-18 when MODEL-QUAL-001 was registered.
+
 ## The resolution chain — a successful write does not mean a changed threshold
 
 **Writing a row is not the same as production reading it.** An earlier revision of this

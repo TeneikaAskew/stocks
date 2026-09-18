@@ -718,6 +718,42 @@ def _traceability_rows() -> dict[str, str]:
     }
 
 
+def test_code_cell_experiments_appear_in_the_experiments_cell():
+    """An experiment named in a row's CODE cell must be in its EXPERIMENTS cell.
+
+    Measured 2026-09-18 on MODEL-FEAT-X: its Code cell read "E-34's families:
+    gcp/research/direction_program/phase2_features.py" while its Experiments
+    cell listed only E-08, E-26, E-31, E-33. E-34's Phase 2 ablation tested
+    five feature families in isolation and full stack -- a result about feature
+    families, which is all MODEL-FEAT-X is.
+
+    Every existing ownership gate stayed green, because
+    test_every_ledger_experiment_is_owned_or_explicitly_ownerless asks only
+    whether SOMEONE owns each id, and DIR and MAG both cite E-34. An experiment
+    can be fully owned and still missing from the model it is most about. This
+    checks the one place the registry contradicts ITSELF, within a single row,
+    which needs no judgement about what an experiment is "about".
+    """
+    body = REGISTRY.read_text().split("| Model | Experiments |", 1)[1].split("\n###", 1)[0]
+    rows = re.findall(
+        r"^\| (MODEL-[A-Z]+-[0-9X]+) \| ([^|]*) \| ([^|]*) \|", body, re.M)
+    assert len(rows) >= 8, (
+        f"only {len(rows)} traceability rows parsed -- the table shape has drifted "
+        "and this test would compare nothing."
+    )
+    bad = []
+    for model, experiments, code in rows:
+        in_exp = set(re.findall(EXP_ID, experiments))
+        for eid in set(re.findall(EXP_ID, code)):
+            if eid not in in_exp:
+                bad.append(f"{model}: Code cell names {eid}, Experiments cell omits it")
+    assert not bad, (
+        f"traceability rows contradict themselves: {bad}. Either the experiment "
+        "belongs on the row -- add it to Experiments -- or the code pointer does "
+        "not belong to this model."
+    )
+
+
 def test_experiments_spanning_both_engines_appear_on_both_models():
     """An experiment the ledger scopes to `both` must not be filed under one."""
     scopes = {e: _engines(a) for e, a in _ledger_engine_area().items()}
@@ -1083,11 +1119,23 @@ def test_docs_citing_solyra_paths_explain_the_split():
 #: Jobs whose name marks them as model-bearing: they train, score, or audit a
 #: model. A scheduled job matching this and absent from the table is the
 #: `audit-brief-bias-weekly` omission repeating.
-#: A job is model-bearing when it executes code cited in a MODEL-* row. The live
-#: fire path was missing from this tuple until 2026-09-17, so the completeness
-#: check reported green while the registry omitted `signal-monitor` -- the job that
-#: evaluates MOM, MR, AGREE, EXIT and BRIEF every trading morning. A substring list
-#: is only as complete as its author; that is the standing weakness here.
+#: A job is model-bearing when it PRODUCES A DECISION, A LABEL OR A VERDICT about
+#: a trade, a signal or a position that REACHES A PERSON OR A SERVED SURFACE --
+#: wherever its thresholds live. That is the rule published in the registry as of
+#: 2026-09-18. This tuple is a cheaper PROXY for it ("executes code cited in a
+#: MODEL-* row"), kept because it is the only rule expressible as a substring
+#: match, and it is no longer what guarantees completeness:
+#:
+#:   - it missed `signal-monitor` until 2026-09-17 -- the job that evaluates MOM,
+#:     MR, AGREE, EXIT and BRIEF every trading morning;
+#:   - it structurally could not see `build-options-greeks` or `insight-pipeline`,
+#:     because its rule needs a MODEL-* row to cite the code first;
+#:   - it missed four more on 2026-09-18 that import no `lib/` code at all.
+#:
+#: Completeness is now test_every_live_scheduler_is_classified, which requires
+#: every scheduler in deploy.sh to appear in one of the registry's two tables. A
+#: substring list is only as complete as its author; that is why it is no longer
+#: the thing being trusted.
 MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds",
                  "regime-combo", "audit-walkforward", "audit-brief-bias",
                  "p2-build-gamma-levels", "audit-magnitude-drift",
@@ -1113,7 +1161,18 @@ MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds
                  # needs a MODEL-* row to cite the code, and the LLM table had no
                  # Code column at all.
                  "earnings-reactions-brief", "insight-pipeline",
-                 "insight-discord-push")
+                 "insight-discord-push",
+                 # Added 2026-09-18 by the round-10 systematic sweep. None of the
+                 # four was findable by this list's rule ("executes code cited in
+                 # a MODEL-* row"): `phase6-playbook` and `earnings-long-watchlist`
+                 # have no `lib/` import at all, `evaluate-ew-strikes` writes only
+                 # with UPDATE, and `weekend-review` reaches model code through one
+                 # label helper. They were found by walking every scheduler in
+                 # deploy.sh instead -- which is what
+                 # test_every_live_scheduler_is_classified now requires, and why
+                 # this tuple is no longer the completeness mechanism.
+                 "phase6-playbook", "earnings-long-watchlist",
+                 "evaluate-ew-strikes", "weekend-review")
 
 def _is_model_bearing(job: str) -> bool:
     return any(k in job for k in MODEL_BEARING)
@@ -1140,6 +1199,95 @@ def test_every_scheduled_model_bearing_job_is_listed():
         "This is how audit-brief-bias-weekly was missed one round after the "
         "gamma omission was 'gated', and how signal-monitor-daily -- the entry that "
         "fires the live strategies -- was missed the round after that."
+    )
+
+
+#: The registry's two scheduler tables. Together they must cover every scheduler
+#: declared in gcp/deploy.sh -- that is the invariant that replaced MODEL_BEARING
+#: as the completeness mechanism.
+_LISTED_HEADER = "| Scheduler | Cron (`America/New_York`) | Job | Serves |"
+_EXCLUDED_HEADER = "| Scheduler | Job | Why it is not model-bearing |"
+
+
+def _table_schedulers(header: str) -> set[str]:
+    """Scheduler names from a registry table's FIRST CELL only.
+
+    First cell only, because schedulers differing solely by cron share a row
+    ("`av-intraday-nightly` . `av-intraday-monthly`") and every backticked name
+    there is a classification -- while a name appearing in a later cell is a job
+    or a file, and counting those would mark a scheduler classified because some
+    row happened to mention it.
+    """
+    text = REGISTRY.read_text()
+    assert header in text, f"the registry no longer has the table {header!r}"
+    body = text.split(header, 1)[1].split("\n\n", 1)[0]
+    out: set[str] = set()
+    for row in body.split("\n"):
+        if not row.startswith("|"):
+            continue
+        out |= set(re.findall(r"`([\w-]+)`", row.split("|")[1]))
+    return out
+
+
+def test_every_live_scheduler_is_classified():
+    """Completeness by ENUMERATION, not by keyword.
+
+    Three consecutive review rounds on PR #1111 each found a scheduled decision
+    system with no registry row, and every one was missed the same way: the gate
+    asked "does this job name contain a model word", which is a proxy. This asks
+    the only question that cannot be gamed by naming -- is every scheduler in
+    deploy.sh written down somewhere, as model-bearing or as deliberately not.
+
+    A new scheduler therefore fails the build until somebody classifies it. That
+    is the point: an unrecorded exclusion is indistinguishable from an omission.
+    """
+    declared = set(_declared_schedulers())
+    assert len(declared) >= 55, (
+        f"only {len(declared)} schedulers parsed from gcp/deploy.sh -- the parser "
+        "has drifted, and a completeness check that enumerates almost nothing passes."
+    )
+    listed = _table_schedulers(_LISTED_HEADER)
+    excluded = _table_schedulers(_EXCLUDED_HEADER)
+    assert excluded, (
+        "the deliberate-exclusion table is empty. It is what makes this gate mean "
+        "anything: without it, every scheduler could be classified by deleting the rule."
+    )
+
+    unclassified = sorted(declared - listed - excluded)
+    assert not unclassified, (
+        f"schedulers in gcp/deploy.sh classified in neither registry table: "
+        f"{unclassified}. Add each to the scheduler table with the model it serves, "
+        "or to the deliberate-exclusion table with the reason. Run "
+        "`python3 scripts/audit_scheduler_coverage.py` for the write / Discord / "
+        "import evidence behind the call."
+    )
+
+    both = sorted(listed & excluded)
+    assert not both, f"schedulers classified as BOTH model-bearing and not: {both}"
+
+
+def test_scheduler_table_model_ids_have_registry_rows():
+    """A `Serves` cell naming a model that does not exist.
+
+    Measured 2026-09-18: four new scheduler rows were added citing MODEL-PLAY-001,
+    MODEL-WATCH-001, MODEL-EWV-001 and MODEL-WEEK-001 before any of those rows
+    existed, and the whole suite stayed green. Every other gate checks the model
+    rows against the docs and the docs against the code; nothing checked that a
+    scheduler pointing at a model pointed at a real one.
+    """
+    text = REGISTRY.read_text()
+    defined = set(re.findall(r"^\| (MODEL-[A-Z0-9-]+) \|", text, re.M))
+    assert len(defined) >= 20, (
+        f"only {len(defined)} MODEL-* rows parsed -- the table format has drifted "
+        "and this test would accept any id at all."
+    )
+    section = _run_section()
+    cited = set(re.findall(r"(MODEL-[A-Z]+-[A-Z0-9]+)", section))
+    dangling = sorted(cited - defined)
+    assert not dangling, (
+        f"the scheduler table serves models with no registry row: {dangling}. "
+        "A job cannot serve a model that is not registered -- register it or "
+        "correct the Serves cell."
     )
 
 

@@ -42,6 +42,11 @@ see [#906](https://github.com/TeneikaAskew/stocks/issues/906).
 | MODEL-OPT-001 | Options Greeks / parity / theta | Statistical | Greeks, parity spot, theta path | `lib/options_greeks.py` | Production but needs remediation | RETEST | UNVERIFIED · [DOC-02](#documentation-coverage-and-freshness) | [#878](https://github.com/TeneikaAskew/stocks/issues/878) discount parity spot · [#927](https://github.com/TeneikaAskew/stocks/issues/927) hard-coded rates · [#607](https://github.com/TeneikaAskew/stocks/issues/607) 0DTE theta anchored to EOD |
 | MODEL-EARN-001 | Earnings reaction analytics | Statistical / heuristic | event reaction and strategy lean | `lib/earnings_reactions.py` | Experimental | RETEST | CURRENT · [doc](../models/MODEL-EARN-001.md) | [#863](https://github.com/TeneikaAskew/stocks/issues/863) winners posted to Discord at 99 days old |
 | MODEL-EARN-002 | Earnings-reaction setup classifier | Heuristic | one of four setup labels per upcoming reporter | `gcp/earnings_reactions_brief.py` (`classify_context`) | Experimental | RETEST | CURRENT · [doc](../models/MODEL-EARN-002.md) | **None filed.** Unevaluated — no experiment tests whether the labels precede the moves they name, and the output is a Discord embed with no table behind it |
+| MODEL-PLAY-001 | Phase 6 playbook cards | Heuristic | per-ticker entry cards — setup, direction, confirmation checklist, target/stop | `scripts/analysis/phase6_playbook.py` | Experimental | RETEST | CURRENT · [doc](../models/MODEL-PLAY-001.md) | **None filed.** Card statistics are **in-sample** (no train/test split anywhere in the module) and the published `best_horizon` is an argmax over four holds scored on that same data (`:110`); no costs are modelled (`compute_card_stats` docstring) |
+| MODEL-WATCH-001 | Long-side earnings watchlist | Heuristic | which upcoming reporters to consider a long-premium position on | `gcp/earnings_long_watchlist.py` | Experimental | RETEST | CURRENT · [doc](../models/MODEL-WATCH-001.md) | **None filed.** Unevaluated — `min_wins = 2` and the prior-winners-repeat premise carry no derivation and no experiment |
+| MODEL-EWV-001 | Earnings Whispers strike verdicts | Deterministic | HIT / MISS / KEPT / ASSIGNED on each strike pick | `gcp/fetchers/evaluate_ew_strikes.py` | Production | KEEP | CURRENT · [doc](../models/MODEL-EWV-001.md) | **None filed.** A vendor-fetch failure and an unsupported strategy take the same `continue` (`:196-197`), so an outage is uncounted |
+| MODEL-WEEK-001 | Weekend performance review | Heuristic | realized win rate per score bucket, labelled on the live ladder | `gcp/weekend_review.py` | Production but needs remediation | RESTRUCTURE | CURRENT · [doc](../models/MODEL-WEEK-001.md) | [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) the module docstring claims a backtest comparison the code does not perform · seven §3.7 zero-coercions on financial fields (`:46`, `:50`, `:51`, `:60`, `:74`, `:87`, `:88`) |
+| MODEL-QUAL-001 | Signal-quality classification and regression alarm | Deterministic / statistical | CLEAN_HIT / WRONG_DIRECTION / NOISE / MIXED per fire per horizon, and whether the clean rate has regressed | `scripts/signal_quality_report.py`, `gcp/signal_quality_alarm.py` | Production | RETEST | CURRENT · [doc](../models/MODEL-QUAL-001.md) | **None filed.** `CLEAN_THRESHOLD = 0.005` and `NOISE_THRESHOLD = 0.003` decide what counts as a hit for every strategy and carry no derivation; `ticker_calibration.threshold_clean` / `_wrong` / `_noise`, written quarterly by MODEL-CALIB-001, are never read by it |
 | MODEL-RANK-001 | Candidate ranker | Heuristic / ensemble | rank trade candidates | `lib/agents/ranker` | Experimental | RESTRUCTURE | UNVERIFIED | — |
 
 ### MODEL-GAMMA-001 — what was and was not reproduced, 2026-08-30
@@ -114,14 +119,21 @@ are **Experimental**; none has promotion evidence.
 
 | Status | Models |
 |---|---|
-| Production but needs remediation | 8 |
+| Production but needs remediation | 9 |
+| **Production** | 2 (MODEL-EWV-001, MODEL-QUAL-001) |
 | Broken | 1 (MODEL-EXIT-001) |
 | Retest Required | 2 (MODEL-GAMMA-001, MODEL-CALIB-001) |
 | Invalidated | 2 (MODEL-MAG-001, MODEL-SWEEP-001) |
 | Failed | 2 (MODEL-DIR-001, MODEL-FLOW-001) |
 | Shadow | 1 (MODEL-TYPE-001) |
 | Research | 3 |
-| Experimental | 5 (MODEL-BRIEF-001, MODEL-EARN-001, MODEL-EARN-002, MODEL-RANK-001, MODEL-STYLE-001) + 7 LLM node groups |
+| Experimental | 7 (MODEL-BRIEF-001, MODEL-EARN-001, MODEL-EARN-002, MODEL-PLAY-001, MODEL-RANK-001, MODEL-STYLE-001, MODEL-WATCH-001) + 7 LLM node groups |
+
+**29 `MODEL-*` rows**, up from 24 on 2026-09-18 when the scheduler sweep registered five
+systems that had been running unregistered: MODEL-PLAY-001, MODEL-WATCH-001, MODEL-EWV-001,
+MODEL-WEEK-001 and MODEL-QUAL-001. The two new `Production` rows are the first on this table —
+both are **measurement** systems (strike verdicts, signal classification) rather than
+predictors, which is the only reason they clear a bar nothing else here does.
 
 **No model in this repository currently meets the promotion bar.** Two carry explicit
 recorded FAIL/DEAD-END verdicts ([#575](https://github.com/TeneikaAskew/stocks/pull/575),
@@ -174,7 +186,7 @@ trustworthy evidence ([#906](https://github.com/TeneikaAskew/stocks/issues/906))
 | MODEL-NEXTBAR-001 | E-25 | `scripts/strat_forward_walk{,_oos}.py`, `strat_oos_{clv_ablation,multi_tf}.py`, `strat_clv_demech.py`, `strat_struct_backtest.py`, `strat_next_candle_analysis.py` | [EXPERIMENT_REGISTRY §E-25](../EXPERIMENT_REGISTRY.md) · [MODEL_REGISTRY §CAT-A8](../MODEL_REGISTRY.md) | Held-out OOS edge confirmed; CLV ablation shows it is largely **gap-mechanical** (CLV_LAG1 ≈ 0) |
 | MODEL-CALIB-001 | — (no `E-` id) | `scripts/calibrate_thresholds.py` | **none** — no experiment in the ledger evaluates this system | **Unevaluated.** A rolling 60-day percentile calibrator, scheduled quarterly, writing thresholds MODEL-MOM-001 and MODEL-MR-001 read. Whether a 60-day percentile is the right operating threshold has never been tested |
 | MODEL-SWEEP-001 | — (no `E-` id) | `lib/walk_forward.py`, `scripts/run_param_sweep.py`, `scripts/calibrate_iwm_strat.py`, `scripts/run_walk_forward.py` | **none** — no experiment in the ledger evaluates this system | **Invalidated** — [#813](https://github.com/TeneikaAskew/stocks/issues/813) “out-of-sample” calibration is in-sample and auto-writes production · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias |
-| MODEL-FEAT-X | E-08 (C-news / C-xasset / C-vol / C-options) — committed; E-26, E-31, E-33 — **scratch harness, artifacts unavailable** | E-08: `lib/features/experimental/`. E-34's families: `gcp/research/direction_program/phase2_features.py`. E-26/E-31/E-33: **no code committed** — the ledger records their result JSONs as retained by the author only, so nothing here reproduces them | [DIRECTION_FEATURES_R&D](../DIRECTION_FEATURES_R&D.md) | **FAIL** — three orthogonal families, 0/8 folds each; vol-regime and external-data probes NEUTRAL |
+| MODEL-FEAT-X | E-08 (C-news / C-xasset / C-vol / C-options) — committed; **E-34** (Phase 2 feature-family ablation, five families in isolation and full stack via `--features`); E-26, E-31, E-33 — **scratch harness, artifacts unavailable** | E-08: `lib/features/experimental/`. E-34's families: `gcp/research/direction_program/phase2_features.py`. E-26/E-31/E-33: **no code committed** — the ledger records their result JSONs as retained by the author only, so nothing here reproduces them | [DIRECTION_FEATURES_R&D](../DIRECTION_FEATURES_R&D.md) | **FAIL** — three orthogonal families, 0/8 folds each; vol-regime and external-data probes NEUTRAL |
 | MODEL-FLOW-001 | **B5 (E5)** — Book II thematic ledger, not an `E-nn` id | `lib/features/flow_direction.py`, `gcp/build_options_daily_greeks.py` | [EXPERIMENT_REGISTRY §B5](../EXPERIMENT_REGISTRY.md) | **failed (null + dilutive)** — IWM +0.053/z2.85 → −0.008/z−0.49; fires 726→881 while precision falls |
 | MODEL-GAMMA-001 | E-22 (P2), E-24 | `gcp/research/p2_build_gamma_levels.py`, `p2_outcomes_grid.py`, `lib/gamma.py`, `lib/features/intraday_gex.py` | [docs/research/2026-05-23/P2_gamma_outcomes.md](../research/2026-05-23/P2_gamma_outcomes.md) · [gamma_levels.md](../gamma_levels.md) · [GAMMA_BALANCE_AUDIT](../audits/GAMMA_BALANCE_AUDIT_2026-08-25.md) | VOL signal confirmed, **direction null**; E-24 fixed a `gamma_regime` sign inversion at source |
 | MODEL-STYLE-001 | — (no `E-` id) | `lib/style_miner.py`, `platform/api/routers/backtest.py` | [#707](https://github.com/TeneikaAskew/stocks/pull/707) | Walk-forward validated into the playbook seam |
@@ -216,28 +228,51 @@ governance. Each is real work with a real verdict that no row above claims.
 
 ### Which of these actually run
 
-**There is deliberately no count here.** This is a *curated list of scheduled jobs that exist
-to run a model* — not every scheduled job that imports model code. Those are different sets,
-and the second is much larger: `fetch-market-data-daily` imports `lib/indicators.py`
-(`gcp/fetchers/fetch_market_data.py:290`) and `lib/strat.py` (`:333`), and
-`backfill-indicators-daily` imports the same two (`gcp/fetchers/backfill_daily_indicators.py:304`,
-`:320`), but neither exists to run a model. Do not derive a number from this table and state it
-as the count of model-bearing jobs.
+**The rule, replacing the one that failed three rounds running.**
+
+> A scheduled job is **model-bearing** when it produces a **decision, a label or a verdict
+> about a trade, a signal or a position** that **reaches a person or a served surface** —
+> wherever its thresholds live.
+
+Until 2026-09-18 the working test here was *"does the job import `lib/` code cited in a
+`MODEL-*` row"*. That is a **proxy** for the rule above, and it misses every job that hard-codes
+its own thresholds. Three consecutive review rounds on PR
+[#1111](https://github.com/TeneikaAskew/stocks/pull/1111) each found a scheduled decision system
+with no row here — MODEL-FLOW-001, then MODEL-EARN-002, then four more — and all six were
+missed the same way. The proxy is now **one sufficient signal, not the definition**.
+
+Two clauses of the rule are doing real work:
+
+- **"about a trade, a signal or a position"** is what keeps ops alarms out.
+  `audit-infra-drift-daily` and the two `freshness-watchdog` schedulers post to Discord and a
+  person acts on them, so "reaches a person" alone would sweep them in. They decide nothing
+  about a position.
+- **"reaches a person or a served surface"** is what keeps pure ingest out — and it is a claim
+  about a **reader**, not about a write. `regime-combo-weekly` writes `regime_combo_results`
+  every Sunday and **nothing in this repository reads that table**: not a router, not another
+  job, not the frontend. It stays listed below because an operator paying for it weekly should
+  know that, but it is the one row whose output reaches nobody.
+
+**Still no count**, for the reason recorded below. The two tables together must cover every
+scheduler in `gcp/deploy.sh`, and `scripts/audit_scheduler_coverage.py` fails the build if one
+is missing from both — so a new scheduler cannot be silently unclassified, which is how
+`signal-monitor-daily` and the six above went missing.
+
+> **The exclusion this replaces was wrong, and its own words said so.** The previous revision
+> excluded `phase6-playbook-daily` on the grounds that it *"has no `from lib.` import of its own
+> and writes markdown **decision cards** from earlier phases' output"*. A sentence arguing that a
+> job is not a decision system, containing the phrase "decision cards". It passes `--write-db`
+> (`gcp/deploy.sh:4430`) and upserts `playbook_cards`
+> (`scripts/analysis/phase6_playbook.py:942-993`), which `/api/playbook` serves. Recorded as
+> DOC-35. That paragraph existed *because* exclusions should be visible rather than silent; the
+> first one written down was false, which is the argument for the gate rather than against the
+> practice.
 
 > **An earlier revision of this paragraph used `fred-rates-daily` as its first example and said
 > it imports `lib/options_greeks.py`. It does not** — `gcp/fetchers/fetch_fred_rates.py:15` is a
 > **docstring mention**; the file's only `lib` import is `lib.logging_config`. Both examples in a
 > paragraph arguing for evidence over derived numbers were asserted without being checked, and
-> one was false. Recorded as DOC-28, and replaced above with two that were verified by reading
-> the imports.
-
-**What is deliberately excluded, so the near-misses are not silent.** `phase6-playbook-daily`
-runs `scripts.analysis.phase6_playbook`, which has no `from lib.` import of its own and writes
-markdown decision cards from earlier phases' output; it reaches `lib/strat.py` only through a
-shared helper. `fetch-market-data-daily`, `backfill-indicators-daily`, `premarket-refresh-daily`
-and `signal-quality-report-nightly` are fetchers and reporters that touch indicator helpers.
-None of them exists to run a model. Saying so here is the point: an unrecorded exclusion is
-indistinguishable from an omission, which is exactly how `signal-monitor-daily` went missing.
+> one was false. Recorded as DOC-28.
 
 > **Why the number is gone.** It was stated as `eight`, corrected to `fourteen` on
 > 2026-09-17, and was still wrong, because it was derived by hand from a rule that — applied
@@ -256,7 +291,7 @@ declared-versus-live reconciliation.
 | `magnitude-inference-daily` | `25 9 * * 1-5` | `magnitude-inference` | MODEL-MAG-001 |
 | `audit-magnitude-drift-daily` | `55 9 * * 1-5` | `audit-magnitude-drift` | MODEL-MAG-001 drift |
 | `audit-walkforward-weekly` | `0 9 * * 6` | `audit-walkforward` | MODEL-MOM-001 / MODEL-MR-001 factor audit (`scripts.analysis.per_factor_walkforward`, read-only) |
-| `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | combo mining (E-22) |
+| `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | combo mining (E-22) — writes `regime_combo_results`, and **nothing in this repo reads that table**. Owned by the ledger, not by a `MODEL-*` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it |
 | `calibrate-thresholds-quarterly` | `0 2 1 1,4,7,10 *` | `calibrate-thresholds` | MODEL-CALIB-001 writer (A), the percentile calibrator |
 | `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-GAMMA-001 |
 | `audit-brief-bias-weekly` | `0 10 * * 0` | `audit-brief-bias` | MODEL-BRIEF-001 audit |
@@ -276,12 +311,48 @@ declared-versus-live reconciliation.
 | `historical-signals-watchlist-daily` | `0 1 * * 2-6` | `historical-signals-watchlist` | MODEL-MOM-001 / MODEL-MR-001 / MODEL-IND-001 replayed over history — `MarketAnalyzer` (`scripts/run_historical_signals.py:40`), `lib.signals.generate_signals` (`:366`). The producer of `historical_signals` |
 | `earnings-sweep-sunday` | `30 20 * * 0` | `earnings-sweep` | MODEL-EARN-001 — writes `earnings_calibration`; applying is the **default** (`--no-apply` opts out). **Declared in `gcp/deploy.sh:4707`, absent from the live fleet** — confirmed 2026-09-18 against `gcloud scheduler jobs list`, and pinned by `tests/scripts/test_doc_inventory.py:235` |
 | `earnings-reactions-brief-daily` | `35 8 * * 1-5` | `earnings-reactions-brief` | MODEL-EARN-002 — `classify_context` (`gcp/earnings_reactions_brief.py:474`). Output is a Discord embed; there is no table behind it |
+| `phase6-playbook-daily` | `30 4 * * 1-5` | `phase6-playbook` | MODEL-PLAY-001 — per-ticker entry cards, `"IF ALL CONFIRMED -> {direction} ENTRY"` (`scripts/analysis/phase6_playbook.py:305`), upserted to `playbook_cards` and served by `/api/playbook`. **Registered 2026-09-18**; it was the deliberate exclusion quoted above |
+| `earnings-long-watchlist-sunday` | `45 19 * * 0` | `earnings-long-watchlist` | MODEL-WATCH-001 — ranks upcoming reporters by prior long-side wins, `HAVING COUNT(DISTINCT (structure, event_date)) >= :min_wins` (`gcp/earnings_long_watchlist.py:169`), Discord embed |
+| `evaluate-ew-strikes-daily` | `0 23 * * 1-5` | `evaluate-ew-strikes` | MODEL-EWV-001 — HIT / MISS / KEPT / ASSIGNED verdicts on Earnings Whispers strike picks (`gcp/fetchers/evaluate_ew_strikes.py:51-103`), rendered by the premarket brief (`gcp/premarket_brief.py:2391-2396`) |
+| `weekend-review-weekly` | `0 9 * * 6` | `weekend-review` | MODEL-WEEK-001 — realized win rate per score bucket, labelled with `get_signal_strength_label` (`gcp/weekend_review.py:72`), the same ladder `gcp/signal_monitor.py:1343` labels live fires with. Discord |
+| `signal-quality-report-nightly` | `0 1 * * 2-6` | `signal-quality-report` | MODEL-QUAL-001 — classifies every historical fire at seven horizons into `signal_metrics` (`scripts/signal_quality_report.py:84-106`) |
+| `signal-quality-alarm-daily` | `0 2 * * 2-6` | `signal-quality-alarm` | MODEL-QUAL-001 regression alarm — trailing-7d vs prior-7d clean rate, fires below `-3.0` pp on `>= 50` rows per window (`gcp/signal_quality_alarm.py:114-116`) |
 | `insight-pipeline-daily` | `45 8 * * 1-5` | `insight-pipeline` | **all 14 LLM nodes** — `lib.agents.orchestrator.run_insight_pipeline`, imported at `gcp/insight_pipeline_job.py:69` and called at `:526` |
 | `insight-discord-push-daily` | `15 9 * * 1-5` | `insight-discord-push` | the LLM nodes' delivery half — `lib.agents.model_routing` (`gcp/insight_discord_push.py:36`) |
 
 `direction-baseline`, `direction-phase2`, `direction-probe`, `direction-importance`
 and `param-sweep` are deployed but **unscheduled**;
 `options-exec-backtest` is defined in `gcp/deploy.sh` but marked **not deployed**.
+
+#### Deliberately not model-bearing
+
+Every other scheduler in `gcp/deploy.sh`, with the reason. This table is not decoration: the
+exclusions are what the gate checks, and an unrecorded exclusion is indistinguishable from an
+omission. Each row was classified by reading the entrypoint, with
+`scripts/audit_scheduler_coverage.py` printing the write / Discord / import evidence.
+
+| Scheduler | Job | Why it is not model-bearing |
+|---|---|---|
+| `fetch-market-data-daily` | `fetch-market-data` | Vendor bars → `market_data_daily`. It **does** import `lib.indicators` and `lib.strat` (`gcp/fetchers/fetch_market_data.py:290`, `:333`) and writes their output as columns — those are model *inputs*, materialised for later readers. No decision is emitted |
+| `backfill-indicators-daily` | `backfill-indicators` | Same computation over history (`gcp/fetchers/backfill_daily_indicators.py:304`, `:320`). Backfill of inputs |
+| `premarket-refresh-daily` | `premarket-refresh` | Refreshes the current session's `market_data_daily` row before the brief reads it. Imports `lib.indicators`; emits no decision |
+| `av-intraday-nightly` · `av-intraday-monthly` | `av-intraday` | AlphaVantage 1-min bars → `market_data_intraday`. Pure ingest |
+| `av-options-daily` · `av-options-monthly` | `av-historical-options` | Historical options chains → `etf_options_snapshots`. Pure ingest |
+| `av-options-realtime` | `av-realtime-options` | Intraday chain snapshot → `etf_options_snapshots`. Pure ingest |
+| `daily-earnings-refresh-calendar` · `weekly-earnings-refresh-calendar` | `fetch-earnings-calendar` | Earnings dates → `earnings_calendar`. Ingest. (The **verdict** columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above) |
+| `daily-earnings-refresh-history` · `weekly-earnings-refresh-history` | `fetch-earnings-history` | Reported EPS / surprise → `earnings_history`. Ingest |
+| `daily-earnings-refresh-reactions` · `weekly-earnings-refresh-reactions` | `compute-earnings-reactions` | Derives post-earnings move statistics into `earnings_reactions`. Descriptive statistics over history, not a call on any position; MODEL-EARN-001 is the model that reads them |
+| `economic-events-daily` | `economic-events` | Calendar → `economic_events`. Ingest |
+| `fred-rates-daily` | `fred-rates` | FRED series → `daily_rates`. Ingest. Its only `lib` import is `lib.logging_config` |
+| `insider-transactions-daily` | `insider-transactions` | Form 4 filings → `insider_transactions`. Ingest |
+| `sec-filings-intraday` | `sec-filings` | EDGAR filings → `sec_filings`. Ingest |
+| `news-sentiment-hourly` · `news-sentiment-earnings-0600` · `news-topics-hourly` | `news-sentiment` | Vendor-scored sentiment → `news_sentiment`. The score is the **vendor's**; this job stores it |
+| `top-movers-daily` · `top-movers-intraday-hourly` · `top-movers-intraday-close` | `top-movers` | Ranks by realized % change → `top_movers_daily` / `top_movers_intraday`. A sort of what already happened, with no threshold and no call |
+| `freshness-watchdog-hourly` · `freshness-watchdog-nightly` | `freshness-watchdog` | Alarms when a table stops being written. Reaches a person, decides nothing about a position — the clause that keeps ops alarms out |
+| `audit-infra-drift-daily` | `audit-infra-drift` | Same shape: deployed GCP state vs `gcp/deploy.sh`, Discord on drift. Infrastructure, not markets |
+| `options-retention-daily` | `options-retention` | Prunes aged `etf_options_snapshots` rows. Storage housekeeping |
+| `cloud-sql-weekly-export-sunday` | `cloud-sql-weekly-export` | `pg_dump` → GCS. The third backup layer; see CLAUDE.md § Backup and disaster recovery |
+| `discord-warm-open` · `discord-warm-close` | *(service `discord-interactions`)* | Pings a Cloud Run **service** to beat the cold start inside Discord's 3-second interaction ack. Not a job at all |
 
 ### Research documentation corpus
 
@@ -322,7 +393,7 @@ specific recorded concern, and every id it cites exists here — that is gated. 
 `UNVERIFIED`** means only that nobody has checked this model's documentation against its code;
 it is not a claim that a finding exists. An earlier revision of this paragraph said every
 non-`CURRENT` cell names a row here, which was false while the suite was green — the kind of
-published contract a reader would reasonably rely on. Ten of the 24 rows are bare `UNVERIFIED`
+published contract a reader would reasonably rely on. Ten of the 29 rows are bare `UNVERIFIED`
 today.
 
 **Severity is the documentation scale from
@@ -346,7 +417,7 @@ here — that one belongs to code defects and is owned by
 | DOC-08 | `BACKTEST_RESULTS.md` (repo root) | Self-labelled "Auto-generated by `generate_backtest_report.py` — 2026-04-12" while the content is a frozen April snapshot. *This row first called the generator **dead**, on the evidence that `grep -rn generate_backtest_report .github/` is empty. The grep is correct and the inference was wrong: the `report` job was migrated to the on-demand `backtest-pipeline` Cloud Run Job (`gcp/deploy.sh:3013-3037`), which runs `scripts.run_pipeline`, invokes the generator as a subprocess (`scripts/run_pipeline.py:233-243`) and writes `backtest_reports` — executions on 2026-05-24, 2026-08-26 and 2026-08-27. `.github/workflows/backtest-pipeline.yml:3` says so itself. I searched the one directory the workload had been moved out of, under a convention this repo documents* | unsynchronized artifact | **M** | MODEL-CALIB-001 |
 | DOC-09 ([#1118](https://github.com/TeneikaAskew/stocks/issues/1118)) | [INVESTMENT_MODELS_SUMMARY](../INVESTMENT_MODELS_SUMMARY.md) | `ticker_calibration` block says "auto-refreshed monthly" → the monthly workflow **does** call `scripts/refresh_calibration_table.py`, but as `python -m … \|\| echo "::warning::"`, so a failure is swallowed and the block silently ages. Data stamped 2026-07-01 | dead-generator | **M** | MODEL-CALIB-001 |
 | DOC-10 | Seven models | No doc describes them beyond scattered plan/audit mentions: MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-BRIEF-001, MODEL-EARN-001, MODEL-STYLE-001, MODEL-CALIB-001 — measured by searching `docs/` for each one's primary module | omission | **H** | (seven, listed) |
-| DOC-11 | [README](README.md) master matrix | Lists **15 of the 24** models in the two registry tables. Absent: **MODEL-BREAK-001, MODEL-DIR-001, MODEL-EARN-002, MODEL-FEAT-X, MODEL-FLOW-001, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-RANK-001, MODEL-TYPE-001**. *An earlier revision of this row said "every learned model is absent" and listed MODEL-SUM-001 — both wrong: MODEL-CALIB-001 and MODEL-STYLE-001 are learned and **are** present at README:138, MODEL-RANK-001 is heuristic not learned, and the actually-absent MODEL-FEAT-X was missing from the list. Recomputed from the tables rather than restated* | omission | **M** | (nine, listed) |
+| DOC-11 | [README](README.md) master matrix | Lists **15 of the 29** models in the two registry tables. Absent: **MODEL-BREAK-001, MODEL-DIR-001, MODEL-EARN-002, MODEL-EWV-001, MODEL-FEAT-X, MODEL-FLOW-001, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-PLAY-001, MODEL-QUAL-001, MODEL-RANK-001, MODEL-TYPE-001, MODEL-WATCH-001, MODEL-WEEK-001**. *Recomputed 2026-09-18 after the scheduler sweep added five rows; the README was not updated, so the absentee count went 9 → 14 while the fraction's numerator stayed put.* *An earlier revision of this row said "every learned model is absent" and listed MODEL-SUM-001 — both wrong: MODEL-CALIB-001 and MODEL-STYLE-001 are learned and **are** present at README:138, MODEL-RANK-001 is heuristic not learned, and the actually-absent MODEL-FEAT-X was missing from the list. Recomputed from the tables rather than restated* | omission | **M** | (fourteen, listed) |
 | DOC-12 | [05-INFRASTRUCTURE](05-INFRASTRUCTURE.md) | "Cloud Run jobs (67 declared / 76 live)… Scheduler (65 live)" → `doc_inventory.py` parses **68** declared jobs and **66** declared schedulers | stamp | **M** | — |
 | DOC-13 | `docs/product/*.md` | A first pass counted **57** dead repo-rooted paths across the product plan. Re-measured: **27 distinct**, and **22 of those are not debt** — they are `platform/src/**` and frontend `*.spec.ts` paths the #957 split moved to `TeneikaAskew/solyra`, cited deliberately and explained by a header note in [11](11-CODE-TRACEABILITY.md). Genuinely dead: **2** (`scripts/backfill_signals.py`, `scripts/validate_track2_live.py`). Relocatable and now fixed: **2** (`gcp/freshness_watchdog.py` → `scripts/audit_data_freshness.py`, which is what `gcp/deploy.sh:2471` actually runs; `lib/data_loader` → `lib/data_loader.py`) | dead-path | **M** | — |
 | DOC-18 | `lib/strategies/momentum.py`, `lib/strategies/mean_reversion.py` | **Module docstrings describe behaviour the code no longer has.** momentum's lists `StochRSI < 80` (dropped in Phase 0.7.1) and omits `rvol_above_recent` / `atr_expansion` / `rsi_thrust` (added since); mean_reversion's lists an EMA-proximity condition that **does not exist**. momentum's *function* docstring also says `min_conditions=3` while `config.py:108` sets `MIN_CONDITIONS_MOMENTUM = 5`, and says `consecutive_up` was "relaxed ... to 3-of-5" (`:57`) while the body reads the 3-of-3 column (`:78`) and `config.py:101-103` records the reversion. `lib/movement_statement.py:1-7` still says "PHASE 2 (feature-flagged, NOT user-facing) ... Nothing here renders to users" while `platform/deploy.sh:177` sets the flag `true` and `dashboard.py:530-545` serves the card | contradiction | **H** | MODEL-MOM-001, MODEL-MR-001, MODEL-BRIEF-001 |
@@ -370,6 +441,9 @@ here — that one belongs to code defects and is owned by
 | DOC-33 | `gcp/earnings_reactions_brief.py` | `classify_context` (`:474-565`) assigns one of **four** setup labels from its own thresholds (`MIN_QUARTERS_FOR_CLASSIFICATION = 4`, `REVERSAL_HIGH = 0.40`, `DRIFT_HOT_PCT = 2.0`, `CONSISTENCY_HIGH = 0.60`), posts them to Discord every weekday — and was covered by no model row and no reference document. It shares **no code** with MODEL-EARN-001: `grep "lib\." gcp/earnings_reactions_brief.py` returns zero matches. It is the **fourth** archetype-shaped classifier in the earnings surface, after `classify_archetype`, `_derive_archetype` (#1135) and `recommended_structure` | omission | **H** | MODEL-EARN-002 |
 | DOC-34 | `07` (this file) | The `## LLM nodes` table was the only `MODEL-*` table with **no `Code` column**, so the scheduler-completeness gate — whose rule is “executes code cited in a `MODEL-*` row” — could not see `insight-pipeline`, the job that runs all 14 registered LLM nodes on a weekday cron. Its one code pointer, `orchestrator.py:490-492`, sat in the *Numeric authority* prose and named no directory. `insight-discord-push-daily` was missing for the same reason, and `premarket-brief-daily`'s row never mentioned the second live LLM path it also runs | omission | **H** | the 7 LLM node groups |
 | DOC-25 | `07` (this file) | The register's own Disposition table carried **two conflicting verdicts for DOC-24** — “FIXED HERE in the doc, FLAGGED at source” and “FLAGGED — needs a code fix” — left by the same renumbering that produced the DOC-23 collision, and the uniqueness gate written to catch that collision read only the Findings table. DOC-20's disposition also still claimed the scheduler count had been “corrected to fourteen” after the count was deleted | contradiction | **M** | MODEL-EARN-001, MODEL-MR-001 |
+| DOC-35 | `07` (this file) | The deliberate-exclusion paragraph excluded `phase6-playbook-daily` because it *"has no `from lib.` import of its own and writes markdown **decision cards** from earlier phases' output"* — a sentence arguing a job is not a decision system, containing the phrase "decision cards". It passes `--write-db` (`gcp/deploy.sh:4430`) and upserts `playbook_cards` (`scripts/analysis/phase6_playbook.py:942-993`), which `/api/playbook` serves. The exclusion was written to make near-misses visible; the first one written down was false | wrong-claim | **H** | MODEL-PLAY-001 |
+| DOC-36 | `gcp/weekend_review.py` | Module docstring (`:3-7`) says the job *"compares actual performance to backtest expectations"*. It does not — there is no backtest, expectation or prior referenced anywhere in the file; every number is a realized statistic over `trades`. Tracked under [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) with the other stale module docstrings | wrong-claim | **M** | MODEL-WEEK-001 |
+| DOC-37 | `scripts/audit_scheduler_coverage.py` | The sweep written to end the missed-scheduler pattern enumerated **61 of 63** schedulers and reported "61 declared, 61 resolved". Its parser matched line by line, so two `_schedule` calls split across a backslash continuation were never seen — and an entry a parser never sees cannot fail the assertion that every entry resolves. Caught by a *second* parser (the registry gate's `_declared_schedulers`) disagreeing by two, not by the check designed for it | wrong-claim | **H** | MODEL-QUAL-001 |
 
 ### Disposition
 
@@ -404,6 +478,9 @@ here — that one belongs to code defects and is owned by
 
 Merged-PR lineage for every model is owned by
 [12](12-PR-ISSUE-TRACEABILITY.md#audit-prs); this section records only open work.
+| DOC-35 | **FIXED HERE** | The inclusion rule is rewritten and published: *a scheduled job is model-bearing when it produces a decision, a label or a verdict about a trade, a signal or a position that reaches a person or a served surface — wherever its thresholds live.* Imports become one sufficient signal, not the definition. `phase6-playbook-daily` is registered as **MODEL-PLAY-001**, and every one of the 63 live schedulers now appears in the scheduler table or in a new **deliberate-exclusion table** with its reason, gated by `test_every_live_scheduler_is_classified` |
+| DOC-36 | **RECORDED** | Stated in [MODEL-WEEK-001](../models/MODEL-WEEK-001.md) and added to [#1137](https://github.com/TeneikaAskew/stocks/issues/1137), which owns the stale-module-docstring class. Not fixed here: the code change is the docstring's, and the registry's job is to say what runs |
+| DOC-37 | **FIXED HERE** | The parser joins backslash continuations before matching, and the module docstring records the failure in the terms that matter — *an assertion that every item resolves says nothing about items the enumeration missed.* The two schedulers it had hidden, `signal-quality-report-nightly` and `signal-quality-alarm-daily`, are registered as **MODEL-QUAL-001**. The durable lesson is that the second parser is what found it: `test_every_live_scheduler_is_classified` enumerates independently and disagreed by two |
 
 ### Open pull requests touching this surface
 

@@ -61,6 +61,56 @@ endpoint and `lib.backtest.replay_labeled_trades` use — *"never a hand-rolled 
 That is CLAUDE.md Rule 3.6 applied deliberately, and it is the reason this model's
 outputs are comparable with production rather than with a parallel implementation.
 
+## `profile.direction` is never read, and the argument that it need not be is wrong
+
+`StyleProfile` carries a `direction` field — `'CALL'` or `'PUT'`
+(`lib/style_miner.py:133`) — and `profile_to_signal_config` (`lib/walk_forward.py:77-163`)
+**never reads it**. The returned `SignalConfig` contains `min_conditions`, the four threshold
+fields copied from `base`, and `enabled_conditions`. Nothing in it says which side the profile
+was mined for.
+
+The function's docstring argues that no direction gate is needed, and marks the argument
+HIGH-severity (`:105-112`):
+
+> CALL's and PUT's internal factor names never overlap … so a CALL profile's
+> `enabled_conditions` list contains zero PUT factor names. `check_put_conditions` therefore
+> scores 0 for every PUT factor, `put_score` is always 0, and `evaluate_signal` can never
+> select PUT for that config.
+
+**Each step is true except the premise.** The internal factor names really are disjoint
+(`lib/walk_forward.py:42-45`). What does not hold is that a CALL profile contains only CALL
+factor names — and the reason is in this document's own vocabulary table above.
+`snapshot_entry_conditions` (`lib/style_miner.py:201-210`) returns **all eight conditions on
+every entry, regardless of direction**: it evaluates `rsi_25_50` *and* `rsi_50_75`,
+`above_vwap` *and* `below_vwap`, both `consec_*`, both `stoch_*`. `mine_style` then keeps, per
+direction, whichever of those eight were true at or above `min_support_frac` of that
+direction's resolved entries (`:238-239`).
+
+Nothing restricts that selection to one side. A CALL fire needs 3 of its 5 conditions, so a
+CALL entry at RSI 58 fails `rsi_25_50` and satisfies `rsi_50_75`; if that is common enough
+among a ticker's CALL entries, `rsi_50_75` enters the CALL profile. `_translate_condition`
+maps it to `rsi_overbought_zone`, it lands in `enabled_conditions`, `put_score` becomes
+nonzero, and `evaluate_signal` — which selects the higher of the two scores, CALL winning only
+a tie — can return **PUT** for a profile mined from CALL entries.
+
+### Blast radius, measured
+
+`profile_to_signal_config` has exactly one non-test caller: `WalkForwardValidator.run_profile`
+(`lib/walk_forward.py:296`), itself called once, at
+`platform/api/routers/backtest.py:801` — the mine-and-validate endpoint. So the consequence is
+**corrupted validation metrics**, not a live trade:
+
+- the expectancy and win rate returned in that endpoint's HTTP response describe a config that
+  could fire either direction;
+- the same numbers are archived to `user_style_results` and upserted into
+  `playbook_cards_staging`;
+- they do **not** reach the admin playbook UI, because `PLAYBOOK_USER_CARDS = False`
+  (`backtest.py:613`) and the comment at `:610-611` records that the UI reads `playbook_cards`
+  and never the staging table.
+
+No signal-monitor path touches it. That bounds the damage without excusing it: the number a
+user is shown for their mined style can be produced by trades in the opposite direction.
+
 ## Thresholds
 
 | Name | Value | Line | Meaning |

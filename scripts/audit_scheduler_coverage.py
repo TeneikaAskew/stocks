@@ -158,10 +158,27 @@ def resolve_services(text: str) -> dict[str, dict]:
 
 
 def resolve_schedulers(text: str) -> dict[str, tuple[str, str]]:
-    """scheduler -> (cron, job). Same shape the registry's own gate parses."""
+    """scheduler -> (cron, job).
+
+    Backslash continuations are JOINED FIRST, and that is not a detail. The
+    first version matched line by line, so a call split as
+
+        _schedule "signal-quality-alarm-daily" \\
+            "0 2 * * 2-6" "signal-quality-alarm"
+
+    matched nothing and the scheduler was never enumerated at all. The script
+    then printed "61 schedulers declared, 61 resolved" and exited 0 -- because
+    an entry the parser never saw cannot fail to resolve. The real count is 63.
+
+    An assertion that every item resolves says nothing about items the
+    enumeration missed, which is the same shape as the proxy this whole script
+    exists to replace. It was caught by a SECOND parser (the registry gate's
+    `_declared_schedulers`) disagreeing by two, not by anything here.
+    """
+    joined = re.sub(r"\\\n\s*", " ", text)
     out = {}
-    for line in text.split("\n"):
-        m = re.search(r'_schedule[a-z_]*\s+"([^"]+)"\s+\\?\s*"([^"]+)"\s+\\?\s*"([^"]+)"', line)
+    for line in joined.split("\n"):
+        m = re.search(r'_schedule[a-z_]*\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"', line)
         if m:
             out[m.group(1)] = (m.group(2), m.group(3))
     return out
@@ -180,8 +197,17 @@ def entry_path(entry: str, kind: str) -> Path | None:
     return p if p.exists() else None
 
 
+#: A job writes a table three ways here, and missing any one of them
+#: understates the job. The third was missing until 2026-09-18 and the
+#: omission was not theoretical: ``evaluate-ew-strikes-daily`` writes its
+#: HIT/MISS/KEPT/ASSIGNED verdicts with ``UPDATE earnings_calendar SET``
+#: and nothing else, so this script reported it as "no write, no Discord,
+#: no lib/ import found" — evidence that would have justified excluding a
+#: job whose output the premarket brief renders to a person every morning.
 _WRITE_RE = re.compile(
-    r"INSERT\s+INTO\s+([a-z_][\w]*)|upsert_dataframe\(\s*[^,]+,\s*['\"]([a-z_]\w*)['\"]",
+    r"INSERT\s+INTO\s+([a-z_][\w]*)"
+    r"|upsert_dataframe\(\s*[^,]+,\s*['\"]([a-z_]\w*)['\"]"
+    r"|UPDATE\s+([a-z_][\w]*)\s+SET",
     re.I)
 
 
@@ -199,7 +225,8 @@ def served_tables() -> set[str]:
 
 def evidence(path: Path, served: set[str]) -> dict:
     src = path.read_text()
-    writes = {m.group(1) or m.group(2) for m in _WRITE_RE.finditer(src)}
+    writes = {m.group(1) or m.group(2) or m.group(3)
+              for m in _WRITE_RE.finditer(src)}
     writes = {w.lower() for w in writes if w}
     return {
         "writes": sorted(writes),
@@ -222,7 +249,18 @@ def registry_tables() -> tuple[set[str], set[str]]:
         if header not in text:
             return set()
         body = text.split(header, 1)[1].split("\n\n", 1)[0]
-        return {m.group(1) for m in re.finditer(r"^\|\s*`([\w-]+)`", body, re.M)}
+        out: set[str] = set()
+        for row in body.split("\n"):
+            if not row.startswith("|"):
+                continue
+            # FIRST CELL ONLY. Schedulers that differ solely by cron share a
+            # row ("av-intraday-nightly . av-intraday-monthly"), so every
+            # backticked name in that cell counts -- but a later cell naming a
+            # job or a file must not, or the gate would mark a scheduler
+            # classified because some row happened to mention it.
+            cell = row.split("|")[1]
+            out |= set(re.findall(r"`([\w-]+)`", cell))
+        return out
 
     return names(LISTED_HEADER), names(EXCLUDED_HEADER)
 
