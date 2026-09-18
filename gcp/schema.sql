@@ -2360,6 +2360,24 @@ END $$;
 -- fact — the very corruption this table exists to prevent, arriving
 -- through its own migration. Postgres has transactional DDL and nothing
 -- here is CREATE INDEX CONCURRENTLY, so one transaction covers it all.
+--
+-- One transaction is still not enough on its own: BEGIN does not lock
+-- `watchlists`. Locks are taken per statement, so the table stays open to
+-- writers until `CREATE TRIGGER` below reaches it, and the session runs
+-- READ COMMITTED, so the seed at the end of this group sees whatever
+-- committed in the meantime. A remove/re-add landing in that gap is
+-- captured by no trigger (not installed yet) and invisible to the seed
+-- (`watchlists` keeps the original `added_at` on re-add — the erasure
+-- this table exists to stop), so it is recorded as continuous
+-- membership, permanently. Taking the lock as the FIRST statement closes
+-- it. SHARE ROW EXCLUSIVE is not an escalation: it is the mode
+-- `CREATE TRIGGER` itself takes on this table (verified against
+-- Postgres 16 — `pg_locks.mode` reads `ShareRowExclusiveLock`), so this
+-- only moves the acquisition earlier. It blocks writers, not readers,
+-- and only for this group: an empty table, two indexes, two functions
+-- and an 18-row seed.
+LOCK TABLE watchlists IN SHARE ROW EXCLUSIVE MODE;
+
 CREATE TABLE IF NOT EXISTS watchlist_history (
     id            BIGSERIAL     PRIMARY KEY,
     user_id       VARCHAR(320)  NOT NULL,

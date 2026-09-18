@@ -822,3 +822,45 @@ def test_watchlist_history_creation_and_trigger_are_one_atomic_unit():
     assert seed == table, (
         "the seed is not in the same transaction as the trigger install"
     )
+
+
+def test_watchlists_is_locked_before_the_history_is_built():
+    """One transaction is not enough; BEGIN does not lock the source table.
+
+    Postgres takes locks per statement, so `watchlists` stays open to
+    writers until `CREATE TRIGGER` reaches it partway through the group,
+    and the session runs READ COMMITTED so the seed at the end sees
+    whatever committed in the meantime. A remove/re-add landing in that
+    gap is captured by no trigger (not yet installed) and is invisible to
+    the seed, because `watchlists` keeps the original `added_at` on
+    re-add — the precise erasure this table exists to stop. It would be
+    recorded as continuous membership, permanently (Codex P2 on
+    `53b6b6a`).
+
+    The lock must be FIRST: anything before it re-opens the same gap,
+    just narrower.
+
+    SHARE ROW EXCLUSIVE is not an escalation — it is the mode
+    `CREATE TRIGGER` already takes on this table, verified against
+    Postgres 16 by reading `pg_locks.mode` inside a transaction that had
+    just created a trigger on `watchlists` (`ShareRowExclusiveLock`).
+    """
+    import pathlib
+    import re
+
+    from gcp.apply_schema import split_statement_groups
+
+    units = split_statement_groups(pathlib.Path("gcp/schema.sql").read_text())
+    group = next(
+        u for u in units
+        if any("CREATE TABLE IF NOT EXISTS watchlist_history" in s for s in u)
+    )
+
+    first = group[0]
+    assert re.search(
+        r"LOCK\s+TABLE\s+watchlists\s+IN\s+SHARE\s+ROW\s+EXCLUSIVE\s+MODE",
+        first, re.IGNORECASE,
+    ), (
+        "the first statement of the watchlist_history group is not a "
+        f"write-blocking lock on watchlists; it is: {first[:120]!r}"
+    )
