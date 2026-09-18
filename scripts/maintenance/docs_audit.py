@@ -141,6 +141,18 @@ BLOCKING_CUE_RE = re.compile(
     r"blocking|blocked by|open issue|still open|outstanding|in progress|not started|pending",
     re.I,
 )
+# Prose that says a citation is finished. Checked against the citation's own
+# clause, never the whole line: `docs/product/12-PR-ISSUE-TRACEABILITY.md:48`
+# says three stocks records "are closed as not planned with the work still
+# open in solyra", and the line-level cue applied "still open" to all five
+# citations on it -- reporting truthful traceability history as stale docs.
+SETTLED_CUE_RE = re.compile(
+    r"closed|resolved|superseded|merged|moved to|relocated|duplicate of|completed", re.I)
+# What bounds a clause: sentence punctuation, a semicolon, or a table-cell
+# edge. Not a comma -- the example above puts the closed and open halves in
+# one comma-free clause pair separated by "with".
+_CLAUSE_SPLIT_RE = re.compile(r"[.;|]")
+_URL_RE = re.compile(r"https?://\S+")
 ISSUE_URL_RE = re.compile(
     r"github\.com/" + OWNER + r"/(?P<repo>solyra|stocks)/(?P<kind>issues|pull)/(?P<num>\d+)"
 )
@@ -772,6 +784,34 @@ def is_calendar_date(value: str | None) -> bool:
         return False
 
 
+# The field names MARKER_RE owns. Finding one in the unmatched tail means the
+# optional group declined it, which is malformed provenance, not absence.
+_MARKER_FIELD_RE = re.compile(r"\*\*(Depth|Against|Last scanned|Last reviewed):\*\*", re.I)
+
+
+def check_marker_fields(doc: str, info: dict) -> list[dict]:
+    """A field the parser recognised the NAME of but could not read.
+
+    Every optional group in MARKER_RE declines silently: `**Against:** `zzzz``
+    does not fail to parse, it captures nothing and `rest` absorbs that field
+    AND everything after it. The document then reports only the non-gating P3
+    "no reviewed-against SHA" worklist item, so `--check` passes while drift
+    detection is disabled for it -- provenance that looks present to a reader
+    and is invisible to the audit.
+
+    resolve_marker_sha guards the WRITE side; this is the read side, which
+    sees markers written by hand or by an older version of this script.
+    """
+    rest = info.get("rest") or ""
+    names = sorted({m.group(1).lower() for m in _MARKER_FIELD_RE.finditer(rest)})
+    if not names:
+        return []
+    return [{"check": "marker", "doc": doc, "severity": "P2",
+             "detail": f"marker field(s) {', '.join(names)} could not be parsed and were "
+                       f"read as free text ({rest.strip()[:60]!r}); the values they carry "
+                       "are invisible to every check"}]
+
+
 def check_marker_dates(doc: str, info: dict, today: str | None = None) -> list[dict]:
     """Every date a marker carries has to be a day that exists, and be past.
 
@@ -831,7 +871,7 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
         if m:
             out.append((i, {"date": m.group("date"), "depth": m.group("depth"),
                             "sha": m.group("sha"), "scanned": m.group("scanned"),
-                            "legacy": False}))
+                            "rest": m.group("rest"), "legacy": False}))
             continue
         m = LEGACY_MARKER_RE.match(line)
         if m:
@@ -1063,12 +1103,37 @@ def fetch_issue_states(repo: str) -> dict[int, dict]:
 
 # ── checks ──────────────────────────────────────────────────────────────────
 
+def citation_clause(line: str, start: int, end: int) -> str:
+    """The clause a citation sits in, for judging what the prose says about IT.
+
+    A cue evaluated once per line is applied to every citation on it, which
+    turns mixed-status prose into false findings. The clause is bounded by
+    sentence punctuation, a semicolon or a table-cell pipe, so each citation is
+    read against the words around it rather than the words around its
+    neighbours.
+    """
+    # URLs are masked first, at the same length so the offsets still line up.
+    # Every citation IS a URL containing dots, so splitting the raw line cuts
+    # each clause inside `github.com` and the prose around the citation --
+    # which is the only thing being asked about -- falls outside it.
+    masked = _URL_RE.sub(lambda m: "\x00" * len(m.group(0)), line)
+    lo = max((m.end() for m in _CLAUSE_SPLIT_RE.finditer(masked, 0, start)), default=0)
+    nxt = _CLAUSE_SPLIT_RE.search(masked, end)
+    return line[lo:nxt.start() if nxt else len(line)]
+
+
 def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[dict]:
     out = []
     for n, line in enumerate(text.split("\n"), 1):
         if not BLOCKING_CUE_RE.search(line):
             continue
         for m in ISSUE_URL_RE.finditer(line):
+            # The line carries a live-work cue; does THIS citation's clause say
+            # the opposite? Deliberately narrow: only prose that explicitly
+            # settles the reference suppresses it, so this can remove a false
+            # finding and never a true one.
+            if SETTLED_CUE_RE.search(citation_clause(line, m.start(), m.end())):
+                continue
             if m.group("kind") != "issues":
                 continue
             repo, num = m.group("repo"), int(m.group("num"))
@@ -1216,9 +1281,52 @@ def drift_commits(out: str) -> list[str]:
         if not status or not commits:
             continue
         kind, score = status.group(1), status.group(2)
-        if kind in "AMD" or (kind == "R" and int(score or 100) < 100):
+        if kind in "AMDT" or (kind == "R" and int(score or 100) < 100):
             commits[-1] = (commits[-1][0], True)
     return [line for line, drift in commits if drift]
+
+
+def check_doc_changed_since(doc: str, sha: str | None, base_ref: str, *,
+                           cwd: pathlib.Path | None = None) -> list[dict]:
+    """Has the DOCUMENT itself changed since it was reviewed?
+
+    The drift check queries the declared code paths only, so prose rewritten
+    after its `Against` SHA kept the old review date and SHA -- and a registry
+    row with an empty declared-path column could never produce a drift finding
+    at all, whatever happened to the document.
+
+    Marker-only edits are excluded rather than filtered per commit: the marker
+    line is what `--stamp` rewrites on every scheduled run, so counting it
+    would mark every document stale the moment the weekly scan touched it.
+    Comparing the two texts with their marker lines removed answers the real
+    question in one `git show`, and needs no per-commit diff inspection.
+    """
+    if not sha:
+        return []
+    old = run(["git", "show", f"{sha}:{doc}"], cwd=cwd, ok_exit_codes=(128,))
+    if not old:
+        # The document did not exist at that SHA, or the object is missing.
+        # check_marker_sha reports an unreachable SHA separately; a document
+        # created after its own review date is a marker problem, not drift.
+        return []
+    try:
+        new = (REPO / doc).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if _without_marker(old) == _without_marker(new):
+        return []
+    return [{"check": "changed-since", "doc": doc, "severity": "P2",
+             "detail": f"the document itself changed since {sha}, so its review covers "
+                       "prose that is no longer there"}]
+
+
+def _without_marker(text: str) -> str:
+    """The text a review is about: everything but the marker line itself."""
+    lines = text.split("\n")
+    found = find_marker(lines)
+    if found is not None:
+        lines = lines[:found[0]] + lines[found[0] + 1:]
+    return "\n".join(lines)
 
 
 def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_ref: str,
@@ -1241,7 +1349,11 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # document. `-M` asks for the score explicitly rather than trusting
     # `diff.renames` on whichever machine runs the audit.
     out = run(["git", "log", "--format=%h%x09%s", "--name-status", "-M",
-               "--diff-filter=AMDR", f"{sha}..{base_ref}", "--"] + code_paths,
+               # T as well: git files a regular-file-to-symlink conversion as a
+               # TYPE change, and AMDR dropped the commit before drift_commits
+               # could look at it -- so replacing a declared implementation path
+               # with a symlink changed the surface and queued no review.
+               "--diff-filter=AMDRT", f"{sha}..{base_ref}", "--"] + code_paths,
               cwd=cwd or REPO)
     commits = drift_commits(out)
     if not commits:
@@ -1256,7 +1368,17 @@ TOP_LEVEL_DIRS: set[str] = set()
 # The job that owns the Class A docs, and the PR title it opens.
 OWNING_JOB = {
     "workflow": "refresh-architecture-docs.yml",
+    # Broad, for ATTEMPTS: "Fix: Monthly architecture doc refresh failed" is a
+    # failed attempt and belongs on the report.
     "pr_title_re": re.compile(r"architecture doc refresh", re.I),
+    # Strict, for DELIVERIES. The workflow's own output PR is titled
+    # `Monthly architecture doc refresh: YYYY-MM`; the broad pattern also
+    # matches maintenance like "fix architecture doc refresh authentication",
+    # and `delivered` was computed from every merged match -- so merging a
+    # workflow REPAIR could supersede and hide a refresh that never delivered
+    # a document.
+    "delivery_title_re": re.compile(r"Monthly architecture doc refresh:\s*\d{4}-\d{2}",
+                                    re.I),
     "docs": [
         "docs/product/infrastructure/05-a-ARCHITECTURE.md",
         "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
@@ -1274,7 +1396,8 @@ PR_PAGE_SIZE = 100
 PR_PAGE_LIMIT = 40
 
 
-def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE) -> list[dict]:
+def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE,
+                    delivery_re: re.Pattern | None = None) -> list[dict]:
     """Every refresh PR the delivery check can act on, newest first.
 
     One `per_page=100` page covers the 100 newest PRs of ANY kind, not the 100
@@ -1298,6 +1421,7 @@ def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE) -> l
     `delivered` supersedes too. It is still bounded by PR_PAGE_LIMIT
     (CLAUDE.md §3.8).
     """
+    delivery_re = delivery_re or title_re
     owned: list[dict] = []
     for page in range(1, PR_PAGE_LIMIT + 1):
         out = run([
@@ -1314,7 +1438,8 @@ def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE) -> l
                               "created": parts[3], "title": parts[4]})
         if len(rows) < page_size:
             break
-        delivered = max((pr["merged"] for pr in owned if pr["merged"]), default="")
+        delivered = max((pr["merged"] for pr in owned
+                         if pr["merged"] and delivery_re.search(pr["title"])), default="")
         pending = [pr["created"] for pr in owned if not pr["merged"]]
         if delivered and all(created < delivered for created in pending):
             break
@@ -1398,6 +1523,43 @@ def _is_dry_run(row: list[str]) -> bool:
     return row[3].strip().lower() in {"true", "1", "yes"}
 
 
+RUNS_PAGE_SIZE = 10
+# Enough pages to get past a run of manual dry runs without reading history
+# nobody will act on. Reaching it is reported, never silently truncated.
+RUNS_PAGE_LIMIT = 10
+
+
+def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
+    """Recent runs of the owning workflow, read until one of them delivered.
+
+    A fixed ten-run window plus the dry-run filter is a hole the two together
+    open and neither has alone: the workflow permits repeated manual dry runs,
+    and ten of them push the last DELIVERING execution out of view, so a failed
+    scheduled refresh behind them reports nothing at all. The walk stops as
+    soon as a non-dry run is in hand, so the common case is still one request.
+    """
+    rows: list[list[str]] = []
+    for page in range(1, RUNS_PAGE_LIMIT + 1):
+        out = run([
+            "gh", "api",
+            f"repos/{OWNER}/{THIS_REPO}/actions/workflows/{OWNING_JOB['workflow']}"
+            f"/runs?per_page={page_size}&page={page}",
+            "--jq", '.workflow_runs[] | [.conclusion, .created_at, '
+                    '(.event // ""), ((.inputs // {}).dry_run // "")] | @tsv',
+        ])
+        # strip("\n"), not strip(). A queued or in-progress run has a null
+        # conclusion, so its TSV row BEGINS with a tab -- and stripping the
+        # whole response removes that tab from the first row, shifting every
+        # column left. The timestamp then reads as the conclusion.
+        page_rows = [r.split("\t") for r in out.strip("\n").split("\n") if r.strip()]
+        rows += page_rows
+        if any(not _is_dry_run(r) for r in page_rows):
+            return rows
+        if len(page_rows) < page_size:
+            return rows
+    return rows
+
+
 def check_owning_job(today: str) -> list[dict]:
     """Did the job that owns the Class A docs actually deliver?
 
@@ -1409,13 +1571,9 @@ def check_owning_job(today: str) -> list[dict]:
     """
     findings: list[dict] = []
     try:
-        runs = run([
-            "gh", "api",
-            f"repos/{OWNER}/{THIS_REPO}/actions/workflows/{OWNING_JOB['workflow']}/runs?per_page=10",
-            "--jq", '.workflow_runs[] | [.conclusion, .created_at, '
-                    '(.event // ""), ((.inputs // {}).dry_run // "")] | @tsv',
-        ])
-        owned_prs = fetch_owned_prs(OWNING_JOB["pr_title_re"])
+        recent = fetch_owning_runs()
+        owned_prs = fetch_owned_prs(OWNING_JOB["pr_title_re"],
+                                    delivery_re=OWNING_JOB["delivery_title_re"])
     except AuditError:
         # Do NOT convert this into a finding. A finding means "the docs are
         # stale"; this means "the audit never learned whether they are", and
@@ -1423,7 +1581,7 @@ def check_owning_job(today: str) -> list[dict]:
         # -- neither of which is the documented exit 2 for an incomplete audit.
         raise
 
-    recent = [r.split("\t") for r in runs.strip().split("\n") if r.strip()]
+
     # A dry run does not deliver: refresh-architecture-docs.yml declares a
     # `dry_run` input and skips its "Open refresh PR" step when it is set, so
     # reading `recent[0]` unconditionally let a successful manual dry run stand
@@ -1439,7 +1597,9 @@ def check_owning_job(today: str) -> list[dict]:
     # A closed-unmerged attempt that a LATER refresh superseded is history, not
     # a live defect. Reporting #963/#1012/#1021 forever kept --check red with
     # findings whose only remedy would be reviving obsolete PRs.
-    delivered = max((pr["merged"] for pr in owned_prs if pr["merged"]), default="")
+    delivery_re = OWNING_JOB["delivery_title_re"]
+    delivered = max((pr["merged"] for pr in owned_prs
+                     if pr["merged"] and delivery_re.search(pr["title"])), default="")
     for pr in owned_prs[:6]:
         if pr["merged"]:
             continue
@@ -1481,6 +1641,16 @@ def check_owning_job(today: str) -> list[dict]:
             findings.append({"check": "class-a", "doc": doc, "severity": "P2",
                              "detail": f"Generated {bad[0]} is not a real calendar day"})
             continue
+        if len(set(stamps)) > 1:
+            # 05-c carries a stamp in its header AND its footer. max() reads the
+            # document as current when a partial refresh moved only one, while
+            # the other visible provenance claim stays stale -- and the
+            # workflow's own gate only requires ONE occurrence of today's date.
+            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
+                             "detail": "generated stamps disagree ("
+                                       + ", ".join(sorted(set(stamps)))
+                                       + "); a partial refresh moved one and left the other"})
+            continue
         newest = max(stamps)
         if is_future_date(newest, today):
             # A future stamp yields a negative age, which passes the threshold
@@ -1504,6 +1674,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verify", nargs="*", default=None, metavar="PATH",
                     help="mark these docs Depth: verified (default is scanned); requires --stamp")
     ap.add_argument("--since", metavar="SHA", help="override the reviewed-against SHA")
+    ap.add_argument("--no-owning-job-check", action="store_true",
+                    help="skip the Class A delivery audit, which needs the GitHub API")
     ap.add_argument("--issues-snapshot", metavar="FILE", help="read issue state from FILE (offline)")
     ap.add_argument("--write-issues-snapshot", metavar="FILE", help="save the issue state read")
     ap.add_argument("--date", metavar="YYYY-MM-DD", help="override today's date (tests)")
@@ -1567,7 +1739,12 @@ def main(argv: list[str] | None = None) -> int:
     # Needs no network: it asks the artifact what it says about itself, which
     # is the only evidence a best-effort refresh step leaves behind.
     findings += check_best_effort_artifacts(today)
-    if not args.issues_snapshot:
+    # Its own flag, not a side effect of --issues-snapshot. Keying the Class A
+    # delivery audit off the issue-state flag meant an offline or deterministic
+    # issue run reported Class A clean however badly the architecture refresh
+    # was failing -- an unrelated check silently disabled by an unrelated
+    # option, until a Generated stamp aged past 40 days.
+    if not args.no_owning_job_check:
         findings += check_owning_job(today)
     stamped: list[dict] = []
     # A review is recorded only by WRITING a marker, so `--verify` without
@@ -1668,6 +1845,7 @@ def main(argv: list[str] | None = None) -> int:
             # the future check used to live here and read `info["date"]` only,
             # which left `Last scanned` in the future entirely unchecked.
             findings += check_marker_dates(doc, info, today)
+            findings += check_marker_fields(doc, info)
             # A second marker in the window is a document making two review
             # claims at once. Reading the first and ignoring the rest let
             # `--stamp` rewrite the top one, report `updated` or `unchanged`,
@@ -1701,6 +1879,10 @@ def main(argv: list[str] | None = None) -> int:
                                  "detail": "incomplete provenance: " + "; ".join(missing)})
             if measurable:
                 findings += check_changed_since(doc, info["sha"], code_paths, base_ref)
+                # And the document itself, which the code-path query cannot
+                # see -- and which is the ONLY drift signal a registry row
+                # with no declared code paths has.
+                findings += check_doc_changed_since(doc, info["sha"], base_ref)
 
         if args.stamp:
             # Never write a marker into a generated region. The marker goes
@@ -1712,6 +1894,18 @@ def main(argv: list[str] | None = None) -> int:
             # success for a review whose provenance is still ambiguous. The
             # finding above says which lines; a human merges them.
             if len(markers) > 1:
+                continue
+            # Where the EXISTING marker sits, not just where a new one would
+            # go. The proximity test below compares the first generated line
+            # with the H1, which says nothing about a marker further down
+            # inside a block that starts later: `stamp` would replace it in
+            # place, report success for a --verify, and the renderer would
+            # overwrite that provenance on its next run.
+            if found is not None and (found[0] + 1) in owned:
+                findings.append({"check": "unowned", "doc": doc, "severity": "P2",
+                                 "detail": f"not stamped: the existing marker on line "
+                                           f"{found[0] + 1} is inside a generated region, so "
+                                           "rewriting it would be discarded by the renderer"})
                 continue
             h1 = h1_index(lines)
             if owned and h1 is not None and min(owned) <= h1 + 2:

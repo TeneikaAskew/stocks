@@ -404,7 +404,12 @@ def test_marker_roundtrips_through_the_parser():
     found = m.find_marker(["# T", "", line])
     assert found is not None
     assert found[1] == {"date": "2026-09-16", "depth": "verified", "sha": "aa60569",
-                        "scanned": "2026-09-16", "legacy": False}
+                        "scanned": "2026-09-16", "rest": " · **Owner:** TBD",
+                        "legacy": False}
+    # `rest` is the unmatched tail, carried so check_marker_fields can see a
+    # field the parser recognised the name of but could not read. Owner is not
+    # one of MARKER_RE's own fields, so a marker carrying it is not malformed.
+    assert m.check_marker_fields("d.md", found[1]) == []
 
 
 def test_a_scan_never_overwrites_an_existing_review_date():
@@ -1043,7 +1048,7 @@ def audit_repo(tmp_path, monkeypatch):
 def _audit(repo, *argv):
     """Run main() over `repo`, offline, and return (exit code, report)."""
     _commit(repo, "tree")
-    code = m.main(["--json", "--date", "2026-09-18",
+    code = m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
                    "--issues-snapshot", str(repo / "issues.json"), *argv])
     return code
 
@@ -1531,6 +1536,348 @@ def test_a_citation_that_climbs_above_the_repo_is_not_a_finding():
     repository: deliberate cross-repo prose, not rot."""
     m.TOP_LEVEL_DIRS.update({"docs"})
     assert m.check_dead_links("docs/d.md", "see `../../../../elsewhere.md`\n", set()) == []
+
+
+# ── the delivery audit, round three ────────────────────────────────────────
+
+def test_ten_dry_runs_cannot_push_the_last_delivery_out_of_view(monkeypatch, tmp_path):
+    """A fixed ten-run window plus the dry-run filter is a hole the two open
+    together and neither has alone: the workflow permits repeated manual dry
+    runs, and ten of them hide the failed scheduled refresh behind them."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
+    page1 = "\n".join(["success\t2026-09-18T06:00:00Z\tworkflow_dispatch\ttrue"] * 10)
+    page2 = "failure\t2026-09-16T06:00:00Z\tschedule\t"
+    pages = {1: page1, 2: page2}
+
+    def fake(cmd, **kw):
+        joined = " ".join(cmd)
+        if "runs?per_page" in joined:
+            return pages.get(int(joined.split("&page=")[1].split()[0]), "")
+        return ""
+
+    monkeypatch.setattr(m, "run", fake)
+    out = m.check_owning_job("2026-09-18")
+    assert [f for f in out if "failure" in f["detail"]], out
+
+
+def test_the_run_walk_stops_at_the_first_delivering_run(monkeypatch, tmp_path):
+    """Cost scales with the answer: once a non-dry run is in hand there is
+    nothing older that can change the verdict."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
+    calls = {"n": 0}
+
+    def fake(cmd, **kw):
+        if "runs?per_page" in " ".join(cmd):
+            calls["n"] += 1
+            return "success\t2026-09-18T06:00:00Z\tschedule\t"
+        return ""
+
+    monkeypatch.setattr(m, "run", fake)
+    m.check_owning_job("2026-09-18")
+    assert calls["n"] == 1
+
+
+def test_a_repair_pr_does_not_count_as_a_delivery():
+    """The broad pattern catches failed ATTEMPTS, which belong on the report.
+    It also matches maintenance like "fix architecture doc refresh
+    authentication", and computing `delivered` from every merged match let a
+    workflow repair supersede a refresh that never delivered a document."""
+    assert m.OWNING_JOB["pr_title_re"].search("Fix architecture doc refresh authentication")
+    assert not m.OWNING_JOB["delivery_title_re"].search(
+        "Fix architecture doc refresh authentication")
+    assert m.OWNING_JOB["delivery_title_re"].search(
+        "Monthly architecture doc refresh: 2026-09")
+
+
+def test_a_merged_repair_pr_does_not_supersede_an_open_refresh(monkeypatch, tmp_path):
+    """Through check_owning_job, not just against the two regexes: `delivered`
+    is computed from merged matches, so a merged workflow REPAIR could hide a
+    refresh that never delivered a document."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
+    pages = ["\n".join([
+        "1060\topen\t\t2026-09-08T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
+        "1059\tclosed\t2026-09-10T00:00:00Z\t2026-09-09T00:00:00Z\t"
+        "Fix architecture doc refresh authentication",
+    ])]
+    monkeypatch.setattr(m, "run", _pr_pages(pages))
+    out = m.check_owning_job("2026-09-17")
+    assert [f for f in out if "1060" in f["detail"]], out
+
+
+def test_a_merged_refresh_still_supersedes(monkeypatch, tmp_path):
+    """The stricter delivery pattern must not stop a real delivery from
+    clearing older attempts."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
+    pages = ["\n".join([
+        "1060\topen\t\t2026-09-08T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
+        "1059\tclosed\t2026-09-10T00:00:00Z\t2026-09-09T00:00:00Z\t"
+        "Monthly architecture doc refresh: 2026-09",
+    ])]
+    monkeypatch.setattr(m, "run", _pr_pages(pages))
+    assert [f for f in m.check_owning_job("2026-09-17") if "1060" in f["detail"]] == []
+
+
+def test_disagreeing_generated_stamps_are_reported(tmp_path, monkeypatch):
+    """05-c carries a stamp in its header AND its footer. max() reads the
+    document as current when a partial refresh moved only one, while the other
+    visible provenance claim stays stale."""
+    out = _owning_doc(tmp_path, monkeypatch,
+                      "# G\n\nGenerated 2026-09-15\n\nbody\n\nGenerated 2026-08-01\n")
+    assert [f for f in out if "stamps disagree" in f["detail"]], out
+
+
+def test_agreeing_generated_stamps_are_quiet(tmp_path, monkeypatch):
+    out = _owning_doc(tmp_path, monkeypatch,
+                      "# G\n\nGenerated 2026-09-15\n\nbody\n\nGenerated 2026-09-15\n")
+    assert [f for f in out if f["doc"] == "g.md"] == [], out
+
+
+def test_a_type_change_is_drift(tmp_path, monkeypatch):
+    """git files a regular-file-to-symlink conversion as T, which AMDR dropped
+    before drift_commits could look at it. Both halves have to hold: the query
+    must ASK for T, and the parser must count it -- testing only the parser
+    left the filter free to drop the commit before it ever arrived."""
+    assert m.drift_commits("abc1234\tsubject\nT\tlib/x.py\n") == ["abc1234\tsubject"]
+    seen = {}
+    monkeypatch.setattr(m, "run", lambda cmd, **kw: seen.setdefault("cmd", cmd) and "")
+    m.check_changed_since("d.md", "abc1234", ["lib"], "HEAD")
+    assert "--diff-filter=AMDRT" in seen["cmd"], seen["cmd"]
+
+
+# ── a review covers prose, not only the code it describes ──────────────────
+
+def test_a_document_edited_after_its_review_is_drift(tmp_path, monkeypatch):
+    """The drift check queried the declared code paths only, so prose rewritten
+    after its `Against` SHA kept the old review date -- and a registry row with
+    an empty declared-path column could never produce a drift finding at all."""
+    _git(tmp_path, "init", "-q", "-b", "work")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    (tmp_path / "d.md").write_text("# D\n\noriginal prose\n")
+    _commit(tmp_path, "one")
+    sha = _git(tmp_path, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    assert m.check_doc_changed_since("d.md", sha, "HEAD", cwd=tmp_path) == []
+    (tmp_path / "d.md").write_text("# D\n\nrewritten prose\n")
+    out = m.check_doc_changed_since("d.md", sha, "HEAD", cwd=tmp_path)
+    assert len(out) == 1 and out[0]["check"] == "changed-since", out
+
+
+def test_a_document_edit_is_reported_by_a_whole_run(audit_repo, capsys):
+    """Through main(). Two tests calling check_doc_changed_since directly
+    stayed green when its call site was deleted -- the same assert-around-the
+    -code failure this file has now recorded three times."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\noriginal prose\n")
+    _commit(audit_repo, "one")
+    sha = _git(audit_repo, "rev-parse", "--short=12", "HEAD").strip()
+    (audit_repo / "docs" / "d.md").write_text(
+        "# D\n\n" + m.render_marker("2026-09-01", "verified", sha, "2026-09-18", "TBD")
+        + "\n\nrewritten prose\n")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    drift = [f for f in report["findings"]
+             if f["doc"] == "docs/d.md" and f["check"] == "changed-since"]
+    assert len(drift) == 1 and "the document itself changed" in drift[0]["detail"], \
+        report["findings"]
+
+
+def test_a_marker_only_edit_is_not_drift(tmp_path, monkeypatch):
+    """The marker line is what --stamp rewrites on every scheduled run.
+    Counting it would mark every document stale the moment the weekly scan
+    touched it."""
+    _git(tmp_path, "init", "-q", "-b", "work")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    before = "# D\n\n" + m.render_marker("2026-01-01", None, None, "2026-01-01", "TBD") + "\n\nprose\n"
+    (tmp_path / "d.md").write_text(before)
+    _commit(tmp_path, "one")
+    sha = _git(tmp_path, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    after = "# D\n\n" + m.render_marker("2026-01-01", None, None, "2026-09-18", "TBD") + "\n\nprose\n"
+    (tmp_path / "d.md").write_text(after)
+    assert after != before
+    assert m.check_doc_changed_since("d.md", sha, "HEAD", cwd=tmp_path) == []
+
+
+# ── provenance that looks present and is invisible ─────────────────────────
+
+def test_a_malformed_marker_field_is_reported_not_read_as_absent():
+    """Every optional group in MARKER_RE declines SILENTLY. `**Against:**
+    `zzzz`` does not fail to parse -- it captures nothing and `rest` swallows
+    that field and everything after it, so the document reports only the
+    non-gating P3 worklist item and `--check` passes while drift detection is
+    off for it."""
+    line = "**Last reviewed:** 2026-09-16 · **Against:** `zzzz` · **Last scanned:** 2026-09-17"
+    found = m.find_marker(["# T", "", line])
+    assert found is not None and found[1]["sha"] is None
+    out = m.check_marker_fields("d.md", found[1])
+    assert len(out) == 1 and out[0]["severity"] == "P2", out
+    assert "against" in out[0]["detail"] and "last scanned" in out[0]["detail"]
+
+
+def test_a_well_formed_marker_reports_no_malformed_fields():
+    line = m.render_marker("2026-09-16", "verified", "aa60569abc12", "2026-09-17", "TBD")
+    assert m.check_marker_fields("d.md", m.find_marker(["# T", "", line])[1]) == []
+
+
+def test_a_malformed_marker_field_is_reported_by_a_whole_run(audit_repo, capsys):
+    """Through main(), not beside it. Two tests calling check_marker_fields
+    directly stayed green when the call site was deleted, which is the
+    assert-around-the-code failure this file has hit before."""
+    (audit_repo / "docs" / "d.md").write_text(
+        "# D\n\n**Last reviewed:** 2026-09-16 · **Against:** `zzzz` · "
+        "**Last scanned:** 2026-09-17\n\nbody\n")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    bad = [f for f in report["findings"]
+           if f["doc"] == "docs/d.md" and "could not be parsed" in f["detail"]]
+    assert len(bad) == 1 and bad[0]["severity"] == "P2", report["findings"]
+
+
+def test_a_marker_inside_a_generated_region_is_never_rewritten(audit_repo, capsys):
+    """The proximity guard compares the FIRST generated line with the H1, which
+    says nothing about a marker further down inside a block that starts later.
+    `stamp` would replace it in place, report a --verify successful, and the
+    renderer would discard that provenance on its next run."""
+    body = ("# G\n\nhand written prose\n\n<!-- inventory:x:start -->\n"
+            "**Last reviewed:** 2026-01-01 · **Owner:** TBD\nrendered\n"
+            "<!-- inventory:x:end -->\n")
+    (audit_repo / "gen" / "G.md").write_text(body)
+    _audit(audit_repo, "--stamp")
+    report = json.loads(capsys.readouterr().out)
+    assert [s for s in report["stamped"] if s["doc"] == "gen/G.md"] == [], report["stamped"]
+    assert (audit_repo / "gen" / "G.md").read_text() == body
+    assert [f for f in report["findings"]
+            if f["doc"] == "gen/G.md" and "inside a generated region" in f["detail"]]
+
+
+# ── a cue belongs to a citation, not to a line ─────────────────────────────
+
+def test_a_citation_the_prose_calls_closed_is_not_reported_as_live_work():
+    """docs/product/12-PR-ISSUE-TRACEABILITY.md:48 says three stocks records
+    "are closed as not planned with the work still open in solyra". The
+    line-level cue applied "still open" to every citation on the line and
+    reported truthful traceability history as stale documentation."""
+    line = ("after the split, [#683](" + U.format("stocks", 683) + ") moved to "
+            "[solyra#26](" + U.format("solyra", 26) + "); all stocks records are "
+            "closed as not planned with the work still open in solyra.")
+    states = {"stocks": {683: {"state": "closed", "reason": "not_planned", "kind": "ISSUE"}},
+              "solyra": {26: {"state": "open", "reason": "", "kind": "ISSUE"}}}
+    assert m.check_closed_issues("d.md", line, states) == []
+
+
+def test_a_genuine_blocker_is_still_reported():
+    """The suppression is deliberately narrow: only prose that explicitly
+    settles a reference silences it, so it can remove a false finding and
+    never a true one."""
+    line = f"| Blocking issues | [#861]({U.format('stocks', 861)}) |"
+    out = m.check_closed_issues("d.md", line, STATES)
+    assert len(out) == 1 and out[0]["severity"] == "P1", out
+
+
+def test_the_clause_splitter_does_not_cut_inside_a_url():
+    """Every citation IS a URL full of dots, so splitting the raw line cuts
+    each clause inside `github.com` and the prose around the citation -- the
+    only thing being asked about -- falls outside it. Measured on the real
+    line 48 before this: #683 was still reported while #685 and #868 were
+    correctly suppressed, which is the tell that the window was wrong rather
+    than the rule."""
+    line = ("moved to [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) "
+            "and canonical [#868](https://github.com/TeneikaAskew/stocks/issues/868) "
+            "is still open")
+    i = line.index("https://github.com/TeneikaAskew/stocks")
+    assert "moved to" in m.citation_clause(line, i, i + 50)
+
+
+def test_the_real_traceability_line_reports_nothing(monkeypatch):
+    """The line Codex cited, through the real check rather than a fixture."""
+    doc = "docs/product/12-PR-ISSUE-TRACEABILITY.md"
+    path = m.REPO / doc
+    if not path.exists():
+        pytest.skip("not this checkout")
+    line = path.read_text(encoding="utf-8").split("\n")[47]
+    if "closed as not planned" not in line:
+        pytest.skip("the cited line has moved; the unit tests above still pin the rule")
+    states = {
+        "stocks": {n: {"state": "closed", "reason": "not_planned", "kind": "ISSUE"}
+                   for n in (683, 685, 868)},
+        "solyra": {n: {"state": "open", "reason": "", "kind": "ISSUE"} for n in (26, 27, 28)},
+    }
+    assert m.check_closed_issues(doc, line, states) == []
+
+
+def test_the_clause_is_bounded_by_the_citation_not_the_sentence():
+    line = "Blocked by A; [#861](" + U.format("stocks", 861) + ") is still open."
+    assert "Blocked by A" not in m.citation_clause(line, line.index("[#861]"), len(line))
+
+
+# ── the delivery audit answers to its own flag ─────────────────────────────
+
+def test_a_null_conclusion_does_not_shift_the_columns(monkeypatch, tmp_path):
+    """A queued or in-progress run has a null conclusion, so its TSV row BEGINS
+    with a tab. Stripping the whole response removes that tab from the first
+    row and every column shifts left, so the timestamp reads as the conclusion
+    and the run is reported as a failure concluding "2026-09-18T..."."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
+    runs = "\t2026-09-18T06:00:00Z\tschedule\t\nsuccess\t2026-09-17T06:00:00Z\tschedule\t\n"
+    monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
+    out = m.check_owning_job("2026-09-18")
+    assert [f for f in out if "2026-09-18T06:00:00Z" in f["detail"]] == [], out
+
+
+def test_the_owning_job_check_is_not_disabled_by_the_issues_snapshot(audit_repo):
+    """Keying the Class A delivery audit off an unrelated flag meant an offline
+    issue run reported Class A clean however badly the refresh was failing."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")
+    calls = []
+    real = m.run
+
+    def fake_run(cmd, **kw):
+        joined = " ".join(cmd)
+        calls.append(joined)
+        # Let the local git reads through; only the GitHub calls are faked, so
+        # the run reaches the delivery audit instead of aborting before it.
+        if cmd[0] == "git":
+            return real(cmd, **kw)
+        return ""
+
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(m, "run", fake_run)
+        try:
+            m.main(["--json", "--date", "2026-09-18",
+                    "--issues-snapshot", str(audit_repo / "issues.json")])
+        except Exception:
+            pass
+    assert any("actions/workflows" in c for c in calls), calls[-5:]
+
+
+def test_the_owning_job_check_can_still_be_turned_off(audit_repo):
+    """It needs the GitHub API, so an offline run has to be able to skip it --
+    just not as a side effect of an unrelated flag."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")
+    calls = []
+    real = m.run
+
+    def fake_run(cmd, **kw):
+        calls.append(" ".join(cmd))
+        return real(cmd, **kw) if cmd[0] == "git" else ""
+
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(m, "run", fake_run)
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json")])
+    assert not [c for c in calls if "actions/workflows" in c], calls
 
 
 # ── anchors, and the links that pointed at headings nobody has ─────────────
