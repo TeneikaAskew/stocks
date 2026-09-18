@@ -215,7 +215,10 @@ ISSUE_URL_RE = re.compile(
 # the pattern did not match at all, so a missing target reported clean rather
 # than dead. Raised on the Node twin (solyra#69).
 MD_LINK_RE = re.compile(
-    r"\[[^\]]*\]\((?P<target>[^)#\s]*)(?:#(?P<frag>[^)\s]+))?"
+    # One level of BALANCED parentheses in the destination: `guide(v2).md` is a
+    # valid local link, and stopping at the first `)` validated `guide(v2` and
+    # called a tracked file dead.
+    r"\[[^\]]*\]\((?P<target>(?:[^()#\s]|\([^()\s]*\))*)(?:#(?P<frag>[^)\s]+))?"
     r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)""")
 # Reference-style Markdown, both halves. The definition's label may not open
 # with `^`: that is a footnote, which defines a note rather than a destination.
@@ -289,10 +292,16 @@ def heading_anchors(text: str) -> set[str]:
     for i, line in enumerate(lines):
         if i in fenced:
             continue
+        # Setext (`Title` over `===` or `---`) renders as a heading and
+        # GitHub exposes its anchor, but an ATX-only scan recorded none -- so a
+        # valid link to one was emitted as a gating dead-anchor finding.
+        setext = (line.strip() and not line.lstrip().startswith("#")
+                  and i + 1 < len(lines) and (i + 1) not in fenced
+                  and re.fullmatch(r" {0,3}(=+|-{2,})\s*", lines[i + 1] or ""))
         m = _HEADING_RE.match(line)
-        if not m:
+        if not (m or setext):
             continue
-        base = heading_slug(m.group(1))
+        base = heading_slug(line.strip() if setext else m.group(1))
         n = seen.get(base, 0)
         slug = base if n == 0 else f"{base}-{n}"
         while slug in out:
@@ -742,6 +751,14 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             # walks past the AuditError handler, so the CLI printed a traceback
             # and exited 1 -- the status it documents for findings. The Node
             # twin already made this split.
+            if not spec[5:]:
+                # `re.compile("")` succeeds and matches EVERY line, so the
+                # region map called the whole document generated and valid:
+                # the hand-written complement suppressed, stamping disabled,
+                # every content finding routed to the renderer.
+                raise AuditError(
+                    f"registry region `{spec}` has no pattern; an empty one matches every "
+                    "line and would claim the entire document as generated")
             try:
                 pat = re.compile(spec[5:])
             except re.error as exc:
@@ -928,7 +945,7 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     # as one ended the search early, so an existing marker below the fence was
     # reported missing and --stamp inserted a second one above it, leaving
     # contradictory provenance in the document.
-    fenced = fenced_lines(lines)
+    fenced = fenced_lines(lines) | commented_lines(lines)
     stop = len(lines)
     for j in range(h1 + 1, min(h1 + 1 + limit, len(lines))):
         if j not in fenced and lines[j].startswith("#"):
@@ -1622,7 +1639,8 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     # bracketed prose in this corpus cannot be told apart from one.
     ref_defs: dict[str, tuple[str, int]] = {}
     for n, line in enumerate(lines, 1):
-        if n - 1 in fenced:
+        if n - 1 in fenced or (n - 1) in commented and any(
+                a == 0 for a, _ in commented[n - 1]):
             continue
         rm = REF_DEF_RE.match(line)
         # The FIRST definition wins, as Markdown renders it. Overwriting with
@@ -1928,10 +1946,14 @@ def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE,
                               "created": parts[3], "title": parts[4]})
         if len(rows) < page_size:
             break
-        delivered = max((pr["merged"] for pr in owned
-                         if pr["merged"] and delivery_re.search(pr["title"])), default="")
-        pending = [pr["created"] for pr in owned if not pr["merged"]]
-        if delivered and all(created < delivered for created in pending):
+        # The SAME rule the reporting uses. Comparing a creation time against
+        # a merge time here bypassed the generation comparison entirely, so the
+        # walk could stop on an older-generation delivery while a newer,
+        # unmerged refresh sat on a later page and was never read.
+        deliveries = [pr for pr in owned
+                      if pr["merged"] and delivery_re.search(pr["title"])]
+        pending = [pr for pr in owned if not pr["merged"]]
+        if deliveries and all(superseded(pr, deliveries) for pr in pending):
             break
     return owned
 
@@ -2117,6 +2139,41 @@ def _refresh_generation(title: str) -> str:
     return f"{m.group(1)}-{m.group(2)}" if m else ""
 
 
+def superseded(pr: dict, deliveries: list[dict]) -> bool:
+    """Has a later refresh made this attempt history?
+
+    Per delivery, because the two facts that matter live on the same record.
+    A delivery supersedes when it is a NEWER generation, or the same
+    generation merged after this attempt was opened.
+
+    Both halves are load-bearing and each was learned from a case:
+
+    * Generation alone is wrong. #1060 (`refresh: 2026-09`, opened 09-08) is
+      not superseded by #953 (`refresh: 2026-09`, merged 09-02): a September
+      refresh opened AFTER a September refresh merged is a re-attempt, and its
+      being unmerged is the thing worth reporting.
+    * Time alone is wrong. #900 (`refresh: 2026-08`, merged 09-20) does not
+      supersede #1060 either: August's output cannot establish that
+      September's documents landed.
+
+    A repair attempt (`Fix: Monthly architecture doc refresh failed`) names no
+    generation, so there is nothing to compare but time -- the case the
+    supersede rule was added for (#963/#1012/#1021).
+
+    Shared with the PR walk on purpose: a walk that stops on a different rule
+    from the one that reports can stop before the PR it would report.
+    """
+    gen = _refresh_generation(pr["title"])
+    for d in deliveries:
+        d_gen = _refresh_generation(d["title"])
+        if gen and d_gen:
+            if d_gen > gen or (d_gen == gen and d["merged"] > pr["created"]):
+                return True
+        elif d["merged"] and d["merged"] > pr["created"]:
+            return True
+    return False
+
+
 def check_owning_job(today: str) -> list[dict]:
     """Did the job that owns the Class A docs actually deliver?
 
@@ -2168,26 +2225,13 @@ def check_owning_job(today: str) -> list[dict]:
     # title has no generation cannot supersede anything.
     deliveries = [pr for pr in owned_prs
                   if pr["merged"] and delivery_re.search(pr["title"])]
-    delivered_gen = max((g for g in (_refresh_generation(pr["title"]) for pr in deliveries)
-                         if g), default="")
-    delivered_at = max((pr["merged"] for pr in deliveries), default="")
     # Filter first, THEN limit. Slicing the raw list meant six newer merged
     # maintenance PRs -- which the attempt pattern is deliberately broad enough
     # to match, and which never contribute to the strict delivery set -- could
     # push an older unsuperseded open refresh PR out of view, so the audit
     # reported no delivery problem while that refresh sat unmerged.
-    def _superseded(pr: dict) -> bool:
-        gen = _refresh_generation(pr["title"])
-        if gen:
-            # Both sides name a month: compare those, and nothing else.
-            return bool(delivered_gen and gen <= delivered_gen)
-        # A repair attempt (`Fix: Monthly architecture doc refresh failed`)
-        # names no generation, so there is nothing to compare but time. It is
-        # history once ANY delivery merged after it was opened -- which is the
-        # case the supersede rule was added for (#963/#1012/#1021).
-        return bool(delivered_at and pr["created"] < delivered_at)
-
-    actionable = [pr for pr in owned_prs if not pr["merged"] and not _superseded(pr)]
+    actionable = [pr for pr in owned_prs
+                  if not pr["merged"] and not superseded(pr, deliveries)]
     for pr in actionable[:6]:
         age = (datetime.date.fromisoformat(today)
                - datetime.date.fromisoformat(pr["created"][:10])).days
@@ -2205,7 +2249,18 @@ def check_owning_job(today: str) -> list[dict]:
         path = REPO / doc
         if not path.exists():
             continue
-        stamps = GENERATED_RE.findall(path.read_text(encoding="utf-8", errors="replace"))
+        body = path.read_text(encoding="utf-8", errors="replace")
+        # Not from a fenced example or an HTML comment. A scan of the whole
+        # document let any `Generated YYYY-MM-DD` in sample output stand in for
+        # a missing footer, so removing the real stamp while keeping a recent
+        # example passed the freshness check with no production date at all.
+        # Narrower than "the declared provenance location", which this module
+        # does not model; it removes the non-rendered sources, which is the
+        # case reported.
+        body_lines = body.split("\n")
+        skip = fenced_lines(body_lines) | commented_lines(body_lines)
+        stamps = [d for i, line in enumerate(body_lines) if i not in skip
+                  for d in GENERATED_RE.findall(line)]
         if not stamps:
             # Silently skipping this is the same clean-run-on-no-evidence the
             # best-effort artifact check already refuses. For 05-a, 05-c and
@@ -2351,8 +2406,15 @@ def main(argv: list[str] | None = None) -> int:
     # satisfy a link is the bug is_tracked_dir was written to close.
     staged = {p for p in run(["git", "diff", "--cached", "--name-only",
                               "--diff-filter=A"]).strip().split("\n") if p}
-    if staged:
-        tracked |= staged
+    # And a DELETION, staged or not, leaves it. Keeping a deleted path in
+    # `tracked` let a surviving document link to an asset that is gone and
+    # pass, let a deleted declared code path satisfy the registry check, and --
+    # when the deleted path was itself a document -- aborted the whole audit on
+    # the working-tree read instead.
+    deleted = {p for p in run(["git", "diff", "--name-only", "--diff-filter=D",
+                               "HEAD"]).strip().split("\n") if p}
+    if staged or deleted:
+        tracked = (tracked | staged) - deleted
         docs = document_set(tracked, registry)
     untracked = [p for p in run(["git", "ls-files", "--others", "--exclude-standard",
                                  "--", "*.md"]).strip().split("\n") if p]
@@ -2477,7 +2539,14 @@ def main(argv: list[str] | None = None) -> int:
                 f["severity"] == "P1" for f in reg_findings)
             stampable = map_valid and prompt is None and bool(unowned_spans(text, owned))
 
-        content = check_closed_issues(doc, text, states) + check_dead_links(doc, text, tracked)
+        # A registered `.drawio` is XML. Scanning it as Markdown turned a
+        # diagram label reading `[x](missing.md)` into a gating dead-link
+        # finding for a construct nothing renders. Region, marker and delivery
+        # checks still apply to these artefacts; only the MARKDOWN content
+        # checks are skipped.
+        content = ((check_closed_issues(doc, text, states)
+                    + check_dead_links(doc, text, tracked))
+                   if doc.endswith(".md") else [])
         if cls == "A":
             for f in content:
                 f["region"] = region_of(f.get("line", 0), owned, prompt)

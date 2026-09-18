@@ -2109,15 +2109,21 @@ def test_the_pr_lookup_stops_once_every_pending_refresh_is_superseded(monkeypatc
 
 
 def test_the_pr_lookup_reads_on_while_a_pending_refresh_postdates_every_merge(monkeypatch):
-    """The pages are ordered by CREATION time; `delivered` is a MERGE time.
+    """The walk must not stop while an unsuperseded refresh is still pending.
 
-    A refresh PR created in August can merge after one created in September,
-    so the newest delivery can sit on a page the old walk never reached -- it
-    stopped at the first merged refresh it saw. The attempts that merge
-    superseded were then reported as live failures.
+    Page 1 holds #1060 (open, `refresh: 2026-09`, created 09-08) and #953
+    (`refresh: 2026-09`, merged 09-02) -- which does NOT supersede it, because
+    a September refresh opened AFTER a September refresh merged is a
+    re-attempt. So the walk reads on.
 
-    Page 1: #1060 open, created 09-08, and #953 merged 09-02 -- which does NOT
-    supersede it. Page 2: #900, created 08-01 but merged 09-20, which does."""
+    What #900 on page 2 does NOT do is supersede it either, and that changed in
+    round 13: it is `refresh: 2026-08`, and an August delivery cannot establish
+    that September's documents landed, however late it merged. Before that this
+    case asserted #1060 was silenced, on a pure creation-versus-merge
+    comparison -- and the round-13 generation fix kept it green for the WRONG
+    reason, because delivered_gen was a max over ALL deliveries and #953 put
+    2026-09 into it. Making supersession per-delivery is what exposed that.
+    """
     pages = ["\n".join([
         "1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09",
         "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\t"
@@ -2129,8 +2135,8 @@ def test_the_pr_lookup_reads_on_while_a_pending_refresh_postdates_every_merge(mo
     monkeypatch.setattr(m, "run", fake)
     monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
     out = m.check_owning_job("2026-09-21")
-    assert fake.calls["n"] == 2, "stopped before the delivery that superseded #1060"
-    assert not [f for f in out if "1060" in f["detail"]], out
+    assert fake.calls["n"] == 2, "stopped while an unsuperseded refresh was pending"
+    assert [f for f in out if "1060" in f["detail"]], out
 
 
 def _owning_doc(tmp_path, monkeypatch, body):
@@ -2720,17 +2726,21 @@ def test_a_history_with_a_delivering_run_still_returns(monkeypatch):
     assert len(m.fetch_owning_runs(page_size=2)) == 1
 
 
-def test_a_document_deleted_from_the_working_tree_is_an_audit_error(audit_repo):
-    """The list comes from HEAD and the contents from the working tree, so an
-    ordinary staged deletion raised FileNotFoundError: a traceback and exit 1,
-    the status reserved for documentation findings."""
+def test_a_document_deleted_from_the_working_tree_is_simply_gone(audit_repo, capsys):
+    """Round 12 made this an AuditError, because the list came from HEAD and
+    the contents from the working tree so an ordinary deletion raised
+    FileNotFoundError. Round 17 went further and removed deleted paths from the
+    audited tree, which is the better answer: a deletion is a normal edit, not
+    a reason the audit cannot run. The guard it replaced still stands for a
+    document that IS in the tree and cannot be read."""
     (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
     subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
     subprocess.run(["git", "commit", "-qm", "doc"], cwd=audit_repo, check=True)
     (audit_repo / "docs" / "d.md").unlink()
-    with pytest.raises(m.AuditError, match="cannot be read from the working tree"):
-        m.main(["--date", "2026-09-18", "--no-owning-job-check",
-                "--issues-snapshot", str(audit_repo / "issues.json")])
+    m.main(["--date", "2026-09-18", "--json", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    assert [f for f in report["findings"] if f["doc"] == "docs/d.md"] == [], report["findings"]
 
 
 def test_a_cited_path_is_checked_on_any_extension_the_tree_tracks():
@@ -3241,3 +3251,151 @@ def test_the_shipped_registry_declares_no_rule_that_covers_nothing():
     inert = [f for f in m.check_registry_paths(tracked, registry)
              if "covers nothing" in f["detail"]]
     assert inert == [], inert
+
+
+# ── round 17 ────────────────────────────────────────────────────────────────
+
+
+def test_a_commented_heading_does_not_bound_the_marker_window():
+    """Treating it as the next section excluded the real marker from the
+    search, so the audit reported it missing and --stamp inserted a second one
+    above the comment."""
+    lines = ["# T", "<!--", "# Hidden", "-->", "**Last reviewed:** 2026-01-01", "body"]
+    assert 4 in m.marker_window(lines)
+    assert [i for i, _ in m.find_markers(lines)] == [4]
+
+
+def test_a_setext_heading_offers_an_anchor():
+    """GitHub renders it and exposes the anchor; an ATX-only scan recorded none,
+    so a valid link to it was a gating dead-anchor finding."""
+    assert sorted(m.heading_anchors("Install\n=======\n\nOther\n-------\n")) == \
+        ["install", "other"]
+
+
+def test_a_table_delimiter_is_not_a_setext_heading():
+    assert sorted(m.heading_anchors("| a |\n|---|\n")) == []
+
+
+def test_a_destination_with_balanced_parentheses_resolves():
+    """Stopping at the first `)` validated `guide(v2` and called a tracked file
+    dead."""
+    assert m.check_dead_links("d.md", "# T\n\n[g](guide(v2).md)\n",
+                              {"guide(v2).md"}) == []
+
+
+def test_a_missing_parenthesised_destination_is_still_dead():
+    out = m.check_dead_links("d.md", "# T\n\n[g](gone(v2).md)\n", {"guide(v2).md"})
+    assert len(out) == 1, out
+
+
+def test_an_empty_line_region_is_refused():
+    """`re.compile("")` matches EVERY line, so the region map called the whole
+    document generated and valid: the hand-written complement suppressed,
+    stamping disabled, every finding routed to the renderer."""
+    with pytest.raises(m.AuditError, match="has no pattern"):
+        m.owned_lines("# T\nbody\n", ["line:"])
+
+
+def test_a_commented_reference_definition_is_not_a_definition():
+    """The inline and backticked passes mask commented spans; this separate
+    pass did not, so a non-rendered definition still produced a gating finding."""
+    # Multi-line, so the definition sits at column 0 and REF_DEF_RE does match
+    # it -- the single-line form never matched, so a test using it passed
+    # whatever the comment handling did.
+    doc = "# T\n\nSee [g][guide].\n\n<!--\n[guide]: deleted.md\n-->\n"
+    assert m.check_dead_links("d.md", doc, {"src/a.py"}) == []
+
+
+def test_a_generated_date_in_an_example_is_not_provenance(audit_repo, monkeypatch):
+    """A whole-document scan let any `Generated YYYY-MM-DD` in sample output
+    stand in for a missing footer, so removing the real stamp while keeping a
+    recent example passed the freshness check with no production date."""
+    # Through check_owning_job, because recomputing the filter in the test
+    # proves only that the expression works, not that anything calls it.
+    (audit_repo / "docs" / "arch.md").write_text(
+        "# A\n\n```\nGenerated 2026-09-17\n```\n\n<!-- Generated 2026-09-16 -->\n")
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": ["docs/arch.md"]})
+    monkeypatch.setattr(m, "run", lambda cmd, **k: (
+        "success\t2026-09-18T00:00:00Z\tschedule\t\n" if "runs?" in " ".join(cmd) else ""))
+    out = [f for f in m.check_owning_job("2026-09-18") if f["doc"] == "docs/arch.md"]
+    assert [f["detail"] for f in out] == [
+        "no `Generated <date>` stamp, so nothing in the document shows when the "
+        "owning job produced it"], out
+
+
+def test_a_registered_non_markdown_artifact_skips_the_markdown_checks(audit_repo, capsys):
+    """A registered `.drawio` is XML. Scanning it as Markdown turned a diagram
+    label reading `[x](missing.md)` into a gating dead-link finding for a
+    construct nothing renders."""
+    (audit_repo / "docs" / "Arch.drawio").write_text(
+        '<mxfile><root><mxCell value="[x](missing.md)"/></root></mxfile>\n')
+    (audit_repo / "docs" / "DOC_REGISTRY.md").write_text(
+        (audit_repo / "docs" / "DOC_REGISTRY.md").read_text()
+        + "| D | docs/Arch.drawio | src |  |\n")
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "art"], cwd=audit_repo, check=True)
+    m.main(["--date", "2026-09-18", "--json", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    assert [f for f in report["findings"]
+            if f["doc"] == "docs/Arch.drawio" and f["check"] == "dead-link"] == []
+
+
+def test_a_staged_deletion_leaves_the_audited_tree(audit_repo, capsys):
+    """Keeping a deleted path in `tracked` let a surviving document link to an
+    asset that is gone and pass."""
+    (audit_repo / "docs" / "target.md").write_text("# Target\n\nbody\n")
+    (audit_repo / "docs" / "source.md").write_text("# Source\n\nSee [t](target.md).\n")
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "docs"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "rm", "-q", "docs/target.md"], cwd=audit_repo, check=True)
+    m.main(["--date", "2026-09-18", "--json", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    assert [f for f in report["findings"] if f["check"] == "dead-link"], report["findings"]
+
+
+@pytest.mark.parametrize("delivery,expected", [
+    # Same generation merged BEFORE the attempt opened: a re-attempt, live.
+    (("2026-09", "2026-09-02T00:00:00Z"), False),
+    # Older generation merged after: says nothing about this generation.
+    (("2026-08", "2026-09-20T00:00:00Z"), False),
+    # Newer generation: this attempt is history.
+    (("2026-10", "2026-10-02T00:00:00Z"), True),
+    # Same generation merged after the attempt opened: delivered.
+    (("2026-09", "2026-09-20T00:00:00Z"), True),
+])
+def test_supersession_needs_both_generation_and_time(delivery, expected):
+    """Each half was learned from a case, and the per-delivery form is what
+    exposed that the round-13 generation fix had been passing an existing test
+    for the wrong reason -- delivered_gen was a max over ALL deliveries."""
+    gen, merged = delivery
+    pr = {"num": "1060", "title": "Monthly architecture doc refresh: 2026-09",
+          "merged": "", "created": "2026-09-08T00:00:00Z"}
+    d = [{"num": "d", "title": f"Monthly architecture doc refresh: {gen}",
+          "merged": merged, "created": "2026-01-01T00:00:00Z"}]
+    assert m.superseded(pr, d) is expected
+
+
+def test_the_walk_stops_on_the_same_rule_that_reports(monkeypatch):
+    """A timestamp stop and a generation report can disagree, and when they do
+    the walk ends before the PR the report would name.
+
+    Page 1: #1200 open (`refresh: 2026-10`, created 10-01) and #900 merged
+    (`refresh: 2026-08`, merged 10-05). Under a creation-versus-merge stop the
+    walk ends here -- 10-01 < 10-05 -- while the report says #1200 is NOT
+    superseded, because August's output cannot establish that October's
+    documents landed. The walk must read on."""
+    pages = ["\n".join([
+        "1200\topen\t\t2026-10-01T00:00:00Z\tMonthly architecture doc refresh: 2026-10",
+        "900\tclosed\t2026-10-05T00:00:00Z\t2026-08-01T00:00:00Z\t"
+        "Monthly architecture doc refresh: 2026-08",
+    ] + _filler(1000, 1098)),
+        "800\tclosed\t2026-07-02T00:00:00Z\t2026-07-01T00:00:00Z\t"
+        "Monthly architecture doc refresh: 2026-07"]
+    fake = _pr_pages(pages)
+    monkeypatch.setattr(m, "run", fake)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    out = m.check_owning_job("2026-10-20")
+    assert fake.calls["n"] == 2, "stopped on a rule the report does not use"
+    assert [f for f in out if "1200" in f["detail"]], out
