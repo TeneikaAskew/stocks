@@ -454,6 +454,31 @@ def test_legacy_review_labels_are_recognised(label):
     assert found is not None and found[1]["legacy"] is True
 
 
+def test_an_indented_marker_example_is_not_the_documents_marker():
+    """`line.strip()` before matching threw away the only thing separating a
+    marker from an example of one. A sample in the opening section counted as
+    the marker, suppressed the real missing-marker finding, and --stamp then
+    REPLACED the example with an unindented live marker."""
+    lines = ["# T", "", "Example:", "",
+             "    **Last reviewed:** 2026-01-01 \u00b7 **Owner:** TBD", "", "body"]
+    assert m.find_marker(lines) is None
+
+
+def test_a_fenced_marker_example_is_not_the_documents_marker():
+    lines = ["# T", "", "```",
+             "**Last reviewed:** 2026-01-01 \u00b7 **Owner:** TBD", "```", "", "body"]
+    assert m.find_marker(lines) is None
+
+
+def test_a_real_unindented_marker_is_still_found():
+    lines = ["# T", "", "**Last reviewed:** 2026-01-01 \u00b7 **Owner:** TBD", "", "body"]
+    assert m.find_marker(lines) is not None
+
+
+def test_fenced_lines_covers_the_fence_and_its_contents():
+    assert m.fenced_lines(["a", "```", "x", "```", "b"]) == {1, 2, 3}
+
+
 def test_generated_footer_is_not_a_review_marker():
     """`Generated <date>` is the refresh job's signature. Treating it as a
     review marker would let a machine stamp stand in for a human review."""
@@ -1170,11 +1195,32 @@ def test_a_document_that_cannot_be_stamped_is_refused_before_any_write(audit_rep
             pytest.skip("running as root: mode 444 is still writable, so the "
                         "pre-flight cannot see it")
         with pytest.raises(m.AuditError, match="not writable"):
-            m.main(["--json", "--date", "2026-09-18",
+            m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
                     "--issues-snapshot", str(audit_repo / "issues.json"), "--stamp"])
     finally:
         (audit_repo / "docs" / "locked.md").chmod(0o644)
     # The refusal comes before the writes, so no other document was touched.
+    assert (audit_repo / "docs" / "d.md").read_text() == before
+
+
+def test_the_unwritable_preflight_runs_as_any_user(audit_repo, monkeypatch):
+    """The chmod version of this test SKIPS as root, so it runs only in CI --
+    and a CI-only test is one I cannot reproduce a failure in locally. That is
+    exactly how the --no-owning-job-check regression reached CI green-looking:
+    the sibling test never executed here. This drives the same guard through
+    main() with os.access stubbed, so it binds on every machine.
+    """
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    (audit_repo / "docs" / "locked.md").write_text("# L\n\nbody\n")
+    _commit(audit_repo, "tree")
+    before = (audit_repo / "docs" / "d.md").read_text()
+    real_access = os.access
+    monkeypatch.setattr(
+        os, "access",
+        lambda p, mode, **kw: False if str(p).endswith("locked.md") else real_access(p, mode))
+    with pytest.raises(m.AuditError, match="not writable"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json"), "--stamp"])
     assert (audit_repo / "docs" / "d.md").read_text() == before
 
 
@@ -1199,7 +1245,7 @@ def test_a_write_that_fails_mid_stamp_says_what_was_already_written(audit_repo, 
 
     monkeypatch.setattr(pathlib.Path, "write_text", explode)
     with pytest.raises(m.AuditError, match="were already stamped"):
-        m.main(["--json", "--date", "2026-09-18",
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
                 "--issues-snapshot", str(audit_repo / "issues.json"), "--stamp"])
 
 
@@ -1209,7 +1255,7 @@ def test_a_snapshot_that_cannot_be_written_is_exit_two(audit_repo):
     (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
     _commit(audit_repo, "tree")
     with pytest.raises(m.AuditError, match="could not be written"):
-        m.main(["--json", "--date", "2026-09-18",
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
                 "--issues-snapshot", str(audit_repo / "issues.json"),
                 "--write-issues-snapshot", str(audit_repo / "nodir" / "out.json")])
 
@@ -1287,7 +1333,7 @@ def test_a_verify_target_already_carrying_the_review_is_accepted(audit_repo):
     # Re-run without a new commit, so the head SHA and therefore the rendered
     # marker are identical and `stamp()` returns `unchanged` rather than
     # `updated`. That is the action this test exists to keep accepted.
-    assert m.main(["--json", "--date", "2026-09-18",
+    assert m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
                    "--issues-snapshot", str(audit_repo / "issues.json"),
                    "--stamp", "--verify", "docs/d.md"]) in (0, 1)
     assert (audit_repo / "docs" / "d.md").read_text() == first
@@ -1343,7 +1389,7 @@ def test_a_whole_run_with_an_unreadable_snapshot_is_exit_two(audit_repo):
     (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
     _commit(audit_repo, "tree")
     with pytest.raises(m.AuditError, match="could not be read"):
-        m.main(["--json", "--date", "2026-09-18",
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
                 "--issues-snapshot", str(audit_repo / "nope.json")])
 
 
@@ -1853,6 +1899,9 @@ def test_the_owning_job_check_is_not_disabled_by_the_issues_snapshot(audit_repo)
     with _pytest.MonkeyPatch.context() as mp:
         mp.setattr(m, "run", fake_run)
         try:
+            # Deliberately WITHOUT --no-owning-job-check: the point of this
+            # test is that --issues-snapshot alone no longer suppresses the
+            # delivery audit. `run` is faked, so no network is touched.
             m.main(["--json", "--date", "2026-09-18",
                     "--issues-snapshot", str(audit_repo / "issues.json")])
         except Exception:
@@ -1896,6 +1945,14 @@ def test_github_anchor_rule_does_not_collapse_separator_runs():
 def test_repeated_headings_are_numbered_as_github_numbers_them():
     out = m.heading_anchors("# Notes\n\n## Notes\n\n## Notes\n")
     assert out == {"notes", "notes-1", "notes-2"}
+
+
+def test_numbering_does_not_collide_with_a_naturally_suffixed_heading():
+    """A per-base counter emits `notes-1` twice and never `notes-2`, which is
+    what GitHub gives the third heading -- so a valid link to it reads as dead.
+    A false finding, which is worse than a missed one."""
+    assert m.heading_anchors("## Notes\n## Notes-1\n## Notes\n") == {
+        "notes", "notes-1", "notes-2"}
 
 
 def test_a_link_to_a_heading_that_does_not_exist_is_reported(tmp_path, monkeypatch):
@@ -2245,7 +2302,7 @@ def test_plain_output_names_the_region_and_its_owner(audit_repo, capsys):
         "# G\n\nprose\n\n<!-- inventory:x:start -->\nsee `scripts/gone.py`\n"
         "<!-- inventory:x:end -->\n")
     _commit(audit_repo, "tree")
-    m.main(["--date", "2026-09-18", "--issues-snapshot", str(audit_repo / "issues.json")])
+    m.main(["--date", "2026-09-18", "--no-owning-job-check", "--issues-snapshot", str(audit_repo / "issues.json")])
     out = capsys.readouterr().out
     line = [row for row in out.split("\n") if "gone.py" in row]
     assert len(line) == 1, out
@@ -2259,7 +2316,7 @@ def test_plain_output_names_the_prompt_for_a_model_prose_finding(audit_repo, cap
     reg.write_text(reg.read_text().replace("| A | gen/*.md | | inventory:* |",
                                            "| A | gen/*.md | | prose:scripts/tool.py |"))
     _commit(audit_repo, "tree")
-    m.main(["--date", "2026-09-18", "--issues-snapshot", str(audit_repo / "issues.json")])
+    m.main(["--date", "2026-09-18", "--no-owning-job-check", "--issues-snapshot", str(audit_repo / "issues.json")])
     out = capsys.readouterr().out
     line = [row for row in out.split("\n") if "gone.py" in row]
     assert len(line) == 1, out

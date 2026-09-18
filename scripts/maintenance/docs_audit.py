@@ -203,14 +203,26 @@ def heading_slug(heading: str) -> str:
 
 
 def heading_anchors(text: str) -> set[str]:
-    """Every anchor a document offers, duplicates numbered as GitHub does."""
+    """Every anchor a document offers, duplicates numbered as GitHub does.
+
+    The suffix ADVANCES until it is unused rather than following a per-base
+    count, because GitHub disambiguates against everything already assigned.
+    `## Notes` / `## Notes-1` / `## Notes` gives `notes-1` twice under a
+    counter and never emits `notes-2`, which is what GitHub gives the third --
+    so a valid link to it reads as dead, which is a FALSE finding and the
+    direction that makes an audit untrustworthy rather than incomplete.
+    """
     seen: dict[str, int] = {}
     out: set[str] = set()
     for m in _HEADING_RE.finditer(text):
         base = heading_slug(m.group(1))
         n = seen.get(base, 0)
+        slug = base if n == 0 else f"{base}-{n}"
+        while slug in out:
+            n += 1
+            slug = f"{base}-{n}"
         seen[base] = n + 1
-        out.add(base if n == 0 else f"{base}-{n}")
+        out.add(slug)
     return out
 
 
@@ -854,6 +866,22 @@ def is_future_date(date: str, today: str) -> bool:
     return is_calendar_date(date) and date > today
 
 
+_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+
+
+def fenced_lines(lines: list[str]) -> set[int]:
+    """Indices inside a fenced code block, which are examples, not content."""
+    out: set[int] = set()
+    open_fence = False
+    for i, line in enumerate(lines):
+        if _FENCE_RE.match(line):
+            open_fence = not open_fence
+            out.add(i)
+        elif open_fence:
+            out.add(i)
+    return out
+
+
 def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     """Every marker in the window, not just the first.
 
@@ -865,7 +893,17 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     in place -- a document that states two different review claims and passes.
     """
     out = []
+    fenced = fenced_lines(lines)
     for i in marker_window(lines):
+        # An INDENTED marker-shaped line is an example of a marker, not the
+        # document's provenance -- and stripping before matching threw away
+        # the only thing that distinguishes them. A sample in the opening
+        # section counted as the marker, suppressed the real missing-marker
+        # finding, and `--stamp` then REPLACED the example with an unindented
+        # live marker: a write straight through this module's one hard rule.
+        # Fenced blocks are excluded for the same reason.
+        if i in fenced or (lines[i] and lines[i][0].isspace()):
+            continue
         line = lines[i].strip()
         m = MARKER_RE.match(line)
         if m:
