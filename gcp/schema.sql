@@ -1,9 +1,20 @@
 -- Cloud SQL (PostgreSQL 15) schema for the trading system.
 --
--- Run via:
---   gcloud sql connect INSTANCE_NAME --user=trading_user --database=trading < gcp/schema.sql
--- or:
---   psql "host=... dbname=trading user=trading_user" < gcp/schema.sql
+-- Apply with the applier, not with psql:
+--   python -m gcp.apply_schema
+-- In production this runs as the `apply-schema-migrations` Cloud Run Job,
+-- fired by the `apply-schema-on-change` trigger on any push to main that
+-- touches this file.
+--
+-- `psql -f` / `gcloud sql connect < ` DO still work and are what the
+-- ephemeral integration-test database uses, but they are not equivalent:
+-- the `-- ATOMIC-BEGIN` / `-- ATOMIC-END` markers below are ordinary
+-- comments to psql, so every statement commits on its own. The applier
+-- runs each marked group in ONE transaction, and three groups in this
+-- file depend on that for correctness (see the watchlist_history group
+-- for the failure mode). Against a populated database, prefer the
+-- applier; psql against the live instance is a fallback that silently
+-- drops the grouping.
 
 -- ─────────────────────────────────────────────────────────
 -- MARKET DATA
@@ -2321,6 +2332,377 @@ BEGIN
            AND removed_at IS NULL;
     END IF;
 END $$;
+
+
+-- ── watchlist_history: immutable membership log ──────────────────────
+-- `watchlists` is PRIMARY KEY (user_id, ticker), so it holds CURRENT
+-- state plus a first-add timestamp — not a membership history. Every
+-- re-add path is
+--     ON CONFLICT (user_id, ticker) DO UPDATE SET removed_at = NULL
+-- and none of them touches added_at, so "added Jan, removed Mar,
+-- re-added Jun" reads as present the whole time and a replay of April
+-- wrongly includes the ticker. The evidence is erased, not hidden:
+-- no query against `watchlists` can tell that case from a ticker that
+-- was never removed. That silently changes the analog universe an
+-- INSIGHT_AS_OF replay computes its forward-return statistics over.
+--
+-- This table records every membership transition instead. It is written
+-- ONLY by the trigger below, never by application code: there are three
+-- writers of `watchlists` today (gcp/fetchers/_watchlist.py, which the
+-- platform API delegates to; gcp/discord_interactions/main.py; and
+-- gcp/backfill_ticker.py) plus this file's own `signals` UPDATE and any
+-- ad-hoc SQL. A dual-write in each of them is five places to keep in
+-- step and would silently diverge the first time one is missed or a
+-- fourth writer is added. A trigger fires inside the writer's own
+-- transaction, so history cannot commit apart from the state change it
+-- describes, and a future writer gets it for free.
+-- ATOMIC-BEGIN watchlist history: table + indexes + trigger + seed as one txn
+-- The group starts HERE, at the CREATE TABLE, not at the trigger below.
+-- Every unmarked statement is its own unit and its own transaction
+-- (gcp/apply_schema.py:split_statement_groups), so starting lower would
+-- commit the table and its indexes first and leave a window in which
+-- `watchlist_history` exists while `watchlists` still has no trigger on
+-- it. That window is not bounded by how fast the applier runs: an apply
+-- interrupted there — task timeout, crash — leaves the table committed
+-- and triggerless until someone re-runs it, while production keeps
+-- writing. A remove/re-add inside it erases `added_at` exactly as
+-- before, and the seed below (guarded on "history is empty") would then
+-- reconstruct membership FROM that corrupted state and record it as
+-- fact — the very corruption this table exists to prevent, arriving
+-- through its own migration. Postgres has transactional DDL and nothing
+-- here is CREATE INDEX CONCURRENTLY, so one transaction covers it all.
+--
+-- One transaction is still not enough on its own: BEGIN does not lock
+-- `watchlists`. Locks are taken per statement, so the table stays open to
+-- writers until `CREATE TRIGGER` below reaches it, and the session runs
+-- READ COMMITTED, so the seed at the end of this group sees whatever
+-- committed in the meantime. A remove/re-add landing in that gap is
+-- captured by no trigger (not installed yet) and invisible to the seed
+-- (`watchlists` keeps the original `added_at` on re-add — the erasure
+-- this table exists to stop), so it is recorded as continuous
+-- membership, permanently. Taking the lock as the FIRST statement closes
+-- it. SHARE ROW EXCLUSIVE is not an escalation: it is the mode
+-- `CREATE TRIGGER` itself takes on this table (verified against
+-- Postgres 16 — `pg_locks.mode` reads `ShareRowExclusiveLock`), so this
+-- only moves the acquisition earlier. It blocks writers, not readers,
+-- and only for this group: an empty table, two indexes, two functions
+-- and an 18-row seed.
+-- Wrapped in DO because this file has TWO KINDS of loader with different
+-- transaction semantics, and a bare `LOCK TABLE` only satisfies one.
+-- `gcp/apply_schema.py` runs an ATOMIC group inside one transaction, so a
+-- bare lock is legal there. The `psql -f` loaders treat the ATOMIC markers
+-- as ordinary comments, so every statement gets its own implicit
+-- transaction — and a bare lock there is `ERROR: LOCK TABLE can only be
+-- used in transaction blocks`, which is how CI caught this. A PL/pgSQL
+-- body always executes inside a transaction, so the DO form is valid
+-- under all of them.
+--
+-- Under `apply_schema.py` the lock is held to the end of the group's
+-- transaction — PL/pgSQL does not release locks on block exit (verified
+-- against Postgres 16: `pg_locks` still reports ShareRowExclusiveLock
+-- after the DO block returns). That is the production guarantee this is
+-- for: `apply-schema-on-change` -> `apply-schema-migrations` is the only
+-- path that applies this file to the live database.
+--
+-- Under `psql -f` the lock ends with the DO statement, so it guards
+-- nothing there — but neither does the ATOMIC grouping, so that is not a
+-- gap this wrapper could close. The ATOMIC contract is the applier's
+-- alone, and two tracked scripts still load this file with psql:
+--
+--   .github/workflows/backtest-pipeline.yml — an ephemeral per-run
+--     Postgres, created empty, no concurrent writers, ON_ERROR_STOP=1.
+--     Nothing to guard.
+--   gcp/setup_cloud_sql.sh — provisioning a NEW instance. Every step is
+--     re-runnable ("already exists"), so it CAN be pointed at the live
+--     one; doing that rotates the production database password before it
+--     ever reaches the schema, so the grouping is not what breaks first.
+--
+-- `scripts/cloud_shell/phase2_deploy.sh` was a third until it was moved to
+-- `python -m gcp.apply_schema`. It reached the LIVE instance through
+-- cloud-sql-proxy, which is the one case where losing the grouping has
+-- real consequences, so documenting it was not enough (Codex P2 on
+-- `e3463b3`). Note the header above still offers two hand routes
+-- (`gcloud sql connect ... <`, `psql ... <`) and now says what they drop.
+--
+-- On the remaining psql loaders this group is neither atomic nor locked,
+-- as is every other ATOMIC group in this file. Hand-rolling BEGIN/COMMIT
+-- here is NOT the answer: it would commit the applier's own outer
+-- transaction early. `test_every_psql_loader_of_the_schema_is_accounted_for`
+-- pins the set above so a new one cannot appear unexamined.
+DO $$
+BEGIN
+    LOCK TABLE watchlists IN SHARE ROW EXCLUSIVE MODE;
+END
+$$;
+
+CREATE TABLE IF NOT EXISTS watchlist_history (
+    id            BIGSERIAL     PRIMARY KEY,
+    user_id       VARCHAR(320)  NOT NULL,
+    ticker        VARCHAR(10)   NOT NULL,
+    action        VARCHAR(10)   NOT NULL CHECK (action IN ('add', 'remove')),
+    -- When membership actually changed (added_at / removed_at / NOW()
+    -- on a re-add), NOT when the row was written. As-of resolution
+    -- reads this one.
+    effective_at  TIMESTAMPTZ   NOT NULL,
+    recorded_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- 'seed' = backfilled from `watchlists` when this table was created,
+    -- so it inherits that table's blind spot. 'trigger' = observed live.
+    -- The newest 'seed' row's recorded_at is the horizon before which
+    -- resolution is reported as approximate.
+    origin        VARCHAR(10)   NOT NULL DEFAULT 'trigger'
+                                CHECK (origin IN ('trigger', 'seed')),
+    source        VARCHAR(20)   NULL,
+    -- Surface flags as they stood at the ADD or REMOVE, and only then.
+    -- Not read by the analog universe, which applies no surface filter.
+    --
+    -- This does NOT amount to surface history, and an earlier version of
+    -- this comment claimed it did -- that a future as-of resolution for
+    -- the brief / signal surfaces would need no second migration (Codex
+    -- P2 on `c9637d3`). It would. Moving a ticker between surfaces is an
+    -- UPDATE that changes these flags while membership is unchanged, and
+    -- the trigger deliberately records nothing for it, so the WHEN of a
+    -- flag change is not captured here at all. Answering "was this ticker
+    -- in_brief on date D" needs flag-transition events, which means a
+    -- third `action` value and a resolver that filters to add/remove --
+    -- a contract change, not a column. Until then these columns are a
+    -- snapshot at the membership transition and nothing more.
+    --
+    -- The cost of waiting is real and bounded: flag changes made before
+    -- that lands are not recoverable afterwards. Recorded here rather
+    -- than left implied so the decision is visible.
+    in_brief      BOOLEAN       NULL,
+    in_insight    BOOLEAN       NULL,
+    signals       BOOLEAN       NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_history_asof
+    ON watchlist_history (user_id, ticker, effective_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
+    ON watchlist_history (recorded_at) WHERE origin = 'seed';
+
+-- Still inside the group opened at CREATE TABLE above. The trigger and
+-- the seed must also share a transaction with each other: an apply
+-- interrupted between them would leave the trigger live with the seed
+-- never run, so history would start at the interruption, the
+-- pre-existing rows would be absent, and the next apply would find a
+-- non-empty table and skip the seed permanently.
+CREATE OR REPLACE FUNCTION watchlists_record_membership()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    -- Any timestamp a writer produced with NOW() IS transaction_timestamp():
+    -- fixed when THEIR transaction began, so it can predate an event that
+    -- committed in between and invert the log. Both production removers
+    -- spell it `SET removed_at = NOW()`, so this is the normal case, not an
+    -- exotic one. Reproduced against a live server:
+    --
+    --   13  add     18:16:55.160928   (re-add, committed FIRST)
+    --   14  remove  18:16:54.164695   (removal, written LAST, a second EARLIER)
+    --   resolver -> 'add';  watchlists -> REMOVED
+    --
+    -- A removed ticker reported active, the mirror of the re-add case.
+    -- Equality with transaction_timestamp() identifies exactly the values
+    -- that came from NOW()/CURRENT_TIMESTAMP; anything else the writer
+    -- stated deliberately -- a correction, a backfill, a fixture removing
+    -- as of March -- and that is history, not a clock read, so it is kept.
+    -- Verified both directions in psql: NOW() -> equal, an explicit
+    -- 2026-03-10 -> not equal.
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO watchlist_history
+            (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+        VALUES (NEW.user_id, NEW.ticker, 'add',
+                CASE WHEN NEW.added_at = transaction_timestamp()
+                     THEN clock_timestamp() ELSE NEW.added_at END,
+                NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        IF NEW.removed_at IS NOT NULL THEN
+            INSERT INTO watchlist_history
+                (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+            VALUES (NEW.user_id, NEW.ticker, 'remove',
+                    CASE WHEN NEW.removed_at = transaction_timestamp()
+                         THEN clock_timestamp() ELSE NEW.removed_at END,
+                    NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_OP = 'UPDATE' THEN
+        -- `(user_id, ticker)` is this table's PRIMARY KEY, and Postgres
+        -- permits updating a primary key. That is the one mutation this
+        -- trigger must not interpret. Membership below is keyed on the
+        -- `removed_at IS NULL` predicate, which a key change does not
+        -- move, so such an UPDATE recorded nothing at all: history kept
+        -- an `add` for the OLD key with no `remove` (active forever) and
+        -- never saw the NEW key (never a member). Both answers wrong,
+        -- permanently, in a table that forbids its own correction.
+        --
+        -- Refused rather than recorded, because the intent is genuinely
+        -- ambiguous: a corporate-action rename means one interval that
+        -- should survive, a handoff means one interval closing and
+        -- another opening, and the database cannot tell them apart.
+        -- Writing the wrong reading into an append-only log cannot be
+        -- undone, so the ambiguity is returned to the human. DELETE +
+        -- INSERT expresses the handoff exactly, through branches below
+        -- that already record it correctly and with no ambiguity about
+        -- effective_at -- which is why the message names that route.
+        --
+        -- This rejects nothing any writer does today: all three re-add
+        -- paths are `ON CONFLICT (user_id, ticker) DO UPDATE`, whose SET
+        -- list never contains the conflict target, so OLD and NEW agree.
+        -- The comparison is on VALUES, not on which columns the SET
+        -- names, so `SET ticker = ticker` is correctly a non-event.
+        IF NEW.user_id IS DISTINCT FROM OLD.user_id
+           OR NEW.ticker IS DISTINCT FROM OLD.ticker THEN
+            RAISE EXCEPTION
+                'watchlists row identity is immutable: (%, %) cannot be '
+                'updated to (%, %). Express it as DELETE + INSERT so the '
+                'close and the open are recorded as separate membership '
+                'events.',
+                OLD.user_id, OLD.ticker, NEW.user_id, NEW.ticker;
+        END IF;
+
+        -- `watchlists` may not be edited in ways this append-only log
+        -- cannot follow. Correcting a removal from March 10 to March 12
+        -- changes the source row while history keeps March 10, so
+        -- `resolve_membership_at` reports the ticker ABSENT on March 11
+        -- while `watchlists` now says it was active until the 12th: two
+        -- sources silently disagreeing, which is the shape Rule 3.7.1
+        -- names. The earlier event cannot be amended -- the append-only
+        -- trigger below forbids exactly that -- so the edit is refused
+        -- rather than half-applied (Codex P2 on `8de8e82`).
+        --
+        -- Refused rather than recorded as a correction event, for the same
+        -- reason as the identity guard above: representing "the removal was
+        -- actually the 12th" faithfully needs a third `action` value and a
+        -- resolver that understands supersession. That is a contract change
+        -- to decide, not one to infer from an UPDATE.
+        --
+        -- `added_at` has the identical shape and is guarded with it.
+        --
+        -- Neither rejects anything a writer does today: all three re-add
+        -- paths set only `removed_at` (to NULL), the two surface flags and
+        -- source/notes -- none touches `added_at` -- and the removal path
+        -- is guarded on `removed_at IS NULL`, so it never edits an existing
+        -- removal. The comparison is on VALUES, so rewriting a column with
+        -- the value it already holds stays a non-event.
+        IF NEW.added_at IS DISTINCT FROM OLD.added_at THEN
+            RAISE EXCEPTION
+                'watchlists.added_at is immutable once recorded: % cannot '
+                'become %. watchlist_history holds the original and is '
+                'append-only, so the two would disagree.',
+                OLD.added_at, NEW.added_at;
+        END IF;
+        IF OLD.removed_at IS NOT NULL AND NEW.removed_at IS NOT NULL
+           AND NEW.removed_at IS DISTINCT FROM OLD.removed_at THEN
+            RAISE EXCEPTION
+                'watchlists.removed_at cannot be corrected once recorded: '
+                '% cannot become %. watchlist_history holds the original '
+                'and is append-only, so as-of resolution would disagree '
+                'with this row for every date in between.',
+                OLD.removed_at, NEW.removed_at;
+        END IF;
+
+        -- Membership is `removed_at IS NULL`; only a transition of THAT
+        -- predicate is an event. A flag edit, a source rewrite, or a
+        -- re-add of an already-active row must record nothing, or the
+        -- log fills with non-events and DISTINCT ON picks one of them.
+        IF OLD.removed_at IS NOT NULL AND NEW.removed_at IS NULL THEN
+            -- Re-add. added_at is deliberately NOT read: the re-add
+            -- paths leave it at the original first-add, which is the
+            -- erasure this table exists to stop.
+            --
+            -- clock_timestamp(), NOT NOW(). NOW() is transaction_timestamp
+            -- -- fixed when the transaction began, not when this row
+            -- changed. A writer whose transaction started BEFORE another
+            -- transaction's removal, and which re-adds AFTER that removal
+            -- commits, would stamp its `add` earlier than the `remove` it
+            -- follows. `resolve_membership_at` orders by effective_at
+            -- first, so it would pick the removal and report a CURRENTLY
+            -- ACTIVE ticker as absent. Not theoretical: the re-add blocks
+            -- on the remover's row lock, so "started earlier, committed
+            -- later" is the NORMAL interleaving under contention.
+            -- Reproduced against a live server before this was changed:
+            --   id 6  remove  17:43:13.027248   (committed second)
+            --   id 7  add     17:43:11.024156   (written last, 2s earlier)
+            -- resolver -> 'remove'; watchlists -> ACTIVE.
+            -- clock_timestamp() reads the wall clock at trigger execution,
+            -- which is necessarily after the removal it followed.
+            INSERT INTO watchlist_history
+                (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+            VALUES (NEW.user_id, NEW.ticker, 'add', clock_timestamp(),
+                    NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        ELSIF OLD.removed_at IS NULL AND NEW.removed_at IS NOT NULL THEN
+            -- Same test as the INSERT branch above: a live removal carries
+            -- the remover's transaction-start clock and must not be able to
+            -- precede a re-add that committed while that transaction was
+            -- open; a deliberately backdated one is kept verbatim.
+            INSERT INTO watchlist_history
+                (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+            VALUES (NEW.user_id, NEW.ticker, 'remove',
+                    CASE WHEN NEW.removed_at = transaction_timestamp()
+                         THEN clock_timestamp() ELSE NEW.removed_at END,
+                    NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    -- DELETE. No writer hard-deletes today; without this branch one
+    -- would drop an open interval with no record that it ever closed.
+    -- clock_timestamp() for the same reason as the re-add above: the row
+    -- stopped existing when this fired, not when the transaction opened.
+    IF OLD.removed_at IS NULL THEN
+        INSERT INTO watchlist_history
+            (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+        VALUES (OLD.user_id, OLD.ticker, 'remove', clock_timestamp(),
+                OLD.source, OLD.in_brief, OLD.in_insight, OLD.signals);
+    END IF;
+    RETURN OLD;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_watchlists_membership ON watchlists;
+CREATE TRIGGER trg_watchlists_membership
+    AFTER INSERT OR UPDATE OR DELETE ON watchlists
+    FOR EACH ROW EXECUTE FUNCTION watchlists_record_membership();
+
+-- Append-only, enforced rather than merely intended. UPDATE and DELETE
+-- are the paths that would silently rewrite the past. TRUNCATE is
+-- deliberately NOT blocked: it is not reachable from application code,
+-- and the CI integration tests need it to isolate.
+CREATE OR REPLACE FUNCTION watchlist_history_is_append_only()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'watchlist_history is append-only; % is not permitted', TG_OP;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_watchlist_history_append_only ON watchlist_history;
+CREATE TRIGGER trg_watchlist_history_append_only
+    BEFORE UPDATE OR DELETE ON watchlist_history
+    FOR EACH ROW EXECUTE FUNCTION watchlist_history_is_append_only();
+
+-- One-shot seed from current `watchlists` state. added_at, and a
+-- non-null removed_at, are genuine; what cannot be recovered is an
+-- interval a re-add already erased — hence origin='seed'.
+--
+-- The guard is "history is entirely empty", not "no seed rows exist".
+-- On a fresh database `watchlists` is empty, so a seed-row guard would
+-- write nothing and stay satisfiable forever: a later apply, after the
+-- trigger had recorded real adds, would seed on top of them and
+-- duplicate every active ticker's add event.
+INSERT INTO watchlist_history
+    (user_id, ticker, action, effective_at, origin, source, in_brief, in_insight, signals)
+SELECT s.user_id, s.ticker, s.action, s.effective_at, 'seed',
+       s.source, s.in_brief, s.in_insight, s.signals
+  FROM (
+        SELECT user_id, ticker, 'add' AS action, added_at AS effective_at,
+               source, in_brief, in_insight, signals
+          FROM watchlists
+        UNION ALL
+        SELECT user_id, ticker, 'remove', removed_at,
+               source, in_brief, in_insight, signals
+          FROM watchlists WHERE removed_at IS NOT NULL
+       ) s
+ WHERE NOT EXISTS (SELECT 1 FROM watchlist_history);
+-- ATOMIC-END watchlist history
 
 
 -- ─────────────────────────────────────────────────────────
