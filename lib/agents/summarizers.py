@@ -1133,6 +1133,12 @@ def summarize_backtest_metrics(
     # widening the analog set.
     if cross_ticker and len(matched) < 10:
         cross_detail["attempted"] = True
+        # `cutoff` is `as_of` unnormalized and `datetime` subclasses `date`,
+        # so it can be an aware datetime here. `resolve_membership_at`
+        # normalizes internally and `WatchlistMembership.as_of` is always a
+        # plain date, so both sides must go through the same normalization
+        # or an agreeing pair would compare unequal.
+        cutoff_day = cutoff.date() if isinstance(cutoff, datetime) else cutoff
         if universe is None:
             # Resolved here rather than at every entry point so the cost is
             # paid only on the sparse path. It is the SAME resolver a caller
@@ -1140,7 +1146,25 @@ def summarize_backtest_metrics(
             # resolutions that can disagree.
             from gcp.fetchers._watchlist import resolve_membership_at
 
-            universe = resolve_membership_at(cutoff)
+            universe = resolve_membership_at(cutoff_day)
+        elif universe.as_of != cutoff_day:
+            # An injected universe resolved for a DIFFERENT date selects
+            # peers from one day while the bars are queried at another, and
+            # `describe()` below would persist that universe's as_of as this
+            # report's provenance — a fabricated claim about how the analog
+            # set was chosen, which is what this whole change exists to stop.
+            # Easy to hit from replay code that resolves once and reuses the
+            # object across dates, which is precisely the usage the
+            # `universe` parameter invites. INTERNAL bucket (Rule 3.7): a
+            # mismatch is a bug in our caller, so fail loud. The per-section
+            # guard in `build_context_bundle` turns this into an explicit
+            # `available: False` with the reason attached, so the pipeline
+            # degrades visibly rather than reporting a wrong peer set.
+            raise ValueError(
+                f"injected analog universe was resolved for {universe.as_of}, "
+                f"but this backtest's cutoff is {cutoff_day}; peers and bars "
+                f"would come from different dates"
+            )
         cross_detail["universe"] = universe.describe()
         cross_history, cross_empty_reason = _build_cross_ticker_history(
             ticker, str(cutoff), inclusive_today=inclusive_today,

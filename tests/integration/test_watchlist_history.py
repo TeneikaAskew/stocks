@@ -265,6 +265,77 @@ def test_an_insert_that_arrives_already_removed_records_both_ends(wl):
 
 
 # ---------------------------------------------------------------------------
+# Clocks: a later event must never carry an earlier timestamp
+# ---------------------------------------------------------------------------
+
+
+def test_a_re_add_is_never_stamped_before_the_removal_it_follows(wl):
+    """Codex P2 on `e3463b3`, reproduced against real concurrency first.
+
+    `NOW()` is `transaction_timestamp()` -- fixed when the transaction
+    BEGAN, not when the row changed. A writer whose transaction starts
+    before another transaction's removal, and which re-adds after that
+    removal commits, stamped its `add` EARLIER than the `remove` it
+    followed. `resolve_membership_at` orders by `effective_at` first, so it
+    picked the removal and reported a currently-active ticker as absent.
+
+    This is the normal interleaving under contention, not an exotic one:
+    the re-add blocks on the remover's row lock, so "started earlier,
+    committed later" is what waiting on that lock produces. Measured
+    against a live server before the fix:
+
+        id 6  remove  17:43:13.027248   (committed second)
+        id 7  add     17:43:11.024156   (written last, two seconds earlier)
+        resolver -> 'remove';  watchlists -> ACTIVE
+
+    `clock_timestamp()` reads the wall clock when the trigger fires, which
+    is necessarily after the removal it followed.
+    """
+    _add(wl, "ACME", JAN)
+
+    # A opens its transaction and touches the database, fixing its
+    # transaction_timestamp strictly before B runs at all.
+    conn_a = wl.connect()
+    tx_a = conn_a.begin()
+    conn_a.execute(sqlalchemy.text("SELECT 1"))
+    try:
+        # B removes and commits, entirely inside A's transaction.
+        with wl.begin() as conn_b:
+            conn_b.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = now() "
+                    " WHERE ticker = 'ACME' AND removed_at IS NULL"
+                )
+            )
+        # A now re-adds, through the ON CONFLICT shape all three writers use.
+        conn_a.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, 'ACME', now(), 'test') "
+                "ON CONFLICT (user_id, ticker) DO UPDATE SET removed_at = NULL"
+            ),
+            {"u": OWNER},
+        )
+        tx_a.commit()
+    finally:
+        conn_a.close()
+
+    events = _events(wl, "ACME")
+    assert [a for a, _ in events] == ["add", "remove", "add"]
+    _, removed_at = events[1]
+    _, readded_at = events[2]
+    assert readded_at > removed_at, (
+        f"the re-add is stamped {removed_at - readded_at} BEFORE the removal "
+        "it follows, so as-of resolution will pick the removal"
+    )
+
+    # The consequence, stated as the consumer sees it.
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == (
+        "ACME",
+    ), "a currently-active ticker resolved as absent"
+
+
+# ---------------------------------------------------------------------------
 # The append-only guarantee
 # ---------------------------------------------------------------------------
 
@@ -283,6 +354,110 @@ def test_history_rejects_update_and_delete(wl, statement):
             conn.execute(sqlalchemy.text(statement))
     assert "append-only" in str(excinfo.value)
     assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+
+
+# ---------------------------------------------------------------------------
+# Identity changes: the one mutation the trigger cannot interpret
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE watchlists SET ticker = 'META' WHERE ticker = 'ACME'",
+        "UPDATE watchlists SET user_id = 'someone@example.com' WHERE ticker = 'ACME'",
+    ],
+)
+def test_changing_a_rows_identity_is_refused(wl, statement):
+    """Codex P2 on `b0f9d73`, reproduced against real SQL before fixing.
+
+    `(user_id, ticker)` is the primary key, and Postgres lets you UPDATE a
+    primary key. The UPDATE branch only fires on a transition of the
+    `removed_at IS NULL` predicate, so a key change on an active row
+    matched neither arm and recorded nothing: history kept an `add` for the
+    OLD key with no `remove` (active forever) and never saw the NEW key at
+    all (never a member). Both answers wrong, in an append-only table that
+    cannot be corrected afterwards.
+
+    Refusing rather than recording is deliberate. A key change has two
+    readings the database cannot tell apart -- a corporate-action rename
+    that should preserve one interval, and a membership handoff that should
+    close one and open another -- and writing the wrong one into an
+    append-only log is irreversible. DELETE + INSERT expresses the second
+    reading exactly, through branches the trigger already records
+    correctly, so the refusal costs an error message and buys an explicit
+    choice. No writer performs a key update today: all three go through
+    `ON CONFLICT (user_id, ticker) DO UPDATE`, whose SET list never
+    contains the conflict target.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text(statement))
+    assert "identity" in str(excinfo.value).lower()
+
+    # The refusal rolled the statement back: state and history both intact.
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+    with wl.begin() as conn:
+        assert conn.execute(
+            sqlalchemy.text("SELECT ticker, user_id FROM watchlists")
+        ).fetchall() == [("ACME", OWNER)]
+
+
+def test_the_refusal_names_the_route_that_does_work(wl):
+    """An error that only says no would push the operator to disable it."""
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text("UPDATE watchlists SET ticker='META' WHERE ticker='ACME'")
+            )
+    message = str(excinfo.value)
+    assert "DELETE" in message and "INSERT" in message
+
+
+def test_delete_then_insert_records_the_handoff(wl):
+    """The route the refusal names has to actually produce a correct log."""
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("DELETE FROM watchlists WHERE ticker='ACME'"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, 'META', :at, 'test')"
+            ),
+            {"u": OWNER, "at": JUN},
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+    assert [a for a, _ in _events(wl, "META")] == ["add"]
+
+    # The DELETE branch stamps its `remove` at NOW() -- the moment the row
+    # actually stopped existing -- not at META's `added_at`. So ACME and
+    # META genuinely overlap between JUN and today, and asserting they do
+    # not would be asserting a backdate. February predates META; tomorrow
+    # postdates ACME's removal.
+    assert resolve_membership_at(date(2026, 2, 1), OWNER).tickers == ("ACME",)
+    tomorrow = date.today() + timedelta(days=1)
+    assert resolve_membership_at(tomorrow, OWNER).tickers == ("META",)
+
+
+def test_an_unchanged_key_in_the_set_list_is_not_an_identity_change(wl):
+    """Writing the same value must not trip the guard.
+
+    `ON CONFLICT (user_id, ticker) DO UPDATE` is how all three writers
+    re-add, and a guard comparing "is the key in the SET list" rather than
+    "did the key change" would reject every re-add in production.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET ticker = ticker, user_id = user_id, "
+                "       removed_at = NULL WHERE ticker = 'ACME'"
+            )
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove", "add"]
 
 
 # ---------------------------------------------------------------------------

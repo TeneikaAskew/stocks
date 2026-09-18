@@ -893,10 +893,15 @@ def test_watchlists_is_locked_before_the_history_is_built():
 PSQL_SCHEMA_LOADERS = {
     # Ephemeral per-run Postgres, created empty. Nothing to guard.
     ".github/workflows/backtest-pipeline.yml",
-    # One-time provisioning; re-runnable, so it CAN reach the live instance.
+    # Provisioning a NEW instance. Re-runnable, so it can in principle be
+    # pointed at the live one -- but doing that rotates the production
+    # database password before it reaches the schema at all, so the
+    # grouping is not what breaks first.
     "gcp/setup_cloud_sql.sh",
-    # Cloud Shell runbook reaching the LIVE instance via cloud-sql-proxy.
-    "scripts/cloud_shell/phase2_deploy.sh",
+    # `scripts/cloud_shell/phase2_deploy.sh` was here until it was moved to
+    # `python -m gcp.apply_schema`: it reached the LIVE instance through
+    # cloud-sql-proxy, which is the one case where losing the grouping has
+    # real consequences (Codex P2 on `e3463b3`).
 }
 
 # `schema.sql` matched as a whole path component, so `p7_schema.sql` — a

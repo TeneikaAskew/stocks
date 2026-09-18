@@ -2407,30 +2407,28 @@ END $$;
 -- Under `psql -f` the lock ends with the DO statement, so it guards
 -- nothing there — but neither does the ATOMIC grouping, so that is not a
 -- gap this wrapper could close. The ATOMIC contract is the applier's
--- alone. Three tracked scripts load this file with psql:
+-- alone, and two tracked scripts still load this file with psql:
 --
 --   .github/workflows/backtest-pipeline.yml — an ephemeral per-run
 --     Postgres, created empty, no concurrent writers, ON_ERROR_STOP=1.
 --     Nothing to guard.
---   gcp/setup_cloud_sql.sh — one-time provisioning. Every step is
+--   gcp/setup_cloud_sql.sh — provisioning a NEW instance. Every step is
 --     re-runnable ("already exists"), so it CAN be pointed at the live
---     instance; doing so also rotates the production database password
---     before it ever reaches the schema, and it omits ON_ERROR_STOP.
---   scripts/cloud_shell/phase2_deploy.sh — a Cloud Shell runbook that
---     reaches the LIVE instance through cloud-sql-proxy. A real
---     production route, and the header of this file advertises two more
---     by hand (`gcloud sql connect ... <` and `psql ... <`).
+--     one; doing that rotates the production database password before it
+--     ever reaches the schema, so the grouping is not what breaks first.
 --
--- On any of those this group is neither atomic nor locked — as is every
--- other ATOMIC group in this file. That is pre-existing and file-wide
--- rather than specific to this group, and it is not this change's
--- runbook: merging fires `apply-schema-on-change` ->
--- `apply-schema-migrations` -> gcp/apply_schema.py, which does honour it.
--- AUDIT-2026-09-18: the fix is to point those scripts at
--- `python -m gcp.apply_schema`, NOT to hand-roll BEGIN/COMMIT here, which
--- would commit the applier's own outer transaction early.
--- `test_every_psql_loader_of_the_schema_is_accounted_for` pins the set
--- above so a fourth cannot appear without this comment being revisited.
+-- `scripts/cloud_shell/phase2_deploy.sh` was a third until it was moved to
+-- `python -m gcp.apply_schema`. It reached the LIVE instance through
+-- cloud-sql-proxy, which is the one case where losing the grouping has
+-- real consequences, so documenting it was not enough (Codex P2 on
+-- `e3463b3`). Note the header above still offers two hand routes
+-- (`gcloud sql connect ... <`, `psql ... <`) and now says what they drop.
+--
+-- On the remaining psql loaders this group is neither atomic nor locked,
+-- as is every other ATOMIC group in this file. Hand-rolling BEGIN/COMMIT
+-- here is NOT the answer: it would commit the applier's own outer
+-- transaction early. `test_every_psql_loader_of_the_schema_is_accounted_for`
+-- pins the set above so a new one cannot appear unexamined.
 DO $$
 BEGIN
     LOCK TABLE watchlists IN SHARE ROW EXCLUSIVE MODE;
@@ -2492,6 +2490,40 @@ BEGIN
     END IF;
 
     IF TG_OP = 'UPDATE' THEN
+        -- `(user_id, ticker)` is this table's PRIMARY KEY, and Postgres
+        -- permits updating a primary key. That is the one mutation this
+        -- trigger must not interpret. Membership below is keyed on the
+        -- `removed_at IS NULL` predicate, which a key change does not
+        -- move, so such an UPDATE recorded nothing at all: history kept
+        -- an `add` for the OLD key with no `remove` (active forever) and
+        -- never saw the NEW key (never a member). Both answers wrong,
+        -- permanently, in a table that forbids its own correction.
+        --
+        -- Refused rather than recorded, because the intent is genuinely
+        -- ambiguous: a corporate-action rename means one interval that
+        -- should survive, a handoff means one interval closing and
+        -- another opening, and the database cannot tell them apart.
+        -- Writing the wrong reading into an append-only log cannot be
+        -- undone, so the ambiguity is returned to the human. DELETE +
+        -- INSERT expresses the handoff exactly, through branches below
+        -- that already record it correctly and with no ambiguity about
+        -- effective_at -- which is why the message names that route.
+        --
+        -- This rejects nothing any writer does today: all three re-add
+        -- paths are `ON CONFLICT (user_id, ticker) DO UPDATE`, whose SET
+        -- list never contains the conflict target, so OLD and NEW agree.
+        -- The comparison is on VALUES, not on which columns the SET
+        -- names, so `SET ticker = ticker` is correctly a non-event.
+        IF NEW.user_id IS DISTINCT FROM OLD.user_id
+           OR NEW.ticker IS DISTINCT FROM OLD.ticker THEN
+            RAISE EXCEPTION
+                'watchlists row identity is immutable: (%, %) cannot be '
+                'updated to (%, %). Express it as DELETE + INSERT so the '
+                'close and the open are recorded as separate membership '
+                'events.',
+                OLD.user_id, OLD.ticker, NEW.user_id, NEW.ticker;
+        END IF;
+
         -- Membership is `removed_at IS NULL`; only a transition of THAT
         -- predicate is an event. A flag edit, a source rewrite, or a
         -- re-add of an already-active row must record nothing, or the
@@ -2499,11 +2531,27 @@ BEGIN
         IF OLD.removed_at IS NOT NULL AND NEW.removed_at IS NULL THEN
             -- Re-add. added_at is deliberately NOT read: the re-add
             -- paths leave it at the original first-add, which is the
-            -- erasure this table exists to stop. NOW() is the
-            -- transaction clock, the same one `removed_at = NOW()` uses.
+            -- erasure this table exists to stop.
+            --
+            -- clock_timestamp(), NOT NOW(). NOW() is transaction_timestamp
+            -- -- fixed when the transaction began, not when this row
+            -- changed. A writer whose transaction started BEFORE another
+            -- transaction's removal, and which re-adds AFTER that removal
+            -- commits, would stamp its `add` earlier than the `remove` it
+            -- follows. `resolve_membership_at` orders by effective_at
+            -- first, so it would pick the removal and report a CURRENTLY
+            -- ACTIVE ticker as absent. Not theoretical: the re-add blocks
+            -- on the remover's row lock, so "started earlier, committed
+            -- later" is the NORMAL interleaving under contention.
+            -- Reproduced against a live server before this was changed:
+            --   id 6  remove  17:43:13.027248   (committed second)
+            --   id 7  add     17:43:11.024156   (written last, 2s earlier)
+            -- resolver -> 'remove'; watchlists -> ACTIVE.
+            -- clock_timestamp() reads the wall clock at trigger execution,
+            -- which is necessarily after the removal it followed.
             INSERT INTO watchlist_history
                 (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
-            VALUES (NEW.user_id, NEW.ticker, 'add', NOW(),
+            VALUES (NEW.user_id, NEW.ticker, 'add', clock_timestamp(),
                     NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         ELSIF OLD.removed_at IS NULL AND NEW.removed_at IS NOT NULL THEN
             INSERT INTO watchlist_history
@@ -2516,10 +2564,12 @@ BEGIN
 
     -- DELETE. No writer hard-deletes today; without this branch one
     -- would drop an open interval with no record that it ever closed.
+    -- clock_timestamp() for the same reason as the re-add above: the row
+    -- stopped existing when this fired, not when the transaction opened.
     IF OLD.removed_at IS NULL THEN
         INSERT INTO watchlist_history
             (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
-        VALUES (OLD.user_id, OLD.ticker, 'remove', NOW(),
+        VALUES (OLD.user_id, OLD.ticker, 'remove', clock_timestamp(),
                 OLD.source, OLD.in_brief, OLD.in_insight, OLD.signals);
     END IF;
     RETURN OLD;

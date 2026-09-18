@@ -55,8 +55,20 @@ def _bars(n: int, seed: int, start: float = 100.0) -> pd.DataFrame:
     })
 
 
-def _universe(*tickers: str, as_of=datetime.date(2026, 9, 15),
+def _universe(*tickers: str, as_of=None,
               resolution: str = "exact") -> WatchlistMembership:
+    """A resolved universe, defaulting to TODAY's date.
+
+    This used to hardcode 2026-09-15, which was "today" the day it was
+    written. `summarize_backtest_metrics` defaults its cutoff to today, so
+    the literal drifted out of agreement with it as soon as the date rolled
+    over, and three tests were silently injecting a universe resolved for a
+    different date than the bars they queried -- the defect Codex filed on
+    `e3463b3`, live in the suite meant to cover this code. Tests that want a
+    mismatch now have to ask for one.
+    """
+    if as_of is None:
+        as_of = datetime.date.today()
     return WatchlistMembership(
         tickers=tuple(tickers), as_of=as_of, owner="default",
         resolution=resolution, horizon=None,
@@ -579,3 +591,57 @@ def test_the_orchestrator_actually_populates_it():
         "InsightReport is built without analog_universe, so the resolved "
         "universe and the empty-cause never reach the persisted report"
     )
+
+
+# ---------------------------------------------------------------------------
+# The injected universe has to belong to THIS cutoff
+# ---------------------------------------------------------------------------
+
+
+def test_a_universe_resolved_for_another_date_is_refused(capture):
+    """Codex P2 on `e3463b3`.
+
+    The injection point trusted whatever it was handed. A universe resolved
+    for a different day selects peers from one date while the bars are
+    queried at another, and `describe()` then persists that universe's
+    `as_of` as this report's provenance -- a fabricated account of how the
+    analog set was chosen, which is the exact failure this change exists to
+    prevent, arriving through the parameter the change added.
+
+    Reachable from precisely the usage the parameter invites: replay code
+    that resolves once and reuses the object across dates. It was also live
+    in this file -- `_universe` hardcoded 2026-09-15 while the default
+    cutoff is today, so three tests here were injecting a mismatch.
+
+    Refused rather than silently re-resolved: re-resolving would discard
+    the caller's frozen universe, which is the one thing the parameter
+    exists to guarantee.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        summarizers.summarize_backtest_metrics(
+            "TGT",
+            universe=_universe("AMD", "AVGO", as_of=datetime.date(2020, 1, 2)),
+        )
+    message = str(excinfo.value)
+    assert "2020-01-02" in message and str(datetime.date.today()) in message
+    assert not capture.resolved, (
+        "the mismatch was papered over by re-resolving, which throws away "
+        "the caller's frozen universe"
+    )
+
+
+def test_an_aware_datetime_cutoff_still_matches_its_own_calendar_date(capture):
+    """The guard must normalize both sides or it rejects agreeing pairs.
+
+    `datetime` subclasses `date`, so `cutoff` here can be an aware datetime
+    while `WatchlistMembership.as_of` is always a plain date -- the same
+    trap `28162e4` fixed one layer down in the resolver. A guard comparing
+    them raw would raise on a universe that matches perfectly.
+    """
+    summarizers.summarize_backtest_metrics(
+        "TGT",
+        as_of=datetime.datetime(2026, 9, 15, 14, 30, tzinfo=datetime.timezone.utc),
+        universe=_universe("AMD", "AVGO", as_of=datetime.date(2026, 9, 15)),
+    )
+    _, params = _cross_call(capture)
+    assert sorted(params["tickers"]) == ["AMD", "AVGO"]

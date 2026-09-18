@@ -17,37 +17,37 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
 |---|---|---|
-| `admin_refresh_leases` | table | [`gcp/schema.sql:4381`](../../../gcp/schema.sql#L4381) |
+| `admin_refresh_leases` | table | [`gcp/schema.sql:4431`](../../../gcp/schema.sql#L4431) |
 | `archive_yahoo_earnings_options_snapshots` | table | [`gcp/schema.sql:552`](../../../gcp/schema.sql#L552) |
 | `archive_yahoo_etf_options_snapshots` | table | [`gcp/schema.sql:549`](../../../gcp/schema.sql#L549) |
 | `archive_yahoo_market_data_daily` | table | [`gcp/schema.sql:543`](../../../gcp/schema.sql#L543) |
 | `archive_yahoo_market_data_intraday` | table | [`gcp/schema.sql:546`](../../../gcp/schema.sql#L546) |
-| `backtest_reports` | table | [`gcp/schema.sql:3328`](../../../gcp/schema.sql#L3328) |
-| `backtest_sweeps` | table | [`gcp/schema.sql:3299`](../../../gcp/schema.sql#L3299) |
-| `backtest_trades` | table | [`gcp/schema.sql:3257`](../../../gcp/schema.sql#L3257) |
-| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3354`](../../../gcp/schema.sql#L3354) |
+| `backtest_reports` | table | [`gcp/schema.sql:3378`](../../../gcp/schema.sql#L3378) |
+| `backtest_sweeps` | table | [`gcp/schema.sql:3349`](../../../gcp/schema.sql#L3349) |
+| `backtest_trades` | table | [`gcp/schema.sql:3307`](../../../gcp/schema.sql#L3307) |
+| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3404`](../../../gcp/schema.sql#L3404) |
 | `daily_rates` | table | [`gcp/schema.sql:522`](../../../gcp/schema.sql#L522) |
 | `earnings_calendar` | table | [`gcp/schema.sql:562`](../../../gcp/schema.sql#L562) |
-| `earnings_calibration` | table | [`gcp/schema.sql:3447`](../../../gcp/schema.sql#L3447) |
+| `earnings_calibration` | table | [`gcp/schema.sql:3497`](../../../gcp/schema.sql#L3497) |
 | `earnings_history` | table | [`gcp/schema.sql:723`](../../../gcp/schema.sql#L723) |
 | `earnings_options_snapshots` | table | [`gcp/schema.sql:461`](../../../gcp/schema.sql#L461) |
-| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:3675`](../../../gcp/schema.sql#L3675) |
-| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:3703`](../../../gcp/schema.sql#L3703) |
+| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:3725`](../../../gcp/schema.sql#L3725) |
+| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:3753`](../../../gcp/schema.sql#L3753) |
 | `earnings_reactions` | table | [`gcp/schema.sql:769`](../../../gcp/schema.sql#L769) |
-| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4093`](../../../gcp/schema.sql#L4093) |
+| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4143`](../../../gcp/schema.sql#L4143) |
 | `economic_events` | table | [`gcp/schema.sql:1438`](../../../gcp/schema.sql#L1438) |
 | `etf_options_daily_greeks` | table | [`gcp/schema.sql:368`](../../../gcp/schema.sql#L368) |
 | `etf_options_snapshots` | table | [`gcp/schema.sql:161`](../../../gcp/schema.sql#L161) |
-| `exit_config_overrides` | table | [`gcp/schema.sql:2676`](../../../gcp/schema.sql#L2676) |
+| `exit_config_overrides` | table | [`gcp/schema.sql:2726`](../../../gcp/schema.sql#L2726) |
 | `historical_signals` | table | [`gcp/schema.sql:2123`](../../../gcp/schema.sql#L2123) |
-| `indicator_correlation` | table | [`gcp/schema.sql:3516`](../../../gcp/schema.sql#L3516) |
+| `indicator_correlation` | table | [`gcp/schema.sql:3566`](../../../gcp/schema.sql#L3566) |
 | `insider_transactions` | table | [`gcp/schema.sql:975`](../../../gcp/schema.sql#L975) |
 | `insight_reports` | table | [`gcp/schema.sql:1537`](../../../gcp/schema.sql#L1537) |
 | `insight_reports_history` | table | [`gcp/schema.sql:2054`](../../../gcp/schema.sql#L2054) |
 | `insight_runs` | table | [`gcp/schema.sql:1573`](../../../gcp/schema.sql#L1573) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:408`](../../../gcp/schema.sql#L408) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:429`](../../../gcp/schema.sql#L429) |
-| `job_runs` | table | [`gcp/schema.sql:4230`](../../../gcp/schema.sql#L4230) |
+| `job_runs` | table | [`gcp/schema.sql:4280`](../../../gcp/schema.sql#L4280) |
 | `journal_entries` | table | [`gcp/schema.sql:1196`](../../../gcp/schema.sql#L1196) |
 | `market_data_daily` | table | [`gcp/schema.sql:23`](../../../gcp/schema.sql#L23) |
 | `market_data_intraday` | table | [`gcp/schema.sql:126`](../../../gcp/schema.sql#L126) |
@@ -60,33 +60,33 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `news_sentiment` | table | [`gcp/schema.sql:1615`](../../../gcp/schema.sql#L1615) |
 | `options_daily_features` | table | [`gcp/schema.sql:271`](../../../gcp/schema.sql#L271) |
 | `playbook_cards` | table | [`gcp/schema.sql:1364`](../../../gcp/schema.sql#L1364) |
-| `playbook_cards_staging` | table | [`gcp/schema.sql:4204`](../../../gcp/schema.sql#L4204) |
+| `playbook_cards_staging` | table | [`gcp/schema.sql:4254`](../../../gcp/schema.sql#L4254) |
 | `premarket_analysis` | table | [`gcp/schema.sql:1310`](../../../gcp/schema.sql#L1310) |
 | `premarket_analysis_history` | table | [`gcp/schema.sql:1939`](../../../gcp/schema.sql#L1939) |
 | `ranker_runs` | table | [`gcp/schema.sql:1050`](../../../gcp/schema.sql#L1050) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:448`](../../../gcp/schema.sql#L448) |
-| `regime_combo_results` | table | [`gcp/schema.sql:3593`](../../../gcp/schema.sql#L3593) |
-| `schema_apply_history` | table | [`gcp/schema.sql:4395`](../../../gcp/schema.sql#L4395) |
+| `regime_combo_results` | table | [`gcp/schema.sql:3643`](../../../gcp/schema.sql#L3643) |
+| `schema_apply_history` | table | [`gcp/schema.sql:4445`](../../../gcp/schema.sql#L4445) |
 | `sec_filings` | table | [`gcp/schema.sql:942`](../../../gcp/schema.sql#L942) |
 | `signal_alerts` | table | [`gcp/schema.sql:1068`](../../../gcp/schema.sql#L1068) |
-| `signal_metrics` | table | [`gcp/schema.sql:2906`](../../../gcp/schema.sql#L2906) |
-| `strat_combo_results` | table | [`gcp/schema.sql:3625`](../../../gcp/schema.sql#L3625) |
+| `signal_metrics` | table | [`gcp/schema.sql:2956`](../../../gcp/schema.sql#L2956) |
+| `strat_combo_results` | table | [`gcp/schema.sql:3675`](../../../gcp/schema.sql#L3675) |
 | `strat_levels` | table | [`gcp/schema.sql:1655`](../../../gcp/schema.sql#L1655) |
-| `ticker_calibration` | table | [`gcp/schema.sql:2589`](../../../gcp/schema.sql#L2589) |
+| `ticker_calibration` | table | [`gcp/schema.sql:2639`](../../../gcp/schema.sql#L2639) |
 | `ticker_info` | table | [`gcp/schema.sql:2176`](../../../gcp/schema.sql#L2176) |
 | `top_movers_daily` | table | [`gcp/schema.sql:1001`](../../../gcp/schema.sql#L1001) |
 | `top_movers_intraday` | table | [`gcp/schema.sql:1025`](../../../gcp/schema.sql#L1025) |
 | `trades` | table | [`gcp/schema.sql:1153`](../../../gcp/schema.sql#L1153) |
-| `user_preferences` | table | [`gcp/schema.sql:4318`](../../../gcp/schema.sql#L4318) |
-| `user_profile` | table | [`gcp/schema.sql:4349`](../../../gcp/schema.sql#L4349) |
-| `user_roles` | table | [`gcp/schema.sql:4267`](../../../gcp/schema.sql#L4267) |
-| `user_style_results` | table | [`gcp/schema.sql:4186`](../../../gcp/schema.sql#L4186) |
-| `waitlist_signups` | table | [`gcp/schema.sql:4173`](../../../gcp/schema.sql#L4173) |
-| `walk_forward_results` | table | [`gcp/schema.sql:3400`](../../../gcp/schema.sql#L3400) |
-| `watchlist_history` | table | [`gcp/schema.sql:2440`](../../../gcp/schema.sql#L2440) |
+| `user_preferences` | table | [`gcp/schema.sql:4368`](../../../gcp/schema.sql#L4368) |
+| `user_profile` | table | [`gcp/schema.sql:4399`](../../../gcp/schema.sql#L4399) |
+| `user_roles` | table | [`gcp/schema.sql:4317`](../../../gcp/schema.sql#L4317) |
+| `user_style_results` | table | [`gcp/schema.sql:4236`](../../../gcp/schema.sql#L4236) |
+| `waitlist_signups` | table | [`gcp/schema.sql:4223`](../../../gcp/schema.sql#L4223) |
+| `walk_forward_results` | table | [`gcp/schema.sql:3450`](../../../gcp/schema.sql#L3450) |
+| `watchlist_history` | table | [`gcp/schema.sql:2438`](../../../gcp/schema.sql#L2438) |
 | `watchlists` | table | [`gcp/schema.sql:2232`](../../../gcp/schema.sql#L2232) |
-| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:3841`](../../../gcp/schema.sql#L3841) |
-| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4032`](../../../gcp/schema.sql#L4032) |
+| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:3891`](../../../gcp/schema.sql#L3891) |
+| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4082`](../../../gcp/schema.sql#L4082) |
 | `v_etf_options_node` | view | [`gcp/schema.sql:305`](../../../gcp/schema.sql#L305) |
 <!-- inventory:tables:end -->
 
@@ -507,7 +507,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [370](../../../gcp/premarket_brief.py#L370), [770](../../../gcp/premarket_brief.py#L770)
 - [`gcp/refresh_earnings_views.py`](../../../gcp/refresh_earnings_views.py) — line [157](../../../gcp/refresh_earnings_views.py#L157)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [89](../../../lib/agents/ranker/candidates.py#L89)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1570](../../../lib/agents/summarizers.py#L1570)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1594](../../../lib/agents/summarizers.py#L1594)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [234](../../../lib/strategies/catalyst_proximity.py#L234)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [446](../../../platform/api/routers/catalysts.py#L446), [716](../../../platform/api/routers/catalysts.py#L716)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
@@ -559,7 +559,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [847](../../../gcp/premarket_brief.py#L847)
 - [`gcp/research/magnitude_engine/mag_dataset.py`](../../../gcp/research/magnitude_engine/mag_dataset.py) — line [133](../../../gcp/research/magnitude_engine/mag_dataset.py#L133)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [195](../../../lib/agents/ranker/candidates.py#L195)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1561](../../../lib/agents/summarizers.py#L1561)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1585](../../../lib/agents/summarizers.py#L1585)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [194](../../../lib/strategies/catalyst_proximity.py#L194)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [416](../../../platform/api/routers/catalysts.py#L416)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
@@ -648,7 +648,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1247](../../../scripts/audit_data_freshness.py#L1247)
 
 ### `journal_entries`
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1854](../../../lib/agents/summarizers.py#L1854)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1878](../../../lib/agents/summarizers.py#L1878)
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [545](../../../platform/api/routers/backtest.py#L545), [717](../../../platform/api/routers/backtest.py#L717)
 - [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [862](../../../platform/api/routers/journal.py#L862), [899](../../../platform/api/routers/journal.py#L899), [994](../../../platform/api/routers/journal.py#L994), [1182](../../../platform/api/routers/journal.py#L1182)
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [59](../../../scripts/backfill_journal_embeddings.py#L59)
@@ -672,7 +672,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/strat_data_pipeline.py`](../../../gcp/research/strat_engine/strat_data_pipeline.py) — line [127](../../../gcp/research/strat_engine/strat_data_pipeline.py#L127)
 - [`gcp/research/strat_engine/strat_leakage_audit.py`](../../../gcp/research/strat_engine/strat_leakage_audit.py) — line [112](../../../gcp/research/strat_engine/strat_leakage_audit.py#L112), [114](../../../gcp/research/strat_engine/strat_leakage_audit.py#L114), [116](../../../gcp/research/strat_engine/strat_leakage_audit.py#L116)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [56](../../../lib/agents/ranker/signals.py#L56), [134](../../../lib/agents/ranker/signals.py#L134), [310](../../../lib/agents/ranker/signals.py#L310), [357](../../../lib/agents/ranker/signals.py#L357), [360](../../../lib/agents/ranker/signals.py#L360)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [225](../../../lib/agents/summarizers.py#L225), [258](../../../lib/agents/summarizers.py#L258), [1003](../../../lib/agents/summarizers.py#L1003), [1444](../../../lib/agents/summarizers.py#L1444)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [225](../../../lib/agents/summarizers.py#L225), [258](../../../lib/agents/summarizers.py#L258), [1003](../../../lib/agents/summarizers.py#L1003), [1468](../../../lib/agents/summarizers.py#L1468)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [416](../../../lib/data_loader.py#L416), [593](../../../lib/data_loader.py#L593)
 - [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [594](../../../lib/earnings_reactions.py#L594)
 - [`lib/features/experimental/cross_asset.py`](../../../lib/features/experimental/cross_asset.py) — line [45](../../../lib/features/experimental/cross_asset.py#L45)
@@ -743,7 +743,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [191](../../../gcp/fetchers/fetch_news_sentiment.py#L191)
 - [`gcp/insight_discord_push.py`](../../../gcp/insight_discord_push.py) — line [268](../../../gcp/insight_discord_push.py#L268), [284](../../../gcp/insight_discord_push.py#L284)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [194](../../../lib/agents/ranker/signals.py#L194), [268](../../../lib/agents/ranker/signals.py#L268)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1584](../../../lib/agents/summarizers.py#L1584), [1745](../../../lib/agents/summarizers.py#L1745), [1762](../../../lib/agents/summarizers.py#L1762)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1608](../../../lib/agents/summarizers.py#L1608), [1769](../../../lib/agents/summarizers.py#L1769), [1786](../../../lib/agents/summarizers.py#L1786)
 - [`lib/features/experimental/news_sentiment.py`](../../../lib/features/experimental/news_sentiment.py) — line [83](../../../lib/features/experimental/news_sentiment.py#L83)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [114](../../../platform/api/routers/catalysts.py#L114), [677](../../../platform/api/routers/catalysts.py#L677)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [133](../../../scripts/backfill_watchlist_data.py#L133)
@@ -788,7 +788,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `sec_filings`
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [116](../../../lib/agents/ranker/candidates.py#L116)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [542](../../../lib/agents/ranker/signals.py#L542)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1599](../../../lib/agents/summarizers.py#L1599)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1623](../../../lib/agents/summarizers.py#L1623)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [276](../../../lib/strategies/catalyst_proximity.py#L276)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [529](../../../platform/api/routers/catalysts.py#L529), [687](../../../platform/api/routers/catalysts.py#L687), [690](../../../platform/api/routers/catalysts.py#L690)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [155](../../../scripts/backfill_watchlist_data.py#L155)
