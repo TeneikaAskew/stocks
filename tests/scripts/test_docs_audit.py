@@ -1094,6 +1094,45 @@ def test_a_good_issues_snapshot_still_loads(tmp_path):
     assert m.load_issues_snapshot(str(good)) == {"stocks": {7: {"state": "closed"}}, "solyra": {}}
 
 
+def test_a_snapshot_issue_record_must_carry_a_state(tmp_path):
+    """The structural check stopped at "the repo entry is an object", so a row
+    with no `state` reached `st["state"]` and raised KeyError -- a traceback
+    and exit 1, the status reserved for "this documentation has findings".
+    A `null` row was worse than that: it reads as `st is None`, which is the
+    unresolvable branch, so a malformed snapshot FABRICATES a finding against
+    a document that cites a perfectly live issue (CLAUDE.md §3.7)."""
+    missing_state = tmp_path / "a.json"
+    missing_state.write_text(json.dumps({"stocks": {"1": {}}, "solyra": {}}))
+    with pytest.raises(m.AuditError, match="stocks#1"):
+        m.load_issues_snapshot(str(missing_state))
+
+    null_row = tmp_path / "b.json"
+    null_row.write_text(json.dumps({"stocks": {"1": None}, "solyra": {}}))
+    with pytest.raises(m.AuditError, match="stocks#1"):
+        m.load_issues_snapshot(str(null_row))
+
+    non_string = tmp_path / "c.json"
+    non_string.write_text(json.dumps({"stocks": {"1": {"state": 7}}, "solyra": {}}))
+    with pytest.raises(m.AuditError, match="stocks#1"):
+        m.load_issues_snapshot(str(non_string))
+
+    listed = tmp_path / "d.json"
+    listed.write_text(json.dumps({"stocks": [], "solyra": {}}))
+    with pytest.raises(m.AuditError, match='no "stocks" entry'):
+        m.load_issues_snapshot(str(listed))
+
+
+def test_a_snapshot_that_cannot_be_written_is_exit_two(audit_repo):
+    """Reading a bad snapshot is exit 2; failing to WRITE one was exit 1, via
+    an OSError escaping the AuditError handler. Same class, same status."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")
+    with pytest.raises(m.AuditError, match="could not be written"):
+        m.main(["--json", "--date", "2026-09-18",
+                "--issues-snapshot", str(audit_repo / "issues.json"),
+                "--write-issues-snapshot", str(audit_repo / "nodir" / "out.json")])
+
+
 def test_verify_without_stamp_is_refused(audit_repo):
     """A review is recorded by WRITING a marker. `--verify` alone wrote
     nothing and exited 0, so the audit reported success for a human
@@ -1125,6 +1164,52 @@ def test_nothing_is_written_when_a_verify_target_is_missing(audit_repo):
     with pytest.raises(m.AuditError):
         _audit(audit_repo, "--stamp", "--verify", "docs/typo.md")
     assert (audit_repo / "docs" / "d.md").read_text() == before
+
+
+def test_a_verify_target_stamping_could_not_record_is_refused(audit_repo):
+    """`stamp_targets` was filled before `stamp()` ran, so a document whose
+    marker cannot be written -- no H1, or a legacy line carrying prose -- still
+    consumed the request. `--stamp --verify` then exited 0 having written
+    nothing, which is the ignored-verification behaviour the unmatched-target
+    check exists to prevent, one layer in."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    (audit_repo / "docs" / "noh1.md").write_text("<!-- fenced -->\nrules\n")
+    with pytest.raises(m.AuditError, match="no H1"):
+        _audit(audit_repo, "--stamp", "--verify", "docs/noh1.md")
+
+    (audit_repo / "docs" / "legacy.md").write_text(
+        "# L\n\n**Last updated:** 2026-05-01 by the release script\n\nbody\n")
+    with pytest.raises(m.AuditError, match="legacy"):
+        _audit(audit_repo, "--stamp", "--verify", "docs/legacy.md")
+
+
+def test_nothing_is_written_when_a_verify_target_cannot_be_stamped(audit_repo):
+    """Same ordering guarantee as the misspelled-path case: the refusal comes
+    before the writes, so the rest of the tree is not stamped by a run that
+    aborts."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    (audit_repo / "docs" / "noh1.md").write_text("<!-- fenced -->\nrules\n")
+    before = (audit_repo / "docs" / "d.md").read_text()
+    with pytest.raises(m.AuditError):
+        _audit(audit_repo, "--stamp", "--verify", "docs/noh1.md")
+    assert (audit_repo / "docs" / "d.md").read_text() == before
+
+
+def test_a_verify_target_already_carrying_the_review_is_accepted(audit_repo):
+    """`unchanged` records nothing because the marker is already exactly what
+    would be written. Refusing it would fail a re-run of a review that IS on
+    disk, so the target counts as consumed."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    assert _audit(audit_repo, "--stamp", "--verify", "docs/d.md") in (0, 1)
+    first = (audit_repo / "docs" / "d.md").read_text()
+    assert "**Depth:** verified" in first
+    # Re-run without a new commit, so the head SHA and therefore the rendered
+    # marker are identical and `stamp()` returns `unchanged` rather than
+    # `updated`. That is the action this test exists to keep accepted.
+    assert m.main(["--json", "--date", "2026-09-18",
+                   "--issues-snapshot", str(audit_repo / "issues.json"),
+                   "--stamp", "--verify", "docs/d.md"]) in (0, 1)
+    assert (audit_repo / "docs" / "d.md").read_text() == first
 
 
 def test_a_class_a_doc_with_no_region_map_is_never_stamped(audit_repo, capsys):

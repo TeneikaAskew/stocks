@@ -843,10 +843,23 @@ def load_issues_snapshot(file: str) -> dict[str, dict[int, dict]]:
             raise AuditError(f'--issues-snapshot {file} has no "{repo}" entry; every '
                              f"{repo} citation would read as unresolvable")
         try:
-            states[repo] = {int(k): v for k, v in entry.items()}
+            rows = {int(k): v for k, v in entry.items()}
         except (TypeError, ValueError) as exc:
             raise AuditError(f'--issues-snapshot {file}: "{repo}" is not keyed by '
                              f"issue number: {exc}") from exc
+        # Numeric keys are not enough. `check_closed_issues` reads st["state"]
+        # once it has decided the row is not None, so a row with no state
+        # raises KeyError -- a traceback and exit 1, the status that means
+        # "this documentation has findings". A `null` row is worse: it takes
+        # the `st is None` branch and reports a live issue as unresolvable,
+        # fabricating a finding from a malformed file (CLAUDE.md §3.7).
+        for num, rec in sorted(rows.items()):
+            if not isinstance(rec, dict) or not isinstance(rec.get("state"), str):
+                raise AuditError(
+                    f"--issues-snapshot {file}: {repo}#{num} has no usable state "
+                    f"({rec!r}); a row the audit cannot read is not a row it may "
+                    "report on")
+        states[repo] = rows
     return states
 
 
@@ -1242,9 +1255,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         states = {THIS_REPO: fetch_issue_states(THIS_REPO), SIBLING_REPO: fetch_issue_states(SIBLING_REPO)}
     if args.write_issues_snapshot:
-        pathlib.Path(args.write_issues_snapshot).write_text(
-            json.dumps({r: {str(k): v for k, v in d.items()} for r, d in states.items()}, indent=1),
-            encoding="utf-8")
+        # Reading an unusable snapshot is exit 2; failing to write one was
+        # exit 1, because OSError walks straight past the AuditError handler.
+        # Same class of failure -- the run did not happen -- so same status.
+        try:
+            pathlib.Path(args.write_issues_snapshot).write_text(
+                json.dumps({r: {str(k): v for k, v in d.items()} for r, d in states.items()},
+                           indent=1),
+                encoding="utf-8")
+        except OSError as exc:
+            raise AuditError(
+                f"--write-issues-snapshot {args.write_issues_snapshot} could not "
+                f"be written: {exc}") from exc
 
     findings: list[dict] = check_registry_paths(tracked, registry)
     region_maps: dict[str, dict] = {}
@@ -1268,6 +1290,10 @@ def main(argv: list[str] | None = None) -> int:
     # class with nowhere to stamp used to leave everything else scan-only and
     # exit 0 without a word about the review it dropped.
     stamp_targets: set[str] = set()
+    # doc -> the action `stamp` returned when it declined, so the refusal can
+    # name the reason rather than listing the path and leaving the caller to
+    # guess which of five causes applies.
+    stamp_refusals: dict[str, str] = {}
     writes: list[tuple[str, str]] = []
     counts = {"A": 0, "B": 0, "C": 0, "D": 0, "X": 0, "unclassified": 0}
 
@@ -1380,10 +1406,19 @@ def main(argv: list[str] | None = None) -> int:
                                  "detail": f"not stamped: a generated region starts at line "
                                            f"{min(owned)}, too close to the H1 on line {h1 + 1}"})
                 continue
-            stamp_targets.add(doc)
             reviewed = doc in verify
             new, action = stamp(text, today, "verified" if reviewed else "scanned",
                                 head, reviewed=reviewed)
+            # Consumed only if the review was actually recorded. `stamp` can
+            # decline -- no H1 to place a marker after, or a legacy line
+            # carrying prose that rewriting would delete -- and counting the
+            # target before reading that answer let `--verify` exit 0 having
+            # written nothing. `unchanged` counts: the marker on disk is
+            # already exactly what would be written.
+            if action in {"inserted", "updated", "unchanged"}:
+                stamp_targets.add(doc)
+            else:
+                stamp_refusals[doc] = action
             if action in {"inserted", "updated"}:
                 writes.append((doc, new))
             stamped.append({"doc": doc, "action": action,
@@ -1394,8 +1429,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.stamp:
         missing = sorted(verify - stamp_targets)
         if missing:
+            why = {"skipped-no-h1": "no H1 to place a marker after",
+                   "skipped-legacy-content": "a legacy marker carrying prose that "
+                                             "rewriting would delete"}
+            named = ", ".join(
+                f"{d} ({why.get(stamp_refusals[d], stamp_refusals[d])})"
+                if d in stamp_refusals else d
+                for d in missing)
             raise AuditError(
-                f"--verify {', '.join(missing)}: no stamped document matches (not a "
+                f"--verify {named}: the review could not be recorded (not a "
                 "tracked doc, or Class B/C/X, or a machine-owned file with nowhere "
                 "to stamp). Nothing was written.")
         for doc, new in writes:
