@@ -285,7 +285,7 @@ def heading_anchors(text: str) -> set[str]:
     # dead-anchor check. Marker parsing already excludes fenced lines; the Node
     # twin already excluded them here.
     lines = text.split("\n")
-    fenced = fenced_lines(lines)
+    fenced = fenced_lines(lines) | commented_lines(lines)
     for i, line in enumerate(lines):
         if i in fenced:
             continue
@@ -1790,15 +1790,23 @@ def _without_marker(text: str) -> str:
     found = find_marker(lines)
     if found is not None:
         i = found[0]
-        # The SEPARATING BLANK LINE too. `stamp` inserts the marker with one,
-        # so dropping only the marker left the normalised working copy with a
-        # blank line the reviewed revision does not have -- and the very next
-        # audit reported changed-since for a document whose only edit was the
-        # audit's own marker.
         end = i + 1
-        if end < len(lines) and not lines[end].strip() and i and not lines[i - 1].strip():
+        if end < len(lines) and not lines[end].strip():
             end += 1
         lines = lines[:i] + lines[end:]
+    # And every blank between the H1 and the first content line, on BOTH sides
+    # of the comparison. `stamp` inserts the marker with a blank after it, and
+    # with one BEFORE it as well when the document had none -- and the two
+    # cases produce byte-identical output, so the stamped text cannot say which
+    # happened. Normalising that run away is what makes `# T\n\nbody` and
+    # `# T\nbody` compare equal once each has been stamped, which is the only
+    # question this function is asked.
+    h1 = h1_index(lines)
+    if h1 is not None:
+        j = h1 + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        lines = lines[:h1 + 1] + lines[j:]
     return "\n".join(lines)
 
 
@@ -2335,18 +2343,20 @@ def main(argv: list[str] | None = None) -> int:
     # a LINK resolves, and letting an untracked file satisfy a link is the bug
     # is_tracked_dir was written to close -- present here, absent in every
     # clean clone.
-    # --others is UNTRACKED only; `git add docs/new.md` moves the path into the
-    # index, where it is neither "other" nor in HEAD -- so the document fell
-    # out of both inventories at the moment a contributor staged it, which is
-    # the moment before committing. --cached covers the index, and the HEAD set
-    # below removes everything that is not actually new.
-    pending = [p for p in run(["git", "ls-files", "--cached", "--others",
-                               "--exclude-standard", "--", "*.md"]).strip().split("\n") if p]
-    # The `not in tracked` filter is for READABILITY, not correctness: this is
-    # a set union, so a path already in `docs` collapses anyway. Said plainly
-    # because a test written to cover it stayed green when it was removed, and
-    # a test that cannot fail is worse than no test.
-    docs = sorted(set(docs) | {p for p in pending if p not in tracked})
+    # An index ADDITION is part of the content about to be committed, so it
+    # resolves links and satisfies registry declarations as any tracked file
+    # does -- otherwise a multi-file documentation change cannot be audited
+    # cleanly before it is committed, the one moment the audit is most useful.
+    # An UNTRACKED file is different: it may never be committed, and letting it
+    # satisfy a link is the bug is_tracked_dir was written to close.
+    staged = {p for p in run(["git", "diff", "--cached", "--name-only",
+                              "--diff-filter=A"]).strip().split("\n") if p}
+    if staged:
+        tracked |= staged
+        docs = document_set(tracked, registry)
+    untracked = [p for p in run(["git", "ls-files", "--others", "--exclude-standard",
+                                 "--", "*.md"]).strip().split("\n") if p]
+    docs = sorted(set(docs) | set(untracked))
 
     if args.issues_snapshot:
         states = load_issues_snapshot(args.issues_snapshot)

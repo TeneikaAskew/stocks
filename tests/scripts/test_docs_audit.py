@@ -3176,3 +3176,68 @@ def test_an_old_stamp_with_no_recent_success_is_still_stale(audit_repo, monkeypa
         "success\t2026-07-01T00:00:00Z\tschedule\t\n" if "runs?" in " ".join(cmd) else ""))
     out = [f for f in m.check_owning_job("2026-09-18") if f["doc"] == "docs/arch.md"]
     assert [f["severity"] for f in out] == ["P2"], out
+
+
+# ── round 16 ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("before", ["# T\n\nbody\n", "# T\nbody\n"])
+def test_stamping_never_makes_a_document_look_changed(before):
+    """`stamp` inserts a blank AFTER the marker, and one BEFORE it as well when
+    the document had none -- and the two cases produce byte-identical output,
+    so the stamped text cannot say which happened. Removing only the trailing
+    blank left `# T\n\nbody` where the reviewed revision was `# T\nbody`."""
+    after, _ = m.stamp(before, "2026-09-18", "scanned", "abc1234", False)
+    assert after != before
+    assert m._without_marker(after) == m._without_marker(before)
+
+
+def test_a_heading_inside_an_html_comment_offers_no_anchor():
+    """A link to `#hidden` passed the dead-anchor audit even though the
+    rendered document exposes no such anchor."""
+    assert sorted(m.heading_anchors("<!--\n# Hidden\n-->\n# Real\n")) == ["real"]
+
+
+def test_a_staged_addition_satisfies_a_link(audit_repo, capsys):
+    """An index addition is part of the content about to be committed, so it
+    resolves links as any tracked file does. Otherwise a multi-file
+    documentation change cannot be audited cleanly before it is committed --
+    the one moment the audit is most useful. An UNTRACKED file is different."""
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "tree"], cwd=audit_repo, check=True)
+    (audit_repo / "docs" / "target.md").write_text("# Target\n\nbody\n")
+    (audit_repo / "docs" / "source.md").write_text("# Source\n\nSee [t](target.md).\n")
+    subprocess.run(["git", "add", "docs/target.md", "docs/source.md"],
+                   cwd=audit_repo, check=True)
+    m.main(["--date", "2026-09-18", "--json", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    dead = [f for f in report["findings"] if f["check"] == "dead-link"]
+    assert dead == [], dead
+    # And both are still audited.
+    assert {f["doc"] for f in report["findings"]} >= {"docs/source.md", "docs/target.md"}
+
+
+def test_an_untracked_file_still_does_not_satisfy_a_link(audit_repo, capsys):
+    """It may never be committed, and letting it satisfy a link is the bug
+    is_tracked_dir was written to close."""
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "tree"], cwd=audit_repo, check=True)
+    (audit_repo / "docs" / "target.md").write_text("# Target\n\nbody\n")
+    (audit_repo / "docs" / "source.md").write_text("# Source\n\nSee [t](target.md).\n")
+    subprocess.run(["git", "add", "docs/source.md"], cwd=audit_repo, check=True)
+    m.main(["--date", "2026-09-18", "--json", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    assert [f for f in report["findings"] if f["check"] == "dead-link"], report["findings"]
+
+
+def test_the_shipped_registry_declares_no_rule_that_covers_nothing():
+    """docs/models/*.md declared a rule for documents that live only on an
+    unmerged branch, so it covered nothing on main -- found by the checker
+    added in this same PR, and fixed at the source rather than exempted."""
+    tracked = set(m.run(["git", "ls-tree", "-r", "HEAD", "--name-only"]).strip().split("\n"))
+    registry = m.load_registry((m.REPO / m.REGISTRY).read_text(encoding="utf-8"))
+    inert = [f for f in m.check_registry_paths(tracked, registry)
+             if "covers nothing" in f["detail"]]
+    assert inert == [], inert

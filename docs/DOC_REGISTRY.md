@@ -1,6 +1,6 @@
 # Documentation registry
 
-**Last reviewed:** 2026-09-16 · **Depth:** verified · **Against:** `aa60569` · **Last scanned:** 2026-09-18 · **Owner:** TBD
+**Last reviewed:** 2026-09-16 · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 Which documents this repo maintains, who owns each one, and what code each one
 describes. `scripts/maintenance/docs_audit.py` reads the table below; the prose
@@ -225,7 +225,6 @@ renames are ignored, so a file-move wave does not flag every document.
 | D | docs/MODELS_END_TO_END.md | |  |
 | D | docs/MODEL_SUMMARY.md | |  |
 | D | docs/MODEL_RETHINK_PLANS.md | lib/strategies |  |
-| D | docs/models/*.md | lib/strategies |  |
 | D | docs/STRAT_ENGINE_AND_COMBO_PIPELINE.md | gcp/research/strat_engine |  |
 | D | docs/BRIEFING_DECK.md | |  |
 | D | docs/FEATURE_ADOPTION_ROADMAP.md | |  |
