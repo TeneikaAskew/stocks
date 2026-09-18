@@ -195,17 +195,64 @@ def test_re_adding_an_already_active_row_records_no_event(wl):
     assert resolve_membership_at(date(2026, 2, 1), OWNER).tickers == ("ACME",)
 
 
-def test_correcting_a_removal_timestamp_records_no_second_removal(wl):
+def test_correcting_a_removal_timestamp_is_refused(wl):
+    """Codex P2 on `8de8e82`. This test used to pin the opposite.
+
+    It asserted that correcting `removed_at` on an already-removed row
+    recorded no second event -- true, and the reason it is a defect:
+    `watchlists` took the new time while history kept the old one, so
+    as-of resolution and the source row disagreed for every date in
+    between, with nothing saying so. The earlier event cannot be amended,
+    because the append-only trigger forbids exactly that, so the edit is
+    refused instead of half-applied.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = :at WHERE ticker='ACME'"
+                ),
+                {"at": MAR + timedelta(days=1)},
+            )
+    assert "cannot be corrected" in str(excinfo.value)
+
+    # Source and history still agree, which is the whole point.
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+    with wl.begin() as conn:
+        assert conn.execute(
+            sqlalchemy.text("SELECT removed_at FROM watchlists WHERE ticker='ACME'")
+        ).scalar() == MAR
+
+
+def test_rewriting_a_timestamp_with_its_own_value_is_still_a_non_event(wl):
+    """The guard compares values, not which columns the SET names."""
     _add(wl, "ACME", JAN)
     _remove(wl, "ACME", MAR)
     with wl.begin() as conn:
         conn.execute(
             sqlalchemy.text(
-                "UPDATE watchlists SET removed_at = :at WHERE ticker='ACME'"
-            ),
-            {"at": MAR + timedelta(days=1)},
+                "UPDATE watchlists SET removed_at = removed_at, "
+                "       added_at = added_at, source = 'ui' WHERE ticker='ACME'"
+            )
         )
     assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+
+
+def test_editing_added_at_is_refused(wl):
+    """Same divergence, other column: history holds the original add."""
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET added_at = :at WHERE ticker='ACME'"
+                ),
+                {"at": JUN},
+            )
+    assert "immutable" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
 
 
 # ---------------------------------------------------------------------------

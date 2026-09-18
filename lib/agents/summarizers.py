@@ -987,7 +987,27 @@ def summarize_backtest_metrics(
         top_analogs: list[dict] — up to 5 closest historical
                                    examples with their forward moves
     """
-    cutoff = as_of or datetime.now(timezone.utc).date()
+    # An injected universe's own date IS this run's date. Reading the clock
+    # here instead re-decides it, and the two decisions can differ: the
+    # caller freezes a universe, then `_run_one` loads a route snapshot and
+    # `build_context_bundle` runs four analyst sections before this one, so
+    # a batch begun near UTC midnight can freeze on one date and arrive
+    # here on the next. The guard below would then correctly refuse the
+    # universe and the report would lose its backtest section -- a
+    # time-of-check/time-of-use gap that narrowing the window cannot close,
+    # only removing the second clock read can (Codex P2 on `8de8e82`).
+    #
+    # Freezing the universe is HOW a caller pins the date; honouring it is
+    # what makes peers and bars agree instead of racing. An explicit
+    # `as_of` still wins over both, and a universe that disagrees with it
+    # is still refused below -- that is the replay-cache bug, where the
+    # caller named a date and handed over a universe from another one.
+    if as_of is not None:
+        cutoff = as_of
+    elif universe is not None:
+        cutoff = universe.as_of
+    else:
+        cutoff = datetime.now(timezone.utc).date()
     # `<` under the premarket contract: the as-of day's own bar is not
     # knowable at brief time (see docstring / #822).
     daily_op = "<=" if inclusive_today else "<"

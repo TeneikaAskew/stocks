@@ -2559,6 +2559,47 @@ BEGIN
                 OLD.user_id, OLD.ticker, NEW.user_id, NEW.ticker;
         END IF;
 
+        -- `watchlists` may not be edited in ways this append-only log
+        -- cannot follow. Correcting a removal from March 10 to March 12
+        -- changes the source row while history keeps March 10, so
+        -- `resolve_membership_at` reports the ticker ABSENT on March 11
+        -- while `watchlists` now says it was active until the 12th: two
+        -- sources silently disagreeing, which is the shape Rule 3.7.1
+        -- names. The earlier event cannot be amended -- the append-only
+        -- trigger below forbids exactly that -- so the edit is refused
+        -- rather than half-applied (Codex P2 on `8de8e82`).
+        --
+        -- Refused rather than recorded as a correction event, for the same
+        -- reason as the identity guard above: representing "the removal was
+        -- actually the 12th" faithfully needs a third `action` value and a
+        -- resolver that understands supersession. That is a contract change
+        -- to decide, not one to infer from an UPDATE.
+        --
+        -- `added_at` has the identical shape and is guarded with it.
+        --
+        -- Neither rejects anything a writer does today: all three re-add
+        -- paths set only `removed_at` (to NULL), the two surface flags and
+        -- source/notes -- none touches `added_at` -- and the removal path
+        -- is guarded on `removed_at IS NULL`, so it never edits an existing
+        -- removal. The comparison is on VALUES, so rewriting a column with
+        -- the value it already holds stays a non-event.
+        IF NEW.added_at IS DISTINCT FROM OLD.added_at THEN
+            RAISE EXCEPTION
+                'watchlists.added_at is immutable once recorded: % cannot '
+                'become %. watchlist_history holds the original and is '
+                'append-only, so the two would disagree.',
+                OLD.added_at, NEW.added_at;
+        END IF;
+        IF OLD.removed_at IS NOT NULL AND NEW.removed_at IS NOT NULL
+           AND NEW.removed_at IS DISTINCT FROM OLD.removed_at THEN
+            RAISE EXCEPTION
+                'watchlists.removed_at cannot be corrected once recorded: '
+                '% cannot become %. watchlist_history holds the original '
+                'and is append-only, so as-of resolution would disagree '
+                'with this row for every date in between.',
+                OLD.removed_at, NEW.removed_at;
+        END IF;
+
         -- Membership is `removed_at IS NULL`; only a transition of THAT
         -- predicate is an event. A flag edit, a source rewrite, or a
         -- re-add of an already-active row must record nothing, or the

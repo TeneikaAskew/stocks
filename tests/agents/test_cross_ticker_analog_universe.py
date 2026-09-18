@@ -617,13 +617,14 @@ def test_a_universe_resolved_for_another_date_is_refused(capture):
     the caller's frozen universe, which is the one thing the parameter
     exists to guarantee.
     """
+    named = datetime.date(2026, 9, 15)
     with pytest.raises(ValueError) as excinfo:
         summarizers.summarize_backtest_metrics(
-            "TGT",
+            "TGT", as_of=named,
             universe=_universe("AMD", "AVGO", as_of=datetime.date(2020, 1, 2)),
         )
     message = str(excinfo.value)
-    assert "2020-01-02" in message and str(datetime.date.today()) in message
+    assert "2020-01-02" in message and str(named) in message
     assert not capture.resolved, (
         "the mismatch was papered over by re-resolving, which throws away "
         "the caller's frozen universe"
@@ -645,3 +646,32 @@ def test_an_aware_datetime_cutoff_still_matches_its_own_calendar_date(capture):
     )
     _, params = _cross_call(capture)
     assert sorted(params["tickers"]) == ["AMD", "AVGO"]
+
+
+def test_an_injected_universe_pins_the_cutoff_when_no_as_of_is_named(capture):
+    """Codex P2 on `8de8e82` -- the second clock read had to go, not shrink.
+
+    A caller that freezes a universe and names no `as_of` has pinned the
+    date; reading the clock again here re-decides it. Those two reads are
+    separated by a route-snapshot load and four analyst sections, so a
+    batch begun near UTC midnight freezes on one date and arrives here on
+    the next, and the guard above then correctly refuses its own caller's
+    universe -- costing the report its backtest section. Narrowing that
+    window cannot close it; removing the second read can.
+
+    The universe's date must therefore reach the BAR query too, not only
+    the peer list, or peers and bars come from different days -- which is
+    the thing the guard exists to prevent, arriving by another route.
+    """
+    frozen = datetime.date(2026, 9, 15)
+    summarizers.summarize_backtest_metrics(
+        "TGT", universe=_universe("AMD", "AVGO", as_of=frozen))
+
+    sql, params = _cross_call(capture)
+    assert sorted(params["tickers"]) == ["AMD", "AVGO"]
+    named = [v for v in params.values() if str(v).startswith(str(frozen))]
+    assert named, (
+        f"the bar query was not bounded by the frozen date {frozen}; "
+        f"params were {params}"
+    )
+    assert not capture.resolved, "it re-resolved instead of honouring the pin"
