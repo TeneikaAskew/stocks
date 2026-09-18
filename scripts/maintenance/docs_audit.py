@@ -187,8 +187,13 @@ ISSUE_URL_RE = re.compile(
 # tree, including all 16 feature links in docs/product/02-FEATURE-CATALOG.md,
 # whose targets in 12-PR-ISSUE-TRACEABILITY.md carry an em dash and a slash
 # that GitHub's anchor rule turns into DOUBLED hyphens.
+# The optional TITLE is admitted and discarded. `[guide](missing.md "Guide")`
+# is standard CommonMark; requiring `)` straight after the destination meant
+# the pattern did not match at all, so a missing target reported clean rather
+# than dead. Raised on the Node twin (solyra#69).
 MD_LINK_RE = re.compile(
-    r"\[[^\]]*\]\((?P<target>[^)#\s]*)(?:#(?P<frag>[^)\s]+))?\)")
+    r"\[[^\]]*\]\((?P<target>[^)#\s]*)(?:#(?P<frag>[^)\s]+))?"
+    r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)""")
 # Reference-style Markdown, both halves. The definition's label may not open
 # with `^`: that is a footnote, which defines a note rather than a destination.
 REF_DEF_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:\s+(?P<target>\S+)")
@@ -1220,7 +1225,14 @@ def citation_clause(line: str, start: int, end: int) -> str:
 
 def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[dict]:
     out = []
-    for n, line in enumerate(text.split("\n"), 1):
+    lines = text.split("\n")
+    # --check gates on these findings, so a document DEMONSTRATING what a
+    # blocking citation looks like failed the audit over its own example. The
+    # link, heading and marker checks already skip fenced lines.
+    fenced = fenced_lines(lines)
+    for n, line in enumerate(lines, 1):
+        if n - 1 in fenced:
+            continue
         if not has_blocking_cue(line):
             continue
         for m in ISSUE_URL_RE.finditer(line):

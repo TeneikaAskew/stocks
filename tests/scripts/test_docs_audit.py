@@ -2481,3 +2481,37 @@ def test_a_registry_glob_that_covers_nothing_is_a_finding():
 def test_a_registry_glob_that_covers_something_is_quiet():
     rows = [{"cls": "A", "glob": "docs/*.md", "code_paths": []}]
     assert m.check_registry_paths({"docs/x.md"}, rows) == []
+
+
+def test_an_inline_link_carrying_a_title_is_still_checked():
+    """`[guide](missing.md "Guide")` is standard CommonMark. Requiring `)`
+    straight after the destination meant the pattern did not match at all, so
+    the audit reported clean over a missing target. Raised on the Node twin
+    (solyra#69)."""
+    out = m.check_dead_links("d.md", '# T\n\n[guide](missing.md "Guide")\n', {"src/a.ts"})
+    assert len(out) == 1 and "missing.md" in out[0]["detail"], out
+
+
+def test_a_titled_inline_link_keeps_its_fragment_checkable():
+    out = m.check_dead_links("d.md", "# T\n\n[x](README.md#no-such-heading 'T')\n",
+                             {"README.md"})
+    assert [f["check"] for f in out] == ["dead-anchor"], out
+
+
+def test_a_titled_inline_link_that_resolves_is_quiet():
+    assert m.check_dead_links("d.md", '# T\n\n[a](README.md "The readme")\n',
+                              {"README.md"}) == []
+
+
+def test_a_blocker_example_inside_a_fence_is_not_a_citation():
+    """--check gates on closed-issue findings, so a document demonstrating what
+    a blocking citation looks like failed the audit over its own example."""
+    states = {"stocks": {8: {"state": "closed", "reason": "completed"}}}
+    doc = "# T\n\n```md\nBlocked by https://github.com/TeneikaAskew/stocks/issues/8\n```\n"
+    assert m.check_closed_issues("d.md", doc, states) == []
+
+
+def test_the_same_blocker_outside_the_fence_is_still_reported():
+    states = {"stocks": {8: {"state": "closed", "reason": "completed"}}}
+    doc = "# T\n\nBlocked by https://github.com/TeneikaAskew/stocks/issues/8\n"
+    assert len(m.check_closed_issues("d.md", doc, states)) == 1
