@@ -218,3 +218,63 @@ def test_fallback_alert_posts_to_webhook_when_configured(monkeypatch):
     _post_fallback_alert("test reason")
     assert len(posted) == 1
     assert "test reason" in posted[0]["json"]["content"]
+
+
+# ---------------------------------------------------------------------------
+# As-of membership resolution (watchlist_history)
+#
+# The resolver's ANSWER is tested against a real Postgres in
+# tests/integration/test_watchlist_history.py — it reads a table maintained
+# by a database trigger, and a mocked connection would only prove the mock
+# fired. What belongs here are the properties that are checkable without a
+# database and that a local/CI run would otherwise pass over.
+# ---------------------------------------------------------------------------
+
+
+def test_membership_sql_uses_positional_placeholders():
+    """Named placeholders would pass every local and CI test and fail only
+    in production.
+
+    `lib.agents.model_routing.connect()` returns psycopg2 locally and under
+    CLOUD_SQL_URL, but pg8000 through the Cloud SQL Connector in production
+    — and pg8000's paramstyle is `format`, not `pyformat`. `%(owner)s`
+    raises there while working everywhere a test can reach. Measured
+    2026-09-18: pg8000 1.31.5, `paramstyle == 'format'`.
+    """
+    from gcp.fetchers import _watchlist
+
+    for name in ("_MEMBERSHIP_AT_SQL", "_HORIZON_SQL"):
+        sql = getattr(_watchlist, name)
+        assert "%(" not in sql, (
+            f"{name} uses named placeholders; pg8000 cannot bind them and "
+            "this is only reachable in production"
+        )
+
+
+def test_membership_resolution_does_not_swallow_database_errors():
+    """`_load_from_cloud_sql` above returns [] on any error so callers can
+    fall through to file/env. The as-of resolver must NOT copy that: a
+    caller that cannot tell "nobody was watchlisted on that date" from "the
+    query failed" computes analog statistics over the wrong universe and
+    reports them as fact (CLAUDE.md Rule 3.7).
+    """
+    import datetime
+
+    from gcp.fetchers import _watchlist
+
+    class _Boom:
+        def cursor(self):
+            raise RuntimeError("connection reset by peer")
+
+        def close(self):
+            return None
+
+    import lib.agents.model_routing as mr
+
+    original = mr.connect
+    mr.connect = lambda: _Boom()
+    try:
+        with pytest.raises(RuntimeError, match="connection reset"):
+            _watchlist.resolve_membership_at(datetime.date(2026, 9, 15))
+    finally:
+        mr.connect = original

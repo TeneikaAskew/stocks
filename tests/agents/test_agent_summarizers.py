@@ -866,12 +866,16 @@ def _cutoff_aware_query(monkeypatch, df):
         else:
             assert "date <= CAST(:cutoff AS date)" in sql, sql
             out = df[dates <= cutoff].reset_index(drop=True)
-        if "ticker <> :ticker" in sql:
+        if "= ANY(:tickers)" in sql:
             # Cross-ticker pull carries a `ticker` column per source row.
             out = out.assign(ticker="QQQ")
         return out
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    # The cross-ticker pull is strict (a DB error must not read as "no
+    # analogs"), so both paths need the same cutoff-aware fake or the test
+    # would exercise only the same-ticker query.
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
     return seen
 
 
@@ -922,8 +926,16 @@ def test_backtest_metrics_cross_ticker_query_honours_the_same_cutoff(monkeypatch
     df = _synth_daily_bars()
     as_of = pd.Timestamp(df.iloc[-1]["date"]).date()
     seen = _cutoff_aware_query(monkeypatch, df)
+    # Membership is resolved separately now; supply it rather than reaching
+    # for a database. What this test is about is the cutoff operator on the
+    # bar pull, not how the universe was resolved.
+    from gcp.fetchers._watchlist import WatchlistMembership
+
     summarizers.summarize_backtest_metrics(
-        "SPY", as_of=as_of, cross_ticker=True, inclusive_today=False)
+        "SPY", as_of=as_of, cross_ticker=True, inclusive_today=False,
+        universe=WatchlistMembership(
+            tickers=("QQQ",), as_of=as_of, owner="default",
+            resolution="exact", horizon=None))
     daily_sqls = [s for s, _ in seen if "market_data_daily" in s]
     assert daily_sqls, "no market_data_daily query issued"
     assert all("date <= CAST(:cutoff AS date)" not in s for s in daily_sqls), \
@@ -934,7 +946,7 @@ def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
     calls = {}
 
     def fake_backtest(ticker, lookback_days=90, as_of=None, *, cross_ticker=True,
-                      inclusive_today=True):
+                      inclusive_today=True, universe=None):
         calls["inclusive_today"] = inclusive_today
         return {"available": False, "reason": "stub"}
 

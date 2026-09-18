@@ -31,11 +31,159 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
+from datetime import date as date_type, datetime, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_ID = "default"
+
+
+# ---------------------------------------------------------------------------
+# As-of membership resolution (watchlist_history)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WatchlistMembership:
+    """Who was on ``owner``'s watchlist on ``as_of``, and how well we know.
+
+    Frozen because callers resolve this ONCE per run and thread it down;
+    a mutable universe would let one ticker's processing change the next
+    ticker's analog set inside the same run.
+
+    ``resolution`` is the honest part and callers are expected to render
+    it (CLAUDE.md Rule 3.7.1 — an undisclosed quality difference is a
+    silent fallback):
+
+    * ``exact`` — every membership transition on or after ``as_of`` is in
+      ``watchlist_history``, so this is the membership, not an estimate.
+    * ``approximate`` — ``as_of`` predates ``horizon``, the point where
+      history recording began. ``watchlists`` holds current state under
+      ``PRIMARY KEY (user_id, ticker)``, so a removal that a later re-add
+      cleared left no trace to seed from. Adds after ``as_of`` and
+      removals never followed by a re-add are still resolved correctly;
+      an interval erased before ``horizon`` is not, and cannot be.
+    """
+
+    tickers: tuple[str, ...]
+    as_of: date_type
+    owner: str
+    resolution: str
+    horizon: Optional[datetime]
+
+    def describe(self) -> dict:
+        """Render for the context bundle / insight report."""
+        return {
+            "tickers": list(self.tickers),
+            "ticker_count": len(self.tickers),
+            "as_of": str(self.as_of),
+            "owner": self.owner,
+            "resolution": self.resolution,
+            "horizon": str(self.horizon) if self.horizon else None,
+        }
+
+
+# Membership at any point during the as-of DAY, which is exactly the
+# predicate the inline semi-join in lib/agents/summarizers.py used before
+# this table existed. Preserved deliberately: this change is about the
+# accuracy of the answer (intervals a re-add used to erase), not about the
+# boundary. Changing both at once would make any behaviour difference
+# impossible to attribute to either.
+#
+# Residual, stated rather than quietly fixed: "any point during the day"
+# still admits an edit made LATER in the as-of day than the moment a run
+# represents (a brief runs 08:30 ET; a ticker added at noon counts). That
+# is a smaller leak than the one being closed and needs a run-instant
+# concept the pipeline does not currently carry.
+# Placeholders are POSITIONAL %s, not %(name)s. `connect()` returns
+# psycopg2 locally and under CLOUD_SQL_URL, but pg8000 through the Cloud SQL
+# Connector in production, and pg8000's paramstyle is `format` — named
+# placeholders raise there while passing every local and CI test. Every other
+# cur.execute() in this module and in model_routing.py is positional for the
+# same reason; test_membership_sql_uses_positional_placeholders pins it.
+_MEMBERSHIP_AT_SQL = """
+    SELECT ticker FROM (
+        SELECT DISTINCT ON (ticker) ticker, action
+          FROM watchlist_history
+         WHERE user_id = %s
+           AND effective_at < %s
+         ORDER BY ticker, effective_at DESC, id DESC
+    ) carried
+     WHERE carried.action = 'add'
+    UNION
+    SELECT DISTINCT ticker
+      FROM watchlist_history
+     WHERE user_id = %s
+       AND action = 'add'
+       AND effective_at >= %s
+       AND effective_at <  %s
+"""
+
+_HORIZON_SQL = """
+    SELECT max(recorded_at) AS horizon
+      FROM watchlist_history
+     WHERE origin = 'seed'
+"""
+
+
+def resolve_membership_at(
+    as_of: date_type,
+    user_id: str = DEFAULT_USER_ID,
+) -> WatchlistMembership:
+    """Resolve ``user_id``'s watchlist membership as it stood on ``as_of``.
+
+    Raises on any database failure. That is deliberate and is the whole
+    point of the function: a caller that cannot tell "nobody was on the
+    watchlist" from "the query failed" will quietly compute analog
+    statistics over the wrong universe, which is the failure class
+    CLAUDE.md Rule 3.7 exists to prevent. An empty watchlist is a
+    legitimate answer and returns empty ``tickers``; an unreachable
+    database is not an answer and raises.
+    """
+    from lib.agents.model_routing import connect
+
+    day_start = datetime(as_of.year, as_of.month, as_of.day)
+    day_end = day_start + timedelta(days=1)
+
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _MEMBERSHIP_AT_SQL,
+            (user_id, day_start, user_id, day_start, day_end),
+        )
+        tickers = _dedupe_upper(r[0] for r in cur.fetchall())
+        cur.execute(_HORIZON_SQL)
+        row = cur.fetchone()
+        horizon = row[0] if row else None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            # cleanup — original error already propagated
+            pass
+
+    resolution = "exact"
+    if horizon is not None:
+        # `horizon` is tz-aware (TIMESTAMPTZ); day_start is naive local.
+        # Compare on the calendar date, which is the granularity the
+        # caller reasons in and avoids inventing a timezone here.
+        if as_of < horizon.date():
+            resolution = "approximate"
+
+    logger.info(
+        "watchlist membership owner=%s as_of=%s tickers=%d resolution=%s",
+        user_id, as_of, len(tickers), resolution,
+    )
+    return WatchlistMembership(
+        tickers=tuple(sorted(tickers)),
+        as_of=as_of,
+        owner=user_id,
+        resolution=resolution,
+        horizon=horizon,
+    )
 
 
 _VALID_SURFACES = ("all", "brief", "insight", "signals")

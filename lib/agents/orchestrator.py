@@ -51,7 +51,7 @@ import logging
 import re
 import time
 from datetime import date as date_type, datetime, timezone
-from typing import Any, Callable, Literal, Optional, Type
+from typing import Any, Callable, Literal, Optional, Type, TYPE_CHECKING
 
 from pydantic import BaseModel
 
@@ -76,6 +76,9 @@ from .schema import (
     TraderOutput,
 )
 from .summarizers import build_context_bundle, retrieve_similar_journal
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from gcp.fetchers._watchlist import WatchlistMembership
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +275,7 @@ async def run_insight_pipeline(
     as_of: Optional[date_type] = None,
     *,
     snapshot: Optional[RouteSnapshot] = None,
+    universe: Optional["WatchlistMembership"] = None,
     llm_factory: LLMFactory = _default_factory,
     query_embedding: Optional[list[float]] = None,
 ) -> InsightReport:
@@ -284,6 +288,12 @@ async def run_insight_pipeline(
     snapshot :
         Optional pre-loaded route snapshot. Tests inject a stub; the
         Cloud Run job loads from Cloud SQL via load_routes_snapshot().
+    universe :
+        Optional pre-resolved WatchlistMembership for the cross-ticker
+        analog set. Same shape as `snapshot`: frozen for the run when
+        supplied, resolved on demand when not. Supplying it pins the
+        analog universe for a replay and lets a test drive the sparse
+        path without a database.
     llm_factory :
         Function (provider:str) -> LLMClient instance. Tests inject
         a mock so no provider SDK is called.
@@ -298,7 +308,7 @@ async def run_insight_pipeline(
     tracker = _Tracker()
 
     # 1. Build the grounded context bundle (no LLM yet)
-    bundle = build_context_bundle(ticker, as_of)
+    bundle = build_context_bundle(ticker, as_of, universe=universe)
 
     # 2. Resolve route snapshot (frozen for the whole run)
     if snapshot is None:

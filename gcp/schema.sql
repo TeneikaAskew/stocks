@@ -2323,6 +2323,163 @@ BEGIN
 END $$;
 
 
+-- ── watchlist_history: immutable membership log ──────────────────────
+-- `watchlists` is PRIMARY KEY (user_id, ticker), so it holds CURRENT
+-- state plus a first-add timestamp — not a membership history. Every
+-- re-add path is
+--     ON CONFLICT (user_id, ticker) DO UPDATE SET removed_at = NULL
+-- and none of them touches added_at, so "added Jan, removed Mar,
+-- re-added Jun" reads as present the whole time and a replay of April
+-- wrongly includes the ticker. The evidence is erased, not hidden:
+-- no query against `watchlists` can tell that case from a ticker that
+-- was never removed. That silently changes the analog universe an
+-- INSIGHT_AS_OF replay computes its forward-return statistics over.
+--
+-- This table records every membership transition instead. It is written
+-- ONLY by the trigger below, never by application code: there are three
+-- writers of `watchlists` today (gcp/fetchers/_watchlist.py, which the
+-- platform API delegates to; gcp/discord_interactions/main.py; and
+-- gcp/backfill_ticker.py) plus this file's own `signals` UPDATE and any
+-- ad-hoc SQL. A dual-write in each of them is five places to keep in
+-- step and would silently diverge the first time one is missed or a
+-- fourth writer is added. A trigger fires inside the writer's own
+-- transaction, so history cannot commit apart from the state change it
+-- describes, and a future writer gets it for free.
+CREATE TABLE IF NOT EXISTS watchlist_history (
+    id            BIGSERIAL     PRIMARY KEY,
+    user_id       VARCHAR(320)  NOT NULL,
+    ticker        VARCHAR(10)   NOT NULL,
+    action        VARCHAR(10)   NOT NULL CHECK (action IN ('add', 'remove')),
+    -- When membership actually changed (added_at / removed_at / NOW()
+    -- on a re-add), NOT when the row was written. As-of resolution
+    -- reads this one.
+    effective_at  TIMESTAMPTZ   NOT NULL,
+    recorded_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- 'seed' = backfilled from `watchlists` when this table was created,
+    -- so it inherits that table's blind spot. 'trigger' = observed live.
+    -- The newest 'seed' row's recorded_at is the horizon before which
+    -- resolution is reported as approximate.
+    origin        VARCHAR(10)   NOT NULL DEFAULT 'trigger'
+                                CHECK (origin IN ('trigger', 'seed')),
+    source        VARCHAR(20)   NULL,
+    -- Surface flags as they stood at the transition. Not read by the
+    -- analog universe (which uses no surface filter), recorded so a
+    -- future as-of resolution for the brief / signal surfaces does not
+    -- need a second migration to start collecting them.
+    in_brief      BOOLEAN       NULL,
+    in_insight    BOOLEAN       NULL,
+    signals       BOOLEAN       NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_history_asof
+    ON watchlist_history (user_id, ticker, effective_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
+    ON watchlist_history (recorded_at) WHERE origin = 'seed';
+
+-- ATOMIC-BEGIN watchlist history: trigger + seed as one txn
+-- Grouped so an apply interrupted between the two cannot leave the
+-- trigger live with the seed never run: history would then start at the
+-- interruption, the pre-existing rows would be absent, and the next
+-- apply would find a non-empty table and skip the seed permanently.
+CREATE OR REPLACE FUNCTION watchlists_record_membership()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO watchlist_history
+            (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+        VALUES (NEW.user_id, NEW.ticker, 'add', NEW.added_at,
+                NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        IF NEW.removed_at IS NOT NULL THEN
+            INSERT INTO watchlist_history
+                (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+            VALUES (NEW.user_id, NEW.ticker, 'remove', NEW.removed_at,
+                    NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_OP = 'UPDATE' THEN
+        -- Membership is `removed_at IS NULL`; only a transition of THAT
+        -- predicate is an event. A flag edit, a source rewrite, or a
+        -- re-add of an already-active row must record nothing, or the
+        -- log fills with non-events and DISTINCT ON picks one of them.
+        IF OLD.removed_at IS NOT NULL AND NEW.removed_at IS NULL THEN
+            -- Re-add. added_at is deliberately NOT read: the re-add
+            -- paths leave it at the original first-add, which is the
+            -- erasure this table exists to stop. NOW() is the
+            -- transaction clock, the same one `removed_at = NOW()` uses.
+            INSERT INTO watchlist_history
+                (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+            VALUES (NEW.user_id, NEW.ticker, 'add', NOW(),
+                    NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        ELSIF OLD.removed_at IS NULL AND NEW.removed_at IS NOT NULL THEN
+            INSERT INTO watchlist_history
+                (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+            VALUES (NEW.user_id, NEW.ticker, 'remove', NEW.removed_at,
+                    NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    -- DELETE. No writer hard-deletes today; without this branch one
+    -- would drop an open interval with no record that it ever closed.
+    IF OLD.removed_at IS NULL THEN
+        INSERT INTO watchlist_history
+            (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+        VALUES (OLD.user_id, OLD.ticker, 'remove', NOW(),
+                OLD.source, OLD.in_brief, OLD.in_insight, OLD.signals);
+    END IF;
+    RETURN OLD;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_watchlists_membership ON watchlists;
+CREATE TRIGGER trg_watchlists_membership
+    AFTER INSERT OR UPDATE OR DELETE ON watchlists
+    FOR EACH ROW EXECUTE FUNCTION watchlists_record_membership();
+
+-- Append-only, enforced rather than merely intended. UPDATE and DELETE
+-- are the paths that would silently rewrite the past. TRUNCATE is
+-- deliberately NOT blocked: it is not reachable from application code,
+-- and the CI integration tests need it to isolate.
+CREATE OR REPLACE FUNCTION watchlist_history_is_append_only()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'watchlist_history is append-only; % is not permitted', TG_OP;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_watchlist_history_append_only ON watchlist_history;
+CREATE TRIGGER trg_watchlist_history_append_only
+    BEFORE UPDATE OR DELETE ON watchlist_history
+    FOR EACH ROW EXECUTE FUNCTION watchlist_history_is_append_only();
+
+-- One-shot seed from current `watchlists` state. added_at, and a
+-- non-null removed_at, are genuine; what cannot be recovered is an
+-- interval a re-add already erased — hence origin='seed'.
+--
+-- The guard is "history is entirely empty", not "no seed rows exist".
+-- On a fresh database `watchlists` is empty, so a seed-row guard would
+-- write nothing and stay satisfiable forever: a later apply, after the
+-- trigger had recorded real adds, would seed on top of them and
+-- duplicate every active ticker's add event.
+INSERT INTO watchlist_history
+    (user_id, ticker, action, effective_at, origin, source, in_brief, in_insight, signals)
+SELECT s.user_id, s.ticker, s.action, s.effective_at, 'seed',
+       s.source, s.in_brief, s.in_insight, s.signals
+  FROM (
+        SELECT user_id, ticker, 'add' AS action, added_at AS effective_at,
+               source, in_brief, in_insight, signals
+          FROM watchlists
+        UNION ALL
+        SELECT user_id, ticker, 'remove', removed_at,
+               source, in_brief, in_insight, signals
+          FROM watchlists WHERE removed_at IS NOT NULL
+       ) s
+ WHERE NOT EXISTS (SELECT 1 FROM watchlist_history);
+-- ATOMIC-END watchlist history
+
+
 -- ─────────────────────────────────────────────────────────
 -- TICKER CALIBRATION (Phase 0.6)
 -- Per-ticker, quarterly-refreshed thresholds for the multi-tf signal
