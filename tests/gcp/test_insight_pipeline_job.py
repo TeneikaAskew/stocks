@@ -138,7 +138,7 @@ def stub_run_pipeline(monkeypatch):
     """
     calls: list[str] = []
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None, **kwargs) -> bool:
         calls.append(ticker)
         return True
 
@@ -168,7 +168,7 @@ def captured_triggers(monkeypatch):
 
     monkeypatch.setattr(job, "_insert_run", fake_insert_run)
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None, **kwargs) -> bool:
         return True
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
@@ -403,7 +403,7 @@ def captured_as_of(monkeypatch):
     """Capture the as_of value passed to _run_one for every ticker."""
     received: list[tuple[str, object]] = []
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None, **kwargs) -> bool:
         received.append((ticker, as_of))
         return True
 
@@ -484,7 +484,8 @@ def stub_fanout(monkeypatch):
 
     async def fake_run_one(run_id: str, ticker: str, as_of=None,
                            allow_update: bool = False,
-                           run_kind: str = "scheduled", triggered_by=None) -> bool:
+                           run_kind: str = "scheduled", triggered_by=None,
+                           **kwargs) -> bool:
         ran.append((run_id, ticker))
         return True
 
@@ -745,3 +746,81 @@ def test_the_claim_is_a_compare_and_swap_on_claimable_states():
         "the running transition must be a conditional claim, not a bare UPDATE"
     )
     assert "rowcount" in src, "the claim must be decided by rows affected"
+
+
+# ---------------------------------------------------------------------------
+# One analog universe per batch, not one per ticker
+# ---------------------------------------------------------------------------
+
+
+def test_the_batch_threads_one_universe_into_every_in_process_ticker():
+    """Codex P2 on `e3463b3`.
+
+    `WatchlistMembership` is frozen so a batch resolves ONE universe and
+    every ticker uses it; nothing honoured that. Each `_run_one` reached
+    `summarize_backtest_metrics` with `universe=None` and resolved
+    independently, so a watchlist edit between two tickers changed the
+    later ones' peers -- the promise in the dataclass's own docstring,
+    unkept.
+
+    Checked by AST rather than by regex: both call sites span several
+    lines, so a line-anchored pattern cannot see their keywords. Asserting
+    on the source is deliberate -- driving `_run_scheduled` end to end
+    would need Cloud SQL, Cloud Tasks and an LLM, and would prove the
+    mocks were wired rather than that the argument is passed.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[2] / "gcp/insight_pipeline_job.py"
+    tree = ast.parse(src.read_text())
+
+    scheduled = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and n.name == "_run_scheduled"
+    )
+    calls = [
+        n for n in ast.walk(scheduled)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name) and n.func.id == "_run_one"
+    ]
+    assert len(calls) == 2, (
+        f"expected the sequential and enqueue-fallback loops, found {len(calls)} "
+        "_run_one call sites; a new one must also be given the batch universe"
+    )
+    for call in calls:
+        passed = {kw.arg for kw in call.keywords}
+        assert "universe" in passed, (
+            "a _run_one call site does not pass the batch universe, so that "
+            "ticker resolves its own and the batch is no longer one universe"
+        )
+
+
+def test_run_one_forwards_the_universe_rather_than_dropping_it():
+    """A parameter accepted and not forwarded is the same bug, hidden."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[2] / "gcp/insight_pipeline_job.py"
+    tree = ast.parse(src.read_text())
+
+    run_one = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and n.name == "_run_one"
+    )
+    assert "universe" in {a.arg for a in run_one.args.args}, \
+        "_run_one does not accept a universe"
+
+    pipeline_calls = [
+        n for n in ast.walk(run_one)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name) and n.func.id == "run_insight_pipeline"
+    ]
+    assert pipeline_calls, "_run_one no longer calls run_insight_pipeline"
+    for call in pipeline_calls:
+        assert "universe" in {kw.arg for kw in call.keywords}, (
+            "_run_one accepts a universe and does not pass it on, so the "
+            "batch's frozen universe is silently discarded"
+        )

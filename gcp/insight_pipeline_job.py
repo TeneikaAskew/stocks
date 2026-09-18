@@ -493,6 +493,7 @@ async def _run_one(
     allow_update: bool = False,
     run_kind: str = 'scheduled',
     triggered_by: Optional[str] = None,
+    universe=None,
 ) -> bool:
     """Execute one pipeline run and persist transitions. Returns True
     on success.
@@ -524,7 +525,8 @@ async def _run_one(
         return True
     try:
         snapshot = load_routes_snapshot()
-        report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
+        report = await run_insight_pipeline(
+            ticker, as_of=as_of, snapshot=snapshot, universe=universe)
         # Always append to history first; current-table write is conditional.
         _insert_report_history(report, run_id, run_kind, triggered_by)
         report_id = _upsert_report(report, allow_update=allow_update)
@@ -756,6 +758,48 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
                 len(pending), len(tickers), ",".join(t for _, t in pending),
             )
 
+    # One universe for the whole batch, not one per ticker (Codex P2 on
+    # `e3463b3`). `WatchlistMembership` is frozen precisely so one ticker's
+    # processing cannot change the next ticker's analog set, and nothing was
+    # honouring that: every `_run_one` reached `summarize_backtest_metrics`
+    # with universe=None and resolved independently, so a watchlist edit
+    # between two tickers changed the later ones' peers.
+    #
+    # Resolved only when there is in-process work. An all-enqueued fan-out
+    # runs no ticker here and must not pay for a query it will not use.
+    #
+    # Agreeing with the per-backtest cutoff guard is not luck:
+    # `insight-pipeline-daily` fires at 08:45 America/New_York (12:45/13:45
+    # UTC, read from Cloud Scheduler, not from a doc) against an 1800 s
+    # task-timeout, so a batch cannot cross UTC midnight and compute a
+    # different `today` than this line did.
+    #
+    # A failure here is logged and left as None rather than aborting the
+    # batch: each ticker then resolves on its own as before, and a resolver
+    # that cannot run at all still surfaces through `build_context_bundle`'s
+    # per-section guard as `available: False` with the reason attached. The
+    # disclosure is unchanged; only where it is computed moves.
+    batch_universe = None
+    if pending is None or pending:
+        try:
+            from gcp.fetchers._watchlist import resolve_membership_at
+
+            _cutoff = as_of.date() if isinstance(as_of, datetime) else as_of
+            batch_universe = resolve_membership_at(
+                _cutoff or datetime.now(timezone.utc).date()
+            )
+            logger.info(
+                "analog universe frozen for this batch: as_of=%s resolution=%s "
+                "tickers=%d",
+                batch_universe.as_of, batch_universe.resolution,
+                len(batch_universe.tickers),
+            )
+        except Exception as exc:
+            logger.warning(
+                "could not freeze one analog universe for this batch (%s); "
+                "each ticker will resolve its own", exc,
+            )
+
     any_failures = False
     if pending is None:
         # Sequential mode: insert each run row immediately before
@@ -765,7 +809,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             ok = await _run_one(
                 run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
-                triggered_by=triggered_by,
+                triggered_by=triggered_by, universe=batch_universe,
             )
             if not ok:
                 any_failures = True
@@ -775,7 +819,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             ok = await _run_one(
                 run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
-                triggered_by=triggered_by,
+                triggered_by=triggered_by, universe=batch_universe,
             )
             if not ok:
                 any_failures = True

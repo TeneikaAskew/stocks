@@ -49,9 +49,20 @@ DEFAULT_USER_ID = "default"
 class WatchlistMembership:
     """Who was on ``owner``'s watchlist on ``as_of``, and how well we know.
 
-    Frozen because callers resolve this ONCE per run and thread it down;
-    a mutable universe would let one ticker's processing change the next
-    ticker's analog set inside the same run.
+    Frozen so a batch can resolve ONE universe and thread it down: a
+    mutable one would let one ticker's processing change the next
+    ticker's analog set. ``gcp/insight_pipeline_job.py`` does that for
+    every ticker it runs in-process.
+
+    It does NOT reach fan-out children (``INSIGHT_FANOUT=1``, the
+    default). Each child is its own Cloud Run execution launched from
+    container env vars, so freezing across them would mean serializing
+    this object -- ``resolution`` and ``horizon`` included -- into an env
+    var for the child to assert without having computed it, which is the
+    fabricated provenance this class exists to prevent. Until that is
+    designed, a fan-out child resolves its own universe and reports
+    honestly which one it used, so two children of one batch can differ
+    if the watchlist changes between them (Codex P2 on ``e3463b3``).
 
     ``resolution`` is the honest part and callers are expected to render
     it (CLAUDE.md Rule 3.7.1 — an undisclosed quality difference is a
