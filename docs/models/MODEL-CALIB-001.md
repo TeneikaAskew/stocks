@@ -60,6 +60,17 @@ compares each new value against the rolling 4-row mean and standard deviation fo
   the reader falls back to Tier B. One anomalous quarter cannot whipsaw production.
 - **≥ `_DRIFT_REFUSE_SIGMAS = 3.0`** (`:278`) → the write is **refused** for that ticker
   (`:436-442`) unless `--force`.
+- **`sd == 0.0` — a flat prior history → *any* nonzero change flags** (`:343-352`), with the
+  sigma thresholds never reached: the branch sets `drift_flagged = True` and `continue`s, so it
+  can flag but can never **refuse**. The log line says so — *"sd=0 (history is flat) → ANY
+  change is drift"*.
+
+  This is the branch most likely to surprise an operator, and it is not a corner case: the
+  guard needs only `_DRIFT_MIN_PRIOR_ROWS = 3` prior rows, and a quarterly writer producing
+  three or four identical values for a stable ticker is ordinary. The next calibration that
+  moves a percentile by any amount at all is then flagged, and the live resolver silently drops
+  to Tier B for that ticker. A successful write, a tiny change, and no threshold crossed — and
+  production stops reading it.
 
 So `--force` is the switch that puts a drifted calibration into production: with it, the row is
 written `drift_flagged=FALSE` (`:450-457`), which the comment there explains is deliberate —
