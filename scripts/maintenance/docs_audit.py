@@ -421,6 +421,19 @@ def resolve_marker_sha(since: str | None, base_ref: str, runner=None) -> str:
         raise AuditError(
             f"the resolved SHA {sha!r} is not a form the marker parser reads "
             f"back (expects 7-40 hex characters); refusing to write it")
+    # Resolvable is not the same as REVIEWABLE. A commit from another branch
+    # resolves fine, and writing it into a marker records a review against
+    # content this run never read: check_marker_sha calls the marker invalid on
+    # the next run, and the drift range `sha..base_ref` is not a baseline at
+    # all. Only checked for an explicit --since, because base_ref is trivially
+    # its own ancestor.
+    if since and subprocess.run(
+            ["git", "merge-base", "--is-ancestor", sha, base_ref],
+            cwd=REPO, capture_output=True).returncode != 0:
+        raise AuditError(
+            f"--since {since} resolves to {sha}, which is not an ancestor of {base_ref}; "
+            "a marker naming it would record a review against content this run did not "
+            "read, and the next run would report it invalid. Nothing was written.")
     return sha
 
 
@@ -539,7 +552,15 @@ def check_registry_paths(tracked: set[str], registry: list[dict]) -> list[dict]:
             continue
         top = max(len(r["glob"]) for r in matches)
         tied = [r for r in matches if len(r["glob"]) == top]
-        if len({r["cls"] for r in tied}) > 1:
+        def _rule(r: dict) -> tuple:
+            # What classify() hands the caller. Two tied rows agreeing on the
+            # class but declaring different code paths still silently drop one
+            # set: duplicate Class D rows naming `lib/a` and `lib/b` produced
+            # no finding, and changes under `lib/b` could never trigger drift.
+            return (r["cls"], tuple(r.get("code_paths") or ()),
+                    tuple(r.get("regions") or ()))
+
+        if len({_rule(r) for r in tied}) > 1:
             rules = ", ".join(sorted({"{} -> {}".format(r["glob"], r["cls"])
                                       for r in tied}))
             out.append({"check": "registry", "doc": path, "severity": "P1",
@@ -884,9 +905,14 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     h1 = h1_index(lines)
     if h1 is None:
         return range(0, min(limit, len(lines)))
+    # A heading inside a FENCE is an example, not the next section. Treating it
+    # as one ended the search early, so an existing marker below the fence was
+    # reported missing and --stamp inserted a second one above it, leaving
+    # contradictory provenance in the document.
+    fenced = fenced_lines(lines)
     stop = len(lines)
     for j in range(h1 + 1, min(h1 + 1 + limit, len(lines))):
-        if lines[j].startswith("#"):
+        if j not in fenced and lines[j].startswith("#"):
             stop = j
             break
     return range(h1 + 1, min(stop, h1 + 1 + limit, len(lines)))
@@ -986,6 +1012,29 @@ def is_future_date(date: str, today: str) -> bool:
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 
 
+def commented_lines(lines: list[str]) -> set[int]:
+    """Indices inside an HTML comment, which renders as nothing at all.
+
+    A marker-shaped line inside `<!-- ... -->` was accepted as the document's
+    provenance, so the missing-marker check passed and --stamp rewrote the line
+    in place -- still inside the invisible comment. The command reported
+    success and the document still had no rendered review marker.
+    """
+    out: set[int] = set()
+    depth = 0
+    for i, line in enumerate(lines):
+        opens = line.count("<!--")
+        closes = line.count("-->")
+        if depth:
+            out.add(i)
+        elif opens:
+            out.add(i)
+        depth += opens - closes
+        if depth < 0:
+            depth = 0
+    return out
+
+
 def fenced_lines(lines: list[str]) -> set[int]:
     """Indices inside a fenced code block, which are examples, not content.
 
@@ -1025,6 +1074,11 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     """
     out = []
     fenced = fenced_lines(lines)
+    # A marker inside `<!-- ... -->` is invisible to every reader. Accepting it
+    # passed the missing-marker check, and --stamp then rewrote the line still
+    # inside the comment: the command reported success over a document with no
+    # rendered provenance at all.
+    commented = commented_lines(lines)
     for i in marker_window(lines):
         # An INDENTED marker-shaped line is an example of a marker, not the
         # document's provenance -- and stripping before matching threw away
@@ -1033,7 +1087,7 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
         # finding, and `--stamp` then REPLACED the example with an unindented
         # live marker: a write straight through this module's one hard rule.
         # Fenced blocks are excluded for the same reason.
-        if i in fenced or (lines[i] and lines[i][0].isspace()):
+        if i in fenced or i in commented or (lines[i] and lines[i][0].isspace()):
             continue
         line = lines[i].strip()
         m = MARKER_RE.match(line)
@@ -1389,6 +1443,18 @@ def is_tracked_dir(tracked: set[str], norm: str) -> bool:
     return any(p.startswith(prefix) for p in tracked)
 
 
+_CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
+
+
+def code_spans(line: str) -> list[tuple[int, int]]:
+    """Offset ranges of inline code spans, CommonMark's backtick-run rule.
+
+    A run of N backticks opens a span that only a run of exactly N closes, so
+    ``` ``a ` b`` ``` is one span rather than two.
+    """
+    return [(m.start(), m.end()) for m in _CODE_SPAN_RE.finditer(line)]
+
+
 def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     out = []
     # Every extension this tree actually tracks. CODE_EXTS is the floor, so a
@@ -1491,7 +1557,18 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
+        # Link SYNTAX shown as inline code or escaped is rendered literally,
+        # not as a link: `` `[x](missing.md)` `` and `\[x](missing.md)` both
+        # display the brackets. Scanning them produced gating dead-link
+        # findings over a document's own syntax examples. Only this pass is
+        # masked -- the backtick pass below needs those code spans, because a
+        # backticked path IS its subject.
+        spans = code_spans(line)
         for m in MD_LINK_RE.finditer(line):
+            if any(lo <= m.start() < hi for lo, hi in spans):
+                continue
+            if m.start() and line[m.start() - 1] == "\\":
+                continue
             check_target(m.group("target"), m.group("frag"), n)
         for m in BACKTICK_PATH_RE.finditer(line):
             cited = m.group("path")
@@ -1895,6 +1972,19 @@ def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
     return rows
 
 
+_REFRESH_GEN_RE = re.compile(r"(\d{4})-(\d{2})")
+
+
+def _refresh_generation(title: str) -> str:
+    """The `YYYY-MM` a refresh PR title names, or "" when it names none.
+
+    Supersession is a statement about which month's documents landed, and only
+    a title carrying a generation can make it.
+    """
+    m = _REFRESH_GEN_RE.search(title or "")
+    return f"{m.group(1)}-{m.group(2)}" if m else ""
+
+
 def check_owning_job(today: str) -> list[dict]:
     """Did the job that owns the Class A docs actually deliver?
 
@@ -1933,15 +2023,35 @@ def check_owning_job(today: str) -> list[dict]:
     # a live defect. Reporting #963/#1012/#1021 forever kept --check red with
     # findings whose only remedy would be reviving obsolete PRs.
     delivery_re = OWNING_JOB["delivery_title_re"]
-    delivered = max((pr["merged"] for pr in owned_prs
-                     if pr["merged"] and delivery_re.search(pr["title"])), default="")
+    # By GENERATION, not by mixing one PR's creation time with another's merge
+    # time. An August refresh that merges after September's PR was opened made
+    # `created < delivered` true for September, so the still-unmerged September
+    # refresh was skipped -- though August's output says nothing about whether
+    # September's documents ever landed. The strict delivery title carries the
+    # generation (`Monthly architecture doc refresh: YYYY-MM`); a PR whose
+    # title has no generation cannot supersede anything.
+    deliveries = [pr for pr in owned_prs
+                  if pr["merged"] and delivery_re.search(pr["title"])]
+    delivered_gen = max((g for g in (_refresh_generation(pr["title"]) for pr in deliveries)
+                         if g), default="")
+    delivered_at = max((pr["merged"] for pr in deliveries), default="")
     # Filter first, THEN limit. Slicing the raw list meant six newer merged
     # maintenance PRs -- which the attempt pattern is deliberately broad enough
-    # to match, and which never contribute to the strict `delivered` timestamp
-    # -- could push an older unsuperseded open refresh PR out of view, so the
-    # audit reported no delivery problem while that refresh sat unmerged.
-    actionable = [pr for pr in owned_prs
-                  if not pr["merged"] and not (delivered and pr["created"] < delivered)]
+    # to match, and which never contribute to the strict delivery set -- could
+    # push an older unsuperseded open refresh PR out of view, so the audit
+    # reported no delivery problem while that refresh sat unmerged.
+    def _superseded(pr: dict) -> bool:
+        gen = _refresh_generation(pr["title"])
+        if gen:
+            # Both sides name a month: compare those, and nothing else.
+            return bool(delivered_gen and gen <= delivered_gen)
+        # A repair attempt (`Fix: Monthly architecture doc refresh failed`)
+        # names no generation, so there is nothing to compare but time. It is
+        # history once ANY delivery merged after it was opened -- which is the
+        # case the supersede rule was added for (#963/#1012/#1021).
+        return bool(delivered_at and pr["created"] < delivered_at)
+
+    actionable = [pr for pr in owned_prs if not pr["merged"] and not _superseded(pr)]
     for pr in actionable[:6]:
         age = (datetime.date.fromisoformat(today)
                - datetime.date.fromisoformat(pr["created"][:10])).days
@@ -2145,7 +2255,17 @@ def main(argv: list[str] | None = None) -> int:
         # `docs` and raised FileNotFoundError here: a traceback and exit 1, the
         # status reserved for documentation findings.
         try:
-            text = (REPO / doc).read_text(encoding="utf-8", errors="replace")
+            # STRICT when a write may follow. errors="replace" substitutes
+            # U+FFFD for any invalid byte, and --stamp writes the whole decoded
+            # string back -- corrupting bytes far outside the marker, which is
+            # the one thing stamping promises not to touch.
+            text = (REPO / doc).read_text(
+                encoding="utf-8", errors="strict" if args.stamp else "replace")
+        except UnicodeDecodeError as exc:
+            raise AuditError(
+                f"{doc} is not valid UTF-8 ({exc}); --stamp would write back a lossy "
+                "decode and corrupt bytes outside the marker. Fix the encoding first, "
+                "or run without --stamp") from exc
         except OSError as exc:
             raise AuditError(
                 f"{doc} is in the audited tree at HEAD but cannot be read from the "
@@ -2370,8 +2490,17 @@ def main(argv: list[str] | None = None) -> int:
                      if f.get("region") else "")
             print(f"  [{f['severity']}] {f['check']}: {f['doc']}{loc}{where} — {f['detail']}")
         if stamped:
-            acted = [s for s in stamped if s["action"] != "unchanged"]
-            print(f"  stamped: {len(acted)} changed, {len(stamped) - len(acted)} unchanged")
+            # Only a WRITE is a change. `skipped-legacy-content` and
+            # `skipped-no-h1` queue nothing, and several living documents
+            # return the former deliberately, so a routine --stamp reported
+            # them changed when no write existed.
+            acted = [s for s in stamped if s["action"] in {"inserted", "updated"}]
+            refused = [s for s in stamped
+                       if s["action"] not in {"inserted", "updated", "unchanged"}]
+            skipped = len(refused)
+            print(f"  stamped: {len(acted)} changed, "
+                  f"{len(stamped) - len(acted) - skipped} unchanged"
+                  + (f", {skipped} skipped" if skipped else ""))
 
     # --check gates on P1 and P2. P3 is the standing worklist: legacy lines a
     # human must merge, and documents nobody has reviewed yet. Both are real

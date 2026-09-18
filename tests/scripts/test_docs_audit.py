@@ -2816,3 +2816,150 @@ def test_a_new_working_tree_document_is_audited(audit_repo, capsys):
             "--issues-snapshot", str(audit_repo / "issues.json")])
     report = json.loads(capsys.readouterr().out)
     assert any(f["doc"] == "docs/brand-new.md" for f in report["findings"]), report["findings"]
+
+
+# ── round 13 ────────────────────────────────────────────────────────────────
+
+
+def test_a_marker_inside_an_html_comment_is_not_provenance():
+    """It renders as nothing. Accepting it passed the missing-marker check, and
+    --stamp then rewrote the line still inside the comment: success reported
+    over a document with no rendered provenance at all."""
+    lines = ["# T", "", "<!--", "**Last reviewed:** 2026-01-01 · **Owner:** X", "-->",
+             "", "body"]
+    assert m.find_markers(lines) == []
+
+
+def test_a_marker_outside_the_comment_is_still_found():
+    lines = ["# T", "", "<!-- a note -->", "**Last reviewed:** 2026-01-01 · **Owner:** X",
+             "", "body"]
+    assert [i for i, _ in m.find_markers(lines)] == [3]
+
+
+def test_a_fenced_heading_does_not_end_the_marker_window():
+    """Treating an example heading as the next section ended the search early,
+    so an existing marker below the fence was reported missing and --stamp
+    inserted a second one above it: contradictory provenance."""
+    lines = ["# T", "```md", "## Example", "```", "**Last reviewed:** 2026-01-01", "body"]
+    assert 4 in m.marker_window(lines)
+    assert [i for i, _ in m.find_markers(lines)] == [4]
+
+
+def test_link_syntax_shown_as_inline_code_is_not_a_link():
+    """`` `[x](missing.md)` `` renders the brackets literally. Scanning it
+    produced a gating dead-link finding over a document's own syntax example."""
+    assert m.check_dead_links("d.md", "# T\n\nUse `[x](missing.md)` for links.\n",
+                              {"src/a.py"}) == []
+
+
+def test_escaped_link_syntax_is_not_a_link():
+    assert m.check_dead_links("d.md", "# T\n\n\\[x](missing.md)\n", {"src/a.py"}) == []
+
+
+def test_a_real_link_beside_a_code_span_is_still_checked():
+    """The mask applies to the link pass only; a genuine link on the same line
+    must survive it."""
+    out = m.check_dead_links("d.md", "# T\n\nUse `[x](a.md)` then [y](missing.md).\n",
+                             {"src/a.py"})
+    assert len(out) == 1 and "missing.md" in out[0]["detail"], out
+
+
+def test_tied_registry_rules_that_disagree_on_code_paths_are_a_finding():
+    """The ambiguity check compared only `cls`, so duplicate Class D rows
+    naming `lib/a` and `lib/b` produced no finding and changes under `lib/b`
+    could never trigger drift."""
+    reg = [{"cls": "D", "glob": "docs/a*.md", "code_paths": ["lib/a"], "regions": []},
+           {"cls": "D", "glob": "docs/*a.md", "code_paths": ["lib/b"], "regions": []}]
+    out = [f for f in m.check_registry_paths({"docs/aa.md", "lib/a", "lib/b"}, reg)
+           if "equal specificity" in f["detail"]]
+    assert len(out) == 1, out
+
+
+def test_tied_registry_rules_that_agree_entirely_are_not_a_finding():
+    reg = [{"cls": "D", "glob": "docs/a*.md", "code_paths": ["lib/a"], "regions": []},
+           {"cls": "D", "glob": "docs/*a.md", "code_paths": ["lib/a"], "regions": []}]
+    assert [f for f in m.check_registry_paths({"docs/aa.md", "lib/a"}, reg)
+            if "equal specificity" in f["detail"]] == []
+
+
+def test_a_since_commit_that_is_not_an_ancestor_is_refused():
+    """Resolvable is not reviewable. A commit from another branch resolves
+    fine, and writing it into a marker records a review against content this
+    run never read -- which the next run reports as an invalid marker."""
+    def fake_run(cmd, **kw):
+        return "abcdef123456"
+    orig = m.subprocess.run
+
+    class Refused:
+        returncode = 1
+
+    m.subprocess.run = lambda *a, **k: (Refused() if a and "merge-base" in a[0]
+                                        else orig(*a, **k))
+    try:
+        with pytest.raises(m.AuditError, match="not an ancestor"):
+            m.resolve_marker_sha("other-branch", "HEAD", runner=fake_run)
+    finally:
+        m.subprocess.run = orig
+
+
+def test_an_august_delivery_does_not_supersede_a_september_refresh(monkeypatch):
+    """Comparing September's creation time with August's merge time treated the
+    older delivery as superseding the newer attempt, so a still-unmerged
+    September refresh was skipped -- though August's output says nothing about
+    whether September's documents landed."""
+    prs = "\n".join([
+        "1100\topen\t\t2026-09-01T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
+        "1050\tclosed\t2026-09-10T00:00:00Z\t2026-08-01T00:00:00Z\t"
+        "Monthly architecture doc refresh: 2026-08",
+    ])
+    monkeypatch.setattr(m, "run", lambda cmd, **k: "success\t2026-09-10T00:00:00Z\n"
+                        if "runs?" in " ".join(cmd) else prs)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    findings = m.check_owning_job("2026-09-17")
+    assert any("#1100" in f["detail"] for f in findings), [f["detail"] for f in findings]
+
+
+def test_only_a_written_stamp_counts_as_changed(audit_repo, capsys):
+    """`skipped-legacy-content` and `skipped-no-h1` queue no write, and several
+    living documents return the former deliberately, so a routine --stamp
+    reported them changed when no write existed."""
+    # Behavioural, through main(): a document with no H1 cannot be stamped, so
+    # a --stamp run over it must report 0 changed and say it was skipped.
+    (audit_repo / "docs" / "noh1.md").write_text("no heading here\n\nbody\n")
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "doc"], cwd=audit_repo, check=True)
+    m.main(["--date", "2026-09-18", "--no-owning-job-check", "--stamp",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    out = capsys.readouterr().out
+    # The registry document IS stamped, so one write happened. The point is
+    # that noh1.md is NOT in that count: under the old rule it read
+    # "2 changed", because every action other than `unchanged` was a change.
+    assert "1 changed" in out, out
+    assert "1 skipped" in out, out
+
+
+def test_stamping_refuses_a_document_that_is_not_valid_utf8(audit_repo):
+    """errors="replace" substitutes U+FFFD for any invalid byte, and --stamp
+    writes the whole decoded string back -- corrupting bytes far outside the
+    marker, which is the one thing stamping promises not to touch."""
+    bad = audit_repo / "docs" / "bad.md"
+    bad.write_bytes(b"# T\n\nca\xe9 body\n")
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "doc"], cwd=audit_repo, check=True)
+    with pytest.raises(m.AuditError, match="not valid UTF-8"):
+        m.main(["--date", "2026-09-18", "--no-owning-job-check", "--stamp",
+                "--issues-snapshot", str(audit_repo / "issues.json")])
+    # And the bytes are untouched, because nothing was written.
+    assert bad.read_bytes() == b"# T\n\nca\xe9 body\n"
+
+
+def test_a_read_only_run_still_reports_on_a_lossily_decoded_document(audit_repo, capsys):
+    """No write follows, so replacement is harmless and refusing would make the
+    audit unable to report on a document at all."""
+    (audit_repo / "docs" / "bad.md").write_bytes(b"# T\n\nca\xe9 body\n")
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "doc"], cwd=audit_repo, check=True)
+    m.main(["--date", "2026-09-18", "--json", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    assert any(f["doc"] == "docs/bad.md" for f in report["findings"]), report["findings"]
