@@ -2515,3 +2515,120 @@ def test_the_same_blocker_outside_the_fence_is_still_reported():
     states = {"stocks": {8: {"state": "closed", "reason": "completed"}}}
     doc = "# T\n\nBlocked by https://github.com/TeneikaAskew/stocks/issues/8\n"
     assert len(m.check_closed_issues("d.md", doc, states)) == 1
+
+
+# ── round 12 ────────────────────────────────────────────────────────────────
+
+
+def test_a_fence_closes_only_on_a_compatible_delimiter():
+    """A `~~~` line inside a ``` example is CODE. Toggling on any fence-looking
+    line closed the block there, so the rest of the example read as prose and
+    the prose after the real closing fence read as code."""
+    assert sorted(m.fenced_lines(["```md", "~~~ ex", "```", "prose"])) == [0, 1, 2]
+    assert sorted(m.fenced_lines(["~~~ts", "code", "~~~", "prose"])) == [0, 1, 2]
+
+
+def test_a_heading_inside_a_fence_offers_no_anchor():
+    """Recording it invented an anchor, so a link to a fragment the rendered
+    document does not have PASSED the dead-anchor check."""
+    assert sorted(m.heading_anchors("```md\n# Example\n```\n# Real\n")) == ["real"]
+
+
+def test_a_heading_with_closing_atx_markers_anchors_on_its_text():
+    """`## Install ##` renders as `Install`; GitHub's anchor is `#install`."""
+    assert sorted(m.heading_anchors("## Install ##\n")) == ["install"]
+
+
+def test_the_document_h1_is_not_a_heading_inside_a_fence():
+    """--stamp would insert the provenance marker INSIDE the code block: the
+    example rewritten, the document left effectively unstamped."""
+    assert m.h1_index(["```md", "# Example", "```", "# Real Title"]) == 3
+
+
+def test_a_malformed_line_region_is_an_audit_error():
+    """re.error walks past the AuditError handler, so the CLI printed a
+    traceback and exited 1 -- the status it documents for findings."""
+    with pytest.raises(m.AuditError, match="not a valid regular"):
+        m.owned_lines("# T\nbody\n", ["line:[unclosed"])
+    m.owned_lines("# T\nbody\n", ["line:^body$"])
+
+
+def test_unresolved_does_not_settle_a_citation():
+    """An unbounded alternation matched `resolved` inside `unresolved`, so
+    `Outstanding: <url> remains unresolved` settled the citation and a closed
+    issue cited as live work produced no finding."""
+    states = {"stocks": {1: {"state": "closed", "reason": "completed"}}}
+    line = "Outstanding: https://github.com/TeneikaAskew/stocks/issues/1 remains unresolved\n"
+    assert len(m.check_closed_issues("d.md", line, states)) == 1
+
+
+def test_a_settled_word_embedded_in_a_longer_one_does_not_settle():
+    """`unresolved` is caught by the negator scan, so it does not on its own
+    prove the word boundary is doing anything. `enclosed` does: nothing before
+    it is a negator, and an unbounded `closed` matches inside it, which settles
+    a citation over prose that says nothing of the kind.
+
+    Found by mutation-checking the boundary change and getting 0 failures --
+    the test written for it was passing for the other reason.
+    """
+    states = {"stocks": {1: {"state": "closed", "reason": "completed"}}}
+    line = ("Outstanding: https://github.com/TeneikaAskew/stocks/issues/1, "
+            "enclosed in the table\n")
+    assert len(m.check_closed_issues("d.md", line, states)) == 1
+
+
+def test_a_genuinely_settled_citation_is_still_suppressed():
+    states = {"stocks": {1: {"state": "closed", "reason": "completed"}}}
+    line = "Outstanding: https://github.com/TeneikaAskew/stocks/issues/1 is now closed\n"
+    assert m.check_closed_issues("d.md", line, states) == []
+
+
+def test_two_citations_on_one_line_are_read_against_their_own_clauses():
+    """One boolean for the whole line gave the closed #1 a P1 from #2's cue,
+    on a line that says in so many words that #1 no longer blocks."""
+    u = "https://github.com/TeneikaAskew/stocks/issues"
+    states = {"stocks": {1: {"state": "closed", "reason": "completed"},
+                         2: {"state": "open", "reason": ""}}}
+    line = f"#1 {u}/1 is no longer blocking; #2 {u}/2 is still open\n"
+    assert m.check_closed_issues("d.md", line, states) == []
+
+
+def test_a_clause_with_no_cue_still_falls_back_to_the_line():
+    """A table row puts the cue and the citations in different cells, and
+    `| Open issues | #1 |` is a real finding -- it is how stocks#838 is
+    reported on this tree. Scoping strictly to the clause would lose it."""
+    u = "https://github.com/TeneikaAskew/stocks/issues/1"
+    states = {"stocks": {1: {"state": "closed", "reason": "completed"}}}
+    assert len(m.check_closed_issues("d.md", f"| Open issues | [#1]({u}) |\n", states)) == 1
+
+
+@pytest.mark.parametrize("tgt", ["tel:+15551234", "ftp://example.com/x",
+                                 "HTTPS://example.com/a", "//example.com/page"])
+def test_a_destination_that_is_not_a_repository_path_is_left_alone(tgt):
+    """A narrow, case-sensitive http/https/mailto allowlist sent all four down
+    the repository-path branch and produced a P2 for a file never meant to
+    exist locally."""
+    assert m.check_dead_links("d.md", f"# T\n\n[x]({tgt})\n", {"src/a.py"}) == []
+
+
+def test_a_percent_encoded_destination_resolves_against_the_decoded_name():
+    """git reports the DECODED filename, so `Morning%20Checklist.md` was
+    compared against a tracked `Morning Checklist.md` and reported dead."""
+    assert m.check_dead_links("d.md", "# T\n\n[x](Morning%20Checklist.md)\n",
+                              {"Morning Checklist.md"}) == []
+
+
+def test_a_percent_encoded_destination_that_is_really_missing_is_still_dead():
+    out = m.check_dead_links("d.md", "# T\n\n[x](Gone%20File.md)\n", {"src/a.py"})
+    assert len(out) == 1
+    # The ORIGINAL spelling is what the reader has to find in the document.
+    assert "Gone%20File.md" in out[0]["detail"], out[0]["detail"]
+
+
+def test_the_first_reference_definition_is_the_one_markdown_uses():
+    """Overwriting with the last meant `[g]: missing.md` followed by
+    `[g]: README.md` rendered as a broken link while the audit validated only
+    the second and reported clean."""
+    out = m.check_dead_links("d.md", "# T\n\nSee [g][g].\n\n[g]: missing.md\n[g]: README.md\n",
+                             {"README.md"})
+    assert len(out) == 1 and "missing.md" in out[0]["detail"], out

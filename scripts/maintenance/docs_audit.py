@@ -90,6 +90,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import urllib.parse
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 OWNER = "TeneikaAskew"
@@ -134,6 +135,7 @@ def legacy_tail_is_bare(rest: str) -> bool:
     return bool(_BARE_TAIL_RE.match(rest or ""))
 
 H1_RE = re.compile(r"^#\s+\S")
+_URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
 
 # A reference only counts as a staleness finding when the surrounding line
 # presents it as live work. A changelog saying "fixed #123" is not a defect.
@@ -166,8 +168,24 @@ def has_blocking_cue(line: str) -> bool:
 # says three stocks records "are closed as not planned with the work still
 # open in solyra", and the line-level cue applied "still open" to all five
 # citations on it -- reporting truthful traceability history as stale docs.
+# Whole words, and negation-aware. An unbounded alternation matched `resolved`
+# inside `unresolved`, so `Outstanding: <url> remains unresolved` SETTLED the
+# citation and a closed issue cited as live work produced no finding -- a
+# suppression, which is the worse direction. Raised on the Node twin's
+# blocking-cue equivalent first (solyra#69).
 SETTLED_CUE_RE = re.compile(
-    r"closed|resolved|superseded|merged|moved to|relocated|duplicate of|completed", re.I)
+    r"\b(?:closed|resolved|superseded|merged|moved to|relocated|duplicate of"
+    r"|completed)\b", re.I)
+
+
+def is_settled(clause: str) -> bool:
+    """Does this clause say the citation is finished?
+
+    True only when at least one settled cue is not negated: `not resolved` and
+    `never merged` say the opposite of the word they contain.
+    """
+    return any(not CUE_NEGATOR_RE.search(clause[:mm.start()])
+               for mm in SETTLED_CUE_RE.finditer(clause))
 # What bounds a clause: sentence punctuation, a semicolon, or a table-cell
 # edge. Not a comma -- the example above puts the closed and open halves in
 # one comma-free clause pair separated by "with".
@@ -221,7 +239,10 @@ CODE_EXTS = {".py", ".ts", ".tsx", ".js", ".mjs", ".sql", ".sh", ".yml", ".yaml"
 
 
 _SLUG_STRIP_RE = re.compile(r"[^\w\s-]")
-_HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.M)
+# `## Install ##` renders as `Install`, and GitHub's anchor is `install`.
+# Passing `Install ##` to heading_slug recorded `install-`, so a valid link to
+# `#install` was reported dead. Raised on the Node twin (solyra#69).
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)(?:\s+#+)?\s*$", re.M)
 
 
 def heading_slug(heading: str) -> str:
@@ -254,7 +275,18 @@ def heading_anchors(text: str) -> set[str]:
     """
     seen: dict[str, int] = {}
     out: set[str] = set()
-    for m in _HEADING_RE.finditer(text):
+    # A `# ` line inside a fence is CODE. Recording it invented an anchor, so a
+    # link to a fragment the rendered document does not have PASSED the
+    # dead-anchor check. Marker parsing already excludes fenced lines; the Node
+    # twin already excluded them here.
+    lines = text.split("\n")
+    fenced = fenced_lines(lines)
+    for i, line in enumerate(lines):
+        if i in fenced:
+            continue
+        m = _HEADING_RE.match(line)
+        if not m:
+            continue
         base = heading_slug(m.group(1))
         n = seen.get(base, 0)
         slug = base if n == 0 else f"{base}-{n}"
@@ -648,7 +680,15 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             if len(starts) != len(ends):
                 orphans.append(f"{name} has {len(starts)} BEGIN and {len(ends)} END markers")
         elif spec.startswith("line:"):
-            pat = re.compile(spec[5:])
+            # A registry typo is bad INPUT. re.compile raises re.error, which
+            # walks past the AuditError handler, so the CLI printed a traceback
+            # and exited 1 -- the status it documents for findings. The Node
+            # twin already made this split.
+            try:
+                pat = re.compile(spec[5:])
+            except re.error as exc:
+                raise AuditError(f"registry region `{spec}` is not a valid regular "
+                                 f"expression: {exc}") from exc
             for n, line in enumerate(lines, 1):
                 if pat.search(line):
                     owned.add(n)
@@ -918,19 +958,33 @@ def is_future_date(date: str, today: str) -> bool:
     return is_calendar_date(date) and date > today
 
 
-_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 
 
 def fenced_lines(lines: list[str]) -> set[int]:
-    """Indices inside a fenced code block, which are examples, not content."""
+    """Indices inside a fenced code block, which are examples, not content.
+
+    The OPENING delimiter is remembered. Toggling on any fence-looking line
+    meant a `~~~` inside a ``` example closed the block there, so the rest of
+    the example read as prose and the prose after the real closing fence read
+    as code -- false findings and suppressed ones from one line. CommonMark: a
+    fence closes only on the same character, at least as long, with no info
+    string. Raised on the Node twin (solyra#69).
+    """
     out: set[int] = set()
-    open_fence = False
+    open_fence: str | None = None
     for i, line in enumerate(lines):
-        if _FENCE_RE.match(line):
-            open_fence = not open_fence
-            out.add(i)
-        elif open_fence:
-            out.add(i)
+        m = _FENCE_RE.match(line)
+        if open_fence is None:
+            # An opening ``` fence may not carry a backtick in its info string.
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                open_fence = m.group(1)
+                out.add(i)
+            continue
+        out.add(i)
+        if (m and m.group(1)[0] == open_fence[0]
+                and len(m.group(1)) >= len(open_fence) and not m.group(2).strip()):
+            open_fence = None
     return out
 
 
@@ -983,8 +1037,12 @@ def h1_index(lines: list[str]) -> int | None:
     and carry their H1 on line 9, where a line-3 insert lands inside the
     comment. A doc with no H1 is skipped by the caller entirely.
     """
+    # A fenced `# Example` before the real title was returned as the H1, so
+    # --stamp inserted the provenance marker INSIDE the code block: the example
+    # was rewritten and the document left effectively unstamped.
+    fenced = fenced_lines(lines)
     for i, line in enumerate(lines):
-        if H1_RE.match(line):
+        if i not in fenced and H1_RE.match(line):
             return i
     return None
 
@@ -1223,6 +1281,24 @@ def citation_clause(line: str, start: int, end: int) -> str:
     return line[lo:nxt.start() if nxt else len(line)]
 
 
+def cites_live_work(line: str, start: int, end: int) -> bool:
+    """Is THIS citation cited as live work?
+
+    A line-level answer put every URL on the line under one verdict, so
+    `#1 is no longer blocking; #2 is still open` gave #1 a P1 from #2's cue.
+    The clause decides when it carries a cue at all; otherwise the line does,
+    because a table row puts the cue and the citations in different cells --
+    `| Open issues | #838 · #839 |` is a real finding whose citations sit in a
+    clause with no cue of its own. Raised on the Node twin (solyra#69).
+    """
+    clause = citation_clause(line, start, end)
+    if SETTLED_CUE_RE.search(clause) and is_settled(clause):
+        return False
+    if BLOCKING_CUE_RE.search(clause):
+        return has_blocking_cue(clause)
+    return has_blocking_cue(line)
+
+
 def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[dict]:
     out = []
     lines = text.split("\n")
@@ -1237,10 +1313,10 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             continue
         for m in ISSUE_URL_RE.finditer(line):
             # The line carries a live-work cue; does THIS citation's clause say
-            # the opposite? Deliberately narrow: only prose that explicitly
-            # settles the reference suppresses it, so this can remove a false
-            # finding and never a true one.
-            if SETTLED_CUE_RE.search(citation_clause(line, m.start(), m.end())):
+            # the opposite? Both cue families are read against the clause now
+            # (see cites_live_work), with the line as the fallback when the
+            # clause carries no cue of its own.
+            if not cites_live_work(line, m.start(), m.end()):
                 continue
             if m.group("kind").lower() != "issues":
                 continue
@@ -1294,7 +1370,11 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
         what = (f"relative link -> {tgt}" if label is None
                 else f"reference link [{label}] -> {tgt}")
         anchor_what = f"link -> {tgt}" if label is None else what
-        if tgt.startswith(("http://", "https://", "mailto:")):
+        # Any scheme, case-insensitively, plus a protocol-relative `//host/x`.
+        # A narrow `http|https|mailto` allowlist sent `tel:`, `ftp:`, `HTTPS:`
+        # and `//example.com/x` down the repository-path branch and produced a
+        # P2 for a file never meant to exist locally.
+        if _URI_SCHEME_RE.match(tgt) or tgt.startswith("//"):
             return
         if not tgt:
             # `[x](#heading)` -- same document, so the anchor is still
@@ -1307,8 +1387,13 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
             # `.github/workflows/README.md` linking `../../docs/...`
             # produced `.github/workflows/../../docs/...`, which is in no
             # tracked set, and 3,259 live links reported as dead.
-            resolved = (tgt.lstrip("/") if tgt.startswith("/")
-                        else posixpath.join(str(base), tgt))
+            # Markdown percent-encodes spaces and other path characters, and
+            # git reports the DECODED filename, so `Morning%20Checklist.md` was
+            # compared against a tracked `Morning Checklist.md` and reported
+            # dead. The original spelling stays in the message.
+            decoded = urllib.parse.unquote(tgt)
+            resolved = (decoded.lstrip("/") if decoded.startswith("/")
+                        else posixpath.join(str(base), decoded))
             norm = posixpath.normpath(resolved)
             if norm.startswith(".."):
                 # Climbs out of the repository: cross-repo prose, which
@@ -1347,8 +1432,12 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
         if n - 1 in fenced:
             continue
         rm = REF_DEF_RE.match(line)
+        # The FIRST definition wins, as Markdown renders it. Overwriting with
+        # the last meant `[g]: missing.md` followed by `[g]: good.md` rendered
+        # as a broken link while the audit validated only `good.md`.
         if rm:
-            ref_defs[rm.group("label").strip().lower()] = (rm.group("target").strip("<>"), n)
+            ref_defs.setdefault(rm.group("label").strip().lower(),
+                                (rm.group("target").strip("<>"), n))
     for label, (target, n) in ref_defs.items():
         tgt, _, frag = target.partition("#")
         check_target(tgt, frag or None, n, label)
