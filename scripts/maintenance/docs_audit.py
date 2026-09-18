@@ -238,8 +238,14 @@ REF_DEF_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:\s+(?P<target>\S+)"
 # citation failed to match at all and was never checked. There are 1,207 of
 # them in this tree, `gcp/database.py:88-102` in CLAUDE.md among them, and a
 # rename or deletion of any of those files produced no finding.
+# The extension bound is 10, not 5. At 5 a citation of `docs/STRAT_ENGINE_ERD.drawio`
+# did not match the pattern at all, so it was never checked -- though this tree
+# tracks five `.drawio` files and `check_dead_links` derives its allowlist FROM
+# the tree exactly so extensions like that are covered. The allowlist is what
+# keeps the wider bound honest: an extension this tree does not track is
+# skipped there, so widening the pattern adds reach, not false positives.
 BACKTICK_PATH_RE = re.compile(
-    r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,5}"
+    r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,10}"
     r"(?::\d+(?:-\d+)?)?)`")
 
 # The `:line` or `:start-end` suffix above, which is a citation's coordinate
@@ -303,9 +309,8 @@ def heading_anchors(text: str) -> set[str]:
         # Setext (`Title` over `===` or `---`) renders as a heading and
         # GitHub exposes its anchor, but an ATX-only scan recorded none -- so a
         # valid link to one was emitted as a gating dead-anchor finding.
-        setext = (line.strip() and not line.lstrip().startswith("#")
-                  and i + 1 < len(lines) and (i + 1) not in fenced
-                  and re.fullmatch(r" {0,3}(=+|-{2,})\s*", lines[i + 1] or ""))
+        setext = (i + 1 < len(lines)
+                  and is_setext_underline(lines, i + 1, fenced))
         m = _HEADING_RE.match(line)
         if not (m or setext):
             continue
@@ -318,6 +323,18 @@ def heading_anchors(text: str) -> set[str]:
         seen[base] = n + 1
         out.add(slug)
     return out
+
+
+def decode_fragment(frag: str) -> str:
+    """The anchor a browser resolves, from the spelling a link carries.
+
+    `#caf%C3%A9` is how a link to `## Caf\u00e9` is written, and it works;
+    comparing the encoded spelling against the decoded slug reported it dead.
+    `unquote` leaves an invalid escape (`100%-done`) exactly as it is, which is
+    what makes this safe to apply to every fragment rather than guessing which
+    ones are encoded.
+    """
+    return urllib.parse.unquote(frag)
 
 
 def strip_dot_segments(path: str) -> str:
@@ -809,11 +826,22 @@ def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list
     """Balanced `<!-- inventory:NAME:start/end -->` pairs by name, and every
     marker with no partner, each described with its line so the finding can
     be acted on. Read once per document; both the wildcard and the named
-    specs consume it."""
+    specs consume it.
+
+    Fenced lines are skipped. A document explaining the convention shows the
+    marker pair in a code block, and reading that example as a real region put
+    the renderer's ownership check on prose: the span was reported generated,
+    a marker landing inside it was called unstampable, and the audit measured
+    region drift against a code sample. Every other check here already skips
+    fences for the same reason.
+    """
+    fenced = fenced_lines(lines)
     pairs: dict[str, tuple[int, int]] = {}
     unbalanced: list[str] = []
     open_at: dict[str, int] = {}
     for n, line in enumerate(lines, 1):
+        if n - 1 in fenced:
+            continue
         m = INVENTORY_RE.search(line)
         if not m:
             continue
@@ -961,8 +989,18 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     # being asked about; the line count was a proxy for it.
     stop = len(lines)
     for j in range(h1 + 1, len(lines)):
-        if j not in fenced and lines[j].startswith("#"):
+        if j in fenced:
+            continue
+        if lines[j].startswith("#"):
             stop = j
+            break
+        # Setext is a section heading too, and its underline marks the heading
+        # written on the line ABOVE -- so the next section starts there, not at
+        # the underline. Reading only `#` let a `Last reviewed` line inside
+        # that section stand in for the whole document's provenance, which is
+        # the `# PART A` defect above in the other heading syntax.
+        if is_setext_underline(lines, j, fenced):
+            stop = j - 1
             break
     return range(h1 + 1, min(stop, len(lines)))
 
@@ -1070,40 +1108,50 @@ def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
     an ordinary citation beside it: the balanced inline comment marked the
     whole line invisible and the dead link on it stopped being reported.
 
-    A `<!--` inside a code span is not a comment either, so code spans are
-    masked before the scan -- which is what makes that same line parse right.
+    ONE ordered scan, because a fence and a comment compete for the same text
+    and whichever opens first wins until it closes. A code line cannot OPEN a
+    comment -- `<!--` shown inside a code block is a sample -- but it CAN close
+    one, because inside a comment nothing is code. Masking every fenced line
+    wholesale looked equivalent and was not: the Node twin's
+    docs/UI-SCREENS.md opens with a multi-line comment whose closing `-->` sits
+    on an indented continuation line, so masking destroyed the closer, the
+    comment ran to end of file, and five real closed-issue findings vanished.
+    The findings diff is what caught it (solyra#69).
+
+    A `<!--` inside an inline code span is not an opener either, which is what
+    makes the 05-a line above parse right.
     """
-    masked = []
-    for line in lines:
-        buf = list(line)
-        for a, b in code_spans(line):
-            for k in range(a, b):
-                buf[k] = "\x00"
-        masked.append("".join(buf))
-    text = "\n".join(masked)
-
-    ranges: list[tuple[int, int]] = []
-    pos = 0
-    while True:
-        a = text.find("<!--", pos)
-        if a < 0:
-            break
-        b = text.find("-->", a + 4)
-        end = len(text) if b < 0 else b + 3
-        ranges.append((a, end))
-        if b < 0:
-            break
-        pos = end
-
+    code = fenced_lines(lines) | indented_code_lines(lines)
     out: dict[int, list[tuple[int, int]]] = {}
-    base = 0
+
+    def add(i: int, a: int, b: int) -> None:
+        if a < b:
+            out.setdefault(i, []).append((a, b))
+
+    open_at: tuple[int, int] | None = None
     for i, line in enumerate(lines):
-        lo, hi = base, base + len(line)
-        for a, b in ranges:
-            s0, e0 = max(a, lo), min(b, hi)
-            if s0 < e0:
-                out.setdefault(i, []).append((s0 - base, e0 - base))
-        base = hi + 1
+        pos = 0
+        while True:
+            if open_at is None:
+                if i in code:
+                    break
+                spans = code_spans(line)
+                a = line.find("<!--", pos)
+                while a >= 0 and any(lo <= a < hi for lo, hi in spans):
+                    a = line.find("<!--", a + 1)
+                if a < 0:
+                    break
+                open_at = (i, a)
+                pos = a + 4
+            else:
+                frm = open_at[1] if open_at[0] == i else 0
+                b = line.find("-->", pos if open_at[0] == i else 0)
+                if b < 0:
+                    add(i, frm, len(line))
+                    break
+                add(i, frm, b + 3)
+                open_at = None
+                pos = b + 3
     return out
 
 
@@ -1127,6 +1175,43 @@ def commented_lines(lines: list[str]) -> set[int]:
             if a == 0 and b >= stop:
                 out.add(i)
                 break
+    return out
+
+
+def indented_code_lines(lines: list[str]) -> set[int]:
+    """Indices inside a four-space-indented code block.
+
+    CommonMark's other code form, which `fenced_lines` does not see: an example
+    written that way was inspected as live prose, so `[demo](missing.md)` or a
+    backticked path in it could fail --check over content that renders as code.
+
+    Deliberately narrow. Indented code cannot interrupt a paragraph, and inside
+    a list item the indentation is the LIST's -- so a run starts only after a
+    blank line whose own preceding content is neither a list item nor a table
+    row. Anything less careful masks list continuations and turns real findings
+    invisible, which is the worse direction. Ported from the Node twin
+    (solyra#69).
+    """
+    out: set[int] = set()
+    last_content: str | None = None
+    blank_seen = True
+    in_code = False
+    for i, line in enumerate(lines):
+        if not line.strip():
+            blank_seen = True
+            continue
+        indented = bool(re.match(r"^ {4,}\S", line) or line.startswith("\t"))
+        if in_code and indented:
+            out.add(i)
+            continue
+        in_code = False
+        if indented and blank_seen and not (
+                last_content is not None
+                and re.match(r"^\s*([-*+]|\d+[.)]|\|)", last_content)):
+            in_code = True
+            out.add(i)
+        last_content = line
+        blank_seen = False
     return out
 
 
@@ -1204,6 +1289,28 @@ def find_marker(lines: list[str]) -> tuple[int, dict] | None:
     return found[0] if found else None
 
 
+# `-` needs two or more: a single `-` under text is a list bullet's sibling far
+# more often than a heading, and CommonMark's own `---` case is covered.
+_SETEXT_UNDERLINE_RE = re.compile(r" {0,3}(?P<rule>=+|-{2,})\s*")
+
+
+def is_setext_underline(lines: list[str], i: int,
+                        fenced: frozenset[int] | set[int] = frozenset()) -> bool:
+    """Does line `i` underline a Setext heading written on line `i - 1`?
+
+    Three things are NOT one: a thematic break (`---` after a blank line, with
+    no heading text above it), a table's delimiter row (`|---|---|`, which the
+    pattern rejects outright), and a real underline. The line above is what
+    separates them.
+    """
+    if i <= 0 or i in fenced or (i - 1) in fenced:
+        return False
+    if not _SETEXT_UNDERLINE_RE.fullmatch(lines[i] or ""):
+        return False
+    above = lines[i - 1] or ""
+    return bool(above.strip()) and not above.lstrip().startswith("#")
+
+
 def h1_index(lines: list[str]) -> int | None:
     """Index of the first H1.
 
@@ -1228,6 +1335,23 @@ def h1_index(lines: list[str]) -> int | None:
                 and re.fullmatch(r" {0,3}=+\s*", lines[i + 1] or "")):
             return i
     return None
+
+
+def marker_anchor(lines: list[str]) -> int | None:
+    """The line a new marker goes AFTER, which is not always the H1's line.
+
+    A Setext H1 is TWO lines -- the title and its `===` underline -- so
+    inserting after the title splits the heading in half and leaves the
+    document with no H1 at all: `h1_index` returns None for the result. That is
+    strictly worse than the `skipped-no-h1` this recognizer replaced, because
+    it corrupts the document instead of declining to touch it.
+    """
+    h1 = h1_index(lines)
+    if h1 is None:
+        return None
+    if h1 + 1 < len(lines) and re.fullmatch(r" {0,3}=+\s*", lines[h1 + 1] or ""):
+        return h1 + 1
+    return h1
 
 
 def render_marker(date: str, depth: str | None, sha: str | None,
@@ -1318,7 +1442,7 @@ def stamp(text: str, date: str, depth: str, sha: str,
             return text, "unchanged"
         lines[idx] = marker
         return "\n".join(lines), "updated"
-    h1 = h1_index(lines)
+    h1 = marker_anchor(lines)
     if h1 is None:
         return text, "skipped-no-h1"
     # Target shape:  "# Title" / "" / marker / "" / body.
@@ -1489,12 +1613,21 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     # blocking citation looks like failed the audit over its own example. The
     # link, heading and marker checks already skip fenced lines.
     fenced = fenced_lines(lines)
+    # And commented-OUT text, which is how a blocker list is retired without
+    # losing it: the prose no longer renders, but it still held the build red.
+    # Span-based rather than whole-line, matching check_dead_links -- a row
+    # retired with a trailing `<!-- superseded: ... -->` is the common shape,
+    # and a whole-line rule cannot see it.
+    commented = comment_spans(lines)
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
         if not has_blocking_cue(line):
             continue
+        hidden = commented.get(n - 1, [])
         for m in ISSUE_URL_RE.finditer(line):
+            if any(lo <= m.start() < hi for lo, hi in hidden):
+                continue
             # The line carries a live-work cue; does THIS citation's clause say
             # the opposite? Both cue families are read against the clause now
             # (see cites_live_work), with the line as the fallback when the
@@ -1631,7 +1764,12 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
         # The target resolves; does the heading it names?
         if frag and norm.endswith(".md"):
             have = anchors_of(norm)
-            if have is not None and frag.lower() not in have:
+            # The fragment as the BROWSER resolves it. `#caf%C3%A9` is the
+            # ordinary spelling of a link to `## Cafe\u0301`, and comparing the
+            # encoded form against the decoded slug reported a working link
+            # dead -- the false direction, which is the one that makes an audit
+            # untrustworthy rather than merely incomplete.
+            if have is not None and decode_fragment(frag).lower() not in have:
                 out.append({"check": "dead-anchor", "doc": doc, "line": n,
                             "detail": f"{anchor_what}#{frag}: the target has no "
                                       "such heading",
@@ -1646,7 +1784,10 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     # Markdown syntax with `[x](missing.md)`, or showing a path that has since
     # moved, was read as rendered documentation and failed --check over its own
     # teaching material. The marker and heading checks already skip these.
-    fenced = fenced_lines(lines)
+    # Four-space-indented blocks are code too, and this repo's documents use
+    # that form for examples: without it `    [demo](missing.md)` was read as a
+    # rendered link. See indented_code_lines for why the rule is narrow.
+    fenced = fenced_lines(lines) | indented_code_lines(lines)
     # Retired Markdown kept in a comment is not rendered, so it is not a
     # citation -- but only the commented SPAN is invisible, not the line.
     commented = comment_spans(lines)
@@ -1746,7 +1887,14 @@ def check_marker_sha(doc: str, sha: str | None, base_ref: str, *,
     return [], True
 
 
-_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{7,40}\t")
+# Four, not seven: `%h` honours `core.abbrev`, and git's own floor is 4. Below
+# seven the header line was rejected, so every name-status line after it was
+# attributed to no commit and real code drift produced no finding at all. The
+# log format below asks for `%H` so this does not depend on local config; the
+# range is widened as well because the parser is public and is handed output
+# the caller produced. No status line can collide: `--name-status` emits a
+# letter or `R###`, and `R` is not a hex digit.
+_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{4,40}\t")
 _DRIFT_STATUS_RE = re.compile(r"^([AMDRCT])(\d{3})?\t")
 
 
@@ -1790,6 +1938,18 @@ def drift_commits(out: str, paths: list[str] | None = None) -> list[str]:
     return [line for line, drift in commits if drift]
 
 
+def path_in_commit(sha: str, doc: str, *, cwd: pathlib.Path | None = None) -> bool:
+    """Does this commit contain this path?
+
+    `run(["git", "show", f"{sha}:{doc}"])` cannot answer it: the command exits
+    128 for a path the commit lacks and returns an empty string, which is the
+    same value an empty file gives. The two need telling apart, because one of
+    them means the whole drift check is unmeasurable.
+    """
+    return subprocess.run(["git", "cat-file", "-e", f"{sha}:{doc}"],
+                          cwd=cwd or REPO, capture_output=True).returncode == 0
+
+
 def check_doc_changed_since(doc: str, sha: str | None, base_ref: str, *,
                            cwd: pathlib.Path | None = None) -> list[dict]:
     """Has the DOCUMENT itself changed since it was reviewed?
@@ -1807,12 +1967,17 @@ def check_doc_changed_since(doc: str, sha: str | None, base_ref: str, *,
     """
     if not sha:
         return []
+    # A baseline the document predates is not "no drift": `git show` exits 128,
+    # `run` returns "", and reading that as clean let a document claim, for as
+    # long as the marker stood, a verification against a revision in which it
+    # did not exist -- with its drift check silently never running again.
+    # `--stamp --verify` no longer writes such a SHA (see main); one already on
+    # disk, or a document since renamed, is reported here.
+    if not path_in_commit(sha, doc, cwd=cwd):
+        return [{"check": "changed-since", "doc": doc, "severity": "P2",
+                 "detail": f"the document does not exist at {sha}, so its review "
+                           "names a baseline predating it and drift cannot be measured"}]
     old = run(["git", "show", f"{sha}:{doc}"], cwd=cwd, ok_exit_codes=(128,))
-    if not old:
-        # The document did not exist at that SHA, or the object is missing.
-        # check_marker_sha reports an unreachable SHA separately; a document
-        # created after its own review date is a marker problem, not drift.
-        return []
     try:
         new = (REPO / doc).read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -1825,15 +1990,25 @@ def check_doc_changed_since(doc: str, sha: str | None, base_ref: str, *,
 
 
 def _without_marker(text: str) -> str:
-    """The text a review is about: everything but the marker line itself."""
+    """The text a review is about: the marker's OWN fields removed, nothing else.
+
+    Deleting the whole line deleted the content sharing it. `stamp` deliberately
+    preserves extra segments -- 09-SECURITY-AUTH's `Trust status`, 10's
+    `Status`, a planning caveat each in 13 and 14 -- because they are real
+    prose a review is about. Dropping them here made a change to any of them
+    invisible to the drift check, which is a silent fallback in the direction
+    that matters: it reports a document current over content that moved.
+    """
     lines = text.split("\n")
     found = find_marker(lines)
     if found is not None:
         i = found[0]
+        extras = extra_segments(lines[i]) if not found[1].get("legacy") else []
         end = i + 1
         if end < len(lines) and not lines[end].strip():
             end += 1
-        lines = lines[:i] + lines[end:]
+        keep = [f" {DOT} ".join(extras)] if extras else []
+        lines = lines[:i] + keep + lines[end:]
     # And every blank between the H1 and the first content line, on BOTH sides
     # of the comparison. `stamp` inserts the marker with a blank after it, and
     # with one BEFORE it as well when the document had none -- and the two
@@ -1878,7 +2053,7 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # afterwards, so the widened query never widens the answer.
     scopes = sorted({p if not posixpath.splitext(p)[1] else (posixpath.dirname(p) or ".")
                      for p in code_paths})
-    out = run(["git", "log", "--format=%h%x09%s", "--name-status", "-M",
+    out = run(["git", "log", "--format=%H%x09%s", "--name-status", "-M",
                # T as well: git files a regular-file-to-symlink conversion as a
                # TYPE change, and AMDR dropped the commit before drift_commits
                # could look at it -- so replacing a declared implementation path
@@ -2435,6 +2610,21 @@ def main(argv: list[str] | None = None) -> int:
     # the working-tree read instead.
     deleted = {p for p in run(["git", "diff", "--name-only", "--diff-filter=D",
                                "HEAD"]).strip().split("\n") if p}
+    # A pure RENAME is neither, and `--diff-filter` cannot express it: `git mv
+    # docs/old.md docs/new.md` produces one `R100` line that both queries above
+    # skip. The old path therefore stayed in the inventory while the new one
+    # was absent, so the run opened a document no longer on disk and exited 2 --
+    # on precisely the workflow (audit the change before committing it) that
+    # staged-addition support exists for. Both sides are consumed here: the
+    # source joins the deletions, the destination joins the additions.
+    renamed_from: set[str] = set()
+    for line in run(["git", "diff", "--cached", "--name-status",
+                     "--diff-filter=R"]).strip().split("\n"):
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].startswith("R"):
+            renamed_from.add(parts[1])
+            staged.add(parts[2])
+    deleted |= renamed_from
     if staged or deleted:
         tracked = (tracked | staged) - deleted
         docs = document_set(tracked, registry)
@@ -2652,13 +2842,22 @@ def main(argv: list[str] | None = None) -> int:
                                            f"{found[0] + 1} is inside a generated region, so "
                                            "rewriting it would be discarded by the renderer"})
                 continue
-            h1 = h1_index(lines)
+            h1 = marker_anchor(lines)
             if owned and h1 is not None and min(owned) <= h1 + 2:
                 findings.append({"check": "unowned", "doc": doc, "severity": "P2",
                                  "detail": f"not stamped: a generated region starts at line "
                                            f"{min(owned)}, too close to the H1 on line {h1 + 1}"})
                 continue
             reviewed = doc in verify
+            # A review records "these claims were true against THIS revision".
+            # For a document the revision does not contain, that sentence has
+            # no meaning -- and the marker it would write is unfalsifiable,
+            # because every later drift check finds nothing to diff against.
+            # A staged-new document is the case that reaches here; the answer
+            # is to commit it and stamp against a revision that holds it.
+            if reviewed and not path_in_commit(head, doc):
+                stamp_refusals[doc] = "baseline-predates-doc"
+                continue
             new, action = stamp(text, today, "verified" if reviewed else "scanned",
                                 head, reviewed=reviewed)
             # Consumed only if the review was actually recorded. `stamp` can
@@ -2681,7 +2880,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.stamp:
         missing = sorted(verify - stamp_targets)
         if missing:
-            why = {"skipped-no-h1": "no H1 to place a marker after",
+            why = {"baseline-predates-doc":
+                       f"the document does not exist at {head}, so the review would "
+                       "name a baseline predating it; commit it first",
+                   "skipped-no-h1": "no H1 to place a marker after",
                    "skipped-legacy-content": "a legacy marker carrying prose that "
                                              "rewriting would delete"}
             named = ", ".join(

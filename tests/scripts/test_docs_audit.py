@@ -3439,3 +3439,309 @@ def test_a_title_section_longer_than_the_limit_still_contains_its_marker():
 def test_the_marker_window_still_stops_at_the_next_heading():
     lines = ["# T", "body", "## Next", "**Last reviewed:** 2026-01-01"]
     assert list(m.marker_window(lines)) == [1]
+
+
+# ── round 19 ────────────────────────────────────────────────────────────────
+
+def test_a_tracked_extension_longer_than_five_characters_is_citable():
+    """The backticked-path regex capped the extension at five characters, so
+    `docs/STRAT_ENGINE_ERD.drawio` never matched and could not be checked --
+    though this tree tracks five `.drawio` files and check_dead_links derives
+    its allowlist from the tree precisely so those are covered."""
+    assert m.BACKTICK_PATH_RE.findall("see `docs/gone.drawio` here") == ["docs/gone.drawio"]
+    assert m.BACKTICK_PATH_RE.findall("`a/b.properties`") == ["a/b.properties"]
+    assert m.BACKTICK_PATH_RE.findall("`docs/x.py:88-102`") == ["docs/x.py:88-102"]
+
+
+def test_a_citation_of_a_long_extension_that_is_gone_is_reported():
+    """The regex is only half of it: the extension must also survive the
+    tree-derived allowlist, so this drives check_dead_links rather than the
+    pattern."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    tracked = {"docs/here.drawio", "docs/d.md"}
+    out = m.check_dead_links("docs/d.md", "See `docs/gone.drawio`.\n", tracked)
+    assert [f["detail"] for f in out] == ["backticked path -> docs/gone.drawio"], out
+    assert m.check_dead_links("docs/d.md", "See `docs/here.drawio`.\n", tracked) == []
+
+
+def test_a_fenced_inventory_example_does_not_form_a_region():
+    """A document SHOWING what a generated block looks like had its example
+    read as a real one, so the renderer's region check ran against prose and
+    the marker-placement test measured against a line that is a code sample."""
+    lines = ["# T", "```", "<!-- inventory:demo:start -->",
+             "<!-- inventory:demo:end -->", "```"]
+    assert m.inventory_blocks(lines) == ({}, [])
+
+
+def test_an_unbalanced_inventory_marker_outside_a_fence_is_still_reported():
+    """Skipping fenced lines must not swallow the real finding next to them."""
+    lines = ["# T", "```", "<!-- inventory:demo:start -->", "```",
+             "<!-- inventory:real:start -->"]
+    pairs, unbalanced = m.inventory_blocks(lines)
+    assert pairs == {}
+    assert len(unbalanced) == 1 and "inventory:real" in unbalanced[0], unbalanced
+
+
+def test_a_retired_blocker_inside_an_html_comment_does_not_gate():
+    """--check gates on closed-issue findings, so text commented OUT -- the
+    normal way to retire a blocker list without losing it -- held the build
+    red over prose that no longer renders."""
+    u = "https://github.com/TeneikaAskew/stocks/issues/838"
+    states = {"stocks": {838: {"state": "closed", "reason": "completed"}}}
+    assert m.check_closed_issues("d.md", f"# T\n\n<!-- was: still open {u} -->\n",
+                                 states) == []
+    live = m.check_closed_issues("d.md", f"# T\n\nstill open {u}\n", states)
+    assert len(live) == 1 and live[0]["severity"] == "P1", live
+
+
+def test_a_setext_titled_document_can_be_stamped():
+    """h1_index learning setext is not the same as --stamp placing a marker:
+    the abort Codex reported is in stamp(), and only driving stamp() binds it.
+
+    The first version of this test asserted the marker's POSITION and nothing
+    else, and passed on a stamp that wrote the marker BETWEEN the title and its
+    `===` underline -- splitting the heading, leaving the document with no H1
+    at all. Codex caught that on the next round. What the test has to assert is
+    that the heading survives, which is the thing the stamp was for.
+    """
+    new, action = m.stamp("Title\n=====\n\nBody.\n", "2026-09-18", "verified",
+                          "abc1234", reviewed=True)
+    assert action == "inserted", action
+    lines = new.split("\n")
+    assert lines[:2] == ["Title", "====="], lines
+    assert m.h1_index(lines) == 0, new
+    assert lines[3].startswith("**Last reviewed:** 2026-09-18"), new
+
+
+def test_a_staged_rename_audits_the_new_path_and_not_the_old(audit_repo, capsys):
+    """`git mv docs/old.md docs/new.md` reports as `R100`, which neither the
+    `--diff-filter=A` nor the `--diff-filter=D` query consumes. The old path
+    therefore stayed in the inventory and the new one was absent, so the run
+    opened a document that is no longer on disk -- exit 2, on the one workflow
+    (audit before you commit) the staged-addition support exists for."""
+    (audit_repo / "docs" / "old.md").write_text("# Old\n\nSee `scripts/tool.py`.\n")
+    _commit(audit_repo, "tree")
+    _git(audit_repo, "mv", "docs/old.md", "docs/new.md")
+    code = m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                   "--issues-snapshot", str(audit_repo / "issues.json")])
+    assert code != 2, capsys.readouterr()
+    report = json.loads(capsys.readouterr().out)
+    docs = {f["doc"] for f in report["findings"]}
+    assert "docs/old.md" not in docs, report["findings"]
+
+
+def test_a_staged_rename_target_resolves_a_link(audit_repo, capsys):
+    """The other half: the new path must also COUNT as tracked, or every
+    citation of it reads as dead the moment the rename is staged."""
+    (audit_repo / "docs" / "old.md").write_text("# Old\n")
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nSee `docs/new.md`.\n")
+    _commit(audit_repo, "tree")
+    _git(audit_repo, "mv", "docs/old.md", "docs/new.md")
+    m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    dead = [f for f in report["findings"] if f["check"] == "dead-link"]
+    assert dead == [], dead
+
+
+def test_a_review_is_not_recorded_against_a_commit_predating_the_document(
+        audit_repo, capsys):
+    """`--stamp --verify` on a staged-new document wrote `Against: <HEAD>`,
+    a commit that does not contain it. `git show <sha>:<doc>` then exits 128
+    forever after and check_doc_changed_since reads that as "no drift", so the
+    document permanently claims a verification against a revision in which it
+    did not exist."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n")
+    _commit(audit_repo, "tree")
+    (audit_repo / "docs" / "new.md").write_text("# New\n")
+    _git(audit_repo, "add", "docs/new.md")
+    with pytest.raises(m.AuditError, match="baseline predating it"):
+        m.main(["--date", "2026-09-18", "--no-owning-job-check", "--stamp",
+                "--verify", "docs/new.md",
+                "--issues-snapshot", str(audit_repo / "issues.json")])
+    assert "**Last reviewed:**" not in (audit_repo / "docs" / "new.md").read_text()
+
+
+def test_a_baseline_that_predates_the_document_is_reported_not_silent(audit_repo,
+                                                                     capsys):
+    """A marker already carrying such a SHA (written before the refusal above,
+    or by hand) must say so rather than reporting a clean drift check it never
+    ran."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n")
+    first = _commit(audit_repo, "tree")
+    (audit_repo / "docs" / "new.md").write_text(
+        f"# New\n\n**Last reviewed:** 2026-09-01 · **Depth:** verified · "
+        f"**Against:** `{first}` · **Last scanned:** 2026-09-18\n")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    bad = [f for f in report["findings"]
+           if f["doc"] == "docs/new.md" and "does not exist at" in f["detail"]]
+    assert len(bad) == 1 and bad[0]["severity"] == "P2", report["findings"]
+
+
+def test_a_generated_region_under_a_setext_title_still_blocks_the_stamp(audit_repo,
+                                                                       capsys):
+    """The proximity guard has to measure from the line the marker actually
+    lands on. A Setext H1 occupies two lines, so measuring from the title lets
+    a generated region beginning immediately after the underline pass the
+    guard -- and the marker is then written into content the renderer
+    overwrites on its next run."""
+    (audit_repo / "gen" / "g.md").write_text(
+        "Title\n=====\n<!-- inventory:x:start -->\nbody\n<!-- inventory:x:end -->\n")
+    _commit(audit_repo, "tree")
+    m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check", "--stamp",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    blocked = [f for f in report["findings"]
+               if f["doc"] == "gen/g.md" and "too close to the H1" in f["detail"]]
+    assert len(blocked) == 1, report["findings"]
+    assert "line 3" in blocked[0]["detail"] and "H1 on line 2" in blocked[0]["detail"], \
+        blocked[0]["detail"]
+    assert "**Last reviewed:**" not in (audit_repo / "gen" / "g.md").read_text()
+
+
+# ── round 20 ────────────────────────────────────────────────────────────────
+
+def test_a_setext_section_heading_ends_the_marker_window():
+    """The window stops at the next SECTION, and Setext is a section heading
+    too. Reading only `#` let a date inside the following section stand in for
+    the document's provenance -- the same defect the `# PART A` case in
+    marker_window's own docstring describes, one syntax over."""
+    lines = ["# T", "body", "Details", "-------", "**Last reviewed:** 2026-01-01"]
+    assert list(m.marker_window(lines)) == [1]
+    assert m.find_markers(lines) == []
+
+
+def test_an_underline_is_not_a_section_heading_without_text_above_it():
+    """A `---` after a blank line is a thematic break, and a table's delimiter
+    row is not a heading either. Ending the window on those would cut it at the
+    first table, which several documents open with."""
+    assert list(m.marker_window(["# T", "", "---", "**Last reviewed:** 2026-01-01"])) \
+        == [1, 2, 3]
+    assert list(m.marker_window(["# T", "| a | b |", "|---|---|",
+                                 "**Last reviewed:** 2026-01-01"])) == [1, 2, 3]
+
+
+def test_an_unmatched_comment_opener_inside_a_fence_comments_nothing():
+    """`<!--` shown inside a code block is a code sample. Read as a real
+    opener it ran to end of file, so every heading, marker and link after that
+    fence was treated as invisible: false marker findings AND suppressed
+    content findings, from one example line."""
+    lines = ["# T", "```", "<!-- unbalanced", "```", "## Real", "[x](missing.md)"]
+    spans = m.comment_spans(lines)
+    assert 4 not in spans and 5 not in spans, spans
+
+
+def test_a_real_comment_spanning_a_fence_still_hides_what_it_encloses():
+    """Masking fences must not break a comment that legitimately contains one."""
+    lines = ["# T", "<!-- retired:", "```", "[x](missing.md)", "```", "-->", "after"]
+    spans = m.comment_spans(lines)
+    assert 3 in spans and 6 not in spans, spans
+
+
+def test_content_sharing_the_marker_line_still_counts_as_drift():
+    """`stamp` deliberately preserves extra segments on the marker line --
+    `Trust status` on docs/product/09-SECURITY-AUTH.md is real content that a
+    review is about. Deleting the whole line before comparing made a change to
+    that content invisible to the drift check."""
+    a = "# T\n\n**Last reviewed:** 2026-01-01 · **Trust status:** GREEN\n"
+    b = "# T\n\n**Last reviewed:** 2026-01-01 · **Trust status:** RED\n"
+    assert m._without_marker(a) != m._without_marker(b)
+
+
+def test_moving_only_the_audit_owned_fields_is_still_not_drift():
+    """The other direction, which is why the line is normalised at all: the
+    weekly scan rewrites `Last scanned` on every document."""
+    a = "# T\n\n**Last reviewed:** 2026-01-01 · **Last scanned:** 2026-01-02\n"
+    b = "# T\n\n**Last reviewed:** 2026-01-01 · **Last scanned:** 2026-09-18\n"
+    assert m._without_marker(a) == m._without_marker(b)
+
+
+def test_a_link_in_an_indented_code_block_is_not_a_link():
+    """A four-space-indented block is a code block in CommonMark, and the
+    documents here use that form for examples. Both link passes scanned it."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    text = "# T\n\nExample:\n\n    [demo](missing.md)\n    see `docs/gone.md`\n"
+    assert m.check_dead_links("docs/d.md", text, {"docs/d.md"}) == []
+
+
+def test_an_indented_continuation_of_a_list_item_is_still_prose():
+    """Indented code cannot interrupt a paragraph or a list item's own
+    continuation, so the rule must not swallow an ordinary wrapped bullet."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    text = "# T\n\n- a bullet\n    [demo](missing.md)\n"
+    out = m.check_dead_links("docs/d.md", text, {"docs/d.md"})
+    assert [f["detail"] for f in out] == ["relative link -> missing.md"], out
+
+
+def test_decode_fragment_leaves_a_stray_percent_alone():
+    """Decoding is applied to every fragment rather than guessed at, which is
+    only safe because an invalid escape passes through untouched."""
+    assert m.decode_fragment("caf%C3%A9") == "café"
+    assert m.decode_fragment("plain-anchor") == "plain-anchor"
+    assert m.decode_fragment("100%-done") == "100%-done"
+
+
+def test_a_percent_encoded_fragment_resolves_to_its_heading(audit_repo):
+    """`#caf%C3%A9` is how a link to `## Café` is written, and it works.
+    Comparing the encoded spelling against the decoded slug reported it dead.
+
+    Driven through check_dead_links, not decode_fragment: the helper had a test
+    and the CALL SITE did not, so a mutation restoring the raw comparison left
+    the suite green.
+    """
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    (audit_repo / "docs" / "t.md").write_text("# T\n\n## Café\n")
+    tracked = {"docs/d.md", "docs/t.md"}
+    assert m.check_dead_links("docs/d.md", "See [x](t.md#caf%C3%A9).\n", tracked) == []
+    dead = m.check_dead_links("docs/d.md", "See [x](t.md#caf%C3%A8).\n", tracked)
+    assert len(dead) == 1 and dead[0]["check"] == "dead-anchor", dead
+
+
+def test_a_short_core_abbrev_does_not_silence_the_drift_check():
+    """`%h` honours `core.abbrev`, and below seven characters the header
+    pattern rejected every commit line -- so the name-status lines that follow
+    were attributed to nothing and real code drift produced no finding."""
+    out = "abcd\tsubject\nM\tlib/x.py\n"
+    assert m.drift_commits(out) == ["abcd\tsubject"], m.drift_commits(out)
+
+
+def test_the_drift_log_asks_for_a_full_commit_id():
+    """The parser is widened so it can read output a caller produced, but the
+    audit's own query must not depend on local config at all: `%h` honours
+    `core.abbrev` and this tool is run on other people's checkouts."""
+    src = inspect.getsource(m.check_changed_since)
+    assert "--format=%H%x09%s" in src, src
+    assert "%h%x09" not in src, src
+
+
+def test_a_comment_closed_on_an_indented_line_still_closes():
+    """The reason the comment scan is ORDERED rather than a wholesale mask.
+
+    Masking every code line destroyed a `-->` sitting on an indented
+    continuation of the comment that opened above it, so the comment ran to end
+    of file and every later finding vanished. Measured on the Node twin's
+    docs/UI-SCREENS.md, which opens exactly this way: five real closed-issue
+    findings disappeared, and only the findings diff caught it.
+    """
+    lines = ["<!-- Moved from the stocks repo", "",
+             "     which stayed there. -->", "still blocked by #1"]
+    # The closer's own line IS indented code by the rule above -- a blank line
+    # precedes it and the text before that is no list item. That is precisely
+    # why a wholesale mask destroyed it, so the fixture has to reproduce it.
+    assert 2 in m.indented_code_lines(lines)
+    spans = m.comment_spans(lines)
+    # The blank line carries no range because it has no offsets; what matters
+    # is that the comment CLOSED, so the prose below it is not swallowed.
+    assert sorted(spans) == [0, 2], spans
+    assert 3 not in spans, spans
+
+
+def test_a_comment_cannot_be_opened_from_inside_a_code_block():
+    """The other direction, which is what the ordering buys: a code line may
+    close a comment but may not open one."""
+    assert m.comment_spans(["# T", "```", "<!-- unbalanced", "```", "## Real"]) == {}
+    # The blank line matters: indented code cannot interrupt a paragraph, so
+    # without it the indented line is prose and its `<!--` is a real opener.
+    assert m.comment_spans(["# T", "", "    <!-- indented sample", "",
+                            "## Real"]) == {}
