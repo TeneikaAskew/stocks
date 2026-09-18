@@ -848,6 +848,42 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             # it did before any freeze existed.
             return None
 
+    def _run_as_of(current):
+        """The date this ticker's whole report is for, not just its peers.
+
+        `as_of=None` does not mean "today" -- it means EVERY consumer
+        decides for itself what now is. `summarize_backtest_metrics` reads
+        a clock, the strat section applies no cutoff at all, and the
+        orchestrator stamps the report from a third read. Freezing only the
+        universe left the backtest on the frozen date while the stamp came
+        from the clock, so a run crossing UTC midnight produced a report
+        whose sections disagreed about which day it was (Codex P2 on
+        `d01ed78`).
+
+        Passing the frozen date as `as_of` gives the whole ticker run one
+        date. Two consequences, both deliberate and neither hidden:
+
+        * `lib/agents/orchestrator.py:644` stamps the report at midnight of
+          that date instead of the moment it ran. For a report that IS "as
+          of" a date, that is the more honest stamp.
+        * `lib/agents/summarizers.py:446` applies the premarket cutoff
+          (`df.index < midnight-of-as_of`) where `None` applied none at
+          all. On the 08:45 ET scheduled run today's daily bar does not
+          exist yet, so that filter removes nothing; an ad-hoc run AFTER
+          the close would now exclude the session's own bar, which is the
+          documented `inclusive_today=False` contract rather than a
+          departure from it.
+
+        Only for the in-process path. The enqueue above still passes the
+        original `as_of`, so a fan-out child's `as_of_iso` is unchanged and
+        no child is pushed into replay mode. If the freeze failed,
+        `current` is None and this returns None, leaving today's behaviour
+        exactly as it was.
+        """
+        if as_of is not None or current is None:
+            return as_of
+        return current.as_of
+
     any_failures = False
     if pending is None:
         # Sequential mode: insert each run row immediately before
@@ -861,7 +897,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             # (Codex P2 on `24ccbd7`).
             batch_universe = _universe_for(batch_universe)
             ok = await _run_one(
-                run_id, ticker, as_of=as_of,
+                run_id, ticker, as_of=_run_as_of(batch_universe),
                 allow_update=allow_update, run_kind=run_kind,
                 triggered_by=triggered_by, universe=batch_universe,
             )
@@ -872,7 +908,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
         for run_id, ticker in pending:
             batch_universe = _universe_for(batch_universe)
             ok = await _run_one(
-                run_id, ticker, as_of=as_of,
+                run_id, ticker, as_of=_run_as_of(batch_universe),
                 allow_update=allow_update, run_kind=run_kind,
                 triggered_by=triggered_by, universe=batch_universe,
             )

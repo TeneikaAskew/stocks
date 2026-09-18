@@ -841,6 +841,7 @@ def _drive_batch(monkeypatch, resolve_returns):
     import gcp.fetchers._watchlist as wl_mod
 
     got: list = []
+    got_as_of: list = []
     calls: list = []
 
     def fake_resolve(cutoff, *a, **kw):
@@ -854,6 +855,7 @@ def _drive_batch(monkeypatch, resolve_returns):
     async def fake_run_one(run_id, ticker, as_of=None, allow_update=False,
                            run_kind="scheduled", triggered_by=None, universe=None):
         got.append(universe)
+        got_as_of.append(as_of)
         return True
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
@@ -861,6 +863,7 @@ def _drive_batch(monkeypatch, resolve_returns):
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None, INSIGHT_AS_OF=None)
     monkeypatch.setenv("INSIGHT_FANOUT", "0")
     assert _run(job._run_scheduled()) == 0
+    _drive_batch.last_as_of = got_as_of
     return got, calls, _dt.datetime.now(_dt.timezone.utc).date()
 
 
@@ -916,4 +919,48 @@ def test_a_utc_day_rollover_mid_batch_re_resolves_rather_than_losing_the_section
     assert got[0] is got[1], (
         "the two post-rollover tickers got different universe objects, so "
         "a watchlist edit between them would change the later peer set"
+    )
+
+
+def test_the_frozen_date_is_passed_as_as_of_for_the_whole_ticker_run(monkeypatch):
+    """Codex P2 on `d01ed78`.
+
+    Freezing only the universe pinned the backtest section's cutoff and
+    left every other consumer reading its own clock: the strat section
+    applies no cutoff when `as_of is None`, and the orchestrator stamps
+    the report from a third read. A run crossing UTC midnight therefore
+    produced a report whose sections disagreed about which day it was --
+    an inconsistency the freeze introduced, since before it the backtest
+    and the stamp at least read the clock together.
+
+    `as_of=None` does not mean "today"; it means every consumer decides
+    for itself. Handing the frozen date down is what makes one report
+    carry one date.
+    """
+    import datetime as _dt
+
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    _drive_batch(monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY"))
+    assert _drive_batch.last_as_of == [today, today], (
+        "the ticker runs were left unpinned, so their sections each read "
+        f"their own clock; got {_drive_batch.last_as_of}"
+    )
+
+
+def test_a_failed_freeze_leaves_as_of_exactly_as_it_was(monkeypatch):
+    """No universe, no pin. The degraded path must not change behaviour.
+
+    If resolution fails there is no frozen date to hand down, and
+    inventing one would apply the premarket cutoff where today's code
+    applies none -- changing what data every section sees, on the path
+    that is already degraded.
+    """
+    def boom(cutoff, n):
+        raise RuntimeError("watchlist_history missing")
+
+    got, calls, _ = _drive_batch(monkeypatch, boom)
+    assert got == [None, None], "a universe survived a failed resolution"
+    assert _drive_batch.last_as_of == [None, None], (
+        "a date was invented for a run whose freeze failed; that silently "
+        "changes the cutoff every section applies"
     )
