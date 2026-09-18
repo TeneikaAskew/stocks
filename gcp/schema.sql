@@ -2376,7 +2376,27 @@ END $$;
 -- only moves the acquisition earlier. It blocks writers, not readers,
 -- and only for this group: an empty table, two indexes, two functions
 -- and an 18-row seed.
-LOCK TABLE watchlists IN SHARE ROW EXCLUSIVE MODE;
+-- Wrapped in DO because this file has TWO loaders with different
+-- transaction semantics, and a bare `LOCK TABLE` only satisfies one.
+-- `gcp/apply_schema.py` runs an ATOMIC group inside one transaction, so a
+-- bare lock is legal there. The integration-test job loads the same file
+-- with `psql -f`, where the ATOMIC markers are ordinary comments and every
+-- statement gets its own implicit transaction — and a bare lock there is
+-- `ERROR: LOCK TABLE can only be used in transaction blocks`, which is
+-- how CI caught this. A PL/pgSQL body always executes inside a
+-- transaction, so the DO form is valid under both.
+--
+-- The two loaders then differ in how long the lock is held, which is
+-- correct rather than a compromise: under apply_schema.py it is held to
+-- the end of the group's transaction (PL/pgSQL does not release locks on
+-- block exit), which is the production guarantee this is for; under psql
+-- it ends with the DO statement, and that load targets a fresh ephemeral
+-- database with no concurrent writers, where there is nothing to guard.
+DO $$
+BEGIN
+    LOCK TABLE watchlists IN SHARE ROW EXCLUSIVE MODE;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS watchlist_history (
     id            BIGSERIAL     PRIMARY KEY,

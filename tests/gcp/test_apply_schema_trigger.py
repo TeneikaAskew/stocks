@@ -864,3 +864,20 @@ def test_watchlists_is_locked_before_the_history_is_built():
         "the first statement of the watchlist_history group is not a "
         f"write-blocking lock on watchlists; it is: {first[:120]!r}"
     )
+
+    # And it must be DO-wrapped, because this file has TWO loaders.
+    # `apply_schema.py` runs an ATOMIC group in one transaction, so a bare
+    # `LOCK TABLE` is legal there — but the integration-test job loads the
+    # same file with `psql -f`, where the ATOMIC markers are ordinary
+    # comments and each statement gets its own implicit transaction. A bare
+    # lock is then `ERROR: LOCK TABLE can only be used in transaction
+    # blocks`, which is exactly how CI failed on `f395a24`. A PL/pgSQL body
+    # always runs inside a transaction, so DO satisfies both loaders, and
+    # the lock still survives to the end of the group's transaction under
+    # the applier (verified against Postgres 16: `pg_locks` still reports
+    # ShareRowExclusiveLock after the DO block exits).
+    assert re.match(r"\s*DO\s*\$", first), (
+        "the lock is not DO-wrapped, so `psql -f gcp/schema.sql` — the "
+        "integration-test loader — will fail with 'LOCK TABLE can only be "
+        f"used in transaction blocks'. Statement: {first[:120]!r}"
+    )
