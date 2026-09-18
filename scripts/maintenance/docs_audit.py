@@ -541,6 +541,21 @@ def region_of(line: int, owned: set[int], prompt: str | None) -> str:
     return "model-prose" if prompt else "unowned"
 
 
+def region_owner(region: str, prompt: str | None) -> str:
+    """Who must make the fix -- the renderer, the prompt, or a human here.
+
+    The region alone is half the answer, and it was the half the plain output
+    dropped: "generated" without naming the job still leaves the reader
+    looking for the text in the document, where editing it is exactly what
+    the region rule forbids.
+    """
+    if region == "generated":
+        return OWNING_JOB["workflow"]
+    if region == "model-prose":
+        return prompt or "an undeclared prompt"
+    return "this document (hand-written, audit as Class D)"
+
+
 def check_regions(doc: str, text: str, specs: list[str], prompt_exists=None
                   ) -> tuple[list[dict], set[int], str | None, dict]:
     """Findings, the owned line set, the prompt, and the region map.
@@ -1012,6 +1027,106 @@ OWNING_JOB = {
 }
 GENERATED_RE = re.compile(r"Generated (\d{4}-\d{2}-\d{2})")
 
+# `gh api --paginate` is not the mechanism here: GitHub's Link header names
+# `repositories/{id}/pulls`, which this sandbox's API proxy rejects with 403,
+# so the page number is walked explicitly -- the same loop fetch_issue_states
+# already uses.
+PR_PAGE_SIZE = 100
+PR_PAGE_LIMIT = 40
+
+
+def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE) -> list[dict]:
+    """Every refresh PR the delivery check can act on, newest first.
+
+    One `per_page=100` page covers the 100 newest PRs of ANY kind, not the 100
+    newest refresh PRs. Measured on this repo on 2026-09-18: page 1 reaches
+    #1130 down to #959, a 15-day window, and the refresh PR that actually
+    delivered -- #953, merged 2026-09-02 -- is on page 2. The single-page
+    lookup therefore saw no delivery at all, so the supersede rule could not
+    fire and three long-superseded failed attempts stayed on the report.
+
+    The walk stops at the first MERGED refresh PR, because every matching PR
+    older than that one is created before `delivered` and is skipped by the
+    supersede rule anyway: reading further costs requests and can change
+    nothing (CLAUDE.md §3.8).
+    """
+    owned: list[dict] = []
+    for page in range(1, PR_PAGE_LIMIT + 1):
+        out = run([
+            "gh", "api",
+            f"repos/{OWNER}/{THIS_REPO}/pulls?state=all&per_page={page_size}"
+            f"&sort=created&direction=desc&page={page}",
+            "--jq", '.[] | [.number, .state, (.merged_at // ""), .created_at, .title] | @tsv',
+        ])
+        rows = [r for r in out.strip().split("\n") if r.strip()]
+        for row in rows:
+            parts = row.split("\t")
+            if len(parts) >= 5 and title_re.search(parts[4]):
+                owned.append({"num": parts[0], "state": parts[1], "merged": parts[2],
+                              "created": parts[3], "title": parts[4]})
+        if len(rows) < page_size or any(pr["merged"] for pr in owned):
+            break
+    return owned
+
+
+# Artifacts the owning workflow refreshes BEST-EFFORT. The calibration step is
+# written `python -m scripts.refresh_calibration_table || echo "::warning::
+# ... continuing"` (refresh-architecture-docs.yml:895-896), so a Cloud SQL
+# outage leaves the table stale while the step exits 0, the run concludes
+# success, and the refresh PR still merges -- which also suppresses the
+# PR-state checks above. Workflow success is evidence that the job ran, never
+# that THIS artifact was refreshed. The only evidence is the date the artifact
+# itself carries.
+#
+# The bound is the renderer's own: past `STALE_DAYS` scripts/
+# refresh_calibration_table.py writes `B (stale)` for the row, so a block
+# older than that is one the renderer has not re-rendered.
+BEST_EFFORT_ARTIFACTS = [
+    {
+        "doc": "docs/INVESTMENT_MODELS_SUMMARY.md",
+        "region": "ticker_calibration_resolved_values",
+        "date_re": re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
+        "max_age_days": 180,
+        "refresher": "scripts/refresh_calibration_table.py",
+    },
+]
+
+
+def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None) -> list[dict]:
+    """Freshness for the documents whose refresh step cannot fail the run.
+
+    Needs no network, so it runs even under `--issues-snapshot`: the question
+    is what the artifact says about itself, not what GitHub says about the job.
+    """
+    findings: list[dict] = []
+    for art in artifacts if artifacts is not None else BEST_EFFORT_ARTIFACTS:
+        path = REPO / art["doc"]
+        if not path.exists():
+            continue
+        dates = art["date_re"].findall(path.read_text(encoding="utf-8", errors="replace"))
+        if not dates:
+            findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
+                             "detail": f"`{art['region']}` carries no date, so nothing shows "
+                                       f"whether {art['refresher']} ever refreshed it; its "
+                                       "workflow step is best-effort and cannot fail the run"})
+            continue
+        bad = [d for d in dates if not is_calendar_date(d)]
+        if bad:
+            findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
+                             "detail": f"`{art['region']}` is dated {bad[0]}, which is not a "
+                                       "real calendar day"})
+            continue
+        newest = max(dates)
+        age = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(newest)).days
+        if age > art["max_age_days"]:
+            findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
+                             "detail": f"`{art['region']}` is dated {newest}, {age}d old and past "
+                                       f"the {art['max_age_days']}d the renderer itself calls "
+                                       f"stale, so {art['refresher']} has not re-rendered it -- "
+                                       "its workflow step is best-effort, so a green run and a "
+                                       "merged refresh PR prove nothing about this block"})
+    return findings
+
 
 def check_owning_job(today: str) -> list[dict]:
     """Did the job that owns the Class A docs actually deliver?
@@ -1029,10 +1144,7 @@ def check_owning_job(today: str) -> list[dict]:
             f"repos/{OWNER}/{THIS_REPO}/actions/workflows/{OWNING_JOB['workflow']}/runs?per_page=10",
             "--jq", '.workflow_runs[] | [.conclusion, .created_at] | @tsv',
         ])
-        prs = run([
-            "gh", "api", f"repos/{OWNER}/{THIS_REPO}/pulls?state=all&per_page=100",
-            "--jq", '.[] | [.number, .state, (.merged_at // ""), .created_at, .title] | @tsv',
-        ])
+        owned_prs = fetch_owned_prs(OWNING_JOB["pr_title_re"])
     except AuditError:
         # Do NOT convert this into a finding. A finding means "the docs are
         # stale"; this means "the audit never learned whether they are", and
@@ -1045,12 +1157,6 @@ def check_owning_job(today: str) -> list[dict]:
         findings.append({"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P1",
                          "detail": f"last run concluded {recent[0][0]} at {recent[0][1]}"})
 
-    owned_prs = []
-    for row in prs.strip().split("\n"):
-        parts = row.split("\t")
-        if len(parts) >= 5 and OWNING_JOB["pr_title_re"].search(parts[4]):
-            owned_prs.append({"num": parts[0], "state": parts[1], "merged": parts[2],
-                              "created": parts[3], "title": parts[4]})
     # A closed-unmerged attempt that a LATER refresh superseded is history, not
     # a live defect. Reporting #963/#1012/#1021 forever kept --check red with
     # findings whose only remedy would be reviving obsolete PRs.
@@ -1135,6 +1241,9 @@ def main(argv: list[str] | None = None) -> int:
 
     findings: list[dict] = check_registry_paths(tracked, registry)
     region_maps: dict[str, dict] = {}
+    # Needs no network: it asks the artifact what it says about itself, which
+    # is the only evidence a best-effort refresh step leaves behind.
+    findings += check_best_effort_artifacts(today)
     if not args.issues_snapshot:
         findings += check_owning_job(today)
     stamped: list[dict] = []
@@ -1213,6 +1322,7 @@ def main(argv: list[str] | None = None) -> int:
         if cls == "A":
             for f in content:
                 f["region"] = region_of(f.get("line", 0), owned, prompt)
+                f["region_owner"] = region_owner(f["region"], prompt)
         findings += content
 
         if not stampable:
@@ -1304,7 +1414,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {k}: {v}")
         for f in findings:
             loc = f":{f['line']}" if f.get("line") else ""
-            print(f"  [{f['severity']}] {f['check']}: {f['doc']}{loc} — {f['detail']}")
+            # Where the fix belongs, not just what is wrong. Without it a dead
+            # link inside generated inventory reads exactly like an editable
+            # prose finding, and the safety rule is never to edit a generated
+            # region in place.
+            where = (f" (region: {f['region']}, owner: {f['region_owner']})"
+                     if f.get("region") else "")
+            print(f"  [{f['severity']}] {f['check']}: {f['doc']}{loc}{where} — {f['detail']}")
         if stamped:
             acted = [s for s in stamped if s["action"] != "unchanged"]
             print(f"  stamped: {len(acted)} changed, {len(stamped) - len(acted)} unchanged")

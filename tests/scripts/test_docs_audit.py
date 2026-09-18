@@ -1251,3 +1251,180 @@ def test_a_rename_with_an_edit_is_drift(repo):
     _commit(repo, "move and edit")
     out = m.check_changed_since("d.md", reviewed, ["lib"], "HEAD", cwd=repo)
     assert len(out) == 1 and out[0]["detail"].startswith("1 content commit(s)"), out
+
+
+# ── the owning job, and what its success does not prove ────────────────────
+
+def _pr_pages(pages):
+    """A fake `run` serving one PR page per call, then the workflow-runs read."""
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        joined = " ".join(cmd)
+        if "runs?per_page=10" in joined:
+            return "success\t2026-09-16T06:00:00Z\n"
+        calls["n"] += 1
+        return pages[calls["n"] - 1] if calls["n"] <= len(pages) else ""
+    fake_run.calls = calls
+    return fake_run
+
+
+def test_the_refresh_pr_lookup_reads_past_the_first_page(monkeypatch):
+    """A single `per_page=100` page covers the 100 newest PRs of ANY kind.
+
+    Measured on this repo on 2026-09-18: page 1 reaches #1130 down to #959, a
+    15-day window, and the refresh PR that actually delivered (#953, merged
+    2026-09-02) is on page 2 -- invisible to the single-page lookup, so the
+    supersede rule saw no delivery at all.
+    """
+    page1 = "\n".join(
+        [f"{n}\tclosed\t2026-09-1{n % 10}T00:00:00Z\t2026-09-1{n % 10}T00:00:00Z\tfix: unrelated {n}"
+         for n in range(1130, 1030, -1)])
+    page2 = "\n".join([
+        "1021\tclosed\t\t2026-09-07T13:07:48Z\tFix: Monthly architecture doc refresh failed",
+        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\tMonthly architecture doc refresh: 2026-09",
+    ])
+    monkeypatch.setattr(m, "run", _pr_pages([page1, page2]))
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    out = m.check_owning_job("2026-09-17")
+    assert any("1021" in f["detail"] for f in out), out
+
+
+def test_the_pr_lookup_stops_at_the_first_delivered_refresh(monkeypatch):
+    """Cost scales with the answer: everything older than the newest merged
+    refresh PR is skipped by the supersede rule, so there is nothing to learn
+    past it (CLAUDE.md §3.8)."""
+    pages = ["\n".join([
+        "1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09",
+        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\tMonthly architecture doc refresh: 2026-09",
+    ] + [f"{n}\tclosed\t\t2026-09-01T00:00:00Z\tfix: filler {n}" for n in range(900, 998)])]
+    fake = _pr_pages(pages)
+    monkeypatch.setattr(m, "run", fake)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    m.check_owning_job("2026-09-17")
+    assert fake.calls["n"] == 1
+
+
+def test_a_short_page_ends_the_pr_lookup(monkeypatch):
+    """A page holding fewer than 100 rows is the last page; asking for the
+    next one is a request that cannot return anything."""
+    fake = _pr_pages(["1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09"])
+    monkeypatch.setattr(m, "run", fake)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    out = m.check_owning_job("2026-09-17")
+    assert fake.calls["n"] == 1
+    assert any("1060" in f["detail"] for f in out), out
+
+
+def test_a_best_effort_artifact_carries_its_own_freshness_evidence(audit_repo):
+    """refresh-architecture-docs.yml runs `scripts.refresh_calibration_table`
+    followed by `|| echo ... continuing`, so a Cloud SQL outage leaves
+    docs/INVESTMENT_MODELS_SUMMARY.md stale while the run still concludes
+    success AND the refresh PR still merges. Workflow success is not evidence
+    that THIS artifact was refreshed; the only evidence is the date the
+    artifact itself carries.
+    """
+    art = [{"doc": "docs/cal.md", "region": "cal",
+            "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
+            "max_age_days": 180,
+            "refresher": "scripts/refresh_calibration_table.py"}]
+    (audit_repo / "docs" / "cal.md").write_text("latest calibration 2026-09-01\n")
+    assert m.check_best_effort_artifacts("2026-09-18", artifacts=art) == []
+    (audit_repo / "docs" / "cal.md").write_text("latest calibration 2026-01-01\n")
+    out = m.check_best_effort_artifacts("2026-09-18", artifacts=art)
+    assert len(out) == 1 and out[0]["severity"] == "P2", out
+    assert "refresh_calibration_table" in out[0]["detail"]
+
+
+def test_a_best_effort_artifact_with_no_date_at_all_is_a_finding(audit_repo):
+    """No date means no evidence either way, which is not the same as fresh."""
+    art = [{"doc": "docs/cal.md", "region": "cal",
+            "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
+            "max_age_days": 180,
+            "refresher": "scripts/refresh_calibration_table.py"}]
+    (audit_repo / "docs" / "cal.md").write_text("no date here\n")
+    out = m.check_best_effort_artifacts("2026-09-18", artifacts=art)
+    assert len(out) == 1 and "no date" in out[0]["detail"], out
+
+
+def test_an_impossible_date_in_a_best_effort_artifact_is_reported(audit_repo):
+    art = [{"doc": "docs/cal.md", "region": "cal",
+            "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
+            "max_age_days": 180,
+            "refresher": "scripts/refresh_calibration_table.py"}]
+    (audit_repo / "docs" / "cal.md").write_text("latest calibration 2026-02-30\n")
+    out = m.check_best_effort_artifacts("2026-09-18", artifacts=art)
+    assert len(out) == 1 and "not a real calendar day" in out[0]["detail"], out
+
+
+def test_the_calibration_staleness_bound_is_the_renderers_own():
+    """The threshold is not invented here: past STALE_DAYS the renderer itself
+    writes `B (stale)`, so a block older than that which still claims Tier A
+    is proof the renderer has not re-rendered it."""
+    src = (m.REPO / "scripts" / "refresh_calibration_table.py").read_text(encoding="utf-8")
+    declared = int(m.re.search(r"^STALE_DAYS = (\d+)", src, m.re.M).group(1))
+    assert m.BEST_EFFORT_ARTIFACTS[0]["max_age_days"] == declared
+
+
+def test_the_registered_best_effort_artifact_is_the_calibration_table():
+    assert [a["doc"] for a in m.BEST_EFFORT_ARTIFACTS] == ["docs/INVESTMENT_MODELS_SUMMARY.md"]
+    doc = (m.REPO / "docs/INVESTMENT_MODELS_SUMMARY.md").read_text(encoding="utf-8")
+    assert m.BEST_EFFORT_ARTIFACTS[0]["date_re"].search(doc), \
+        "the artifact no longer carries the date this check reads"
+
+
+# ── the plain output has to say where a finding must be fixed ──────────────
+
+def test_plain_output_names_the_region_and_its_owner(audit_repo, capsys):
+    """`--check` printed only the document and the detail, so a dead link
+    inside generated inventory looked identical to an editable prose finding,
+    which is the opposite of the rule never to edit a generated region."""
+    (audit_repo / "gen" / "G.md").write_text(
+        "# G\n\nprose\n\n<!-- inventory:x:start -->\nsee `scripts/gone.py`\n"
+        "<!-- inventory:x:end -->\n")
+    _commit(audit_repo, "tree")
+    m.main(["--date", "2026-09-18", "--issues-snapshot", str(audit_repo / "issues.json")])
+    out = capsys.readouterr().out
+    line = [l for l in out.split("\n") if "gone.py" in l]
+    assert len(line) == 1, out
+    assert "region: generated" in line[0], line
+    assert m.OWNING_JOB["workflow"] in line[0], line
+
+
+def test_plain_output_names_the_prompt_for_a_model_prose_finding(audit_repo, capsys):
+    (audit_repo / "gen" / "G.md").write_text("# G\n\nsee `scripts/gone.py`\n")
+    reg = audit_repo / "docs" / "DOC_REGISTRY.md"
+    reg.write_text(reg.read_text().replace("| A | gen/*.md | | inventory:* |",
+                                           "| A | gen/*.md | | prose:scripts/tool.py |"))
+    _commit(audit_repo, "tree")
+    m.main(["--date", "2026-09-18", "--issues-snapshot", str(audit_repo / "issues.json")])
+    out = capsys.readouterr().out
+    line = [l for l in out.split("\n") if "gone.py" in l]
+    assert len(line) == 1, out
+    assert "region: model-prose" in line[0] and "scripts/tool.py" in line[0], line
+
+
+def test_the_region_owner_is_carried_in_json_too(audit_repo, capsys):
+    (audit_repo / "gen" / "G.md").write_text(
+        "# G\n\nprose\n\n<!-- inventory:x:start -->\nsee `scripts/gone.py`\n"
+        "<!-- inventory:x:end -->\n")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    dead = [f for f in report["findings"] if f["check"] == "dead-link"]
+    assert len(dead) == 1 and dead[0]["region"] == "generated"
+    assert dead[0]["region_owner"] == m.OWNING_JOB["workflow"], dead
+
+
+def test_a_stale_best_effort_artifact_is_reported_by_a_whole_run(audit_repo, capsys, monkeypatch):
+    """Through main(), and under --issues-snapshot: the evidence is what the
+    artifact says about itself, so it must not be gated on the GitHub reads
+    the way check_owning_job is."""
+    monkeypatch.setattr(m, "BEST_EFFORT_ARTIFACTS", [{
+        "doc": "docs/cal.md", "region": "cal",
+        "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
+        "max_age_days": 180, "refresher": "scripts/refresh_calibration_table.py"}])
+    (audit_repo / "docs" / "cal.md").write_text("# Cal\n\nlatest calibration 2026-01-01\n")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    assert [f["severity"] for f in report["findings"]
+            if f["check"] == "class-a" and f["doc"] == "docs/cal.md"] == ["P2"], report["findings"]
