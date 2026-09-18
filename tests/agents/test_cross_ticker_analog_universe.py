@@ -382,7 +382,9 @@ def test_not_used_says_which_of_the_three_reasons_it_was(monkeypatch):
     empty = summarizers.summarize_backtest_metrics("TGT", universe=_universe())
     assert empty["cross_ticker_used"] is False
     assert empty["cross_ticker"]["attempted"] is True
-    assert "no analog universe" in empty["cross_ticker"]["reason"]
+    # Names the cause, not a pointer to Cloud Logging: an empty watchlist
+    # resolves zero same-class peers, which is cause 1.
+    assert "asset class" in empty["cross_ticker"]["reason"]
 
     off = summarizers.summarize_backtest_metrics("TGT", cross_ticker=False)
     assert off["cross_ticker"]["attempted"] is False
@@ -392,9 +394,10 @@ def test_not_used_says_which_of_the_three_reasons_it_was(monkeypatch):
 def test_an_empty_universe_is_logged_not_silent(caplog):
     """An empty watchlist must not read as 'this ticker has no analogs'."""
     with caplog.at_level(logging.WARNING, logger="lib.agents.summarizers"):
-        result = summarizers._build_cross_ticker_history(
+        result, reason = summarizers._build_cross_ticker_history(
             "TGT", "2026-09-15", universe=_universe())
     assert result is None
+    assert reason and "asset class" in reason
     assert any("universe empty" in r.getMessage() for r in caplog.records), (
         "an empty analog universe produced no log line"
     )
@@ -413,3 +416,103 @@ def test_a_database_failure_is_not_reported_as_no_analogs(monkeypatch):
     with pytest.raises(RuntimeError, match="connection reset"):
         summarizers._build_cross_ticker_history(
             "TGT", "2026-09-15", universe=_universe("AMD"))
+
+
+def test_a_caretless_index_symbol_is_not_filed_as_an_equity(monkeypatch):
+    """The caret is a naming convention, not an asset class.
+
+    `^VIX` is self-describing; `SPX`, `NDX`, `RUT` and `XSP` are not, and
+    this repo carries them un-careted — `lib/options_greeks.py` keeps exactly
+    that set as the cash-settled index roots whose Greeks it computes, and
+    SPX is on the production watchlist (the history tests have it active on
+    2026-04-29). Under `startswith("^")` an equity target pulls SPX index
+    bars into its analog statistics and an SPX target pulls equities into
+    its own, which is the cross-asset contamination this filter exists to
+    stop (Codex P2 on `775a29f`).
+    """
+    seen: list[dict] = []
+
+    def fake_query(sql: str, params=None):
+        seen.append(params or {})
+        return pd.DataFrame()
+
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
+
+    summarizers._build_cross_ticker_history(
+        "TGT", "2026-09-15",
+        universe=_universe("AMD", "SPX", "NDX", "^VIX"),
+    )
+    assert sorted(seen[-1]["tickers"]) == ["AMD"], (
+        "an equity target pulled index bars into its analog universe"
+    )
+
+    seen.clear()
+    summarizers._build_cross_ticker_history(
+        "SPX", "2026-09-15",
+        universe=_universe("AMD", "NDX", "^VIX", "SPX"),
+    )
+    assert sorted(seen[-1]["tickers"]) == ["NDX", "^VIX"], (
+        "an index target pulled equity bars into its analog universe"
+    )
+
+
+def test_each_empty_universe_cause_is_persisted_not_just_logged(monkeypatch):
+    """`cross_ticker.reason` must name WHICH cause, not point at Cloud Logs.
+
+    Before this, all three `return None` paths collapsed into one literal
+    string telling the reader to go read the warning in Cloud Logging. That
+    is the same indistinguishable-value defect `cross_ticker_used=False`
+    had, one layer up: a report consumer cannot tell "this watchlist has no
+    same-class peers" (a curation fact) from "the peers have no bars" (an
+    ingestion gap) from "the peers are too new" (a timing fact), and the
+    three want different responses (Codex P2 on `775a29f`).
+    """
+    # Cause 1 — no same-class peers.
+    frame, reason = summarizers._build_cross_ticker_history(
+        "TGT", "2026-09-15", universe=_universe("^VIX", "^VVIX"))
+    assert frame is None
+    assert "asset class" in reason
+
+    # Cause 2 — peers exist, no bars.
+    monkeypatch.setattr(
+        summarizers, "_query_strict", lambda sql, params=None: pd.DataFrame())
+    frame, no_bars = summarizers._build_cross_ticker_history(
+        "TGT", "2026-09-15", universe=_universe("AMD", "AVGO"))
+    assert frame is None
+    assert "none has daily bars" in no_bars
+
+    # Cause 3 — peers have bars, but under the 60-bar feature minimum.
+    short = pd.DataFrame({
+        "ticker": ["AMD"] * 10,
+        "date": pd.date_range("2026-08-01", periods=10).date,
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0,
+    })
+    monkeypatch.setattr(
+        summarizers, "_query_strict", lambda sql, params=None: short)
+    frame, too_short = summarizers._build_cross_ticker_history(
+        "TGT", "2026-09-15", universe=_universe("AMD"))
+    assert frame is None
+    assert "enough history" in too_short
+
+    assert len({reason, no_bars, too_short}) == 3, (
+        "the three causes must be distinguishable by a report consumer"
+    )
+
+
+def test_the_index_set_covers_the_repos_cash_settled_index_roots():
+    """`_CARETLESS_INDEX_SYMBOLS` is kept local so a Greeks-side edit cannot
+    silently reclassify an asset class. That independence is only safe if
+    the two cannot drift in the dangerous direction: anything
+    `lib.options_greeks` treats as a cash-settled index root must still
+    classify as an index here.
+    """
+    from lib.options_greeks import COMPUTE_GREEKS_TICKERS
+
+    missing = sorted(
+        t for t in COMPUTE_GREEKS_TICKERS
+        if not summarizers._is_index_symbol(t)
+    )
+    assert not missing, (
+        f"{missing} are index roots to the Greeks pipeline but would be "
+        f"matched against equities as analogs"
+    )

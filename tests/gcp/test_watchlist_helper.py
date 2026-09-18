@@ -278,3 +278,59 @@ def test_membership_resolution_does_not_swallow_database_errors():
             _watchlist.resolve_membership_at(datetime.date(2026, 9, 15))
     finally:
         mr.connect = original
+
+
+def test_an_aware_datetime_cutoff_resolves_instead_of_raising():
+    """`parse_as_of` returns `Union[date, datetime]` — an aware datetime for
+    the `YYYY-MM-DDTHH:MM:SSZ` form — and `summarize_backtest_metrics` passes
+    its `cutoff` straight through. `datetime` is a subclass of `date`, so it
+    satisfies the annotation and reaches the horizon comparison, where
+    `aware_datetime < horizon.date()` raises
+    `TypeError: can't compare datetime.datetime to datetime.date`.
+
+    Production has seed rows and therefore a non-null horizon, so every
+    timestamp-cutoff replay that needs cross-ticker expansion lost the whole
+    backtest section (Codex P2 on `775a29f`). The resolver normalizes to the
+    calendar date its own SQL already reads off the input.
+    """
+    import datetime as _dt
+
+    from gcp.fetchers import _watchlist
+
+    class _Cur:
+        def __init__(self):
+            self.n = 0
+
+        def execute(self, sql, params=None):
+            self.n += 1
+
+        def fetchall(self):
+            return [("AMD",), ("NVDA",)]
+
+        def fetchone(self):
+            return (_dt.datetime(2026, 4, 27, tzinfo=_dt.timezone.utc),)
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            return None
+
+    import lib.agents.model_routing as mr
+
+    original = mr.connect
+    mr.connect = lambda: _Conn()
+    try:
+        aware = _dt.datetime(2026, 9, 15, 14, 30, tzinfo=_dt.timezone.utc)
+        resolved = _watchlist.resolve_membership_at(aware)
+    finally:
+        mr.connect = original
+
+    assert resolved.tickers == ("AMD", "NVDA")
+    # Normalized, not carried through as a datetime: the dataclass is what
+    # the report records and a caller comparing it to a date must not blow up
+    # for the same reason the horizon comparison did.
+    assert resolved.as_of == _dt.date(2026, 9, 15)
+    assert not isinstance(resolved.as_of, _dt.datetime)
+    assert resolved.resolution == "exact"

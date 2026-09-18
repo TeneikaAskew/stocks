@@ -435,8 +435,8 @@ def test_a_re_add_changes_which_peers_a_replay_actually_pulls(wl):
     resolved = resolve_membership_at(april, OWNER)
     assert resolved.tickers == ("KEEP",), resolved.tickers
 
-    frame = _build_cross_ticker_history("TGT", str(april), universe=resolved)
-    assert frame is not None
+    frame, reason = _build_cross_ticker_history("TGT", str(april), universe=resolved)
+    assert frame is not None, reason
     assert sorted(frame["ticker"].unique()) == ["KEEP"], (
         "the replay pulled bars for a ticker that was not on the watchlist "
         "on that date"
@@ -445,7 +445,7 @@ def test_a_re_add_changes_which_peers_a_replay_actually_pulls(wl):
     # Today, GONE is back, so it is a peer again.
     now = resolve_membership_at(date.today(), OWNER)
     assert sorted(now.tickers) == ["GONE", "KEEP"]
-    frame_now = _build_cross_ticker_history("TGT", str(date.today()), universe=now)
+    frame_now, _ = _build_cross_ticker_history("TGT", str(date.today()), universe=now)
     assert sorted(frame_now["ticker"].unique()) == ["GONE", "KEEP"]
 
 

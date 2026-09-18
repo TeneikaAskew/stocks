@@ -144,6 +144,19 @@ def resolve_membership_at(
     """
     from lib.agents.model_routing import connect
 
+    # `parse_as_of` returns `Union[date, datetime]` and `datetime` is a
+    # subclass of `date`, so an aware datetime satisfies the annotation and
+    # arrives here intact. Normalize once, at the boundary: the horizon
+    # comparison below would raise `TypeError: can't compare
+    # datetime.datetime to datetime.date`, and the dataclass would carry a
+    # datetime into the report for every other reader to trip over.
+    # `.date()` is the same calendar date the SQL below already reads off
+    # the Y/M/D components, so this changes no query result — converting to
+    # Eastern here instead would (Rule 3.9 belongs at the writer, not in a
+    # resolver that has always read the input's own date).
+    if isinstance(as_of, datetime):
+        as_of = as_of.date()
+
     day_start = datetime(as_of.year, as_of.month, as_of.day)
     day_end = day_start + timedelta(days=1)
 

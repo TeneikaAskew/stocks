@@ -1142,14 +1142,19 @@ def summarize_backtest_metrics(
 
             universe = resolve_membership_at(cutoff)
         cross_detail["universe"] = universe.describe()
-        cross_history = _build_cross_ticker_history(
+        cross_history, cross_empty_reason = _build_cross_ticker_history(
             ticker, str(cutoff), inclusive_today=inclusive_today,
             universe=universe,
         )
         if cross_history is None or cross_history.empty:
-            cross_detail["reason"] = (
-                "no analog universe for this target at the cutoff — the "
-                "cross-ticker warning in logs names which of the two causes"
+            # The helper returns WHICH of the three causes it was — no
+            # same-class peers, peers without bars, or peers without enough
+            # history. Pointing the reader at Cloud Logging instead would
+            # leave the report unable to distinguish them, which is the
+            # indistinguishable-value shape Rule 3.7 forbids and exactly
+            # what `cross_ticker_used=False` already suffered from.
+            cross_detail["reason"] = cross_empty_reason or (
+                "no analog universe for this target at the cutoff"
             )
         else:
             target_band = band_used or bands[-1]
@@ -1244,6 +1249,28 @@ def _round_or_none(v):
     if v is None or pd.isna(v):
         return None
     return round(float(v), 2)
+
+
+# Index roots this repo carries WITHOUT a caret. `^VIX` is self-describing;
+# these are not, and `startswith("^")` files them as equities — which puts
+# SPX index bars in an equity's analog statistics and equities in SPX's.
+# SPX is on the production watchlist (the history tests have it active on
+# 2026-04-29), so this is reachable, not theoretical.
+#
+# Deliberately a local constant rather than an import of
+# `lib.options_greeks.COMPUTE_GREEKS_TICKERS`, which happens to hold the
+# same symbols today: that set answers "whose Greeks must we compute
+# ourselves", and coupling asset-class classification to it would let a
+# Greeks-side edit silently reclassify an instrument. A test asserts this
+# set covers that one, so the two cannot drift in the direction that
+# matters.
+_CARETLESS_INDEX_SYMBOLS = frozenset({"SPX", "SPXW", "NDX", "RUT", "XSP"})
+
+
+def _is_index_symbol(ticker: str) -> bool:
+    """True when `ticker` names an index rather than a tradeable equity."""
+    t = ticker.upper()
+    return t.startswith("^") or t in _CARETLESS_INDEX_SYMBOLS
 
 
 def _build_cross_ticker_history(target_ticker: str, cutoff: str,
@@ -1371,16 +1398,25 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
     Peer narrowing stays here, not in the resolver: it is per-target
     (asset class is relative to the target, and the target excludes
     itself) while membership is per-run.
+
+    Returns ``(frame, reason)``. On success ``reason`` is None; when there
+    is no usable universe ``frame`` is None and ``reason`` names WHICH of
+    three causes it was — no same-class peers, peers without bars, or peers
+    without enough history for the feature window. The caller persists it
+    on the section, because a single "see the logs" string leaves a report
+    consumer unable to tell a curation fact from an ingestion gap from a
+    timing one (Rule 3.7's indistinguishable-value shape; Codex P2 on
+    ``775a29f``).
     """
     # Same operator as the same-ticker pull, or the as-of bar leaks back
     # in through the analogs (#822).
     daily_op = "<=" if inclusive_today else "<"
 
     target = target_ticker.upper()
-    target_is_index = target.startswith("^")
+    target_is_index = _is_index_symbol(target)
     peers = [
         t for t in universe.tickers
-        if t != target and t.startswith("^") == target_is_index
+        if t != target and _is_index_symbol(t) == target_is_index
     ]
     if not peers:
         # Not a fallback: the caller skips cross-ticker analogs and says
@@ -1388,13 +1424,15 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
         # here would be a cross-source fallback (CLAUDE.md Rule 3.7.1) —
         # the curated universe silently replaced by a baked-in one, with
         # the report unable to tell which answered.
-        logger.warning(
-            "cross-ticker analog universe empty for %s (cutoff=%s): "
-            "%d watchlist ticker(s) resolved, none of the target's asset "
-            "class after excluding the target itself",
-            target, cutoff, len(universe.tickers),
+        reason = (
+            f"{len(universe.tickers)} watchlist ticker(s) resolved, none of "
+            f"the target's asset class after excluding the target itself"
         )
-        return None
+        logger.warning(
+            "cross-ticker analog universe empty for %s (cutoff=%s): %s",
+            target, cutoff, reason,
+        )
+        return None, reason
 
     # `_query_strict`, not `_query`: `query_to_dataframe` returns an empty
     # frame on error, which lands on the same branch as "this universe has
@@ -1410,13 +1448,15 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
         {"tickers": peers, "cutoff": cutoff},
     )
     if df is None or df.empty:
-        logger.warning(
-            "cross-ticker analog universe empty for %s (cutoff=%s): "
-            "%d peer(s) resolved (%s) but none has daily bars at or before "
-            "the cutoff",
-            target, cutoff, len(peers), ", ".join(peers[:10]),
+        reason = (
+            f"{len(peers)} peer(s) resolved ({', '.join(peers[:10])}) but "
+            f"none has daily bars at or before the cutoff"
         )
-        return None
+        logger.warning(
+            "cross-ticker analog universe empty for %s (cutoff=%s): %s",
+            target, cutoff, reason,
+        )
+        return None, reason
     logger.info(
         "cross_ticker_universe target=%s peers=%d with_bars=%d rows=%d "
         "resolution=%s",
@@ -1465,8 +1505,21 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
             out_frames.append(g)
 
     if not out_frames:
-        return None
-    return pd.concat(out_frames, ignore_index=True)
+        # Third distinct cause, and the one most easily mistaken for the
+        # second: every peer HAD bars, but none cleared the 60-bar minimum
+        # the feature window needs (or lost every row to the 20-day recency
+        # trim). A newly-added ticker looks exactly like an outage here
+        # unless the caller is told which it was.
+        reason = (
+            f"{df['ticker'].nunique()} peer(s) had bars but none had enough "
+            f"history to compute analog features at the cutoff"
+        )
+        logger.warning(
+            "cross-ticker analog universe empty for %s (cutoff=%s): %s",
+            target, cutoff, reason,
+        )
+        return None, reason
+    return pd.concat(out_frames, ignore_index=True), None
 
 
 # ---------------------------------------------------------------------------
