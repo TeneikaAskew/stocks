@@ -1053,3 +1053,127 @@ def test_an_impossible_marker_date_is_reported_by_a_whole_run(audit_repo, capsys
     bad = [f for f in report["findings"]
            if f["check"] == "marker" and "not a real calendar day" in f["detail"]]
     assert len(bad) == 1 and bad[0]["severity"] == "P2", report["findings"]
+
+
+# ── the CLI contract: bad input is exit 2, never a finding and never silent ──
+
+def test_a_missing_issues_snapshot_is_exit_two_not_a_traceback(tmp_path):
+    """Exit 1 is documented as "there are findings"; a snapshot that cannot be
+    read is "the audit did not happen". Automation could not tell them apart,
+    and --json produced no report at all -- FileNotFoundError escaped past the
+    AuditError handler and Python exited 1 with a traceback."""
+    with pytest.raises(m.AuditError, match="could not be read"):
+        m.load_issues_snapshot(str(tmp_path / "nope.json"))
+
+
+def test_a_malformed_issues_snapshot_is_exit_two(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json at all")
+    with pytest.raises(m.AuditError, match="could not be read"):
+        m.load_issues_snapshot(str(bad))
+
+
+def test_a_structurally_wrong_issues_snapshot_is_exit_two(tmp_path):
+    """A JSON file with no `stocks` entry makes every stocks citation read as
+    unresolvable -- 24 fabricated findings, not an empty result."""
+    half = tmp_path / "half.json"
+    half.write_text(json.dumps({"solyra": {"1": {"state": "open"}}}))
+    with pytest.raises(m.AuditError, match='no "stocks" entry'):
+        m.load_issues_snapshot(str(half))
+    nonnumeric = tmp_path / "keys.json"
+    nonnumeric.write_text(json.dumps({"stocks": {"abc": {}}, "solyra": {}}))
+    with pytest.raises(m.AuditError, match="issue number"):
+        m.load_issues_snapshot(str(nonnumeric))
+
+
+def test_a_good_issues_snapshot_still_loads(tmp_path):
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({"stocks": {"7": {"state": "closed"}}, "solyra": {}}))
+    assert m.load_issues_snapshot(str(good)) == {"stocks": {7: {"state": "closed"}}, "solyra": {}}
+
+
+def test_verify_without_stamp_is_refused(audit_repo):
+    """A review is recorded by WRITING a marker. `--verify` alone wrote
+    nothing and exited 0, so the audit reported success for a human
+    verification it never recorded."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    with pytest.raises(m.AuditError, match="requires --stamp"):
+        _audit(audit_repo, "--verify", "docs/d.md")
+
+
+def test_a_verify_target_that_was_never_stamped_is_refused(audit_repo):
+    """A misspelled path, or one the audit skips, stamped everything else
+    scan-only and exited 0 without a word about the review it dropped."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    with pytest.raises(m.AuditError, match="docs/typo.md"):
+        _audit(audit_repo, "--stamp", "--verify", "docs/typo.md")
+
+
+def test_a_verify_target_that_is_stamped_is_accepted(audit_repo):
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    assert _audit(audit_repo, "--stamp", "--verify", "./docs/d.md") in (0, 1)
+    assert "**Depth:** verified" in (audit_repo / "docs" / "d.md").read_text()
+
+
+def test_nothing_is_written_when_a_verify_target_is_missing(audit_repo):
+    """The refusal has to come before the writes, or half the tree is stamped
+    and the run still aborts."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    before = (audit_repo / "docs" / "d.md").read_text()
+    with pytest.raises(m.AuditError):
+        _audit(audit_repo, "--stamp", "--verify", "docs/typo.md")
+    assert (audit_repo / "docs" / "d.md").read_text() == before
+
+
+def test_a_class_a_doc_with_no_region_map_is_never_stamped(audit_repo, capsys):
+    """`prompt is None` meant "no model owns this prose", so every nonblank
+    complement was stampable -- including the machine-owned document whose
+    safe writable region could not be established at all. An empty region map
+    can put that marker inside content the next regeneration discards."""
+    (audit_repo / "gen" / "G.md").write_text("# G\n\ngenerated body\n")
+    reg = audit_repo / "docs" / "DOC_REGISTRY.md"
+    reg.write_text(reg.read_text().replace("| A | gen/*.md | | inventory:* |",
+                                           "| A | gen/*.md | | |"))
+    _audit(audit_repo, "--stamp")
+    report = json.loads(capsys.readouterr().out)
+    assert [s for s in report["stamped"] if s["doc"] == "gen/G.md"] == [], report["stamped"]
+    assert "**Last reviewed:**" not in (audit_repo / "gen" / "G.md").read_text()
+
+
+def test_a_class_a_doc_whose_declared_region_matched_nothing_is_never_stamped(audit_repo, capsys):
+    """The invalid-`prose:`-owner branch feeds the same `prompt is None`."""
+    (audit_repo / "gen" / "G.md").write_text("# G\n\ngenerated body\n")
+    reg = audit_repo / "docs" / "DOC_REGISTRY.md"
+    reg.write_text(reg.read_text().replace("| A | gen/*.md | | inventory:* |",
+                                           "| A | gen/*.md | | prose:prompts/gone.md |"))
+    _audit(audit_repo, "--stamp")
+    report = json.loads(capsys.readouterr().out)
+    assert any(f["severity"] == "P1" and f["doc"] == "gen/G.md" for f in report["findings"])
+    assert [s for s in report["stamped"] if s["doc"] == "gen/G.md"] == [], report["stamped"]
+    assert "**Last reviewed:**" not in (audit_repo / "gen" / "G.md").read_text()
+
+
+def test_a_class_a_doc_with_a_valid_region_map_is_still_stamped(audit_repo, capsys):
+    """The guard must not stop the mixed Class A documents this audit exists
+    to stamp -- README's hand-written complement is the whole point."""
+    (audit_repo / "gen" / "G.md").write_text(
+        "# G\n\nhand written prose\n\n<!-- inventory:x:start -->\nrendered\n"
+        "<!-- inventory:x:end -->\n")
+    _audit(audit_repo, "--stamp")
+    report = json.loads(capsys.readouterr().out)
+    assert [s["doc"] for s in report["stamped"] if s["doc"] == "gen/G.md"] == ["gen/G.md"]
+    assert "**Last reviewed:**" in (audit_repo / "gen" / "G.md").read_text()
+
+
+def test_a_whole_run_with_an_unreadable_snapshot_is_exit_two(audit_repo):
+    """Through main(): the helper existing is not the same as main() using it.
+
+    Reverting the call site alone left the direct helper tests green, which is
+    the "asserting around the code rather than through it" failure the earlier
+    round on this file recorded.
+    """
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")
+    with pytest.raises(m.AuditError, match="could not be read"):
+        m.main(["--json", "--date", "2026-09-18",
+                "--issues-snapshot", str(audit_repo / "nope.json")])

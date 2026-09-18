@@ -142,6 +142,18 @@ BACKTICK_PATH_RE = re.compile(r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Z
 CODE_EXTS = {".py", ".ts", ".tsx", ".js", ".mjs", ".sql", ".sh", ".yml", ".yaml", ".json", ".md"}
 
 
+def strip_dot_segments(path: str) -> str:
+    """`./scripts/tool.py` and `scripts/tool.py` are the same repository path.
+
+    Callers compare against `git ls-tree` output, which never carries a
+    leading `./`, and split on the first `/` to find the top-level directory.
+    Without this the root-relative form yields the component `.`.
+    """
+    while path.startswith("./"):
+        path = path[2:]
+    return path
+
+
 class AuditError(RuntimeError):
     """The run itself could not be completed. Never degrades to empty results."""
 
@@ -772,6 +784,37 @@ def stamp(text: str, date: str, depth: str, sha: str,
 
 # ── github state ────────────────────────────────────────────────────────────
 
+def load_issues_snapshot(file: str) -> dict[str, dict[int, dict]]:
+    """Read a snapshot written by --write-issues-snapshot, or say why not.
+
+    A missing, malformed or structurally wrong file raised FileNotFoundError,
+    JSONDecodeError or ValueError straight past the AuditError handler, and
+    Python exited 1 with a traceback and no report. Exit 1 is documented as
+    "this documentation has findings"; automation could not tell that from
+    "the audit never ran". Bad input is exit 2.
+
+    The structural check is not ceremony: a file with no `stocks` entry makes
+    every stocks citation unresolvable, which is 24 fabricated findings rather
+    than an empty result (CLAUDE.md §3.7).
+    """
+    try:
+        raw = json.loads(pathlib.Path(file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AuditError(f"--issues-snapshot {file} could not be read: {exc}") from exc
+    states: dict[str, dict[int, dict]] = {}
+    for repo in (THIS_REPO, SIBLING_REPO):
+        entry = raw.get(repo) if isinstance(raw, dict) else None
+        if not isinstance(entry, dict):
+            raise AuditError(f'--issues-snapshot {file} has no "{repo}" entry; every '
+                             f"{repo} citation would read as unresolvable")
+        try:
+            states[repo] = {int(k): v for k, v in entry.items()}
+        except (TypeError, ValueError) as exc:
+            raise AuditError(f'--issues-snapshot {file}: "{repo}" is not keyed by '
+                             f"issue number: {exc}") from exc
+    return states
+
+
 def fetch_issue_states(repo: str) -> dict[int, dict]:
     """One paginated read per repo, never one call per reference (Rule 0)."""
     states: dict[int, dict] = {}
@@ -999,8 +1042,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true", help="machine-readable findings on stdout")
     ap.add_argument("--check", action="store_true", help="exit 1 when any finding is reported")
     ap.add_argument("--stamp", action="store_true", help="write review markers in place")
-    ap.add_argument("--verify", nargs="*", default=[], metavar="PATH",
-                    help="mark these docs Depth: verified (default is scanned)")
+    ap.add_argument("--verify", nargs="*", default=None, metavar="PATH",
+                    help="mark these docs Depth: verified (default is scanned); requires --stamp")
     ap.add_argument("--since", metavar="SHA", help="override the reviewed-against SHA")
     ap.add_argument("--issues-snapshot", metavar="FILE", help="read issue state from FILE (offline)")
     ap.add_argument("--write-issues-snapshot", metavar="FILE", help="save the issue state read")
@@ -1032,8 +1075,7 @@ def main(argv: list[str] | None = None) -> int:
     docs = document_set(tracked, registry)
 
     if args.issues_snapshot:
-        raw = json.loads(pathlib.Path(args.issues_snapshot).read_text(encoding="utf-8"))
-        states = {r: {int(k): v for k, v in d.items()} for r, d in raw.items()}
+        states = load_issues_snapshot(args.issues_snapshot)
     else:
         states = {THIS_REPO: fetch_issue_states(THIS_REPO), SIBLING_REPO: fetch_issue_states(SIBLING_REPO)}
     if args.write_issues_snapshot:
@@ -1046,7 +1088,21 @@ def main(argv: list[str] | None = None) -> int:
     if not args.issues_snapshot:
         findings += check_owning_job(today)
     stamped: list[dict] = []
-    verify = {v.lstrip("./") for v in args.verify}
+    # A review is recorded only by WRITING a marker, so `--verify` without
+    # `--stamp` is a no-op that reads, on an otherwise clean audit, as if the
+    # human verification had been recorded. It exits 2 instead.
+    if args.verify is not None and not args.stamp:
+        raise AuditError("--verify requires --stamp: a review is recorded by writing "
+                         "a marker, and without --stamp nothing is written")
+    if args.verify is not None and not args.verify:
+        raise AuditError("--verify needs at least one path")
+    verify = {strip_dot_segments(v) for v in (args.verify or [])}
+    # Every --verify path must be consumed by a document this run actually
+    # stamps. A misspelled path, one outside `docs`, or one that resolves to a
+    # class with nowhere to stamp used to leave everything else scan-only and
+    # exit 0 without a word about the review it dropped.
+    stamp_targets: set[str] = set()
+    writes: list[tuple[str, str]] = []
     counts = {"A": 0, "B": 0, "C": 0, "D": 0, "X": 0, "unclassified": 0}
 
     for doc in docs:
@@ -1091,7 +1147,17 @@ def main(argv: list[str] | None = None) -> int:
             findings += reg_findings
             if region_map:
                 region_maps[doc] = region_map
-            stampable = prompt is None and bool(unowned_spans(text, owned))
+            # A region map that could NOT be established is not a licence to
+            # write. `prompt is None` means "no model owns this prose", and it
+            # is also what a Class A row with no region specs and a row whose
+            # `prose:` owner is missing both leave behind -- so the marker went
+            # into precisely the machine-owned document whose safe writable
+            # region the audit had just reported it could not find, where the
+            # next regeneration discards it without anyone able to say what it
+            # was.
+            map_valid = bool(region_map) and not any(
+                f["severity"] == "P1" for f in reg_findings)
+            stampable = map_valid and prompt is None and bool(unowned_spans(text, owned))
 
         content = check_closed_issues(doc, text, states) + check_dead_links(doc, text, tracked)
         if cls == "A":
@@ -1147,13 +1213,26 @@ def main(argv: list[str] | None = None) -> int:
                                  "detail": f"not stamped: a generated region starts at line "
                                            f"{min(owned)}, too close to the H1 on line {h1 + 1}"})
                 continue
+            stamp_targets.add(doc)
             reviewed = doc in verify
             new, action = stamp(text, today, "verified" if reviewed else "scanned",
                                 head, reviewed=reviewed)
             if action in {"inserted", "updated"}:
-                (REPO / doc).write_text(new, encoding="utf-8")
+                writes.append((doc, new))
             stamped.append({"doc": doc, "action": action,
                             "depth": "verified" if reviewed else "scan-only"})
+
+    # Nothing is written until every requested review has a document to land
+    # on, so a misspelled --verify aborts the run rather than half of it.
+    if args.stamp:
+        missing = sorted(verify - stamp_targets)
+        if missing:
+            raise AuditError(
+                f"--verify {', '.join(missing)}: no stamped document matches (not a "
+                "tracked doc, or Class B/C/X, or a machine-owned file with nowhere "
+                "to stamp). Nothing was written.")
+        for doc, new in writes:
+            (REPO / doc).write_text(new, encoding="utf-8")
 
     report = {
         "date": today, "base_ref": base_ref, "head": head, "docs": len(docs),
