@@ -1063,7 +1063,8 @@ def audit_repo(tmp_path, monkeypatch):
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "tool.py").write_text("x = 1\n")
     (tmp_path / "docs" / "DOC_REGISTRY.md").write_text(E2E_REGISTRY)
-    (tmp_path / "issues.json").write_text(json.dumps({"stocks": {}, "solyra": {}}))
+    (tmp_path / "issues.json").write_text(
+        json.dumps({"stocks": {"1": {"state": "open"}}, "solyra": {"9": {"state": "open"}}}))
     monkeypatch.setattr(m, "REPO", tmp_path)
     monkeypatch.setattr(m, "TOP_LEVEL_DIRS", set())
     monkeypatch.chdir(tmp_path)
@@ -1115,15 +1116,16 @@ def test_a_structurally_wrong_issues_snapshot_is_exit_two(tmp_path):
     with pytest.raises(m.AuditError, match='no "stocks" entry'):
         m.load_issues_snapshot(str(half))
     nonnumeric = tmp_path / "keys.json"
-    nonnumeric.write_text(json.dumps({"stocks": {"abc": {}}, "solyra": {}}))
+    nonnumeric.write_text(json.dumps({"stocks": {"abc": {}}, "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="issue number"):
         m.load_issues_snapshot(str(nonnumeric))
 
 
 def test_a_good_issues_snapshot_still_loads(tmp_path):
     good = tmp_path / "good.json"
-    good.write_text(json.dumps({"stocks": {"7": {"state": "closed"}}, "solyra": {}}))
-    assert m.load_issues_snapshot(str(good)) == {"stocks": {7: {"state": "closed"}}, "solyra": {}}
+    good.write_text(json.dumps({"stocks": {"7": {"state": "closed"}}, "solyra": {"9": {"state": "open"}}}))
+    assert m.load_issues_snapshot(str(good)) == {"stocks": {7: {"state": "closed"}},
+                                                 "solyra": {9: {"state": "open"}}}
 
 
 def test_a_snapshot_issue_record_must_carry_a_state(tmp_path):
@@ -1134,22 +1136,22 @@ def test_a_snapshot_issue_record_must_carry_a_state(tmp_path):
     unresolvable branch, so a malformed snapshot FABRICATES a finding against
     a document that cites a perfectly live issue (CLAUDE.md §3.7)."""
     missing_state = tmp_path / "a.json"
-    missing_state.write_text(json.dumps({"stocks": {"1": {}}, "solyra": {}}))
+    missing_state.write_text(json.dumps({"stocks": {"1": {}}, "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(missing_state))
 
     null_row = tmp_path / "b.json"
-    null_row.write_text(json.dumps({"stocks": {"1": None}, "solyra": {}}))
+    null_row.write_text(json.dumps({"stocks": {"1": None}, "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(null_row))
 
     non_string = tmp_path / "c.json"
-    non_string.write_text(json.dumps({"stocks": {"1": {"state": 7}}, "solyra": {}}))
+    non_string.write_text(json.dumps({"stocks": {"1": {"state": 7}}, "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(non_string))
 
     listed = tmp_path / "d.json"
-    listed.write_text(json.dumps({"stocks": [], "solyra": {}}))
+    listed.write_text(json.dumps({"stocks": [], "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match='no "stocks" entry'):
         m.load_issues_snapshot(str(listed))
 
@@ -1166,7 +1168,7 @@ def test_a_snapshot_state_must_be_one_the_checks_understand(tmp_path):
     bogus = tmp_path / "bogus.json"
     bogus.write_text(json.dumps(
         {"stocks": {"8": {"state": "bogus", "reason": "", "kind": "ISSUE"}},
-         "solyra": {}}))
+         "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="stocks#8"):
         m.load_issues_snapshot(str(bogus))
 
@@ -1174,7 +1176,7 @@ def test_a_snapshot_state_must_be_one_the_checks_understand(tmp_path):
         good = tmp_path / f"{state}.json"
         good.write_text(json.dumps(
             {"stocks": {"8": {"state": state, "reason": "", "kind": "ISSUE"}},
-             "solyra": {}}))
+             "solyra": {"9": {"state": "open"}}}))
         assert m.load_issues_snapshot(str(good))["stocks"][8]["state"] == state
 
 
@@ -2347,3 +2349,135 @@ def test_a_stale_best_effort_artifact_is_reported_by_a_whole_run(audit_repo, cap
     report = json.loads(capsys.readouterr().out)
     assert [f["severity"] for f in report["findings"]
             if f["check"] == "class-a" and f["doc"] == "docs/cal.md"] == ["P2"], report["findings"]
+
+
+# ── round 10 parity with the Node twin (solyra#69) ──────────────────────────
+
+
+def test_a_snapshot_that_names_both_repos_but_records_nothing_is_bad_input(tmp_path):
+    """fetch_issue_states refuses to report on a repository that returned zero
+    issues; a snapshot read may not be laxer than the live path it stands in
+    for. With an empty map every citation becomes a fabricated "could not be
+    resolved" P2 and --check exits 1 for findings that do not exist."""
+    f = tmp_path / "snap.json"
+    f.write_text(json.dumps({"solyra": {}, "stocks": {}}))
+    with pytest.raises(m.AuditError, match=r'empty "stocks" map'):
+        m.load_issues_snapshot(str(f))
+
+
+def test_a_snapshot_with_one_record_per_repo_still_loads(tmp_path):
+    f = tmp_path / "snap.json"
+    f.write_text(json.dumps({"solyra": {"1": {"state": "open"}},
+                             "stocks": {"2": {"state": "closed"}}}))
+    assert m.load_issues_snapshot(str(f))["stocks"][2]["state"] == "closed"
+
+
+def test_an_issue_url_in_a_casing_github_accepts_resolves(tmp_path):
+    """github.com/teneikaaskew/Stocks/issues/8 is the same issue. A
+    case-sensitive match dropped the blocker; the `i` flag ALONE would index
+    states['Stocks'], miss, and fabricate "could not be resolved"."""
+    states = {"stocks": {8: {"state": "closed", "reason": "completed"}}}
+    out = m.check_closed_issues(
+        "d.md", "blocked by https://github.com/teneikaaskew/Stocks/issues/8\n", states)
+    assert [f["severity"] for f in out] == ["P1"], out
+    assert out[0]["ref"] == "stocks#8"
+
+
+@pytest.mark.parametrize("prose", [
+    "This is not blocked by",
+    "nonblocking:",
+    "A non-blocking note on",
+    "No longer blocking:",
+])
+def test_a_negated_blocking_cue_is_not_a_citation_of_live_work(prose):
+    """An unbounded substring match saw `blocked by` inside `not blocked by`
+    and `blocking` inside `non-blocking`, so a line stating the opposite
+    produced a P1 against the issue it exonerates."""
+    states = {"stocks": {8: {"state": "closed", "reason": "completed"}}}
+    line = f"{prose} https://github.com/TeneikaAskew/stocks/issues/8\n"
+    assert m.check_closed_issues("d.md", line, states) == []
+
+
+@pytest.mark.parametrize("prose", ["blocked by", "Blocking:", "Work not started on",
+                                   "Still open:"])
+def test_an_unnegated_cue_is_still_read_as_live_work(prose):
+    states = {"stocks": {8: {"state": "closed", "reason": "completed"}}}
+    line = f"{prose} https://github.com/TeneikaAskew/stocks/issues/8\n"
+    assert len(m.check_closed_issues("d.md", line, states)) == 1
+
+
+def test_a_link_example_inside_a_fence_is_not_a_dead_link():
+    """A document showing Markdown syntax is not citing a path. The marker and
+    heading checks already skip fenced lines; this one did not, so a syntax
+    example failed --check over the document's own teaching material."""
+    tracked = {"src/a.ts"}
+    doc = "# T\n\n```md\n[x](missing.md)\n`nowhere/gone.py`\n```\n\nbody\n"
+    assert m.check_dead_links("d.md", doc, tracked) == []
+
+
+def test_the_same_link_outside_the_fence_is_still_flagged():
+    assert len(m.check_dead_links("d.md", "# T\n\n[x](missing.md)\n", {"src/a.ts"})) == 1
+
+
+def test_a_reference_style_definition_that_does_not_resolve_is_a_dead_link():
+    """`[guide][g]` plus `[g]: missing.md` matches neither MD_LINK_RE nor the
+    backticked-path pass, so the audit read clean over a link broken for every
+    reader."""
+    out = m.check_dead_links("d.md", "# T\n\nSee [guide][g].\n\n[g]: missing.md\n",
+                             {"src/a.ts"})
+    assert len(out) == 1 and "missing.md" in out[0]["detail"], out
+
+
+def test_a_bracket_pair_that_is_not_a_reference_use_is_left_alone():
+    """The USE half is deliberately unchecked. Measured over the 322 markdown
+    documents in this tree: 1 reference definition, 204 bracket pairs, almost
+    all issue-title tags -- `| #906 | P0 | [P0][Replay] Quarantine ...` is a
+    title, not a link. Flagging undefined uses produced 79 fabricated findings,
+    so only the definition's destination is validated."""
+    doc = "# T\n\n| [#906](https://x/906) | P0 | [P0][Replay] Quarantine it |\n"
+    assert m.check_dead_links("d.md", doc, {"src/a.ts"}) == []
+
+
+def test_open_issues_plural_still_carries_a_blocking_cue():
+    """Giving the cue alternation word boundaries dropped `Open issues`, whose
+    trailing `s` leaves no boundary after `issue`. Caught by diffing findings
+    over this tree: stocks#838, cited under `| Open issues |` in
+    docs/product/09-SECURITY-AUTH.md, silently stopped being reported."""
+    assert m.has_blocking_cue("| Open issues | [#838](x) |")
+    assert m.has_blocking_cue("one open issue remains")
+
+
+def test_an_inline_dead_anchor_keeps_its_original_wording():
+    """Sharing the message builder with reference links relabelled every
+    inline anchor finding `relative link ->`, churning 19 findings on this
+    tree for no behaviour change."""
+    # A real file, because the anchor set is read from disk and an unreadable
+    # target skips the check entirely.
+    out = m.check_dead_links("d.md", "# T\n\n[x](README.md#no-such-heading-here)\n",
+                             {"README.md"})
+    assert len(out) == 1, out
+    assert out[0]["detail"].startswith("link -> README.md#no-such-heading-here"), out[0]
+
+
+def test_a_reference_style_definition_that_resolves_is_quiet():
+    assert m.check_dead_links("d.md", "# T\n\nSee [guide][g].\n\n[g]: src/a.ts\n",
+                              {"src/a.ts"}) == []
+
+
+def test_a_reference_style_definition_pointing_off_the_web_is_left_alone():
+    assert m.check_dead_links("d.md", "# T\n\nSee [g][g].\n\n[g]: https://example.com/x\n",
+                              {"src/a.ts"}) == []
+
+
+def test_a_registry_glob_that_covers_nothing_is_a_finding():
+    """`.claude/agents/*.md` can stop matching any tracked path -- every agent
+    deleted, or the glob mistyped -- and no document reaches classify() to
+    expose the inert declaration."""
+    rows = [{"cls": "A", "glob": ".claude/agents/*.md", "code_paths": []}]
+    out = m.check_registry_paths({"docs/x.md"}, rows)
+    assert len(out) == 1 and "matches no tracked document" in out[0]["detail"], out
+
+
+def test_a_registry_glob_that_covers_something_is_quiet():
+    rows = [{"cls": "A", "glob": "docs/*.md", "code_paths": []}]
+    assert m.check_registry_paths({"docs/x.md"}, rows) == []

@@ -137,10 +137,30 @@ H1_RE = re.compile(r"^#\s+\S")
 
 # A reference only counts as a staleness finding when the surrounding line
 # presents it as live work. A changelog saying "fixed #123" is not a defect.
+# Whole cues, not substrings. An unbounded alternation matched inside
+# `nonblocking` and `not blocked by`, so a line stating an issue is NOT a
+# blocker produced a P1 against it once it closed -- a finding whose own
+# source line says the opposite. `\b` alone stops `nonblocking`; the negator
+# scan in has_blocking_cue stops the spaced and hyphenated forms.
 BLOCKING_CUE_RE = re.compile(
-    r"blocking|blocked by|open issue|still open|outstanding|in progress|not started|pending",
+    r"\b(?:blocking|blocked by|open issues?|still open|outstanding|in progress"
+    r"|not started|pending)\b",
     re.I,
 )
+# Text immediately before a cue that inverts it. `not started` is itself a cue,
+# so what precedes THAT phrase is what is tested -- its own leading `not` is
+# never read as negating the phrase it belongs to.
+CUE_NEGATOR_RE = re.compile(r"\b(?:not|non|never|no longer|without|un)[\s-]*$", re.I)
+
+
+def has_blocking_cue(line: str) -> bool:
+    """Does this line cite live work?
+
+    True when at least ONE cue occurrence is not negated: a line may say one
+    issue still blocks and another no longer does.
+    """
+    return any(not CUE_NEGATOR_RE.search(line[:mm.start()])
+               for mm in BLOCKING_CUE_RE.finditer(line))
 # Prose that says a citation is finished. Checked against the citation's own
 # clause, never the whole line: `docs/product/12-PR-ISSUE-TRACEABILITY.md:48`
 # says three stocks records "are closed as not planned with the work still
@@ -153,8 +173,14 @@ SETTLED_CUE_RE = re.compile(
 # one comma-free clause pair separated by "with".
 _CLAUSE_SPLIT_RE = re.compile(r"[.;|]")
 _URL_RE = re.compile(r"https?://\S+")
+# Case-insensitive, because GitHub resolves `teneikaaskew/Stocks` to the same
+# repository and a document may cite it that way. The `i` flag ALONE would be
+# worse than the bug: the captured name would index states["Stocks"], miss, and
+# fabricate a "could not be resolved" P2 against a live issue. Both captures
+# are lower-cased at the call site.
 ISSUE_URL_RE = re.compile(
-    r"github\.com/" + OWNER + r"/(?P<repo>solyra|stocks)/(?P<kind>issues|pull)/(?P<num>\d+)"
+    r"github\.com/" + OWNER + r"/(?P<repo>solyra|stocks)/(?P<kind>issues|pull)/(?P<num>\d+)",
+    re.I,
 )
 # The fragment is CAPTURED, not discarded. Dropping it meant a link to a real
 # file but a heading that does not exist always passed -- 35 such links in this
@@ -163,6 +189,15 @@ ISSUE_URL_RE = re.compile(
 # that GitHub's anchor rule turns into DOUBLED hyphens.
 MD_LINK_RE = re.compile(
     r"\[[^\]]*\]\((?P<target>[^)#\s]*)(?:#(?P<frag>[^)\s]+))?\)")
+# Reference-style Markdown, both halves. The definition's label may not open
+# with `^`: that is a footnote, which defines a note rather than a destination.
+REF_DEF_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:\s+(?P<target>\S+)")
+# A USE (`[text][label]`) is deliberately NOT checked. Measured over the 322
+# markdown documents in this tree: 1 reference definition, 204 bracket pairs.
+# Almost every pair is an issue-title tag -- `[P0][Replay]`, `[audit] R2 --` --
+# which is indistinguishable from a full reference use, and flagging them
+# produced 79 fabricated findings. The definition's destination is the half
+# that certainly names a path, so that is the half this checks.
 # A backticked path: has a slash and a file-ish extension, no spaces or globs.
 # The trailing `:12` / `:88-102` is optional and part of the match: without it
 # the closing backtick had to follow the extension, so every line-qualified
@@ -453,10 +488,22 @@ def check_registry_paths(tracked: set[str], registry: list[dict]) -> list[dict]:
     out: list[dict] = []
     for row in registry:
         glob = row["glob"]
-        if not any(c in glob for c in "*?[") and glob not in tracked:
+        if not any(c in glob for c in "*?["):
+            if glob not in tracked:
+                out.append({"check": "registry", "doc": glob, "severity": "P1",
+                            "detail": "registry names this document exactly, but it is not in "
+                                      "the audited tree -- it was deleted, moved, or never "
+                                      "existed"})
+        # A wildcard row covering nothing is the same failure one step out:
+        # every document it named has been deleted, or the glob is mistyped.
+        # Nothing reaches classify(), so the declaration goes inert and the
+        # audit reports no registry finding while a whole rule quietly stops
+        # applying. Matched against `tracked` with the same fnmatch classify
+        # uses, so the two agree on what a glob covers.
+        elif not any(fnmatch.fnmatch(path, glob) for path in tracked):
             out.append({"check": "registry", "doc": glob, "severity": "P1",
-                        "detail": "registry names this document exactly, but it is not in "
-                                  "the audited tree -- it was deleted, moved, or never existed"})
+                        "detail": "registry declaration matches no tracked document, so the "
+                                  "rule it carries covers nothing"})
         for cp in row["code_paths"]:
             if cp not in tracked and cp not in dirs:
                 out.append({"check": "registry", "doc": glob, "severity": "P2",
@@ -1078,6 +1125,17 @@ def load_issues_snapshot(file: str) -> dict[str, dict[int, dict]]:
         except (TypeError, ValueError) as exc:
             raise AuditError(f'--issues-snapshot {file}: "{repo}" is not keyed by '
                              f"issue number: {exc}") from exc
+        # An empty map is not "a repository with no open work": fetch_issue_states
+        # refuses to report on a repository that returned zero issues, and the
+        # snapshot path may not be laxer than the live path it stands in for.
+        # Accepting `{}` turns every citation of that repo into a fabricated
+        # "could not be resolved" P2 and exits 1 for findings that do not
+        # exist (CLAUDE.md §3.7).
+        if not rows:
+            raise AuditError(f'--issues-snapshot {file} has an empty "{repo}" map; the '
+                             "live read refuses to report on zero issues and a snapshot "
+                             f"may not either -- every {repo} citation would become a "
+                             'fabricated "could not be resolved" finding')
         # Numeric keys are not enough. `check_closed_issues` reads st["state"]
         # once it has decided the row is not None, so a row with no state
         # raises KeyError -- a traceback and exit 1, the status that means
@@ -1163,7 +1221,7 @@ def citation_clause(line: str, start: int, end: int) -> str:
 def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[dict]:
     out = []
     for n, line in enumerate(text.split("\n"), 1):
-        if not BLOCKING_CUE_RE.search(line):
+        if not has_blocking_cue(line):
             continue
         for m in ISSUE_URL_RE.finditer(line):
             # The line carries a live-work cue; does THIS citation's clause say
@@ -1172,9 +1230,9 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # finding and never a true one.
             if SETTLED_CUE_RE.search(citation_clause(line, m.start(), m.end())):
                 continue
-            if m.group("kind") != "issues":
+            if m.group("kind").lower() != "issues":
                 continue
-            repo, num = m.group("repo"), int(m.group("num"))
+            repo, num = m.group("repo").lower(), int(m.group("num"))
             st = states.get(repo, {}).get(num)
             if st is None:
                 out.append({"check": "closed-issue", "doc": doc, "line": n,
@@ -1215,40 +1273,78 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
                 anchors[path] = None
         return anchors[path]
 
-    for n, line in enumerate(text.split("\n"), 1):
+    def check_target(tgt: str, frag: str | None, n: int, label: str | None = None) -> None:
+        """One destination, validated the way an inline link's is.
+
+        Reference-style definitions resolve to the same tracked paths and the
+        same anchors; a different spelling must not buy a laxer check.
+        """
+        what = (f"relative link -> {tgt}" if label is None
+                else f"reference link [{label}] -> {tgt}")
+        anchor_what = f"link -> {tgt}" if label is None else what
+        if tgt.startswith(("http://", "https://", "mailto:")):
+            return
+        if not tgt:
+            # `[x](#heading)` -- same document, so the anchor is still
+            # checkable even though there is no path to resolve.
+            norm = doc
+        else:
+            # normpath, not PurePosixPath: the latter keeps `..` segments
+            # verbatim, and the old code leaned on the filesystem to
+            # resolve them. Requiring a tracked target exposed that --
+            # `.github/workflows/README.md` linking `../../docs/...`
+            # produced `.github/workflows/../../docs/...`, which is in no
+            # tracked set, and 3,259 live links reported as dead.
+            resolved = (tgt.lstrip("/") if tgt.startswith("/")
+                        else posixpath.join(str(base), tgt))
+            norm = posixpath.normpath(resolved)
+            if norm.startswith(".."):
+                # Climbs out of the repository: cross-repo prose, which
+                # this repo cannot resolve and must not call rot.
+                return
+            if norm not in tracked and not is_tracked_dir(tracked, norm):
+                out.append({"check": "dead-link", "doc": doc, "line": n,
+                            "detail": what, "severity": "P2"})
+                return
+        # The target resolves; does the heading it names?
+        if frag and norm.endswith(".md"):
+            have = anchors_of(norm)
+            if have is not None and frag.lower() not in have:
+                out.append({"check": "dead-anchor", "doc": doc, "line": n,
+                            "detail": f"{anchor_what}#{frag}: the target has no "
+                                      "such heading",
+                            "severity": "P2"})
+
+    lines = text.split("\n")
+    # A fenced block is an EXAMPLE, not a citation. A document demonstrating
+    # Markdown syntax with `[x](missing.md)`, or showing a path that has since
+    # moved, was read as rendered documentation and failed --check over its own
+    # teaching material. The marker and heading checks already skip these.
+    fenced = fenced_lines(lines)
+
+    # Reference-style Markdown: `[guide][g]` with `[g]: docs/guide.md` further
+    # down. Neither shape matches MD_LINK_RE, so a broken reference link -- the
+    # form CommonMark calls standard and readers see as an ordinary link --
+    # produced a clean audit. The DEFINITION's destination is validated exactly
+    # as an inline link's is. A footnote (`[^1]: ...`) is excluded: it defines
+    # a note, not a destination. A
+    # A use is excluded too -- see REF_USE_RE for the measurement that says
+    # bracketed prose in this corpus cannot be told apart from one.
+    ref_defs: dict[str, tuple[str, int]] = {}
+    for n, line in enumerate(lines, 1):
+        if n - 1 in fenced:
+            continue
+        rm = REF_DEF_RE.match(line)
+        if rm:
+            ref_defs[rm.group("label").strip().lower()] = (rm.group("target").strip("<>"), n)
+    for label, (target, n) in ref_defs.items():
+        tgt, _, frag = target.partition("#")
+        check_target(tgt, frag or None, n, label)
+    for n, line in enumerate(lines, 1):
+        if n - 1 in fenced:
+            continue
         for m in MD_LINK_RE.finditer(line):
-            tgt, frag = m.group("target"), m.group("frag")
-            if tgt.startswith(("http://", "https://", "mailto:")):
-                continue
-            if not tgt:
-                # `[x](#heading)` -- same document, so the anchor is still
-                # checkable even though there is no path to resolve.
-                norm = doc
-            else:
-                # normpath, not PurePosixPath: the latter keeps `..` segments
-                # verbatim, and the old code leaned on the filesystem to
-                # resolve them. Requiring a tracked target exposed that --
-                # `.github/workflows/README.md` linking `../../docs/...`
-                # produced `.github/workflows/../../docs/...`, which is in no
-                # tracked set, and 3,259 live links reported as dead.
-                resolved = (tgt.lstrip("/") if tgt.startswith("/")
-                            else posixpath.join(str(base), tgt))
-                norm = posixpath.normpath(resolved)
-                if norm.startswith(".."):
-                    # Climbs out of the repository: cross-repo prose, which
-                    # this repo cannot resolve and must not call rot.
-                    continue
-                if norm not in tracked and not is_tracked_dir(tracked, norm):
-                    out.append({"check": "dead-link", "doc": doc, "line": n,
-                                "detail": f"relative link -> {tgt}", "severity": "P2"})
-                    continue
-            # The target resolves; does the heading it names?
-            if frag and norm.endswith(".md"):
-                have = anchors_of(norm)
-                if have is not None and frag.lower() not in have:
-                    out.append({"check": "dead-anchor", "doc": doc, "line": n,
-                                "detail": f"link -> {tgt}#{frag}: the target has no such "
-                                          "heading", "severity": "P2"})
+            check_target(m.group("target"), m.group("frag"), n)
         for m in BACKTICK_PATH_RE.finditer(line):
             cited = m.group("path")
             # Root-relative, parent-relative and line-qualified spellings all
