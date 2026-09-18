@@ -1,5 +1,7 @@
 # Strat Implementation Plan
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 **Branch:** `docs/strat-implementation-plan`
 **Date:** 2026-04-26
 **Status:** Strat v2 shipped 2026-04-27 via PR #101 + hardening follow-ups.

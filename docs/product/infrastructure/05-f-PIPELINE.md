@@ -1,5 +1,7 @@
 # Pipeline Architecture — Live vs Research
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 > Authoritative map of how the trading platform runs end-to-end: which jobs
 > fire when, how data flows, and where the indicator-combination work (regime
 > combos + Strat combos) plugs in. For the raw-data *fetcher* details see

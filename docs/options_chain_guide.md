@@ -1,5 +1,7 @@
 # Options Chain Fetching Guide
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 ## Problem: Only Getting Today's Options
 
 If you're only seeing options for the current day, it's likely because:

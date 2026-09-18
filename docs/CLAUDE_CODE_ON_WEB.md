@@ -1,5 +1,7 @@
 # Claude Code on the Web — Setup, Patterns, and Gotchas
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 A field guide for using **Claude Code on the web** (claude.ai/code) with this repo, especially from a phone-only session where the sandbox can't reach Cloud SQL or run `gh`/`gcloud` natively.
 
 > **Audience.** Anyone (you, future Claude sessions, a teammate) needing to operate this repo from a web sandbox.

@@ -1,5 +1,7 @@
 # Living Product Plan
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 **Repository:** `TeneikaAskew/stocks` · **Evidence snapshot / Last reviewed:** 2026-08-31 · **`main` baseline:** `b9621c4`
 
 The maintained index from product intent through implementation, evidence, risk and delivery.

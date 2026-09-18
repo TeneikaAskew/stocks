@@ -1,5 +1,7 @@
 # Pine Script Upgrades — Backtest-Driven Enhancements
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 ## Context
 
 Your 5 TradingView Pine scripts work well individually, but the backtest reports (10+ years, IWM/SPY/QQQ) reveal a critical insight: **Strat patterns alone win ~47% — indicator confirmation adds 5-21 percentage points to win rate**. Your scripts are currently missing the exact indicator combinations that the backtests proved most effective. The goal is to make each script catch winning setups **earlier and with higher confidence**.
