@@ -523,6 +523,26 @@ def check_registry_paths(tracked: set[str], registry: list[dict]) -> list[dict]:
             dirs.add("/".join(parts[:i]))
 
     out: list[dict] = []
+    # Two matching rows of EQUAL glob length never replace `best` in classify,
+    # so the first wins by table order alone. A duplicate or equally long
+    # overlapping glob can therefore park a document in Class B/X, suppress all
+    # auditing of it, and leave the conflicting Class A/D declaration silently
+    # ignored. Table order is not a decision.
+    for path in sorted(tracked):
+        matches = [r for r in registry if fnmatch.fnmatch(path, r["glob"])]
+        if not matches:
+            continue
+        top = max(len(r["glob"]) for r in matches)
+        tied = [r for r in matches if len(r["glob"]) == top]
+        if len({r["cls"] for r in tied}) > 1:
+            rules = ", ".join(sorted({"{} -> {}".format(r["glob"], r["cls"])
+                                      for r in tied}))
+            out.append({"check": "registry", "doc": path, "severity": "P1",
+                        "detail": "two registry rules of equal specificity disagree about "
+                                  f"this document ({rules}); classify() takes the first by "
+                                  "table order, so the other declaration is ignored "
+                                  "without a finding"})
+
     for row in registry:
         glob = row["glob"]
         if not any(c in glob for c in "*?["):
@@ -1349,6 +1369,11 @@ def is_tracked_dir(tracked: set[str], norm: str) -> bool:
 
 def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     out = []
+    # Every extension this tree actually tracks. CODE_EXTS is the floor, so a
+    # rename that empties an extension out of the tree does not make its
+    # citations silently uncheckable.
+    cited_exts = CODE_EXTS | {pathlib.PurePosixPath(p).suffix for p in tracked
+                              if pathlib.PurePosixPath(p).suffix}
     base = pathlib.PurePosixPath(doc).parent
     anchors: dict[str, set[str] | None] = {}
 
@@ -1454,7 +1479,11 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
             p = repo_relative(cited, doc)
             if p is None:
                 continue
-            if pathlib.PurePosixPath(p).suffix not in CODE_EXTS:
+            # The allowlist is derived from the tree, not fixed. A hardcoded
+            # set skipped a citation of `notebooks/strat_pred_diagnose.ipynb`
+            # entirely, so deleting that notebook produced no finding though
+            # `notebooks` is plainly one of this repo's directories.
+            if pathlib.PurePosixPath(p).suffix not in cited_exts:
                 continue
             if p in tracked or is_tracked_dir(tracked, p):
                 continue
@@ -1791,7 +1820,25 @@ def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
         if any(not _is_dry_run(r) for r in page_rows):
             return rows
         if len(page_rows) < page_size:
-            return rows
+            break
+    if not rows:
+        # The workflow exists but has never run. Returning [] made
+        # check_owning_job emit no run-status finding, so the delivery audit
+        # passed without any evidence the owning job has ever executed --
+        # the same clean-bill-of-health-on-no-data shape fetch_issue_states
+        # already refuses.
+        raise AuditError(
+            f"{OWNING_JOB['workflow']} has no runs at all; refusing to report a clean "
+            "delivery audit on no evidence that the owning job has ever executed")
+    if all(_is_dry_run(r) for r in rows):
+        # Exhausting the page limit with nothing but dry runs is a TRUNCATED
+        # read, not a complete one. Returning it silently let 100 consecutive
+        # manual dry runs hide a failed scheduled run behind them -- exactly
+        # the hole the pagination was added to close, one level out.
+        raise AuditError(
+            f"{OWNING_JOB['workflow']}: {len(rows)} runs read across "
+            f"{RUNS_PAGE_LIMIT} pages and every one is a dry run; refusing to report "
+            "on a history with no delivering execution in it")
     return rows
 
 
@@ -1835,11 +1882,14 @@ def check_owning_job(today: str) -> list[dict]:
     delivery_re = OWNING_JOB["delivery_title_re"]
     delivered = max((pr["merged"] for pr in owned_prs
                      if pr["merged"] and delivery_re.search(pr["title"])), default="")
-    for pr in owned_prs[:6]:
-        if pr["merged"]:
-            continue
-        if delivered and pr["created"] < delivered:
-            continue
+    # Filter first, THEN limit. Slicing the raw list meant six newer merged
+    # maintenance PRs -- which the attempt pattern is deliberately broad enough
+    # to match, and which never contribute to the strict `delivered` timestamp
+    # -- could push an older unsuperseded open refresh PR out of view, so the
+    # audit reported no delivery problem while that refresh sat unmerged.
+    actionable = [pr for pr in owned_prs
+                  if not pr["merged"] and not (delivered and pr["created"] < delivered)]
+    for pr in actionable[:6]:
         age = (datetime.date.fromisoformat(today)
                - datetime.date.fromisoformat(pr["created"][:10])).days
         if pr["state"] == "open":
@@ -2017,7 +2067,17 @@ def main(argv: list[str] | None = None) -> int:
         if cls in {"B", "X"}:
             continue
 
-        text = (REPO / doc).read_text(encoding="utf-8", errors="replace")
+        # The document list comes from HEAD and the contents from the working
+        # tree, so an ordinary staged or unstaged deletion left the path in
+        # `docs` and raised FileNotFoundError here: a traceback and exit 1, the
+        # status reserved for documentation findings.
+        try:
+            text = (REPO / doc).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise AuditError(
+                f"{doc} is in the audited tree at HEAD but cannot be read from the "
+                f"working tree ({exc}); the audit cannot report on a document it "
+                "could not open") from exc
         lines = text.split("\n")
         markers = find_markers(lines)
         found = markers[0] if markers else None

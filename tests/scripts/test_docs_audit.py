@@ -2632,3 +2632,96 @@ def test_the_first_reference_definition_is_the_one_markdown_uses():
     out = m.check_dead_links("d.md", "# T\n\nSee [g][g].\n\n[g]: missing.md\n[g]: README.md\n",
                              {"README.md"})
     assert len(out) == 1 and "missing.md" in out[0]["detail"], out
+
+
+def test_two_registry_rules_of_equal_specificity_are_a_finding():
+    """classify() keeps the FIRST of two equal-length matches, so a duplicate
+    or equally long overlapping glob can park a document in Class X, suppress
+    all auditing of it, and leave the conflicting Class D declaration ignored
+    by table order alone."""
+    reg = [{"cls": "X", "glob": "docs/a*.md", "code_paths": [], "regions": []},
+           {"cls": "D", "glob": "docs/*a.md", "code_paths": [], "regions": []}]
+    out = [f for f in m.check_registry_paths({"docs/aa.md"}, reg)
+           if "equal specificity" in f["detail"]]
+    assert len(out) == 1 and out[0]["doc"] == "docs/aa.md", out
+
+
+def test_rules_of_different_specificity_are_not_ambiguous():
+    reg = [{"cls": "X", "glob": "docs/*", "code_paths": [], "regions": []},
+           {"cls": "D", "glob": "docs/aa.md", "code_paths": [], "regions": []}]
+    assert [f for f in m.check_registry_paths({"docs/aa.md"}, reg)
+            if "equal specificity" in f["detail"]] == []
+
+
+def test_a_workflow_with_no_runs_at_all_is_refused(monkeypatch):
+    """Returning [] made check_owning_job emit no run-status finding, so the
+    delivery audit passed with no evidence the owning job ever executed."""
+    monkeypatch.setattr(m, "run", lambda *a, **k: "")
+    with pytest.raises(m.AuditError, match="no runs at all"):
+        m.fetch_owning_runs(page_size=2)
+
+
+def test_a_run_history_that_is_all_dry_runs_is_refused(monkeypatch):
+    """Exhausting the page limit with nothing but dry runs is a TRUNCATED read.
+    Returning it silently let consecutive manual dry runs hide a failed
+    scheduled run behind them."""
+    monkeypatch.setattr(m, "run",
+                        lambda *a, **k: "success\t2026-01-01\tworkflow_dispatch\ttrue\n" * 2)
+    with pytest.raises(m.AuditError, match="every one is a dry run"):
+        m.fetch_owning_runs(page_size=2)
+
+
+def test_a_history_with_a_delivering_run_still_returns(monkeypatch):
+    monkeypatch.setattr(m, "run",
+                        lambda *a, **k: "success\t2026-01-01\tschedule\t\n")
+    assert len(m.fetch_owning_runs(page_size=2)) == 1
+
+
+def test_a_document_deleted_from_the_working_tree_is_an_audit_error(audit_repo):
+    """The list comes from HEAD and the contents from the working tree, so an
+    ordinary staged deletion raised FileNotFoundError: a traceback and exit 1,
+    the status reserved for documentation findings."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "doc"], cwd=audit_repo, check=True)
+    (audit_repo / "docs" / "d.md").unlink()
+    with pytest.raises(m.AuditError, match="cannot be read from the working tree"):
+        m.main(["--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json")])
+
+
+def test_a_cited_path_is_checked_on_any_extension_the_tree_tracks():
+    """A hardcoded allowlist skipped `notebooks/x.ipynb` entirely, so deleting
+    that notebook produced no finding though `notebooks` is plainly one of this
+    repo's directories."""
+    m.TOP_LEVEL_DIRS.add("notebooks")
+    try:
+        out = m.check_dead_links("d.md", "# T\n\n`notebooks/gone.ipynb`\n",
+                                 {"notebooks/kept.ipynb"})
+        assert len(out) == 1 and "gone.ipynb" in out[0]["detail"], out
+    finally:
+        m.TOP_LEVEL_DIRS.discard("notebooks")
+
+
+def test_the_refresh_pr_limit_applies_after_the_merged_filter(monkeypatch):
+    """Slicing the raw list meant six newer merged maintenance PRs -- which the
+    attempt pattern is deliberately broad enough to match, and which never
+    contribute to the strict `delivered` timestamp -- pushed an older
+    unsuperseded OPEN refresh PR out of view."""
+    # Six merged maintenance PRs the BROAD attempt pattern matches, newest
+    # first as the API returns them, then the old open refresh at position 7.
+    merged = "\n".join(
+        f"{i}\tclosed\t2026-09-1{i}T00:00:00Z\t2026-09-1{i}T00:00:00Z\t"
+        "fix architecture doc refresh authentication" for i in range(1, 7))
+    stale_open = ("99\topen\t\t2026-01-01T00:00:00Z\t"
+                  "Fix: Monthly architecture doc refresh failed")
+
+    def fake_run(cmd, **kw):
+        if "runs?per_page=10" in " ".join(cmd):
+            return "success\t2026-09-18T06:00:00Z\tschedule\t\n"
+        return f"{merged}\n{stale_open}\n"
+
+    monkeypatch.setattr(m, "run", fake_run)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    out = m.check_owning_job("2026-09-18")
+    assert any("#99" in f["detail"] for f in out), [f["detail"] for f in out]
