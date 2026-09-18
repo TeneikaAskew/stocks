@@ -4,7 +4,7 @@
 (`/api/style/mine-and-validate`) · **Table:** `user_style_results` ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-16
+**Doc health:** CURRENT · **Last verified:** 2026-09-17
 
 > **Scope of this document.** It records what the code does, read from the source and
 > its tests. Where the code does not record *why* a value was chosen, this document says
@@ -58,16 +58,26 @@ outputs are comparable with production rather than with a parallel implementatio
 
 ## Rationale
 
-**Partly recorded, and the sample floors are among the recorded parts.** The choice to
-route through the production indicator path *is* explained, with the rule it implements.
-So are both floors, at `style_miner.py:105-112`: `_MIN_TOTAL_ENTRIES = 10` is tied to the
-*"spec §8 / Task 4.3 endpoint contract (need >= 10 closed trades)"*, and
-`_MIN_DIRECTION_ENTRIES` is derived as half of it because *"denominators of 1-4 are too
-coarse to call the result a style rather than noise"*. An earlier revision of this
-document said both carried no derivation, which discarded recorded provenance.
+**Mostly recorded.** The choice to route through the production indicator path *is*
+explained, with the rule it implements. So are the sample-size floors, which an earlier
+revision of this document wrongly called underived:
 
-**UNKNOWN:** `_WARMUP_BARS = 14` is consistent with a 14-period RSI, but the source does
-not say that is why.
+- **`_MIN_TOTAL_ENTRIES = 10`** is pinned to a contract, not chosen locally: *"spec §8 /
+  Task 4.3's endpoint contract ('need >= 10 closed trades') — the absolute floor before
+  mining is attempted at all"* (`lib/style_miner.py:105-107`). The contract is
+  `docs/superpowers/plans/2026-07-08-phases2-5-trade-journal-program.md:290`, which has
+  `/api/style/mine-and-validate` answer `{status: "unavailable", reason: "need >= 10 closed
+  trades, have N"}` below it.
+- **`_MIN_DIRECTION_ENTRIES = 5`** is derived from that: *"Half of `_MIN_TOTAL_ENTRIES`, split
+  across the two possible directions — below this a direction's frequency counts are too
+  coarse (denominators of 1-4) to call the result a 'style' rather than noise"* (`:109-112`).
+- **`_WARMUP_BARS = 14`** is a parity choice: it *"mirrors `lib.backtest._SIGNAL_WARMUP_BARS`
+  / `platform/api/routers/live.py`'s `compute_live_signal_series` warm-up gate — indicators
+  aren't trustworthy before this many bars"* (`:100-103`).
+
+**UNKNOWN:** why the endpoint contract chose ten, and why the shared warm-up gate is
+fourteen. Fourteen is consistent with the 14-period RSI, but none of the three sources says
+that is the reason.
 
 Mined profiles are walk-forward validated through
 [MODEL-SWEEP-001](MODEL-SWEEP-001.md)'s walk-forward machinery

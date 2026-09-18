@@ -3,7 +3,7 @@
 **Code:** `lib/strategies/brief_bias.py` (266 lines), `lib/movement_statement.py` (1004 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-16
+**Doc health:** CURRENT · **Last verified:** 2026-09-17
 
 > **Scope of this document.** It records what the code does, read from the source and
 > its tests. Where the code does not record *why* a value was chosen, this document says
@@ -26,11 +26,17 @@ other surfaces **will** render it identically — that is stated intent, not cur
 
 **Today the Movement Read card is the only wired consumer.** `assemble_movement_statement`
 has exactly one production caller, `platform/api/routers/dashboard.py:595`; no Discord job or
-renderer calls it. An earlier revision of this document reported the module header's future
-tense as present-tense cross-surface parity. That module header also calls it **NOT user-facing**,
-and that part is now stale: `platform/deploy.sh:177` ships the flag `true` and
-`platform/api/routers/dashboard.py:530-545` exposes the enabled endpoint that the React
-Movement Read card consumes. It is feature-flagged and the flag is on.
+renderer calls it. An earlier revision reported that future tense as present-tense
+cross-surface parity.
+
+It **is user-facing**: `GET /api/movement-statement`
+(`platform/api/routers/dashboard.py:530-545`) returns the assembled statement for the React
+Movement Read card whenever the flag is on, and the deployed flag is on — see
+[Live gating](#live-gating). The module header at `lib/movement_statement.py:1-7` still
+reads *"PHASE 2 (feature-flagged, NOT user-facing) ... Nothing here renders to users"*.
+That header describes the phase the module was written in, not the deployment; it is stale
+in the same way as the strategy docstrings recorded under DOC-18, and this document does
+not repeat it as current behaviour.
 
 ## Bias values
 
@@ -83,14 +89,21 @@ exists so a missing brief cannot read as agreement, which is a deliberate applic
 CLAUDE.md Rule 3.7. The visibility-only posture is also explained: there is not yet
 evidence that brief-aligned signals outperform brief-opposed ones.
 
-**The actionable threshold is recorded**, and an earlier revision wrongly said it was not:
-`SignalConfig.premarket_signal_threshold` defaults to **3** and
-`premarket_building_threshold` to **2** (`lib/config.py:490-491`), and
-`gcp/premarket_brief.py:999-1000` reads both to produce the setup status that `classify`
-parses. A score of 3+/5 is a setup; 2 is "building"; below that is no signal.
+**The actionable threshold is recorded; its rationale is not.** The `(N/5)` in the
+brief's `signal_status` is the five-factor mean-reversion score from
+`lib.signals.check_call_conditions` / `check_put_conditions` (`gcp/premarket_brief.py:28`,
+`:1174-1175`), and `_resolve_signal_status` (`:1767`) turns it into text with two
+thresholds read at `:999-1000`:
 
-**UNKNOWN:** why 3 and 2 are the right cut-points, and how the `(\d)/5` scale itself was
-constructed, are not recorded.
+| Threshold | Default | Source | Status text | `classify` reads it as |
+|---|---|---|---|---|
+| `SignalConfig.premarket_signal_threshold` | **3** | `lib/config.py:490` | `CALL setup (N/5)` / `PUT setup (N/5)` (`premarket_brief.py:1814-1815`) | `CALL` / `PUT` (subject to the FTFC check above) |
+| `SignalConfig.premarket_building_threshold` | **2** | `lib/config.py:491` | `CALL building (N/5)` / `PUT building (N/5)` (`:1816-1817`) | `NEUTRAL` ("building") |
+| below both | — | — | `No signal` | `NEUTRAL` |
+
+So a brief becomes a CALL or PUT bias at a score of 3 of 5. Both values can be overridden
+from the loaded config (`lib/config.py:870-871`). **UNKNOWN:** why 3 and 2 — neither
+constant carries a derivation in code or tests.
 
 ## Tests
 

@@ -3,11 +3,11 @@
 **Code:** `lib/earnings_reactions.py` (958 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-16
+**Doc health:** CURRENT · **Last verified:** 2026-09-17
 
 > **Scope of this document.** It records what the code does, read from the source and
-> its tests. Unlike the other models in this directory, **this one's thresholds carry a
-> recorded derivation** — see [Rationale](#rationale).
+> its tests. This one's quintile thresholds carry the **most complete recorded derivation**
+> in this directory — see [Rationale](#rationale).
 
 ## What it decides
 
@@ -15,13 +15,26 @@ A **playability score** per upcoming earnings event, a **quintile** and confiden
 derived from it, and an **archetype** tag. Consumed by the pre-market brief's playbook
 section, the watchlist UI, and the weekly long-side watchlist job.
 
-CLAUDE.md's "`lib/` is the shared backend spine" is the intent, but **it does not hold for
-the archetype tag**: `gcp/refresh_earnings_views.py::_derive_archetype` reimplements the
-thresholds instead of calling `classify_archetype`, and the two **disagree** — with
-consistency data missing it returns `reversal_play` where the canonical function returns
-`quiet`. That job writes the table the watchlist UI reads, so the divergence is
-user-visible. Either route it through the shared helper or treat this as a second
-implementation to keep in parity.
+CLAUDE.md's "`lib/` is the shared backend spine" says every consumer should read this one
+implementation. **One does not.** The daily `earnings_upcoming_with_history` rebuild in
+`gcp/refresh_earnings_views.py` — the table `platform/api/routers/earnings.py:122` serves to
+the watchlist UI — derives its archetype through its own `_derive_archetype` (`:312-336`,
+called at `:245`) rather than `classify_archetype`. The two agree on the numeric cut-points
+but not on missing data:
+
+| Input state | `classify_archetype` (`lib/earnings_reactions.py`) | `_derive_archetype` (`gcp/refresh_earnings_views.py`) |
+|---|---|---|
+| `dir_consistency` missing, `reversal_rate >= 0.40` | `quiet` (`:481-482`) | **`reversal_play`** — `(dir_cons or 0) < 50` is true for `None` (`:334-335`) |
+| `reversal_rate` missing, `dir_consistency >= 0.65`, bias beyond ±0.5 | `quiet` (`:481-482`) | **`bullish_trend` / `bearish_trend`** (`:329-333`) |
+| `directional_bias` missing | trend branch skipped (`:489`) | `bias = ... or 0.0` (`:328`) — a Rule 3.7 `or 0` on a financial field; same result today, by accident |
+| no lean row at all | `quiet` | `None` (`:322-323`) |
+
+So a watchlist row can carry `reversal_play` for a name whose canonical archetype is
+`quiet`, and the brief and the watchlist can disagree on the same ticker on the same
+morning. No issue tracks this; recorded as DOC-22 in
+[07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
+This document does not change the job's behaviour — routing the refresh through
+`classify_archetype` is a code change for a code PR.
 
 ## The formula (locked in Phase 0.5)
 
@@ -44,10 +57,18 @@ typical_daily_return = median(|daily_return_pct|) over last 60d
 | Q4 | `28.2–41.9` | 51.7% | ✅ SOLID | standard sizing |
 | Q3 | `21.2–28.2` | 46.5% | 🟡 OK | small position only |
 | Q2 | `15.7–21.2` | 42.9% | ❓ WEAK | paper / watch |
-| Q1 | `< 15.7` | 34.8% | 🚫 SKIP | below baseline; routed to `low_conviction`, not dropped |
+| Q1 | `< 15.7` | 34.8% | 🚫 SKIP | below baseline; routed to `low_conviction` and rendered as a compact line, not dropped (see below) |
 
 Boundaries are midpoints between adjacent quintile-average scores, so a score landing
 exactly on an average maps to that quintile.
+
+**Q1 names are not dropped.** `gcp/premarket_brief.py:669-696` moves every Q1-scoring
+survivor into a separate `low_conviction` list (`:684-685`) rather than discarding it — the
+comment records why: silently dropping them *"hides whole-slate visibility"* and made
+mega-caps *"vanish without a trace"*. The daily embed then renders them per BMO/AMC bucket
+as one compact `⤷ Also reporting (lower conviction): TICK, TICK, …` line (`:2684`,
+`:2732`) and counts them in the title (`:2690`), so the full slate stays visible without
+giving a below-baseline name a playability row.
 
 ## Archetypes
 
@@ -87,14 +108,18 @@ All environment variables; defaults are the Phase 0.5 locked values.
 
 ## Rationale
 
-**RECORDED — the quintile calibration is the best-evidenced threshold set in these seven
-documents.** (It is not the only one with any derivation: MODEL-MOM-001 records a
-walk-forward behind its score floor and a measured 72.2% fire rate behind dropping
-StochRSI, and MODEL-MR-001 records the 84.6% rate behind dropping EMA proximity.)
-The quintile boundaries are *"calibrated against the 21,592-prediction backtest
+**RECORDED — the best-evidenced derivation among the seven, not the only one.** The
+quintile boundaries are *"calibrated against the 21,592-prediction backtest
 (`scripts/backtest_playability.py`, 2026-05-14)"*, and the per-quintile hit rates above
 are quoted from that calibration. The monotonic 34.8% → 58.9% progression is what
-justifies demoting Q1 to low conviction and sizing up at Q5.
+justifies routing Q1 to the compact line and the size-up-at-Q5 guidance.
+
+For comparison, [MODEL-MOM-001](MODEL-MOM-001.md) records a score-bucket walk-forward for
+its floor of 5 and a 72.2% fire-rate measurement for dropping StochRSI, and
+[MODEL-MR-001](MODEL-MR-001.md) records the 84.6% fire-rate that removed EMA proximity —
+real derivations, but each covers a single change, and both models' operating bands remain
+`UNKNOWN`. What is unique here is that the *whole* threshold set traces to one measured
+backtest.
 
 Two caveats a reader should carry:
 

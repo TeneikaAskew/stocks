@@ -2,7 +2,7 @@
 
 **Code:** `lib/walk_forward.py` (607 lines), `scripts/run_param_sweep.py`,
 `scripts/calibrate_iwm_strat.py`, `scripts/run_walk_forward.py` ·
-**Table:** `exit_config_overrides` · **Job:** none — **unscheduled**, run by hand ·
+**Table:** `exit_config_overrides` · **Job:** `param-sweep` — deployed but **unscheduled**, run by hand ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** **Invalidated** · **Rec:** RESTRUCTURE
 **Doc health:** CURRENT · **Last verified:** 2026-09-18
