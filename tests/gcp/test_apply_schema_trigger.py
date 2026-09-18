@@ -765,3 +765,60 @@ def test_the_workflow_apply_refuses_rather_than_waiting_past_its_deadline():
     assert "APPLY lock=" not in r.stdout, r.stdout
     assert "SCAN budget=" not in r.stdout, "the scan must not start either"
     assert "no time left" in r.stderr.lower(), r.stderr
+
+
+def test_watchlist_history_creation_and_trigger_are_one_atomic_unit():
+    """A committed table with no trigger on it is a hole in the guarantee.
+
+    `split_statement_groups` makes every non-marked statement its own unit,
+    and the executor runs each unit in its own transaction. With
+    ATOMIC-BEGIN placed after `CREATE TABLE watchlist_history` and its two
+    indexes, those three commit separately and only then does the trigger
+    install. Between those commits `watchlist_history` exists and
+    `watchlists` has no trigger on it, so membership transitions are not
+    captured.
+
+    The window is not bounded by the applier's speed: if the apply is
+    interrupted there — Cloud Run task timeout, a crash — the table stays
+    committed and triggerless until someone re-runs it, while production
+    keeps writing. A remove/re-add inside that window erases `added_at` on
+    `watchlists` exactly as before, and the seed (guarded on "history is
+    empty") then reconstructs membership FROM that already-corrupted state
+    and records it as fact. That is the corruption this table exists to
+    prevent, reachable through its own migration (Codex P2 on `1155a62`).
+
+    Postgres has transactional DDL and none of these statements is
+    `CREATE INDEX CONCURRENTLY`, so one transaction is available here.
+    """
+    import pathlib
+
+    from gcp.apply_schema import split_statement_groups
+
+    sql = pathlib.Path("gcp/schema.sql").read_text()
+    units = split_statement_groups(sql)
+
+    def _unit_with(needle: str) -> int:
+        hits = [i for i, u in enumerate(units)
+                if any(needle in stmt for stmt in u)]
+        assert len(hits) == 1, f"expected exactly one unit containing {needle!r}, got {hits}"
+        return hits[0]
+
+    table = _unit_with("CREATE TABLE IF NOT EXISTS watchlist_history")
+    idx_asof = _unit_with("idx_watchlist_history_asof")
+    idx_seed = _unit_with("idx_watchlist_history_seed")
+    trigger = _unit_with("CREATE TRIGGER trg_watchlists_membership")
+    guard = _unit_with("CREATE TRIGGER trg_watchlist_history_append_only")
+
+    assert table == trigger == guard == idx_asof == idx_seed, (
+        "watchlist_history's creation, indexes, trigger and append-only "
+        f"guard are in units {table}/{idx_asof}/{idx_seed}/{trigger}/{guard} "
+        "— each unit commits separately, so there is a committed window "
+        "where the table exists and watchlists is untriggered"
+    )
+
+    # And the seed must ride in the same transaction, or the reverse hole
+    # opens: a live trigger with the pre-existing rows never seeded.
+    seed = _unit_with("INSERT INTO watchlist_history")
+    assert seed == table, (
+        "the seed is not in the same transaction as the trigger install"
+    )

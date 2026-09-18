@@ -2345,6 +2345,21 @@ END $$;
 -- fourth writer is added. A trigger fires inside the writer's own
 -- transaction, so history cannot commit apart from the state change it
 -- describes, and a future writer gets it for free.
+-- ATOMIC-BEGIN watchlist history: table + indexes + trigger + seed as one txn
+-- The group starts HERE, at the CREATE TABLE, not at the trigger below.
+-- Every unmarked statement is its own unit and its own transaction
+-- (gcp/apply_schema.py:split_statement_groups), so starting lower would
+-- commit the table and its indexes first and leave a window in which
+-- `watchlist_history` exists while `watchlists` still has no trigger on
+-- it. That window is not bounded by how fast the applier runs: an apply
+-- interrupted there — task timeout, crash — leaves the table committed
+-- and triggerless until someone re-runs it, while production keeps
+-- writing. A remove/re-add inside it erases `added_at` exactly as
+-- before, and the seed below (guarded on "history is empty") would then
+-- reconstruct membership FROM that corrupted state and record it as
+-- fact — the very corruption this table exists to prevent, arriving
+-- through its own migration. Postgres has transactional DDL and nothing
+-- here is CREATE INDEX CONCURRENTLY, so one transaction covers it all.
 CREATE TABLE IF NOT EXISTS watchlist_history (
     id            BIGSERIAL     PRIMARY KEY,
     user_id       VARCHAR(320)  NOT NULL,
@@ -2376,11 +2391,12 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_history_asof
 CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
     ON watchlist_history (recorded_at) WHERE origin = 'seed';
 
--- ATOMIC-BEGIN watchlist history: trigger + seed as one txn
--- Grouped so an apply interrupted between the two cannot leave the
--- trigger live with the seed never run: history would then start at the
--- interruption, the pre-existing rows would be absent, and the next
--- apply would find a non-empty table and skip the seed permanently.
+-- Still inside the group opened at CREATE TABLE above. The trigger and
+-- the seed must also share a transaction with each other: an apply
+-- interrupted between them would leave the trigger live with the seed
+-- never run, so history would start at the interruption, the
+-- pre-existing rows would be absent, and the next apply would find a
+-- non-empty table and skip the seed permanently.
 CREATE OR REPLACE FUNCTION watchlists_record_membership()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
