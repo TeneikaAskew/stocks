@@ -27,10 +27,50 @@ Merged 2026-06-10 from:
 | E-21, E-22 | P (P1–P7), D | Archived P7 pipeline + pre-registered program + exec backtests |
 | E-23 | D, G3 | Cost / EV / friction |
 | E-24 | DQ1 + NAN_AUDIT + DATA_DICTIONARY | Data-quality remediation + gamma rename |
+| E-25 | `CAT-A8` (`STRAT-NEXTBAR`) | Historical tape + next-bar directional forward-walk |
+| E-26…E-31, E-33 | — (2026-07-06 scratch session) | Forward-window / directional re-probe |
+| E-32 | `CAT-A5` (`STRAT-BREAKOUT-META`) | BREAKOUT-META execution-quality + OFI-proxy follow-up |
+| E-34 | direction_program Phase 2 | Pure-prediction feature-lever ablation |
 
 > When a number in Book I and Book II disagree, the deeper per-fold doc wins
-> (`docs/RESEARCH_COMPENDIUM.md` narrative; `docs/MODELS_END_TO_END.md` log;
+> (`docs/RESEARCH_COMPENDIUM.md` narrative — Part A; `docs/RESEARCH_COMPENDIUM.md`
+> Part B is the former `MODELS_END_TO_END.md` log;
 > `docs/DIRECTION_RESEARCH_RESULTS.md` verdict).
+
+### ID collisions resolved (2026-09-15)
+
+This registry had shipped **two `E-24` sections and three `E-25` references**, so a
+citation like "see E-25" was ambiguous. The canonical holder of each number is the
+one already cited **from code or from another document**; the others were renumbered
+into free IDs above the previous maximum (`E-31`). Nothing was deleted or merged.
+
+| Was | Now | Entry | Why this one moved |
+|---|---|---|---|
+| `E-24` (2nd) | **`E-32`** | BREAKOUT-META execution-quality + OFI-proxy follow-up (2026-06-05) | `E-24` is fixed by this doc's own header (`E-01…E-23` + "the `E-24` data-quality/gamma bridge entry"), the cross-map row above, and the §DQ3 back-reference "Continues **E-24/DQ1**" |
+| `E-25` (2nd) | **`E-33`** | Feature-family ablation, 2026-07-06 scratch session | table row only; no external citation |
+| `E-25` (3rd) | **`E-34`** | Direction-Predictability Program Phase 2 (2026-07-09) | `E-25` = STRAT-NEXTBAR is cited by `scripts/strat_clv_demech.py`, `scripts/strat_struct_backtest.py`, `docs/MODEL_REGISTRY.md` and `docs/RESEARCH_COMPENDIUM.md` |
+
+**If you are reading an older PR, issue or commit message:** an `E-25` dated
+2026-07-09 or later means **E-34**; an `E-24` describing breakout-meta execution
+quality means **E-32**. Next free ID is **E-35**.
+
+### Where the rest of the corpus lives
+
+| Doc | Holds |
+|---|---|
+| [`RESEARCH_COMPENDIUM.md`](RESEARCH_COMPENDIUM.md) | Master narrative (Part A) + the end-to-end experiment log (Part B, formerly `MODELS_END_TO_END.md`) |
+| [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md) | Model inventory, families A/B/C (Part A) + catalog edition (Part B, formerly `MODEL_CATALOG.md`) |
+| [`INVESTMENT_MODELS_SUMMARY.md`](INVESTMENT_MODELS_SUMMARY.md) | Models #1–#5, `lib/`, Strat classifier, backtest engine |
+| [`MAGNITUDE_ENGINE_RESULTS.md`](MAGNITUDE_ENGINE_RESULTS.md) | E-09…E-15 fold tables · **PROJECT VERDICT FAIL** (gate 7) |
+| [`DIRECTION_RESEARCH_RESULTS.md`](DIRECTION_RESEARCH_RESULTS.md) | E-07/E-08/E-17 · **no generalizable directional edge** |
+| [`DIRECTION_FEATURES_R&D.md`](DIRECTION_FEATURES_R&D.md) | E-08 feature families · **FAIL**, 0/8 folds each |
+| [`DIRECTION_LITERATURE_SCAN.md`](DIRECTION_LITERATURE_SCAN.md) | Phase 0 literature anchors (see §A4) |
+| [`MODEL_RETHINK_PLANS.md`](MODEL_RETHINK_PLANS.md) | The B1–B3 "trade the underlying" pivot |
+| [`EXEC_BACKTEST_RESULTS.md`](EXEC_BACKTEST_RESULTS.md) · [`OPTIONS_EXEC_BACKTEST_RESULTS.md`](OPTIONS_EXEC_BACKTEST_RESULTS.md) | E-23 execution backtests · both **FAIL** |
+| [`BSVP_VALIDATION_RESULTS.md`](BSVP_VALIDATION_RESULTS.md) | 11.5-year BSVP / scalping-lane validation |
+| [`STRAT_ENGINE_AND_COMBO_PIPELINE.md`](STRAT_ENGINE_AND_COMBO_PIPELINE.md) · [`STRAT_ENGINE_ARCHITECTURE.md`](STRAT_ENGINE_ARCHITECTURE.md) · [`STRAT_ENGINE_OPERATIONS.md`](STRAT_ENGINE_OPERATIONS.md) | Strat engine design and ops ("ON THE SHELF") |
+| `docs/research/2026-05-23`, `2026-05-24`, `2026-05-25` | E-22 pre-registered P1–P7 program + committed data artifacts |
+| [`product/07-MODEL-REGISTRY.md`](product/07-MODEL-REGISTRY.md) | **Governance view** — `MODEL-*` IDs, lifecycle status, promotion criteria, and the experiment-to-model traceability table |
 
 ---
 
@@ -126,7 +166,8 @@ tick-microstructure: **NOT available** (the documented blocker for direction).
 | Variance Risk Premium / gamma-scalping (RV vs IV) | gate-7, call/put | priced-in confirmed |
 | Intraday volatility U-shape seasonality | gate-7 critique (HONEST-GATE7, deferred) | flat-IV benchmark flagged |
 
-Full synthesis with URLs: `docs/MODELS_END_TO_END.md` §refs and the session
+Full synthesis with URLs: `docs/RESEARCH_COMPENDIUM.md` Part B §refs (formerly
+`MODELS_END_TO_END.md`) and the session
 research notes.
 
 ## A5. Shared conventions
@@ -153,7 +194,7 @@ research notes.
 
 ## A6. Open items & reproducibility gaps
 
-- **BREAKOUT-META net:** ⚠️ **PARTIAL / fragile** (E-24 + 2026-06-09 reconfirmation).
+- **BREAKOUT-META net:** ⚠️ **PARTIAL / fragile** (E-32 + 2026-06-09 reconfirmation).
   META (gross) reproduces PASS on all cells, but on data extended to 2026-06 the
   NET edge at realistic fill is **only a clean net-positive on IWM 5m (+0.110 R,
   8/8)** — SPY 5m, QQQ 5m, SPY 15m all NET_FAIL (4/8–4/7, median R ≈ 0). The
@@ -209,8 +250,10 @@ null-clean — `news_sentiment` 101,939 rows (dense 2025+), `^VIX/^VIX3M/^VVIX`
 
 ## A7. Source artifacts consulted
 
-Docs: `MAGNITUDE_ENGINE_RESULTS.md`, `MODEL_RETHINK_PLANS.md`, `MODEL_CATALOG.md`,
-`MODELS_END_TO_END.md`, `MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF.md`,
+Docs: `MAGNITUDE_ENGINE_RESULTS.md`, `MODEL_RETHINK_PLANS.md`,
+`MODEL_REGISTRY.md` Part B (formerly `MODEL_CATALOG.md`),
+`RESEARCH_COMPENDIUM.md` Part B (formerly `MODELS_END_TO_END.md`),
+`MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF.md`,
 `DIRECTION_FEATURES_R&D.md`, `STRAT_ENGINE_AND_COMBO_PIPELINE.md`,
 `STRAT_ENGINE_ARCHITECTURE.md`, `STRAT_METHODOLOGY.md`, `STRAT_IMPLEMENTATION_PLAN.md`,
 `docs/product/infrastructure/05-d-COST_ANALYSIS.md`, `docs/research/2026-05-23/RESEARCH_PLAN.md`.
@@ -364,7 +407,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Target:** `(next_high−next_low)/atr_20` bucketed.
 - **Results (verified this session):** "passed" gate-7 ~1.5–2× on SPY/IWM/QQQ (7/8,8/8,8/8 folds) — **but it's a measurement artifact**: high−low range is mechanically ~1.5–2× the close-to-close move for the same vol, vs a straddle's body-expected-move (apples-to-oranges). A held straddle captures the body, which failed (E-12).
 - **Verdict:** ⚠️ not a real edge (artifact).
-- **Artifacts:** `mag_config.py` LABEL_MODES, `mag_dataset.py`; movement sim (E-15); MODELS_END_TO_END.md §5.
+- **Artifacts:** `mag_config.py` LABEL_MODES, `mag_dataset.py`; movement sim (E-15); `RESEARCH_COMPENDIUM.md` Part B §5.
 
 ## E-14 · MAG-SIZE `call`/`put` directional labels + directional gate-7
 - **Engine/area:** magnitude (directional) · **Status:** failed · **Date:** 2026-06; this session.
@@ -417,7 +460,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
   - **Self-audit fix:** first pass FAILED due to same-tf "both-barriers-in-one-bar=stop" labeling deflating base to 0.28 + corrupting labels; 1-min labeling raised base to 0.33 and flipped to 24/24.
   - **NET-of-cost (1bp spread + slippage sweep):** SPY 5m FAIL, **SPY 15m NET_PASS 5/8**, SPY 30m FAIL; IWM all FAIL; QQQ all FAIL. Diagnosis: 5m 0.5-ATR stop ≈ $0.18 so 1bp spread eats ~0.19 R > gross edge; 15m SPY is the sweet spot.
 - **Approach/why:** meta-labeling reframe — the only path that's VRP-immune (trades the underlying).
-- **Verdict:** ✅ **real edge** — gross 24/24; net-positive on SPY/IWM/QQQ @5m + SPY @15m under realistic fill at true spreads (see E-24). PRIMARY (trigger break) is the deterministic `STRAT-RULES`; only the take/skip filter is learned.
+- **Verdict:** ✅ **real edge** — gross 24/24; net-positive on SPY/IWM/QQQ @5m + SPY @15m under realistic fill at true spreads (see E-32). PRIMARY (trigger break) is the deterministic `STRAT-RULES`; only the take/skip filter is learned.
 - **Gaps:** stop-limit entry, PT/SL sweep, true ~0.6bp SPY spread untested; would change the verdict.
 - **Artifacts:** `breakout_meta_walk_forward.py`; `gs://.../<ticker>_<tf>/breakout_meta_wf_pt1.0_sl0.5_h12_*.json`; `MODEL_RETHINK_PLANS.md` §RESULTS.
 
@@ -473,7 +516,11 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Verdict:** mixed/superseded; foundational for the engines.
 - **Artifacts:** `docs/research/2026-05-23/RESEARCH_PLAN.md` + dated deliverables; `scripts/analysis/*`.
 
-## E-24 · BREAKOUT-META execution-quality + OFI-proxy follow-up
+## E-32 · BREAKOUT-META execution-quality + OFI-proxy follow-up
+
+> **Renumbered 2026-09-15** — was a second `E-24`, colliding with the
+> data-quality entry below. See [ID collisions resolved](#id-collisions-resolved-2026-09-15).
+
 - **Engine/area:** strat/meta + flow · **Status:** validated (improved net) · **Date:** 2026-06-05.
 - **Question:** does realistic stop-limit entry rescue the net edge; do order-flow proxies help; can AlphaVantage supply order-flow / time-of-day IV?
 - **Target/data:** same as E-18; SPY/IWM/QQQ; 5m+15m; 1-min barriers; realistic 0.6bp spread.
@@ -578,7 +625,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
     --args="^|^-m|scripts.strat_struct_backtest|--tickers=SPY,QQQ,IWM,AAPL,NVDA|--timeframes=1d,1w|--hold=oc|--slippage-bps=2|--band=0.05"
   ```
   Output → Cloud Logging for the execution. Use `--tasks 1` (the job defaults to 27 parallel tasks) and the `^|^` arg delimiter (so comma-separated ticker lists survive). Build with `./gcp/deploy.sh build-research`; SHA-fingerprint-verify scripts in the image before each run (verified 2026-06-09: all four `strat_*` scripts matched local `sha256sum`).
-- **Open items:** ✅ **CLOSED 2026-06-09** — de-mechanize CLV (done: `strat_clv_demech.py` → edge is gap-mechanical, CLV_LAG1≈0); costed underlying backtest of the structural residual (done: `strat_struct_backtest.py` → not tradeable daily, weekly is beta). Remaining: the directional read is best used as the PRIMARY side of a barrier strategy — see BREAKOUT-META (E-18/E-24), the only net-tradeable path in this family.
+- **Open items:** ✅ **CLOSED 2026-06-09** — de-mechanize CLV (done: `strat_clv_demech.py` → edge is gap-mechanical, CLV_LAG1≈0); costed underlying backtest of the structural residual (done: `strat_struct_backtest.py` → not tradeable daily, weekly is beta). Remaining: the directional read is best used as the PRIMARY side of a barrier strategy — see BREAKOUT-META (E-18/E-32), the only net-tradeable path in this family.
 
 ---
 
@@ -772,7 +819,8 @@ Docs: `DIRECTION_RESEARCH_RESULTS.md`, `DIRECTION_FEATURES_R&D.md`,
 `DIRECTION_LITERATURE_SCAN.md`, `MAGNITUDE_ENGINE_RESULTS.md`,
 `EXEC_BACKTEST_RESULTS.md`, `OPTIONS_EXEC_BACKTEST_RESULTS.md`,
 `STRAT_ENGINE_AND_COMBO_PIPELINE.md`, `STRAT_ENGINE_ARCHITECTURE.md`,
-`STRAT_METHODOLOGY.md`, `MODEL_REGISTRY.md`, `MODEL_SUMMARY.md`,
+`STRAT_METHODOLOGY.md`, `MODEL_REGISTRY.md`,
+`INVESTMENT_MODELS_SUMMARY.md` Part B (formerly `MODEL_SUMMARY.md`),
 `INVESTMENT_MODELS_SUMMARY.md`, `RESEARCH_COMPENDIUM.md`,
 `gcp/research/strat_engine/STRAT_DIRECTIONALITY_ENGINE_PRD.md`,
 `docs/research/2026-05-23/P1..P6 + FLIP_PUT_DISCREPANCY`,
@@ -1072,7 +1120,7 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Verdict:** ✅ positive IC+Sharpe @15m+ (gross, pre-deep-cost). **Artifacts:** `docs/research/2026-05-24/P7_*`, `p7-analysis/`.
 
 ### P7.2 — 10-model family robustness
-- **Status:** success (signal linear). **Models:** Ridge, Lasso, ElasticNet, BayesRidge, PLS-5, PLS-10, LGBM(+shallow). **Result (60m):** PLS-10 +2.63, BayesRidge +2.59, Ridge +2.58, Lasso +2.52, LGBM +1.42 Sharpe — 8 linear cluster tight. **Verdict:** ✅ genuinely linear @60m. **Artifacts:** `gcp/research/p7_analyze_tf.py`.
+- **Status:** success (signal linear). **Models:** Ridge, Lasso, ElasticNet, BayesRidge, PLS-5, PLS-10, LGBM(+shallow). **Result (60m):** PLS-10 +2.63, BayesRidge +2.59, Ridge +2.58, Lasso +2.52, LGBM +1.42 Sharpe — 8 linear cluster tight. **Verdict:** ✅ genuinely linear @60m. **Artifacts:** `gcp/research/_archive/p7_analyze_tf.py`.
 
 ### P7.3 — Per-ticker single-model training
 - **Status:** success (IWM standout). **Result:** **IWM Sharpe +3.24 (30m LGBM), +3.15 (15m), WR 58–59%**; QQQ +2.48 (15m); SPY +1.67 (15m) but best 60m linear IC 0.058; SPY/QQQ linear negative @15m, LGBM positive. **Verdict:** ✅ per-ticker > pooled @15–30m; IWM special. **Note:** these Sharpes are pre-deep-cost; P7-T1/T3 show net-negative after 10bps. **Artifacts:** `data/p7_per_ticker/{TK}_{TF}_model_summary.csv`.
@@ -1081,7 +1129,7 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Status:** success (regime structure). **Target:** hit_pct @60m. **Results (top):** SPY `322_bull×GEX_MID_VEX_LOW` 80% (N=30); IWM `11_inside×GEX_HIGH_VEX_MID` 73.3% (+47.2 bps); QQQ `322_bull×GEX_HIGH_VEX_LOW` 71.7%; anti: QQQ `clean_2d_bear×GEX_LOW_VEX_MID` 33.3%. **Verdict:** ✅ regime-dependent edge structure (small N). **Artifacts:** `p7-analysis-per-ticker/*/03b_combo_gex.csv`.
 
 ### P7-T1.1 — Next-candle classifier
-- **Status:** classifier works, P&L fails. **Target:** next_candle_type (categorical). **Data:** SPY/IWM/QQQ 5m, 195–200k train, Jan–May 2026 OOS. **Result:** **58–60% OOS accuracy** (QQQ 59.7% post data-fix). **Verdict:** ⚠️ accurate but doesn't survive to P&L. **Bug:** same-day VIX leak (trivial). **Artifacts:** `gcp/research/p7b_next_candle_classifier.py`.
+- **Status:** classifier works, P&L fails. **Target:** next_candle_type (categorical). **Data:** SPY/IWM/QQQ 5m, 195–200k train, Jan–May 2026 OOS. **Result:** **58–60% OOS accuracy** (QQQ 59.7% post data-fix). **Verdict:** ⚠️ accurate but doesn't survive to P&L. **Bug:** same-day VIX leak (trivial). **Artifacts:** `gcp/research/_archive/p7b_next_candle_classifier.py`.
 
 ### P7-T1.2 — Stacked regression
 - **Status:** failed. **Method:** 5-fold OOF classifier probs → layer-2 LGBM regressor. **Result:** baseline IC 0.0295 → stacked **0.0197** (down); L/S +0.68 bps (negligible). **Verdict:** ❌ classifier adds 0 (overlapping signal). **Artifacts:** `p7c_stacked_regression.py`.
@@ -1139,7 +1187,7 @@ updated when the intraday-OFI pipeline completes.*
 
 ---
 
-# 2026-07-06 SESSION — Forward-window & directional re-probe (E-25 … E-31 + P0.1)
+# 2026-07-06 SESSION — Forward-window & directional re-probe (E-26 … E-31, E-33 + P0.1)
 
 **Scratch-harness re-examination of the magnitude/direction question, prompted
 by "what features or changes would make this model effective?" Read the harness
@@ -1162,7 +1210,7 @@ gate-cleared edges.**
 
 | E | probe | result | verdict |
 |---|---|---|---|
-| E-25 | Feature-family ablation | signal DISTRIBUTED; `prev` most load-bearing (drop −24% EXPLOSIVE lift); macd/rsi/strat/dealer/gex prunable dead weight; no slim subset beats full 248 | feature engineering near ceiling |
+| E-33 | Feature-family ablation | signal DISTRIBUTED; `prev` most load-bearing (drop −24% EXPLOSIVE lift); macd/rsi/strat/dealer/gex prunable dead weight; no slim subset beats full 248 | feature engineering near ceiling |
 | E-26 | Engineered vol-regime feats (realized vol, range-expansion, vol-of-vol) | NEUTRAL (+0.18× lift); vol-only-without-patterns HURT — existing feats already carry the vol signal | null |
 | E-27 | Time-of-day / session features | modest+ (+0.6× argmax lift); `mins_since_open` is the #1 feature in the fwd-window model; EXPLOSIVE calls enrich ~5× at open/close | small, cheap |
 | **E-28** | **Forward-window target (30-min RANGE, K=6 bars)** | **argmax precision 50–59% / 8–10× lift; p≥0.55 56–64%; generalizes IWM/SPY/QQQ.** Audited: NOT atr-denominator artifact (trivial atr-rank 3% prec / 0.5×), NOT overlap artifact (non-overlap holds 65%); driven by vol + time-of-day | ⚠️ statistically strong; see reconciliation |
@@ -1215,7 +1263,12 @@ per-experiment result JSONs retained by the author; not committed to the repo.
 
 ---
 
-## E-25 — Direction-Predictability Program Phase 2: pure-prediction feature-lever ablation (2026-07-09)
+## E-34 — Direction-Predictability Program Phase 2: pure-prediction feature-lever ablation (2026-07-09)
+
+> **Renumbered 2026-09-15** — was a third `E-25`, colliding with STRAT-NEXTBAR
+> (which is cited by name in `scripts/strat_clv_demech.py`, `scripts/strat_struct_backtest.py`,
+> `docs/MODEL_REGISTRY.md` and `docs/RESEARCH_COMPENDIUM.md`, so it keeps the number).
+> See [ID collisions resolved](#id-collisions-resolved-2026-09-15).
 
 **Frame:** PURE PREDICTION (log-loss beat vs base-rate constant over purged
 walk-forward), options costs explicitly out of scope (per 2026-07 reframe).
@@ -1256,14 +1309,14 @@ MAGNITUDE_ENGINE_RESULTS.md Phase-2 sections. Code: PR #698
 (gcp/research/direction_program/, phase2_features.py, phase2_ablation.py).
 
 
-**E-25 follow-up (2026-07-10, isotonic recal `magnitude-recal-j5lfv`):** SIZE
+**E-34 follow-up (2026-07-10, isotonic recal `magnitude-recal-j5lfv`):** SIZE
 calibration hypothesis partly confirmed — isotonic fails at 5m (beat still ≈
 -0.13, ECE 0.10) but at **15m** produces positive, well-calibrated beats (ECE
 0.04) with SPY 6/8, IWM 5/8, QQQ 4/8 — a strong near-miss on the full gate.
 15m+isotonic is the recommended next ablation target. See MAGNITUDE_ENGINE_RESULTS.md.
 
 
-**E-25 GATE PASS (2026-07-11, `direction-phase2-cmv2d`):** SIZE clears the
+**E-34 GATE PASS (2026-07-11, `direction-phase2-cmv2d`):** SIZE clears the
 pre-registered gate at **15m + isotonic** — baseline IWM 6/8, SPY 7/8, QQQ 6/8
 (3/3 tickers, predictable=True); `prune` strengthens to IWM 8/8 (med beat +0.012).
 First gate pass in the program. Winning lever = timeframe+calibration+prune, not
@@ -1271,7 +1324,7 @@ new features. Modest edge (near 6/8 threshold; bootstrap-confirm recommended).
 See MAGNITUDE_ENGINE_RESULTS.md.
 
 
-**E-25 confirmation (2026-07-11, `magnitude-recal-jcv9r`):** shifted-cutoffs
+**E-34 confirmation (2026-07-11, `magnitude-recal-jcv9r`):** shifted-cutoffs
 robustness run shows the SIZE gate pass is FOLD-FRAGILE — under mid-year folds
 IWM drops 8/8→5/8 (QQQ held 6/8, SPY 8/8), so the strict 3-ticker gate does not
 replicate across fold placements. The edge is real (all positive median beats,
@@ -1279,7 +1332,7 @@ ECE ~0.04) but the strict pass is near-threshold. Not productionized. See
 MAGNITUDE_ENGINE_RESULTS.md.
 
 
-**E-25 CORRECTION (2026-07-11):** the shifted-cutoffs "fold-fragility" claim is
+**E-34 CORRECTION (2026-07-11):** the shifted-cutoffs "fold-fragility" claim is
 RETRACTED — the mag --all-cells confirmation runs did not persist reliably and the
 DB reads picked up old magnitude-engine runs. Reliable result stands (config-tagged
 GCS): SIZE PASSES at 15m+isotonic+prune (IWM 8/8, SPY 7/8, QQQ 6/8), QQQ bootstrap-
@@ -1287,7 +1340,7 @@ marginal (0.69). Cross-fold robustness UNCONFIRMED; needs a clean re-run via the
 phase2_ablation GCS path. See MAGNITUDE_ENGINE_RESULTS.md.
 
 
-**E-25 ROBUSTNESS CONFIRMED (2026-07-11, `direction-phase2-v5lxx`):** shifted-
+**E-34 ROBUSTNESS CONFIRMED (2026-07-11, `direction-phase2-v5lxx`):** shifted-
 cutoffs re-run via the reliable config-tagged GCS path shows the SIZE gate pass
 HOLDS across fold placements — prune: Jan-1 (8/7/6) and shifted (7/8/7), both
 3/3. No fold-fragility. FINAL: SIZE robustly predictable+calibrated at
@@ -1311,7 +1364,7 @@ Continues **E-24/DQ1** (data-quality remediation) and the **L-series**
 ## DQ3 — `run_kind` on the three remaining API-served tables
 
 `signal_alerts` and `trades` gained `run_kind` in #820 after
-`scripts/backfill_signals.py` was found writing 432 + 412 **simulated** rows
+`scripts/backfill_signals.py` (no longer in the tree as of 2026-09-15; the finding stands as a record) was found writing 432 + 412 **simulated** rows
 into production with forward-looking perfect-fill exits — those rows read
 **72.6% win rate against 48.1% on live ones**. That fix stopped at those two
 tables. DQ3 is the sweep for the same shape everywhere else. The audit question
