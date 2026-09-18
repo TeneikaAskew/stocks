@@ -902,11 +902,18 @@ def test_a_utc_day_rollover_mid_batch_re_resolves_rather_than_losing_the_section
         monkeypatch,
         lambda cutoff, n: _membership(yesterday if n == 1 else cutoff, "SPY"),
     )
-    assert len(calls) == 3, (
-        "expected the initial freeze plus one re-resolution per ticker once "
-        f"the frozen universe went stale; got {len(calls)} resolutions"
+    assert len(calls) == 2, (
+        "expected the initial freeze plus ONE re-resolution for the whole "
+        f"batch; got {len(calls)}. This assertion previously read == 3 and "
+        "was pinning the defect: the refreshed universe was passed inline "
+        "and never stored, so every post-midnight ticker resolved its own "
+        "and the freeze was gone for the rest of the run"
     )
     assert all(u is not None and u.as_of == today for u in got), (
         "a ticker was handed a universe resolved for a different date than "
         "its own cutoff, which the cutoff guard refuses"
+    )
+    assert got[0] is got[1], (
+        "the two post-rollover tickers got different universe objects, so "
+        "a watchlist edit between them would change the later peer set"
     )

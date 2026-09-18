@@ -840,8 +840,12 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
         except Exception as exc:
             logger.warning(
                 "day rolled over mid-batch and re-resolution failed (%s); "
-                "this ticker resolves its own", exc,
+                "the rest of the batch resolves per ticker", exc,
             )
+            # None is cached by the caller, so this is not retried per
+            # ticker. Deliberate: the failure is logged once rather than
+            # once per ticker, and every ticker then degrades the same way
+            # it did before any freeze existed.
             return None
 
     any_failures = False
@@ -850,20 +854,27 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
         # executing it, as this job did before fan-out existed.
         for ticker in tickers:
             run_id = _insert_run(ticker, trigger=trigger)
+            # Assigned back, not called inline: the refreshed universe has to
+            # become the batch's universe for every ticker after it, or the
+            # rollover re-resolves once PER TICKER and the freeze is gone for
+            # the rest of the run -- the very guarantee it exists to keep
+            # (Codex P2 on `24ccbd7`).
+            batch_universe = _universe_for(batch_universe)
             ok = await _run_one(
                 run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
-                triggered_by=triggered_by, universe=_universe_for(batch_universe),
+                triggered_by=triggered_by, universe=batch_universe,
             )
             if not ok:
                 any_failures = True
     else:
         # Enqueue-failure fallback: rows already exist, reuse their ids.
         for run_id, ticker in pending:
+            batch_universe = _universe_for(batch_universe)
             ok = await _run_one(
                 run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
-                triggered_by=triggered_by, universe=_universe_for(batch_universe),
+                triggered_by=triggered_by, universe=batch_universe,
             )
             if not ok:
                 any_failures = True
