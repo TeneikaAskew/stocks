@@ -1278,11 +1278,13 @@ def test_the_refresh_pr_lookup_reads_past_the_first_page(monkeypatch):
     supersede rule saw no delivery at all.
     """
     page1 = "\n".join(
-        [f"{n}\tclosed\t2026-09-1{n % 10}T00:00:00Z\t2026-09-1{n % 10}T00:00:00Z\tfix: unrelated {n}"
+        [f"{n}\tclosed\t2026-09-1{n % 10}T00:00:00Z\t"
+         f"2026-09-1{n % 10}T00:00:00Z\tfix: unrelated {n}"
          for n in range(1130, 1030, -1)])
     page2 = "\n".join([
         "1021\tclosed\t\t2026-09-07T13:07:48Z\tFix: Monthly architecture doc refresh failed",
-        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\tMonthly architecture doc refresh: 2026-09",
+        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\t"
+        "Monthly architecture doc refresh: 2026-09",
     ])
     monkeypatch.setattr(m, "run", _pr_pages([page1, page2]))
     monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
@@ -1296,7 +1298,8 @@ def test_the_pr_lookup_stops_at_the_first_delivered_refresh(monkeypatch):
     past it (CLAUDE.md §3.8)."""
     pages = ["\n".join([
         "1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09",
-        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\tMonthly architecture doc refresh: 2026-09",
+        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\t"
+        "Monthly architecture doc refresh: 2026-09",
     ] + [f"{n}\tclosed\t\t2026-09-01T00:00:00Z\tfix: filler {n}" for n in range(900, 998)])]
     fake = _pr_pages(pages)
     monkeypatch.setattr(m, "run", fake)
@@ -1308,7 +1311,8 @@ def test_the_pr_lookup_stops_at_the_first_delivered_refresh(monkeypatch):
 def test_a_short_page_ends_the_pr_lookup(monkeypatch):
     """A page holding fewer than 100 rows is the last page; asking for the
     next one is a request that cannot return anything."""
-    fake = _pr_pages(["1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09"])
+    fake = _pr_pages(["1060\topen\t\t2026-09-08T15:46:57Z\t"
+                      "Monthly architecture doc refresh: 2026-09"])
     monkeypatch.setattr(m, "run", fake)
     monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
     out = m.check_owning_job("2026-09-17")
@@ -1385,7 +1389,7 @@ def test_plain_output_names_the_region_and_its_owner(audit_repo, capsys):
     _commit(audit_repo, "tree")
     m.main(["--date", "2026-09-18", "--issues-snapshot", str(audit_repo / "issues.json")])
     out = capsys.readouterr().out
-    line = [l for l in out.split("\n") if "gone.py" in l]
+    line = [row for row in out.split("\n") if "gone.py" in row]
     assert len(line) == 1, out
     assert "region: generated" in line[0], line
     assert m.OWNING_JOB["workflow"] in line[0], line
@@ -1399,7 +1403,7 @@ def test_plain_output_names_the_prompt_for_a_model_prose_finding(audit_repo, cap
     _commit(audit_repo, "tree")
     m.main(["--date", "2026-09-18", "--issues-snapshot", str(audit_repo / "issues.json")])
     out = capsys.readouterr().out
-    line = [l for l in out.split("\n") if "gone.py" in l]
+    line = [row for row in out.split("\n") if "gone.py" in row]
     assert len(line) == 1, out
     assert "region: model-prose" in line[0] and "scripts/tool.py" in line[0], line
 
