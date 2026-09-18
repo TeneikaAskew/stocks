@@ -1414,6 +1414,125 @@ def test_a_rename_with_an_edit_is_drift(repo):
     assert len(out) == 1 and out[0]["detail"].startswith("1 content commit(s)"), out
 
 
+# ── the marker a run writes has to be one the parser reads back ────────────
+
+def test_the_marker_sha_is_a_length_the_parser_accepts(monkeypatch):
+    """`--short` honours core.abbrev, which can be set below 7.
+
+    `git -c core.abbrev=4 rev-parse --short HEAD` emits four characters, and
+    MARKER_RE requires 7-40. A marker written with a shorter id loses BOTH the
+    `Against` field and the `Last scanned` field after it to the unmatched
+    tail, so a verified review reports as having no reviewed-against SHA and
+    its drift check silently stops running.
+    """
+    seen = {}
+
+    def fake(argv):
+        seen["argv"] = argv
+        return "0123456789ab\n"
+
+    assert m.resolve_marker_sha(None, "HEAD", runner=fake) == "0123456789ab"
+    assert f"--short={m.MARKER_SHA_LEN}" in seen["argv"]
+    assert m.MARKER_SHA_LEN >= 7
+
+
+def test_a_since_value_git_cannot_place_is_refused_before_any_write():
+    """`--since not-a-sha` was written straight into `Against:`, where it does
+    not match MARKER_RE -- so the review it was asked to record immediately
+    read back as having no SHA at all."""
+    with pytest.raises(m.AuditError, match="not-a-sha"):
+        m.resolve_marker_sha("not-a-sha", "HEAD", runner=lambda argv: "")
+
+
+def test_a_resolved_sha_the_parser_cannot_read_is_refused():
+    """The round trip is the check, not the length arithmetic: whatever git
+    returns has to parse back out of a rendered marker."""
+    with pytest.raises(m.AuditError, match="not a form the marker parser"):
+        m.resolve_marker_sha(None, "HEAD", runner=lambda argv: "zzzz\n")
+
+
+def test_a_future_last_scanned_date_is_reported():
+    """The future check read `info["date"]` only, so a marker claiming a
+    mechanical scan in 2099 passed every check and the document reported clean
+    provenance for a scan that has not happened."""
+    out = m.check_marker_dates("d.md", {"date": "2026-01-01", "scanned": "2099-01-01"},
+                               "2026-09-18")
+    assert [f["severity"] for f in out] == ["P1"], out
+    assert "last-scanned date 2099-01-01 is in the future" in out[0]["detail"]
+
+
+def test_a_past_last_scanned_date_is_quiet():
+    assert m.check_marker_dates("d.md", {"date": "2026-01-01", "scanned": "2026-09-18"},
+                                "2026-09-18") == []
+
+
+def test_a_second_marker_in_the_window_is_reported(audit_repo, capsys):
+    """find_marker stopped at the first match, so a second marker carrying a
+    different date or SHA sat below it unreported -- and `--stamp` would
+    rewrite the first, report success, and leave the contradiction."""
+    (audit_repo / "docs" / "d.md").write_text(
+        "# D\n\n**Last reviewed:** 2026-09-01 · **Owner:** TBD\n"
+        "**Last reviewed:** 2026-01-01 · **Owner:** TBD\n\nbody\n")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    dupes = [f for f in report["findings"]
+             if f["doc"] == "docs/d.md" and "review markers in the marker window" in f["detail"]]
+    assert len(dupes) == 1 and dupes[0]["severity"] == "P2", report["findings"]
+
+
+def test_a_document_with_two_markers_is_not_stamped(audit_repo, capsys):
+    """Rewriting one of two leaves the other, so the run would report success
+    for provenance that is still ambiguous."""
+    body = ("# D\n\n**Last reviewed:** 2026-09-01 · **Owner:** TBD\n"
+            "**Last reviewed:** 2026-01-01 · **Owner:** TBD\n\nbody\n")
+    (audit_repo / "docs" / "d.md").write_text(body)
+    _audit(audit_repo, "--stamp")
+    report = json.loads(capsys.readouterr().out)
+    assert [s for s in report["stamped"] if s["doc"] == "docs/d.md"] == [], report["stamped"]
+    assert (audit_repo / "docs" / "d.md").read_text() == body
+
+
+# ── citations the dead-link check could not see ────────────────────────────
+
+def test_a_line_qualified_backticked_path_is_checked():
+    """`gcp/database.py:88-102` never matched BACKTICK_PATH_RE at all, because
+    the closing backtick had to follow the extension. 1,207 such citations are
+    in this tree, so a rename or deletion of any of those files was invisible.
+    """
+    m.TOP_LEVEL_DIRS.update({"gcp"})
+    out = m.check_dead_links("d.md", "see `gcp/gone_forever.py:88-102`\n", set())
+    assert len(out) == 1, out
+    assert "gcp/gone_forever.py:88-102" in out[0]["detail"]
+
+
+def test_a_line_qualified_path_that_exists_is_quiet():
+    m.TOP_LEVEL_DIRS.update({"scripts"})
+    assert m.check_dead_links("d.md", "see `scripts/tool.py:12`\n", {"scripts/tool.py"}) == []
+
+
+def test_a_parent_relative_backticked_path_resolves_from_the_document():
+    """`../../docs/API.md` was left unchanged, checked as `REPO/../../...`,
+    then discarded because its first component is `..` and never a tracked
+    top-level directory."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    out = m.check_dead_links("docs/product/infrastructure/d.md",
+                             "see `../../gone_forever.md`\n", set())
+    assert len(out) == 1, out
+    assert "../../gone_forever.md" in out[0]["detail"]
+
+
+def test_a_parent_relative_path_that_exists_is_quiet():
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    assert m.check_dead_links("docs/product/d.md", "see `../API.md`\n", {"docs/API.md"}) == []
+
+
+def test_a_citation_that_climbs_above_the_repo_is_not_a_finding():
+    """`../../../../README.md` from a doc two levels down leaves the
+    repository: deliberate cross-repo prose, not rot."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    assert m.check_dead_links("docs/d.md", "see `../../../../elsewhere.md`\n", set()) == []
+
+
 # ── the owning job, and what its success does not prove ────────────────────
 
 def _pr_pages(pages):
@@ -1453,20 +1572,95 @@ def test_the_refresh_pr_lookup_reads_past_the_first_page(monkeypatch):
     assert any("1021" in f["detail"] for f in out), out
 
 
-def test_the_pr_lookup_stops_at_the_first_delivered_refresh(monkeypatch):
-    """Cost scales with the answer: everything older than the newest merged
-    refresh PR is skipped by the supersede rule, so there is nothing to learn
-    past it (CLAUDE.md §3.8)."""
+def _filler(lo, hi, created="2026-09-01T00:00:00Z"):
+    return [f"{n}\tclosed\t\t{created}\tfix: filler {n}" for n in range(lo, hi)]
+
+
+def test_the_pr_lookup_stops_once_every_pending_refresh_is_superseded(monkeypatch):
+    """Cost scales with the answer (CLAUDE.md §3.8), but the stop rule is
+    "every pending candidate is already superseded", not "a merge exists".
+
+    Here the open refresh was CREATED before the merge that delivered, so the
+    supersede rule skips it and no later page can change that: a later page
+    holds only older-created PRs, which the same merge supersedes too."""
     pages = ["\n".join([
-        "1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09",
-        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\t"
+        "1060\topen\t\t2026-09-01T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
+        "953\tclosed\t2026-09-10T22:27:07Z\t2026-08-28T06:24:17Z\t"
         "Monthly architecture doc refresh: 2026-09",
-    ] + [f"{n}\tclosed\t\t2026-09-01T00:00:00Z\tfix: filler {n}" for n in range(900, 998)])]
+    ] + _filler(900, 998))]
     fake = _pr_pages(pages)
     monkeypatch.setattr(m, "run", fake)
     monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
     m.check_owning_job("2026-09-17")
     assert fake.calls["n"] == 1
+
+
+def test_the_pr_lookup_reads_on_while_a_pending_refresh_postdates_every_merge(monkeypatch):
+    """The pages are ordered by CREATION time; `delivered` is a MERGE time.
+
+    A refresh PR created in August can merge after one created in September,
+    so the newest delivery can sit on a page the old walk never reached -- it
+    stopped at the first merged refresh it saw. The attempts that merge
+    superseded were then reported as live failures.
+
+    Page 1: #1060 open, created 09-08, and #953 merged 09-02 -- which does NOT
+    supersede it. Page 2: #900, created 08-01 but merged 09-20, which does."""
+    pages = ["\n".join([
+        "1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09",
+        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\t"
+        "Monthly architecture doc refresh: 2026-09",
+    ] + _filler(1000, 1098)),
+        "900\tclosed\t2026-09-20T00:00:00Z\t2026-08-01T00:00:00Z\t"
+        "Monthly architecture doc refresh: 2026-08"]
+    fake = _pr_pages(pages)
+    monkeypatch.setattr(m, "run", fake)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    out = m.check_owning_job("2026-09-21")
+    assert fake.calls["n"] == 2, "stopped before the delivery that superseded #1060"
+    assert not [f for f in out if "1060" in f["detail"]], out
+
+
+def _owning_doc(tmp_path, monkeypatch, body):
+    """check_owning_job over a single throwaway owned document."""
+    (tmp_path / "g.md").write_text(body)
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": ["g.md"]})
+    monkeypatch.setattr(m, "run", _pr_pages([
+        "1060\tclosed\t2026-09-10T00:00:00Z\t2026-09-01T00:00:00Z\t"
+        "Monthly architecture doc refresh: 2026-09"]))
+    return m.check_owning_job("2026-09-17")
+
+
+def test_an_owned_document_with_no_generated_stamp_is_reported(tmp_path, monkeypatch):
+    """`if not stamps: continue` is a clean run produced by missing evidence.
+
+    For 05-a, 05-c and 05-d the stamp is not a separately declared generated
+    region, so a refresh that dropped it leaves a green workflow, a merged PR,
+    and a document carrying nothing about when it was produced. All four owned
+    docs carry a stamp today, so this changes no current finding.
+    """
+    out = _owning_doc(tmp_path, monkeypatch, "# G\n\nno stamp here\n")
+    assert [f["detail"] for f in out if "no `Generated <date>` stamp" in f["detail"]], out
+
+
+def test_an_impossible_generated_date_is_a_finding_not_a_traceback(tmp_path, monkeypatch):
+    """`fromisoformat("2026-02-31")` raised straight past the AuditError
+    handler, so documentation corruption exited 1 with a traceback -- the
+    status that means "the docs have findings" -- instead of being one."""
+    out = _owning_doc(tmp_path, monkeypatch, "# G\n\nGenerated 2026-02-31\n")
+    assert [f for f in out if "not a real calendar day" in f["detail"]], out
+
+
+def test_a_future_generated_date_cannot_pass_forever(tmp_path, monkeypatch):
+    """A future stamp yields a negative age, which is under every staleness
+    threshold permanently: the one value that can never go stale."""
+    out = _owning_doc(tmp_path, monkeypatch, "# G\n\nGenerated 2099-01-01\n")
+    assert [f for f in out if "in the future" in f["detail"]], out
+
+
+def test_a_current_generated_date_is_quiet(tmp_path, monkeypatch):
+    out = _owning_doc(tmp_path, monkeypatch, "# G\n\nGenerated 2026-09-15\n")
+    assert [f for f in out if f["doc"] == "g.md"] == [], out
 
 
 def test_a_short_page_ends_the_pr_lookup(monkeypatch):

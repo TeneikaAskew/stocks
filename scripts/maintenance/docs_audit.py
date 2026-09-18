@@ -86,6 +86,7 @@ import fnmatch
 import json
 import os
 import pathlib
+import posixpath
 import re
 import subprocess
 import sys
@@ -145,7 +146,18 @@ ISSUE_URL_RE = re.compile(
 )
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\((?P<target>[^)#\s]+)(?:#[^)\s]*)?\)")
 # A backticked path: has a slash and a file-ish extension, no spaces or globs.
-BACKTICK_PATH_RE = re.compile(r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,5})`")
+# The trailing `:12` / `:88-102` is optional and part of the match: without it
+# the closing backtick had to follow the extension, so every line-qualified
+# citation failed to match at all and was never checked. There are 1,207 of
+# them in this tree, `gcp/database.py:88-102` in CLAUDE.md among them, and a
+# rename or deletion of any of those files produced no finding.
+BACKTICK_PATH_RE = re.compile(
+    r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,5}"
+    r"(?::\d+(?:-\d+)?)?)`")
+
+# The `:line` or `:start-end` suffix above, which is a citation's coordinate
+# inside the file and not part of its path.
+LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
 
 CODE_EXTS = {".py", ".ts", ".tsx", ".js", ".mjs", ".sql", ".sh", ".yml", ".yaml", ".json", ".md"}
 
@@ -160,6 +172,35 @@ def strip_dot_segments(path: str) -> str:
     while path.startswith("./"):
         path = path[2:]
     return path
+
+
+def repo_relative(cited: str, doc: str) -> str | None:
+    """A backticked citation as a repository path, or None if it leaves the repo.
+
+    Three spellings reach here and only the first used to work:
+
+      scripts/tool.py           repo-relative
+      ./scripts/tool.py         root-relative, handled by strip_dot_segments
+      ../../docs/API.md         relative to the CITING DOCUMENT's directory
+
+    The third was left unchanged, checked as `REPO/../../docs/API.md`, and then
+    discarded because its first component is `..` and never a tracked top-level
+    directory -- so a deleted target produced no finding. Living documents use
+    it: `docs/STRAT_ENGINE_OPERATIONS.md` and the incident records under
+    `docs/product/` cite their siblings this way.
+
+    A citation that climbs above the repository root is deliberate cross-repo
+    prose, not rot, and returns None rather than a path this repo could never
+    hold. The `:line` suffix is a coordinate inside the file, so it is removed
+    before anything is resolved -- otherwise the extension reads as `.py:88`
+    and the citation is skipped as an unknown file type.
+    """
+    cited = LINE_SUFFIX_RE.sub("", cited)
+    if cited.startswith("../") or "/../" in cited:
+        resolved = posixpath.normpath(
+            posixpath.join(str(pathlib.PurePosixPath(doc).parent), cited))
+        return None if resolved.startswith("..") else resolved
+    return strip_dot_segments(cited)
 
 
 class AuditError(RuntimeError):
@@ -204,6 +245,42 @@ BASE_REF_CANDIDATES = ("HEAD", "origin/main", "main")
 def _ref_exists(ref: str) -> bool:
     return subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
                           cwd=REPO, capture_output=True).returncode == 0
+
+
+# Long enough to be unambiguous in a repo this size and comfortably inside
+# MARKER_RE's 7-40, whatever core.abbrev says locally.
+MARKER_SHA_LEN = 12
+
+
+def resolve_marker_sha(since: str | None, base_ref: str, runner=None) -> str:
+    """The SHA a marker will carry: resolved by git, never taken on trust.
+
+    Both inputs could otherwise produce a marker this module's own parser
+    cannot read back -- `--short` under a low `core.abbrev`, and any `--since`
+    value at all. A marker whose `Against:` does not match MARKER_RE loses that
+    field AND the `Last scanned` field after it to the unmatched tail, so the
+    review reads as never-recorded and drift stops being checked, both without
+    a word. Round-tripping through the parser is the check, not the shape.
+    """
+    runner = runner or (lambda argv: run(argv))
+    ref = since or base_ref
+    sha = runner(["git", "rev-parse", f"--short={MARKER_SHA_LEN}",
+                  "--verify", "--quiet", f"{ref}^{{commit}}"]).strip()
+    if not sha:
+        raise AuditError(
+            f"--since {since}: not a commit this checkout can resolve. Nothing "
+            "was written." if since else
+            f"{ref} does not resolve to a commit; the marker would name nothing")
+    # The whole line still MATCHES with a bad SHA, because `Against` is an
+    # optional group -- it just captures nothing and swallows the rest of the
+    # line. Round-tripping means the group has to come back holding the value
+    # that went in, not that the line parsed.
+    parsed = MARKER_RE.match(f"**Last reviewed:** unknown · **Against:** `{sha}`")
+    if not parsed or parsed.group("sha") != sha:
+        raise AuditError(
+            f"the resolved SHA {sha!r} is not a form the marker parser reads "
+            f"back (expects 7-40 hex characters); refusing to write it")
+    return sha
 
 
 def resolve_base_ref(candidates: tuple[str, ...] = BASE_REF_CANDIDATES,
@@ -655,12 +732,19 @@ def is_calendar_date(value: str | None) -> bool:
         return False
 
 
-def check_marker_dates(doc: str, info: dict) -> list[dict]:
-    """Every date a marker carries has to be a day that exists.
+def check_marker_dates(doc: str, info: dict, today: str | None = None) -> list[dict]:
+    """Every date a marker carries has to be a day that exists, and be past.
 
     P2, not P3: this is not an absent review, it is a recorded one that cannot
     be true. A date nobody can place is worse than `unknown`, which at least
     says so.
+
+    The future check covers BOTH fields. It used to be applied to the review
+    date only, at the call site, so `Last scanned: 2099-01-01` passed every
+    check and the document reported clean provenance claiming a mechanical
+    scan that has not happened. A scan date is the one field a machine writes,
+    so a future value there means the clock or the file is wrong, never that
+    somebody was optimistic.
     """
     out = []
     for field, label in (("date", "review date"), ("scanned", "last-scanned date")):
@@ -670,6 +754,9 @@ def check_marker_dates(doc: str, info: dict) -> list[dict]:
         if not is_calendar_date(value):
             out.append({"check": "marker", "doc": doc, "severity": "P2",
                         "detail": f"{label} {value} is not a real calendar day"})
+        elif today is not None and is_future_date(value, today):
+            out.append({"check": "marker", "doc": doc, "severity": "P1",
+                        "detail": f"{label} {value} is in the future"})
     return out
 
 
@@ -687,19 +774,36 @@ def is_future_date(date: str, today: str) -> bool:
     return is_calendar_date(date) and date > today
 
 
-def find_marker(lines: list[str]) -> tuple[int, dict] | None:
+def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
+    """Every marker in the window, not just the first.
+
+    `find_marker` stops at the first match, which is the right answer for
+    reading a document's provenance and the wrong one for judging it: a second
+    marker sitting immediately below carries a different date or SHA, and
+    nothing said so. `--stamp --verify` would rewrite the first, return
+    `unchanged` or `updated`, accept the target, and leave the contradiction
+    in place -- a document that states two different review claims and passes.
+    """
+    out = []
     for i in marker_window(lines):
-        line = lines[i]
-        m = MARKER_RE.match(line.strip())
+        line = lines[i].strip()
+        m = MARKER_RE.match(line)
         if m:
-            return i, {"date": m.group("date"), "depth": m.group("depth"),
-                       "sha": m.group("sha"), "scanned": m.group("scanned"), "legacy": False}
-        m = LEGACY_MARKER_RE.match(line.strip())
+            out.append((i, {"date": m.group("date"), "depth": m.group("depth"),
+                            "sha": m.group("sha"), "scanned": m.group("scanned"),
+                            "legacy": False}))
+            continue
+        m = LEGACY_MARKER_RE.match(line)
         if m:
-            return i, {"date": m.group("date"), "depth": None, "sha": None,
-                       "scanned": None, "legacy": True,
-                       "bare": legacy_tail_is_bare(m.group("rest"))}
-    return None
+            out.append((i, {"date": m.group("date"), "depth": None, "sha": None,
+                            "scanned": None, "legacy": True,
+                            "bare": legacy_tail_is_bare(m.group("rest"))}))
+    return out
+
+
+def find_marker(lines: list[str]) -> tuple[int, dict] | None:
+    found = find_markers(lines)
+    return found[0] if found else None
 
 
 def h1_index(lines: list[str]) -> int | None:
@@ -938,12 +1042,12 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
                             "detail": f"relative link -> {tgt}", "severity": "P2"})
         for m in BACKTICK_PATH_RE.finditer(line):
             cited = m.group("path")
-            # `./scripts/tool.py` is the root-relative spelling of the same
-            # path. Without this the existence check failed and then the root
-            # component was `.`, never a tracked top-level directory, so the
-            # citation was discarded as if it pointed outside this repo --
-            # silently exempting a convention CLAUDE.md alone uses 9 times.
-            p = strip_dot_segments(cited)
+            # Root-relative, parent-relative and line-qualified spellings all
+            # name the same repository file as the plain form; see
+            # repo_relative for what each one used to do instead.
+            p = repo_relative(cited, doc)
+            if p is None:
+                continue
             if pathlib.PurePosixPath(p).suffix not in CODE_EXTS:
                 continue
             if p in tracked or (REPO / p).exists():
@@ -1074,10 +1178,19 @@ def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE) -> l
     lookup therefore saw no delivery at all, so the supersede rule could not
     fire and three long-superseded failed attempts stayed on the report.
 
-    The walk stops at the first MERGED refresh PR, because every matching PR
-    older than that one is created before `delivered` and is skipped by the
-    supersede rule anyway: reading further costs requests and can change
-    nothing (CLAUDE.md §3.8).
+    The walk used to stop at the FIRST merged refresh PR, on the reasoning that
+    everything older is created before `delivered` and skipped by the supersede
+    rule anyway. That confuses two orderings. The pages are sorted by CREATION
+    time; `delivered` is a MERGE time. A refresh PR created in August can merge
+    after one created in September, so the newest delivery can sit on a page
+    the walk never reached -- and the attempts it superseded are then reported
+    as live failures.
+
+    It now stops once every unmerged candidate collected so far is already
+    superseded by a merge it has seen. That is sound rather than merely
+    cheaper: a later page can only add OLDER-created PRs, which the same
+    `delivered` supersedes too. It is still bounded by PR_PAGE_LIMIT
+    (CLAUDE.md §3.8).
     """
     owned: list[dict] = []
     for page in range(1, PR_PAGE_LIMIT + 1):
@@ -1093,7 +1206,11 @@ def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE) -> l
             if len(parts) >= 5 and title_re.search(parts[4]):
                 owned.append({"num": parts[0], "state": parts[1], "merged": parts[2],
                               "created": parts[3], "title": parts[4]})
-        if len(rows) < page_size or any(pr["merged"] for pr in owned):
+        if len(rows) < page_size:
+            break
+        delivered = max((pr["merged"] for pr in owned if pr["merged"]), default="")
+        pending = [pr["created"] for pr in owned if not pr["merged"]]
+        if delivered and all(created < delivered for created in pending):
             break
     return owned
 
@@ -1146,6 +1263,11 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
                                        "real calendar day"})
             continue
         newest = max(dates)
+        if is_future_date(newest, today):
+            findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
+                             "detail": f"`{art['region']}` is dated {newest}, which is in the "
+                                       "future, so its age can never reach the threshold"})
+            continue
         age = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(newest)).days
         if age > art["max_age_days"]:
             findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
@@ -1213,8 +1335,32 @@ def check_owning_job(today: str) -> list[dict]:
             continue
         stamps = GENERATED_RE.findall(path.read_text(encoding="utf-8", errors="replace"))
         if not stamps:
+            # Silently skipping this is the same clean-run-on-no-evidence the
+            # best-effort artifact check already refuses. For 05-a, 05-c and
+            # 05-d the stamp is not a separately declared generated region, so
+            # a refresh that dropped it leaves a green workflow, a merged PR,
+            # and a document carrying no evidence at all of when it was made.
+            # All four docs carry one today, so this changes no current finding.
+            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
+                             "detail": "no `Generated <date>` stamp, so nothing in the document "
+                                       "shows when the owning job produced it"})
+            continue
+        bad = [s for s in stamps if not is_calendar_date(s)]
+        if bad:
+            # fromisoformat raised here, so an impossible footer produced a
+            # traceback and exit 1 -- the status that means "the docs have
+            # findings" -- rather than the finding it is.
+            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
+                             "detail": f"Generated {bad[0]} is not a real calendar day"})
             continue
         newest = max(stamps)
+        if is_future_date(newest, today):
+            # A future stamp yields a negative age, which passes the threshold
+            # below forever: the one value that can never go stale.
+            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
+                             "detail": f"Generated {newest} is in the future, so its age can "
+                                       "never reach the staleness threshold"})
+            continue
         age = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(newest)).days
         if age > 40:
             findings.append({"check": "class-a", "doc": doc, "severity": "P2",
@@ -1247,7 +1393,18 @@ def main(argv: list[str] | None = None) -> int:
     # stamped. One value, so the marker can never name a commit whose contents
     # the run did not read.
     base_ref = resolve_base_ref()
-    head = args.since or run(["git", "rev-parse", "--short", base_ref]).strip()
+    # --short alone honours core.abbrev, which can be set below 7:
+    # `git -c core.abbrev=4 rev-parse --short HEAD` emits four characters, and
+    # MARKER_RE requires 7-40. A marker written with a shorter id parses with
+    # `sha` unset and the rest of the line swallowed into the unmatched tail,
+    # so the verified review it records reports as having no reviewed-against
+    # SHA and its drift check silently stops running. The length is fixed here.
+    #
+    # --since is written straight into `Against:` too, so an unresolvable or
+    # misspelled value lands in the marker with the same consequence. It is
+    # resolved through git rather than trusted, and a value git cannot place
+    # is exit 2 before anything is written.
+    head = resolve_marker_sha(args.since, base_ref)
 
     reg_path = REPO / REGISTRY
     if not reg_path.exists():
@@ -1322,7 +1479,8 @@ def main(argv: list[str] | None = None) -> int:
 
         text = (REPO / doc).read_text(encoding="utf-8", errors="replace")
         lines = text.split("\n")
-        found = find_marker(lines)
+        markers = find_markers(lines)
+        found = markers[0] if markers else None
 
         # Class C is deliberately exempt from the content checks, not merely
         # exempt from rewriting. A 2026-04 changelog citing an issue that has
@@ -1378,10 +1536,22 @@ def main(argv: list[str] | None = None) -> int:
             if info["legacy"]:
                 findings.append({"check": "marker", "doc": doc, "severity": "P3",
                                  "detail": f"legacy label, date {info['date']}; normalise to Last reviewed"})
-            findings += check_marker_dates(doc, info)
-            if is_future_date(info["date"], today):
-                findings.append({"check": "marker", "doc": doc, "severity": "P1",
-                                 "detail": f"review date {info['date']} is in the future"})
+            # Both date fields, calendar validity and future-dating together:
+            # the future check used to live here and read `info["date"]` only,
+            # which left `Last scanned` in the future entirely unchecked.
+            findings += check_marker_dates(doc, info, today)
+            # A second marker in the window is a document making two review
+            # claims at once. Reading the first and ignoring the rest let
+            # `--stamp` rewrite the top one, report `updated` or `unchanged`,
+            # and accept a --verify target while a conflicting older date or
+            # SHA sat immediately below it.
+            if len(markers) > 1:
+                findings.append({
+                    "check": "marker", "doc": doc, "severity": "P2",
+                    "line": markers[1][0] + 1,
+                    "detail": f"{len(markers)} review markers in the marker window "
+                              f"(lines {', '.join(str(i + 1) for i, _ in markers)}); "
+                              "the audit reads the first and the others contradict it"})
             # Their check_marker_sha supersedes the inline ancestry test: a
             # SHA this checkout does not hold is a finding for that document,
             # not an abort for the whole run, and drift is skipped for it.
@@ -1409,6 +1579,12 @@ def main(argv: list[str] | None = None) -> int:
             # after the H1, so the check is whether anything a job owns sits
             # that high in the file -- on README the H1 is line 1 and the first
             # badge is line 5, which is why stamping it is safe at all.
+            # Not stamped while the document contradicts itself: rewriting
+            # one of two markers leaves the other, and the run would report
+            # success for a review whose provenance is still ambiguous. The
+            # finding above says which lines; a human merges them.
+            if len(markers) > 1:
+                continue
             h1 = h1_index(lines)
             if owned and h1 is not None and min(owned) <= h1 + 2:
                 findings.append({"check": "unowned", "doc": doc, "severity": "P2",
