@@ -378,6 +378,38 @@ def test_concern_ids_are_unique():
     assert not dupes, f"the same DOC id names more than one finding: {dupes}"
 
 
+def test_no_concern_carries_two_different_dispositions():
+    """One DOC id, one verdict.
+
+    The first version of `test_concern_ids_are_unique` stopped at the Findings
+    table, so the same renumbering that produced the DOC-23 collision left
+    DOC-24 with TWO disposition rows giving different verdicts -- "FIXED HERE
+    in the doc, FLAGGED at source" and "FLAGGED -- needs a code fix" -- and the
+    green suite said nothing. Gating half a table is how the first collision
+    survived; this is the other half.
+
+    Repeating an id across rows is allowed, because DOC-13 legitimately has a
+    registry half labelled in place and a path half repointed. What is not
+    allowed is two rows disagreeing about what was DONE, which is what a reader
+    consumes the column for.
+    """
+    text = REGISTRY.read_text()
+    disposition = text[text.index("### Disposition"):text.index("Merged-PR lineage")]
+    verdicts: dict[str, set[str]] = {}
+    for line in disposition.split("\n"):
+        if not re.match(r"^\|\s*DOC-", line):
+            continue
+        cells = [c.strip() for c in line.split("|")]
+        # leading bolded token of the Disposition cell, e.g. **FIXED HERE**
+        head = re.match(r"\*\*(.+?)\*\*", cells[2])
+        assert head, f"disposition cell does not open with a bolded verdict: {cells[2]!r}"
+        for cid in re.findall(r"DOC-\d+", cells[1]):
+            verdicts.setdefault(cid, set()).add(head.group(1).strip())
+    assert len(verdicts) >= 20, f"only {len(verdicts)} ids parsed -- did the table change shape?"
+    split = {k: sorted(v) for k, v in verdicts.items() if len(v) > 1}
+    assert not split, f"the same DOC id carries conflicting dispositions: {split}"
+
+
 def test_doc_health_cells_use_the_declared_vocabulary():
     allowed = {"CURRENT", "UNVERIFIED", "CONTRADICTED", "NONE"}
     text = REGISTRY.read_text()
