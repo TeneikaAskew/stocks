@@ -3915,3 +3915,26 @@ def test_an_unparsed_marker_is_reported_by_a_whole_run(audit_repo, capsys):
     bad = [f for f in report["findings"]
            if f["doc"] == "docs/d.md" and "parses as neither" in f["detail"]]
     assert len(bad) == 1 and bad[0]["severity"] == "P2", report["findings"]
+
+
+def test_a_run_still_in_flight_does_not_hide_the_failure_beneath_it(monkeypatch):
+    """`delivering[0][0] not in {"success", ""}` accepted an empty conclusion,
+    which is what a queued or in-progress run has. The completed run beneath
+    it -- the one that actually failed -- was never examined, so the delivery
+    audit reported clean while the rerun had delivered nothing. The pagination
+    fix fetched that row; this condition ignored it."""
+    rows = [["", "2026-09-18T10:00:00Z"], ["failure", "2026-09-17T10:00:00Z"]]
+    monkeypatch.setattr(m, "fetch_owning_runs", lambda **k: rows)
+    monkeypatch.setattr(m, "run", lambda *a, **k: "")
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    out = m.check_owning_job("2026-09-18")
+    bad = [f for f in out if "concluded failure" in f["detail"]]
+    assert len(bad) == 1 and bad[0]["severity"] == "P1", out
+
+
+def test_a_completed_success_beneath_an_in_flight_run_is_still_clean():
+    """The other direction: an in-flight run is not evidence of a problem
+    either, so the last COMPLETED delivering run is what decides."""
+    rows = [("", "2026-09-18T10:00:00Z"), ("success", "2026-09-17T10:00:00Z")]
+    assert m.last_delivering_conclusion(rows) == ("success", "2026-09-17T10:00:00Z")
+    assert m.last_delivering_conclusion([("", "x")]) is None

@@ -2519,6 +2519,21 @@ def superseded(pr: dict, deliveries: list[dict]) -> bool:
     return False
 
 
+def last_delivering_conclusion(rows: list) -> tuple[str, str] | None:
+    """The most recent delivering run that has actually FINISHED.
+
+    A queued or in-progress run has an empty conclusion, and accepting that as
+    "nothing wrong" meant the completed run beneath it -- the one that failed --
+    was never examined, so the delivery audit reported clean while the rerun
+    had delivered nothing. An in-flight run is not evidence in either
+    direction; the last completed one is what decides.
+    """
+    for row in rows:
+        if not _is_dry_run(row) and row[0]:
+            return row[0], row[1]
+    return None
+
+
 def check_owning_job(today: str) -> list[dict]:
     """Did the job that owns the Class A docs actually deliver?
 
@@ -2552,10 +2567,10 @@ def check_owning_job(today: str) -> list[dict]:
     # a no-op month regenerated identical content, which no document can show
     # about itself because the workflow reverts timestamp-only files.
     last_success = max((r[1][:10] for r in delivering if r[0] == "success"), default="")
-    if delivering and delivering[0][0] not in {"success", ""}:
+    last = last_delivering_conclusion(recent)
+    if last and last[0] != "success":
         findings.append({"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P1",
-                         "detail": f"last delivering run concluded {delivering[0][0]} "
-                                   f"at {delivering[0][1]}"})
+                         "detail": f"last delivering run concluded {last[0]} at {last[1]}"})
 
     # A closed-unmerged attempt that a LATER refresh superseded is history, not
     # a live defect. Reporting #963/#1012/#1021 forever kept --check red with
