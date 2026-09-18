@@ -316,11 +316,13 @@ def test_drift_filter_covers_additions_and_deletions_not_just_edits():
 
     `--diff-filter=M` alone queued neither, so a new module under `lib` or a
     deleted one under `platform/api` left the describing document unflagged.
-    Renames stay excluded, which is what the filter is for.
+    Renames are asked for and then filtered by SCORE, because git files a
+    move-with-an-edit under R and only a pure `R100` is not drift.
     """
     src = inspect.getsource(m.check_changed_since)
-    assert "--diff-filter=AMD" in src
+    assert "--diff-filter=AMDR" in src
     assert "--diff-filter=M\"" not in src
+    assert "drift_commits(out)" in src
 
 
 # ── what gates and what does not ────────────────────────────────────────────
@@ -1177,3 +1179,75 @@ def test_a_whole_run_with_an_unreadable_snapshot_is_exit_two(audit_repo):
     with pytest.raises(m.AuditError, match="could not be read"):
         m.main(["--json", "--date", "2026-09-18",
                 "--issues-snapshot", str(audit_repo / "nope.json")])
+
+
+# ── what the checks can actually see ────────────────────────────────────────
+
+def test_a_root_relative_backticked_path_is_checked_like_any_other():
+    """`./scripts/tool.py` is the same repository path as `scripts/tool.py`.
+
+    The existence check failed, and then `p.split("/", 1)[0]` was `.` rather
+    than `scripts`, so the citation was discarded as if it pointed outside
+    this repo. CLAUDE.md alone carries 9 backticked `./...` citations.
+    """
+    m.TOP_LEVEL_DIRS.update({"scripts"})
+    out = m.check_dead_links("d.md", "see `./scripts/gone_forever.py`\n", set())
+    assert len(out) == 1, out
+    # The finding quotes the citation as written, so it can be found in the file.
+    assert "./scripts/gone_forever.py" in out[0]["detail"]
+
+
+def test_a_root_relative_backticked_path_that_exists_is_still_quiet():
+    m.TOP_LEVEL_DIRS.update({"scripts"})
+    assert m.check_dead_links("d.md", "see `./scripts/here.py`\n", {"scripts/here.py"}) == []
+
+
+def test_a_genuine_cross_repo_citation_is_still_not_reported():
+    """The root filter is what keeps a deliberate solyra citation quiet."""
+    m.TOP_LEVEL_DIRS.update({"scripts"})
+    assert m.check_dead_links("d.md", "see `src/lib/format.ts`\n", set()) == []
+
+
+def test_two_complete_blocks_with_the_same_name_are_a_finding():
+    """Neither pair is unbalanced, so the second silently replaced the first in
+    the region map. `insert_blocks()` refreshes only the first occurrence
+    (`count=1`), so the second copy can stay stale indefinitely while the
+    audit reports the map as valid.
+    """
+    doc = ("# T\n<!-- inventory:x:start -->\nfresh\n<!-- inventory:x:end -->\n"
+           "prose\n<!-- inventory:x:start -->\nstale\n<!-- inventory:x:end -->\n")
+    pairs, unbalanced = m.inventory_blocks(m.doc_lines(doc))
+    assert len(unbalanced) == 1 and "second time" in unbalanced[0], unbalanced
+    # The pair kept is the FIRST one -- the one the renderer refreshes.
+    assert pairs == {"x": (2, 4)}
+    findings, owned, _, _ = m.check_regions("t.md", doc, ["inventory:*", "inventory:x"])
+    assert [f["severity"] for f in findings] == ["P1"], findings
+    assert "second time" in findings[0]["detail"]
+
+
+def test_one_block_of_each_name_is_still_silent():
+    doc = ("# T\n<!-- inventory:x:start -->\na\n<!-- inventory:x:end -->\n"
+           "<!-- inventory:y:start -->\nb\n<!-- inventory:y:end -->\n")
+    pairs, unbalanced = m.inventory_blocks(m.doc_lines(doc))
+    assert unbalanced == [] and pairs == {"x": (2, 4), "y": (5, 7)}
+
+
+def test_drift_commits_counts_a_move_with_an_edit_but_not_a_pure_move():
+    out = ("aaa1111\tmove and edit\n\nR096\tlib/a.py\tlib/b.py\n"
+           "bbb2222\tpure move\n\nR100\tlib/c.py\tlib/d.py\n"
+           "ccc3333\tordinary edit\n\nM\tlib/e.py\n")
+    assert m.drift_commits(out) == ["aaa1111\tmove and edit", "ccc3333\tordinary edit"]
+
+
+def test_a_rename_with_an_edit_is_drift(repo):
+    """Measured on git 2.43.0: a one-line edit during a move files as R096,
+    and `--diff-filter=AMD` returned no commit at all, so the documentation
+    was never queued for review although the implementation had changed."""
+    (repo / "lib").mkdir()
+    (repo / "lib" / "a.py").write_text("x = 1\n" * 30)
+    reviewed = _commit(repo, "base")
+    _git(repo, "mv", "lib/a.py", "lib/b.py")
+    (repo / "lib" / "b.py").write_text("x = 1\n" * 30 + "x = 999\n")
+    _commit(repo, "move and edit")
+    out = m.check_changed_since("d.md", reviewed, ["lib"], "HEAD", cwd=repo)
+    assert len(out) == 1 and out[0]["detail"].startswith("1 content commit(s)"), out

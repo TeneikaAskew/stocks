@@ -493,7 +493,20 @@ def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list
                                   f"{open_at[name]} and {n})")
             open_at[name] = n
         elif name in open_at:
-            pairs[name] = (open_at.pop(name), n)
+            lo = open_at.pop(name)
+            if name in pairs:
+                # Neither pair is unbalanced, so this assignment used to
+                # replace the first silently. `insert_blocks()` refreshes only
+                # the FIRST occurrence (`count=1`), so the copy that is not
+                # refreshed can stay stale indefinitely while the region map
+                # reports itself valid. Keep the pair the renderer actually
+                # writes and report the duplicate.
+                unbalanced.append(f"inventory:{name} completes a second time (lines "
+                                  f"{lo}-{n}); the renderer refreshes only the first "
+                                  f"pair at {pairs[name][0]}-{pairs[name][1]}, so this "
+                                  "copy can never be refreshed")
+                continue
+            pairs[name] = (lo, n)
         else:
             unbalanced.append(f"inventory:{name} ends at line {n} with no start")
     for name, n in sorted(open_at.items(), key=lambda kv: kv[1]):
@@ -880,7 +893,13 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
                 out.append({"check": "dead-link", "doc": doc, "line": n,
                             "detail": f"relative link -> {tgt}", "severity": "P2"})
         for m in BACKTICK_PATH_RE.finditer(line):
-            p = m.group("path")
+            cited = m.group("path")
+            # `./scripts/tool.py` is the root-relative spelling of the same
+            # path. Without this the existence check failed and then the root
+            # component was `.`, never a tracked top-level directory, so the
+            # citation was discarded as if it pointed outside this repo --
+            # silently exempting a convention CLAUDE.md alone uses 9 times.
+            p = strip_dot_segments(cited)
             if pathlib.PurePosixPath(p).suffix not in CODE_EXTS:
                 continue
             if p in tracked or (REPO / p).exists():
@@ -890,7 +909,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
             root = p.split("/", 1)[0]
             if root in TOP_LEVEL_DIRS:
                 out.append({"check": "dead-link", "doc": doc, "line": n,
-                            "detail": f"backticked path -> {p}", "severity": "P2"})
+                            "detail": f"backticked path -> {cited}", "severity": "P2"})
     return out
 
 
@@ -922,6 +941,32 @@ def check_marker_sha(doc: str, sha: str | None, base_ref: str, *,
     return [], True
 
 
+_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{7,40}\t")
+_DRIFT_STATUS_RE = re.compile(r"^([AMDRCT])(\d{3})?\t")
+
+
+def drift_commits(out: str) -> list[str]:
+    """Commits in a `--name-status` listing that actually changed content.
+
+    A pure rename (`R100`) is not drift; a moved file with an edit (`R096`) is
+    exactly as much drift as the edit alone. `--diff-filter` cannot express
+    that distinction -- it files the whole commit under R -- so the score is
+    read per file here.
+    """
+    commits: list[tuple[str, bool]] = []
+    for line in out.split("\n"):
+        if _DRIFT_HEADER_RE.match(line):
+            commits.append((line, False))
+            continue
+        status = _DRIFT_STATUS_RE.match(line)
+        if not status or not commits:
+            continue
+        kind, score = status.group(1), status.group(2)
+        if kind in "AMD" or (kind == "R" and int(score or 100) < 100):
+            commits[-1] = (commits[-1][0], True)
+    return [line for line, drift in commits if drift]
+
+
 def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_ref: str,
                         *, cwd: pathlib.Path | None = None) -> list[dict]:
     if not sha or not code_paths:
@@ -931,15 +976,20 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # have exits 128, and swallowing that reported "nothing changed since
     # <sha>" for a commit that was never read. The marker check reports an
     # unknown SHA separately, so this one aborts.
-    # AMD, not M: a declared path GAINING a module or LOSING one changes the
-    # documented surface just as much as editing one, and `M` alone queued
-    # neither. Renames stay excluded -- that is what the filter is for, so the
-    # 2026-09-07 file-move wave does not flag every document -- and
-    # `--find-renames` says so explicitly rather than trusting `diff.renames`
-    # on whichever machine runs the audit.
-    out = run(["git", "log", "--oneline", "--find-renames", "--diff-filter=AMD",
-               f"{sha}..{base_ref}", "--"] + code_paths, cwd=cwd or REPO)
-    commits = [c for c in out.strip().split("\n") if c.strip()]
+    # AMDR with the rename score read per file, not AMD: a declared path
+    # GAINING a module or LOSING one changes the documented surface just as
+    # much as editing one, and a file moved WITH an edit is drift that git
+    # files under `R<similarity>` -- measured on git 2.43.0, a one-line edit
+    # during a move is `R096` and `--diff-filter=AMD` returned no commit at
+    # all, so the document was never queued although the implementation had
+    # changed. Only a pure rename (`R100`) stays excluded, which is what the
+    # filter was for: the 2026-09-07 file-move wave must not flag every
+    # document. `-M` asks for the score explicitly rather than trusting
+    # `diff.renames` on whichever machine runs the audit.
+    out = run(["git", "log", "--format=%h%x09%s", "--name-status", "-M",
+               "--diff-filter=AMDR", f"{sha}..{base_ref}", "--"] + code_paths,
+              cwd=cwd or REPO)
+    commits = drift_commits(out)
     if not commits:
         return []
     return [{"check": "changed-since", "doc": doc,
