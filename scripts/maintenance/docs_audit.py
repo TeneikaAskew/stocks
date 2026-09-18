@@ -146,7 +146,7 @@ class AuditError(RuntimeError):
     """The run itself could not be completed. Never degrades to empty results."""
 
 
-def run(cmd: list[str], *, cwd: pathlib.Path = REPO,
+def run(cmd: list[str], *, cwd: pathlib.Path | None = None,
         ok_exit_codes: tuple[int, ...] = ()) -> str:
     """Run a command, treating only the listed non-zero exits as answers.
 
@@ -159,7 +159,10 @@ def run(cmd: list[str], *, cwd: pathlib.Path = REPO,
     would have flagged a correct document as wrong. A read that could not
     happen is never a measurement (CLAUDE.md §3.7).
     """
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    # `cwd=REPO` as a default ARGUMENT binds the repo root at import time, so
+    # a test that points the module at a throwaway tree still shelled out
+    # against this checkout. Resolved per call instead.
+    proc = subprocess.run(cmd, cwd=cwd or REPO, capture_output=True, text=True)
     if proc.returncode != 0 and proc.returncode not in ok_exit_codes:
         raise AuditError(f"{' '.join(cmd[:4])}... exited {proc.returncode}: {proc.stderr.strip()[:400]}")
     return proc.stdout
@@ -583,14 +586,57 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     return range(h1 + 1, min(stop, h1 + 1 + limit, len(lines)))
 
 
+def is_calendar_date(value: str | None) -> bool:
+    """Is this a real day, and written the way the marker declares it?
+
+    `MARKER_RE` only checks the SHAPE `\\d{4}-\\d{2}-\\d{2}`, so `2025-02-31`
+    parses as a marker date, and every comparison the audit then makes is
+    lexicographic -- it sorts below today, so it is not "future", and with a
+    valid `Against:` SHA nothing else looks at it. An impossible day is
+    recorded as review provenance permanently.
+
+    The round-trip is what makes this a check rather than a shape test:
+    `fromisoformat` accepts `2026-9-18` on 3.11+, which is not the format the
+    marker declares and would not sort against the others.
+    """
+    if not value:
+        return False
+    try:
+        return datetime.date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def check_marker_dates(doc: str, info: dict) -> list[dict]:
+    """Every date a marker carries has to be a day that exists.
+
+    P2, not P3: this is not an absent review, it is a recorded one that cannot
+    be true. A date nobody can place is worse than `unknown`, which at least
+    says so.
+    """
+    out = []
+    for field, label in (("date", "review date"), ("scanned", "last-scanned date")):
+        value = info.get(field)
+        if value in (None, "", "unknown"):
+            continue
+        if not is_calendar_date(value):
+            out.append({"check": "marker", "doc": doc, "severity": "P2",
+                        "detail": f"{label} {value} is not a real calendar day"})
+    return out
+
+
 def is_future_date(date: str, today: str) -> bool:
     """Is this marker date actually in the future?
 
     "unknown" sorts after any date beginning with a digit, so the unguarded
     comparison reported every never-reviewed document as future-dated -- 77 of
     them on the tree this landed against, which alone kept --check red.
+
+    Only real days are compared. `2027-02-31` sorts after today and is not a
+    day, so calling it future-dated is a true-shaped answer about nothing;
+    `check_marker_dates` reports it for what it is instead.
     """
-    return date != "unknown" and date > today
+    return is_calendar_date(date) and date > today
 
 
 def find_marker(lines: list[str]) -> tuple[int, dict] | None:
@@ -717,7 +763,10 @@ def stamp(text: str, date: str, depth: str, sha: str,
     if h1 + 1 < len(lines) and lines[h1 + 1].strip() == "":
         lines[h1 + 2:h1 + 2] = [marker, ""]
     else:
-        lines[h1 + 1:h1 + 1] = ["", marker]
+        # Both blanks, not just the leading one. An H1 followed straight by
+        # body text got `# Title` / "" / marker / body, and Markdown renders
+        # the marker and the opening sentence as a single paragraph.
+        lines[h1 + 1:h1 + 1] = ["", marker, ""]
     return "\n".join(lines), "inserted"
 
 
@@ -958,6 +1007,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--date", metavar="YYYY-MM-DD", help="override today's date (tests)")
     args = ap.parse_args(argv)
 
+    # `--stamp --date 2026-02-30` wrote that value into every marker as
+    # `Last scanned`, and the next run's MARKER_RE stopped at the prefix while
+    # extra_segments kept the malformed remainder as prose. A day that does not
+    # exist is bad input, not a finding: exit 2, the documented status for a
+    # run that could not happen.
+    if args.date is not None and not is_calendar_date(args.date):
+        raise AuditError(f"--date {args.date} is not a calendar day (YYYY-MM-DD)")
     today = args.date or datetime.date.today().isoformat()
     # The revision being reviewed: what gets enumerated, diffed against and
     # stamped. One value, so the marker can never name a commit whose contents
@@ -1054,6 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
             if info["legacy"]:
                 findings.append({"check": "marker", "doc": doc, "severity": "P3",
                                  "detail": f"legacy label, date {info['date']}; normalise to Last reviewed"})
+            findings += check_marker_dates(doc, info)
             if is_future_date(info["date"], today):
                 findings.append({"check": "marker", "doc": doc, "severity": "P1",
                                  "detail": f"review date {info['date']} is in the future"})

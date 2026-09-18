@@ -7,6 +7,7 @@ red, then reverted.
 from __future__ import annotations
 
 import inspect
+import json
 import subprocess
 
 import pytest
@@ -933,3 +934,122 @@ def test_registry_declares_every_inventory_block_the_renderer_emits():
         present = {mm.group("name") for mm in m.INVENTORY_RE.finditer(
             (m.REPO / doc).read_text(encoding="utf-8"))}
         assert named == present, (doc, named ^ present)
+
+
+# ── follow-ups to the Codex findings on bd730589 and f1c2bf8e ───────────────
+
+def test_a_date_shaped_impossible_day_is_not_a_calendar_date():
+    """`2025-02-31` matches MARKER_RE and sorts below today, so a marker could
+    record a day that does not exist and pass every check forever."""
+    assert m.is_calendar_date("2026-09-18") is True
+    assert m.is_calendar_date("2025-02-31") is False
+    assert m.is_calendar_date("2026-13-01") is False
+    assert m.is_calendar_date("unknown") is False
+    # A shortened form round-trips through fromisoformat on 3.11+ but is not
+    # the format the marker declares, so it must not pass either.
+    assert m.is_calendar_date("2026-9-18") is False
+
+
+def test_an_impossible_marker_date_is_reported():
+    assert m.check_marker_dates("d.md", {"date": "2025-02-31", "scanned": None}) != []
+    assert m.check_marker_dates("d.md", {"date": "2026-09-18", "scanned": "2026-09-18"}) == []
+    assert m.check_marker_dates("d.md", {"date": "unknown", "scanned": "2026-09-18"}) == []
+    bad = m.check_marker_dates("d.md", {"date": "unknown", "scanned": "2026-02-30"})
+    assert len(bad) == 1 and "2026-02-30" in bad[0]["detail"], bad
+
+
+def test_a_future_date_test_never_fires_on_an_impossible_day():
+    """The lexicographic compare said `2027-02-31` is in the future, which is
+    a true-shaped answer about a day that does not exist. Only real days are
+    compared; the impossible one is reported by check_marker_dates instead."""
+    assert m.is_future_date("2026-09-19", "2026-09-18") is True
+    assert m.is_future_date("2027-02-31", "2026-09-18") is False
+    assert m.is_future_date("unknown", "2026-09-18") is False
+
+
+def test_an_impossible_override_date_aborts_rather_than_being_written():
+    """`--date 2026-02-30` would be written into every marker as Last scanned."""
+    with pytest.raises(m.AuditError, match="not a calendar day"):
+        m.main(["--date", "2026-02-30"])
+
+
+def test_an_inserted_marker_keeps_a_blank_line_on_both_sides():
+    """With the H1 followed straight by body text the marker got a leading
+    blank and no trailing one, so Markdown ran the marker and the opening
+    sentence together as one paragraph."""
+    out, action = m.stamp("# Title\nbody text\n", "2026-09-18", "scanned", "abc1234")
+    assert action == "inserted"
+    lines = out.split("\n")
+    assert lines[0] == "# Title"
+    assert lines[1] == ""
+    assert lines[2].startswith("**Last reviewed:**")
+    assert lines[3] == "", lines
+    assert lines[4] == "body text"
+
+
+def test_the_blank_the_h1_already_has_is_still_reused():
+    """The other branch must not gain a second blank line."""
+    out, _ = m.stamp("# Title\n\nbody text\n", "2026-09-18", "scanned", "abc1234")
+    lines = out.split("\n")
+    assert lines[:2] == ["# Title", ""]
+    assert lines[2].startswith("**Last reviewed:**")
+    assert lines[3] == "" and lines[4] == "body text", lines
+
+
+# ── end to end: main() against a throwaway tree ─────────────────────────────
+
+E2E_REGISTRY = """
+# Documentation registry
+
+## Registry
+
+| Class | Path glob | Declared code paths | Generated regions |
+|---|---|---|---|
+| D | docs/DOC_REGISTRY.md | | |
+| D | docs/*.md | scripts | |
+| A | gen/*.md | | inventory:* |
+"""
+
+
+@pytest.fixture
+def audit_repo(tmp_path, monkeypatch):
+    """A tree main() can audit end to end without touching this checkout.
+
+    The main() wiring -- which findings are appended, which documents are
+    stampable, what the plain output prints -- is where several of these
+    defects live, and a test that calls the helper directly cannot see it.
+    Reverting the fix has to turn a test red THROUGH main(), not beside it.
+    """
+    _git(tmp_path, "init", "-q", "-b", "work")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "gen").mkdir()
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "tool.py").write_text("x = 1\n")
+    (tmp_path / "docs" / "DOC_REGISTRY.md").write_text(E2E_REGISTRY)
+    (tmp_path / "issues.json").write_text(json.dumps({"stocks": {}, "solyra": {}}))
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "TOP_LEVEL_DIRS", set())
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def _audit(repo, *argv):
+    """Run main() over `repo`, offline, and return (exit code, report)."""
+    _commit(repo, "tree")
+    code = m.main(["--json", "--date", "2026-09-18",
+                   "--issues-snapshot", str(repo / "issues.json"), *argv])
+    return code
+
+
+def test_an_impossible_marker_date_is_reported_by_a_whole_run(audit_repo, capsys):
+    """Through main(), not beside it: the check has to be wired in."""
+    (audit_repo / "docs" / "d.md").write_text(
+        "# D\n\n**Last reviewed:** 2025-02-31 · **Last scanned:** 2026-09-18\n")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    bad = [f for f in report["findings"]
+           if f["check"] == "marker" and "not a real calendar day" in f["detail"]]
+    assert len(bad) == 1 and bad[0]["severity"] == "P2", report["findings"]
