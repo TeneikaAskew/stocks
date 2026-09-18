@@ -246,8 +246,6 @@ declared-versus-live reconciliation.
 and `param-sweep` are deployed but **unscheduled**;
 `options-exec-backtest` is defined in `gcp/deploy.sh` but marked **not deployed**.
 
-
-
 ### Research documentation corpus
 
 The long-form evidence behind every verdict above. None of it was linked from this
@@ -382,7 +380,7 @@ Read live 2026-09-16. Merged-PR lineage for every model is owned by
 | An experiment the ledger marks *not committed* is not listed beside code paths | DOC-17 — E-26/E-31/E-33 implying a reproduction route that does not exist |
 | Every experiment id the ledger declares is on a model's row or in the ownerless table, ranges expanded | Total omission of a single-engine experiment — deleting E-01 from MODEL-TYPE-001 passed every earlier invariant |
 | Experiments in ledger sections the parser cannot read carry explicit scope metadata and go through the family check | The `UNPARSED_LEDGER_SECTIONS` allowlist, which `continue`d past E-24, E-26…E-31, E-33 and E-34 |
-| Model-bearing jobs whose name carries no model word (`signal-monitor`, its resolver) are matched, and that classification is itself pinned | DOC-20 |
+| Model-bearing jobs whose name carries no model word (`signal-monitor`, its resolver) are matched, that classification is itself pinned, and completeness is keyed by **scheduler entry** rather than job — three entries target `signal-monitor`, so a job-keyed check let `signal-monitor-daily` be dropped while the ORB rows kept the job "listed" | DOC-20 |
 
 Each invariant was mutation-tested: the defect was reintroduced and the test
 confirmed red before being reverted.

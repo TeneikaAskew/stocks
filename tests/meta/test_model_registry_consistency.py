@@ -48,8 +48,9 @@ This pins the parts a machine can settle offline. Eleven invariants:
    which is where the three findings on PR #1111's second review landed.
 9. Every experiment id the ledger declares is on a model's row or in the
    ownerless table, so a single-engine experiment cannot vanish silently.
-10. Every scheduled model-bearing job is in the scheduler table, including
-    the ones whose name carries no model word (`signal-monitor`).
+10. Every scheduled model-bearing job is in the scheduler table, keyed by
+    scheduler entry, including the ones whose job name carries no model
+    word (`signal-monitor`).
 11. `Rec` cells come from the declared vocabulary.
 
 What it deliberately does NOT do:
@@ -696,16 +697,26 @@ def _is_model_bearing(job: str) -> bool:
 
 
 def test_every_scheduled_model_bearing_job_is_listed():
-    """Completeness, not just correctness of the rows that are present."""
-    listed = {job for _, _, job in re.findall(
+    """Completeness, not just correctness of the rows that are present.
+
+    Keyed by SCHEDULER NAME, not by target job. Three schedulers target the
+    `signal-monitor` job (`signal-monitor-daily` and the two ORB snapshots),
+    so a job-keyed check let the `signal-monitor-daily` row be deleted while
+    the ORB rows kept the job "listed" -- measured 2026-09-18: dropping that
+    row and lowering the count to thirteen passed every invariant. The table's
+    own inclusion rule is stated per scheduler entry, so this is too."""
+    listed = {name for name, _, _ in re.findall(
         r"^\| `([a-z0-9-]+)` \| `([^`]+)` \| `([a-z0-9-]+)` \|", _run_section(), re.M)}
-    scheduled = {job for _, job in _declared_schedulers().values()}
-    missing = sorted(j for j in scheduled if _is_model_bearing(j) and j not in listed)
+    missing = sorted(
+        f"{name} -> {job}"
+        for name, (_, job) in _declared_schedulers().items()
+        if _is_model_bearing(job) and name not in listed
+    )
     assert not missing, (
-        f"model-bearing jobs on a cron but absent from the table: {missing}. "
+        f"model-bearing scheduler entries absent from the table: {missing}. "
         "This is how audit-brief-bias-weekly was missed one round after the "
-        "gamma omission was 'gated', and how signal-monitor -- the job that "
-        "fires four registered models -- was missed the round after that."
+        "gamma omission was 'gated', and how signal-monitor-daily -- the entry that "
+        "fires the live strategies -- was missed the round after that."
     )
 
 
