@@ -302,6 +302,12 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
 
     ``all``            every line (a wholly rendered artefact, e.g. a .drawio)
     ``inventory:*``    every ``<!-- inventory:NAME:start/end -->`` pair
+    ``inventory:NAME`` that pair, which must exist. The wildcard is satisfied
+                       by whatever blocks survive, so a renderer that stops
+                       emitting a block -- both markers gone, nothing
+                       unbalanced -- is invisible to it. Naming the blocks
+                       makes the registry, not the surviving markers, say
+                       what coverage exists.
     ``mark:NAME``      the ``<!-- BEGIN NAME -->``..``<!-- END NAME -->`` pair
     ``line:REGEX``     every line matching REGEX (README's badges, its footer)
     ``prose:PATH``     everything not otherwise claimed is model-written, by
@@ -321,6 +327,7 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
     orphans: list[str] = []
     prompt: str | None = None
     exhaustive = False
+    pairs, unbalanced = inventory_blocks(lines)
 
     for spec in specs:
         hit = False
@@ -329,28 +336,22 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
             hit = bool(lines)
         elif spec == "inventory:*":
             # Every block has to balance, not just one of them. Treating the
-            # wildcard as satisfied by the first valid pair let a renderer drop
-            # a whole block, or emit a start with no end, while the remaining
-            # pairs kept `hit` true -- and in a `prose:` file the abandoned
-            # span then routes silently as model prose.
-            open_at: dict[str, int] = {}
-            for n, line in enumerate(lines, 1):
-                m = INVENTORY_RE.search(line)
-                if not m:
-                    continue
-                name = m.group("name")
-                if m.group("edge") == "start":
-                    if name in open_at:
-                        orphans.append(f"inventory:{name} opened twice (lines "
-                                       f"{open_at[name]} and {n})")
-                    open_at[name] = n
-                elif name in open_at:
-                    owned.update(range(open_at.pop(name), n + 1))
-                    hit = True
-                else:
-                    orphans.append(f"inventory:{name} ends at line {n} with no start")
-            for name, n in sorted(open_at.items(), key=lambda kv: kv[1]):
-                orphans.append(f"inventory:{name} starts at line {n} with no end")
+            # wildcard as satisfied by the first valid pair let a renderer
+            # emit a start with no end while the remaining pairs kept `hit`
+            # true -- and in a `prose:` file the abandoned span then routed
+            # silently as model prose.
+            for lo, hi in pairs.values():
+                owned.update(range(lo, hi + 1))
+                hit = True
+            orphans.extend(o for o in unbalanced if o not in orphans)
+        elif spec.startswith("inventory:"):
+            name = spec[10:]
+            if name in pairs:
+                lo, hi = pairs[name]
+                owned.update(range(lo, hi + 1))
+                hit = True
+            orphans.extend(o for o in unbalanced
+                           if o.startswith(f"inventory:{name} ") and o not in orphans)
         elif spec.startswith("mark:"):
             name = spec[5:]
             begin = re.compile(rf"<!--\s*BEGIN {re.escape(name)}\s*-->")
@@ -378,6 +379,33 @@ def owned_lines(text: str, specs: list[str]) -> tuple[set[int], list[str], str |
         if not hit:
             unmatched.append(spec)
     return owned, unmatched, prompt, orphans, exhaustive
+
+
+def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list[str]]:
+    """Balanced `<!-- inventory:NAME:start/end -->` pairs by name, and every
+    marker with no partner, each described with its line so the finding can
+    be acted on. Read once per document; both the wildcard and the named
+    specs consume it."""
+    pairs: dict[str, tuple[int, int]] = {}
+    unbalanced: list[str] = []
+    open_at: dict[str, int] = {}
+    for n, line in enumerate(lines, 1):
+        m = INVENTORY_RE.search(line)
+        if not m:
+            continue
+        name = m.group("name")
+        if m.group("edge") == "start":
+            if name in open_at:
+                unbalanced.append(f"inventory:{name} opened twice (lines "
+                                  f"{open_at[name]} and {n})")
+            open_at[name] = n
+        elif name in open_at:
+            pairs[name] = (open_at.pop(name), n)
+        else:
+            unbalanced.append(f"inventory:{name} ends at line {n} with no start")
+    for name, n in sorted(open_at.items(), key=lambda kv: kv[1]):
+        unbalanced.append(f"inventory:{name} starts at line {n} with no end")
+    return pairs, unbalanced
 
 
 def unowned_spans(text: str, owned: set[int]) -> list[tuple[int, int]]:

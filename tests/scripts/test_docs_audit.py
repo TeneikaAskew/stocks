@@ -762,3 +762,36 @@ def test_drift_counts_added_and_deleted_modules_but_not_pure_renames(repo):
     out = m.check_changed_since("d.md", reviewed, ["lib"], "HEAD", cwd=repo)
     assert len(out) == 1 and out[0]["detail"].startswith("2 content commit(s)"), out
 
+
+def test_a_whole_inventory_block_dropped_cleanly_is_a_finding_when_it_is_named():
+    """Finding 6, the case orphan tracking cannot see.
+
+    A renderer that stops emitting a block removes BOTH markers, so nothing is
+    unbalanced and `inventory:*` is satisfied by whatever blocks remain --
+    measured on 2f14ccf: 05-e with its `routes` block deleted outright reports
+    nothing. `inventory:NAME` declares the blocks a renderer must emit, so the
+    registry, not the surviving markers, says what coverage exists.
+    """
+    doc = "# T\n<!-- inventory:routers:start -->\nx\n<!-- inventory:routers:end -->\n"
+    silent, _, _, _ = m.check_regions("05-e.md", doc, ["inventory:*"])
+    assert silent == []
+    findings, owned, _, _ = m.check_regions(
+        "05-e.md", doc, ["inventory:*", "inventory:routers", "inventory:routes"])
+    assert owned == {2, 3, 4}
+    assert [f["severity"] for f in findings] == ["P1"]
+    assert "`inventory:routes` matched nothing" in findings[0]["detail"]
+
+
+def test_registry_declares_every_inventory_block_the_renderer_emits():
+    """The three inventory-backed rows name their blocks, and the names agree
+    with what the documents on this tree actually carry: a spec the registry
+    forgot would let a dropped block go unnoticed again."""
+    rows = m.load_registry((m.REPO / m.REGISTRY).read_text(encoding="utf-8"))
+    for doc in ("docs/product/infrastructure/05-a-ARCHITECTURE.md",
+                "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
+                "docs/product/infrastructure/05-e-API.md"):
+        _, _, regions = m.classify(doc, rows)
+        named = {r[10:] for r in regions if r.startswith("inventory:") and r != "inventory:*"}
+        present = {mm.group("name") for mm in m.INVENTORY_RE.finditer(
+            (m.REPO / doc).read_text(encoding="utf-8"))}
+        assert named == present, (doc, named ^ present)
