@@ -2963,3 +2963,45 @@ def test_a_read_only_run_still_reports_on_a_lossily_decoded_document(audit_repo,
             "--issues-snapshot", str(audit_repo / "issues.json")])
     report = json.loads(capsys.readouterr().out)
     assert any(f["doc"] == "docs/bad.md" for f in report["findings"]), report["findings"]
+
+
+# ── round 14 ────────────────────────────────────────────────────────────────
+
+
+def test_a_staged_new_document_is_audited(audit_repo, capsys):
+    """`git ls-files --others` is UNTRACKED only, so `git add docs/new.md`
+    moved the path into the index where it was neither "other" nor in HEAD --
+    and the document fell out of both inventories at the moment before
+    committing, which is exactly when the check is worth having."""
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "tree"], cwd=audit_repo, check=True)
+    (audit_repo / "docs" / "staged.md").write_text("# Staged\n\nbody\n")
+    subprocess.run(["git", "add", "docs/staged.md"], cwd=audit_repo, check=True)
+    m.main(["--date", "2026-09-18", "--json", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    assert any(f["doc"] == "docs/staged.md" for f in report["findings"]), report["findings"]
+
+
+@pytest.mark.parametrize("dest", ["<README.md>", "README.md?plain=1"])
+def test_a_destination_that_is_not_a_bare_path_still_resolves(dest):
+    """Angle brackets are delimiters -- the standard form when the path has a
+    space -- and a query string is not part of the path. Both were compared
+    against the tracked set verbatim and reported dead."""
+    assert m.check_dead_links("d.md", f"# T\n\n[g]({dest})\n", {"README.md"}) == []
+
+
+@pytest.mark.parametrize("dest", ["<gone.md>", "gone.md?x=1"])
+def test_a_missing_target_written_either_way_is_still_dead(dest):
+    assert len(m.check_dead_links("d.md", f"# T\n\n[g]({dest})\n", {"README.md"})) == 1
+
+
+def test_inserting_a_marker_does_not_make_the_document_look_changed():
+    """stamp() inserts the marker WITH a separating blank line, so dropping
+    only the marker line left the normalised working copy carrying a blank the
+    reviewed revision does not have -- and the very next audit reported
+    changed-since for a document whose only edit was the audit's own marker."""
+    before = "# T\n\nbody\n"
+    after, _ = m.stamp(before, "2026-09-18", "scanned", "abc1234", False)
+    assert after != before
+    assert m._without_marker(after) == m._without_marker(before)

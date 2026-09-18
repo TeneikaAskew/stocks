@@ -1504,7 +1504,15 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
             # git reports the DECODED filename, so `Morning%20Checklist.md` was
             # compared against a tracked `Morning Checklist.md` and reported
             # dead. The original spelling stays in the message.
-            decoded = urllib.parse.unquote(tgt)
+            # `[g](<guide.md>)` is the standard form for a destination with a
+            # space, and the angle brackets are delimiters. A query string is
+            # not part of the path either: the tracked lookup searched for the
+            # literal `guide.md?plain=1`.
+            bare = tgt[1:-1] if tgt.startswith("<") and tgt.endswith(">") else tgt
+            bare = bare.split("?")[0]
+            if not bare:
+                return
+            decoded = urllib.parse.unquote(bare)
             resolved = (decoded.lstrip("/") if decoded.startswith("/")
                         else posixpath.join(str(base), decoded))
             norm = posixpath.normpath(resolved)
@@ -1688,7 +1696,16 @@ def _without_marker(text: str) -> str:
     lines = text.split("\n")
     found = find_marker(lines)
     if found is not None:
-        lines = lines[:found[0]] + lines[found[0] + 1:]
+        i = found[0]
+        # The SEPARATING BLANK LINE too. `stamp` inserts the marker with one,
+        # so dropping only the marker left the normalised working copy with a
+        # blank line the reviewed revision does not have -- and the very next
+        # audit reported changed-since for a document whose only edit was the
+        # audit's own marker.
+        end = i + 1
+        if end < len(lines) and not lines[end].strip() and i and not lines[i - 1].strip():
+            end += 1
+        lines = lines[:i] + lines[end:]
     return "\n".join(lines)
 
 
@@ -2188,8 +2205,17 @@ def main(argv: list[str] | None = None) -> int:
     # a LINK resolves, and letting an untracked file satisfy a link is the bug
     # is_tracked_dir was written to close -- present here, absent in every
     # clean clone.
-    pending = [p for p in run(["git", "ls-files", "--others", "--exclude-standard",
-                               "--", "*.md"]).strip().split("\n") if p]
+    # --others is UNTRACKED only; `git add docs/new.md` moves the path into the
+    # index, where it is neither "other" nor in HEAD -- so the document fell
+    # out of both inventories at the moment a contributor staged it, which is
+    # the moment before committing. --cached covers the index, and the HEAD set
+    # below removes everything that is not actually new.
+    pending = [p for p in run(["git", "ls-files", "--cached", "--others",
+                               "--exclude-standard", "--", "*.md"]).strip().split("\n") if p]
+    # The `not in tracked` filter is for READABILITY, not correctness: this is
+    # a set union, so a path already in `docs` collapses anyway. Said plainly
+    # because a test written to cover it stayed green when it was removed, and
+    # a test that cannot fail is worse than no test.
     docs = sorted(set(docs) | {p for p in pending if p not in tracked})
 
     if args.issues_snapshot:
