@@ -273,17 +273,25 @@ def test_jobs_claimed_unscheduled_really_are():
     )
 
 
-def test_scheduled_count_prose_matches_the_table():
+def test_scheduler_table_has_no_count_to_drift():
+    """The count sentence is deliberately gone; assert it stays gone.
+
+    It was published as `eight`, corrected to `fourteen`, and was still wrong,
+    because it was derived by hand from a rule that also catches every fetcher
+    importing a `lib/` helper. Two wrong counts in two rounds: the list is the
+    deliverable, and a number over it is a liability. The rows themselves are
+    checked against deploy.sh by test_scheduler_table_matches_deploy_sh.
+    """
     section = _run_section()
-    words = {"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-             "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
-             "fifteen": 15, "sixteen": 16}
-    m = re.search(r"\b\**(\w+)\**\s+scheduler entries target", section)
-    assert m, "the scheduled-count sentence changed shape"
-    stated = words.get(m.group(1).lower())
-    assert stated is not None, f"unhandled number word: {m.group(1)}"
-    rows = len(re.findall(r"^\| `[a-z0-9-]+` \| `[^`]+` \| `[a-z0-9-]+` \|", section, re.M))
-    assert stated == rows, f"prose says {stated} scheduled jobs; the table lists {rows}"
+    stated = re.search(
+        r"\b(six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|\d+)\s+"
+        r"(?:model-bearing\s+jobs|scheduler entries)", section, re.I)
+    assert not stated, (
+        f"a count of scheduled jobs is back in the section: {stated.group(0)!r}. "
+        "This number has been wrong twice; publish the list, not a total."
+    )
+    rows = re.findall(r"^\| `[a-z0-9-]+` \| `[^`]+` \| `[a-z0-9-]+` \|", section, re.M)
+    assert len(rows) >= 10, f"only {len(rows)} scheduler rows parsed — did the table change?"
 
 
 # ------------------------------------------------------- 4. count safety ----
@@ -442,12 +450,40 @@ LEDGER = REPO / "docs" / "EXPERIMENT_REGISTRY.md"
 #: A first pass at this map guessed "direction" for most of them from the surrounding
 #: direction_program prose and was wrong; the scopes below are read from the rows.
 UNPARSED_LEDGER_SECTIONS = {
-    "E-24": "gamma (data quality)",
-    "E-26": "magnitude", "E-27": "magnitude", "E-28": "magnitude",
-    "E-29": "magnitude", "E-30": "direction", "E-31": "magnitude",
-    "E-33": "magnitude",
-    "E-34": "both (direction + magnitude SIZE arm)",
+    "E-24": {"gamma"},
+    "E-26": {"magnitude"}, "E-27": {"magnitude"}, "E-28": {"magnitude"},
+    "E-29": {"magnitude"}, "E-30": {"direction"}, "E-31": {"magnitude"},
+    "E-33": {"magnitude"},
+    "E-34": {"direction", "magnitude"},
 }
+
+#: Which model owns each engine. A multi-engine experiment must appear on EVERY
+#: owner, which is what makes `both` a set rather than a wildcard.
+ENGINE_OWNER = {
+    "strat": "MODEL-TYPE-001",
+    "magnitude": "MODEL-MAG-001",
+    "direction": "MODEL-DIR-001",
+}
+
+
+def _engines(area) -> set:
+    """An Engine/area value -> the set of engines it names.
+
+    `both` used to be matched with `startswith`, which made it an unrestricted
+    wildcard: E-34 ("both (direction + magnitude)") satisfied the check on
+    MODEL-TYPE-001, an engine it does not name. Parsing to a set removes the
+    wildcard -- membership is the test, and every named engine must own it.
+    """
+    if isinstance(area, (set, frozenset)):
+        return set(area)
+    # The engine is the LEADING token, before any parenthetical. A first pass
+    # scanned the whole string and read "magnitude (directional)" as two
+    # engines, and "strat (direction / next-candle)" likewise -- the
+    # parenthetical qualifies the work, it does not name a second owner.
+    head = re.split(r"[(/]", str(area).lower(), 1)[0].strip()
+    if head.startswith("both"):
+        return {"strat", "magnitude"}       # E-19, E-20: the two engines
+    return {e for e in ENGINE_OWNER if head.startswith(e)}
 
 
 def _expand_experiment_ranges(text: str) -> set[str]:
@@ -500,20 +536,22 @@ def _traceability_rows() -> dict[str, str]:
 
 def test_experiments_spanning_both_engines_appear_on_both_models():
     """An experiment the ledger scopes to `both` must not be filed under one."""
-    area = _ledger_engine_area()
-    rows = _traceability_rows()
-    cited = {model: set(re.findall(r"E-\d+", cell)) for model, cell in rows.items()}
+    scopes = {e: _engines(a) for e, a in _ledger_engine_area().items()}
+    scopes.update({e: _engines(a) for e, a in UNPARSED_LEDGER_SECTIONS.items()})
+    cited = {model: set(re.findall(r"E-\d+", cell))
+             for model, cell in _traceability_rows().items()}
 
-    both = {e for e, a in area.items() if a.startswith("both")}
-    assert both, "the ledger no longer scopes any experiment 'both' — did its shape change?"
+    multi = {e: s for e, s in scopes.items() if len(s) > 1}
+    assert multi, "no experiment spans two engines — did the ledger's shape change?"
     missing = []
-    for exp in sorted(both):
-        # UNCONDITIONAL. The earlier `if on` guard only fired once some row
-        # already cited the experiment, so deleting E-19 from BOTH models
-        # passed -- total omission, the worse form of the defect, was invisible.
-        for model in ("MODEL-TYPE-001", "MODEL-MAG-001"):
-            if exp not in cited.get(model, set()):
-                missing.append(f"{exp} is '{area[exp]}' but is not on {model}")
+    for exp, engines in sorted(multi.items()):
+        # UNCONDITIONAL, and per NAMED OWNER. The earlier version hardcoded
+        # TYPE+MAG, so E-34 (direction + magnitude) was never checked against
+        # MODEL-DIR-001 and could be deleted from it while MAG still owned it.
+        for engine in sorted(engines):
+            model = ENGINE_OWNER.get(engine)
+            if model and exp not in cited.get(model, set()):
+                missing.append(f"{exp} spans {sorted(engines)} but is not on {model}")
     assert not missing, (
         "experiments scoped to both engines are filed under only one: "
         f"{missing}. This is how E-19's STRAT half and E-20's magnitude half went missing."
@@ -541,7 +579,9 @@ def test_cited_experiments_match_the_models_engine():
                     wrong.append(f"{model} cites {exp}, which has no Engine/area in the ledger")
                     continue
                 # fall through: an exceptional section is checked like a parsed one.
-            if engine in a or a.startswith(("both", "cross-cutting", "precursor")):
+            engines = _engines(a)
+            if engine in engines or (not engines and
+                                     str(a).startswith(("cross-cutting", "precursor"))):
                 continue
             # Anything else needs a parenthetical saying which arm applies.
             if not re.search(rf"{exp}\s*\([^)]+\)", cell):
@@ -612,6 +652,83 @@ def test_uncommitted_experiments_are_not_presented_as_reproducible():
     assert not bad, (
         f"{bad}. The ledger records these as a scratch harness whose code was never "
         "committed, so no listed path reproduces them — say so in the row."
+    )
+
+
+# ------------------------------------------------- 9. doc <-> registry joins --
+# Four findings in one review round were the same shape: a claim corrected in
+# docs/models/ and left standing in the registry row or the concern register.
+# Fixing the instance is not fixing the claim. These two gate that class.
+
+def test_registry_code_column_names_the_live_implementation():
+    """A doc that names a live implementation must have it in the registry's Code cell.
+
+    MODEL-MR-001's doc was corrected to say `lib.signals.evaluate_signal` is the
+    production path while the registry row still listed only the class that
+    production never calls -- so the governance inventory pointed at the wrong
+    code for a live model, and nothing noticed.
+    """
+    text = REGISTRY.read_text()
+    code_cell = {}
+    for table in ("## Deterministic and heuristic systems", "## Learned models"):
+        for line in text.split(table, 1)[1].split("\n##", 1)[0].split("\n"):
+            if re.match(r"^\| MODEL-", line):
+                cells = [c.strip() for c in line.split("|")]
+                code_cell[cells[1]] = cells[5]
+
+    missing, found = [], 0
+    for doc in sorted((REPO / "docs" / "models").glob("MODEL-*.md")):
+        mid, body = doc.stem, doc.read_text()
+        # The doc may name the live path as a file (`lib/signals.py`) or as a
+        # dotted symbol (`lib.signals.evaluate_signal`). A first version of this
+        # test only matched the file form, matched NOTHING, and passed -- the
+        # vacuous-green failure this suite keeps re-learning. Hence `found`.
+        for m in re.finditer(
+                r"`([A-Za-z0-9_./]+)`[^\n]{0,90}?\*\*(?:The )?[Ll]ive implementation", body):
+            raw = m.group(1)
+            if raw.endswith(".py"):
+                path = raw
+            else:                      # lib.signals.evaluate_signal -> lib/signals.py
+                parts = raw.split(".")
+                path = None
+                for cut in range(len(parts), 1, -1):
+                    cand = "/".join(parts[:cut]) + ".py"
+                    if (REPO / cand).exists():
+                        path = cand
+                        break
+                if path is None:
+                    continue
+            found += 1
+            if mid in code_cell and path.rsplit("/", 1)[-1] not in code_cell[mid]:
+                missing.append(f"{mid}: doc names {path} as live; registry Code cell omits it")
+    assert found, (
+        "no model doc names a live implementation -- the parser matched nothing, "
+        "so this test would pass no matter what the registry said."
+    )
+    assert not missing, (
+        f"registry Code cells disagree with their model docs: {missing}. "
+        "Correcting the doc and leaving the row is how MODEL-MR-001 kept pointing "
+        "at a class production never calls."
+    )
+
+
+def test_register_makes_no_uniqueness_claim_about_recorded_rationale():
+    """No disposition may claim one model is the only one with a derivation.
+
+    That exact claim was wrong twice: written into MODEL-EARN-001, corrected
+    there, and left standing in DOC-10's disposition. MODEL-MOM-001,
+    MODEL-MR-001 and MODEL-STYLE-001 all record derivations, so any "only
+    MODEL-X had a real one" phrasing is false by construction.
+    """
+    text = REGISTRY.read_text()
+    register = text[text.index("### Findings"):text.index("## How this registry is kept honest")]
+    bad = re.findall(
+        r"[Oo]nly\s+(MODEL-[A-Z-]+(?:-\d+|X))\s+(?:had|has)\s+(?:a\s+)?real",
+        register)
+    assert not bad, (
+        f"the concern register claims {bad} uniquely has a recorded derivation. "
+        "MOM, MR and STYLE all record one; this claim was already removed from "
+        "the earnings doc and must not survive here."
     )
 
 

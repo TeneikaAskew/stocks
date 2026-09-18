@@ -20,9 +20,14 @@ used to gate or modify scores yet — until we have enough data on whether brief
 signals actually outperform brief-opposed ones, this layer is read-only and purely
 informational."*
 
-**Movement statement** assembles one structured object that the website, Discord and any
-other surface render identically. The source describes itself as *"the SINGLE SOURCE OF
-TRUTH for the movement statement"*. That module header also calls it **NOT user-facing**,
+**Movement statement** assembles one structured object. The source describes itself as
+*"the SINGLE SOURCE OF TRUTH for the movement statement"* and says the website, Discord and
+other surfaces **will** render it identically — that is stated intent, not current wiring.
+
+**Today the Movement Read card is the only wired consumer.** `assemble_movement_statement`
+has exactly one production caller, `platform/api/routers/dashboard.py:595`; no Discord job or
+renderer calls it. An earlier revision of this document reported the module header's future
+tense as present-tense cross-surface parity. That module header also calls it **NOT user-facing**,
 and that part is now stale: `platform/deploy.sh:177` ships the flag `true` and
 `platform/api/routers/dashboard.py:530-545` exposes the enabled endpoint that the React
 Movement Read card consumes. It is feature-flagged and the flag is on.

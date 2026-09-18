@@ -52,7 +52,7 @@ strategy audit).
 
 Per-ticker RSI ranges override the Tier-B default via
 `lib.strategies.calibration.get_call_rsi_range(ticker)`, written by
-[MODEL-CALIB-001](MODEL-CALIB-001.md) — whose status is **Invalidated**. Read that document
+[MODEL-CALIB-001](MODEL-CALIB-001.md) — the percentile calibrator, which **no experiment evaluates**. Read that document
 before treating a calibrated range as validated.
 
 ## Entry points

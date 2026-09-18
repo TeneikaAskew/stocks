@@ -70,7 +70,7 @@ document said both carried no derivation, which discarded recorded provenance.
 not say that is why.
 
 Mined profiles are walk-forward validated through
-[MODEL-CALIB-001](MODEL-CALIB-001.md)'s machinery
+[MODEL-SWEEP-001](MODEL-SWEEP-001.md)'s walk-forward machinery
 (`tests/lib/test_style_walk_forward.py`), whose own status is **Invalidated** — see that
 document before treating a validated profile as out-of-sample.
 

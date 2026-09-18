@@ -333,7 +333,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | UI surface | `/reports` |
 | Backend | `/api/analytics`, `/api/backtest` |
 | Data | `backtest_*`, `walk_forward_results` |
-| Models | MODEL-CALIB-001, MODEL-STYLE-001 |
+| Models | MODEL-CALIB-001, MODEL-SWEEP-001, MODEL-STYLE-001 |
 | Code | `platform/src/routes/ReportsPage.tsx`, `platform/api/routers/backtest.py`, `analytics.py` |
 | Tests | `reports.spec.ts`, `BacktesterSection.format.test.ts` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |

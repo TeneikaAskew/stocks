@@ -1,6 +1,6 @@
 # Model and Algorithm Registry
 
-**Last reviewed:** 2026-09-17 · **Owner:** TBD
+**Last reviewed:** 2026-09-18 · **Owner:** TBD
 
 Covers deterministic rules, heuristics, statistical systems, trained estimators and LLM
 nodes — a model is anything that produces a decision, not only a fitted estimator.
@@ -34,7 +34,7 @@ see [#906](https://github.com/TeneikaAskew/stocks/issues/906).
 | MODEL-LEVEL-001 | Structural level state / magnitude | Heuristic | proximity, state, targets | `lib/strat_levels.py` | Production but needs remediation | RETEST | UNVERIFIED | [#866](https://github.com/TeneikaAskew/stocks/issues/866) PDH/PDL off-by-one · [#907](https://github.com/TeneikaAskew/stocks/issues/907) legacy positional fallback · [#908](https://github.com/TeneikaAskew/stocks/issues/908) executable repricing |
 | MODEL-IND-001 | Technical indicators / RVOL / ORB | Deterministic / statistical | indicator and opening-range context | `lib/indicators.py`, `lib/signals.py` | Production but needs remediation | RETEST | UNVERIFIED | [#870](https://github.com/TeneikaAskew/stocks/issues/870) RSI warm-up · [#892](https://github.com/TeneikaAskew/stocks/issues/892) ATR warm-up · [#894](https://github.com/TeneikaAskew/stocks/issues/894) premarket bars in RTH VWAP · [#912](https://github.com/TeneikaAskew/stocks/issues/912) duplicate implementations |
 | MODEL-MOM-001 | Momentum strategy | Heuristic | long/short eligibility | `lib/strategies/momentum.py` | Production but needs remediation | RETEST | CURRENT · [doc](../models/MODEL-MOM-001.md) | [#285](https://github.com/TeneikaAskew/stocks/issues/285) duplicate inline path · [#701](https://github.com/TeneikaAskew/stocks/issues/701) two divergent voters |
-| MODEL-MR-001 | Mean reversion strategy | Heuristic | reversion eligibility | `lib/strategies/mean_reversion.py` | Production but needs remediation | RETEST | CURRENT · [doc](../models/MODEL-MR-001.md) | [#249](https://github.com/TeneikaAskew/stocks/issues/249) walk-forward RSI thresholds |
+| MODEL-MR-001 | Mean reversion strategy | Heuristic | reversion eligibility | `lib/signals.py` (live path — `evaluate_signal`), `lib/strategies/mean_reversion.py` (class form, not on the fire path) | Production but needs remediation | RETEST | CURRENT · [doc](../models/MODEL-MR-001.md) | [#249](https://github.com/TeneikaAskew/stocks/issues/249) walk-forward RSI thresholds |
 | MODEL-AGREE-001 | Agreement scoring | Heuristic / ensemble | combine strategy evidence into a score | `lib/strategies/agreement.py` | Production but needs remediation | RESTRUCTURE | CURRENT · [doc](../models/MODEL-AGREE-001.md) | [#905](https://github.com/TeneikaAskew/stocks/issues/905) freeze and prospectively validate expectancy |
 | MODEL-EXIT-001 | Exit / stop / target policy | Heuristic | exit, stop, target selection | `lib/strategies`, `gcp/signal_monitor.py`, `exit_config_overrides` | **Broken** | RESTRUCTURE | UNVERIFIED | [#815](https://github.com/TeneikaAskew/stocks/issues/815) live has no stop-loss, backtest does · [#816](https://github.com/TeneikaAskew/stocks/issues/816) daily loss limit structurally unenforceable · [#862](https://github.com/TeneikaAskew/stocks/issues/862) overrides 113 days stale on the live fire path · [#915](https://github.com/TeneikaAskew/stocks/issues/915) same-minute ordering |
 | MODEL-BRIEF-001 | Brief bias / movement statement | Heuristic | market bias and explanation | `lib/strategies/brief_bias.py`, `lib/movement_statement.py` | Experimental | RETEST | CURRENT · [doc](../models/MODEL-BRIEF-001.md) | **none open** — [#900](https://github.com/TeneikaAskew/stocks/issues/900) closed 2026-09-14; the RETEST rests on no current blocker and needs a stated reason or a status change |
@@ -89,7 +89,8 @@ rows — are what keep it open.
 | MODEL-NEXTBAR-001 | STRAT next-bar edge | Statistical / ML | next-candle prediction | `gcp/research/strat_engine`, `lib/strat.py` | Research | RETEST | UNVERIFIED | Held-out OOS forward-walk confirms edge ([#593](https://github.com/TeneikaAskew/stocks/pull/593), [#594](https://github.com/TeneikaAskew/stocks/pull/594)); CLV ablation quantifies mechanical vs genuine ([#595](https://github.com/TeneikaAskew/stocks/pull/595), [#598](https://github.com/TeneikaAskew/stocks/pull/598)) |
 | MODEL-BREAK-001 | Breakout meta-model | ML / ensemble | filter / rank breakouts | `gcp/research`, `lib/strategies` | Research | RETEST | UNVERIFIED | Net reconfirmed in [#598](https://github.com/TeneikaAskew/stocks/pull/598) |
 | MODEL-STYLE-001 | User style mining | ML | learned personal trading pattern | `platform/api/routers/backtest.py` (`/api/style/mine-and-validate`), `user_style_results` | Experimental | RETEST | CURRENT · [doc](../models/MODEL-STYLE-001.md) | Origin [#707](https://github.com/TeneikaAskew/stocks/pull/707) — walk-forward validated into the playbook seam |
-| MODEL-CALIB-001 | Ticker calibration / walk-forward | Statistical | per-ticker thresholds written to production | `lib/walk_forward.py`, `ticker_calibration` | **Invalidated** | RESTRUCTURE | CURRENT · [doc](../models/MODEL-CALIB-001.md) | [#813](https://github.com/TeneikaAskew/stocks/issues/813) "out-of-sample" calibration is in-sample **and auto-writes production** · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining, no multiple-testing control · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias · [#380](https://github.com/TeneikaAskew/stocks/issues/380) close the loop |
+| MODEL-CALIB-001 | Ticker threshold calibration (percentile) | Statistical | per-ticker ATR/RVOL/RSI thresholds written to `ticker_calibration` | `scripts/calibrate_thresholds.py`, `ticker_calibration` | **Retest Required** | RETEST | CURRENT · [doc](../models/MODEL-CALIB-001.md) | — no open issue names this system; **nothing in the ledger evaluates it**, which is the standing concern |
+| MODEL-SWEEP-001 | Walk-forward parameter sweep | Statistical | winning exit/entry parameter set written to `exit_config_overrides` | `lib/walk_forward.py`, `scripts/run_param_sweep.py`, `exit_config_overrides` | **Invalidated** | RESTRUCTURE | CURRENT · [doc](../models/MODEL-SWEEP-001.md) | [#813](https://github.com/TeneikaAskew/stocks/issues/813) "out-of-sample" calibration is in-sample **and auto-writes production** · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining, no multiple-testing control · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias · [#380](https://github.com/TeneikaAskew/stocks/issues/380) close the loop |
 | MODEL-FEAT-X | Experimental feature families | Statistical | cross-asset / news / options / vol features | `lib/features/experimental` | Research | PAUSE | UNVERIFIED | [#784](https://github.com/TeneikaAskew/stocks/issues/784) incremental-vol ablation open |
 
 ## LLM nodes
@@ -113,8 +114,8 @@ are **Experimental**; none has promotion evidence.
 |---|---|
 | Production but needs remediation | 8 |
 | Broken | 1 (MODEL-EXIT-001) |
-| Retest Required | 1 (MODEL-GAMMA-001) |
-| Invalidated | 2 (MODEL-MAG-001, MODEL-CALIB-001) |
+| Retest Required | 2 (MODEL-GAMMA-001, MODEL-CALIB-001) |
+| Invalidated | 2 (MODEL-MAG-001, MODEL-SWEEP-001) |
 | Failed | 1 (MODEL-DIR-001) |
 | Shadow | 1 (MODEL-TYPE-001) |
 | Research | 3 |
@@ -169,7 +170,8 @@ trustworthy evidence ([#906](https://github.com/TeneikaAskew/stocks/issues/906))
 | MODEL-MAG-001 | E-09…E-15, E-19, E-20 (probability calibration), E-34 (SIZE arm) | `gcp/research/magnitude_engine/` (`mag_walk_forward.py`, `mag_pred_train.py`, `mag_leakage_audit.py`, `mag_inference.py`) | [MAGNITUDE_ENGINE_RESULTS](../MAGNITUDE_ENGINE_RESULTS.md) · [MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF](../MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF.md) | **PROJECT VERDICT FAIL** — closed by gate 7, 2026-05-29. Size is learnable; nothing beats option IV |
 | MODEL-BREAK-001 | E-18 ★, E-32 | `gcp/research/strat_engine/breakout_meta_walk_forward.py` | [MODEL_RETHINK_PLANS §RESULTS](../MODEL_RETHINK_PLANS.md) · [EXPERIMENT_REGISTRY §E-18](../EXPERIMENT_REGISTRY.md) | Gross 24/24. **Net fragile** — 2026-06-09 reconfirm: only IWM 5m clean net-positive (+0.110 R, 8/8); SPY/QQQ NET_FAIL |
 | MODEL-NEXTBAR-001 | E-25 | `scripts/strat_forward_walk{,_oos}.py`, `strat_oos_{clv_ablation,multi_tf}.py`, `strat_clv_demech.py`, `strat_struct_backtest.py`, `strat_next_candle_analysis.py` | [EXPERIMENT_REGISTRY §E-25](../EXPERIMENT_REGISTRY.md) · [MODEL_REGISTRY §CAT-A8](../MODEL_REGISTRY.md) | Held-out OOS edge confirmed; CLV ablation shows it is largely **gap-mechanical** (CLV_LAG1 ≈ 0) |
-| MODEL-CALIB-001 | — (no `E-` id) | `lib/walk_forward.py`, `scripts/calibrate_thresholds.py`, `scripts/calibrate_iwm_strat.py`, `scripts/run_walk_forward.py` | **none** — no experiment in the ledger evaluates this system | **Invalidated** — [#813](https://github.com/TeneikaAskew/stocks/issues/813) “out-of-sample” calibration is in-sample and auto-writes production · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias |
+| MODEL-CALIB-001 | — (no `E-` id) | `scripts/calibrate_thresholds.py` | **none** — no experiment in the ledger evaluates this system | **Unevaluated.** A rolling 60-day percentile calibrator, scheduled quarterly, writing thresholds MODEL-MOM-001 and MODEL-MR-001 read. Whether a 60-day percentile is the right operating threshold has never been tested |
+| MODEL-SWEEP-001 | — (no `E-` id) | `lib/walk_forward.py`, `scripts/run_param_sweep.py`, `scripts/calibrate_iwm_strat.py`, `scripts/run_walk_forward.py` | **none** — no experiment in the ledger evaluates this system | **Invalidated** — [#813](https://github.com/TeneikaAskew/stocks/issues/813) “out-of-sample” calibration is in-sample and auto-writes production · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias |
 | MODEL-FEAT-X | E-08 (C-news / C-xasset / C-vol / C-options) — committed; E-26, E-31, E-33 — **scratch harness, artifacts unavailable** | E-08: `lib/features/experimental/`. E-34's families: `gcp/research/direction_program/phase2_features.py`. E-26/E-31/E-33: **no code committed** — the ledger records their result JSONs as retained by the author only, so nothing here reproduces them | [DIRECTION_FEATURES_R&D](../DIRECTION_FEATURES_R&D.md) | **FAIL** — three orthogonal families, 0/8 folds each; vol-regime and external-data probes NEUTRAL |
 | MODEL-GAMMA-001 | E-22 (P2), E-24 | `gcp/research/p2_build_gamma_levels.py`, `p2_outcomes_grid.py`, `lib/gamma.py`, `lib/features/intraday_gex.py` | [docs/research/2026-05-23/P2_gamma_outcomes.md](../research/2026-05-23/P2_gamma_outcomes.md) · [gamma_levels.md](../gamma_levels.md) · [GAMMA_BALANCE_AUDIT](../audits/GAMMA_BALANCE_AUDIT_2026-08-25.md) | VOL signal confirmed, **direction null**; E-24 fixed a `gamma_regime` sign inversion at source |
 | MODEL-STYLE-001 | — (no `E-` id) | `lib/style_miner.py`, `platform/api/routers/backtest.py` | [#707](https://github.com/TeneikaAskew/stocks/pull/707) | Walk-forward validated into the playbook seam |
@@ -211,17 +213,21 @@ governance. Each is real work with a real verdict that no row above claims.
 
 ### Which of these actually run
 
-Of the 68 Cloud Run Jobs declared in `gcp/deploy.sh`, **fourteen** scheduler entries target a
-job that executes code cited in a `MODEL-*` row above; the rest of the research surface is
-on-demand only. That inclusion rule is the definition of "model-bearing" here, and it is what
-the test enforces.
+**There is deliberately no count here.** This is a *curated list of scheduled jobs that exist
+to run a model* — not every scheduled job that imports model code. Those are different sets,
+and the second is much larger: `fred-rates-daily` imports `lib/options_greeks.py`, and
+`backfill-indicators-daily` imports `lib/indicators.py` and `lib/strat.py`, but neither exists
+to run a model. Do not derive a number from this table and state it as the count of
+model-bearing jobs.
 
-> **This count was `eight` until 2026-09-17, and the eight omitted the live fire path.**
-> `signal-monitor-daily` runs `gcp/signal_monitor.py`, which evaluates MODEL-MOM-001,
-> MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 and MODEL-BRIEF-001 every trading morning —
-> the single most consequential model-bearing job in the repo, and it was missing from the
-> table that exists to name them. Found in review, not by the gate that was supposed to
-> catch exactly this.
+> **Why the number is gone.** It was stated as `eight`, corrected to `fourteen` on
+> 2026-09-17, and was still wrong, because it was derived by hand from a rule that — applied
+> literally — sweeps in every fetcher that touches a `lib/` helper. The eight also omitted
+> `signal-monitor-daily`, the job that evaluates MODEL-MOM-001, MODEL-MR-001,
+> MODEL-AGREE-001, MODEL-EXIT-001 and MODEL-BRIEF-001 every trading morning. Two wrong counts
+> in two rounds is enough evidence that the number was the wrong thing to publish; the list
+> is what readers actually need, and the test checks it for drift against `gcp/deploy.sh`.
+
 The live fleet is larger — see [05-INFRASTRUCTURE](05-INFRASTRUCTURE.md) for the
 declared-versus-live reconciliation.
 
@@ -230,7 +236,7 @@ declared-versus-live reconciliation.
 | `strat-engine-daily` | `35 23 * * 1-5` | `strat-engine` | MODEL-TYPE-001 |
 | `magnitude-inference-daily` | `25 9 * * 1-5` | `magnitude-inference` | MODEL-MAG-001 |
 | `audit-magnitude-drift-daily` | `55 9 * * 1-5` | `audit-magnitude-drift` | MODEL-MAG-001 drift |
-| `audit-walkforward-weekly` | `0 9 * * 6` | `audit-walkforward` | MODEL-CALIB-001 |
+| `audit-walkforward-weekly` | `0 9 * * 6` | `audit-walkforward` | MODEL-SWEEP-001 |
 | `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | combo mining (E-22) |
 | `calibrate-thresholds-quarterly` | `0 2 1 1,4,7,10 *` | `calibrate-thresholds` | MODEL-CALIB-001 |
 | `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-GAMMA-001 |
@@ -241,6 +247,7 @@ declared-versus-live reconciliation.
 | `signal-monitor-eod-resolver-daily` | `30 16 * * 1-5` | `signal-monitor-eod-resolver` | MODEL-EXIT-001 outcomes |
 | `realtime-gex-daily` | `0 17 * * 1-5` | `build-realtime-gex` | MODEL-GAMMA-001 |
 | `refresh-earnings-views-weekly` | `0 20 * * 0` | `refresh-earnings-views` | MODEL-EARN-001 |
+| `premarket-playbook-resolver-daily` | `15 21 * * 1-5` | `premarket-playbook-resolver` | MODEL-LEVEL-001 (calls `build_level_map`) |
 
 `direction-baseline`, `direction-phase2`, `direction-probe`, `direction-importance`
 and `param-sweep` are deployed but **unscheduled**;
@@ -285,7 +292,7 @@ specific recorded concern, and every id it cites exists here — that is gated. 
 `UNVERIFIED`** means only that nobody has checked this model's documentation against its code;
 it is not a claim that a finding exists. An earlier revision of this paragraph said every
 non-`CURRENT` cell names a row here, which was false while the suite was green — the kind of
-published contract a reader would reasonably rely on. Ten of the 21 rows are bare `UNVERIFIED`
+published contract a reader would reasonably rely on. Ten of the 22 rows are bare `UNVERIFIED`
 today.
 
 **Severity is the documentation scale from
@@ -309,7 +316,7 @@ here — that one belongs to code defects and is owned by
 | DOC-08 | `BACKTEST_RESULTS.md` (repo root) | Self-labelled "Auto-generated by `generate_backtest_report.py` — 2026-04-12" → no workflow invokes that generator (`grep -rn generate_backtest_report .github/` is empty). The content is a frozen April snapshot presented as generated | dead-generator | **M** | MODEL-CALIB-001 |
 | DOC-09 ([#1118](https://github.com/TeneikaAskew/stocks/issues/1118)) | [INVESTMENT_MODELS_SUMMARY](../INVESTMENT_MODELS_SUMMARY.md) | `ticker_calibration` block says "auto-refreshed monthly" → the monthly workflow **does** call `scripts/refresh_calibration_table.py`, but as `python -m … \|\| echo "::warning::"`, so a failure is swallowed and the block silently ages. Data stamped 2026-07-01 | dead-generator | **M** | MODEL-CALIB-001 |
 | DOC-10 | Seven models | No doc describes them beyond scattered plan/audit mentions: MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-BRIEF-001, MODEL-EARN-001, MODEL-STYLE-001, MODEL-CALIB-001 — measured by searching `docs/` for each one's primary module | omission | **H** | (seven, listed) |
-| DOC-11 | [README](README.md) master matrix | Lists **14 of the 21** models in the two registry tables. Absent: **MODEL-BREAK-001, MODEL-DIR-001, MODEL-FEAT-X, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-RANK-001, MODEL-TYPE-001**. *An earlier revision of this row said "every learned model is absent" and listed MODEL-SUM-001 — both wrong: MODEL-CALIB-001 and MODEL-STYLE-001 are learned and **are** present at README:138, MODEL-RANK-001 is heuristic not learned, and the actually-absent MODEL-FEAT-X was missing from the list. Recomputed from the tables rather than restated* | omission | **M** | (seven, listed) |
+| DOC-11 | [README](README.md) master matrix | Lists **14 of the 22** models in the two registry tables. Absent: **MODEL-BREAK-001, MODEL-DIR-001, MODEL-FEAT-X, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-RANK-001, MODEL-TYPE-001**. *An earlier revision of this row said "every learned model is absent" and listed MODEL-SUM-001 — both wrong: MODEL-CALIB-001 and MODEL-STYLE-001 are learned and **are** present at README:138, MODEL-RANK-001 is heuristic not learned, and the actually-absent MODEL-FEAT-X was missing from the list. Recomputed from the tables rather than restated* | omission | **M** | (seven, listed) |
 | DOC-12 | [05-INFRASTRUCTURE](05-INFRASTRUCTURE.md) | "Cloud Run jobs (67 declared / 76 live)… Scheduler (65 live)" → `doc_inventory.py` parses **68** declared jobs and **66** declared schedulers | stamp | **M** | — |
 | DOC-13 | `docs/product/*.md` | A first pass counted **57** dead repo-rooted paths across the product plan. Re-measured: **27 distinct**, and **22 of those are not debt** — they are `platform/src/**` and frontend `*.spec.ts` paths the #957 split moved to `TeneikaAskew/solyra`, cited deliberately and explained by a header note in [11](11-CODE-TRACEABILITY.md). Genuinely dead: **2** (`scripts/backfill_signals.py`, `scripts/validate_track2_live.py`). Relocatable and now fixed: **2** (`gcp/freshness_watchdog.py` → `scripts/audit_data_freshness.py`, which is what `gcp/deploy.sh:2471` actually runs; `lib/data_loader` → `lib/data_loader.py`) | dead-path | **M** | — |
 | DOC-18 | `lib/strategies/momentum.py`, `lib/strategies/mean_reversion.py` | **Module docstrings describe behaviour the code no longer has.** momentum's lists `StochRSI < 80` (dropped in Phase 0.7.1) and omits `rvol_above_recent` / `atr_expansion` / `rsi_thrust` (added since); mean_reversion's lists an EMA-proximity condition that **does not exist**. momentum's *function* docstring also says `min_conditions=3` while `config.py:108` sets `MIN_CONDITIONS_MOMENTUM = 5` | contradiction | **H** | MODEL-MOM-001, MODEL-MR-001 |
@@ -320,6 +327,7 @@ here — that one belongs to code defects and is owned by
 | DOC-14 | Whole corpus | Git dates are unusable as a freshness signal: this is a shallow clone whose graft `4df291d` (2026-09-07) has no parent, so **187 of 220** docs show exactly one commit on that date regardless of when they were written | stamp | **M** | — |
 | DOC-20 | `07` (this file) | The scheduler table claimed **eight** model-bearing cron jobs and omitted `signal-monitor-daily` — the live fire path running MODEL-MOM/MR/AGREE/EXIT/BRIEF every trading morning, plus the two ORB triggers, the EOD resolver, `realtime-gex-daily` and `refresh-earnings-views-weekly`. The real count by the stated rule is **fourteen** | omission | **H** | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001, MODEL-BRIEF-001, MODEL-IND-001, MODEL-GAMMA-001, MODEL-EARN-001 |
 | DOC-21 | `docs/models/*` (second round) | Eleven further errors in the reference docs, same class as DOC-19: thresholds labelled UNKNOWN that the source records (STYLE's sample floors, BRIEF's actionable threshold), a "canonical" implementation production does not call (`MeanReversionStrategy` vs `lib.signals.evaluate_signal`), a delegating wrapper that is a second implementation (`MarketAnalyzer.generate_technical_signals`), a reverted relaxation described as current (momentum 3-of-5), a tie-break that only applies on ties, two independent systems merged into one model record (MODEL-CALIB-001), and three EARN claims contradicted by source | contradiction | **H** | six models |
+| DOC-22 | `07` (this file) + `docs/models/*` | Four corrections applied to one document and left standing in another: the MR registry row still named the non-production class after its doc was fixed; DOC-10's disposition still claimed MODEL-EARN-001 was the only model with a recorded derivation; the MODEL-CALIB-001 row still carried one `Invalidated` status after its doc documented the two-system split; and the scheduler count was corrected to a number that was still wrong. Fixing the instance is not fixing the claim | contradiction | **H** | MODEL-MR-001, MODEL-EARN-001, MODEL-CALIB-001, MODEL-SWEEP-001 |
 
 ### Disposition
 
@@ -329,12 +337,13 @@ here — that one belongs to code defects and is owned by
 | DOC-19 | **FIXED HERE** | All six rewritten from the scoring functions, every condition and constant quoted with its `file:line`. Found by review, not by me — see the note under [How this registry is kept honest](#how-this-registry-is-kept-honest) |
 | DOC-20 | **FIXED HERE** | Six rows added, the count corrected to fourteen with the inclusion rule stated, and `MODEL_BEARING` in the test extended so the completeness gate can see the fire path. The gate reported green throughout because its substring list never named `signal-monitor` |
 | DOC-21 | **FIXED HERE** | All eleven rewritten against the cited `file:line`. Two recurring habits produced them: labelling a constant undocumented without reading the comment block above it, and naming a class canonical without checking which implementation the scheduled job calls |
+| DOC-22 | **FIXED HERE** | MODEL-CALIB-001 split into the scheduled percentile calibrator and the new MODEL-SWEEP-001 (walk-forward, `Invalidated`, owns #813/#817/#886). The scheduler count is deleted rather than corrected a third time. Two new invariants gate the class: a model doc's named live implementation must appear in its registry `Code` cell, and no disposition may claim a model uniquely has a recorded derivation |
 | DOC-15, DOC-16, DOC-17 | **FIXED HERE** | Found by review, not by this audit — all three were verified against `EXPERIMENT_REGISTRY.md` and `EXEC_BACKTEST_RESULTS.md` before being corrected, and the join is now gated by `tests/meta/test_model_registry_consistency.py` |
 | DOC-01…DOC-05 | **FIXED HERE** | Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit |
 | DOC-07, DOC-08, DOC-13 (registry half), DOC-14 | **FIXED HERE** | Labelled in place with the measured reality; no result was rewritten |
 | DOC-06 | **FLAGGED — needs measurement**, with a fix in flight | Whether recent engine work overturns the gate-7 FAIL is an experiment, not an edit. The verdict stands as recorded; the contradiction is now visible. [#1117](https://github.com/TeneikaAskew/stocks/pull/1117) (opened 2026-09-16) changes what the magnitude model scores — re-read this finding against it when it lands. Fully resolving it still means re-running gate 7 |
 | DOC-09 | **FILED** as [#1118](https://github.com/TeneikaAskew/stocks/issues/1118) | The swallow at `refresh-architecture-docs.yml:895` is a real Rule 3.7 defect and is now tracked. Whether the block is *actually* stale still needs a live `ticker_calibration` read — the issue says so and gives the query rather than assuming |
-| DOC-10 | **FIXED HERE** | Seven reference docs written to [`docs/models/`](../models/), from source and tests. Each carries a `Rationale` section that states the recorded derivation where one exists and says `UNKNOWN — not recorded in code or tests` where it does not. Only MODEL-EARN-001 had a real one (a 21,592-prediction calibration); the rest are genuinely undocumented decisions, and saying so is the finding |
+| DOC-10 | **FIXED HERE** | Seven reference docs written to [`docs/models/`](../models/), from source and tests. Each carries a `Rationale` section that states the recorded derivation where one exists and says `UNKNOWN — not recorded in code or tests` where it does not. MODEL-EARN-001's quintile calibration (21,592 predictions) is the best-evidenced, but it is **not** the only recorded derivation: MODEL-MOM-001 records a walk-forward behind its score floor and measured fire rates behind two removals, MODEL-MR-001 records the 84.6% EMA measurement, and MODEL-STYLE-001 records both sample-floor rationales. Where a decision genuinely has none, saying so is the finding |
 | DOC-11 | **FLAGGED — needs your decision** | Which learned models deserve a master-matrix row is a capability question, not a correction |
 | DOC-12 | **FLAGGED — deferred** | [#1060](https://github.com/TeneikaAskew/stocks/pull/1060) is an open PR refreshing the infrastructure docs; fixing the same counts here would collide |
 | DOC-13 | **FIXED HERE** (mostly) | The two relocatable paths are repointed, and the test now classifies solyra-owned paths instead of counting them as rot — the backlog drops from 57 to **2**, both genuinely deleted scripts. A new invariant replaces the count: any doc citing a solyra path must say where the frontend went, which caught `16-CONSOLIDATION-AUDIT.md` doing so silently |
