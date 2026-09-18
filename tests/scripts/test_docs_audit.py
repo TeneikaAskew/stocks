@@ -612,9 +612,22 @@ def test_unresolvable_reference_is_reported_not_silently_passed():
     assert len(out) == 1 and "could not be resolved" in out[0]["detail"]
 
 
-def test_pull_request_links_are_not_treated_as_issues():
-    line = "Blocking: [#861](https://github.com/TeneikaAskew/stocks/pull/861)"
-    assert m.check_closed_issues("d.md", line, STATES) == []
+def test_a_pull_request_cited_as_live_work_is_checked():
+    """`/pull/` used to be skipped outright, so a document calling PR #937 the
+    open candidate stayed clean after #937 closed -- though the issue-state
+    read already carries PR rows and their state."""
+    line = "Blocking: [#937](https://github.com/TeneikaAskew/stocks/pull/937)"
+    states = {"stocks": {937: {"state": "closed", "reason": "merged"}}}
+    out = m.check_closed_issues("d.md", line, states)
+    assert len(out) == 1 and "(PR)" in out[0]["detail"], out
+
+
+def test_ordinary_pull_request_lineage_is_still_ignored():
+    """What keeps `fixed in #123` out is the blocking-cue filter, not the URL
+    shape -- which is why checking PRs does not flood the report."""
+    line = "Fixed in [#861](https://github.com/TeneikaAskew/stocks/pull/861)."
+    states = {"stocks": {861: {"state": "closed", "reason": "merged"}}}
+    assert m.check_closed_issues("d.md", line, states) == []
 
 
 # ── owning-job delivery ─────────────────────────────────────────────────────
@@ -2237,6 +2250,33 @@ def test_a_short_page_ends_the_pr_lookup(monkeypatch):
     assert any("1060" in f["detail"] for f in out), out
 
 
+CAL_REGION = ("<!-- BEGIN cal -->\nlatest calibration {}\n<!-- END cal -->\n")
+
+
+def test_a_best_effort_date_outside_the_declared_region_does_not_count(audit_repo):
+    """A whole-file search accepted a date from an unrelated paragraph, so a
+    generated block that lost its own provenance still reported fresh. The
+    artifact's evidence has to come from the artifact."""
+    art = [{"doc": "docs/cal.md", "region": "cal",
+            "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
+            "max_age_days": 180,
+            "refresher": "scripts/refresh_calibration_table.py"}]
+    (audit_repo / "docs" / "cal.md").write_text(
+        "latest calibration 2026-09-01\n\n<!-- BEGIN cal -->\nthe table\n<!-- END cal -->\n")
+    out = m.check_best_effort_artifacts("2026-09-18", artifacts=art)
+    assert len(out) == 1 and "carries no date" in out[0]["detail"], out
+
+
+def test_a_best_effort_region_that_is_absent_is_a_finding(audit_repo):
+    art = [{"doc": "docs/cal.md", "region": "cal",
+            "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
+            "max_age_days": 180,
+            "refresher": "scripts/refresh_calibration_table.py"}]
+    (audit_repo / "docs" / "cal.md").write_text("latest calibration 2026-09-01\n")
+    out = m.check_best_effort_artifacts("2026-09-18", artifacts=art)
+    assert len(out) == 1 and "is not in the document" in out[0]["detail"], out
+
+
 def test_a_best_effort_artifact_carries_its_own_freshness_evidence(audit_repo):
     """refresh-architecture-docs.yml runs `scripts.refresh_calibration_table`
     followed by `|| echo ... continuing`, so a Cloud SQL outage leaves
@@ -2249,9 +2289,9 @@ def test_a_best_effort_artifact_carries_its_own_freshness_evidence(audit_repo):
             "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
             "max_age_days": 180,
             "refresher": "scripts/refresh_calibration_table.py"}]
-    (audit_repo / "docs" / "cal.md").write_text("latest calibration 2026-09-01\n")
+    (audit_repo / "docs" / "cal.md").write_text(CAL_REGION.format("2026-09-01"))
     assert m.check_best_effort_artifacts("2026-09-18", artifacts=art) == []
-    (audit_repo / "docs" / "cal.md").write_text("latest calibration 2026-01-01\n")
+    (audit_repo / "docs" / "cal.md").write_text(CAL_REGION.format("2026-01-01"))
     out = m.check_best_effort_artifacts("2026-09-18", artifacts=art)
     assert len(out) == 1 and out[0]["severity"] == "P2", out
     assert "refresh_calibration_table" in out[0]["detail"]
@@ -2263,7 +2303,7 @@ def test_a_best_effort_artifact_with_no_date_at_all_is_a_finding(audit_repo):
             "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
             "max_age_days": 180,
             "refresher": "scripts/refresh_calibration_table.py"}]
-    (audit_repo / "docs" / "cal.md").write_text("no date here\n")
+    (audit_repo / "docs" / "cal.md").write_text("<!-- BEGIN cal -->\nno date here\n<!-- END cal -->\n")
     out = m.check_best_effort_artifacts("2026-09-18", artifacts=art)
     assert len(out) == 1 and "no date" in out[0]["detail"], out
 
@@ -2273,7 +2313,7 @@ def test_an_impossible_date_in_a_best_effort_artifact_is_reported(audit_repo):
             "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
             "max_age_days": 180,
             "refresher": "scripts/refresh_calibration_table.py"}]
-    (audit_repo / "docs" / "cal.md").write_text("latest calibration 2026-02-30\n")
+    (audit_repo / "docs" / "cal.md").write_text(CAL_REGION.format("2026-02-30"))
     out = m.check_best_effort_artifacts("2026-09-18", artifacts=art)
     assert len(out) == 1 and "not a real calendar day" in out[0]["detail"], out
 
@@ -2344,7 +2384,7 @@ def test_a_stale_best_effort_artifact_is_reported_by_a_whole_run(audit_repo, cap
         "doc": "docs/cal.md", "region": "cal",
         "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
         "max_age_days": 180, "refresher": "scripts/refresh_calibration_table.py"}])
-    (audit_repo / "docs" / "cal.md").write_text("# Cal\n\nlatest calibration 2026-01-01\n")
+    (audit_repo / "docs" / "cal.md").write_text("# Cal\n\n" + CAL_REGION.format("2026-01-01"))
     _audit(audit_repo)
     report = json.loads(capsys.readouterr().out)
     assert [f["severity"] for f in report["findings"]
@@ -2725,3 +2765,54 @@ def test_the_refresh_pr_limit_applies_after_the_merged_filter(monkeypatch):
     monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
     out = m.check_owning_job("2026-09-18")
     assert any("#99" in f["detail"] for f in out), [f["detail"] for f in out]
+
+
+def test_a_pr_needs_a_cue_in_its_own_clause_not_the_rows():
+    """Measured on docs/product/12-PR-ISSUE-TRACEABILITY.md: extending the
+    line-level fallback to PRs attributed a row's cue to whichever PR shared
+    the row, producing four findings whose own source line says the opposite --
+    `| #816 | #933 | merged default-no-op mechanism | ... outstanding |` is
+    accurate prose about a merged PR. Issues keep the fallback: it is what
+    reports stocks#838 under `| Open issues | ... |`, where the cue IS the row
+    label."""
+    u = "https://github.com/TeneikaAskew/stocks"
+    states = {"stocks": {933: {"state": "closed", "reason": "merged"},
+                         816: {"state": "open", "reason": ""}}}
+    row = f"| [#816]({u}/issues/816) | [#933]({u}/pull/933) | merged mechanism | outstanding |"
+    assert m.check_closed_issues("d.md", row, states) == []
+
+
+def test_a_url_mask_stops_before_trailing_sentence_punctuation():
+    """`\\S+` swallowed the `).` after a URL, so citation_clause ran into the
+    NEXT sentence and picked up cues belonging to a different citation. Found
+    by reading the one finding that survived the PR-clause rule."""
+    line = "subsumes [#936](https://github.com/TeneikaAskew/stocks/pull/936). Still open."
+    start = line.index("https")
+    clause = m.citation_clause(line, start, start + len("https://github.com/TeneikaAskew/stocks/pull/936"))
+    assert "Still open" not in clause, clause
+
+
+def test_verify_without_stamp_is_rejected_before_any_side_effect(audit_repo, tmp_path):
+    """The check ran after the issue-state reads, the snapshot write and the
+    owning-job API calls, so an invalid invocation could fail with an unrelated
+    GitHub authentication error -- and write the snapshot first."""
+    out = tmp_path / "written.json"
+    with pytest.raises(m.AuditError, match="requires --stamp"):
+        m.main(["--date", "2026-09-18", "--verify", "docs/x.md",
+                "--write-issues-snapshot", str(out)])
+    assert not out.exists(), "a rejected invocation wrote its snapshot anyway"
+
+
+def test_a_new_working_tree_document_is_audited(audit_repo, capsys):
+    """`git ls-tree HEAD` does not list a staged or untracked document, so a
+    contributor could run the audit clean and then commit a new unclassified
+    document with no marker and dead links."""
+    # The fixture tree has to be committed first, so the new document is the
+    # only thing git does NOT have at HEAD.
+    subprocess.run(["git", "add", "-A"], cwd=audit_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "tree"], cwd=audit_repo, check=True)
+    (audit_repo / "docs" / "brand-new.md").write_text("# New\n\nbody\n")
+    m.main(["--date", "2026-09-18", "--json", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    assert any(f["doc"] == "docs/brand-new.md" for f in report["findings"]), report["findings"]

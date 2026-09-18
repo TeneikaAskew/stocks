@@ -190,7 +190,12 @@ def is_settled(clause: str) -> bool:
 # edge. Not a comma -- the example above puts the closed and open halves in
 # one comma-free clause pair separated by "with".
 _CLAUSE_SPLIT_RE = re.compile(r"[.;|]")
-_URL_RE = re.compile(r"https?://\S+")
+# `\S+` is greedy and swallowed the punctuation AFTER a URL: on
+# docs/product/12-PR-ISSUE-TRACEABILITY.md:98 it masked `.../pull/936).` up to
+# and including the full stop, so citation_clause ran straight into the next
+# sentence and picked up cues belonging to a different citation. A URL ends
+# before trailing sentence punctuation.
+_URL_RE = re.compile(r"https?://\S*[^\s.,;:!?)\]]")
 # Case-insensitive, because GitHub resolves `teneikaaskew/Stocks` to the same
 # repository and a document may cite it that way. The `i` flag ALONE would be
 # worse than the bug: the captured name would index states["Stocks"], miss, and
@@ -1338,17 +1343,34 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # clause carries no cue of its own.
             if not cites_live_work(line, m.start(), m.end()):
                 continue
-            if m.group("kind").lower() != "issues":
+            # A pull request cited as a blocker is live work too. `/pull/`
+            # used to be skipped outright, so a document calling PR #937 the
+            # open candidate stayed clean after #937 closed -- though the
+            # issue-state read already carries PR rows and their state. The
+            # blocking-cue filter above is what keeps ordinary PR lineage
+            # ("fixed in #123") out. The Node twin made this change first.
+            is_pr = m.group("kind").lower() == "pull"
+            # A PR needs a cue in its OWN clause; the line-level fallback does
+            # not extend to it. Measured on docs/product/12-PR-ISSUE-TRACEABILITY.md:
+            # the fallback attributed a row's cue to whichever PR shared the
+            # row, producing four findings whose own source line says the
+            # opposite -- `| #816 | #933 | merged default-no-op mechanism |
+            # ... outstanding |` is accurate prose about a merged PR. Issues
+            # keep the fallback: it is what reports stocks#838 under
+            # `| Open issues | ... |`, where the cue IS the row label.
+            if is_pr and not BLOCKING_CUE_RE.search(
+                    citation_clause(line, m.start(), m.end())):
                 continue
             repo, num = m.group("repo").lower(), int(m.group("num"))
+            label = f"{repo}#{num}" + (" (PR)" if is_pr else "")
             st = states.get(repo, {}).get(num)
             if st is None:
                 out.append({"check": "closed-issue", "doc": doc, "line": n,
-                            "detail": f"{repo}#{num} could not be resolved", "severity": "P2"})
+                            "detail": f"{label} could not be resolved", "severity": "P2"})
             elif st["state"] == "closed":
-                reason = st.get("reason") or "completed"
+                reason = st.get("reason") or ("closed" if is_pr else "completed")
                 out.append({"check": "closed-issue", "doc": doc, "line": n,
-                            "detail": f"{repo}#{num} is CLOSED ({reason}) but cited as live work",
+                            "detail": f"{label} is CLOSED ({reason}) but cited as live work",
                             "severity": "P1" if reason != "not_planned" else "P2",
                             "ref": f"{repo}#{num}", "reason": reason})
     return out
@@ -1733,6 +1755,25 @@ BEST_EFFORT_ARTIFACTS = [
 ]
 
 
+def region_text(body: str, name: str) -> str | None:
+    """The text of one named generated region, or None when it is absent.
+
+    Both delimiter spellings this repo uses: `<!-- BEGIN NAME -->` and
+    `<!-- NAME:BEGIN -->`, with the inventory form as a third.
+    """
+    esc = re.escape(name)
+    for begin, end in (
+        (rf"<!--\s*BEGIN {esc}\s*-->", rf"<!--\s*END {esc}\s*-->"),
+        (rf"<!--\s*{esc}:BEGIN\s*-->", rf"<!--\s*{esc}:END\s*-->"),
+        (rf"<!--\s*inventory:{esc}:start\s*-->", rf"<!--\s*inventory:{esc}:end\s*-->"),
+    ):
+        lo = re.search(begin, body)
+        hi = re.search(end, body)
+        if lo and hi and hi.start() >= lo.end():
+            return body[lo.end():hi.start()]
+    return None
+
+
 def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None) -> list[dict]:
     """Freshness for the documents whose refresh step cannot fail the run.
 
@@ -1744,7 +1785,19 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
         path = REPO / art["doc"]
         if not path.exists():
             continue
-        dates = art["date_re"].findall(path.read_text(encoding="utf-8", errors="replace"))
+        body = path.read_text(encoding="utf-8", errors="replace")
+        # Scoped to the DECLARED region. A whole-file search accepted a date
+        # from an unrelated paragraph, so a generated block that lost its own
+        # provenance still reported fresh -- the artifact's evidence has to
+        # come from the artifact.
+        region = region_text(body, art["region"])
+        if region is None:
+            findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
+                             "detail": f"`{art['region']}` is not in the document, so "
+                                       f"nothing shows whether {art['refresher']} ever "
+                                       "refreshed it"})
+            continue
+        dates = art["date_re"].findall(region)
         if not dates:
             findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
                              "detail": f"`{art['region']}` carries no date, so nothing shows "
@@ -1977,6 +2030,22 @@ def main(argv: list[str] | None = None) -> int:
     # The revision being reviewed: what gets enumerated, diffed against and
     # stamped. One value, so the marker can never name a commit whose contents
     # the run did not read.
+    # Argument validation comes FIRST, before any git read, issue-state read,
+    # snapshot write or owning-job API call. Running it late meant
+    # `--verify docs/x.md` (invalid without --stamp) failed with an unrelated
+    # GitHub authentication error, and combining it with
+    # --write-issues-snapshot wrote that file before the command was rejected.
+    # A rejected invocation must not have side effects.
+    #
+    # A review is recorded only by WRITING a marker, so `--verify` without
+    # `--stamp` is a no-op that reads, on an otherwise clean audit, as if the
+    # human verification had been recorded. It exits 2 instead.
+    if args.verify is not None and not args.stamp:
+        raise AuditError("--verify requires --stamp: a review is recorded by writing "
+                         "a marker, and without --stamp nothing is written")
+    if args.verify is not None and not args.verify:
+        raise AuditError("--verify needs at least one path")
+
     base_ref = resolve_base_ref()
     # --short alone honours core.abbrev, which can be set below 7:
     # `git -c core.abbrev=4 rev-parse --short HEAD` emits four characters, and
@@ -2000,6 +2069,18 @@ def main(argv: list[str] | None = None) -> int:
     tracked = set(run(["git", "ls-tree", "-r", base_ref, "--name-only"]).strip().split("\n"))
     TOP_LEVEL_DIRS.update(p.split("/", 1)[0] for p in tracked if "/" in p)
     docs = document_set(tracked, registry)
+    # A document staged or still untracked is absent from `ls-tree`, so a
+    # contributor could run the audit clean and then commit a new unclassified
+    # document with no marker and dead links. The rest of the command already
+    # reads the WORKING TREE, so the inventory must come from there too.
+    #
+    # `tracked` itself is deliberately NOT widened: it is what decides whether
+    # a LINK resolves, and letting an untracked file satisfy a link is the bug
+    # is_tracked_dir was written to close -- present here, absent in every
+    # clean clone.
+    pending = [p for p in run(["git", "ls-files", "--others", "--exclude-standard",
+                               "--", "*.md"]).strip().split("\n") if p]
+    docs = sorted(set(docs) | {p for p in pending if p not in tracked})
 
     if args.issues_snapshot:
         states = load_issues_snapshot(args.issues_snapshot)
@@ -2032,14 +2113,6 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_owning_job_check:
         findings += check_owning_job(today)
     stamped: list[dict] = []
-    # A review is recorded only by WRITING a marker, so `--verify` without
-    # `--stamp` is a no-op that reads, on an otherwise clean audit, as if the
-    # human verification had been recorded. It exits 2 instead.
-    if args.verify is not None and not args.stamp:
-        raise AuditError("--verify requires --stamp: a review is recorded by writing "
-                         "a marker, and without --stamp nothing is written")
-    if args.verify is not None and not args.verify:
-        raise AuditError("--verify needs at least one path")
     verify = {strip_dot_segments(v) for v in (args.verify or [])}
     # Every --verify path must be consumed by a document this run actually
     # stamps. A misspelled path, one outside `docs`, or one that resolves to a
