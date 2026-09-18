@@ -38,16 +38,30 @@ NOW = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 def _row(ticker: str, tf: str, pred_bucket: int, n: int,
          *, avg_conf: float = 0.65, model: str = "magnitude-engine-test",
-         last_computed: datetime | None = None) -> dict:
-    """Build a fake distribution row matching fetch_distribution()'s shape."""
+         last_computed: datetime | None = None, n_sessions: int = 5) -> dict:
+    """Build a fake distribution row matching fetch_distribution()'s shape.
+
+    `n_sessions` is the cell-level count of distinct ET sessions in the
+    window (the same value on every row of a cell, as the SQL returns it).
+    The default of five means "a full week": a test that wants the
+    one-session incident shape has to say so.
+    """
     return {
         "ticker": ticker, "tf": tf, "model_version": model,
         "pred_bucket": pred_bucket, "n_predictions": n,
+        "n_sessions": n_sessions,
         "avg_conf": avg_conf,
         "avg_p_tight": 0.6, "avg_p_normal": 0.25,
         "avg_p_expanded": 0.1, "avg_p_explosive": 0.05,
         "last_computed": last_computed or (NOW - timedelta(hours=1)),
     }
+
+
+def _serving(rows: list[dict]) -> dict[tuple[str, str], str]:
+    """A LATEST map in which every version present in `rows` serves its
+    cell: the shape fetch_serving_versions returns, for tests that are not
+    about which version serves."""
+    return {(r["ticker"], r["tf"]): r["model_version"] for r in rows}
 
 
 def test_modal_dominance_high_fires_at_collapse():
@@ -56,20 +70,203 @@ def test_modal_dominance_high_fires_at_collapse():
     from gcp.audit_magnitude_drift import (
         Report, check_modal_dominance,
     )
+    # c49qf's shape at the size it was caught, two sessions in: 98% over
+    # 156 bars. Since 2026-09-14 that is MEDIUM, named as over the ceiling
+    # on too few sessions; a week of the same shape is HIGH.
     rows = [
-        _row("IWM", "5m", 0, 153),  # TIGHT: 153/156 = 98% (the live incident shape)
-        _row("IWM", "5m", 2, 1),
-        _row("IWM", "5m", 3, 2),
+        _row("IWM", "5m", 0, 153, n_sessions=2),  # TIGHT: 153/156 = 98%
+        _row("IWM", "5m", 2, 1, n_sessions=2),
+        _row("IWM", "5m", 3, 2, n_sessions=2),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     f = r.findings[0]
-    assert f.severity == "HIGH"
+    assert f.severity == "MEDIUM"
     assert f.check == "modal-dominance"
     assert f.target == "IWM:5m"
     assert "TIGHT" in f.detail
     assert "98" in f.detail  # the 98% share appears in the message
+    assert "only 2 sessions (156 bars), under the 5-session minimum for HIGH" in f.detail
+    # Five post-warmup sessions: 5 x 75 = 375 bars. Under the old bar quota
+    # (5 x 78 = 390) this exact sample could never page, because inference
+    # drops the three warmup bars of every session (Codex on #1117).
+    rows = [
+        _row("IWM", "5m", 0, 368), _row("IWM", "5m", 2, 3), _row("IWM", "5m", 3, 4),
+    ]
+    r = Report()
+    check_modal_dominance(rows, r, _serving(rows))
+    assert r.findings[0].severity == "HIGH", r.findings[0].detail
+    assert "minimum for HIGH" not in r.findings[0].detail
+
+
+def test_a_calm_session_on_a_calibrated_model_does_not_page():
+    """audit-magnitude-drift-d9kkm, 2026-09-15: SPY 5m 6hp7l named TIGHT on
+    73/75 bars of one calm session and was paged HIGH, on a model that
+    names EXPLOSIVE on 11-13% of bars over eight years. Under the decision
+    rule the share moves with the session, so one session cannot be a
+    collapse verdict."""
+    from gcp.audit_magnitude_drift import Report, check_modal_dominance
+    rows = [_row("SPY", "5m", 0, 73, model="magnitude-engine-6hp7l", n_sessions=1),
+            _row("SPY", "5m", 1, 2, model="magnitude-engine-6hp7l", n_sessions=1)]
+    r = Report()
+    check_modal_dominance(rows, r, _serving(rows))
+    assert len(r.findings) == 1
+    assert r.findings[0].severity == "MEDIUM"
+    assert "only 1 session (75 bars)" in r.findings[0].detail
+
+
+def test_the_high_minimum_is_sessions_not_a_bar_quota():
+    """Inference scores 75/23/10 bars per session at 5m/15m/30m, not
+    78/26/13: _load_recent_features drops the three warmup bars whose
+    prev3_candle is NaN. A 7-day window holds at most five sessions, so a
+    quota of 5 x 78 = 390 bars was unreachable and HIGH could never fire
+    (Codex on #1117). The minimum is a count of distinct sessions, which
+    the SQL measures, and the same at every timeframe."""
+    from gcp.audit_magnitude_drift import (
+        MIN_SAMPLE, MIN_SESSIONS_FOR_HIGH, Report, check_modal_dominance)
+    assert MIN_SESSIONS_FOR_HIGH == 5
+    for tf, per_session in (("5m", 75), ("15m", 23), ("30m", 10)):
+        rows = [_row("IWM", tf, 0, 5 * per_session, n_sessions=5)]
+        r = Report()
+        check_modal_dominance(rows, r, _serving(rows))
+        assert r.findings[0].severity == "HIGH", (tf, r.findings[0].detail)
+        # Four sessions is MEDIUM however many bars they hold (at 30m four
+        # sessions is under MIN_SAMPLE, so give it the sample floor).
+        rows = [_row("IWM", tf, 0, max(4 * per_session, MIN_SAMPLE), n_sessions=4)]
+        r = Report()
+        check_modal_dominance(rows, r, _serving(rows))
+        assert r.findings[0].severity == "MEDIUM", (tf, r.findings[0].detail)
+        assert "only 4 sessions" in r.findings[0].detail
+
+
+def test_only_the_serving_model_version_is_judged():
+    """Measured 2026-09-16, one day after SPY/QQQ/IWM 5m moved to 6hp7l:
+    c49qf's five sessions of rows (IWM 5m TIGHT on 340/375, 90.7%) were
+    still inside the 7-day window beside 6hp7l's one session. A HIGH on a
+    version that no longer serves is a page nobody can act on; the cell is
+    judged on the version its LATEST pointer names."""
+    from gcp.audit_magnitude_drift import Report, check_modal_dominance
+    old = NOW - timedelta(hours=30)
+    rows = [
+        _row("IWM", "5m", 0, 340, model="magnitude-engine-c49qf", last_computed=old),
+        _row("IWM", "5m", 3, 35, model="magnitude-engine-c49qf", last_computed=old),
+        _row("IWM", "5m", 0, 51, model="magnitude-engine-6hp7l", n_sessions=1),
+        _row("IWM", "5m", 2, 5, model="magnitude-engine-6hp7l", n_sessions=1),
+        _row("IWM", "5m", 3, 19, model="magnitude-engine-6hp7l", n_sessions=1),
+    ]
+    r = Report()
+    check_modal_dominance(rows, r, {("IWM", "5m"): "magnitude-engine-6hp7l"})
+    assert [f.detail for f in r.findings if "c49qf" in f.detail] == []
+    assert len(r.findings) == 1 and "6hp7l" in r.findings[0].detail
+    assert r.findings[0].severity == "MEDIUM"   # 51/75 = 68%
+    # The registry, not recency, decides: after a rollback the older
+    # version's rows are the newest writes, and it is still the one to judge
+    # only while LATEST names it (Codex P2 on #1117).
+    r = Report()
+    check_modal_dominance(rows, r, {("IWM", "5m"): "magnitude-engine-c49qf"})
+    assert len(r.findings) == 1 and "c49qf" in r.findings[0].detail
+    assert r.findings[0].severity == "HIGH"
+    # A cell with rows but no pointer serves nothing and is not judged.
+    r = Report()
+    check_modal_dominance(rows, r, {})
+    assert r.findings == []
+
+
+def test_serving_versions_come_from_the_registry_not_from_recency():
+    """fetch_serving_versions reads each cell's LATEST pointer, the blob
+    mag_inference follows; main() records a failed read as an error and
+    skips the check rather than judging on a guess."""
+    import inspect
+    from unittest.mock import patch
+    from gcp import audit_magnitude_drift as mod
+    src = inspect.getsource(mod.fetch_serving_versions)
+    assert "magnitude-models/production/" in src and "LATEST" in src
+    assert "last_computed" not in inspect.getsource(mod.check_modal_dominance)
+    main_src = inspect.getsource(mod.main)
+    assert "fetch_serving_versions()" in main_src
+    assert 'report.errors.append(f"fetch_serving_versions: {e}")' in main_src
+    with patch.object(mod, "fetch_distribution", return_value=[_row("IWM", "5m", 0, 375)]), \
+         patch.object(mod, "fetch_serving_versions", side_effect=RuntimeError("gcs down")), \
+         patch.object(mod, "fetch_join_coverage", return_value=[]), \
+         patch.object(mod, "post_to_discord") as post:
+        mod.main()
+    summary = post.call_args[0][0]
+    assert "fetch_serving_versions: gcs down" in summary
+    assert "modal-dominance" not in summary
+
+
+def test_an_empty_serving_pointer_is_a_registry_error_for_that_cell_only():
+    """A LATEST blob that exists but is empty is a corrupt registry entry:
+    inference cannot resolve an artifact from it, and recording "" would
+    make the check skip every real version for the cell while cell-silence
+    still saw fresh rows. The error is per cell: the other cells keep their
+    pointers and are still judged (Codex P2 x2 on #1117)."""
+    import pytest as _pytest
+    from unittest.mock import MagicMock, patch
+    from gcp import audit_magnitude_drift as mod
+    try:
+        from google.api_core.exceptions import NotFound
+    except Exception:   # the stub above stands in for the package
+        _pytest.skip("google-api-core not importable here")
+
+    def fake_blob(name):
+        b = MagicMock()
+        if name.startswith("magnitude-models/production/IWM/15m/"):
+            b.download_as_text.return_value = "   \n"
+        elif name.startswith("magnitude-models/production/IWM/5m/"):
+            b.download_as_text.return_value = "magnitude-engine-6hp7l\n"
+        elif name.startswith("magnitude-models/production/SPY/5m/"):
+            b.download_as_text.side_effect = OSError("connection reset")
+        else:
+            b.download_as_text.side_effect = NotFound("no pointer")
+        return b
+    bucket = MagicMock(); bucket.name = "b"; bucket.blob.side_effect = fake_blob
+    client = MagicMock(); client.bucket.return_value = bucket
+    with patch("google.cloud.storage.Client", return_value=client):
+        serving, errors = mod.fetch_serving_versions()
+    assert serving == {("IWM", "5m"): "magnitude-engine-6hp7l"}
+    assert any("IWM:15m LATEST is empty" in e for e in errors)
+    assert any("SPY:5m LATEST unreadable" in e and "connection reset" in e for e in errors)
+    assert len(errors) == 2
+    # main records each registry error and still runs the check on the cells
+    # it could place
+    with patch.object(mod, "fetch_distribution",
+                      return_value=[_row("IWM", "5m", 0, 375, model="magnitude-engine-6hp7l"),
+                                    _row("IWM", "15m", 0, 375, model="magnitude-engine-c49qf")]), \
+         patch.object(mod, "fetch_serving_versions", return_value=(serving, errors)), \
+         patch.object(mod, "fetch_join_coverage", return_value=[]), \
+         patch.object(mod, "post_to_discord") as post:
+        mod.main()
+    summary = post.call_args[0][0]
+    assert "fetch_serving_versions: IWM:15m LATEST is empty" in summary
+    assert "IWM:5m" in summary and "modal-dominance" in summary   # judged
+    assert "IWM:15m`" not in summary.replace("LATEST", "")         # not judged
+
+
+def test_a_row_without_a_session_count_fails_loud():
+    """The session count is what decides whether to page. A row shape that
+    lacks it is a query drift, not a zero-session cell."""
+    import pytest as _pytest
+    from gcp.audit_magnitude_drift import Report, check_modal_dominance
+    row = _row("IWM", "5m", 0, 375)
+    del row["n_sessions"]
+    with _pytest.raises(KeyError, match="n_sessions"):
+        check_modal_dominance([row], Report(), _serving([row]))
+
+
+def test_fetch_distribution_counts_sessions_in_eastern_time():
+    """Sessions are ET calendar dates (CLAUDE.md 3.9): a UTC date would
+    split no RTH session today, but the count has to be right by
+    construction, not by the clock. The count is per cell, so a bucket that
+    fired on two of five days still sees five."""
+    import inspect
+    from gcp import audit_magnitude_drift as mod
+    src = inspect.getsource(mod.fetch_distribution)
+    assert "AT TIME ZONE 'America/New_York'" in src
+    assert "COUNT(DISTINCT" in src and "n_sessions" in src
+    assert "source = 'inference'" in src
+    assert "decision_rule = 'lift'" in src      # argmax-era rows are not decisions
 
 
 def test_modal_dominance_medium_for_a_model_over_the_base_rate():
@@ -88,7 +285,7 @@ def test_modal_dominance_medium_for_a_model_over_the_base_rate():
         _row("IWM", "15m", 3, 6),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     assert r.findings[0].severity == "MEDIUM"
 
@@ -105,7 +302,7 @@ def test_modal_dominance_medium_fires_55_to_90():
         _row("QQQ", "5m", 3, 5),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     assert r.findings[0].severity == "MEDIUM"
 
@@ -122,7 +319,7 @@ def test_modal_dominance_no_finding_when_distribution_healthy():
         _row("SPY", "5m", 3, 10),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert r.findings == []
 
 
@@ -136,7 +333,7 @@ def test_modal_dominance_skips_below_min_sample():
         _row("IWM", "5m", 0, 40),   # only 40 rows total — below MIN_SAMPLE=50
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert r.findings == []
 
 
@@ -157,7 +354,7 @@ def test_modal_dominance_per_cell_isolation():
         _row("QQQ", "5m", 3, 15),
     ]
     r = Report()
-    check_modal_dominance(rows, r)
+    check_modal_dominance(rows, r, _serving(rows))
     assert len(r.findings) == 1
     assert r.findings[0].target == "IWM:5m"
 

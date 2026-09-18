@@ -98,6 +98,8 @@ LOW_SAMPLE_THRESHOLD = 30
 
 # Magnitude-engine bucket labels (matches platform/api/routers/magnitude.py).
 _MAG_BUCKET_LABELS = ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
+# Row column holding each bucket's probability, indexed by pred_bucket.
+_MAG_BUCKET_PROBA_COLS = ("p_tight", "p_normal", "p_expanded", "p_explosive")
 _MAG_USAGE = (
     "How BIG the next move is likely to be — not which way. The 15m magnitude "
     "model is validated (calibrated, ECE ~0.04; robustly beats the base rate on "
@@ -563,20 +565,30 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict)
 # tier in gcp/audit_magnitude_drift.py. Not imported from mag_config because
 # lib/ must not depend on gcp/research/ (the research package pulls
 # LightGBM); the number is asserted equal in tests/lib/test_movement_statement
-# .py so the two cannot silently drift. Inference rows carry no labels, so
-# the gate's relative criterion has no counterpart here: this backstop
-# catches c49qf's 100%, not a model a few points over the ~68% TIGHT base
-# rate (that is the gate's job, before the model is ever served).
+# .py so the two cannot silently drift. `pred_bucket` has been the served
+# decision rule rather than argmax since 2026-09-14 (mag_pred_train
+# .decide_bucket), and the gate scores that same rule over the training
+# matrix, so this backstop reads exactly what the gate measured.
 _MAG_DEGENERATE_MODAL_SHARE = 0.90
 _MAG_DEGENERACY_LOOKBACK_DAYS = 7
+# Under the decision rule a calibrated model's modal share moves with the
+# session: SPY 5m `magnitude-engine-6hp7l` named TIGHT on 73/75 bars of its
+# first (calm) served session, on a model that names EXPLOSIVE on 11-13% of
+# bars over eight years. One session is not evidence of collapse, so the
+# detector's HIGH tier (gcp/audit_magnitude_drift.MIN_SESSIONS_FOR_HIGH)
+# requires the share to hold across this many distinct sessions, and so does
+# this backstop (Codex P2 on #1117): fewer sessions is insufficient evidence,
+# reported as such in the payload, never a withheld card. Same literal-not-
+# import discipline as the share above; asserted equal in tests.
+_MAG_DEGENERACY_MIN_SESSIONS = 5
 
 
 def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict:
-    """Is the model that produced this prediction argmax-collapsed?
+    """Is the model that produced this prediction decision-collapsed?
 
-    A 4-class softmax that argmax-picks the same bucket on ~every recent bar
-    has learned the base rate, not the signal. Its per-bar `pred_bucket` is a
-    constant and rendering it tells the user nothing — which is exactly what
+    A model whose served decision rule names the same bucket on ~every recent
+    bar is telling the user nothing. Its per-bar `pred_bucket` is a constant
+    and rendering it reads as a confident size class — which is exactly what
     `magnitude-engine-c49qf` did to the Expected-Move card from 2026-08-26
     (TIGHT on 588/588 bars, fold accuracy equal to the base rate) until it was
     caught on 2026-08-28.
@@ -606,14 +618,19 @@ def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict
     # a model that collapsed only on live inputs or withhold a healthy one.
     # gcp/audit_magnitude_drift.py filters the same way; this keeps the render
     # backstop measuring exactly what the detector measures.
+    # Grouped by ET session as well as bucket (CLAUDE.md 3.9, named zone), so
+    # one aggregate answers both "what share" and "over how many sessions".
+    # At most LOOKBACK_DAYS x bars-per-session rows feed it.
     sql = (
-        "SELECT pred_bucket, count(*) AS n "
+        "SELECT pred_bucket, "
+        "       (ts AT TIME ZONE 'America/New_York')::date AS session, "
+        "       count(*) AS n "
         "FROM magnitude_per_bar_predictions "
         "WHERE ticker = :ticker AND tf = :tf AND model_version = :mv "
-        "  AND source = 'inference' "
+        "  AND source = 'inference' AND decision_rule = 'lift' "
         "  AND ts <= :ts "
         f"  AND ts > :ts - INTERVAL '{_MAG_DEGENERACY_LOOKBACK_DAYS} days' "
-        "GROUP BY pred_bucket"
+        "GROUP BY pred_bucket, session"
     )
     params = {"ticker": ticker.upper(), "tf": tf, "mv": model_version, "ts": ts}
     try:
@@ -626,22 +643,35 @@ def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict
 
     if df is None or getattr(df, "empty", True):
         return _unavailable("no recent predictions for this model_version")
-    if "pred_bucket" not in getattr(df, "columns", []) or "n" not in df.columns:
+    cols = getattr(df, "columns", [])
+    if any(c not in cols for c in ("pred_bucket", "session", "n")):
         # A caller-injected query_fn that does not answer this shape. Report
         # it rather than guessing at degeneracy from the wrong frame.
         return _unavailable("degeneracy check returned an unexpected shape")
 
-    counts = {int(r["pred_bucket"]): int(r["n"]) for _, r in df.iterrows()}
+    counts: dict[int, int] = {}
+    sessions: set = set()
+    for _, r in df.iterrows():
+        counts[int(r["pred_bucket"])] = counts.get(int(r["pred_bucket"]), 0) + int(r["n"])
+        sessions.add(r["session"])
     total = sum(counts.values())
     if total <= 0:
         return _unavailable("no recent predictions for this model_version")
     modal_bucket = max(counts, key=counts.get)
     modal_share = counts[modal_bucket] / total
+    n_sessions = len(sessions)
+    enough = n_sessions >= _MAG_DEGENERACY_MIN_SESSIONS
     return _ok(
-        degenerate=bool(modal_share >= _MAG_DEGENERATE_MODAL_SHARE),
+        degenerate=bool(enough and modal_share >= _MAG_DEGENERATE_MODAL_SHARE),
+        # True when the share is over the ceiling but on too few sessions to
+        # call: the card renders, and the payload says why it was not withheld.
+        insufficient_sessions=bool(
+            not enough and modal_share >= _MAG_DEGENERATE_MODAL_SHARE),
         modal_bucket=modal_bucket,
         modal_share=modal_share,
         n_bars=total,
+        n_sessions=n_sessions,
+        min_sessions=_MAG_DEGENERACY_MIN_SESSIONS,
         distinct_buckets=len(counts),
         lookback_days=_MAG_DEGENERACY_LOOKBACK_DAYS,
     )
@@ -662,11 +692,22 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     (the latest row in the table). `ts` is the bar timestamp column in
     `magnitude_per_bar_predictions` (TIMESTAMPTZ).
     """
+    # decision_rule = 'lift': pred_bucket on rows scored before 2026-09-15
+    # is argmax, under the same column and model_version, and an as-of
+    # replay into that period must not present it as the served decision
+    # (Codex P1 on #1117); those rows are tagged 'argmax' and excluded.
+    # source = 'inference' for the same reason _model_degeneracy filters:
+    # the walk-forward harness writes every phase0 fold's test predictions
+    # into this table, promoted or blocked, with `ts` up to the newest
+    # labelled bar, and the newest row by ts would otherwise be a research
+    # run's call rather than the served model's (Codex P1 on #1117).
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, p_explosive, "
-        "       pred_bucket, max_proba, model_version, source, computed_at "
+        "       pred_bucket, max_proba, model_version, source, decision_rule, "
+        "       computed_at "
         "FROM magnitude_per_bar_predictions "
-        "WHERE ticker = :ticker AND tf = :tf "
+        "WHERE ticker = :ticker AND tf = :tf AND source = 'inference' "
+        "  AND decision_rule = 'lift' "
     )
     params = {"ticker": ticker.upper(), "tf": tf}
     if as_of is not None:
@@ -692,13 +733,13 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     bucket = int(row["pred_bucket"])
     ts = row.get("ts")
 
-    # Backstop for an argmax-collapsed model reaching production (c49qf, 2026-08-26).
+    # Backstop for a decision-collapsed model reaching production (c49qf, 2026-08-26).
     # A constant pred_bucket is not information; render it and the user reads a
     # confident-looking size class that is really just the base rate.
     degeneracy = _model_degeneracy(ticker, tf, row.get("model_version"), ts, query_fn)
     if degeneracy.get("status") == "OK" and degeneracy.get("degenerate"):
         return _unavailable(
-            "magnitude model is argmax-collapsed: "
+            "magnitude model is decision-collapsed: "
             f"{_MAG_BUCKET_LABELS[degeneracy['modal_bucket']]} on "
             f"{degeneracy['modal_share']:.1%} of the last "
             f"{degeneracy['n_bars']} bars "
@@ -743,7 +784,13 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
             "p_expanded": float(row["p_expanded"]),
             "p_explosive": float(row["p_explosive"]),
         },
+        # The served bucket's own probability. max_proba is the argmax
+        # bucket's (TIGHT's, on nearly every bar) and is kept for drift
+        # monitoring; it is not the confidence of size_class (Codex P1 on
+        # #1117).
+        pred_bucket_proba=float(row[_MAG_BUCKET_PROBA_COLS[bucket]]),
         max_proba=float(row["max_proba"]),
+        decision_rule=row.get("decision_rule"),
         model_version=row.get("model_version"),
         ts=ts.isoformat() if hasattr(ts, "isoformat") else ts,
         atr_20=atr_20,

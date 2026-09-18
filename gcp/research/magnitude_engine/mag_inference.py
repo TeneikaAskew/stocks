@@ -52,13 +52,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gcp.database import get_engine, query_to_dataframe  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
-    LABEL_CLASSES, LABEL_TO_IDX,
+    LABEL_CLASSES, LABEL_TO_IDX, DECISION_RULE_LIFT,
     CONTRACT_BLOB, contract_mismatch,
     ContractRejection, ContractMissing, ContractMalformed,
     ContractMismatch, NeverPromoted, ModelWithdrawn,
 )
 from gcp.research.magnitude_engine.mag_walk_forward import (  # noqa: E402
-    PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX,
+    PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX, PREDICTIONS_DDL_MIGRATE,
 )
 from lib.logging_config import setup_logging  # noqa: E402
 
@@ -580,10 +580,27 @@ def _load_recent_features(ticker: str, tf: str,
 
 def _score_and_persist(engine, ticker: str, tf: str,
                         model, feature_cols: list[str], version: str,
-                        features: pd.DataFrame) -> int:
-    """Run model.predict_proba and upsert results. Returns rows written."""
+                        features: pd.DataFrame, contract: dict) -> int:
+    """Run model.predict_proba, apply the served decision rule, upsert.
+    Returns rows written.
+
+    `contract` is the artifact's CONTRACT.json, already verified by
+    _load_model_and_version. Its `class_priors` and `decision_lift_min` are
+    what turn four probabilities into `pred_bucket`: the highest bucket whose
+    probability is at least lift_min times its prior, else TIGHT
+    (mag_pred_train.decide_bucket). Before 2026-09-14 pred_bucket was argmax,
+    which on a 64%-TIGHT label set is TIGHT on ~97% of bars for a calibrated
+    model and 100% for the c49qf artifacts; the column was a constant and
+    every consumer that read it read nothing.
+    """
     if features.empty:
         return 0
+    # Required, not defaulted: a contract without priors cannot produce a
+    # decision the consumer has been told the meaning of, and the reader
+    # already refuses such an artifact before this point. Re-checking here
+    # keeps this function honest when driven directly.
+    class_priors = np.asarray(contract["class_priors"], dtype=float)
+    decision_lift_min = float(contract["decision_lift_min"])
 
     # NaN guard on the RAW frame — drop rows whose ESSENTIAL price inputs
     # (OHLCV) are NaN, BEFORE featurize() fills the rest with 0. A settled bar
@@ -605,7 +622,6 @@ def _score_and_persist(engine, ticker: str, tf: str,
     #     data (QQQ's order blocks: 27/156 populated) lost every bar, while one
     #     with none (IWM: all-NULL order_block) passed — a ticker-dependent
     #     asymmetry that produced QQQ's persistent ZERO-OUTPUT.
-    import numpy as np
     _ESSENTIAL_RAW = ("open", "high", "low", "close", "volume")
     present = {c.lower(): c for c in features.columns}
     missing = [c for c in _ESSENTIAL_RAW if c not in present]
@@ -685,7 +701,8 @@ def _score_and_persist(engine, ticker: str, tf: str,
             f" expected {len(LABEL_CLASSES)} ({LABEL_CLASSES})"
         )
 
-    pred_bucket = proba.argmax(axis=1)
+    from gcp.research.magnitude_engine.mag_pred_train import decide_bucket
+    pred_bucket = decide_bucket(proba, class_priors, decision_lift_min)
     max_proba = proba.max(axis=1)
 
     rows = []
@@ -702,6 +719,7 @@ def _score_and_persist(engine, ticker: str, tf: str,
             "model_version": version,
             "fold_label": None,
             "source": "inference",
+            "decision_rule": DECISION_RULE_LIFT,
         })
 
     df = pd.DataFrame(rows)
@@ -754,6 +772,7 @@ def main() -> int:
     with engine.begin() as conn:
         conn.execute(text(PREDICTIONS_DDL_CREATE))
         conn.execute(text(PREDICTIONS_DDL_INDEX))
+        conn.execute(text(PREDICTIONS_DDL_MIGRATE))
 
     total_written = 0
     failures: list[tuple[str, str, str]] = []
@@ -765,11 +784,15 @@ def main() -> int:
             model, feature_cols, version, contract = \
                 _load_model_and_version(ticker, tf)
             log.info("%s:%s — serving contract verified: label_mode=%s "
-                     "thresholds=%s", ticker, tf, contract.get("label_mode"),
-                     contract.get("thresholds"))
+                     "thresholds=%s decision_lift_min=%s class_priors=%s",
+                     ticker, tf, contract.get("label_mode"),
+                     contract.get("thresholds"),
+                     contract.get("decision_lift_min"),
+                     contract.get("class_priors"))
             features = _load_recent_features(ticker, tf, args.lookback_hours)
             n = _score_and_persist(engine, ticker, tf,
-                                    model, feature_cols, version, features)
+                                    model, feature_cols, version, features,
+                                    contract)
             log.info("%s:%s — %d predictions written (model_version=%s)",
                      ticker, tf, n, version)
             total_written += n

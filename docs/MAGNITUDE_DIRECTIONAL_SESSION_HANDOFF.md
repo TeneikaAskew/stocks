@@ -40,6 +40,13 @@ vs Strat-structure overlay).
 - **Open as of this writing:** directional gate-7 (does the one-sided move beat
   the matching call/put IV) is re-running with a 6h timeout after several
   image-desync false starts (see §7).
+- **2026-09-14 update, read before acting on anything above about serving:** the
+  body-label promotion criteria this doc's arms were measured against were
+  argmax-scored and mutually unsatisfiable; `pred_bucket` is now the decision
+  rule P(bucket) ≥ 2× its training prior, recorded in each artifact's
+  `CONTRACT.json`, and gate 4 is scored on that population. Every gate count
+  quoted in this doc was computed under the old rule. `EXPERIMENT_REGISTRY.md`
+  E-26; `MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14.
 
 ---
 

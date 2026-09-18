@@ -304,31 +304,79 @@ DEFAULT_CV = 3
 # already serving the user-facing Expected-Move card. These thresholds move
 # that same criterion in front of the promotion so a collapsed model cannot
 # become LATEST in the first place. audit_magnitude_drift imports
-# PROMOTION_MAX_MODAL_SHARE as its MODAL_DOMINANCE_HIGH so the pre-promotion
-# gate and the post-deployment detector can never disagree.
+# PROMOTION_COLLAPSE_MODAL_SHARE as its MODAL_DOMINANCE_HIGH so the
+# pre-promotion gate and the post-deployment detector can never disagree.
 #
 # Deliberately NOT env-tunable: an operator racing a bad retrain must not be
 # able to widen the gate to push it through. Changing it is a code change.
 #
 # 2026-09-07 (#1025): the first gated retrain, `magnitude-engine-slv7m`,
-# showed the original fixed 70% ceiling measured the LABELS, not the model.
-# The true share of TIGHT is 68.4-68.9% on every 15m cell (63.1% on IWM/5m),
-# so a perfectly calibrated model predicts TIGHT on ~68.5% of bars and sat
-# 1.5 points from the gate; SPY/15m passed at 68.7% while IWM/15m, over-
-# predicting by 7 points at 76%, and QQQ/30m at 70.3% were both blocked as
-# if they were c49qf's 100%. Two criteria replace the one number:
+# showed the original fixed 70% ceiling measured the LABELS, not the model,
+# and two criteria replaced it: an absolute 90% collapse ceiling and a
+# relative "modal excess" ceiling of 10 points over the true modal share.
 #
-#   * PROMOTION_COLLAPSE_MODAL_SHARE — absolute. A candidate that argmax-
-#     picks one bucket on >= 90% of its training rows is collapsed whatever
-#     the labels say (c49qf: 100%; rmcwj before it). This is the number the
-#     post-deployment detector and the render-layer backstop share, since
-#     neither has labels.
-#   * PROMOTION_MAX_MODAL_EXCESS — relative. The predicted share of the modal
-#     bucket may exceed that bucket's TRUE share on the same rows by at most
-#     this much. Scored on the training matrix, where y is in hand. IWM/15m
-#     at +7.4 passes; a model at +15 does not.
+# 2026-09-14: the relative criterion is REMOVED, and every remaining
+# criterion is scored on the DECISION RULE below rather than on argmax. The
+# excess criterion's own rationale -- "a perfectly calibrated model predicts
+# TIGHT on ~68.5% of bars" -- conflated the mean predicted probability with
+# the argmax frequency, and the two are not the same thing. Measured on the
+# alpha=0 sweep (`magnitude-engine-54nrr`, SPY 5m, 138,717 test bars):
+#
+#     mean predicted p(TIGHT/NORMAL/EXPANDED/EXPLOSIVE) = 0.634/0.264/0.073/0.029
+#     true rate                                        = 0.642/0.264/0.068/0.026
+#     argmax share of TIGHT                            = 97.3%
+#
+# The model is marginally calibrated to within a point on every class AND
+# argmax-picks TIGHT on 97% of bars, because TIGHT genuinely is the single
+# most likely bucket on nearly every bar. An argmax-frequency criterion
+# therefore fails a calibrated model by construction, while class weighting
+# that satisfies it (alpha >= 0.6) loses to the class-prior baseline on
+# log-loss in every fold (gate 1 = 0/8 on 25 of 27 cells at alpha 0.75).
+# Prior-correcting the weighted probabilities recovers log-loss and puts the
+# argmax straight back at 94-99.8%. No reweighting satisfies both; the two
+# criteria were measuring one fact from opposite sides. Full evidence in
+# docs/MAGNITUDE_ENGINE_RESULTS.md, 2026-09-14 section.
+#
+# So the served decision is no longer argmax. decide_bucket() names the
+# highest bucket whose probability is at least DECISION_LIFT_MIN times its
+# class prior, else TIGHT. On the same calibrated model that rule flags
+# EXPLOSIVE on 13% of bars with a realised lift of 3.3x in 8 of 8 folds, and
+# its modal share lands at 82%: a calibrated model now makes tail calls and
+# passes, a constant-output model makes none and is blocked.
+#
+#   * DECISION_LIFT_MIN -- the predicted-lift bar a bucket must clear to be
+#     named. Operating curve on the calibrated SPY 5m model (54nrr):
+#
+#         L     non-TIGHT calls   EXPLOSIVE calls   EXPLOSIVE precision   realised lift   modal share
+#         1.5        31.2%            19.6%              7.0%                 2.69x          68.8%
+#         2.0        18.2%            13.1%              8.5%                 3.27x          81.8%
+#         3.0         8.2%             7.0%             11.3%                 4.36x          91.8%
+#
+#     2.0 is the default: a call must be at least twice the base rate, which
+#     is explainable, sits well under the collapse ceiling, and the realised
+#     lift clears gate 4's 1.5x in every fold with margin. 3.0 trips the 90%
+#     ceiling on a calibrated model, and 1.5 flags a fifth of all bars.
+#     Recorded in CONTRACT.json and verified at serve time, so pred_bucket
+#     has ONE meaning across the fleet; changing it re-stamps every artifact.
+#   * PROMOTION_COLLAPSE_MODAL_SHARE -- absolute. A candidate whose decision
+#     rule names one bucket on >= 90% of its training rows is collapsed
+#     whatever the labels say. This is the number the post-deployment
+#     detector and the render-layer backstop share, since neither has labels,
+#     and pred_bucket in the predictions table IS the decision, so they read
+#     it directly.
+#   * PROMOTION_MIN_TAIL_CALL_SHARE -- the decision rule must name a bucket
+#     other than TIGHT on at least this share of training rows. A constant
+#     model scores 0; a calibrated one 17-18% at L=2.0; c49qf's isotonic
+#     models 2.4-3.7% on QQQ/IWM 5m, which is the degeneracy this catches.
+#     Kept as its own floor because a model naming EXPLOSIVE on 95% of rows
+#     passes it and is caught by the collapse ceiling instead.
+#
+# Deliberately NOT env-tunable: an operator racing a bad retrain must not be
+# able to widen the gate to push it through. Changing any of these is a code
+# change.
+DECISION_LIFT_MIN = 2.0
 PROMOTION_COLLAPSE_MODAL_SHARE = 0.90
-PROMOTION_MAX_MODAL_EXCESS = 0.10
+PROMOTION_MIN_TAIL_CALL_SHARE = 0.10
 PROMOTION_MIN_DISTINCT_CLASSES = 2
 
 # 2026-09-08 (#1025): the three criteria above judge the prediction
@@ -468,8 +516,23 @@ class ModelWithdrawn(FileNotFoundError):
 CONTRACT_BLOB = "CONTRACT.json"
 
 
+# The value magnitude_per_bar_predictions.decision_rule carries on every row
+# the inference job writes: pred_bucket is the served decision (decide_bucket),
+# not argmax. Rows tagged 'argmax' predate 2026-09-15 and are excluded from
+# every live read (Codex P1 on #1117).
+DECISION_RULE_LIFT = "lift"
+
+# The only provenance the reader serves. contract_payload defaults to it and
+# contract_mismatch refuses anything else, so a backfill cannot stamp priors
+# measured from a different population without the reader noticing.
+CLASS_PRIORS_TRAINING_LABELS = "training_labels"
+
+
 def contract_payload(label_mode: str,
-                     thresholds: tuple[float, ...]) -> dict:
+                     thresholds: tuple[float, ...],
+                     class_priors: Sequence[float],
+                     class_priors_source: str = CLASS_PRIORS_TRAINING_LABELS,
+                     decision_lift_min: float = DECISION_LIFT_MIN) -> dict:
     """The label contract a model artifact was trained under.
 
     `classes` is recorded even though it is currently a constant: a future
@@ -479,11 +542,32 @@ def contract_payload(label_mode: str,
     reason -- a field that may be omitted cannot detect anything, since the
     reorder it exists to catch would arrive in an artifact that simply
     leaves it out (Codex P2 on #1074).
+
+    `class_priors` (2026-09-14) is the class frequency the model was trained
+    against, one entry per LABEL_CLASSES. It is what the decision rule
+    scales: pred_bucket names the highest bucket whose probability is at
+    least `decision_lift_min` times its prior. Without the priors an artifact
+    cannot be served, because its probabilities could not be turned into a
+    decision the consumer has been told the meaning of. `class_priors_source`
+    says where they came from: "training_labels" is the only value the
+    reader serves. The 2026-09-15 backfill wrote "walk_forward_test_labels"
+    (priors from the held-out CSV, which omits the pre-2019 training rows;
+    Codex P2 on #1117) and those artifacts were re-stamped; contract_mismatch
+    refuses the value should one reappear. It was written by the backfill
+    from its own prediction CSV).
     """
+    priors = [float(p) for p in class_priors]
+    if len(priors) != len(LABEL_CLASSES):
+        raise ValueError(
+            f"class_priors has {len(priors)} entries; one per class in "
+            f"{list(LABEL_CLASSES)} is required")
     return {
         "label_mode": label_mode,
         "thresholds": [float(t) for t in thresholds],
         "classes": list(LABEL_CLASSES),
+        "class_priors": priors,
+        "class_priors_source": class_priors_source,
+        "decision_lift_min": float(decision_lift_min),
     }
 
 
@@ -503,7 +587,8 @@ def contract_mismatch(payload: dict,
         raise ValueError(
             f"{CONTRACT_BLOB} must contain a JSON object, got "
             f"{type(payload).__name__}")
-    missing = [k for k in ("label_mode", "thresholds", "classes")
+    missing = [k for k in ("label_mode", "thresholds", "classes",
+                           "class_priors", "decision_lift_min")
                if payload.get(k) is None]
     if missing:
         raise ValueError(
@@ -521,11 +606,24 @@ def contract_mismatch(payload: dict,
     if not isinstance(got_mode, str):
         raise ValueError(
             f"{CONTRACT_BLOB} label_mode={got_mode!r} is not a string")
-    for key in ("thresholds", "classes"):
+    for key in ("thresholds", "classes", "class_priors"):
         val = payload[key]
         if isinstance(val, (str, bytes)) or not isinstance(val, (list, tuple)):
             raise ValueError(
                 f"{CONTRACT_BLOB} {key}={val!r} is not a JSON array")
+    # JSON booleans are ints to float(): [true, false, false, false] would
+    # read as priors (1, 0, 0, 0), pass every distribution check, and make
+    # three buckets unnameable so the model serves TIGHT on every row
+    # (Codex P2 on #1117). A boolean is not a number in a contract.
+    for key in ("thresholds", "class_priors"):
+        if any(isinstance(v, bool) for v in payload[key]):
+            raise ValueError(
+                f"{CONTRACT_BLOB} {key}={payload[key]!r} is not a list of "
+                f"numbers: contains a boolean")
+    if isinstance(payload["decision_lift_min"], bool):
+        raise ValueError(
+            f"{CONTRACT_BLOB} decision_lift_min="
+            f"{payload['decision_lift_min']!r} is not a number: boolean")
     # Fail CLOSED, like the decode guard in mag_inference and for the same
     # reason. This clause was (TypeError, ValueError) and a JSON integer of
     # 400 digits -- valid JSON, under the 3.11 int-digit limit -- makes
@@ -542,6 +640,39 @@ def contract_mismatch(payload: dict,
             f"{CONTRACT_BLOB} thresholds={payload['thresholds']!r} is not a "
             f"list of numbers: {type(e).__name__}: {e}") from e
 
+    # The decision-rule fields fail closed the same way. A prior that is not
+    # a probability, or a lift bar at or under 1.0 (which would name a bucket
+    # BELOW its base rate), is not a readable contract.
+    try:
+        got_priors = tuple(float(p) for p in payload["class_priors"])
+    except Exception as e:                              # noqa: BLE001
+        raise ValueError(
+            f"{CONTRACT_BLOB} class_priors={payload['class_priors']!r} is "
+            f"not a list of numbers: {type(e).__name__}: {e}") from e
+    if len(got_priors) != len(LABEL_CLASSES):
+        raise ValueError(
+            f"{CONTRACT_BLOB} class_priors has {len(got_priors)} entries; "
+            f"one per class in {list(LABEL_CLASSES)} is required")
+    if not all(math.isfinite(p) and 0.0 <= p <= 1.0 for p in got_priors):
+        raise ValueError(
+            f"{CONTRACT_BLOB} class_priors={got_priors} are not all "
+            f"probabilities in [0, 1]")
+    if abs(sum(got_priors) - 1.0) > 1e-3:
+        raise ValueError(
+            f"{CONTRACT_BLOB} class_priors={got_priors} sum to "
+            f"{sum(got_priors):.4f}, not 1")
+    try:
+        got_lift = float(payload["decision_lift_min"])
+    except Exception as e:                              # noqa: BLE001
+        raise ValueError(
+            f"{CONTRACT_BLOB} decision_lift_min="
+            f"{payload['decision_lift_min']!r} is not a number: "
+            f"{type(e).__name__}: {e}") from e
+    if not math.isfinite(got_lift) or got_lift <= 1.0:
+        raise ValueError(
+            f"{CONTRACT_BLOB} decision_lift_min={got_lift!r} must be a finite "
+            f"number above 1.0")
+
     mismatches = []
     if got_mode != label_mode:
         mismatches.append(
@@ -555,6 +686,30 @@ def contract_mismatch(payload: dict,
         mismatches.append(
             f"classes={list(classes)} (serving contract is "
             f"{list(LABEL_CLASSES)})")
+    # One meaning for pred_bucket across the fleet: the API and the movement
+    # statement read the column without the contract, so two artifacts
+    # serving under different lift bars would hand them one field with two
+    # meanings. An artifact stamped under an older bar is refused until it
+    # is re-stamped, the same discipline as thresholds.
+    if got_lift != float(DECISION_LIFT_MIN):
+        mismatches.append(
+            f"decision_lift_min={got_lift} (serving contract is "
+            f"{float(DECISION_LIFT_MIN)})")
+    # The priors must be the TRAINING labels' frequencies: that is what the
+    # decision rule scales, and what the promoted model was fitted against.
+    # The first backfill (2026-09-15) measured them from the walk-forward
+    # prediction CSV instead, which holds only the held-out test bars
+    # (2019 onward) and omits every pre-2019 training row (Codex P2 on
+    # #1117). A contract that says so is refused until re-stamped from a
+    # training-label source; one that says nothing is refused for the same
+    # reason, since an unstated provenance cannot be checked.
+    got_source = payload.get("class_priors_source")
+    if got_source != CLASS_PRIORS_TRAINING_LABELS:
+        mismatches.append(
+            f"class_priors_source={got_source!r} (serving contract requires "
+            f"{CLASS_PRIORS_TRAINING_LABELS!r}: priors measured from anything "
+            f"but the training labels scale the decision rule by the wrong "
+            f"base rate; re-stamp via scripts/backfill_model_contracts.py)")
     if not mismatches:
         return None
     return "; ".join(mismatches)

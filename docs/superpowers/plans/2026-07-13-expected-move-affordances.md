@@ -13,6 +13,7 @@
 - **No direction prediction** — every tier reinforces "you supply direction." Copy must never imply a buy/sell.
 - **Rule 3.7 — no fabrication**: `expected_move.status !== 'OK'` → whole block "—"; `atr_20 == null` → Tier 1/2 still render, Tier-3 calculator disabled with "ATR unavailable"; never a fabricated stop/size.
 - **Bucket→ATR boundaries (mag_config MAGNITUDE_THRESHOLDS)**: TIGHT <0.5×, NORMAL 0.5–1.0×, EXPANDED 1.0–1.5×, EXPLOSIVE ≥1.5× ATR-20.
+- **`pred_bucket` semantics (added 2026-09-14)**: the served bucket is the decision rule P(bucket) ≥ 2× its training prior, not argmax (`mag_pred_train.decide_bucket`). The `size_class` chip should read `pred_bucket`; the magnitude line should read the probabilities. E-26 in `EXPERIMENT_REGISTRY.md`.
 - **Chip thresholds on `p_tail = p_expanded + p_explosive`**: 🟢 ≥ 0.20, 🟡 0.10–0.20, 🔴 < 0.10 (base-rate grounded; named constants).
 - **Stop calc**: `stop = k × atr_20`, `k` = bucket upper edge `{TIGHT:0.5, NORMAL:1.0, EXPANDED:1.5, EXPLOSIVE:2.0}`; `shares = floor((account × riskPct) / stop)`.
 - **Options idea** shows only when `p_explosive >= 0.10`.
