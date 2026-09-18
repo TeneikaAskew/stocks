@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
+import pathlib
 import subprocess
 
 import pytest
@@ -1120,6 +1122,80 @@ def test_a_snapshot_issue_record_must_carry_a_state(tmp_path):
     listed.write_text(json.dumps({"stocks": [], "solyra": {}}))
     with pytest.raises(m.AuditError, match='no "stocks" entry'):
         m.load_issues_snapshot(str(listed))
+
+
+def test_a_snapshot_state_must_be_one_the_checks_understand(tmp_path):
+    """Requiring a string was not enough. `check_closed_issues` branches only
+    on `== "closed"`, so a row reading `bogus` is neither closed nor
+    unresolved and the cited blocker DISAPPEARS from the report -- the same
+    clean bill of health the row check exists to stop, one value in.
+
+    Reproduced against the string-only validator: a `bogus` row loaded fine
+    and a line citing that issue as blocking produced zero findings.
+    """
+    bogus = tmp_path / "bogus.json"
+    bogus.write_text(json.dumps(
+        {"stocks": {"8": {"state": "bogus", "reason": "", "kind": "ISSUE"}},
+         "solyra": {}}))
+    with pytest.raises(m.AuditError, match="stocks#8"):
+        m.load_issues_snapshot(str(bogus))
+
+    for state in ("open", "closed"):
+        good = tmp_path / f"{state}.json"
+        good.write_text(json.dumps(
+            {"stocks": {"8": {"state": state, "reason": "", "kind": "ISSUE"}},
+             "solyra": {}}))
+        assert m.load_issues_snapshot(str(good))["stocks"][8]["state"] == state
+
+
+def test_a_document_that_cannot_be_stamped_is_refused_before_any_write(audit_repo):
+    """`--stamp` wrote each marker with a bare write_text, so a read-only or
+    deleted document raised OSError past the AuditError handler and exited 1 --
+    the status reserved for findings. Worse, the writes are sequential, so it
+    could stop partway and leave the tree half stamped with nothing saying so.
+
+    Every target is checked before any is written."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    (audit_repo / "docs" / "locked.md").write_text("# L\n\nbody\n")
+    _commit(audit_repo, "tree")
+    before = (audit_repo / "docs" / "d.md").read_text()
+    (audit_repo / "docs" / "locked.md").chmod(0o444)
+    try:
+        if os.access(audit_repo / "docs" / "locked.md", os.W_OK):
+            pytest.skip("running as root: mode 444 is still writable, so the "
+                        "pre-flight cannot see it")
+        with pytest.raises(m.AuditError, match="not writable"):
+            m.main(["--json", "--date", "2026-09-18",
+                    "--issues-snapshot", str(audit_repo / "issues.json"), "--stamp"])
+    finally:
+        (audit_repo / "docs" / "locked.md").chmod(0o644)
+    # The refusal comes before the writes, so no other document was touched.
+    assert (audit_repo / "docs" / "d.md").read_text() == before
+
+
+def test_a_write_that_fails_mid_stamp_says_what_was_already_written(audit_repo, monkeypatch):
+    """The pre-flight narrows the window but cannot close it -- a full disk
+    fails mid-loop, and os.access answers for the calling uid, which under
+    root calls a mode-444 file writable. So the residual failure is an
+    AuditError that states how far it got, never a traceback."""
+    (audit_repo / "docs" / "a.md").write_text("# A\n\nbody\n")
+    (audit_repo / "docs" / "b.md").write_text("# B\n\nbody\n")
+    _commit(audit_repo, "tree")
+
+    real = pathlib.Path.write_text
+    seen: list[str] = []
+
+    def explode(self, *a, **kw):
+        if self.suffix == ".md":
+            seen.append(self.name)
+            if len(seen) > 1:
+                raise OSError(28, "No space left on device")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", explode)
+    with pytest.raises(m.AuditError, match="were already stamped"):
+        m.main(["--json", "--date", "2026-09-18",
+                "--issues-snapshot", str(audit_repo / "issues.json"), "--stamp"])
 
 
 def test_a_snapshot_that_cannot_be_written_is_exit_two(audit_repo):

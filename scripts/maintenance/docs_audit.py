@@ -84,6 +84,7 @@ import argparse
 import datetime
 import fnmatch
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -819,6 +820,14 @@ def stamp(text: str, date: str, depth: str, sha: str,
 
 # ── github state ────────────────────────────────────────────────────────────
 
+# The only values `check_closed_issues` branches on. "Any string" is not
+# enough: it reads `st["state"] == "closed"` and falls through everything else,
+# so a row reading `bogus` silently drops a cited blocker from the report -- the
+# same clean-bill-of-health failure the row check above exists to stop, one
+# value in. GitHub's issues API returns exactly these two.
+ISSUE_STATES = frozenset({"open", "closed"})
+
+
 def load_issues_snapshot(file: str) -> dict[str, dict[int, dict]]:
     """Read a snapshot written by --write-issues-snapshot, or say why not.
 
@@ -854,11 +863,11 @@ def load_issues_snapshot(file: str) -> dict[str, dict[int, dict]]:
         # the `st is None` branch and reports a live issue as unresolvable,
         # fabricating a finding from a malformed file (CLAUDE.md §3.7).
         for num, rec in sorted(rows.items()):
-            if not isinstance(rec, dict) or not isinstance(rec.get("state"), str):
+            if not isinstance(rec, dict) or rec.get("state") not in ISSUE_STATES:
                 raise AuditError(
                     f"--issues-snapshot {file}: {repo}#{num} has no usable state "
-                    f"({rec!r}); a row the audit cannot read is not a row it may "
-                    "report on")
+                    f"({rec!r}); expected one of {sorted(ISSUE_STATES)}. A row the "
+                    "audit cannot read is not a row it may report on")
         states[repo] = rows
     return states
 
@@ -1440,8 +1449,32 @@ def main(argv: list[str] | None = None) -> int:
                 f"--verify {named}: the review could not be recorded (not a "
                 "tracked doc, or Class B/C/X, or a machine-owned file with nowhere "
                 "to stamp). Nothing was written.")
+        # Every target is checked before any is written. A document that has
+        # been deleted or made read-only is the common case here, and finding
+        # it on file 60 of 93 leaves the tree half stamped with no record of
+        # where it stopped. This narrows that window; it does not close it --
+        # a full disk still fails mid-loop, and os.access answers for the
+        # calling uid, which under root says "writable" about a mode-444 file.
+        # So the loop reports what it had already written, rather than
+        # pretending the operation was atomic.
+        unwritable = [doc for doc, _ in writes
+                      if not (REPO / doc).is_file() or not os.access(REPO / doc, os.W_OK)]
+        if unwritable:
+            raise AuditError(
+                f"--stamp cannot write {', '.join(sorted(unwritable))}: missing or "
+                "not writable. Nothing was written.")
+        done: list[str] = []
         for doc, new in writes:
-            (REPO / doc).write_text(new, encoding="utf-8")
+            try:
+                (REPO / doc).write_text(new, encoding="utf-8")
+            except OSError as exc:
+                # Exit 2, not the traceback-and-exit-1 that means "findings".
+                raise AuditError(
+                    f"--stamp failed writing {doc}: {exc}. {len(done)} of "
+                    f"{len(writes)} documents were already stamped"
+                    + (f" ({', '.join(done)})" if done else "")
+                    + "; the tree is partially stamped.") from exc
+            done.append(doc)
 
     report = {
         "date": today, "base_ref": base_ref, "head": head, "docs": len(docs),
