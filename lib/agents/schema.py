@@ -332,6 +332,23 @@ class InsightReport(BaseModel):
             "2026-05-08 G.P2.13."
         ),
     )
+    analog_universe: Optional[dict] = Field(
+        default=None,
+        description=(
+            "Provenance of the backtest section's cross-ticker analog "
+            "expansion: whether it was attempted, whether it was used, the "
+            "specific reason when it was not (no same-class peers / peers "
+            "without bars / peers without enough history), and the resolved "
+            "watchlist membership behind it (owner, as_of, resolution, "
+            "horizon, ticker count). Persisted here because the backtest "
+            "section itself is not: the bundle is transient, and that "
+            "section returns available=True even when expansion found "
+            "nothing, so it never reaches failed_section_reasons either. "
+            "Without this field the cause is visible only in Cloud Logs, "
+            "which is the unread-disclosure shape Rule 3.7.1 forbids. "
+            "Codex P2 on `28162e4`."
+        ),
+    )
     model_versions: dict[str, str] = Field(
         default_factory=dict,
         description="Per-role provider:model snapshot for reproducibility",

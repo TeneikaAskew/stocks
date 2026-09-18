@@ -663,6 +663,12 @@ async def run_insight_pipeline(
         confidence_score=pm.confidence_score,
         failed_sections=failed_sections,
         failed_section_reasons=failed_reasons,
+        # The backtest section is not persisted and returns available=True
+        # even when cross-ticker expansion found nothing, so it never
+        # reaches failed_section_reasons above. Carry its provenance
+        # explicitly or the resolved universe and the empty-cause die with
+        # this bundle (Codex P2 on `28162e4`).
+        analog_universe=(bundle.get("backtest") or {}).get("cross_ticker"),
         model_versions=snapshot.model_versions(),
         run_cost_usd=round(tracker.total_cost, 6),
         run_latency_ms=int((time.monotonic() - start) * 1000),

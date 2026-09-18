@@ -516,3 +516,66 @@ def test_the_index_set_covers_the_repos_cash_settled_index_roots():
         f"{missing} are index roots to the Greeks pipeline but would be "
         f"matched against equities as analogs"
     )
+
+
+def test_the_analog_universe_reaches_the_persisted_report():
+    """`cross_ticker.reason` on the bundle is not disclosure on its own.
+
+    `build_context_bundle`'s output is transient. The persisted artifact is
+    `InsightReport`, written to `insight_reports.report` (JSONB) via
+    `model_dump_json()`, and it carries no backtest section. The sparse
+    cross-ticker path still returns `available: True`, so the section never
+    lands in `failed_sections` either — meaning the cause reached no report
+    consumer and no API response. That is the unread-field shape Rule 3.7.1
+    names, one layer further out than the thread that prompted it (Codex P2
+    on `28162e4`).
+
+    `InsightReport` sets `extra="forbid"`, so this is red until the field
+    exists rather than silently accepted and dropped.
+    """
+    import json
+
+    from lib.agents.schema import InsightReport
+
+    detail = {
+        "attempted": True,
+        "used": False,
+        "reason": "3 peer(s) had bars but none had enough history",
+        "universe": {"owner": "default", "tickers": 16,
+                     "resolution": "exact"},
+    }
+    fields = InsightReport.model_fields
+    assert "analog_universe" in fields, (
+        "the persisted report has no field for the cross-ticker provenance, "
+        "so the cause dies with the transient bundle"
+    )
+
+    # And it must survive the exact serialization the DB write uses.
+    assert json.loads(
+        InsightReport.model_construct(analog_universe=detail)
+        .model_dump_json()
+    )["analog_universe"]["reason"] == detail["reason"]
+
+
+def test_the_orchestrator_actually_populates_it():
+    """A field nothing writes is the same unread disclosure in a new place.
+
+    Checked by AST rather than regex: the `InsightReport(...)` call spans
+    ~28 lines, so a line-anchored pattern cannot see its keywords.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path("lib/agents/orchestrator.py").read_text()
+    calls = [
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "InsightReport"
+    ]
+    assert calls, "no InsightReport(...) construction found"
+    supplied = {kw.arg for c in calls for kw in c.keywords}
+    assert "analog_universe" in supplied, (
+        "InsightReport is built without analog_universe, so the resolved "
+        "universe and the empty-cause never reach the persisted report"
+    )
