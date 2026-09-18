@@ -1251,17 +1251,20 @@ def test_a_write_that_fails_mid_stamp_says_what_was_already_written(audit_repo, 
     (audit_repo / "docs" / "b.md").write_text("# B\n\nbody\n")
     _commit(audit_repo, "tree")
 
-    real = pathlib.Path.write_text
+    # Patched at `write_stamp`, which is where the write now happens: the
+    # stamped text is written through it so the document's existing line
+    # endings survive, and a Path.write_text patch stopped intercepting
+    # anything when that landed.
+    real = m.write_stamp
     seen: list[str] = []
 
-    def explode(self, *a, **kw):
-        if self.suffix == ".md":
-            seen.append(self.name)
-            if len(seen) > 1:
-                raise OSError(28, "No space left on device")
-        return real(self, *a, **kw)
+    def explode(doc, new):
+        seen.append(doc)
+        if len(seen) > 1:
+            raise OSError(28, "No space left on device")
+        return real(doc, new)
 
-    monkeypatch.setattr(pathlib.Path, "write_text", explode)
+    monkeypatch.setattr(m, "write_stamp", explode)
     with pytest.raises(m.AuditError, match="were already stamped"):
         m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
                 "--issues-snapshot", str(audit_repo / "issues.json"), "--stamp"])
@@ -3745,3 +3748,170 @@ def test_a_comment_cannot_be_opened_from_inside_a_code_block():
     # without it the indented line is prose and its `<!--` is a real opener.
     assert m.comment_spans(["# T", "", "    <!-- indented sample", "",
                             "## Real"]) == {}
+
+
+# ── round 21 ────────────────────────────────────────────────────────────────
+
+def test_a_setext_title_does_not_empty_its_own_marker_window():
+    """A regression I introduced last round, and the sharpest kind: the fix for
+    "stop at a Setext SECTION heading" made the document's OWN `=====` the
+    first line scanned, so the window closed before it opened and the marker
+    `stamp` had just placed correctly was reported missing -- the next run
+    would insert a duplicate. The boundary scan starts after the whole H1, not
+    after its title line."""
+    lines = ["Title", "=====", "", "**Last reviewed:** 2026-01-01", "", "body"]
+    assert list(m.marker_window(lines)) == [2, 3, 4, 5]
+    assert [i for i, _ in m.find_markers(lines)] == [3]
+
+
+def test_a_setext_titled_document_round_trips_through_stamp():
+    """The two halves together: stamp places the marker, and the next run finds
+    it rather than inserting a second. Neither helper test catches that."""
+    text = "Title\n=====\n\nBody.\n"
+    once, a1 = m.stamp(text, "2026-09-18", "scanned", "abc1234")
+    twice, a2 = m.stamp(once, "2026-09-18", "scanned", "abc1234")
+    assert (a1, a2) == ("inserted", "unchanged"), (a1, a2)
+    assert once == twice, twice
+    assert once.count("**Last reviewed:**") == 1, once
+
+
+def test_an_inline_code_inventory_example_forms_no_region():
+    """The fenced case was fixed last round; the same example written as inline
+    code was still read as real delimiters. A document explaining the
+    convention shows it both ways."""
+    lines = ["# T", "Shows `<!-- inventory:x:start -->` and `<!-- inventory:x:end -->`."]
+    assert m.inventory_blocks(lines) == ({}, [])
+
+
+def test_a_real_inventory_marker_beside_a_backticked_one_is_still_read():
+    """Masking code spans must not swallow the delimiter next to the example."""
+    lines = ["# T", "like `<!-- inventory:x:start -->` -- <!-- inventory:real:start -->",
+             "<!-- inventory:real:end -->"]
+    pairs, unbalanced = m.inventory_blocks(lines)
+    assert pairs == {"real": (2, 3)} and unbalanced == [], (pairs, unbalanced)
+
+
+def test_an_indented_atx_heading_offers_its_anchor():
+    """CommonMark admits up to three leading spaces, and the fence and Setext
+    parsers here already do. A link to `#details` was reported dead."""
+    assert m.heading_anchors("# T\n\n  ## Details\n") == {"t", "details"}
+    # Four spaces is indented code, not a heading.
+    assert m.heading_anchors("# T\n\n    ## Code\n") == {"t"}
+
+
+def test_a_fence_inside_a_block_quote_is_still_code():
+    """`> ```bash` is the shape SETUP.md and CLAUDE.md already use, and the
+    leading `>` hid the fence entirely -- so a link or blocker citation in the
+    sample was audited as live prose."""
+    assert sorted(m.fenced_lines(["> ```bash", "> [x](missing.md)", "> ```"])) == [0, 1, 2]
+    assert sorted(m.fenced_lines(["> ```", "> x", "> ```", "> after"])) == [0, 1, 2]
+
+
+def test_an_angle_bracketed_destination_with_a_space_is_checked():
+    """`[g](<docs/removed guide.md>)` is how a destination containing a space is
+    written. The pattern rejected the whitespace, so the link never matched and
+    a missing target reported clean."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    out = m.check_dead_links("docs/d.md", "See [g](<removed guide.md>).\n", {"docs/d.md"})
+    assert [f["check"] for f in out] == ["dead-link"], out
+    assert m.check_dead_links("docs/d.md", "See [g](<here.md>).\n",
+                              {"docs/d.md", "docs/here.md"}) == []
+
+
+def test_a_backticked_root_file_is_checked_against_the_root_files_tracked():
+    """`requirements-gcp.txt` and `alert_config.json` are cited exactly that
+    way here, and requiring a slash meant deleting either produced no finding.
+    Only names the tree's ROOT actually holds are checked, so ordinary dotted
+    prose is not mistaken for a path."""
+    tracked = {"docs/d.md", "requirements.txt", "alert_config.json"}
+    # The base ref's root held `requirements-gcp.txt`; the working tree no
+    # longer does, which is the rot being reported.
+    base_root = {"requirements.txt", "requirements-gcp.txt", "alert_config.json"}
+    out = m.check_dead_links("docs/d.md", "See `requirements-gcp.txt`.\n",
+                             tracked, base_root)
+    assert [f["detail"] for f in out] == ["backticked path -> requirements-gcp.txt"], out
+    assert m.check_dead_links("docs/d.md", "See `requirements.txt`.\n",
+                              tracked, base_root) == []
+
+
+def test_a_bare_basename_of_a_subdirectory_file_is_not_a_root_citation():
+    """The discriminator, and the reason the first version of this check was
+    wrong. Keying on the EXTENSION produced 304 fabricated findings on this
+    tree in one run -- `db-query.yml`, `MODEL_REGISTRY.md`, `05-a-ARCHITECTURE.md`
+    -- every one a real file cited without its directory. Only a name the
+    ROOT actually held is this repo's to resolve bare."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    tracked = {"docs/d.md", ".github/workflows/db-query.yml", "docs/MODEL_REGISTRY.md"}
+    base_root = {"README.md"}
+    for cite in ("db-query.yml", "MODEL_REGISTRY.md", "v1.2"):
+        assert m.check_dead_links("docs/d.md", f"See `{cite}`.\n",
+                                  tracked, base_root) == [], cite
+
+
+def test_a_registry_row_with_an_empty_glob_is_bad_input():
+    """Dropping the row silently discarded its region ownership and code paths,
+    so a Class A document could fall through to a broader Class D rule and be
+    stamped as hand-written content with no finding at all."""
+    with pytest.raises(m.AuditError, match="empty path glob"):
+        m.load_registry("## Registry\n\n| Class | Path glob | Declared code paths |\n"
+                        "|---|---|---|\n| A |  | lib |\n")
+
+
+def test_a_marker_shaped_line_that_does_not_parse_is_refused():
+    """`**Last reviewed:** 2026-9-1` matches neither marker pattern, so the
+    audit called the marker absent and --stamp inserted a valid one ABOVE it --
+    leaving two contradictory review claims that the duplicate check cannot
+    see, because only one of them parses."""
+    text = "# T\n\n**Last reviewed:** 2026-9-1\n\nbody\n"
+    new, action = m.stamp(text, "2026-09-18", "scanned", "abc1234")
+    assert action == "skipped-malformed-marker", action
+    assert new == text
+    assert m.check_marker_shape("d.md", text.split("\n"))[0]["severity"] == "P2"
+
+
+def test_a_well_formed_marker_is_not_called_malformed():
+    text = "# T\n\n**Last reviewed:** 2026-09-01 · **Last scanned:** 2026-09-18\n"
+    assert m.check_marker_shape("d.md", text.split("\n")) == []
+
+
+def test_stamping_a_crlf_document_rewrites_only_the_marker(tmp_path, monkeypatch):
+    """`read_text` performs universal-newline conversion, so `write_text` then
+    rewrote every line ending in the file -- a whole-file diff for a one-line
+    stamp, and the opposite of what --stamp promises."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    doc = tmp_path / "d.md"
+    doc.write_bytes(b"# T\r\n\r\nbody\r\n")
+    m.write_stamp("d.md", "# T\n\n**Last reviewed:** x\n\nbody\n")
+    raw = doc.read_bytes()
+    assert raw == b"# T\r\n\r\n**Last reviewed:** x\r\n\r\nbody\r\n", raw
+
+
+def test_stamping_an_lf_document_does_not_gain_carriage_returns(tmp_path, monkeypatch):
+    """The other direction: the file is the authority, so an LF document stays
+    LF whatever the platform would default to."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    doc = tmp_path / "d.md"
+    doc.write_bytes(b"# T\n\nbody\n")
+    m.write_stamp("d.md", "# T\n\n**Last reviewed:** x\n\nbody\n")
+    assert b"\r" not in doc.read_bytes()
+
+
+def test_a_delivery_title_must_match_the_workflow_output_exactly():
+    """`Fix Monthly architecture doc refresh: 2026-09 authentication` is a
+    repair PR, not a delivery. Counting it let a repair supersede an unmerged
+    refresh with no generated document having landed."""
+    assert m._refresh_generation("Monthly architecture doc refresh: 2026-09") == "2026-09"
+    assert m._refresh_generation("Fix Monthly architecture doc refresh: 2026-09 auth") == ""
+    assert m._refresh_generation("chore: bump 2026-09 deps") == ""
+
+
+def test_an_unparsed_marker_is_reported_by_a_whole_run(audit_repo, capsys):
+    """Through main(), not beside it. The helper had a test and the call site
+    did not, so a mutation deleting the wiring left the suite green -- the same
+    shape that has now cost four tests this session."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\n**Last reviewed:** 2026-9-1\n\nbody\n")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    bad = [f for f in report["findings"]
+           if f["doc"] == "docs/d.md" and "parses as neither" in f["detail"]]
+    assert len(bad) == 1 and bad[0]["severity"] == "P2", report["findings"]

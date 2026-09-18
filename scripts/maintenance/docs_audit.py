@@ -221,8 +221,14 @@ MD_LINK_RE = re.compile(
     # One level of BALANCED parentheses in the destination: `guide(v2).md` is a
     # valid local link, and stopping at the first `)` validated `guide(v2` and
     # called a tracked file dead.
-    r"\[[^\]]*\]\((?P<target>(?:[^()#\s]|\([^()\s]*\))*)(?:#(?P<frag>[^)\s]+))?"
-    r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)""")
+    # `<...>` FIRST, as a distinct destination form. It is how CommonMark
+    # writes a destination containing a space -- `[g](<docs/removed guide.md>)`
+    # -- and the bare form rejects whitespace, so the link did not match at all
+    # and a missing target reported clean. Stripping the brackets afterwards
+    # could not help: the pattern never reached it.
+    r"\[[^\]]*\]\(\s*(?:<(?P<btarget>[^<>#]*)(?:#(?P<bfrag>[^>\s]+))?>"
+    r"|(?P<target>(?:[^()#\s]|\([^()\s]*\))*)(?:#(?P<frag>[^)\s]+))?)"
+    r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)""")
 # Reference-style Markdown, both halves. The definition's label may not open
 # with `^`: that is a footnote, which defines a note rather than a destination.
 REF_DEF_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:\s+(?P<target>\S+)")
@@ -248,6 +254,16 @@ BACKTICK_PATH_RE = re.compile(
     r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,10}"
     r"(?::\d+(?:-\d+)?)?)`")
 
+# The other shape a citation takes: a bare root-level filename. Requiring a
+# slash meant `requirements-gcp.txt` and `alert_config.json` -- both cited
+# exactly that way here -- could never produce a finding when deleted. A bare
+# name is checked ONLY against the root files this tree actually tracks (see
+# check_dead_links), because `v1.2` and `api.md` in prose are otherwise
+# indistinguishable from a path.
+BACKTICK_ROOT_FILE_RE = re.compile(
+    r"`(?P<path>[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z0-9]{1,10}"
+    r"(?::\d+(?:-\d+)?)?)`")
+
 # The `:line` or `:start-end` suffix above, which is a citation's coordinate
 # inside the file and not part of its path.
 LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
@@ -259,7 +275,11 @@ _SLUG_STRIP_RE = re.compile(r"[^\w\s-]")
 # `## Install ##` renders as `Install`, and GitHub's anchor is `install`.
 # Passing `Install ##` to heading_slug recorded `install-`, so a valid link to
 # `#install` was reported dead. Raised on the Node twin (solyra#69).
-_HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)(?:\s+#+)?\s*$", re.M)
+# Up to three leading spaces, which CommonMark renders as a heading and the
+# fence and Setext parsers here already admit. Requiring column zero meant
+# `  ## Details` offered no anchor and a working link to `#details` was a
+# gating finding. Four spaces is indented code, so the bound is load-bearing.
+_HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$", re.M)
 
 
 def heading_slug(heading: str) -> str:
@@ -551,7 +571,15 @@ def load_registry(text: str) -> list[dict]:
                 f"declares class {cls!r}, which is not one of A, B, C, D, X; a class "
                 "the audit does not know is a declaration it cannot act on")
         glob = _cell(cells[1])
-        if not glob or " " in glob and not glob.endswith(".md"):
+        if not glob:
+            # Dropping the row silently discarded its region ownership and its
+            # declared code paths with it, so a Class A document could fall
+            # through to a broader Class D rule and be stamped and routed as
+            # hand-written content with no finding that the row was malformed.
+            raise AuditError(
+                f"{REGISTRY}: a class {cls} row has an empty path glob, so it "
+                "declares ownership of nothing; give it a glob or remove the row")
+        if " " in glob and not glob.endswith(".md"):
             continue
         paths = []
         if len(cells) > 2 and _cell(cells[2]) not in {"", "—", "-"}:
@@ -842,8 +870,16 @@ def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
-        m = INVENTORY_RE.search(line)
-        if not m:
+        # And an INLINE-code example, which is the other way a document
+        # explaining the convention writes it. Every delimiter on the line is
+        # read, not just the first, so a real one beside an example still
+        # counts -- `.search` returning only the first was itself a gap.
+        spans = code_spans(line)
+        for m in INVENTORY_RE.finditer(line):
+            if any(lo <= m.start() < hi for lo, hi in spans):
+                continue
+            break
+        else:
             continue
         name = m.group("name")
         if m.group("edge") == "start":
@@ -974,7 +1010,13 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     which the audit accepted as the whole document's review marker, so Part B
     was never covered and no marker was ever inserted after the real H1.
     """
-    h1 = h1_index(lines)
+    # The whole H1, not its title line. A Setext H1 is two lines, so scanning
+    # from `h1_index + 1` started on the document's OWN `=====` underline,
+    # recognised it as a Setext heading, and closed the window before it opened
+    # -- the marker `stamp` had just placed correctly was then reported missing
+    # and the next --stamp inserted a duplicate. A regression from the
+    # section-boundary fix one round earlier, caught by Codex on the same PR.
+    h1 = marker_anchor(lines)
     if h1 is None:
         return range(0, min(limit, len(lines)))
     # A heading inside a FENCE is an example, not the next section. Treating it
@@ -1096,7 +1138,11 @@ def is_future_date(date: str, today: str) -> bool:
     return is_calendar_date(date) and date > today
 
 
-_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
+# A block-quote prefix is a CONTAINER, not content: `> ```bash` opens a fence
+# inside the quote, and SETUP.md and CLAUDE.md both use that shape. Seeing the
+# `>` instead of the fence marked none of the block as code, so links and
+# blocker citations in the sample were audited as live prose.
+_FENCE_RE = re.compile(r"^ {0,3}(?:> ?)*\s{0,3}(`{3,}|~{3,})(.*)$")
 
 
 def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
@@ -1284,6 +1330,42 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     return out
 
 
+_MARKER_SHAPE_RE = re.compile(r"^\*\*Last reviewed:\*\*", re.I)
+
+
+def marker_shaped_lines(lines: list[str]) -> list[int]:
+    """Indices that LOOK like a marker in the window but parse as neither form.
+
+    `**Last reviewed:** 2026-9-1` is the shape: the date is not the format the
+    marker declares, so `MARKER_RE` and `LEGACY_MARKER_RE` both decline and the
+    audit concludes there is no marker at all. `--stamp` then inserted a valid
+    one ABOVE it and the document visibly carried two contradictory review
+    claims -- which the duplicate-marker check cannot see, because only one of
+    the two parses.
+    """
+    fenced = fenced_lines(lines) | commented_lines(lines)
+    out = []
+    for i in marker_window(lines):
+        if i in fenced or (lines[i] and lines[i][0].isspace()):
+            continue
+        line = lines[i].strip()
+        if not _MARKER_SHAPE_RE.match(line):
+            continue
+        if MARKER_RE.match(line) or LEGACY_MARKER_RE.match(line):
+            continue
+        out.append(i)
+    return out
+
+
+def check_marker_shape(doc: str, lines: list[str]) -> list[dict]:
+    """A marker-shaped line that does not parse, reported rather than ignored."""
+    return [{"check": "marker", "doc": doc, "severity": "P2", "line": i + 1,
+             "detail": "a line in the marker window reads as a review marker but "
+                       "parses as neither the current nor the legacy format, so the "
+                       "audit cannot see the claim it makes"}
+            for i in marker_shaped_lines(lines)]
+
+
 def find_marker(lines: list[str]) -> tuple[int, dict] | None:
     found = find_markers(lines)
     return found[0] if found else None
@@ -1407,6 +1489,30 @@ def owner_of(lines: list[str], marker_idx: int | None) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def existing_newline(path: pathlib.Path) -> str:
+    """The line ending the file on disk already uses.
+
+    `read_text` performs universal-newline conversion, so the text this script
+    works on is always `\n`-terminated whatever the file holds. Writing that
+    back rewrote EVERY line ending in a CRLF document -- a whole-file diff for
+    a one-line stamp, and the opposite of what --stamp promises. The file is
+    the authority on its own endings, so it is asked at write time.
+    """
+    try:
+        head = path.open("rb").read(8192)
+    except OSError:
+        return "\n"
+    return "\r\n" if b"\r\n" in head else "\n"
+
+
+def write_stamp(doc: str, new: str) -> None:
+    """Write a stamped document, preserving the line endings it arrived with."""
+    path = REPO / doc
+    nl = existing_newline(path)
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(new if nl == "\n" else new.replace("\n", nl))
+
+
 def stamp(text: str, date: str, depth: str, sha: str,
           reviewed: bool = False) -> tuple[str, str]:
     """Return (new_text, action). Never inserts into a doc with no H1.
@@ -1416,6 +1522,11 @@ def stamp(text: str, date: str, depth: str, sha: str,
     """
     lines = text.split("\n")
     found = find_marker(lines)
+    # Inserting a valid marker above one that merely fails to PARSE leaves the
+    # document carrying two review claims, and the duplicate check cannot see
+    # it because only one of them is a marker as far as this script knows.
+    if found is None and marker_shaped_lines(lines):
+        return text, "skipped-malformed-marker"
     owner = owner_of(lines, found[0] if found else None) or "TBD"
     prev = found[1] if found else None
 
@@ -1692,13 +1803,26 @@ def code_spans(line: str) -> list[tuple[int, int]]:
     return [(m.start(), m.end()) for m in _CODE_SPAN_RE.finditer(line)]
 
 
-def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
+def check_dead_links(doc: str, text: str, tracked: set[str],
+                     root_files: set[str] | None = None) -> list[dict]:
     out = []
     # Every extension this tree actually tracks. CODE_EXTS is the floor, so a
     # rename that empties an extension out of the tree does not make its
     # citations silently uncheckable.
     cited_exts = CODE_EXTS | {pathlib.PurePosixPath(p).suffix for p in tracked
                               if pathlib.PurePosixPath(p).suffix}
+    # Names the BASE REF's root held. A bare citation is this repo's to resolve
+    # only when the root actually had a file by that name, because a basename
+    # alone is otherwise indistinguishable from prose -- and from a
+    # subdirectory file cited by its basename, which this corpus does
+    # constantly. Measured: keying on the EXTENSION instead produced 304
+    # fabricated findings on this tree in one run, every one a real file named
+    # without its directory (`db-query.yml`, `MODEL_REGISTRY.md`). The caller
+    # passes the pre-deletion set, which is what makes a deleted root file
+    # reportable at all; defaulting to `tracked` means no finding, not a wrong
+    # one.
+    known_root = root_files if root_files is not None else {
+        p for p in tracked if "/" not in p}
     base = pathlib.PurePosixPath(doc).parent
     anchors: dict[str, set[str] | None] = {}
 
@@ -1830,8 +1954,27 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
                 continue
             if m.start() and line[m.start() - 1] == "\\":
                 continue
-            check_target(m.group("target"), m.group("frag"), n)
+            # Either destination form. The angle-bracketed branch is separate
+            # in the pattern because it admits a space; both name the same
+            # thing here.
+            tgt = m.group("btarget")
+            frag = m.group("bfrag")
+            if tgt is None:
+                tgt, frag = m.group("target"), m.group("frag")
+            check_target(tgt, frag, n)
         hidden = commented.get(n - 1, [])
+        # A bare root filename resolves against the tree's ROOT only. Anything
+        # it does not hold is prose, not rot -- which is what makes the second
+        # pattern safe to run at all.
+        for m in BACKTICK_ROOT_FILE_RE.finditer(line):
+            if any(lo <= m.start() < hi for lo, hi in hidden):
+                continue
+            cited = m.group("path")
+            name = LINE_SUFFIX_RE.sub("", cited)
+            if name in tracked or name not in known_root:
+                continue
+            out.append({"check": "dead-link", "doc": doc, "line": n,
+                        "detail": f"backticked path -> {cited}", "severity": "P2"})
         for m in BACKTICK_PATH_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in hidden):
                 continue
@@ -2323,7 +2466,12 @@ def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
     return rows
 
 
-_REFRESH_GEN_RE = re.compile(r"(\d{4})-(\d{2})")
+# The WHOLE title, because a delivery is what the workflow emitted verbatim.
+# Unanchored, `Fix Monthly architecture doc refresh: 2026-09 authentication`
+# read as a delivery, so a repair PR could supersede an unmerged refresh with
+# no generated document having landed.
+_REFRESH_GEN_RE = re.compile(
+    r"^\s*Monthly architecture doc refresh:\s*(\d{4})-(\d{2})\s*$", re.I)
 
 
 def _refresh_generation(title: str) -> str:
@@ -2585,6 +2733,12 @@ def main(argv: list[str] | None = None) -> int:
 
     tracked = set(run(["git", "ls-tree", "-r", base_ref, "--name-only"]).strip().split("\n"))
     TOP_LEVEL_DIRS.update(p.split("/", 1)[0] for p in tracked if "/" in p)
+    # Root names as the BASE REF holds them, captured before the staged and
+    # deleted adjustments below. That is what makes a bare citation of a root
+    # file the working tree no longer has reportable: after the adjustment the
+    # name is gone from `tracked`, and the audit would have nothing to compare
+    # the citation against.
+    base_root_files = {p for p in tracked if "/" not in p}
     docs = document_set(tracked, registry)
     # A document staged or still untracked is absent from `ls-tree`, so a
     # contributor could run the audit clean and then commit a new unclassified
@@ -2757,7 +2911,7 @@ def main(argv: list[str] | None = None) -> int:
         # checks still apply to these artefacts; only the MARKDOWN content
         # checks are skipped.
         content = ((check_closed_issues(doc, text, states)
-                    + check_dead_links(doc, text, tracked))
+                    + check_dead_links(doc, text, tracked, base_root_files))
                    if doc.endswith(".md") else [])
         if cls == "A":
             for f in content:
@@ -2767,6 +2921,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if not stampable:
             continue
+
+        # A line that READS as a marker but parses as neither format, whether or
+        # not a valid one exists beside it. Reported either way, because
+        # "no review marker" is the wrong answer when the document plainly
+        # carries one that this script cannot read.
+        findings += check_marker_shape(doc, lines)
 
         if found is None:
             findings.append({"check": "marker", "doc": doc, "severity": "P2",
@@ -2911,7 +3071,7 @@ def main(argv: list[str] | None = None) -> int:
         done: list[str] = []
         for doc, new in writes:
             try:
-                (REPO / doc).write_text(new, encoding="utf-8")
+                write_stamp(doc, new)
             except OSError as exc:
                 # Exit 2, not the traceback-and-exit-1 that means "findings".
                 raise AuditError(
