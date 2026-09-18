@@ -31,7 +31,7 @@ but not on missing data:
 
 So a watchlist row can carry `reversal_play` for a name whose canonical archetype is
 `quiet`, and the brief and the watchlist can disagree on the same ticker on the same
-morning. No issue tracks this; recorded as DOC-20 in
+morning. No issue tracks this; recorded as DOC-22 in
 [07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
 This document does not change the job's behaviour — routing the refresh through
 `classify_archetype` is a code change for a code PR.
@@ -57,7 +57,7 @@ typical_daily_return = median(|daily_return_pct|) over last 60d
 | Q4 | `28.2–41.9` | 51.7% | ✅ SOLID | standard sizing |
 | Q3 | `21.2–28.2` | 46.5% | 🟡 OK | small position only |
 | Q2 | `15.7–21.2` | 42.9% | ❓ WEAK | paper / watch |
-| Q1 | `< 15.7` | 34.8% | 🚫 SKIP | below baseline; the brief routes these to a compact line rather than a full row (see below) |
+| Q1 | `< 15.7` | 34.8% | 🚫 SKIP | below baseline; routed to `low_conviction` and rendered as a compact line, not dropped (see below) |
 
 Boundaries are midpoints between adjacent quintile-average scores, so a score landing
 exactly on an average maps to that quintile.

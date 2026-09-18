@@ -76,13 +76,16 @@ The findings that carry the status name the sweep, not the calibrator:
 | [#817](https://github.com/TeneikaAskew/stocks/issues/817) | `run_param_sweep.py` (its definition of done) | Exhaustive in-sample mining with no out-of-sample holdout and **no multiple-testing control** |
 | [#886](https://github.com/TeneikaAskew/stocks/issues/886) | the research universe | Hand-picked-universe **survivorship bias** — applies to anything calibrated on SPY/QQQ/IWM alone, so to both writers |
 
+`scripts/calibrate_thresholds.py` does not import `WalkForwardValidator` at all; the two
+scripts share no code beyond `gcp.database`.
+
 **Writer (A) has no finding, no experiment and no evaluation.** An earlier revision of this
 document gave the quarterly percentile calibrator the sweep's algorithm ("anchored
 walk-forward"), its evidence and its invalidation rationale, so a reader would have
 concluded the scheduled job was condemned by #813 when #813 never examined it. Its actual
 standing is *never assessed*: a descriptive-statistics job that writes the RSI band both
 live strategies use, on a cron, with nothing in the ledger or the issue tracker saying
-whether the band it produces is any better than the Tier-B constant. Recorded as DOC-23 in
+whether the band it produces is any better than the Tier-B constant. Recorded under DOC-21 in
 [07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
 Whether the two writers should be split into separate `MODEL-*` rows is an open decision
 in [15-OPEN-DECISIONS](../product/15-OPEN-DECISIONS.md).

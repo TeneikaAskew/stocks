@@ -289,8 +289,9 @@ def test_jobs_claimed_unscheduled_really_are():
 def test_scheduled_count_prose_matches_the_table():
     section = _run_section()
     words = {"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-             "eleven": 11, "twelve": 12}
-    m = re.search(r"\b(\w+) model-bearing jobs are on a Cloud Scheduler cron", section)
+             "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+             "fifteen": 15, "sixteen": 16}
+    m = re.search(r"\b\**(\w+)\**\s+scheduler entries target", section)
     assert m, "the scheduled-count sentence changed shape"
     stated = words.get(m.group(1).lower())
     assert stated is not None, f"unhandled number word: {m.group(1)}"
@@ -680,24 +681,18 @@ def test_docs_citing_solyra_paths_explain_the_split():
 #: Jobs whose name marks them as model-bearing: they train, score, or audit a
 #: model. A scheduled job matching this and absent from the table is the
 #: `audit-brief-bias-weekly` omission repeating.
+#: A job is model-bearing when it executes code cited in a MODEL-* row. The live
+#: fire path was missing from this tuple until 2026-09-17, so the completeness
+#: check reported green while the registry omitted `signal-monitor` -- the job that
+#: evaluates MOM, MR, AGREE, EXIT and BRIEF every trading morning. A substring list
+#: is only as complete as its author; that is the standing weakness here.
 MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds",
                  "regime-combo", "audit-walkforward", "audit-brief-bias",
-                 "p2-build-gamma-levels", "audit-magnitude-drift")
-
-#: Model-bearing jobs whose NAME carries no model word, matched exactly. The
-#: substring list above let the principal one through: `signal-monitor` is
-#: scheduled at `gcp/deploy.sh:4481` and its `_evaluate_strategies_for_bar`
-#: (`gcp/signal_monitor.py:1048`) runs MODEL-MOM-001 (`MOMENTUM.evaluate`),
-#: MODEL-MR-001 (`lib.signals.evaluate_signal`), MODEL-AGREE-001
-#: (`detect_agreement`) and MODEL-BRIEF-001 (`get_premarket_bias`), yet the
-#: table claimed eight model-bearing crons and omitted it. Its EOD resolver
-#: replays `SignalMonitor._check_exits` (`gcp/signal_monitor_eod_resolver.py:16`),
-#: which is MODEL-EXIT-001's policy.
-MODEL_BEARING_JOBS = frozenset({"signal-monitor", "signal-monitor-eod-resolver"})
-
+                 "p2-build-gamma-levels", "audit-magnitude-drift",
+                 "signal-monitor", "build-realtime-gex", "refresh-earnings-views")
 
 def _is_model_bearing(job: str) -> bool:
-    return job in MODEL_BEARING_JOBS or any(k in job for k in MODEL_BEARING)
+    return any(k in job for k in MODEL_BEARING)
 
 
 def test_every_scheduled_model_bearing_job_is_listed():

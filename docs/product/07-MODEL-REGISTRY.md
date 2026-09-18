@@ -89,7 +89,7 @@ rows — are what keep it open.
 | MODEL-NEXTBAR-001 | STRAT next-bar edge | Statistical / ML | next-candle prediction | `gcp/research/strat_engine`, `lib/strat.py` | Research | RETEST | UNVERIFIED | Held-out OOS forward-walk confirms edge ([#593](https://github.com/TeneikaAskew/stocks/pull/593), [#594](https://github.com/TeneikaAskew/stocks/pull/594)); CLV ablation quantifies mechanical vs genuine ([#595](https://github.com/TeneikaAskew/stocks/pull/595), [#598](https://github.com/TeneikaAskew/stocks/pull/598)) |
 | MODEL-BREAK-001 | Breakout meta-model | ML / ensemble | filter / rank breakouts | `gcp/research`, `lib/strategies` | Research | RETEST | UNVERIFIED | Net reconfirmed in [#598](https://github.com/TeneikaAskew/stocks/pull/598) |
 | MODEL-STYLE-001 | User style mining | ML | learned personal trading pattern | `platform/api/routers/backtest.py` (`/api/style/mine-and-validate`), `user_style_results` | Experimental | RETEST | CURRENT · [doc](../models/MODEL-STYLE-001.md) | Origin [#707](https://github.com/TeneikaAskew/stocks/pull/707) — walk-forward validated into the playbook seam |
-| MODEL-CALIB-001 | Ticker calibration / walk-forward | Statistical | per-ticker thresholds written to production | two writers: `scripts/calibrate_thresholds.py` → `ticker_calibration` (scheduled); `lib/walk_forward.py` + `scripts/run_param_sweep.py` → `exit_config_overrides` (on demand) | **Invalidated** — the sweep; the scheduled calibrator is unassessed (DOC-23) | RESTRUCTURE | CURRENT · [doc](../models/MODEL-CALIB-001.md) | [#813](https://github.com/TeneikaAskew/stocks/issues/813) "out-of-sample" calibration is in-sample **and auto-writes production** · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining, no multiple-testing control · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias · [#380](https://github.com/TeneikaAskew/stocks/issues/380) close the loop |
+| MODEL-CALIB-001 | Ticker calibration / walk-forward | Statistical | per-ticker thresholds written to production | two writers: `scripts/calibrate_thresholds.py` → `ticker_calibration` (scheduled); `lib/walk_forward.py` + `scripts/run_param_sweep.py` → `exit_config_overrides` (on demand) | **Invalidated** — the sweep; the scheduled calibrator is unassessed (DOC-21) | RESTRUCTURE | CURRENT · [doc](../models/MODEL-CALIB-001.md) | [#813](https://github.com/TeneikaAskew/stocks/issues/813) "out-of-sample" calibration is in-sample **and auto-writes production** · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining, no multiple-testing control · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias · [#380](https://github.com/TeneikaAskew/stocks/issues/380) close the loop |
 | MODEL-FEAT-X | Experimental feature families | Statistical | cross-asset / news / options / vol features | `lib/features/experimental` | Research | PAUSE | UNVERIFIED | [#784](https://github.com/TeneikaAskew/stocks/issues/784) incremental-vol ablation open |
 
 ## LLM nodes
@@ -118,7 +118,7 @@ are **Experimental**; none has promotion evidence.
 | Failed | 1 (MODEL-DIR-001) |
 | Shadow | 1 (MODEL-TYPE-001) |
 | Research | 3 |
-| Experimental | 3 + 7 LLM node groups |
+| Experimental | 4 (MODEL-BRIEF-001, MODEL-EARN-001, MODEL-RANK-001, MODEL-STYLE-001) + 7 LLM node groups |
 
 **No model in this repository currently meets the promotion bar.** Two carry explicit
 recorded FAIL/DEAD-END verdicts ([#575](https://github.com/TeneikaAskew/stocks/pull/575),
@@ -169,7 +169,7 @@ trustworthy evidence ([#906](https://github.com/TeneikaAskew/stocks/issues/906))
 | MODEL-MAG-001 | E-09…E-15, E-19, E-20 (probability calibration), E-34 (SIZE arm) | `gcp/research/magnitude_engine/` (`mag_walk_forward.py`, `mag_pred_train.py`, `mag_leakage_audit.py`, `mag_inference.py`) | [MAGNITUDE_ENGINE_RESULTS](../MAGNITUDE_ENGINE_RESULTS.md) · [MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF](../MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF.md) | **PROJECT VERDICT FAIL** — closed by gate 7, 2026-05-29. Size is learnable; nothing beats option IV |
 | MODEL-BREAK-001 | E-18 ★, E-32 | `gcp/research/strat_engine/breakout_meta_walk_forward.py` | [MODEL_RETHINK_PLANS §RESULTS](../MODEL_RETHINK_PLANS.md) · [EXPERIMENT_REGISTRY §E-18](../EXPERIMENT_REGISTRY.md) | Gross 24/24. **Net fragile** — 2026-06-09 reconfirm: only IWM 5m clean net-positive (+0.110 R, 8/8); SPY/QQQ NET_FAIL |
 | MODEL-NEXTBAR-001 | E-25 | `scripts/strat_forward_walk{,_oos}.py`, `strat_oos_{clv_ablation,multi_tf}.py`, `strat_clv_demech.py`, `strat_struct_backtest.py`, `strat_next_candle_analysis.py` | [EXPERIMENT_REGISTRY §E-25](../EXPERIMENT_REGISTRY.md) · [MODEL_REGISTRY §CAT-A8](../MODEL_REGISTRY.md) | Held-out OOS edge confirmed; CLV ablation shows it is largely **gap-mechanical** (CLV_LAG1 ≈ 0) |
-| MODEL-CALIB-001 | — (no `E-` id) | `scripts/calibrate_thresholds.py` (scheduled percentile calibrator → `ticker_calibration`); `lib/walk_forward.py`, `scripts/run_param_sweep.py` (on-demand sweep → `exit_config_overrides`); `scripts/calibrate_iwm_strat.py`, `scripts/run_walk_forward.py` | **none** — no experiment in the ledger evaluates either writer | **Invalidated** (the sweep — DOC-23) — [#813](https://github.com/TeneikaAskew/stocks/issues/813) “out-of-sample” calibration is in-sample and auto-writes production · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias |
+| MODEL-CALIB-001 | — (no `E-` id) | `scripts/calibrate_thresholds.py` (scheduled percentile calibrator → `ticker_calibration`); `lib/walk_forward.py`, `scripts/run_param_sweep.py` (on-demand sweep → `exit_config_overrides`); `scripts/calibrate_iwm_strat.py`, `scripts/run_walk_forward.py` | **none** — no experiment in the ledger evaluates either writer | **Invalidated** (the sweep — DOC-21) — [#813](https://github.com/TeneikaAskew/stocks/issues/813) “out-of-sample” calibration is in-sample and auto-writes production · [#817](https://github.com/TeneikaAskew/stocks/issues/817) exhaustive in-sample mining · [#886](https://github.com/TeneikaAskew/stocks/issues/886) survivorship bias |
 | MODEL-FEAT-X | E-08 (C-news / C-xasset / C-vol / C-options) — committed; E-26, E-31, E-33 — **scratch harness, artifacts unavailable** | E-08: `lib/features/experimental/`. E-34's families: `gcp/research/direction_program/phase2_features.py`. E-26/E-31/E-33: **no code committed** — the ledger records their result JSONs as retained by the author only, so nothing here reproduces them | [DIRECTION_FEATURES_R&D](../DIRECTION_FEATURES_R&D.md) | **FAIL** — three orthogonal families, 0/8 folds each; vol-regime and external-data probes NEUTRAL |
 | MODEL-GAMMA-001 | E-22 (P2), E-24 | `gcp/research/p2_build_gamma_levels.py`, `p2_outcomes_grid.py`, `lib/gamma.py`, `lib/features/intraday_gex.py` | [docs/research/2026-05-23/P2_gamma_outcomes.md](../research/2026-05-23/P2_gamma_outcomes.md) · [gamma_levels.md](../gamma_levels.md) · [GAMMA_BALANCE_AUDIT](../audits/GAMMA_BALANCE_AUDIT_2026-08-25.md) | VOL signal confirmed, **direction null**; E-24 fixed a `gamma_regime` sign inversion at source |
 | MODEL-STYLE-001 | — (no `E-` id) | `lib/style_miner.py`, `platform/api/routers/backtest.py` | [#707](https://github.com/TeneikaAskew/stocks/pull/707) | Walk-forward validated into the playbook seam |
@@ -211,14 +211,22 @@ governance. Each is real work with a real verdict that no row above claims.
 
 ### Which of these actually run
 
-Of the 68 Cloud Run Jobs declared in `gcp/deploy.sh`, ten model-bearing jobs are on a Cloud Scheduler cron; the rest of the research surface is on-demand only.
+Of the 68 Cloud Run Jobs declared in `gcp/deploy.sh`, **fourteen** scheduler entries target a
+job that executes code cited in a `MODEL-*` row above; the rest of the research surface is
+on-demand only. That inclusion rule is the definition of "model-bearing" here, and it is what
+the test enforces.
+
+> **This count was `eight` until 2026-09-17, and the eight omitted the live fire path.**
+> `signal-monitor-daily` runs `gcp/signal_monitor.py`, which evaluates MODEL-MOM-001,
+> MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 and MODEL-BRIEF-001 every trading morning —
+> the single most consequential model-bearing job in the repo, and it was missing from the
+> table that exists to name them. Found in review, not by the gate that was supposed to
+> catch exactly this.
 The live fleet is larger — see [05-INFRASTRUCTURE](05-INFRASTRUCTURE.md) for the
 declared-versus-live reconciliation.
 
 | Scheduler | Cron (`America/New_York`) | Job | Serves |
 |---|---|---|---|
-| `signal-monitor-daily` | `25 9 * * 1-5` | `signal-monitor` | **The live fire path** — MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001 and MODEL-BRIEF-001, all evaluated per bar in `SignalMonitor._evaluate_strategies_for_bar` (`gcp/signal_monitor.py:1048`) |
-| `signal-monitor-eod-resolver-daily` | `30 16 * * 1-5` | `signal-monitor-eod-resolver` | MODEL-EXIT-001 — replays `SignalMonitor._check_exits` against the closed session (`gcp/signal_monitor_eod_resolver.py:16`) |
 | `strat-engine-daily` | `35 23 * * 1-5` | `strat-engine` | MODEL-TYPE-001 |
 | `magnitude-inference-daily` | `25 9 * * 1-5` | `magnitude-inference` | MODEL-MAG-001 |
 | `audit-magnitude-drift-daily` | `55 9 * * 1-5` | `audit-magnitude-drift` | MODEL-MAG-001 drift |
@@ -227,20 +235,18 @@ declared-versus-live reconciliation.
 | `calibrate-thresholds-quarterly` | `0 2 1 1,4,7,10 *` | `calibrate-thresholds` | MODEL-CALIB-001 writer (A), the percentile calibrator |
 | `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-GAMMA-001 |
 | `audit-brief-bias-weekly` | `0 10 * * 0` | `audit-brief-bias` | MODEL-BRIEF-001 audit |
+| `signal-monitor-daily` | `25 9 * * 1-5` | `signal-monitor` | **the live fire path** — MODEL-STRAT-001, MODEL-FTFC-001, MODEL-LEVEL-001, MODEL-IND-001, MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001, MODEL-BRIEF-001 |
+| `orb-15m-alert` | `45 9 * * 1-5` | `signal-monitor` | MODEL-IND-001 (opening range) |
+| `orb-30m-alert` | `0 10 * * 1-5` | `signal-monitor` | MODEL-IND-001 (opening range) |
+| `signal-monitor-eod-resolver-daily` | `30 16 * * 1-5` | `signal-monitor-eod-resolver` | MODEL-EXIT-001 outcomes |
+| `realtime-gex-daily` | `0 17 * * 1-5` | `build-realtime-gex` | MODEL-GAMMA-001 |
+| `refresh-earnings-views-weekly` | `0 20 * * 0` | `refresh-earnings-views` | MODEL-EARN-001 |
 
 `direction-baseline`, `direction-phase2`, `direction-probe`, `direction-importance`
 and `param-sweep` are deployed but **unscheduled**;
 `options-exec-backtest` is defined in `gcp/deploy.sh` but marked **not deployed**.
 
-Two further schedulers, `orb-15m-alert` (`45 9 * * 1-5`) and `orb-30m-alert`
-(`0 10 * * 1-5`), run the same `signal-monitor` image with `--mode=orb-snapshot`
-(`gcp/deploy.sh:4513-4516`) — a *"one-shot ORB capture"* (`gcp/signal_monitor.py:2570`)
-that records opening-range context for MODEL-IND-001 and evaluates no strategy. They are
-not counted above because they add no job.
 
-Until 2026-09-17 this table omitted `signal-monitor` entirely, while claiming to be complete
-one round after the `audit-brief-bias-weekly` omission was "gated": the completeness check
-matched model words in job names, and the principal job's name carries none (DOC-21).
 
 ### Research documentation corpus
 
@@ -314,23 +320,21 @@ here — that one belongs to code defects and is owned by
 | DOC-16 | `07` (this file) | E-19 assigned only to MODEL-MAG-001 → its ledger entry is `Engine/area: both (integrity)` and it names `strat_leakage_audit.py`; the integrity evidence underwriting the TYPE verdict was missing from TYPE's row | omission | **M** | MODEL-TYPE-001, MODEL-MAG-001 |
 | DOC-17 | `07` (this file) | E-26 / E-31 / E-33 listed beside committed modules → the ledger records their results as from a scratch harness, *“not committed to the repo”* (`EXPERIMENT_REGISTRY.md:1260`); `phase2_features.py` belongs to E-34. The table implied code that reproduces them | dead-path | **M** | MODEL-FEAT-X |
 | DOC-14 | Whole corpus | Git dates are unusable as a freshness signal: this is a shallow clone whose graft `4df291d` (2026-09-07) has no parent, so **187 of 220** docs show exactly one commit on that date regardless of when they were written | stamp | **M** | — |
-| DOC-20 | `gcp/refresh_earnings_views.py` | `_derive_archetype` (`:312-336`) reimplements `classify_archetype`'s thresholds for the daily `earnings_upcoming_with_history` rebuild the watchlist reads (`platform/api/routers/earnings.py:122`) instead of calling it, and diverges on missing inputs: `dir_consistency` missing with `reversal_rate >= 0.40` → **`reversal_play`** where the canonical function returns `quiet` (`lib/earnings_reactions.py:481-482`); `reversal_rate` missing → a trend tag where canonical returns `quiet`; `bias = ... or 0.0` (`:328`). The reference doc claimed every consumer read one implementation | contradiction | **H** | MODEL-EARN-001 |
-| DOC-21 | `07` (this file) | "eight model-bearing jobs are on a Cloud Scheduler cron" omitted `signal-monitor-daily` (`gcp/deploy.sh:4481`) — the job that evaluates MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001 and MODEL-BRIEF-001 on every bar — and its EOD resolver. The completeness gate matched model words in job names and the principal job's name carries none; the omission recurred one round after the `audit-brief-bias-weekly` fix | omission | **M** | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-BRIEF-001, MODEL-EXIT-001 |
-| DOC-22 | `lib/signals.py`, `lib/strategies/mean_reversion.py` | Two mean-reversion implementations. The live path is `lib.signals.evaluate_signal` (`gcp/signal_monitor.py:1107`), which alone applies `SignalConfig.min_conditions`, the per-ticker `consecutive_periods` override and the `disabled_conditions` / `disabled_directions` kill switches (`lib/signals.py:311-344`); `MeanReversionStrategy` is not called in production. The reference doc had called `lib/signals.py` "a thin shim re-exporting from" the class. No issue tracks the MR duplicate the way [#285](https://github.com/TeneikaAskew/stocks/issues/285) tracks momentum's | contradiction | **H** | MODEL-MR-001 |
-| DOC-23 | [MODEL-CALIB-001](../models/MODEL-CALIB-001.md) | One record described two writers as one system. The scheduled `calibrate-thresholds` job runs `scripts/calibrate_thresholds.py`, a rolling 60-day percentile calibrator writing `ticker_calibration`; the anchored walk-forward (`WalkForwardValidator`, `select_calibration_winner`) is `scripts/run_param_sweep.py` writing `exit_config_overrides` from the unscheduled `param-sweep` job, and that is the system [#813](https://github.com/TeneikaAskew/stocks/issues/813) / [#817](https://github.com/TeneikaAskew/stocks/issues/817) name. The percentile calibrator inherited the sweep's algorithm, evidence and invalidation; it has in fact never been evaluated | contradiction | **H** | MODEL-CALIB-001 |
-| DOC-24 | `docs/models/*` (this PR's second revision) | The round-3 rewrite still carried ten misstatements, found by review of `6486c8a`: MR precedence (higher score wins, CALL only on ties), MR live path (DOC-22), MOM "delegating wrapper" (the `MarketAnalyzer` loop is the [#285](https://github.com/TeneikaAskew/stocks/issues/285) duplicate), MOM "3-of-5 relaxation, no measurement" (reverted, measured, `config.py:101-103`), BRIEF "NOT user-facing", BRIEF threshold "not recorded" (`premarket_signal_threshold = 3`, `premarket_building_threshold = 2`), CALIB conflation (DOC-23), EARN "only model with a derivation", EARN "Q1 rows dropped" (routed to a compact line, `premarket_brief.py:669-696`), STYLE floors "no derivation" (`style_miner.py:105-112`), EARN "one implementation" (DOC-20) | contradiction | **H** | six models |
+| DOC-20 | `07` (this file) | The scheduler table claimed **eight** model-bearing cron jobs and omitted `signal-monitor-daily` — the live fire path running MODEL-MOM/MR/AGREE/EXIT/BRIEF every trading morning, plus the two ORB triggers, the EOD resolver, `realtime-gex-daily` and `refresh-earnings-views-weekly`. The real count by the stated rule is **fourteen** | omission | **H** | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001, MODEL-BRIEF-001, MODEL-IND-001, MODEL-GAMMA-001, MODEL-EARN-001 |
+| DOC-21 | `docs/models/*` (second round) | Eleven further errors in the reference docs, same class as DOC-19: thresholds labelled UNKNOWN that the source records (STYLE's sample floors, BRIEF's actionable threshold), a "canonical" implementation production does not call (`MeanReversionStrategy` vs `lib.signals.evaluate_signal`), a delegating wrapper that is a second implementation (`MarketAnalyzer.generate_technical_signals`), a reverted relaxation described as current (momentum 3-of-5), a tie-break that only applies on ties, two independent systems merged into one model record (MODEL-CALIB-001), and three EARN claims contradicted by source | contradiction | **H** | six models |
+| DOC-22 | `gcp/refresh_earnings_views.py` | `_derive_archetype` (`:312-336`) reimplements `classify_archetype`'s thresholds for the daily `earnings_upcoming_with_history` rebuild the watchlist reads (`platform/api/routers/earnings.py:122`) instead of calling it, and diverges on missing inputs: `dir_consistency` missing with `reversal_rate >= 0.40` → **`reversal_play`** where the canonical function returns `quiet` (`lib/earnings_reactions.py:481-482`); `reversal_rate` missing → a trend tag where canonical returns `quiet`; `bias = ... or 0.0` (`:328`). The reference doc claimed every consumer read one implementation | contradiction | **H** | MODEL-EARN-001 |
+| DOC-23 | `lib/signals.py`, `lib/strategies/mean_reversion.py` | Two mean-reversion implementations. The live path is `lib.signals.evaluate_signal` (`gcp/signal_monitor.py:1107`), which alone applies `SignalConfig.min_conditions`, the per-ticker `consecutive_periods` override and the `disabled_conditions` / `disabled_directions` kill switches (`lib/signals.py:311-344`); `MeanReversionStrategy` is not called in production. The reference doc had called `lib/signals.py` "a thin shim re-exporting from" the class. No issue tracks the MR duplicate the way [#285](https://github.com/TeneikaAskew/stocks/issues/285) tracks momentum's | contradiction | **H** | MODEL-MR-001 |
 
 ### Disposition
 
 | ID | Disposition | Why |
 |---|---|---|
 | DOC-18 | **FIXED HERE** in the docs, **FLAGGED** at source | The reference docs now warn about each stale docstring and say which source to trust. Correcting the docstrings themselves touches `lib/strategies/` and `lib/movement_statement.py` and belongs in a code PR, not this docs PR |
-| DOC-20 | **FIXED HERE** in the doc, **FLAGGED** at source | MODEL-EARN-001 now records the duplicate path and quotes the divergence. Routing `refresh_earnings_views.py` through `classify_archetype` changes a production job's output and needs a code PR with a before/after on the affected rows; no issue is filed yet |
-| DOC-21 | **FIXED HERE** | Two rows added to the scheduler table; the completeness invariant now matches `signal-monitor` and its resolver by exact name, and a further test pins that classification so it cannot be emptied silently |
-| DOC-22 | **FIXED HERE** in the doc, **FLAGGED** at source | MODEL-MR-001 now documents `lib.signals.evaluate_signal` as the live implementation, with the runtime gates only it applies. Making the module delegate to the class, or retiring the class, is code work; no issue is filed yet |
-| DOC-23 | **FIXED HERE** in the doc | MODEL-CALIB-001 now separates the two writers, attributes #813/#817 to the sweep, and records the scheduled calibrator as unassessed. Whether to split the registry row is added to [15-OPEN-DECISIONS](15-OPEN-DECISIONS.md) |
-| DOC-24 | **FIXED HERE** | Every passage re-derived from the scoring functions and re-cited at `file:line`. Found by review, not by me — the third time in this PR that the invariants were green over prose that was wrong |
+| DOC-22 | **FIXED HERE** in the doc, **FLAGGED** at source | MODEL-EARN-001 now records the duplicate path and quotes the divergence. Routing `refresh_earnings_views.py` through `classify_archetype` changes a production job's output and needs a code PR with a before/after on the affected rows; no issue is filed yet |
+| DOC-23 | **FIXED HERE** in the doc, **FLAGGED** at source | MODEL-MR-001 now documents `lib.signals.evaluate_signal` as the live implementation, with the runtime gates only it applies. Making the module delegate to the class, or retiring the class, is code work; no issue is filed yet |
 | DOC-19 | **FIXED HERE** | All six rewritten from the scoring functions, every condition and constant quoted with its `file:line`. Found by review, not by me — see the note under [How this registry is kept honest](#how-this-registry-is-kept-honest) |
+| DOC-20 | **FIXED HERE** | Six rows added, the count corrected to fourteen with the inclusion rule stated, and `MODEL_BEARING` in the test extended so the completeness gate can see the fire path. The gate reported green throughout because its substring list never named `signal-monitor` |
+| DOC-21 | **FIXED HERE** | All eleven rewritten against the cited `file:line`; the MODEL-CALIB-001 split is also recorded as an open decision in [15-OPEN-DECISIONS](15-OPEN-DECISIONS.md). Two recurring habits produced them: labelling a constant undocumented without reading the comment block above it, and naming a class canonical without checking which implementation the scheduled job calls |
 | DOC-15, DOC-16, DOC-17 | **FIXED HERE** | Found by review, not by this audit — all three were verified against `EXPERIMENT_REGISTRY.md` and `EXEC_BACKTEST_RESULTS.md` before being corrected, and the join is now gated by `tests/meta/test_model_registry_consistency.py` |
 | DOC-01…DOC-05 | **FIXED HERE** | Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit |
 | DOC-07, DOC-08, DOC-13 (registry half), DOC-14 | **FIXED HERE** | Labelled in place with the measured reality; no result was rewritten |
@@ -378,7 +382,7 @@ Read live 2026-09-16. Merged-PR lineage for every model is owned by
 | An experiment the ledger marks *not committed* is not listed beside code paths | DOC-17 — E-26/E-31/E-33 implying a reproduction route that does not exist |
 | Every experiment id the ledger declares is on a model's row or in the ownerless table, ranges expanded | Total omission of a single-engine experiment — deleting E-01 from MODEL-TYPE-001 passed every earlier invariant |
 | Experiments in ledger sections the parser cannot read carry explicit scope metadata and go through the family check | The `UNPARSED_LEDGER_SECTIONS` allowlist, which `continue`d past E-24, E-26…E-31, E-33 and E-34 |
-| Model-bearing jobs whose name carries no model word (`signal-monitor`, its resolver) are matched exactly, and that classification is itself pinned | DOC-21 |
+| Model-bearing jobs whose name carries no model word (`signal-monitor`, its resolver) are matched, and that classification is itself pinned | DOC-20 |
 
 Each invariant was mutation-tested: the defect was reintroduced and the test
 confirmed red before being reverted.

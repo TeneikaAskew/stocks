@@ -83,7 +83,7 @@ the score:
 None of these gates exists in `MeanReversionStrategy.evaluate`, so a reader who reasons
 from the class alone will predict fires on a ticker whose PUT side is switched off. No
 issue tracks the duplicate mean-reversion path (the momentum twin is
-[#285](https://github.com/TeneikaAskew/stocks/issues/285)); recorded as DOC-22 in
+[#285](https://github.com/TeneikaAskew/stocks/issues/285)); recorded as DOC-23 in
 [07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
 
 ## Rationale
