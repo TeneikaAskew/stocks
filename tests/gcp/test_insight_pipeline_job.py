@@ -824,3 +824,89 @@ def test_run_one_forwards_the_universe_rather_than_dropping_it():
             "_run_one accepts a universe and does not pass it on, so the "
             "batch's frozen universe is silently discarded"
         )
+
+
+def _membership(as_of, *tickers):
+    from gcp.fetchers._watchlist import WatchlistMembership
+    return WatchlistMembership(
+        tickers=tuple(tickers) or ("SPY",), as_of=as_of, owner="default",
+        resolution="exact", horizon=None,
+    )
+
+
+def _drive_batch(monkeypatch, resolve_returns):
+    """Run one sequential batch, capturing the universe each ticker got."""
+    import datetime as _dt
+
+    import gcp.fetchers._watchlist as wl_mod
+
+    got: list = []
+    calls: list = []
+
+    def fake_resolve(cutoff, *a, **kw):
+        calls.append(cutoff)
+        return resolve_returns(cutoff, len(calls))
+
+    monkeypatch.setattr(wl_mod, "resolve_membership_at", fake_resolve)
+    monkeypatch.setattr(wl_mod, "load_watchlist", lambda **kw: ["SPY", "IWM"])
+    monkeypatch.setattr(job, "_insert_run", lambda ticker, trigger: f"run-{ticker}")
+
+    async def fake_run_one(run_id, ticker, as_of=None, allow_update=False,
+                           run_kind="scheduled", triggered_by=None, universe=None):
+        got.append(universe)
+        return True
+
+    monkeypatch.setattr(job, "_run_one", fake_run_one)
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_MAX_BATCH=None,
+             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None, INSIGHT_AS_OF=None)
+    monkeypatch.setenv("INSIGHT_FANOUT", "0")
+    assert _run(job._run_scheduled()) == 0
+    return got, calls, _dt.datetime.now(_dt.timezone.utc).date()
+
+
+def test_every_ticker_in_a_batch_gets_the_same_frozen_universe(monkeypatch):
+    """The freeze holds inside one calendar day: resolved once, reused."""
+    got, calls, today = _drive_batch(
+        monkeypatch, lambda cutoff, n: _membership(today_ := cutoff, "SPY", "IWM"))
+    assert len(calls) == 1, (
+        f"membership was resolved {len(calls)} times for one batch; the "
+        "universe is not frozen"
+    )
+    assert len(got) == 2 and got[0] is got[1], \
+        "two tickers in one batch received different universe objects"
+    assert got[0].as_of == today
+
+
+def test_a_utc_day_rollover_mid_batch_re_resolves_rather_than_losing_the_section(
+        monkeypatch):
+    """Codex P2 on `c9637d3`.
+
+    With no `INSIGHT_AS_OF`, each ticker's cutoff is `today` computed when
+    that ticker runs. A batch spanning UTC midnight therefore hands a later
+    ticker a cutoff the frozen universe was not resolved for, and
+    `summarize_backtest_metrics` rightly refuses a universe from another
+    date -- costing that report its backtest section. The scheduled run
+    cannot reach this (08:45 ET, 1800 s timeout), but the documented ad-hoc
+    `INSIGHT_TICKERS` path runs whenever a person runs it.
+
+    Simulated by having the first resolution come back stamped yesterday,
+    which is what a batch that began before midnight holds once the clock
+    rolls over.
+    """
+    import datetime as _dt
+
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    yesterday = today - _dt.timedelta(days=1)
+
+    got, calls, _ = _drive_batch(
+        monkeypatch,
+        lambda cutoff, n: _membership(yesterday if n == 1 else cutoff, "SPY"),
+    )
+    assert len(calls) == 3, (
+        "expected the initial freeze plus one re-resolution per ticker once "
+        f"the frozen universe went stale; got {len(calls)} resolutions"
+    )
+    assert all(u is not None and u.as_of == today for u in got), (
+        "a ticker was handed a universe resolved for a different date than "
+        "its own cutoff, which the cutoff guard refuses"
+    )

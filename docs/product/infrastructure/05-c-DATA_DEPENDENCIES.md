@@ -17,37 +17,37 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
 |---|---|---|
-| `admin_refresh_leases` | table | [`gcp/schema.sql:4458`](../../../gcp/schema.sql#L4458) |
+| `admin_refresh_leases` | table | [`gcp/schema.sql:4472`](../../../gcp/schema.sql#L4472) |
 | `archive_yahoo_earnings_options_snapshots` | table | [`gcp/schema.sql:552`](../../../gcp/schema.sql#L552) |
 | `archive_yahoo_etf_options_snapshots` | table | [`gcp/schema.sql:549`](../../../gcp/schema.sql#L549) |
 | `archive_yahoo_market_data_daily` | table | [`gcp/schema.sql:543`](../../../gcp/schema.sql#L543) |
 | `archive_yahoo_market_data_intraday` | table | [`gcp/schema.sql:546`](../../../gcp/schema.sql#L546) |
-| `backtest_reports` | table | [`gcp/schema.sql:3405`](../../../gcp/schema.sql#L3405) |
-| `backtest_sweeps` | table | [`gcp/schema.sql:3376`](../../../gcp/schema.sql#L3376) |
-| `backtest_trades` | table | [`gcp/schema.sql:3334`](../../../gcp/schema.sql#L3334) |
-| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3431`](../../../gcp/schema.sql#L3431) |
+| `backtest_reports` | table | [`gcp/schema.sql:3419`](../../../gcp/schema.sql#L3419) |
+| `backtest_sweeps` | table | [`gcp/schema.sql:3390`](../../../gcp/schema.sql#L3390) |
+| `backtest_trades` | table | [`gcp/schema.sql:3348`](../../../gcp/schema.sql#L3348) |
+| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3445`](../../../gcp/schema.sql#L3445) |
 | `daily_rates` | table | [`gcp/schema.sql:522`](../../../gcp/schema.sql#L522) |
 | `earnings_calendar` | table | [`gcp/schema.sql:562`](../../../gcp/schema.sql#L562) |
-| `earnings_calibration` | table | [`gcp/schema.sql:3524`](../../../gcp/schema.sql#L3524) |
+| `earnings_calibration` | table | [`gcp/schema.sql:3538`](../../../gcp/schema.sql#L3538) |
 | `earnings_history` | table | [`gcp/schema.sql:723`](../../../gcp/schema.sql#L723) |
 | `earnings_options_snapshots` | table | [`gcp/schema.sql:461`](../../../gcp/schema.sql#L461) |
-| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:3752`](../../../gcp/schema.sql#L3752) |
-| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:3780`](../../../gcp/schema.sql#L3780) |
+| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:3766`](../../../gcp/schema.sql#L3766) |
+| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:3794`](../../../gcp/schema.sql#L3794) |
 | `earnings_reactions` | table | [`gcp/schema.sql:769`](../../../gcp/schema.sql#L769) |
-| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4170`](../../../gcp/schema.sql#L4170) |
+| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4184`](../../../gcp/schema.sql#L4184) |
 | `economic_events` | table | [`gcp/schema.sql:1438`](../../../gcp/schema.sql#L1438) |
 | `etf_options_daily_greeks` | table | [`gcp/schema.sql:368`](../../../gcp/schema.sql#L368) |
 | `etf_options_snapshots` | table | [`gcp/schema.sql:161`](../../../gcp/schema.sql#L161) |
-| `exit_config_overrides` | table | [`gcp/schema.sql:2753`](../../../gcp/schema.sql#L2753) |
+| `exit_config_overrides` | table | [`gcp/schema.sql:2767`](../../../gcp/schema.sql#L2767) |
 | `historical_signals` | table | [`gcp/schema.sql:2123`](../../../gcp/schema.sql#L2123) |
-| `indicator_correlation` | table | [`gcp/schema.sql:3593`](../../../gcp/schema.sql#L3593) |
+| `indicator_correlation` | table | [`gcp/schema.sql:3607`](../../../gcp/schema.sql#L3607) |
 | `insider_transactions` | table | [`gcp/schema.sql:975`](../../../gcp/schema.sql#L975) |
 | `insight_reports` | table | [`gcp/schema.sql:1537`](../../../gcp/schema.sql#L1537) |
 | `insight_reports_history` | table | [`gcp/schema.sql:2054`](../../../gcp/schema.sql#L2054) |
 | `insight_runs` | table | [`gcp/schema.sql:1573`](../../../gcp/schema.sql#L1573) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:408`](../../../gcp/schema.sql#L408) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:429`](../../../gcp/schema.sql#L429) |
-| `job_runs` | table | [`gcp/schema.sql:4307`](../../../gcp/schema.sql#L4307) |
+| `job_runs` | table | [`gcp/schema.sql:4321`](../../../gcp/schema.sql#L4321) |
 | `journal_entries` | table | [`gcp/schema.sql:1196`](../../../gcp/schema.sql#L1196) |
 | `market_data_daily` | table | [`gcp/schema.sql:23`](../../../gcp/schema.sql#L23) |
 | `market_data_intraday` | table | [`gcp/schema.sql:126`](../../../gcp/schema.sql#L126) |
@@ -60,33 +60,33 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `news_sentiment` | table | [`gcp/schema.sql:1615`](../../../gcp/schema.sql#L1615) |
 | `options_daily_features` | table | [`gcp/schema.sql:271`](../../../gcp/schema.sql#L271) |
 | `playbook_cards` | table | [`gcp/schema.sql:1364`](../../../gcp/schema.sql#L1364) |
-| `playbook_cards_staging` | table | [`gcp/schema.sql:4281`](../../../gcp/schema.sql#L4281) |
+| `playbook_cards_staging` | table | [`gcp/schema.sql:4295`](../../../gcp/schema.sql#L4295) |
 | `premarket_analysis` | table | [`gcp/schema.sql:1310`](../../../gcp/schema.sql#L1310) |
 | `premarket_analysis_history` | table | [`gcp/schema.sql:1939`](../../../gcp/schema.sql#L1939) |
 | `ranker_runs` | table | [`gcp/schema.sql:1050`](../../../gcp/schema.sql#L1050) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:448`](../../../gcp/schema.sql#L448) |
-| `regime_combo_results` | table | [`gcp/schema.sql:3670`](../../../gcp/schema.sql#L3670) |
-| `schema_apply_history` | table | [`gcp/schema.sql:4472`](../../../gcp/schema.sql#L4472) |
+| `regime_combo_results` | table | [`gcp/schema.sql:3684`](../../../gcp/schema.sql#L3684) |
+| `schema_apply_history` | table | [`gcp/schema.sql:4486`](../../../gcp/schema.sql#L4486) |
 | `sec_filings` | table | [`gcp/schema.sql:942`](../../../gcp/schema.sql#L942) |
 | `signal_alerts` | table | [`gcp/schema.sql:1068`](../../../gcp/schema.sql#L1068) |
-| `signal_metrics` | table | [`gcp/schema.sql:2983`](../../../gcp/schema.sql#L2983) |
-| `strat_combo_results` | table | [`gcp/schema.sql:3702`](../../../gcp/schema.sql#L3702) |
+| `signal_metrics` | table | [`gcp/schema.sql:2997`](../../../gcp/schema.sql#L2997) |
+| `strat_combo_results` | table | [`gcp/schema.sql:3716`](../../../gcp/schema.sql#L3716) |
 | `strat_levels` | table | [`gcp/schema.sql:1655`](../../../gcp/schema.sql#L1655) |
-| `ticker_calibration` | table | [`gcp/schema.sql:2666`](../../../gcp/schema.sql#L2666) |
+| `ticker_calibration` | table | [`gcp/schema.sql:2680`](../../../gcp/schema.sql#L2680) |
 | `ticker_info` | table | [`gcp/schema.sql:2176`](../../../gcp/schema.sql#L2176) |
 | `top_movers_daily` | table | [`gcp/schema.sql:1001`](../../../gcp/schema.sql#L1001) |
 | `top_movers_intraday` | table | [`gcp/schema.sql:1025`](../../../gcp/schema.sql#L1025) |
 | `trades` | table | [`gcp/schema.sql:1153`](../../../gcp/schema.sql#L1153) |
-| `user_preferences` | table | [`gcp/schema.sql:4395`](../../../gcp/schema.sql#L4395) |
-| `user_profile` | table | [`gcp/schema.sql:4426`](../../../gcp/schema.sql#L4426) |
-| `user_roles` | table | [`gcp/schema.sql:4344`](../../../gcp/schema.sql#L4344) |
-| `user_style_results` | table | [`gcp/schema.sql:4263`](../../../gcp/schema.sql#L4263) |
-| `waitlist_signups` | table | [`gcp/schema.sql:4250`](../../../gcp/schema.sql#L4250) |
-| `walk_forward_results` | table | [`gcp/schema.sql:3477`](../../../gcp/schema.sql#L3477) |
+| `user_preferences` | table | [`gcp/schema.sql:4409`](../../../gcp/schema.sql#L4409) |
+| `user_profile` | table | [`gcp/schema.sql:4440`](../../../gcp/schema.sql#L4440) |
+| `user_roles` | table | [`gcp/schema.sql:4358`](../../../gcp/schema.sql#L4358) |
+| `user_style_results` | table | [`gcp/schema.sql:4277`](../../../gcp/schema.sql#L4277) |
+| `waitlist_signups` | table | [`gcp/schema.sql:4264`](../../../gcp/schema.sql#L4264) |
+| `walk_forward_results` | table | [`gcp/schema.sql:3491`](../../../gcp/schema.sql#L3491) |
 | `watchlist_history` | table | [`gcp/schema.sql:2438`](../../../gcp/schema.sql#L2438) |
 | `watchlists` | table | [`gcp/schema.sql:2232`](../../../gcp/schema.sql#L2232) |
-| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:3918`](../../../gcp/schema.sql#L3918) |
-| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4109`](../../../gcp/schema.sql#L4109) |
+| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:3932`](../../../gcp/schema.sql#L3932) |
+| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4123`](../../../gcp/schema.sql#L4123) |
 | `v_etf_options_node` | view | [`gcp/schema.sql:305`](../../../gcp/schema.sql#L305) |
 <!-- inventory:tables:end -->
 

@@ -2452,10 +2452,24 @@ CREATE TABLE IF NOT EXISTS watchlist_history (
     origin        VARCHAR(10)   NOT NULL DEFAULT 'trigger'
                                 CHECK (origin IN ('trigger', 'seed')),
     source        VARCHAR(20)   NULL,
-    -- Surface flags as they stood at the transition. Not read by the
-    -- analog universe (which uses no surface filter), recorded so a
-    -- future as-of resolution for the brief / signal surfaces does not
-    -- need a second migration to start collecting them.
+    -- Surface flags as they stood at the ADD or REMOVE, and only then.
+    -- Not read by the analog universe, which applies no surface filter.
+    --
+    -- This does NOT amount to surface history, and an earlier version of
+    -- this comment claimed it did -- that a future as-of resolution for
+    -- the brief / signal surfaces would need no second migration (Codex
+    -- P2 on `c9637d3`). It would. Moving a ticker between surfaces is an
+    -- UPDATE that changes these flags while membership is unchanged, and
+    -- the trigger deliberately records nothing for it, so the WHEN of a
+    -- flag change is not captured here at all. Answering "was this ticker
+    -- in_brief on date D" needs flag-transition events, which means a
+    -- third `action` value and a resolver that filters to add/remove --
+    -- a contract change, not a column. Until then these columns are a
+    -- snapshot at the membership transition and nothing more.
+    --
+    -- The cost of waiting is real and bounded: flag changes made before
+    -- that lands are not recoverable afterwards. Recorded here rather
+    -- than left implied so the decision is visible.
     in_brief      BOOLEAN       NULL,
     in_insight    BOOLEAN       NULL,
     signals       BOOLEAN       NULL

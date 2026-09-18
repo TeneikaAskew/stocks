@@ -800,6 +800,50 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
                 "each ticker will resolve its own", exc,
             )
 
+    def _universe_for(current):
+        """The frozen universe, unless the UTC day has rolled over since.
+
+        With no `INSIGHT_AS_OF`, each ticker's cutoff is `today` computed
+        when that ticker runs, so a batch spanning UTC midnight gives a
+        later ticker a cutoff the frozen universe was not resolved for --
+        and `summarize_backtest_metrics` rightly refuses a universe from
+        another date, costing that report its backtest section.
+
+        The scheduled run cannot hit this (`insight-pipeline-daily` fires
+        08:45 America/New_York against an 1800 s timeout), but the ad-hoc
+        `INSIGHT_TICKERS` path is documented and runs whenever a person
+        runs it, including just before midnight UTC (Codex P2 on
+        `c9637d3`).
+
+        Re-resolving is the correct answer rather than a concession: a new
+        calendar day genuinely has a new cutoff, so a new universe is what
+        that cutoff means. Pinning `as_of` instead would look tidier and is
+        unavailable -- it feeds the fan-out child's `as_of_iso` and the
+        report's own `as_of`, and it switches on the cutoff filters at
+        `lib/agents/summarizers.py:446,472`.
+        """
+        if current is None or as_of is not None:
+            return current
+        today = datetime.now(timezone.utc).date()
+        if current.as_of == today:
+            return current
+        try:
+            from gcp.fetchers._watchlist import resolve_membership_at
+
+            refreshed = resolve_membership_at(today)
+            logger.info(
+                "UTC day rolled over mid-batch (%s -> %s); re-resolved the "
+                "analog universe for the new cutoff",
+                current.as_of, today,
+            )
+            return refreshed
+        except Exception as exc:
+            logger.warning(
+                "day rolled over mid-batch and re-resolution failed (%s); "
+                "this ticker resolves its own", exc,
+            )
+            return None
+
     any_failures = False
     if pending is None:
         # Sequential mode: insert each run row immediately before
@@ -809,7 +853,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             ok = await _run_one(
                 run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
-                triggered_by=triggered_by, universe=batch_universe,
+                triggered_by=triggered_by, universe=_universe_for(batch_universe),
             )
             if not ok:
                 any_failures = True
@@ -819,7 +863,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             ok = await _run_one(
                 run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
-                triggered_by=triggered_by, universe=batch_universe,
+                triggered_by=triggered_by, universe=_universe_for(batch_universe),
             )
             if not ok:
                 any_failures = True
