@@ -37,8 +37,19 @@ will *"use the composite score to rank Discord embed output"*, but that was inte
 was never implemented: `SignalMonitor.fire_alert` emits each alert as it happens, with
 no sorting or prioritisation. The score appears only as a display line
 (`Composite score: X`, `gcp/signal_monitor.py:1562`) and a `🎯 STACKED ` title
-prefix (`:1518`). Anyone assessing this model's production effect should know the score
-currently changes nothing about what fires or in what order.
+prefix (`:1518`), so nothing is ordered or prioritised.
+
+**It does change position size, though.** `gcp/signal_monitor.py:1329-1343` adds
+`AGREEMENT_BONUS` into `raw_score`, which becomes `total_score` and is passed to
+`get_position_size` and `get_signal_strength_label`. The source says so outright:
+*"agreement bonus flows into total_score so a stacked fire actually gets a larger position
+size (not just a prettier Discord embed)"*. So same-direction agreement can raise both the
+size and the strength label of a fire.
+
+An earlier revision said the score changes nothing about what fires — an overcorrection.
+The first version of this document wrongly claimed the score **ranks** alerts; removing
+that claim took the real effect with it. The accurate statement is narrow: it does not
+order alerts, and it does size them.
 
 ## Constants
 

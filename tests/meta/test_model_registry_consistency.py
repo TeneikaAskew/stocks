@@ -251,7 +251,13 @@ def _declared_schedulers() -> dict[str, tuple[str, str]]:
         joined = (pending + " " + line).strip() if pending else line
         pending = joined if joined.endswith("\\") else ""
         m = re.search(
-            r'_schedule(?:_with_args)?\s+"([^"]+)"\s+\\?\s*"([^"]+)"\s+\\?\s*"([^"]+)"',
+            # EVERY scheduler helper, not just two. deploy.sh declares entries
+            # through _schedule, _schedule_args, _schedule_with_args,
+            # _schedule_brief, _schedule_insight, _schedule_verified,
+            # _schedule_with_args_verified and _schedule_min_instances; all share
+            # the same "name" "cron" "job" prefix. Parsing only the first two made
+            # refresh-earnings-views-daily invisible to the completeness gate.
+            r'_schedule[a-z_]*\s+"([^"]+)"\s+\\?\s*"([^"]+)"\s+\\?\s*"([^"]+)"',
             joined.replace("\\", " "),
         )
         if m:
@@ -699,6 +705,41 @@ def test_uncommitted_experiments_are_not_presented_as_reproducible():
 # Four findings in one review round were the same shape: a claim corrected in
 # docs/models/ and left standing in the registry row or the concern register.
 # Fixing the instance is not fixing the claim. These two gate that class.
+
+def _gh_slug(heading: str) -> str:
+    """GitHub's anchor slug: strip punctuation, then space -> '-' ONE FOR ONE.
+
+    Collapsing whitespace runs is wrong and hides real breakage: every heading
+    here contains an em-dash, which is stripped and leaves two spaces, so the
+    real anchor carries a double hyphen. A collapsing slug reported 15 of the
+    16 catalog links as fine when all 16 were dead.
+    """
+    s = re.sub(r"`", "", heading).strip().lower()
+    s = re.sub(r"[^\w\s-]", "", s)
+    return s.replace(" ", "-")
+
+
+def test_cross_document_anchors_resolve():
+    """A heading rename must not leave its consumers pointing at nothing.
+
+    `12-PR-ISSUE-TRACEABILITY.md`'s section headings carry their open-issue
+    count, so every count change renames the anchor. `02-FEATURE-CATALOG.md`
+    links to all sixteen, and nothing noticed when they broke -- the link
+    checker validated files, not fragments.
+    """
+    dead, checked = [], 0
+    for md in sorted(PRODUCT.glob("*.md")):
+        for m in re.finditer(r"\]\(([A-Za-z0-9._-]+\.md)#([a-z0-9-]+)\)", md.read_text()):
+            target = md.parent / m.group(1)
+            if not target.exists():
+                continue
+            anchors = {_gh_slug(h) for h in re.findall(r"^#{1,6} (.+)$", target.read_text(), re.M)}
+            checked += 1
+            if m.group(2) not in anchors:
+                dead.append(f"{md.name} -> {m.group(1)}#{m.group(2)}")
+    assert checked >= 50, f"only {checked} cross-file anchors found -- did the docs change shape?"
+    assert not dead, f"links pointing at headings that do not exist: {dead}"
+
 
 def test_registry_code_column_names_the_live_implementation():
     """A doc that names a live implementation must have it in the registry's Code cell.

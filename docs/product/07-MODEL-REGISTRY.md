@@ -247,6 +247,7 @@ declared-versus-live reconciliation.
 | `signal-monitor-eod-resolver-daily` | `30 16 * * 1-5` | `signal-monitor-eod-resolver` | MODEL-EXIT-001 outcomes |
 | `realtime-gex-daily` | `0 17 * * 1-5` | `build-realtime-gex` | MODEL-GAMMA-001 |
 | `refresh-earnings-views-weekly` | `0 20 * * 0` | `refresh-earnings-views` | MODEL-EARN-001 |
+| `refresh-earnings-views-daily` | `30 7 * * 1-5` | `refresh-earnings-views` | MODEL-EARN-001 (declared via `_schedule_args`) |
 | `premarket-playbook-resolver-daily` | `15 21 * * 1-5` | `premarket-playbook-resolver` | MODEL-LEVEL-001 (calls `build_level_map`) |
 
 `direction-baseline`, `direction-phase2`, `direction-probe`, `direction-importance`

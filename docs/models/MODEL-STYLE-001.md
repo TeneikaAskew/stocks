@@ -17,8 +17,18 @@ producing a `StyleProfile` that converts directly into engine configuration.
 
 ## The condition vocabulary
 
-A **fixed vocabulary of 8 boolean conditions**, each evaluated at the entry bar and each
-mapping 1:1 onto a `lib.config.SignalConfig` tunable:
+A **fixed vocabulary of 8 boolean conditions**, each evaluated at the entry bar. The
+`SignalConfig` column below names the lever each condition *relates to* — it is **not** a
+1:1 mapping, and the miner does not learn per-condition values.
+
+`profile_to_signal_config` (`lib/walk_forward.py:83-97,153-163`) translates the whole
+profile into the single **`enabled_conditions` allowlist** and sets
+`min_conditions = len(profile.conditions)`. Every threshold field —
+`call_rsi_range`, `put_rsi_range`, `consecutive_periods`, `stoch_rsi_oversold`,
+`stoch_rsi_overbought` — is copied from `base`, i.e. left at its default. A mined profile
+therefore **selects a subset of default-valued factors**; it does not tune them. Note also
+that `above_vwap` / `below_vwap` have no `SignalConfig` field at all, and both `consec_*`
+conditions share one:
 
 | Condition | Reads | SignalConfig tunable |
 |---|---|---|
