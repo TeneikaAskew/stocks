@@ -1,9 +1,20 @@
 -- Cloud SQL (PostgreSQL 15) schema for the trading system.
 --
--- Run via:
---   gcloud sql connect INSTANCE_NAME --user=trading_user --database=trading < gcp/schema.sql
--- or:
---   psql "host=... dbname=trading user=trading_user" < gcp/schema.sql
+-- Apply with the applier, not with psql:
+--   python -m gcp.apply_schema
+-- In production this runs as the `apply-schema-migrations` Cloud Run Job,
+-- fired by the `apply-schema-on-change` trigger on any push to main that
+-- touches this file.
+--
+-- `psql -f` / `gcloud sql connect < ` DO still work and are what the
+-- ephemeral integration-test database uses, but they are not equivalent:
+-- the `-- ATOMIC-BEGIN` / `-- ATOMIC-END` markers below are ordinary
+-- comments to psql, so every statement commits on its own. The applier
+-- runs each marked group in ONE transaction, and three groups in this
+-- file depend on that for correctness (see the watchlist_history group
+-- for the failure mode). Against a populated database, prefer the
+-- applier; psql against the live instance is a fallback that silently
+-- drops the grouping.
 
 -- ─────────────────────────────────────────────────────────
 -- MARKET DATA
@@ -2376,22 +2387,50 @@ END $$;
 -- only moves the acquisition earlier. It blocks writers, not readers,
 -- and only for this group: an empty table, two indexes, two functions
 -- and an 18-row seed.
--- Wrapped in DO because this file has TWO loaders with different
+-- Wrapped in DO because this file has TWO KINDS of loader with different
 -- transaction semantics, and a bare `LOCK TABLE` only satisfies one.
 -- `gcp/apply_schema.py` runs an ATOMIC group inside one transaction, so a
--- bare lock is legal there. The integration-test job loads the same file
--- with `psql -f`, where the ATOMIC markers are ordinary comments and every
--- statement gets its own implicit transaction — and a bare lock there is
--- `ERROR: LOCK TABLE can only be used in transaction blocks`, which is
--- how CI caught this. A PL/pgSQL body always executes inside a
--- transaction, so the DO form is valid under both.
+-- bare lock is legal there. The `psql -f` loaders treat the ATOMIC markers
+-- as ordinary comments, so every statement gets its own implicit
+-- transaction — and a bare lock there is `ERROR: LOCK TABLE can only be
+-- used in transaction blocks`, which is how CI caught this. A PL/pgSQL
+-- body always executes inside a transaction, so the DO form is valid
+-- under all of them.
 --
--- The two loaders then differ in how long the lock is held, which is
--- correct rather than a compromise: under apply_schema.py it is held to
--- the end of the group's transaction (PL/pgSQL does not release locks on
--- block exit), which is the production guarantee this is for; under psql
--- it ends with the DO statement, and that load targets a fresh ephemeral
--- database with no concurrent writers, where there is nothing to guard.
+-- Under `apply_schema.py` the lock is held to the end of the group's
+-- transaction — PL/pgSQL does not release locks on block exit (verified
+-- against Postgres 16: `pg_locks` still reports ShareRowExclusiveLock
+-- after the DO block returns). That is the production guarantee this is
+-- for: `apply-schema-on-change` -> `apply-schema-migrations` is the only
+-- path that applies this file to the live database.
+--
+-- Under `psql -f` the lock ends with the DO statement, so it guards
+-- nothing there — but neither does the ATOMIC grouping, so that is not a
+-- gap this wrapper could close. The ATOMIC contract is the applier's
+-- alone. Three tracked scripts load this file with psql:
+--
+--   .github/workflows/backtest-pipeline.yml — an ephemeral per-run
+--     Postgres, created empty, no concurrent writers, ON_ERROR_STOP=1.
+--     Nothing to guard.
+--   gcp/setup_cloud_sql.sh — one-time provisioning. Every step is
+--     re-runnable ("already exists"), so it CAN be pointed at the live
+--     instance; doing so also rotates the production database password
+--     before it ever reaches the schema, and it omits ON_ERROR_STOP.
+--   scripts/cloud_shell/phase2_deploy.sh — a Cloud Shell runbook that
+--     reaches the LIVE instance through cloud-sql-proxy. A real
+--     production route, and the header of this file advertises two more
+--     by hand (`gcloud sql connect ... <` and `psql ... <`).
+--
+-- On any of those this group is neither atomic nor locked — as is every
+-- other ATOMIC group in this file. That is pre-existing and file-wide
+-- rather than specific to this group, and it is not this change's
+-- runbook: merging fires `apply-schema-on-change` ->
+-- `apply-schema-migrations` -> gcp/apply_schema.py, which does honour it.
+-- AUDIT-2026-09-18: the fix is to point those scripts at
+-- `python -m gcp.apply_schema`, NOT to hand-roll BEGIN/COMMIT here, which
+-- would commit the applier's own outer transaction early.
+-- `test_every_psql_loader_of_the_schema_is_accounted_for` pins the set
+-- above so a fourth cannot appear without this comment being revisited.
 DO $$
 BEGIN
     LOCK TABLE watchlists IN SHARE ROW EXCLUSIVE MODE;

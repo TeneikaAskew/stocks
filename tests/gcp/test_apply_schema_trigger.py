@@ -865,19 +865,105 @@ def test_watchlists_is_locked_before_the_history_is_built():
         f"write-blocking lock on watchlists; it is: {first[:120]!r}"
     )
 
-    # And it must be DO-wrapped, because this file has TWO loaders.
-    # `apply_schema.py` runs an ATOMIC group in one transaction, so a bare
-    # `LOCK TABLE` is legal there — but the integration-test job loads the
-    # same file with `psql -f`, where the ATOMIC markers are ordinary
-    # comments and each statement gets its own implicit transaction. A bare
-    # lock is then `ERROR: LOCK TABLE can only be used in transaction
-    # blocks`, which is exactly how CI failed on `f395a24`. A PL/pgSQL body
-    # always runs inside a transaction, so DO satisfies both loaders, and
-    # the lock still survives to the end of the group's transaction under
-    # the applier (verified against Postgres 16: `pg_locks` still reports
-    # ShareRowExclusiveLock after the DO block exits).
+    # And it must be DO-wrapped, because this file has more than one kind
+    # of loader. `apply_schema.py` runs an ATOMIC group in one transaction,
+    # so a bare `LOCK TABLE` is legal there — but three tracked scripts load
+    # the same file with `psql -f` (see PSQL_SCHEMA_LOADERS below), where the
+    # ATOMIC markers are ordinary comments and each statement gets its own
+    # implicit transaction. A bare lock is then `ERROR: LOCK TABLE can only
+    # be used in transaction blocks`, which is exactly how CI failed on
+    # `f395a24`. A PL/pgSQL body always runs inside a transaction, so DO
+    # satisfies every loader, and the lock still survives to the end of the
+    # group's transaction under the applier (verified against Postgres 16:
+    # `pg_locks` still reports ShareRowExclusiveLock after the DO exits).
     assert re.match(r"\s*DO\s*\$", first), (
-        "the lock is not DO-wrapped, so `psql -f gcp/schema.sql` — the "
-        "integration-test loader — will fail with 'LOCK TABLE can only be "
-        f"used in transaction blocks'. Statement: {first[:120]!r}"
+        "the lock is not DO-wrapped, so every `psql -f gcp/schema.sql` "
+        "loader will fail with 'LOCK TABLE can only be used in transaction "
+        f"blocks'. Statement: {first[:120]!r}"
+    )
+
+
+# Every tracked script that loads gcp/schema.sql through psql rather than
+# through gcp/apply_schema.py. psql treats `-- ATOMIC-BEGIN` / `-- ATOMIC-END`
+# as ordinary comments, so on these paths NO group in the file is atomic and
+# the watchlist_history group's lock is released with its own DO statement.
+# That is pre-existing and file-wide; what must not happen silently is a
+# FOURTH one appearing, or one of these quietly becoming a production route,
+# while schema.sql's comments still describe the old set.
+PSQL_SCHEMA_LOADERS = {
+    # Ephemeral per-run Postgres, created empty. Nothing to guard.
+    ".github/workflows/backtest-pipeline.yml",
+    # One-time provisioning; re-runnable, so it CAN reach the live instance.
+    "gcp/setup_cloud_sql.sh",
+    # Cloud Shell runbook reaching the LIVE instance via cloud-sql-proxy.
+    "scripts/cloud_shell/phase2_deploy.sh",
+}
+
+# `schema.sql` matched as a whole path component, so `p7_schema.sql` — a
+# different file with its own DDL — does not count as a loader of this one.
+_SCHEMA_REF = re.compile(r"(?<![\w-])schema\.sql")
+_PSQL = re.compile(r"\bpsql\b")
+
+
+def _psql_schema_loaders():
+    """Tracked, executable files invoking psql on gcp/schema.sql.
+
+    Shell line continuations are folded first: setup_cloud_sql.sh and
+    phase2_deploy.sh both spell the invocation across four lines, so a
+    line-at-a-time scan sees `psql` and `schema.sql` on different lines and
+    finds neither. Restricted to executable formats — prose in docs/ and this
+    test's own strings mention the command without being a loader.
+    """
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO, capture_output=True, text=True, check=True,
+    ).stdout.split("\0")
+
+    found = set()
+    for rel in tracked:
+        if not rel or not rel.endswith((".sh", ".bash", ".yml", ".yaml")):
+            continue
+        try:
+            text = (REPO / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line in text.replace("\\\n", " ").split("\n"):
+            if _PSQL.search(line) and _SCHEMA_REF.search(line):
+                found.add(rel)
+                break
+    return found
+
+
+def test_every_psql_loader_of_the_schema_is_accounted_for():
+    """The ATOMIC contract belongs to the applier; psql loaders drop it.
+
+    `b0f9d73` wrapped the watchlists lock in DO so that `psql -f` would
+    accept it, and its comment justified the resulting short lock hold with
+    "that load targets a fresh ephemeral database with no concurrent
+    writers". That was true of the loader I had looked at and false of the
+    set: `gcp/setup_cloud_sql.sh` is re-runnable against the live instance,
+    and `scripts/cloud_shell/phase2_deploy.sh` reaches it through
+    cloud-sql-proxy by design. I asserted a property of a population after
+    reading one member of it (CLAUDE.md Rule 3.11).
+
+    This pins the population. A new psql loader — or a rename of one of
+    these — turns it red, so schema.sql's account of them cannot go stale
+    without someone reading it.
+    """
+    assert _psql_schema_loaders() == PSQL_SCHEMA_LOADERS
+
+
+def test_the_schema_names_each_psql_loader_it_is_subject_to():
+    """A set pinned in a test nobody reads is the unread disclosure again.
+
+    The operator-facing copy is schema.sql's own comments, so each loader
+    must be named there too. Adding a loader then has to touch both.
+    """
+    schema = (REPO / "gcp/schema.sql").read_text()
+    missing = sorted(p for p in PSQL_SCHEMA_LOADERS if p not in schema)
+    assert not missing, (
+        "gcp/schema.sql does not name these psql loaders, so its account of "
+        f"which loads honour the ATOMIC groups is incomplete: {missing}"
     )
