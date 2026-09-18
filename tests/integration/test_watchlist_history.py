@@ -335,6 +335,75 @@ def test_a_re_add_is_never_stamped_before_the_removal_it_follows(wl):
     ), "a currently-active ticker resolved as absent"
 
 
+def test_a_removal_is_never_stamped_before_the_re_add_it_follows(wl):
+    """Codex P2 on `45846a3` -- the mirror of the case above, and a
+    correction to the reasoning I gave when I fixed that one.
+
+    I argued the removal branch should keep `NEW.removed_at` because it is
+    a value the writer *stated* rather than a clock read. That is true of a
+    backfill and false of production: both live removers spell it
+    `SET removed_at = NOW()`, and `NOW()` IS `transaction_timestamp()`. So
+    a removal whose transaction opened before a concurrent re-add committed
+    carries a stamp EARLIER than that re-add, the resolver picks the add,
+    and a removed ticker reports as active. Reproduced before fixing:
+
+        13  add     18:16:55.160928   (re-add, committed FIRST)
+        14  remove  18:16:54.164695   (removal, written LAST, a second earlier)
+        resolver -> 'add';  watchlists -> REMOVED
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+
+    # A (the remover) opens its transaction first and removes last.
+    conn_a = wl.connect()
+    tx_a = conn_a.begin()
+    conn_a.execute(sqlalchemy.text("SELECT 1"))
+    try:
+        # B re-adds and commits entirely inside A's transaction.
+        _add(wl, "ACME", JUN)
+        # A now removes, exactly as the production writers spell it.
+        conn_a.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET removed_at = now() "
+                " WHERE ticker = 'ACME' AND removed_at IS NULL"
+            )
+        )
+        tx_a.commit()
+    finally:
+        conn_a.close()
+
+    events = _events(wl, "ACME")
+    assert [a for a, _ in events] == ["add", "remove", "add", "remove"]
+    _, readded_at = events[2]
+    _, removed_at = events[3]
+    assert removed_at > readded_at, (
+        f"the removal is stamped {readded_at - removed_at} BEFORE the re-add "
+        "it follows, so as-of resolution will pick the re-add"
+    )
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == (
+        ()
+    ), "a removed ticker resolved as active"
+
+
+def test_a_deliberately_backdated_removal_is_kept_verbatim(wl):
+    """The fix above must not swallow a stated historical time.
+
+    Distinguishing them is the whole point: a value equal to
+    `transaction_timestamp()` came from `NOW()` and is a stale clock read;
+    anything else was chosen. Backdating is a live path here -- the
+    fixtures remove as of March, and a backfill states real dates -- and
+    rewriting those to execution time would destroy the as-of resolution
+    this table exists to provide.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    assert [(a, ts) for a, ts in _events(wl, "ACME")][1][1] == MAR
+
+    # And the as-of answer that depends on it.
+    assert resolve_membership_at(date(2026, 2, 1), OWNER).tickers == ("ACME",)
+    assert resolve_membership_at(date(2026, 4, 1), OWNER).tickers == ()
+
+
 # ---------------------------------------------------------------------------
 # The append-only guarantee
 # ---------------------------------------------------------------------------

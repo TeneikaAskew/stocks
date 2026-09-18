@@ -127,7 +127,8 @@ DB_HOST=127.0.0.1 DB_PORT="$PROXY_PORT" \
 DB_USER="$DB_USER" DB_PASS="$DB_PASS" DB_NAME="$DB_NAME" \
 python3 -m gcp.apply_schema \
     --revision="$(git rev-parse HEAD)" \
-    --revision-time="$(git log -1 --format=%ct HEAD)"
+    --revision-time="$(git log -1 --format=%ct HEAD)" \
+    --revision-ancestors="$(git rev-list --max-count=100 HEAD | tr '\n' ' ')"
 
 kill $PROXY_PID 2>/dev/null || true
 trap - EXIT

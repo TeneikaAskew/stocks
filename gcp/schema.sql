@@ -2475,15 +2475,36 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
 CREATE OR REPLACE FUNCTION watchlists_record_membership()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
+    -- Any timestamp a writer produced with NOW() IS transaction_timestamp():
+    -- fixed when THEIR transaction began, so it can predate an event that
+    -- committed in between and invert the log. Both production removers
+    -- spell it `SET removed_at = NOW()`, so this is the normal case, not an
+    -- exotic one. Reproduced against a live server:
+    --
+    --   13  add     18:16:55.160928   (re-add, committed FIRST)
+    --   14  remove  18:16:54.164695   (removal, written LAST, a second EARLIER)
+    --   resolver -> 'add';  watchlists -> REMOVED
+    --
+    -- A removed ticker reported active, the mirror of the re-add case.
+    -- Equality with transaction_timestamp() identifies exactly the values
+    -- that came from NOW()/CURRENT_TIMESTAMP; anything else the writer
+    -- stated deliberately -- a correction, a backfill, a fixture removing
+    -- as of March -- and that is history, not a clock read, so it is kept.
+    -- Verified both directions in psql: NOW() -> equal, an explicit
+    -- 2026-03-10 -> not equal.
     IF TG_OP = 'INSERT' THEN
         INSERT INTO watchlist_history
             (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
-        VALUES (NEW.user_id, NEW.ticker, 'add', NEW.added_at,
+        VALUES (NEW.user_id, NEW.ticker, 'add',
+                CASE WHEN NEW.added_at = transaction_timestamp()
+                     THEN clock_timestamp() ELSE NEW.added_at END,
                 NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         IF NEW.removed_at IS NOT NULL THEN
             INSERT INTO watchlist_history
                 (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
-            VALUES (NEW.user_id, NEW.ticker, 'remove', NEW.removed_at,
+            VALUES (NEW.user_id, NEW.ticker, 'remove',
+                    CASE WHEN NEW.removed_at = transaction_timestamp()
+                         THEN clock_timestamp() ELSE NEW.removed_at END,
                     NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         END IF;
         RETURN NEW;
@@ -2554,9 +2575,15 @@ BEGIN
             VALUES (NEW.user_id, NEW.ticker, 'add', clock_timestamp(),
                     NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         ELSIF OLD.removed_at IS NULL AND NEW.removed_at IS NOT NULL THEN
+            -- Same test as the INSERT branch above: a live removal carries
+            -- the remover's transaction-start clock and must not be able to
+            -- precede a re-add that committed while that transaction was
+            -- open; a deliberately backdated one is kept verbatim.
             INSERT INTO watchlist_history
                 (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
-            VALUES (NEW.user_id, NEW.ticker, 'remove', NEW.removed_at,
+            VALUES (NEW.user_id, NEW.ticker, 'remove',
+                    CASE WHEN NEW.removed_at = transaction_timestamp()
+                         THEN clock_timestamp() ELSE NEW.removed_at END,
                     NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         END IF;
         RETURN NEW;
