@@ -324,7 +324,10 @@ def test_drift_filter_covers_additions_and_deletions_not_just_edits():
     src = inspect.getsource(m.check_changed_since)
     assert "--diff-filter=AMDR" in src
     assert "--diff-filter=M\"" not in src
-    assert "drift_commits(out)" in src
+    # The call carries the declared paths since round 15: the log query is
+    # widened to the containing directory so rename PAIRS survive, and
+    # drift_commits narrows the answer back.
+    assert "drift_commits(out, code_paths)" in src
 
 
 # ── what gates and what does not ────────────────────────────────────────────
@@ -3005,3 +3008,171 @@ def test_inserting_a_marker_does_not_make_the_document_look_changed():
     after, _ = m.stamp(before, "2026-09-18", "scanned", "abc1234", False)
     assert after != before
     assert m._without_marker(after) == m._without_marker(before)
+
+
+# ── round 15 ────────────────────────────────────────────────────────────────
+
+
+def test_a_heading_inside_an_html_comment_is_not_the_document_h1():
+    """--stamp would insert the marker inside the comment, report the document
+    stamped, and leave the visible document without provenance."""
+    assert m.h1_index(["<!--", "# Old title", "-->", "# Real"]) == 3
+
+
+def test_a_comment_after_the_heading_does_not_hide_the_heading():
+    """commented_lines is whole-line because that is the question a marker or
+    an H1 asks. Treating any line CONTAINING a comment as commented would lose
+    the H1 on `# Real Title <!-- note -->` and make the document unstampable."""
+    assert m.h1_index(["# Real Title <!-- note -->", "body"]) == 0
+    assert m.find_markers(["# T", "", "**Last reviewed:** 2026-01-01 <!-- ok -->", "body"])
+
+
+def test_a_link_inside_an_html_comment_is_not_a_link():
+    """Retired Markdown kept in a comment is not rendered, so --check could
+    fail over content no reader can see."""
+    assert m.check_dead_links("d.md", "# T\n\n<!-- [old](deleted.md) -->\n",
+                              {"src/a.py"}) == []
+
+
+def test_an_inline_comment_example_does_not_hide_the_rest_of_its_line():
+    """SPANS, not whole lines. A line-level rule cost a real finding on
+    docs/product/infrastructure/05-a-ARCHITECTURE.md:5, which mentions
+    `<!-- inventory:*:start/end -->` inside backticks as an EXAMPLE and carries
+    an ordinary citation beside it -- caught by diffing findings, not by
+    reading the diff."""
+    m.TOP_LEVEL_DIRS.add("docs")
+    try:
+        # A `<!--` inside BACKTICKS is not a comment at all, so the whole line
+        # is live and both citations on it are checked.
+        line = "> between `<!-- inventory:*:start/end -->` markers, see `docs/GONE.md`"
+        out = m.check_dead_links("d.md", f"# T\n\n{line}\n", {"docs/kept.md"})
+        assert len(out) == 1 and "docs/GONE.md" in out[0]["detail"], out
+
+        # A GENUINE mid-line comment: the commented span is invisible, the rest
+        # of the line is not. This is what makes the rule span-based rather
+        # than line-based, for links and backticked paths alike.
+        mixed = "See `docs/GONE.md` <!-- and `docs/HIDDEN.md` and [x](docs/HID.md) -->"
+        out = m.check_dead_links("d.md", f"# T\n\n{mixed}\n", {"docs/kept.md"})
+        details = " ".join(f["detail"] for f in out)
+        assert "docs/GONE.md" in details, out
+        assert "HIDDEN" not in details and "HID.md" not in details, out
+    finally:
+        m.TOP_LEVEL_DIRS.discard("docs")
+
+
+def test_an_unknown_registry_class_is_refused():
+    """A mistyped class was discarded in silence, so if the document it meant
+    to cover also matches a broad fallback rule it is classified by THAT rule
+    with no finding -- a fumbled Class A declaration landing as Class D lets
+    the audit stamp and route fixes into machine-generated content."""
+    with pytest.raises(m.AuditError, match="not one of A, B, C, D, X"):
+        m.load_registry("## Registry\n\n| Class | Path glob | Declared code paths |\n"
+                        "|---|---|---|\n| AA | docs/x.md | lib |\n")
+
+
+def test_the_registry_header_and_delimiter_are_still_skipped_silently():
+    reg = m.load_registry("## Registry\n\n| Class | Path glob | Declared code paths |\n"
+                          "|---|---|---|\n| A | docs/x.md | lib |\n")
+    assert [r["cls"] for r in reg] == ["A"], reg
+
+
+def test_two_different_prose_owners_are_an_invalid_region_declaration():
+    """The later assignment silently replaced the first, so the audit reported
+    a valid region map, suppressed every unowned span, and routed all prose
+    findings to one prompt while the registry claimed two."""
+    _, unmatched, _, _, _ = m.owned_lines("# T\nbody\n", ["prose:p/a.md", "prose:p/b.md"],
+                                          prompt_exists=lambda p: True)
+    assert "prose:p/b.md" in unmatched, unmatched
+
+
+def test_the_same_prose_owner_twice_is_not_a_conflict():
+    _, unmatched, prompt, _, _ = m.owned_lines("# T\nbody\n",
+                                               ["prose:p/a.md", "prose:p/a.md"],
+                                               prompt_exists=lambda p: True)
+    assert unmatched == [] and prompt == "p/a.md"
+
+
+def test_a_pure_rename_into_a_declared_path_is_not_drift(tmp_path):
+    """A path-limited log drops the old side of the pair, so `git log -- new.py`
+    reports `A new.py` rather than `R100 old.py new.py` and drift_commits
+    called a pure rename content drift -- the one case the R100 rule excludes.
+    Reproduced against real git, not reasoned about."""
+    def g(*a):
+        subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "t@e.com")
+    g("config", "user.name", "t")
+    g("config", "commit.gpgsign", "false")
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "old.py").write_text("x = 1\n")
+    (tmp_path / "lib" / "other.py").write_text("y = 2\n")
+    g("add", "-A")
+    g("commit", "-qm", "base")
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path,
+                         capture_output=True, text=True).stdout.strip()
+    g("mv", "lib/old.py", "lib/new.py")
+    g("commit", "-qm", "pure rename")
+    assert m.check_changed_since("d.md", sha, ["lib/new.py"], "HEAD", cwd=tmp_path) == []
+    # And widening the query to the directory must not widen the ANSWER. An
+    # EDIT to a sibling, not a rename: a pure rename would be excluded by the
+    # R100 score anyway, so only an edit proves the narrowing is doing the work.
+    (tmp_path / "lib" / "other.py").write_text("y = 3\n")
+    g("add", "-A")
+    g("commit", "-qm", "unrelated edit")
+    assert m.check_changed_since("d.md", sha, ["lib/new.py"], "HEAD", cwd=tmp_path) == []
+    # A real edit under the declared path is still drift.
+    (tmp_path / "lib" / "new.py").write_text("x = 2\n")
+    g("add", "-A")
+    g("commit", "-qm", "edit")
+    assert len(m.check_changed_since("d.md", sha, ["lib/new.py"], "HEAD", cwd=tmp_path)) == 1
+
+
+def test_an_unfinished_run_does_not_end_the_walk(monkeypatch):
+    """A queued or in-progress run has an empty conclusion. Stopping on it
+    treated "the rerun has not finished" as sufficient history, so a completed
+    delivering run that FAILED, pushed onto an earlier page by dry runs, was
+    never examined."""
+    pages = {1: "\t2026-09-18T00:00:00Z\tschedule\t\n\t2026-09-17T00:00:00Z\tschedule\t\n",
+             2: "failure\t2026-09-16T00:00:00Z\tschedule\t\n"}
+    seen = []
+
+    def fake_run(cmd, **kw):
+        joined = " ".join(cmd)
+        # `&page=`, not `page=`: the URL also carries `per_page=2`, and matching
+        # the bare substring sent EVERY call to page 2 -- so the first version
+        # of this test asserted `2 in seen` against a walk that never visited
+        # page 1 and passed no matter what the pagination did.
+        page = 2 if "&page=2" in joined else 1
+        seen.append(page)
+        return pages[page]
+
+    monkeypatch.setattr(m, "run", fake_run)
+    rows = m.fetch_owning_runs(page_size=2)
+    assert seen == [1, 2], seen
+    assert any(r[0] == "failure" for r in rows), rows
+
+
+def test_a_successful_no_op_refresh_is_freshness_evidence(audit_repo, monkeypatch):
+    """refresh-architecture-docs.yml reverts every timestamp-only file and
+    opens its PR only when `meaningful == '1'`, so a month that regenerated
+    identical content leaves the old Generated date in place BY DESIGN. Two of
+    those in a row put every owned document past 40 days and the audit called
+    them all stale -- a finding whose only remedy would be forcing a cosmetic
+    change."""
+    (audit_repo / "docs" / "arch.md").write_text("# A\n\nGenerated 2026-07-01\n")
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": ["docs/arch.md"]})
+    monkeypatch.setattr(m, "run", lambda cmd, **k: (
+        "success\t2026-09-15T00:00:00Z\tschedule\t\n" if "runs?" in " ".join(cmd) else ""))
+    out = [f for f in m.check_owning_job("2026-09-18") if f["doc"] == "docs/arch.md"]
+    assert [f["severity"] for f in out] == ["P3"], out
+    assert "no-op refresh" in out[0]["detail"], out[0]["detail"]
+
+
+def test_an_old_stamp_with_no_recent_success_is_still_stale(audit_repo, monkeypatch):
+    """The no-op allowance must not swallow the case the check exists for."""
+    (audit_repo / "docs" / "arch.md").write_text("# A\n\nGenerated 2026-07-01\n")
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": ["docs/arch.md"]})
+    monkeypatch.setattr(m, "run", lambda cmd, **k: (
+        "success\t2026-07-01T00:00:00Z\tschedule\t\n" if "runs?" in " ".join(cmd) else ""))
+    out = [f for f in m.check_owning_job("2026-09-18") if f["doc"] == "docs/arch.md"]
+    assert [f["severity"] for f in out] == ["P2"], out

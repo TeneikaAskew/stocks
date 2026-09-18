@@ -503,7 +503,19 @@ def load_registry(text: str) -> list[dict]:
             continue
         cls = _cell(cells[0]).upper()
         if cls not in {"A", "B", "C", "D", "X"}:
-            continue
+            # A mistyped class was discarded in silence. If the document it
+            # meant to cover also matches a broad fallback rule it is then
+            # classified by THAT rule with no finding anywhere -- so a
+            # fumbled Class A declaration can land as Class D and let the
+            # audit stamp and route fixes into machine-generated content.
+            # The header and its delimiter are the only rows that may be
+            # skipped without comment.
+            if cls in {"CLASS", ""} or set(cls) <= set("-: "):
+                continue
+            raise AuditError(
+                f"{REGISTRY}: row for `{_cell(cells[1]) if len(cells) > 1 else cls}` "
+                f"declares class {cls!r}, which is not one of A, B, C, D, X; a class "
+                "the audit does not know is a declaration it cannot act on")
         glob = _cell(cells[1])
         if not glob or " " in glob and not glob.endswith(".md"):
             continue
@@ -739,6 +751,13 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
                 if pat.search(line):
                     owned.add(n)
                     hit = True
+        elif spec.startswith("prose:") and prompt is not None \
+                and spec[6:] != prompt:
+            # A second, DIFFERENT prose owner: the later assignment silently
+            # replaced the first, so the audit reported a valid region map,
+            # suppressed every unowned span and routed all prose findings to
+            # one prompt while the registry claimed two.
+            unmatched.append(spec)
         elif spec.startswith("prose:") and prompt_exists is not None \
                 and not prompt_exists(spec[6:]):
             # A misspelled or deleted prompt path silently claimed the entire
@@ -1012,26 +1031,72 @@ def is_future_date(date: str, today: str) -> bool:
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 
 
+def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
+    """Offset ranges inside an HTML comment, per line index.
+
+    SPANS, not whole lines. A line-level rule cost a real finding on
+    `docs/product/infrastructure/05-a-ARCHITECTURE.md:5`, which mentions
+    `<!-- inventory:*:start/end -->` inside backticks as an EXAMPLE and carries
+    an ordinary citation beside it: the balanced inline comment marked the
+    whole line invisible and the dead link on it stopped being reported.
+
+    A `<!--` inside a code span is not a comment either, so code spans are
+    masked before the scan -- which is what makes that same line parse right.
+    """
+    masked = []
+    for line in lines:
+        buf = list(line)
+        for a, b in code_spans(line):
+            for k in range(a, b):
+                buf[k] = "\x00"
+        masked.append("".join(buf))
+    text = "\n".join(masked)
+
+    ranges: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        a = text.find("<!--", pos)
+        if a < 0:
+            break
+        b = text.find("-->", a + 4)
+        end = len(text) if b < 0 else b + 3
+        ranges.append((a, end))
+        if b < 0:
+            break
+        pos = end
+
+    out: dict[int, list[tuple[int, int]]] = {}
+    base = 0
+    for i, line in enumerate(lines):
+        lo, hi = base, base + len(line)
+        for a, b in ranges:
+            s0, e0 = max(a, lo), min(b, hi)
+            if s0 < e0:
+                out.setdefault(i, []).append((s0 - base, e0 - base))
+        base = hi + 1
+    return out
+
+
 def commented_lines(lines: list[str]) -> set[int]:
-    """Indices inside an HTML comment, which renders as nothing at all.
+    """Line indices ENTIRELY inside an HTML comment, which renders as nothing.
 
     A marker-shaped line inside `<!-- ... -->` was accepted as the document's
     provenance, so the missing-marker check passed and --stamp rewrote the line
     in place -- still inside the invisible comment. The command reported
     success and the document still had no rendered review marker.
+
+    Whole-line, because that is the question a marker or an H1 asks. A line
+    with a comment in the MIDDLE of it still renders, and the link checks use
+    comment_spans so they can skip the commented part and read the rest.
     """
+    spans = comment_spans(lines)
     out: set[int] = set()
-    depth = 0
     for i, line in enumerate(lines):
-        opens = line.count("<!--")
-        closes = line.count("-->")
-        if depth:
-            out.add(i)
-        elif opens:
-            out.add(i)
-        depth += opens - closes
-        if depth < 0:
-            depth = 0
+        stop = len(line.rstrip())
+        for a, b in spans.get(i, []):
+            if a == 0 and b >= stop:
+                out.add(i)
+                break
     return out
 
 
@@ -1119,7 +1184,7 @@ def h1_index(lines: list[str]) -> int | None:
     # A fenced `# Example` before the real title was returned as the H1, so
     # --stamp inserted the provenance marker INSIDE the code block: the example
     # was rewritten and the document left effectively unstamped.
-    fenced = fenced_lines(lines)
+    fenced = fenced_lines(lines) | commented_lines(lines)
     for i, line in enumerate(lines):
         if i not in fenced and H1_RE.match(line):
             return i
@@ -1534,11 +1599,18 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
                             "severity": "P2"})
 
     lines = text.split("\n")
+    # Retired Markdown kept in an HTML comment is not rendered, so it is not a
+    # citation: `<!-- [old](deleted.md) -->` produced a gating dead-link
+    # finding over content no reader can see. Applies to the backticked pass
+    # in the same loop, for the same reason.
     # A fenced block is an EXAMPLE, not a citation. A document demonstrating
     # Markdown syntax with `[x](missing.md)`, or showing a path that has since
     # moved, was read as rendered documentation and failed --check over its own
     # teaching material. The marker and heading checks already skip these.
     fenced = fenced_lines(lines)
+    # Retired Markdown kept in a comment is not rendered, so it is not a
+    # citation -- but only the commented SPAN is invisible, not the line.
+    commented = comment_spans(lines)
 
     # Reference-style Markdown: `[guide][g]` with `[g]: docs/guide.md` further
     # down. Neither shape matches MD_LINK_RE, so a broken reference link -- the
@@ -1571,14 +1643,17 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
         # findings over a document's own syntax examples. Only this pass is
         # masked -- the backtick pass below needs those code spans, because a
         # backticked path IS its subject.
-        spans = code_spans(line)
+        spans = code_spans(line) + commented.get(n - 1, [])
         for m in MD_LINK_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in spans):
                 continue
             if m.start() and line[m.start() - 1] == "\\":
                 continue
             check_target(m.group("target"), m.group("frag"), n)
+        hidden = commented.get(n - 1, [])
         for m in BACKTICK_PATH_RE.finditer(line):
+            if any(lo <= m.start() < hi for lo, hi in hidden):
+                continue
             cited = m.group("path")
             # Root-relative, parent-relative and line-qualified spellings all
             # name the same repository file as the plain form; see
@@ -1635,7 +1710,20 @@ _DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{7,40}\t")
 _DRIFT_STATUS_RE = re.compile(r"^([AMDRCT])(\d{3})?\t")
 
 
-def drift_commits(out: str) -> list[str]:
+def _touches(status_line: str, paths: list[str]) -> bool:
+    """Does this `--name-status` line name one of the declared paths?
+
+    Both sides of a rename count: `R100 old.py new.py` is about the declared
+    path whichever end carries it.
+    """
+    for cell in status_line.split("\t")[1:]:
+        cell = cell.strip()
+        if any(cell == p or cell.startswith(f"{p}/") for p in paths):
+            return True
+    return False
+
+
+def drift_commits(out: str, paths: list[str] | None = None) -> list[str]:
     """Commits in a `--name-status` listing that actually changed content.
 
     A pure rename (`R100`) is not drift; a moved file with an edit (`R096`) is
@@ -1650,6 +1738,11 @@ def drift_commits(out: str) -> list[str]:
             continue
         status = _DRIFT_STATUS_RE.match(line)
         if not status or not commits:
+            continue
+        # The query may have been widened to a containing directory so rename
+        # pairs survive (see check_doc_changed_since); the answer is narrowed
+        # back here, so a commit that touched only a sibling file is not drift.
+        if paths is not None and not _touches(line, paths):
             continue
         kind, score = status.group(1), status.group(2)
         if kind in "AMDT" or (kind == "R" and int(score or 100) < 100):
@@ -1728,14 +1821,23 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # filter was for: the 2026-09-07 file-move wave must not flag every
     # document. `-M` asks for the score explicitly rather than trusting
     # `diff.renames` on whichever machine runs the audit.
+    # Rename detection needs BOTH sides of the pair in the diff, and a
+    # path-limited log drops the old one: after a pure `git mv old.py new.py`,
+    # `git log -- new.py` reports `A new.py` rather than `R100 old.py new.py`,
+    # so drift_commits called a pure rename content drift -- the one case the
+    # R100 rule exists to exclude. Querying the containing DIRECTORY keeps the
+    # pair intact, and the status lines are filtered back to the declared paths
+    # afterwards, so the widened query never widens the answer.
+    scopes = sorted({p if not posixpath.splitext(p)[1] else (posixpath.dirname(p) or ".")
+                     for p in code_paths})
     out = run(["git", "log", "--format=%h%x09%s", "--name-status", "-M",
                # T as well: git files a regular-file-to-symlink conversion as a
                # TYPE change, and AMDR dropped the commit before drift_commits
                # could look at it -- so replacing a declared implementation path
                # with a symlink changed the surface and queued no review.
-               "--diff-filter=AMDRT", f"{sha}..{base_ref}", "--"] + code_paths,
+               "--diff-filter=AMDRT", f"{sha}..{base_ref}", "--"] + scopes,
               cwd=cwd or REPO)
-    commits = drift_commits(out)
+    commits = drift_commits(out, code_paths)
     if not commits:
         return []
     return [{"check": "changed-since", "doc": doc,
@@ -1964,7 +2066,12 @@ def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
         # column left. The timestamp then reads as the conclusion.
         page_rows = [r.split("\t") for r in out.strip("\n").split("\n") if r.strip()]
         rows += page_rows
-        if any(not _is_dry_run(r) for r in page_rows):
+        # A QUEUED or in-progress run has an empty conclusion. Stopping on it
+        # treated "the rerun has not finished" as sufficient history, and
+        # check_owning_job accepts that empty conclusion too -- so a completed
+        # delivering run that FAILED, pushed onto an earlier page by dry runs,
+        # was never examined and the delivery audit could report clean.
+        if any(not _is_dry_run(r) and r[0].strip() for r in page_rows):
             return rows
         if len(page_rows) < page_size:
             break
@@ -2031,6 +2138,10 @@ def check_owning_job(today: str) -> list[dict]:
     # then vanished from the report until the 40-day stamp threshold fired.
     # Delivery is judged from the latest NON-dry execution.
     delivering = [r for r in recent if not _is_dry_run(r)]
+    # The most recent COMPLETED delivering run that succeeded. It is what says
+    # a no-op month regenerated identical content, which no document can show
+    # about itself because the workflow reverts timestamp-only files.
+    last_success = max((r[1][:10] for r in delivering if r[0] == "success"), default="")
     if delivering and delivering[0][0] not in {"success", ""}:
         findings.append({"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P1",
                          "detail": f"last delivering run concluded {delivering[0][0]} "
@@ -2126,6 +2237,25 @@ def check_owning_job(today: str) -> list[dict]:
             continue
         age = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(newest)).days
         if age > 40:
+            # A SUCCESSFUL no-op refresh is freshness evidence the document
+            # cannot carry. refresh-architecture-docs.yml reverts every
+            # timestamp-only file and opens its PR only when
+            # `meaningful == '1'`, so a month that regenerated identical
+            # content leaves the old Generated date in place by design. Two of
+            # those in a row put every owned document past 40 days and the
+            # audit called them all stale -- a finding whose only remedy would
+            # be forcing a cosmetic change.
+            if last_success and last_success >= newest:
+                since = (datetime.date.fromisoformat(today)
+                         - datetime.date.fromisoformat(last_success)).days
+                if since <= 40:
+                    findings.append({"check": "class-a", "doc": doc, "severity": "P3",
+                                     "detail": f"Generated {newest} is {age}d old, but the "
+                                               f"owning job last succeeded {since}d ago "
+                                               f"({last_success}) without opening a PR -- a "
+                                               "no-op refresh, which reverts timestamp-only "
+                                               "files by design"})
+                    continue
             findings.append({"check": "class-a", "doc": doc, "severity": "P2",
                              "detail": f"Generated {newest} is {age}d old; the refresh is monthly"})
     return findings
