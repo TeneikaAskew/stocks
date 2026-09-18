@@ -168,7 +168,13 @@ def run(cmd: list[str], *, cwd: pathlib.Path = REPO,
 BASE_REF_CANDIDATES = ("origin/main", "main", "HEAD")
 
 
-def resolve_base_ref(candidates: tuple[str, ...] = BASE_REF_CANDIDATES) -> str:
+def _ref_exists(ref: str) -> bool:
+    return subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
+                          cwd=REPO, capture_output=True).returncode == 0
+
+
+def resolve_base_ref(candidates: tuple[str, ...] = BASE_REF_CANDIDATES,
+                     exists=_ref_exists) -> str:
     """The ref this run audits against: the first candidate git can resolve.
 
     Hard-coding `origin/main` made every documented invocation abort with exit
@@ -183,8 +189,7 @@ def resolve_base_ref(candidates: tuple[str, ...] = BASE_REF_CANDIDATES) -> str:
     ref resolves, so that raises.
     """
     for ref in candidates:
-        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
-                          cwd=REPO, capture_output=True).returncode == 0:
+        if exists(ref):
             return ref
     raise AuditError(
         f"none of {', '.join(candidates)} resolves in this checkout; there is "

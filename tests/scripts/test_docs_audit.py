@@ -278,13 +278,28 @@ def test_base_ref_falls_back_when_origin_main_is_absent():
     reading a single document -- the actions/checkout case this module's own
     run() docstring describes. --since did not work around it either, because
     ls-tree, ancestry and drift named the ref separately.
+
+    The resolver is injected rather than shelling out, because the first
+    version of this test asserted that `origin/main` resolves -- in the very
+    test for behaviour when it does not. It passed locally and turned CI red
+    in the one environment the fix was written for.
     """
-    assert m.resolve_base_ref(("definitely-not-a-ref", "HEAD")) == "HEAD"
+    assert m.resolve_base_ref(("origin/main", "main", "HEAD"),
+                              exists=lambda r: r == "HEAD") == "HEAD"
 
 
 def test_base_ref_prefers_the_trunk_when_it_is_there():
-    assert m.resolve_base_ref(("HEAD", "definitely-not-a-ref")) == "HEAD"
-    assert m.resolve_base_ref(("origin/main", "HEAD")) == "origin/main"
+    assert m.resolve_base_ref(("origin/main", "main", "HEAD"),
+                              exists=lambda r: True) == "origin/main"
+    assert m.resolve_base_ref(("origin/main", "main", "HEAD"),
+                              exists=lambda r: r in {"main", "HEAD"}) == "main"
+
+
+def test_base_ref_resolution_is_not_hard_coded_to_this_checkout():
+    """Whatever this environment has, the real resolver must agree with git."""
+    ref = m.resolve_base_ref()
+    assert ref in m.BASE_REF_CANDIDATES
+    assert m._ref_exists(ref)
 
 
 def test_no_resolvable_ref_raises_rather_than_guessing():
