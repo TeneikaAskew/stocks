@@ -361,6 +361,12 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
 
     ``all``            every line (a wholly rendered artefact, e.g. a .drawio)
     ``inventory:*``    every ``<!-- inventory:NAME:start/end -->`` pair
+    ``inventory:NAME`` that pair, which must exist. The wildcard is satisfied
+                       by whatever blocks survive, so a renderer that stops
+                       emitting a block -- both markers gone, nothing
+                       unbalanced -- is invisible to it. Naming the blocks
+                       makes the registry, not the surviving markers, say
+                       what coverage exists.
     ``mark:NAME``      the ``<!-- BEGIN NAME -->``..``<!-- END NAME -->`` pair
     ``line:REGEX``     every line matching REGEX (README's badges, its footer)
     ``prose:PATH``     everything not otherwise claimed is model-written, by
@@ -380,6 +386,7 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
     orphans: list[str] = []
     prompt: str | None = None
     exhaustive = False
+    pairs, unbalanced = inventory_blocks(lines)
 
     for spec in specs:
         hit = False
@@ -388,28 +395,22 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             hit = bool(lines)
         elif spec == "inventory:*":
             # Every block has to balance, not just one of them. Treating the
-            # wildcard as satisfied by the first valid pair let a renderer drop
-            # a whole block, or emit a start with no end, while the remaining
-            # pairs kept `hit` true -- and in a `prose:` file the abandoned
-            # span then routes silently as model prose.
-            open_at: dict[str, int] = {}
-            for n, line in enumerate(lines, 1):
-                m = INVENTORY_RE.search(line)
-                if not m:
-                    continue
-                name = m.group("name")
-                if m.group("edge") == "start":
-                    if name in open_at:
-                        orphans.append(f"inventory:{name} opened twice (lines "
-                                       f"{open_at[name]} and {n})")
-                    open_at[name] = n
-                elif name in open_at:
-                    owned.update(range(open_at.pop(name), n + 1))
-                    hit = True
-                else:
-                    orphans.append(f"inventory:{name} ends at line {n} with no start")
-            for name, n in sorted(open_at.items(), key=lambda kv: kv[1]):
-                orphans.append(f"inventory:{name} starts at line {n} with no end")
+            # wildcard as satisfied by the first valid pair let a renderer
+            # emit a start with no end while the remaining pairs kept `hit`
+            # true -- and in a `prose:` file the abandoned span then routed
+            # silently as model prose.
+            for lo, hi in pairs.values():
+                owned.update(range(lo, hi + 1))
+                hit = True
+            orphans.extend(o for o in unbalanced if o not in orphans)
+        elif spec.startswith("inventory:"):
+            name = spec[10:]
+            if name in pairs:
+                lo, hi = pairs[name]
+                owned.update(range(lo, hi + 1))
+                hit = True
+            orphans.extend(o for o in unbalanced
+                           if o.startswith(f"inventory:{name} ") and o not in orphans)
         elif spec.startswith("mark:"):
             # Every occurrence, not the first. `next(...)` validated one pair
             # and set hit, so a duplicate or unmatched marker left a generated
@@ -456,6 +457,33 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
         if not hit:
             unmatched.append(spec)
     return owned, unmatched, prompt, orphans, exhaustive
+
+
+def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list[str]]:
+    """Balanced `<!-- inventory:NAME:start/end -->` pairs by name, and every
+    marker with no partner, each described with its line so the finding can
+    be acted on. Read once per document; both the wildcard and the named
+    specs consume it."""
+    pairs: dict[str, tuple[int, int]] = {}
+    unbalanced: list[str] = []
+    open_at: dict[str, int] = {}
+    for n, line in enumerate(lines, 1):
+        m = INVENTORY_RE.search(line)
+        if not m:
+            continue
+        name = m.group("name")
+        if m.group("edge") == "start":
+            if name in open_at:
+                unbalanced.append(f"inventory:{name} opened twice (lines "
+                                  f"{open_at[name]} and {n})")
+            open_at[name] = n
+        elif name in open_at:
+            pairs[name] = (open_at.pop(name), n)
+        else:
+            unbalanced.append(f"inventory:{name} ends at line {n} with no start")
+    for name, n in sorted(open_at.items(), key=lambda kv: kv[1]):
+        unbalanced.append(f"inventory:{name} starts at line {n} with no end")
+    return pairs, unbalanced
 
 
 def unowned_spans(text: str, owned: set[int]) -> list[tuple[int, int]]:
@@ -774,8 +802,36 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     return out
 
 
-def check_changed_since(doc: str, sha: str | None, code_paths: list[str],
-                        base_ref: str = "origin/main") -> list[dict]:
+def check_marker_sha(doc: str, sha: str | None, base_ref: str, *,
+                     cwd: pathlib.Path | None = None) -> tuple[list[dict], bool]:
+    """Findings on a marker's `Against:` SHA, and whether drift since it can be measured.
+
+    Two different answers, kept apart. A SHA this checkout does not hold (a
+    depth-1 clone, or a marker stamped against a branch since rewritten) is
+    reported for that document and the drift since it declared unmeasurable;
+    asking `git log` about it exits 128 and aborted the whole run, which is
+    what a depth-1 checkout of this branch did on 2f14ccf right after
+    `resolve_base_ref` had let it get that far. A SHA that IS here but is not
+    an ancestor of the base ref is the ordinary finding, and drift is measured.
+    """
+    if not sha:
+        return [], True
+    known = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+                           cwd=cwd or REPO, capture_output=True).returncode == 0
+    if not known:
+        return [{"check": "marker", "doc": doc, "severity": "P2",
+                 "detail": f"reviewed-against {sha} is not in this checkout; drift since "
+                           f"it cannot be measured (shallow clone?)"}], False
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", sha, base_ref],
+                              cwd=cwd or REPO, capture_output=True).returncode == 0
+    if not ancestor:
+        return [{"check": "marker", "doc": doc, "severity": "P2",
+                 "detail": f"reviewed-against {sha} is not an ancestor of {base_ref}"}], True
+    return [], True
+
+
+def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_ref: str,
+                        *, cwd: pathlib.Path | None = None) -> list[dict]:
     if not sha or not code_paths:
         return []
     # `git log` exits 0 with empty output when the range holds no commits, so
@@ -786,9 +842,11 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str],
     # AMD, not M: a declared path GAINING a module or LOSING one changes the
     # documented surface just as much as editing one, and `M` alone queued
     # neither. Renames stay excluded -- that is what the filter is for, so the
-    # 2026-09-07 file-move wave does not flag every document.
-    out = run(["git", "log", "--oneline", "--diff-filter=AMD", f"{sha}..{base_ref}",
-               "--"] + code_paths)
+    # 2026-09-07 file-move wave does not flag every document -- and
+    # `--find-renames` says so explicitly rather than trusting `diff.renames`
+    # on whichever machine runs the audit.
+    out = run(["git", "log", "--oneline", "--find-renames", "--diff-filter=AMD",
+               f"{sha}..{base_ref}", "--"] + code_paths, cwd=cwd or REPO)
     commits = [c for c in out.strip().split("\n") if c.strip()]
     if not commits:
         return []
@@ -999,32 +1057,27 @@ def main(argv: list[str] | None = None) -> int:
             if is_future_date(info["date"], today):
                 findings.append({"check": "marker", "doc": doc, "severity": "P1",
                                  "detail": f"review date {info['date']} is in the future"})
-            if info["sha"]:
-                ok = subprocess.run(["git", "merge-base", "--is-ancestor", info["sha"], base_ref],
-                                    cwd=REPO, capture_output=True).returncode == 0
-                if not ok:
-                    findings.append({"check": "marker", "doc": doc, "severity": "P2",
-                                     "detail": f"reviewed-against {info['sha']} is not an ancestor of {base_ref}"})
-            # A marker with `unknown` or no `Against` satisfies the
-            # missing-marker check while supporting no drift check at all:
-            # check_changed_since gets None and returns nothing, so --stamp
-            # could clear the finding without anyone reviewing the document.
-            # Say what is still owed instead of going quiet.
+            # Their check_marker_sha supersedes the inline ancestry test: a
+            # SHA this checkout does not hold is a finding for that document,
+            # not an abort for the whole run, and drift is skipped for it.
+            sha_findings, measurable = check_marker_sha(doc, info["sha"], base_ref)
+            findings += sha_findings
+            # Separately: a marker with `unknown` or no `Against` passes every
+            # check above while supporting no drift check at all, so --stamp
+            # could clear the missing-marker finding with nobody having
+            # reviewed anything. Say what is still owed instead of going quiet.
+            # P3, because --check gates on P1/P2: 98 never-reviewed documents
+            # belong on the worklist and must not hold a build red forever.
             if info["date"] == "unknown" or not info["sha"]:
                 missing = []
                 if info["date"] == "unknown":
                     missing.append("never reviewed")
                 if not info["sha"]:
                     missing.append("no reviewed-against SHA, so drift cannot be checked")
-                # P3, and --check does not gate on P3. The finding must exist
-                # -- otherwise --stamp clears the missing-marker report without
-                # anyone having reviewed anything -- but 98 never-reviewed
-                # documents must not hold the gate red forever, which is the
-                # same objection that took the unowned complement out of
-                # `findings`. It is a worklist, and the worklist is the point.
                 findings.append({"check": "marker", "doc": doc, "severity": "P3",
                                  "detail": "incomplete provenance: " + "; ".join(missing)})
-            findings += check_changed_since(doc, info["sha"], code_paths, base_ref)
+            if measurable:
+                findings += check_changed_since(doc, info["sha"], code_paths, base_ref)
 
         if args.stamp:
             # Never write a marker into a generated region. The marker goes

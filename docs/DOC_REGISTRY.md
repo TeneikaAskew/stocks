@@ -63,20 +63,25 @@ trap wearing a safeguard's label, and `05-e`'s 30 lines and
 `INVESTMENT_MODELS_SUMMARY`'s 1,236 are the same kind of content PR #1111 found
 wrong elsewhere.
 
-`docs_audit.py` reads the `Generated regions` column, reports the complement,
-and treats it as Class D: audited, corrected and stamped in the ordinary
-freshness PR. The spec grammar is small on purpose:
+`docs_audit.py` reads the `Generated regions` column, maps the complement, and
+treats it as Class D: audited, corrected and stamped in the ordinary freshness
+PR. The complement is intentional, so it is counted in the report's `regions`
+map, never reported as a defect. The spec grammar is small on purpose:
 
 | Spec | Owns |
 |---|---|
 | `all` | every line (a wholly rendered artefact — the `.drawio` companions) |
 | `inventory:*` | every `<!-- inventory:NAME:start/end -->` pair |
+| `inventory:NAME` | that pair, which must exist: the blocks the renderer is expected to emit, so a block dropped with both its markers is still noticed |
 | `mark:NAME` | the `<!-- BEGIN NAME -->`..`<!-- END NAME -->` pair |
 | `line:REGEX` | every line matching REGEX (README's badges, its footer) |
 | `prose:PATH` | the remainder is model-written, by the prompt at PATH |
 
 A declared region that matches nothing is a **P1**: a renderer that stopped
 emitting its block leaves this table claiming a coverage that no longer exists.
+An inventory marker with no partner (a start with no end, an orphan end, a
+double open) is a **P1** for the same reason; one intact pair does not vouch
+for the others.
 An empty region cell on a Class A row is also a finding, never "assume the whole
 file is generated" — the absence of a declaration must not become a permissive
 default.
@@ -131,10 +136,10 @@ renames are ignored, so a file-move wave does not flag every document.
 | A | README.md | gcp/deploy.sh, gcp/schema.sql | line:img\.shields\.io; line:^Generated \d{4}-\d{2}-\d{2} by the monthly |
 | A | Architecture.drawio | gcp/deploy.sh | all |
 | A | Architecture-icons.drawio | gcp/deploy.sh | all |
-| A | docs/product/infrastructure/05-a-ARCHITECTURE.md | gcp/deploy.sh, gcp/schema.sql, platform/api | inventory:*; prose:.github/prompts/architecture.md |
-| A | docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md | gcp/schema.sql, gcp/fetchers | inventory:*; prose:.github/prompts/data-dependencies.md |
+| A | docs/product/infrastructure/05-a-ARCHITECTURE.md | gcp/deploy.sh, gcp/schema.sql, platform/api | inventory:*; inventory:tables; inventory:dbtables; inventory:jobs; inventory:services; inventory:routes; inventory:schedulers; inventory:reconcile; inventory:modules; prose:.github/prompts/architecture.md |
+| A | docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md | gcp/schema.sql, gcp/fetchers | inventory:*; inventory:tables; inventory:dbtables; inventory:writes; inventory:reads; inventory:multiwriter; inventory:orphans; inventory:blast; inventory:graph; prose:.github/prompts/data-dependencies.md |
 | A | docs/product/infrastructure/05-d-COST_ANALYSIS.md | gcp/deploy.sh | prose:.github/prompts/cost-analysis.md |
-| A | docs/product/infrastructure/05-e-API.md | platform/api | inventory:* |
+| A | docs/product/infrastructure/05-e-API.md | platform/api | inventory:*; inventory:routers; inventory:routes |
 | A | docs/INVESTMENT_MODELS_SUMMARY.md | lib/strategies | mark:ticker_calibration_resolved_values |
 | B | docs/product/infrastructure/manual/* | |  |
 | C | docs/archive/* | |  |
