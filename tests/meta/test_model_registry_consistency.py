@@ -385,7 +385,12 @@ def _vocab(pattern: str) -> set[str]:
 STATUS_COLUMN = {
     "## Deterministic and heuristic systems": 6,
     "## Learned models": 6,
-    "## LLM nodes": 5,
+    # 6, not 5: the LLM table gained a Code column on 2026-09-18. Until then it
+    # was the only MODEL-* table without one, which is why the completeness gate
+    # could not see `insight-pipeline` -- its rule is "executes code cited in a
+    # MODEL-* row", and no LLM row cited any code. The one pointer that existed,
+    # `orchestrator.py:490-492`, sat in the Numeric authority prose.
+    "## LLM nodes": 6,
 }
 
 
@@ -1100,7 +1105,15 @@ MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds
                  # lib/features/flow_direction.py was cited by none. Adding the
                  # job first would have made the gate demand a row that did not
                  # exist. The registry was short a model, not the list an entry.
-                 "build-options-greeks")
+                 "build-options-greeks",
+                 # Added 2026-09-18 with MODEL-EARN-002 and the LLM table's new
+                 # Code column. `insight-pipeline` runs all 14 registered LLM
+                 # nodes on a weekday cron and was invisible to this gate for the
+                 # same structural reason as build-options-greeks: the rule below
+                 # needs a MODEL-* row to cite the code, and the LLM table had no
+                 # Code column at all.
+                 "earnings-reactions-brief", "insight-pipeline",
+                 "insight-discord-push")
 
 def _is_model_bearing(job: str) -> bool:
     return any(k in job for k in MODEL_BEARING)
