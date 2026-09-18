@@ -73,6 +73,9 @@ def capture(monkeypatch):
         return _bars(230, seed=7)
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    # The universe mirrors INSIGHT_TICKERS when the DB list is empty; pin
+    # the env so a stray value in the runner cannot change what is seen.
+    monkeypatch.delenv("INSIGHT_TICKERS", raising=False)
     return seen
 
 
@@ -299,9 +302,108 @@ def test_an_empty_universe_is_logged_not_silent(monkeypatch, caplog):
         return _bars(230, seed=7)
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    monkeypatch.delenv("INSIGHT_TICKERS", raising=False)
     with caplog.at_level(logging.WARNING, logger="lib.agents.summarizers"):
-        result = summarizers._build_cross_ticker_history("TGT", "2026-09-15")
+        result, source = summarizers._build_cross_ticker_history("TGT", "2026-09-15")
     assert result is None
+    assert source is None
     assert any("universe empty" in r.getMessage() for r in caplog.records), (
         "an empty analog universe produced no log line"
     )
+
+
+# ---------------------------------------------------------------------------
+# Codex P2 on `1069e50`, "Honor the resolved fallback universe". Verified
+# against gcp/insight_pipeline_job.py:674-695 and _watchlist.load_watchlist
+# before fixing: the job resolves INSIGHT_TICKERS env, else the DB list,
+# else DEFAULT_TICKERS; load_watchlist resolves DB rows, else
+# INSIGHT_TICKERS, else []. The universe consulted only the DB.
+# ---------------------------------------------------------------------------
+
+
+def _env_mirror_query(monkeypatch, seen):
+    """A fake `_query` where the DB watchlist is empty at the cutoff and
+    only the INSIGHT_TICKERS mirror returns bars."""
+    def fake_query(sql: str, params=None):
+        params = params or {}
+        seen.append((sql, params))
+        if "EXISTS" in sql:
+            return pd.DataFrame()
+        if "= ANY(:universe)" in sql:
+            frames = []
+            for i, tk in enumerate(params["universe"]):
+                f = _bars(260, seed=300 + i)
+                f.insert(0, "ticker", tk)
+                frames.append(f)
+            return pd.concat(frames, ignore_index=True)
+        return _bars(230, seed=7)
+
+    monkeypatch.setattr(summarizers, "_query", fake_query)
+
+
+def test_the_env_override_is_the_universe_when_the_db_list_is_empty(
+    monkeypatch, caplog
+):
+    """Mirror `load_watchlist`: DB rows, else INSIGHT_TICKERS.
+
+    An env-driven run against a DB list that is empty at the cutoff lost
+    the expansion entirely. That is every replay dated before the table
+    was seeded on 2026-04-27, now that membership resolves at the cutoff.
+    The fallback is loud and disclosed: WARNING log plus
+    `cross_ticker_source` on the section the researcher payload dumps
+    whole (CLAUDE.md Rule 3.7.1). The #822 cutoff operator and the
+    asset-class predicate must survive on this path too.
+    """
+    seen: list[tuple[str, dict]] = []
+    _env_mirror_query(monkeypatch, seen)
+    monkeypatch.setenv("INSIGHT_TICKERS", "tgt, PEER1,PEER2,peer1")
+    with caplog.at_level(logging.WARNING, logger="lib.agents.summarizers"):
+        out = summarizers.summarize_backtest_metrics("TGT")
+
+    env_calls = [(s, p) for s, p in seen if "= ANY(:universe)" in s]
+    assert env_calls, "the INSIGHT_TICKERS universe was never queried"
+    sql, params = env_calls[-1]
+    assert params["universe"] == ["PEER1", "PEER2"], (
+        "the env universe must be deduped, uppercased and exclude the target"
+    )
+    assert "m.ticker <> :ticker" in sql
+    assert "(left(m.ticker, 1) = '^') = (left(:ticker, 1) = '^')" in sql
+    assert "m.date < CAST(:cutoff AS date)" in sql, "the #822 guard was lost on the env path"
+    assert out["cross_ticker_used"] is True
+    assert out["cross_ticker_source"] == "INSIGHT_TICKERS"
+    assert any("sourced from INSIGHT_TICKERS" in r.getMessage() for r in caplog.records)
+
+
+def test_the_env_override_is_not_consulted_when_the_db_list_answers(
+    capture, monkeypatch
+):
+    """Layer order matters: the DB is the source of truth when it has rows.
+
+    This is what keeps the common `INSIGHT_TICKERS=NVDA` replay on the
+    curated peer set: the env list never narrows a universe the DB
+    already answered.
+    """
+    monkeypatch.setenv("INSIGHT_TICKERS", "TGT,ZZZ1,ZZZ2")
+    out = summarizers.summarize_backtest_metrics("TGT")
+    assert not [s for s, _ in capture if "= ANY(:universe)" in s], (
+        "INSIGHT_TICKERS was consulted although the DB watchlist answered"
+    )
+    assert out["cross_ticker_source"] == "watchlists"
+
+
+def test_default_tickers_are_not_a_universe(monkeypatch, caplog):
+    """No env and no DB rows means no universe, said out loud.
+
+    The job's DEFAULT_TICKERS is its own last resort for *targets*. Using a
+    hardcoded list as the analog universe is the Rule 3.7 shape, so the
+    empty path stays loud rather than fabricating peers.
+    """
+    seen: list[tuple[str, dict]] = []
+    _env_mirror_query(monkeypatch, seen)
+    monkeypatch.delenv("INSIGHT_TICKERS", raising=False)
+    with caplog.at_level(logging.WARNING, logger="lib.agents.summarizers"):
+        out = summarizers.summarize_backtest_metrics("TGT")
+    assert not [s for s, _ in seen if "= ANY(:universe)" in s]
+    assert out["cross_ticker_used"] is False
+    assert out["cross_ticker_source"] is None
+    assert any("universe empty" in r.getMessage() for r in caplog.records)

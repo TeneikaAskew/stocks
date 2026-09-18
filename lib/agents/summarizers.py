@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -976,6 +977,9 @@ def summarize_backtest_metrics(
         pattern_today: dict — features describing today's setup
         analog_count: int   — how many historical matches
         cross_ticker_used: bool — whether cross-ticker analogs were merged
+        cross_ticker_source: 'watchlists' | 'INSIGHT_TICKERS' | None —
+                                which universe the expansion drew from;
+                                None when it did not run or was empty
         forward_returns: dict — day_1/3/5/10 stats (median, mean,
                                 win_rate, p25, p75, max, min)
         top_analogs: list[dict] — up to 5 closest historical
@@ -1111,11 +1115,17 @@ def summarize_backtest_metrics(
             break
 
     cross_used = False
+    # Which universe the analogs were drawn from ('watchlists' or the
+    # INSIGHT_TICKERS mirror); None when the expansion did not run or the
+    # universe was empty. Surfaced so a cross-source fallback is never
+    # silent (Rule 3.7.1): the raw bundle reaches the researcher prompts.
+    cross_source = None
     # If same-ticker matches are sparse, expand to every other ticker
     # in the table at the *same* tolerance band — keeps match quality
     # comparable while widening the analog universe.
     if cross_ticker and len(matched) < 10:
-        cross_history = _build_cross_ticker_history(ticker, str(cutoff), inclusive_today=inclusive_today)
+        cross_history, cross_source = _build_cross_ticker_history(
+            ticker, str(cutoff), inclusive_today=inclusive_today)
         if cross_history is not None and not cross_history.empty:
             target_band = band_used or bands[-1]
             cross_matched = _matches_in(cross_history, *target_band)
@@ -1131,6 +1141,7 @@ def summarize_backtest_metrics(
             "analog_count": int(len(matched)),
             "tolerance_bands_used": band_used or bands[-1],
             "cross_ticker_used": cross_used,
+            "cross_ticker_source": cross_source,
             "forward_returns": None,
             "top_analogs": [],
             "note": (
@@ -1191,6 +1202,7 @@ def summarize_backtest_metrics(
         "analog_count": int(len(matched)),
         "tolerance_bands_used": band_used,
         "cross_ticker_used": cross_used,
+        "cross_ticker_source": cross_source,
         "forward_returns": forward,
         "top_analogs": top,
     }
@@ -1286,6 +1298,24 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
     wrong. Measured 2026-09-17 the table held 16 active rows across 1 user,
     so this was latent rather than firing (Codex P1 on ``c75c22c``).
 
+    The universe mirrors ``load_watchlist``'s resolution order: the shared
+    owner's DB rows, else ``INSIGHT_TICKERS`` (Codex P2 on ``1069e50``).
+    A run driven by that env var against a DB list that is empty at the
+    cutoff therefore expands over the run's own tickers rather than
+    nothing. That includes every replay dated before the table was
+    seeded on 2026-04-27, for which the as-of predicate above correctly
+    resolves no members at all. The DB wins whenever it has members, so
+    the common ``INSIGHT_TICKERS=NVDA`` replay keeps the curated peers
+    and the env list never *narrows* a universe. The job's
+    ``DEFAULT_TICKERS`` is not mirrored: a hardcoded universe standing in
+    for a real one is the Rule 3.7 shape, and the loud empty path is the
+    honest answer. Which source answered is returned alongside the frame
+    and surfaced as ``cross_ticker_source`` on the section, which the
+    researcher payload dumps whole (Rule 3.7.1). The run's *target* list
+    is not the universe and is not threaded in: on the daily run the
+    targets are the 3 ``in_insight`` names while the 65 NVDA analogs
+    measured above came from AMD/AVGO/MRVL, on the list but not targets.
+
     Deliberately NOT done: no ``LIMIT``. Truncating an analog sample
     biases it — ``ORDER BY ticker`` means a LIMIT would silently keep
     only the alphabetically-early names. The bound belongs on the
@@ -1306,23 +1336,58 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
     daily_op = "<=" if inclusive_today else "<"
     # Lazy, matching `_query` above: keeps `gcp` off this module's import
     # path. Precedent: lib/agents/ranker/candidates.py:246.
-    from gcp.fetchers._watchlist import DEFAULT_USER_ID
+    from gcp.fetchers._watchlist import DEFAULT_USER_ID, _dedupe_upper
 
-    df = _query(
+    target = target_ticker.upper()
+    bars_sql = (
         "SELECT m.ticker, m.date, m.open, m.high, m.low, m.close, m.volume "
         "FROM market_data_daily m "
         "WHERE m.ticker <> :ticker "
         "  AND (left(m.ticker, 1) = '^') = (left(:ticker, 1) = '^') "
         f"  AND m.date {daily_op} CAST(:cutoff AS date) "
-        "  AND EXISTS (SELECT 1 FROM watchlists w "
-        "               WHERE w.ticker = m.ticker "
-        "                 AND w.user_id = :watchlist_owner "
-        "                 AND w.added_at < CAST(:cutoff AS date) + 1 "
-        "                 AND (w.removed_at IS NULL OR w.removed_at >= CAST(:cutoff AS date))) "
-        "ORDER BY m.ticker ASC, m.date ASC",
-        {"ticker": target_ticker.upper(), "cutoff": cutoff,
-         "watchlist_owner": DEFAULT_USER_ID},
     )
+    params = {"ticker": target, "cutoff": cutoff,
+              "watchlist_owner": DEFAULT_USER_ID}
+
+    df = _query(
+        bars_sql
+        + "  AND EXISTS (SELECT 1 FROM watchlists w "
+          "               WHERE w.ticker = m.ticker "
+          "                 AND w.user_id = :watchlist_owner "
+          "                 AND w.added_at < CAST(:cutoff AS date) + 1 "
+          "                 AND (w.removed_at IS NULL OR w.removed_at >= CAST(:cutoff AS date))) "
+          "ORDER BY m.ticker ASC, m.date ASC",
+        params,
+    )
+    source = "watchlists"
+    if df is None or df.empty:
+        # Mirror `load_watchlist`'s order: the shared owner's DB rows win,
+        # and INSIGHT_TICKERS is the documented shared-owner fallback when
+        # they are empty. The job's own DEFAULT_TICKERS is deliberately
+        # NOT mirrored: a hardcoded universe standing in for a real one is
+        # the Rule 3.7 shape, and the loud empty path below is the honest
+        # answer. A swallowed DB failure cannot reach this branch in
+        # practice: the same-ticker pull upstream uses the same `_query`
+        # and returns `unavailable` first.
+        env_universe = [
+            t for t in _dedupe_upper(
+                os.environ.get("INSIGHT_TICKERS", "").split(","))
+            if t != target
+        ]
+        if env_universe:
+            logger.warning(
+                "cross-ticker analog universe for %s (cutoff=%s) sourced "
+                "from INSIGHT_TICKERS (%d tickers): the %r watchlist had "
+                "no members with bars at the cutoff",
+                target, cutoff, len(env_universe), DEFAULT_USER_ID,
+            )
+            df = _query(
+                bars_sql
+                + "  AND m.ticker = ANY(:universe) "
+                  "ORDER BY m.ticker ASC, m.date ASC",
+                {**params, "universe": env_universe},
+            )
+            source = "INSIGHT_TICKERS"
     if df is None or df.empty:
         # Not a fallback: the caller skips cross-ticker analogs and says so
         # via cross_ticker_used=False. Logged because an empty result means
@@ -1330,12 +1395,12 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
         logger.warning(
             "cross-ticker analog universe empty for %s (cutoff=%s) — "
             "no watchlist rows joined to market_data_daily",
-            target_ticker.upper(), cutoff,
+            target, cutoff,
         )
-        return None
+        return None, None
     logger.info(
-        "cross_ticker_universe target=%s tickers=%d rows=%d",
-        target_ticker.upper(), df["ticker"].nunique(), len(df),
+        "cross_ticker_universe target=%s source=%s tickers=%d rows=%d",
+        target, source, df["ticker"].nunique(), len(df),
     )
 
     out_frames: list[pd.DataFrame] = []
@@ -1379,8 +1444,8 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
             out_frames.append(g)
 
     if not out_frames:
-        return None
-    return pd.concat(out_frames, ignore_index=True)
+        return None, None
+    return pd.concat(out_frames, ignore_index=True), source
 
 
 # ---------------------------------------------------------------------------
