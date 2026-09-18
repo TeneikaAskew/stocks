@@ -1533,16 +1533,107 @@ def test_a_citation_that_climbs_above_the_repo_is_not_a_finding():
     assert m.check_dead_links("docs/d.md", "see `../../../../elsewhere.md`\n", set()) == []
 
 
+# ── anchors, and the links that pointed at headings nobody has ─────────────
+
+def test_github_anchor_rule_does_not_collapse_separator_runs():
+    """The order is the whole point: GitHub strips punctuation, THEN replaces
+    each space with a hyphen. Runs are not collapsed, so an em dash and a
+    slash leave DOUBLED hyphens. Collapsing whitespace here would reproduce
+    the broken links' spelling and call all 16 of them valid."""
+    assert m.heading_slug("FEAT-AUTH-001 — Auth / security (8 open)") == \
+        "feat-auth-001--auth--security-8-open"
+    assert m.heading_slug("Data Sources & Inputs") == "data-sources--inputs"
+    assert m.heading_slug("`code` and **bold**") == "code-and-bold"
+
+
+def test_repeated_headings_are_numbered_as_github_numbers_them():
+    out = m.heading_anchors("# Notes\n\n## Notes\n\n## Notes\n")
+    assert out == {"notes", "notes-1", "notes-2"}
+
+
+def test_a_link_to_a_heading_that_does_not_exist_is_reported(tmp_path, monkeypatch):
+    """The fragment was stripped before the target was checked, so a link to a
+    real file and a nonexistent heading always passed. 35 such links are in
+    this tree, including all 16 feature links in 02-FEATURE-CATALOG.md."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "t.md").write_text("# T\n\n## FEAT-AUTH-001 — Auth / security (8 open)\n")
+    tracked = {"d.md", "t.md"}
+    out = m.check_dead_links(
+        "d.md", "see [x](t.md#feat-auth-001-auth-security-8-open)\n", tracked)
+    assert len(out) == 1 and out[0]["check"] == "dead-anchor", out
+
+
+def test_a_link_to_a_heading_that_exists_is_quiet(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "t.md").write_text("# T\n\n## FEAT-AUTH-001 — Auth / security (8 open)\n")
+    out = m.check_dead_links(
+        "d.md", "see [x](t.md#feat-auth-001--auth--security-8-open)\n", {"d.md", "t.md"})
+    assert out == [], out
+
+
+def test_a_same_document_fragment_is_still_checked(tmp_path, monkeypatch):
+    """`[x](#heading)` has no path to resolve, which is why it used to be
+    skipped outright -- but the anchor is still checkable."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "d.md").write_text("# D\n\n## Real Heading\n\nsee [x](#nope)\n")
+    out = m.check_dead_links("d.md", (tmp_path / "d.md").read_text(), {"d.md"})
+    assert len(out) == 1 and out[0]["check"] == "dead-anchor", out
+
+
+def test_a_dead_file_does_not_also_report_a_dead_anchor(tmp_path, monkeypatch):
+    """One finding per broken link. A missing file cannot have a heading, and
+    reporting both would double-count every dead link that carries one."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    out = m.check_dead_links("d.md", "see [x](gone.md#anything)\n", {"d.md"})
+    assert len(out) == 1 and out[0]["check"] == "dead-link", out
+
+
+def test_a_parent_relative_link_is_normalised_before_the_tracked_check(tmp_path, monkeypatch):
+    """PurePosixPath keeps `..` segments verbatim; the old code leaned on the
+    filesystem to resolve them, which requiring a tracked target removed.
+    Measured on this tree: without normalisation, 3,259 live links reported as
+    dead -- `.github/workflows/README.md` linking `../../docs/...` resolved to
+    `.github/workflows/../../docs/...`, which is in no tracked set."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    tracked = {"a/b/d.md", "docs/API.md"}
+    assert m.check_dead_links("a/b/d.md", "see [x](../../docs/API.md)\n", tracked) == []
+    out = m.check_dead_links("a/b/d.md", "see [x](../../docs/GONE.md)\n", tracked)
+    assert len(out) == 1 and out[0]["check"] == "dead-link", out
+
+
+def test_a_link_climbing_out_of_the_repo_is_not_a_finding(tmp_path, monkeypatch):
+    """Cross-repo prose this repository cannot resolve, and must not call rot.
+    Matches the boundary the backticked-path branch already draws."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    assert m.check_dead_links("d.md", "see [x](../../../elsewhere.md)\n", {"d.md"}) == []
+
+
+def test_an_untracked_file_does_not_satisfy_a_link(tmp_path, monkeypatch):
+    """An ignored or generated file, or one recreated after a staged deletion,
+    exists locally and is absent for everyone who clones."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "built.md").write_text("# B\n")
+    out = m.check_dead_links("d.md", "see [x](built.md)\n", {"d.md"})
+    assert len(out) == 1 and out[0]["check"] == "dead-link", out
+
+
+def test_a_directory_target_still_resolves(tmp_path, monkeypatch):
+    """git tracks no directories, which is the only reason the filesystem
+    check was reachable for links at all."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    assert m.check_dead_links("d.md", "see [x](lib/)\n", {"d.md", "lib/a.py"}) == []
+
+
 # ── the owning job, and what its success does not prove ────────────────────
 
-def _pr_pages(pages):
+def _pr_pages(pages, runs="success\t2026-09-16T06:00:00Z\tschedule\t\n"):
     """A fake `run` serving one PR page per call, then the workflow-runs read."""
     calls = {"n": 0}
 
     def fake_run(cmd, **kw):
         joined = " ".join(cmd)
         if "runs?per_page=10" in joined:
-            return "success\t2026-09-16T06:00:00Z\n"
+            return runs
         calls["n"] += 1
         return pages[calls["n"] - 1] if calls["n"] <= len(pages) else ""
     fake_run.calls = calls
@@ -1661,6 +1752,71 @@ def test_a_future_generated_date_cannot_pass_forever(tmp_path, monkeypatch):
 def test_a_current_generated_date_is_quiet(tmp_path, monkeypatch):
     out = _owning_doc(tmp_path, monkeypatch, "# G\n\nGenerated 2026-09-15\n")
     assert [f for f in out if f["doc"] == "g.md"] == [], out
+
+
+def test_a_dry_run_is_not_evidence_that_the_refresh_delivered(monkeypatch, tmp_path):
+    """refresh-architecture-docs.yml declares a `dry_run` input and skips its
+    "Open refresh PR" step for it, so a successful manual dry run opens no PR
+    and delivers nothing. Reading only the most recent run let one erase a
+    failed scheduled refresh from the report until the 40-day stamp threshold
+    fired."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
+    runs = ("success\t2026-09-17T06:00:00Z\tworkflow_dispatch\ttrue\n"
+            "failure\t2026-09-16T06:00:00Z\tschedule\t\n")
+    monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
+    out = m.check_owning_job("2026-09-17")
+    assert [f for f in out if "failure" in f["detail"]], out
+
+
+def test_a_real_run_after_a_dry_one_still_clears_it(monkeypatch, tmp_path):
+    """The guard must not make a genuine recovery invisible."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
+    runs = ("success\t2026-09-17T06:00:00Z\tschedule\t\n"
+            "failure\t2026-09-16T06:00:00Z\tschedule\t\n")
+    monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
+    assert [f for f in m.check_owning_job("2026-09-17") if "failure" in f["detail"]] == []
+
+
+def test_dry_run_false_is_a_delivering_run():
+    """`inputs` carries STRINGS, so "false" is a real value and must not read
+    as truthy."""
+    assert m._is_dry_run(["success", "t", "workflow_dispatch", "false"]) is False
+    assert m._is_dry_run(["success", "t", "workflow_dispatch", "true"]) is True
+    assert m._is_dry_run(["success", "t", "schedule", ""]) is False
+    # A row from a read that predates the column is treated as delivering,
+    # which can only keep a failure on the report.
+    assert m._is_dry_run(["success", "t"]) is False
+
+
+def test_the_issue_walk_has_no_silent_ceiling(monkeypatch):
+    """`range(1, 40)` stopped at 3,900 combined issues and PRs and said
+    nothing, so every older cited blocker past that point would read as
+    "could not be resolved" -- fabricated findings from a silent cap."""
+    pages = {}
+    for i in range(1, 45):
+        pages[i] = "\n".join(
+            f"{i * 100 + k}\topen\t\tISSUE" for k in range(m.ISSUE_PAGE_SIZE))
+    pages[45] = "1\topen\t\tISSUE"
+
+    def fake(cmd, **kw):
+        page = int(cmd[2].rsplit("&page=", 1)[1])
+        return pages.get(page, "")
+
+    monkeypatch.setattr(m, "run", fake)
+    states = m.fetch_issue_states("stocks")
+    assert len(states) > 4000, len(states)
+
+
+def test_the_issue_walk_refuses_rather_than_truncating(monkeypatch):
+    """A guard that fires means the assumption behind it is wrong, so the
+    result cannot be trusted: exit 2, never a short answer."""
+    monkeypatch.setattr(m, "ISSUE_PAGE_GUARD", 3)
+    monkeypatch.setattr(m, "run", lambda cmd, **kw: "\n".join(
+        f"{k}\topen\t\tISSUE" for k in range(m.ISSUE_PAGE_SIZE)))
+    with pytest.raises(m.AuditError, match="truncated read"):
+        m.fetch_issue_states("stocks")
 
 
 def test_a_short_page_ends_the_pr_lookup(monkeypatch):

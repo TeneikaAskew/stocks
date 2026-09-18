@@ -144,7 +144,13 @@ BLOCKING_CUE_RE = re.compile(
 ISSUE_URL_RE = re.compile(
     r"github\.com/" + OWNER + r"/(?P<repo>solyra|stocks)/(?P<kind>issues|pull)/(?P<num>\d+)"
 )
-MD_LINK_RE = re.compile(r"\[[^\]]*\]\((?P<target>[^)#\s]+)(?:#[^)\s]*)?\)")
+# The fragment is CAPTURED, not discarded. Dropping it meant a link to a real
+# file but a heading that does not exist always passed -- 35 such links in this
+# tree, including all 16 feature links in docs/product/02-FEATURE-CATALOG.md,
+# whose targets in 12-PR-ISSUE-TRACEABILITY.md carry an em dash and a slash
+# that GitHub's anchor rule turns into DOUBLED hyphens.
+MD_LINK_RE = re.compile(
+    r"\[[^\]]*\]\((?P<target>[^)#\s]*)(?:#(?P<frag>[^)\s]+))?\)")
 # A backticked path: has a slash and a file-ish extension, no spaces or globs.
 # The trailing `:12` / `:88-102` is optional and part of the match: without it
 # the closing backtick had to follow the extension, so every line-qualified
@@ -160,6 +166,40 @@ BACKTICK_PATH_RE = re.compile(
 LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
 
 CODE_EXTS = {".py", ".ts", ".tsx", ".js", ".mjs", ".sql", ".sh", ".yml", ".yaml", ".json", ".md"}
+
+
+_SLUG_STRIP_RE = re.compile(r"[^\w\s-]")
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.M)
+
+
+def heading_slug(heading: str) -> str:
+    """GitHub's anchor for a heading.
+
+    The order is what matters and what makes this worth a helper: GitHub
+    lowercases, strips everything that is not a word character, space or
+    hyphen, and THEN replaces each space with a hyphen. Runs are not
+    collapsed. So `FEAT-AUTH-001 — Auth / security (8 open)` loses the em dash
+    and the slash and keeps the spaces either side of them, giving
+    `feat-auth-001--auth--security-8-open` with DOUBLED hyphens -- while the
+    16 links pointing at it spell single ones. Collapsing whitespace here
+    reproduces the links' spelling and would call every one of them valid.
+    """
+    s = re.sub(r"`([^`]*)`", r"\1", heading)
+    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    s = re.sub(r"[*_]", "", s).strip().lower()
+    return _SLUG_STRIP_RE.sub("", s).replace(" ", "-")
+
+
+def heading_anchors(text: str) -> set[str]:
+    """Every anchor a document offers, duplicates numbered as GitHub does."""
+    seen: dict[str, int] = {}
+    out: set[str] = set()
+    for m in _HEADING_RE.finditer(text):
+        base = heading_slug(m.group(1))
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        out.add(base if n == 0 else f"{base}-{n}")
+    return out
 
 
 def strip_dot_segments(path: str) -> str:
@@ -976,24 +1016,46 @@ def load_issues_snapshot(file: str) -> dict[str, dict[int, dict]]:
     return states
 
 
+ISSUE_PAGE_SIZE = 100
+# A runaway guard, not a ceiling on real data: 100,000 issues and PRs is far
+# past anything either repo can hold, and reaching it raises rather than
+# truncating.
+ISSUE_PAGE_GUARD = 1000
+
+
 def fetch_issue_states(repo: str) -> dict[int, dict]:
     """One paginated read per repo, never one call per reference (Rule 0)."""
     states: dict[int, dict] = {}
-    for page in range(1, 40):
+    # No arbitrary ceiling. `range(1, 40)` stopped at 3,900 combined issues and
+    # PRs and said nothing, so every older cited blocker past that point would
+    # read as "could not be resolved" -- fabricated findings from a silent cap,
+    # which is the shape this module refuses everywhere else. The loop ends on
+    # a short or empty page, which is the real end of the data; the counter is
+    # only a runaway guard and is reported if it ever fires.
+    page = 0
+    while True:
+        page += 1
         out = run([
             "gh", "api",
-            f"repos/{OWNER}/{repo}/issues?state=all&per_page=100&page={page}",
+            f"repos/{OWNER}/{repo}/issues?state=all&per_page={ISSUE_PAGE_SIZE}&page={page}",
             "--jq", '.[] | [.number, .state, (.state_reason // ""), '
                     '(if .pull_request then "PR" else "ISSUE" end)] | @tsv',
         ])
         rows = [r for r in out.strip().split("\n") if r.strip()]
-        if not rows:
-            break
         for row in rows:
             parts = row.split("\t")
             if len(parts) != 4:
                 continue
             states[int(parts[0])] = {"state": parts[1], "reason": parts[2], "kind": parts[3]}
+        if len(rows) < ISSUE_PAGE_SIZE:
+            break
+        if page >= ISSUE_PAGE_GUARD:
+            # Loud, not silent. The old ceiling truncated and carried on; a
+            # guard that fires means the assumption behind it is wrong and the
+            # result cannot be trusted, which is exit 2, not a short answer.
+            raise AuditError(
+                f"{repo}: still reading issues after {ISSUE_PAGE_GUARD} pages "
+                f"({len(states)} so far); refusing to report on a truncated read")
     if not states:
         raise AuditError(f"no issues returned for {repo}; refusing to report a clean run on no data")
     return states
@@ -1023,23 +1085,67 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     return out
 
 
+def is_tracked_dir(tracked: set[str], norm: str) -> bool:
+    """Does any tracked path live under this one? Then it is a real directory.
+
+    Filesystem existence is only allowed to answer THIS question. git tracks
+    no directories, which is the sole reason the existence check was there --
+    and using it for files let an ignored or generated file, or one recreated
+    after a staged deletion, satisfy a link that is broken in every clean
+    clone. Codex raised this on the Node twin first (solyra#69).
+    """
+    prefix = f"{norm}/"
+    return any(p.startswith(prefix) for p in tracked)
+
+
 def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     out = []
     base = pathlib.PurePosixPath(doc).parent
+    anchors: dict[str, set[str] | None] = {}
+
+    def anchors_of(path: str) -> set[str] | None:
+        if path not in anchors:
+            try:
+                anchors[path] = heading_anchors(
+                    (REPO / path).read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                anchors[path] = None
+        return anchors[path]
+
     for n, line in enumerate(text.split("\n"), 1):
         for m in MD_LINK_RE.finditer(line):
-            tgt = m.group("target")
-            if tgt.startswith(("http://", "https://", "mailto:", "#")):
+            tgt, frag = m.group("target"), m.group("frag")
+            if tgt.startswith(("http://", "https://", "mailto:")):
                 continue
-            resolved = str((base / tgt)) if not tgt.startswith("/") else tgt.lstrip("/")
-            norm = str(pathlib.PurePosixPath(resolved))
-            try:
-                norm = str(pathlib.PurePosixPath(*pathlib.PurePosixPath(norm).parts))
-            except Exception:
-                pass
-            if norm not in tracked and not (REPO / norm).exists():
-                out.append({"check": "dead-link", "doc": doc, "line": n,
-                            "detail": f"relative link -> {tgt}", "severity": "P2"})
+            if not tgt:
+                # `[x](#heading)` -- same document, so the anchor is still
+                # checkable even though there is no path to resolve.
+                norm = doc
+            else:
+                # normpath, not PurePosixPath: the latter keeps `..` segments
+                # verbatim, and the old code leaned on the filesystem to
+                # resolve them. Requiring a tracked target exposed that --
+                # `.github/workflows/README.md` linking `../../docs/...`
+                # produced `.github/workflows/../../docs/...`, which is in no
+                # tracked set, and 3,259 live links reported as dead.
+                resolved = (tgt.lstrip("/") if tgt.startswith("/")
+                            else posixpath.join(str(base), tgt))
+                norm = posixpath.normpath(resolved)
+                if norm.startswith(".."):
+                    # Climbs out of the repository: cross-repo prose, which
+                    # this repo cannot resolve and must not call rot.
+                    continue
+                if norm not in tracked and not is_tracked_dir(tracked, norm):
+                    out.append({"check": "dead-link", "doc": doc, "line": n,
+                                "detail": f"relative link -> {tgt}", "severity": "P2"})
+                    continue
+            # The target resolves; does the heading it names?
+            if frag and norm.endswith(".md"):
+                have = anchors_of(norm)
+                if have is not None and frag.lower() not in have:
+                    out.append({"check": "dead-anchor", "doc": doc, "line": n,
+                                "detail": f"link -> {tgt}#{frag}: the target has no such "
+                                          "heading", "severity": "P2"})
         for m in BACKTICK_PATH_RE.finditer(line):
             cited = m.group("path")
             # Root-relative, parent-relative and line-qualified spellings all
@@ -1050,7 +1156,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
                 continue
             if pathlib.PurePosixPath(p).suffix not in CODE_EXTS:
                 continue
-            if p in tracked or (REPO / p).exists():
+            if p in tracked or is_tracked_dir(tracked, p):
                 continue
             # Only flag paths that look like they belong to THIS repo's layout,
             # so a deliberate cross-repo citation is not reported as rot.
@@ -1279,6 +1385,19 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
     return findings
 
 
+def _is_dry_run(row: list[str]) -> bool:
+    """Was this workflow run a dry run, which opens no PR and delivers nothing?
+
+    The `inputs` map is present only on workflow_dispatch runs and carries
+    strings, so `"false"` is a real value and must not read as truthy. A row
+    from an older read that carries no such column is treated as delivering,
+    which is the safe direction: it can only keep a failure on the report.
+    """
+    if len(row) < 4:
+        return False
+    return row[3].strip().lower() in {"true", "1", "yes"}
+
+
 def check_owning_job(today: str) -> list[dict]:
     """Did the job that owns the Class A docs actually deliver?
 
@@ -1293,7 +1412,8 @@ def check_owning_job(today: str) -> list[dict]:
         runs = run([
             "gh", "api",
             f"repos/{OWNER}/{THIS_REPO}/actions/workflows/{OWNING_JOB['workflow']}/runs?per_page=10",
-            "--jq", '.workflow_runs[] | [.conclusion, .created_at] | @tsv',
+            "--jq", '.workflow_runs[] | [.conclusion, .created_at, '
+                    '(.event // ""), ((.inputs // {}).dry_run // "")] | @tsv',
         ])
         owned_prs = fetch_owned_prs(OWNING_JOB["pr_title_re"])
     except AuditError:
@@ -1304,9 +1424,17 @@ def check_owning_job(today: str) -> list[dict]:
         raise
 
     recent = [r.split("\t") for r in runs.strip().split("\n") if r.strip()]
-    if recent and recent[0][0] not in {"success", ""}:
+    # A dry run does not deliver: refresh-architecture-docs.yml declares a
+    # `dry_run` input and skips its "Open refresh PR" step when it is set, so
+    # reading `recent[0]` unconditionally let a successful manual dry run stand
+    # as evidence that a failed scheduled refresh had recovered. The failure
+    # then vanished from the report until the 40-day stamp threshold fired.
+    # Delivery is judged from the latest NON-dry execution.
+    delivering = [r for r in recent if not _is_dry_run(r)]
+    if delivering and delivering[0][0] not in {"success", ""}:
         findings.append({"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P1",
-                         "detail": f"last run concluded {recent[0][0]} at {recent[0][1]}"})
+                         "detail": f"last delivering run concluded {delivering[0][0]} "
+                                   f"at {delivering[0][1]}"})
 
     # A closed-unmerged attempt that a LATER refresh superseded is history, not
     # a live defect. Reporting #963/#1012/#1021 forever kept --check red with
