@@ -3399,3 +3399,43 @@ def test_the_walk_stops_on_the_same_rule_that_reports(monkeypatch):
     out = m.check_owning_job("2026-10-20")
     assert fake.calls["n"] == 2, "stopped on a rule the report does not use"
     assert [f for f in out if "1200" in f["detail"]], out
+
+
+def test_an_intraword_underscore_survives_into_the_anchor():
+    """Stripping every `_` turned `## API_FIELD` into `apifield`, so a valid
+    link to `#api_field` read as a dead anchor AND an incorrect `#apifield` was
+    accepted -- wrong in both directions at once."""
+    assert m.heading_slug("API_FIELD") == "api_field"
+    assert m.heading_slug("_em_") == "em"
+    assert m.heading_slug("**Bold** thing") == "bold-thing"
+
+
+def test_a_table_row_with_no_padding_keeps_its_cells_separate():
+    """`\\S*` swallowed the `|` with the URL, so citation_clause merged adjacent
+    cells and an issue described as no longer blocking inherited a live-work
+    cue from the next one."""
+    u = "https://github.com/TeneikaAskew/stocks/issues/"
+    line = f"| {u}1| still open {u}2|"
+    clause = m.citation_clause(line, line.index(u), line.index(u) + len(u) + 1)
+    assert "still open" not in clause, clause
+
+
+def test_a_setext_h1_is_the_document_heading():
+    """Without it the audit reported a missing marker while --stamp answered
+    `skipped-no-h1`, so the command could not repair its own finding."""
+    assert m.h1_index(["Title", "=====", "body"]) == 0
+    assert m.h1_index(["Title", "-----", "body"]) is None
+
+
+def test_a_title_section_longer_than_the_limit_still_contains_its_marker():
+    """A document opening with more than 40 lines of HTML metadata had its real
+    marker excluded from the window, so the audit reported it missing and
+    --stamp inserted a second one."""
+    lines = ["# T", *["x"] * 45, "**Last reviewed:** 2026-01-01"]
+    assert 46 in m.marker_window(lines)
+    assert [i for i, _ in m.find_markers(lines)] == [46]
+
+
+def test_the_marker_window_still_stops_at_the_next_heading():
+    lines = ["# T", "body", "## Next", "**Last reviewed:** 2026-01-01"]
+    assert list(m.marker_window(lines)) == [1]

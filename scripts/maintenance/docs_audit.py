@@ -195,7 +195,10 @@ _CLAUSE_SPLIT_RE = re.compile(r"[.;|]")
 # and including the full stop, so citation_clause ran straight into the next
 # sentence and picked up cues belonging to a different citation. A URL ends
 # before trailing sentence punctuation.
-_URL_RE = re.compile(r"https?://\S*[^\s.,;:!?)\]]")
+# Not `\S*`: a table may omit padding (`| .../issues/1| still open ...|`), and
+# swallowing the `|` merged adjacent cells -- so an issue described as no
+# longer blocking inherited a live-work cue from the next one.
+_URL_RE = re.compile(r"https?://[^\s|]*[^\s|.,;:!?)\]]")
 # Case-insensitive, because GitHub resolves `teneikaaskew/Stocks` to the same
 # repository and a document may cite it that way. The `i` flag ALONE would be
 # worse than the bug: the captured name would index states["Stocks"], miss, and
@@ -267,7 +270,12 @@ def heading_slug(heading: str) -> str:
     """
     s = re.sub(r"`([^`]*)`", r"\1", heading)
     s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
-    s = re.sub(r"[*_]", "", s).strip().lower()
+    # Emphasis MARKUP only. Stripping every underscore turned `## API_FIELD`
+    # into `apifield`, so a valid link to `#api_field` read as a dead anchor
+    # AND an incorrect `#apifield` was accepted -- wrong in both directions.
+    # CommonMark does not treat an intraword `_` as emphasis.
+    s = re.sub(r"\*", "", s)
+    s = re.sub(r"(?<!\w)_+|_+(?!\w)", "", s).strip().lower()
     return _SLUG_STRIP_RE.sub("", s).replace(" ", "-")
 
 
@@ -946,12 +954,17 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     # reported missing and --stamp inserted a second one above it, leaving
     # contradictory provenance in the document.
     fenced = fenced_lines(lines) | commented_lines(lines)
+    # To the next HEADING, with no additional line cap. A document opening
+    # with more than `limit` lines of HTML metadata before its marker had the
+    # real marker excluded from the window, so the audit reported it missing
+    # and --stamp inserted a second one. The section boundary is the thing
+    # being asked about; the line count was a proxy for it.
     stop = len(lines)
-    for j in range(h1 + 1, min(h1 + 1 + limit, len(lines))):
+    for j in range(h1 + 1, len(lines)):
         if j not in fenced and lines[j].startswith("#"):
             stop = j
             break
-    return range(h1 + 1, min(stop, h1 + 1 + limit, len(lines)))
+    return range(h1 + 1, min(stop, len(lines)))
 
 
 def is_calendar_date(value: str | None) -> bool:
@@ -1203,7 +1216,16 @@ def h1_index(lines: list[str]) -> int | None:
     # was rewritten and the document left effectively unstamped.
     fenced = fenced_lines(lines) | commented_lines(lines)
     for i, line in enumerate(lines):
-        if i not in fenced and H1_RE.match(line):
+        if i in fenced:
+            continue
+        if H1_RE.match(line):
+            return i
+        # Setext level one (`Title` over `===`). Without it the audit reported
+        # a missing marker on such a document while --stamp answered
+        # `skipped-no-h1`, so the command could not repair its own finding.
+        if (line.strip() and not line.lstrip().startswith("#")
+                and i + 1 < len(lines) and (i + 1) not in fenced
+                and re.fullmatch(r" {0,3}=+\s*", lines[i + 1] or "")):
             return i
     return None
 
