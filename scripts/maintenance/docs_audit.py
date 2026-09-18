@@ -60,7 +60,14 @@ and are never edited in place.
 Exit codes: 0 clean, 1 a P1/P2 finding (so it can gate CI), 2 the run itself
 failed. P3 is the standing worklist -- unreviewed documents and legacy marker
 lines awaiting a human -- reported but never gating.
-A failed ``gh`` read is exit 2 and never a silent empty result (CLAUDE.md §3.7).
+A failed ``gh`` read is exit 2 and never a silent empty result (CLAUDE.md §3.7),
+and so is bad input: an unreadable ``--issues-snapshot``, a ``--date`` that is
+not a calendar day, a ``--verify`` path no document consumed. Exit 1 means the
+documentation has findings; none of those are findings about documentation.
+
+``--verify`` requires ``--stamp``, because a review is recorded only by writing
+a marker. Nothing is written until every ``--verify`` path has a document to
+land on, so a misspelled target aborts the run rather than half of it.
 
 Usage
 -----
