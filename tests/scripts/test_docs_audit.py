@@ -6,8 +6,8 @@ red, then reverted.
 """
 from __future__ import annotations
 
-import datetime
 import inspect
+import subprocess
 
 import pytest
 
@@ -566,7 +566,7 @@ def test_changed_since_aborts_on_an_unknown_sha_rather_than_reporting_no_drift()
     SHA separately, so this path aborts instead of returning [].
     """
     with pytest.raises(m.AuditError):
-        m.check_changed_since("d.md", "0000000", ["lib"])
+        m.check_changed_since("d.md", "0000000", ["lib"], "HEAD")
 
 
 def test_a_failed_refresh_superseded_by_a_later_delivery_is_not_reported(monkeypatch):
@@ -687,3 +687,78 @@ def test_prose_clause_on_a_marker_line_survives():
             "are **TBD**. Status is planning status.\n\nBody\n")
     out, _ = m.stamp(text, "2026-09-16", "scanned", "abc1234")
     assert "Dates, releases and owners are **TBD**." in out
+
+
+# ── follow-ups to the Codex findings on 2f14ccf ─────────────────────────────
+
+def _git(cwd, *args) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """A throwaway repo on a branch called `work`: no `main`, no `origin/main`."""
+    _git(tmp_path, "init", "-q", "-b", "work")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    return tmp_path
+
+
+def _commit(cwd, msg: str) -> str:
+    _git(cwd, "add", "-A")
+    _git(cwd, "commit", "-q", "-m", msg)
+    return _git(cwd, "rev-parse", "--short", "HEAD")
+
+
+def test_a_marker_sha_the_checkout_lacks_is_reported_not_fatal(repo):
+    """Finding 2, the half `resolve_base_ref` did not reach.
+
+    A depth-1 checkout resolves HEAD fine and then aborts on the first marker
+    whose `Against:` SHA it does not hold, because `git log <sha>..HEAD` exits
+    128 -- measured on 2f14ccf: `fatal: bad revision 'aa60569..HEAD'`, exit 2,
+    nothing reported. That SHA is one explicit finding for that document, and
+    the drift since it is declared unmeasurable; everything else still runs.
+    """
+    (repo / "a.md").write_text("# A\n")
+    _commit(repo, "one")
+    findings, measurable = m.check_marker_sha("d.md", "aa60569", "HEAD", cwd=repo)
+    assert measurable is False
+    assert len(findings) == 1 and "not in this checkout" in findings[0]["detail"], findings
+
+
+def test_a_marker_sha_off_the_base_ref_is_the_ordinary_ancestry_finding(repo):
+    (repo / "a.md").write_text("# A\n")
+    base = _commit(repo, "one")
+    _git(repo, "checkout", "-q", "-b", "side")
+    (repo / "b.md").write_text("# B\n")
+    side = _commit(repo, "two")
+    _git(repo, "checkout", "-q", "work")
+    findings, measurable = m.check_marker_sha("d.md", side, "work", cwd=repo)
+    assert measurable is True
+    assert len(findings) == 1 and "not an ancestor of work" in findings[0]["detail"]
+    assert m.check_marker_sha("d.md", base, "work", cwd=repo) == ([], True)
+
+
+def test_drift_counts_added_and_deleted_modules_but_not_pure_renames(repo):
+    """Finding 3, driven through git rather than through the source text.
+
+    `test_drift_filter_covers_additions_and_deletions_not_just_edits` pins the
+    flag by reading the function's source; this one proves the flag does what
+    the finding asked, with `--find-renames` so a pure rename stays excluded
+    whatever `diff.renames` is set to on the machine running the audit.
+    """
+    (repo / "lib").mkdir()
+    (repo / "lib" / "a.py").write_text("x = 1\n" * 20)
+    reviewed = _commit(repo, "base")
+    _git(repo, "mv", "lib/a.py", "lib/b.py")
+    _commit(repo, "pure rename")
+    assert m.check_changed_since("d.md", reviewed, ["lib"], "HEAD", cwd=repo) == []
+    (repo / "lib" / "c.py").write_text("y = 2\n")
+    _commit(repo, "add a module")
+    (repo / "lib" / "b.py").unlink()
+    _commit(repo, "delete a module")
+    out = m.check_changed_since("d.md", reviewed, ["lib"], "HEAD", cwd=repo)
+    assert len(out) == 1 and out[0]["detail"].startswith("2 content commit(s)"), out
+

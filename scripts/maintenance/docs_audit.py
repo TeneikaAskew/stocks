@@ -695,8 +695,36 @@ def check_dead_links(doc: str, text: str, tracked: set[str]) -> list[dict]:
     return out
 
 
-def check_changed_since(doc: str, sha: str | None, code_paths: list[str],
-                        base_ref: str = "origin/main") -> list[dict]:
+def check_marker_sha(doc: str, sha: str | None, base_ref: str, *,
+                     cwd: pathlib.Path | None = None) -> tuple[list[dict], bool]:
+    """Findings on a marker's `Against:` SHA, and whether drift since it can be measured.
+
+    Two different answers, kept apart. A SHA this checkout does not hold (a
+    depth-1 clone, or a marker stamped against a branch since rewritten) is
+    reported for that document and the drift since it declared unmeasurable;
+    asking `git log` about it exits 128 and aborted the whole run, which is
+    what a depth-1 checkout of this branch did on 2f14ccf right after
+    `resolve_base_ref` had let it get that far. A SHA that IS here but is not
+    an ancestor of the base ref is the ordinary finding, and drift is measured.
+    """
+    if not sha:
+        return [], True
+    known = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+                           cwd=cwd or REPO, capture_output=True).returncode == 0
+    if not known:
+        return [{"check": "marker", "doc": doc, "severity": "P2",
+                 "detail": f"reviewed-against {sha} is not in this checkout; drift since "
+                           f"it cannot be measured (shallow clone?)"}], False
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", sha, base_ref],
+                              cwd=cwd or REPO, capture_output=True).returncode == 0
+    if not ancestor:
+        return [{"check": "marker", "doc": doc, "severity": "P2",
+                 "detail": f"reviewed-against {sha} is not an ancestor of {base_ref}"}], True
+    return [], True
+
+
+def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_ref: str,
+                        *, cwd: pathlib.Path | None = None) -> list[dict]:
     if not sha or not code_paths:
         return []
     # `git log` exits 0 with empty output when the range holds no commits, so
@@ -707,9 +735,11 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str],
     # AMD, not M: a declared path GAINING a module or LOSING one changes the
     # documented surface just as much as editing one, and `M` alone queued
     # neither. Renames stay excluded -- that is what the filter is for, so the
-    # 2026-09-07 file-move wave does not flag every document.
-    out = run(["git", "log", "--oneline", "--diff-filter=AMD", f"{sha}..{base_ref}",
-               "--"] + code_paths)
+    # 2026-09-07 file-move wave does not flag every document -- and
+    # `--find-renames` says so explicitly rather than trusting `diff.renames`
+    # on whichever machine runs the audit.
+    out = run(["git", "log", "--oneline", "--find-renames", "--diff-filter=AMD",
+               f"{sha}..{base_ref}", "--"] + code_paths, cwd=cwd or REPO)
     commits = [c for c in out.strip().split("\n") if c.strip()]
     if not commits:
         return []
@@ -913,13 +943,10 @@ def main(argv: list[str] | None = None) -> int:
             if is_future_date(info["date"], today):
                 findings.append({"check": "marker", "doc": doc, "severity": "P1",
                                  "detail": f"review date {info['date']} is in the future"})
-            if info["sha"]:
-                ok = subprocess.run(["git", "merge-base", "--is-ancestor", info["sha"], base_ref],
-                                    cwd=REPO, capture_output=True).returncode == 0
-                if not ok:
-                    findings.append({"check": "marker", "doc": doc, "severity": "P2",
-                                     "detail": f"reviewed-against {info['sha']} is not an ancestor of {base_ref}"})
-            findings += check_changed_since(doc, info["sha"], code_paths, base_ref)
+            sha_findings, measurable = check_marker_sha(doc, info["sha"], base_ref)
+            findings += sha_findings
+            if measurable:
+                findings += check_changed_since(doc, info["sha"], code_paths, base_ref)
 
         if args.stamp:
             # Never write a marker into a generated region. The marker goes
