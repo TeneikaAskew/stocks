@@ -44,8 +44,30 @@ playability_score = move_magnitude_norm
                   × log(options_volume + 1)
 
 move_magnitude_norm  = move_magnitude / typical_daily_return
-typical_daily_return = median(|daily_return_pct|) over last 60d
+typical_daily_return = median(|daily_return_pct|) over last 64 returns   <- not 60
 ```
+
+**The normalizing window is 64 returns, not the 60 the parameter is named for.**
+`query_typical_daily_return(tickers, window_days=60)` binds `window_size = window_days + 5`
+(`lib/earnings_reactions.py:619`), keeps the **65** most recent daily bars per ticker
+(`:599`), and computes returns with `LAG(close)` (`:606`). The oldest bar has no predecessor
+inside the window, so `WHERE prev_close IS NOT NULL` (`:616`) drops exactly one: **65 bars in,
+64 returns out**, with no trim back to 60 anywhere in the function. The median is taken over
+all 64 (`:612-614`).
+
+This is not cosmetic. The median is the divisor in `move_magnitude_norm` (`:199`), so the score
+is linear in `1 / typical_daily_return`, and the score is bucketed by the **fixed** cut-points
+`(15.7, 21.2, 28.2, 41.9)` below — four extra bars can move a name across a quintile boundary
+and therefore across the sizing guidance. The default is what production runs:
+`enrich_with_playability` passes `daily_return_window = 60` straight through (`:879-883`,
+`:902`) and `gcp/premarket_brief.py:615-616` calls it with no argument.
+
+The `+ 5` carries no comment. The function's own docstring says *"over the last `window_days`
+trading days"* (`:576`), while the docstring of the consumer hedges with a tilde — *"median
+|daily_return_pct| over last ~60 trading days"* (`:175`). The tilde is the closest thing to an
+acknowledgement in the source. **Whether the `+ 5` was a deliberate buffer for a data gap or an
+off-by-five is not recorded anywhere**, which is why it is filed rather than silently
+documented as intended.
 
 ## Quintiles — and their measured hit rates
 

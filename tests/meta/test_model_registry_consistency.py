@@ -159,10 +159,21 @@ def _strip_exempt(text: str) -> str:
     return text
 
 
+#: A backticked repo path, with the `:NN` / `:NN-NN` line suffix the registry
+#: writes on most of its pointers stripped off.
+#:
+#: The first version's character class had no `:`, so `gcp/signal_monitor.py:1107`
+#: matched NOTHING and was silently never checked -- 7 of the registry's pointers,
+#: while the invariant table published "every repo-rooted path cited here exists".
+#: A gate that cannot express the form its document actually uses is not a
+#: narrower gate, it is an absent one.
+_PATH_RE = re.compile(r"`([A-Za-z0-9_./-]+?)(?::\d+(?:[-–]\d+)?)?`")
+
+
 def _cited_paths(text: str) -> set[str]:
     return {
         m.group(1)
-        for m in re.finditer(r"`([A-Za-z0-9_./-]+)`", text)
+        for m in _PATH_RE.finditer(text)
         if m.group(1).startswith(ROOTS) and "/" in m.group(1)
     }
 
@@ -184,6 +195,28 @@ def test_registry_cites_no_dead_code_path():
         f"{REGISTRY.name} cites paths that do not exist: {sorted(dead)}. "
         "A registry pointing at deleted code is how MODEL-OPT-001 spent months "
         "naming platform/src/lib/greeksCalculator.ts."
+    )
+
+
+def test_model_reference_docs_cite_no_dead_code_path():
+    """The eight `docs/models/` references were gated by nothing.
+
+    They are the documents a reader reaches from the registry's `Doc` column,
+    and they are the most pointer-dense things in the corpus -- every threshold
+    quoted with its `file:line`. Until the path regex learned to strip a `:NN`
+    suffix it could not have checked them meaningfully anyway: 16 of their
+    pointers carry one, and the old character class had no `:`, so those 16
+    matched nothing at all.
+
+    Clean today. This is the gate, not a backlog.
+    """
+    docs = sorted((REPO / "docs" / "models").glob("MODEL-*.md"))
+    assert len(docs) >= 8, f"only {len(docs)} model docs found -- did the folder move?"
+    dead = {d.name: sorted(_dead_paths(d)) for d in docs if _dead_paths(d)}
+    assert not dead, (
+        f"model reference docs cite paths that do not exist: {dead}. These docs "
+        "quote thresholds with a file:line; a stale pointer makes a quoted "
+        "constant unverifiable."
     )
 
 
@@ -344,19 +377,55 @@ def _vocab(pattern: str) -> set[str]:
     return {v.strip().strip("`") for v in m.group(1).split("·") if v.strip()}
 
 
+#: Every table in the registry carrying `MODEL-*` rows, and which cell holds
+#: Status. The LLM table is five columns wide, the other two are nine, which is
+#: why a single index cannot cover them -- and why the first version simply left
+#: the LLM table out and checked two thirds of the inventory while the registry
+#: published one vocabulary for the whole of it.
+STATUS_COLUMN = {
+    "## Deterministic and heuristic systems": 6,
+    "## Learned models": 6,
+    "## LLM nodes": 5,
+}
+
+
 def test_status_cells_use_the_declared_vocabulary():
     allowed = _vocab(r"\*\*Model status:\*\*([^\n]*(?:\n[^\n*]*)*?)\.")
     text = REGISTRY.read_text()
-    bad = []
-    for table in ("## Deterministic and heuristic systems", "## Learned models"):
+    bad, checked = [], 0
+    for table, col in STATUS_COLUMN.items():
+        assert table in text, f"registry no longer has the table {table!r}"
         for line in text.split(table, 1)[1].split("\n##", 1)[0].split("\n"):
             if not re.match(r"^\| MODEL-", line):
                 continue
             cells = [c.strip() for c in line.split("|")]
-            status = cells[6].strip("* ").split(" — ")[0].strip("* ")
+            checked += 1
+            status = cells[col].strip("* ").split(" — ")[0].strip("* ")
             if status not in allowed:
                 bad.append(f"{cells[1]}: {status!r}")
+    assert checked >= 29, (
+        f"only {checked} model rows read across {len(STATUS_COLUMN)} tables -- a "
+        "column index or a heading has drifted, and a status check that reads "
+        "nothing passes."
+    )
     assert not bad, f"status values outside the README vocabulary: {bad} (allowed: {sorted(allowed)})"
+
+
+def _expand_doc_ranges(cell: str) -> set[str]:
+    """`DOC-01…DOC-05` names five concerns, not two.
+
+    Same defect as `_expand_experiment_ranges`, in a table written one commit
+    later: `re.findall` keeps the endpoints, so DOC-02, DOC-03 and DOC-04 sat
+    outside the disposition invariant the moment it was added. The data builder
+    that feeds the design board expanded the range correctly; the test did not,
+    which is the difference between a document that renders right and a contract
+    that holds.
+    """
+    ids = re.findall(r"DOC-\d+", cell)
+    if ids and ("…" in cell or "..." in cell):
+        lo, hi = int(ids[0].split("-")[1]), int(ids[-1].split("-")[1])
+        return {f"DOC-{n:02d}" for n in range(lo, hi + 1)}
+    return set(ids)
 
 
 def test_concern_ids_are_unique():
@@ -403,9 +472,9 @@ def test_no_concern_carries_two_different_dispositions():
         # leading bolded token of the Disposition cell, e.g. **FIXED HERE**
         head = re.match(r"\*\*(.+?)\*\*", cells[2])
         assert head, f"disposition cell does not open with a bolded verdict: {cells[2]!r}"
-        for cid in re.findall(r"DOC-\d+", cells[1]):
+        for cid in _expand_doc_ranges(cells[1]):
             verdicts.setdefault(cid, set()).add(head.group(1).strip())
-    assert len(verdicts) >= 20, f"only {len(verdicts)} ids parsed -- did the table change shape?"
+    assert len(verdicts) >= 25, f"only {len(verdicts)} ids parsed -- did the table change shape?"
     split = {k: sorted(v) for k, v in verdicts.items() if len(v) > 1}
     assert not split, f"the same DOC id carries conflicting dispositions: {split}"
 
@@ -562,18 +631,32 @@ def _engines(area) -> set:
         return {"strat", "magnitude"}
     return {e for e in ENGINE_OWNER if head.startswith(e)}
 
+#: An experiment id, and NOT the tail of a model id.
+#:
+#: `re.findall(r"E-\d+", "MODEL-AGREE-001")` returns `["E-001"]`. So does
+#: MODEL-TYPE-001 and MODEL-STYLE-001. The ownerless table's E-23 row names
+#: MODEL-TYPE-001 in its prose, so a phantom `E-001` was already sitting in the
+#: parsed ownerless set -- invisible while the coverage assertion only ran
+#: `ledger - owned - ownerless`, and a guaranteed false failure the moment that
+#: assertion was made two-directional. The lookbehind is the whole fix, and it
+#: belongs in one constant because six call sites had the bare pattern.
+_EXP_PREFIX = r"(?<![A-Za-z])E-"
+EXP_ID = _EXP_PREFIX + r"\d+"
+
+
 def _expand_experiment_ranges(text: str) -> set[str]:
     """`E-26 ... E-31, E-33` means seven ids, not three.
 
-    `re.findall(r"E-\\d+")` takes only the endpoints, so E-27..E-30 were never
+    `re.findall(EXP_ID)` takes only the endpoints, so E-27..E-30 were never
     marked uncommitted and could have been attached to a model beside a code
     path without the reproducibility check firing.
     """
     found: set[str] = set()
-    for m in re.finditer(r"E-(\d+)\s*(?:\u2026|\.\.\.|--|\u2013|\u2014)\s*E-(\d+)", text):
+    for m in re.finditer(
+            rf"{_EXP_PREFIX}(\d+)\s*(?:\u2026|\.\.\.|--|\u2013|\u2014)\s*E-(\d+)", text):
         lo, hi = int(m.group(1)), int(m.group(2))
         found |= {f"E-{n:02d}" for n in range(lo, hi + 1)}
-    found |= set(re.findall(r"E-\d+", text))
+    found |= set(re.findall(EXP_ID, text))
     return found
 
 #: Model row -> the engine token its experiments should carry. Only models whose
@@ -587,6 +670,26 @@ MODEL_ENGINE = {
 #: Experiments the ledger records as having no committed artifacts. Citing one
 #: beside a code path implies a reproduction route that does not exist.
 UNCOMMITTED_MARKER = "not committed to the repo"
+
+#: (model, experiment) pairs where the model owns one ARM of an experiment the
+#: ledger scopes elsewhere. Declared here, not inferred from the prose.
+#:
+#: The check this replaces accepted ANY parenthetical: `re.search(rf"{exp}\s*
+#: \([^)]+\)", cell)` never read what was inside. So moving `E-23 (execution
+#: test)` from MODEL-TYPE-001 to MODEL-MAG-001 passed every invariant, and the
+#: gate written to stop evidence being attached to the wrong model would have
+#: waved it through -- the failure DOC-15 records, re-enabled by its own fix.
+#:
+#: Exactly one pair needs this today. Every other qualified citation in the
+#: registry satisfies the family check on its own; the parentheses there are
+#: prose, not an override.
+ARM_OWNERSHIP = {
+    ("MODEL-TYPE-001", "E-23"): (
+        "the shares-execution arm. The ledger scopes E-23 `cross-cutting "
+        "(tradeability)`; its 0.55-confidence 2U/2D calls are MODEL-TYPE-001's "
+        "own predictions, so its FAIL verdict belongs on that row."
+    ),
+}
 
 
 def _ledger_engine_area() -> dict[str, str]:
@@ -614,7 +717,7 @@ def test_experiments_spanning_both_engines_appear_on_both_models():
     """An experiment the ledger scopes to `both` must not be filed under one."""
     scopes = {e: _engines(a) for e, a in _ledger_engine_area().items()}
     scopes.update({e: _engines(a) for e, a in LEDGER_SCOPE_OVERRIDES.items()})
-    cited = {model: set(re.findall(r"E-\d+", cell))
+    cited = {model: set(re.findall(EXP_ID, cell))
              for model, cell in _traceability_rows().items()}
 
     multi = {e: s for e, s in scopes.items() if len(s) > 1}
@@ -675,6 +778,36 @@ def test_every_ledger_experiment_is_owned_or_explicitly_ownerless():
         f"experiments in the ledger that no model owns and the ownerless table "
         f"does not list: {missing}. Attach each to its owner or record it as ownerless."
     )
+    # And the other direction. Checking only `ledger - owned - ownerless` asks
+    # "is every real experiment placed?" and never "is everything placed real?",
+    # so a typo'd or invented id was citable as evidence. It survived the family
+    # check too, because that check skips models whose engine the ledger does not
+    # name -- which is most of them.
+    invented = sorted((owned | ownerless) - ledger, key=lambda e: int(e[2:]))
+    assert not invented, (
+        f"the registry cites experiment ids the ledger does not declare: {invented}. "
+        "An id that resolves to nothing is evidence that cannot be read."
+    )
+
+
+def test_experiment_ids_are_not_parsed_out_of_model_ids():
+    """`E-\\d+` matches inside MODEL-AGREE-001, MODEL-TYPE-001, MODEL-STYLE-001.
+
+    All three end in `E-001`. The ownerless table's E-23 row names
+    MODEL-TYPE-001 in its prose, so the parsed ownerless set carried a phantom
+    `E-001` -- harmless while coverage was asserted one way, and a guaranteed
+    false failure the moment the reverse assertion was added. Pinned here rather
+    than left to the caller, because six call sites had the bare pattern and the
+    seventh would have had it too.
+    """
+    assert re.findall(EXP_ID, "MODEL-AGREE-001 MODEL-TYPE-001 MODEL-STYLE-001") == []
+    assert re.findall(EXP_ID, "E-23 and E-8") == ["E-23", "E-8"]
+    ownerless: set[str] = set()
+    for cell in _ownerless_rows():
+        ownerless |= _expand_experiment_ranges(cell)
+    assert "E-001" not in ownerless, (
+        f"phantom id parsed from a model id in the ownerless table: {sorted(ownerless)}"
+    )
 
 
 def test_cited_experiments_match_the_models_engine():
@@ -686,7 +819,7 @@ def test_cited_experiments_match_the_models_engine():
         engine = MODEL_ENGINE.get(model)
         if engine is None:
             continue
-        for exp in re.findall(r"E-\d+", cell):
+        for exp in re.findall(EXP_ID, cell):
             # Do NOT skip. A silent `continue` here left E-24, E-34 and the
             # E-26..E-33 session outside the family check entirely, and would
             # accept a typo'd or nonexistent id as valid. Sections whose shape
@@ -704,12 +837,29 @@ def test_cited_experiments_match_the_models_engine():
                     continue
                 # fall through: an exceptional section is checked like a parsed one.
             engines = _engines(a)
-            if engine in engines or (not engines and
-                                     str(a).startswith(("cross-cutting", "precursor"))):
+            if engine in engines:
                 continue
-            # Anything else needs a parenthetical saying which arm applies.
+            # Everything that is NOT a family match goes through one declaration.
+            #
+            # Two escapes used to sit here, and the wider one hid the narrower.
+            # A `cross-cutting` or `precursor` scope passed unconditionally, on
+            # any model -- so E-23 was citable anywhere, and an allowlist placed
+            # after it would never have been consulted for the single case it
+            # exists to govern. (Measured: exactly one citation reached this
+            # branch, and it is the one ARM_OWNERSHIP declares.) The narrower
+            # escape, "some parentheses are present", never read what was inside
+            # them, so the same three words licensed the citation on any row.
+            if (model, exp) not in ARM_OWNERSHIP:
+                wrong.append(
+                    f"{model} cites {exp} ('{a}'), which is not its family and is "
+                    f"not declared in ARM_OWNERSHIP"
+                )
+                continue
             if not re.search(rf"{exp}\s*\([^)]+\)", cell):
-                wrong.append(f"{model} cites {exp} ('{a}') unqualified")
+                wrong.append(
+                    f"{model} cites {exp} as a declared arm but the cell does not "
+                    f"say which arm"
+                )
     assert not wrong, (
         f"experiment/model family mismatches without a qualifying note: {wrong}. "
         "Either the experiment is on the wrong row, or the cell should say which arm applies."
@@ -725,7 +875,7 @@ def test_uncommitted_experiments_are_not_presented_as_reproducible():
 
     # Experiments named in the paragraph carrying the marker.
     para = [p for p in ledger.split("\n\n") if UNCOMMITTED_MARKER in p]
-    uncommitted = {e for p in para for e in re.findall(r"E-\d+", p)}
+    uncommitted = {e for p in para for e in re.findall(EXP_ID, p)}
     # The 2026-07-06 session's table rows name them; pick them up from its header too.
     session = re.search(r"# 2026-07-06 SESSION[^\n]*\(([^)]*)\)", ledger)
     if session:
@@ -737,7 +887,7 @@ def test_uncommitted_experiments_are_not_presented_as_reproducible():
         if len(row) < 2:
             continue
         code_cell = row[1].split("|")[0]
-        for exp in re.findall(r"E-\d+", cell) :
+        for exp in re.findall(EXP_ID, cell) :
             if exp not in uncommitted:
                 continue
             if "unavailable" in cell.lower() or "unavailable" in code_cell.lower():
@@ -792,12 +942,19 @@ def test_cross_document_anchors_resolve():
 
 
 def test_registry_code_column_names_the_live_implementation():
-    """A doc that names a live implementation must have it in the registry's Code cell.
+    """Every `.py` in a model doc's **Code:** header is in its registry Code cell.
 
     MODEL-MR-001's doc was corrected to say `lib.signals.evaluate_signal` is the
     production path while the registry row still listed only the class that
     production never calls -- so the governance inventory pointed at the wrong
     code for a live model, and nothing noticed.
+
+    The first version keyed off the literal phrase "live implementation", which
+    is how MODEL-MR-001 was caught and MODEL-STYLE-001 was not: STYLE's row named
+    the HTTP endpoint and the results table and no implementation at all, and the
+    gate had nothing to match on. A gate keyed to a phrase only covers documents
+    that happen to use it. This one is total -- the header is the doc's own claim
+    about what code the model is, so the row must carry it.
     """
     text = REGISTRY.read_text()
     code_cell = {}
@@ -810,30 +967,15 @@ def test_registry_code_column_names_the_live_implementation():
     missing, found = [], 0
     for doc in sorted((REPO / "docs" / "models").glob("MODEL-*.md")):
         mid, body = doc.stem, doc.read_text()
-        # The doc may name the live path as a file (`lib/signals.py`) or as a
-        # dotted symbol (`lib.signals.evaluate_signal`). A first version of this
-        # test only matched the file form, matched NOTHING, and passed -- the
-        # vacuous-green failure this suite keeps re-learning. Hence `found`.
-        for m in re.finditer(
-                r"`([A-Za-z0-9_./]+)`[^\n]{0,90}?\*\*(?:The )?[Ll]ive implementation", body):
-            raw = m.group(1)
-            if raw.endswith(".py"):
-                path = raw
-            else:                      # lib.signals.evaluate_signal -> lib/signals.py
-                parts = raw.split(".")
-                path = None
-                for cut in range(len(parts), 1, -1):
-                    cand = "/".join(parts[:cut]) + ".py"
-                    if (REPO / cand).exists():
-                        path = cand
-                        break
-                if path is None:
-                    continue
+        if mid not in code_cell or "**Code:**" not in body:
+            continue
+        header = body.split("**Code:**", 1)[1].split("**Registry:**")[0]
+        for path in sorted(set(re.findall(r"`([A-Za-z0-9_./]+\.py)`", header))):
             found += 1
-            if mid in code_cell and path.rsplit("/", 1)[-1] not in code_cell[mid]:
-                missing.append(f"{mid}: doc names {path} as live; registry Code cell omits it")
-    assert found, (
-        "no model doc names a live implementation -- the parser matched nothing, "
+            if path.rsplit("/", 1)[-1] not in code_cell[mid]:
+                missing.append(f"{mid}: doc header names {path}; registry Code cell omits it")
+    assert found >= 8, (
+        f"only {found} header paths parsed -- the parser matched almost nothing, "
         "so this test would pass no matter what the registry said."
     )
     assert not missing, (
@@ -902,7 +1044,14 @@ def test_docs_citing_solyra_paths_explain_the_split():
 MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds",
                  "regime-combo", "audit-walkforward", "audit-brief-bias",
                  "p2-build-gamma-levels", "audit-magnitude-drift",
-                 "signal-monitor", "build-realtime-gex", "refresh-earnings-views")
+                 "signal-monitor", "build-realtime-gex", "refresh-earnings-views",
+                 # Added 2026-09-18. Each runs a model and none carried a model
+                 # word, so the completeness gate had never asked about them --
+                 # the same mechanism DOC-20 records for `signal-monitor`, which
+                 # is why a curated list needs re-deriving, not just extending.
+                 "premarket-brief", "auto-refresh-top-n",
+                 "build-options-daily-features", "historical-signals-watchlist",
+                 "earnings-sweep")
 
 def _is_model_bearing(job: str) -> bool:
     return any(k in job for k in MODEL_BEARING)

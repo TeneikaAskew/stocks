@@ -198,7 +198,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 |
 | Code | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py` |
 | Tests | `signals.spec.ts`, `tests/test_signal*.py` |
-| Open issues | 10 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-10-open) |
+| Open issues | 10 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-11-open) |
 | Blocking issues | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#285](https://github.com/TeneikaAskew/stocks/issues/285) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
@@ -520,7 +520,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py` |
 | Tests | `tests/test_data_loader*.py`, integration suite |
-| Open issues | 12 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-data-001--data-platform-12-open) |
+| Open issues | 12 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-data-001--data-platform-14-open) |
 | Blocking issues | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#927](https://github.com/TeneikaAskew/stocks/issues/927) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
@@ -635,7 +635,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `scripts/`, archived apps |
 | Tests | — |
-| Open issues | 3 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-debt-001--technical-debt-3-open) |
+| Open issues | 3 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-debt-001--technical-debt-4-open) |
 | Blocking issues | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#841](https://github.com/TeneikaAskew/stocks/issues/841) [#921](https://github.com/TeneikaAskew/stocks/issues/921) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 7 |
 

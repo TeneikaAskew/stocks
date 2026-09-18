@@ -28,8 +28,51 @@ and tested but no fire path consumes them. An earlier revision said the strategi
 ATR, RVOL and RSI thresholds as operating configuration, which overstated the reach of a
 scheduled job by most of its output.
 
-It is **not** a walk-forward system. `scripts/calibrate_thresholds.py` does not import
-`WalkForwardValidator`:
+## The resolution chain — a successful write does not mean a changed threshold
+
+**Writing a row is not the same as production reading it.** An earlier revision of this
+document described the path to MODEL-MOM-001 / MODEL-MR-001 as unconditional. It is gated four
+ways, and any one of them silently substitutes the universal Tier-B constants
+`CALL_RSI_RANGE = (25.0, 50.0)` / `PUT_RSI_RANGE = (50.0, 75.0)`
+(`lib/strategies/config.py:31-32`). An operator reading only "the quarterly job succeeded"
+would conclude live thresholds moved; often they did not.
+
+`_latest_calibration` (`lib/strategies/calibration.py:60-137`) returns `None` — meaning Tier B —
+when:
+
+| Gate | Where | Effect |
+|---|---|---|
+| Cloud SQL not configured | `:73-74` | CI and unit tests always run Tier B |
+| No row for the ticker | `:118-120` | logged `no row for %s — Tier-B fallback` |
+| **Row older than `_STALE_DAYS = 180`** (`:36`) | `:124-129` | a quarterly writer leaves ~90 days of headroom; two consecutive skipped quarters expire the row |
+| **`drift_flagged` is true** | `:130-137` | the row is written and then ignored |
+
+and, per percentile rather than per row, `_is_usable_number` (`:39-55`) rejects `None`, `NaN`
+and `inf`. That guard is load-bearing: `pd.read_sql` materialises SQL `NULL` as `NaN`, and a
+`(nan, nan)` range makes the gate `low < rsi < high` silently **always false** for that ticker —
+CLAUDE.md Rule 3.7 applied at the read side.
+
+`drift_flagged` is set by the writer, not the reader. `scripts/calibrate_thresholds.py`
+compares each new value against the rolling 4-row mean and standard deviation for that ticker
+(`_DRIFT_MIN_PRIOR_ROWS = 3`, `:279`):
+
+- **≥ `_DRIFT_WARN_SIGMAS = 2.0`** (`:277`) → the row is written with `drift_flagged=TRUE`, so
+  the reader falls back to Tier B. One anomalous quarter cannot whipsaw production.
+- **≥ `_DRIFT_REFUSE_SIGMAS = 3.0`** (`:278`) → the write is **refused** for that ticker
+  (`:436-442`) unless `--force`.
+
+So `--force` is the switch that puts a drifted calibration into production: with it, the row is
+written `drift_flagged=FALSE` (`:450-457`), which the comment there explains is deliberate —
+otherwise the reader would keep falling back and the manual override would be a no-op.
+
+> **The code and its own comment disagree by one boundary.** The design comment at `:255-260`
+> says `|new - mean| > 2σ` and `> 3σ`; the implementation at `:354` and `:361` compares `>=`.
+> Exactly-2σ flags and exactly-3σ refuses. Recorded rather than corrected — changing either is a
+> code PR, and this document's job is to say what runs.
+
+## Not a walk-forward system
+
+`scripts/calibrate_thresholds.py` does not import `WalkForwardValidator`:
 
 | | **Percentile calibrator** | **Walk-forward parameter sweep** |
 |---|---|---|

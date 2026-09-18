@@ -174,23 +174,23 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
+As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
 
 | Severity | Count |
 |---|---|
 | CRITICAL | 21 |
 | P0 | 14 |
 | HIGH | 16 |
-| P1 | 30 |
+| P1 | 32 |
 | MEDIUM | 9 |
-| P2 | 9 |
+| P2 | 11 |
 | LOW | 5 |
 | P3 | 2 |
 | DEBT | 6 |
 | ENH | 3 |
 | DECISION | 1 |
 | UNTRIAGED | 1 |
-| **Total** | **117** |
+| **Total** | **121** |
 
 ## Full open-issue map by capability
 
@@ -263,7 +263,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 **PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation*
 
-### FEAT-DATA-001 — Data platform (12 open)
+### FEAT-DATA-001 — Data platform (14 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -280,6 +280,8 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 | [#919](https://github.com/TeneikaAskew/stocks/issues/919) | P2 | [P2][Dormant Data] Restore or retire wired-but-unfed production tables |
 | [#918](https://github.com/TeneikaAskew/stocks/issues/918) | P2 | [P2][Database] Replace schema convergence sprawl with ordered migrations |
 
+| [#1135](https://github.com/TeneikaAskew/stocks/issues/1135) | P1 | [P1][Earnings] `_derive_archetype` reimplements `classify_archetype` and diverges on missing consistency data |
+| [#1138](https://github.com/TeneikaAskew/stocks/issues/1138) | P2 | [P2][Earnings] `query_typical_daily_return` normalizes over 64 returns, not the 60 its parameter names |
 **PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation*
 
 ### FEAT-OPTION-001 — Options / gamma (11 open)
@@ -318,7 +320,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 **PR lineage:** [#355](https://github.com/TeneikaAskew/stocks/pull/355) *origin* · [#575](https://github.com/TeneikaAskew/stocks/pull/575) *verdict* · [#588](https://github.com/TeneikaAskew/stocks/pull/588) *verdict* · [#591](https://github.com/TeneikaAskew/stocks/pull/591) *origin* · [#593](https://github.com/TeneikaAskew/stocks/pull/593) *evolution* · [#594](https://github.com/TeneikaAskew/stocks/pull/594) *evolution* · [#595](https://github.com/TeneikaAskew/stocks/pull/595) *evolution* · [#597](https://github.com/TeneikaAskew/stocks/pull/597) *structural* · [#615](https://github.com/TeneikaAskew/stocks/pull/615) *evolution* · [#622](https://github.com/TeneikaAskew/stocks/pull/622) *remediation* · [#629](https://github.com/TeneikaAskew/stocks/pull/629) *remediation* · [#637](https://github.com/TeneikaAskew/stocks/pull/637) *structural* · [#638](https://github.com/TeneikaAskew/stocks/pull/638) *remediation* · [#647](https://github.com/TeneikaAskew/stocks/pull/647) *evolution* · [#698](https://github.com/TeneikaAskew/stocks/pull/698) *origin* · [#707](https://github.com/TeneikaAskew/stocks/pull/707) *origin* · [#719](https://github.com/TeneikaAskew/stocks/pull/719) *evolution* · [#735](https://github.com/TeneikaAskew/stocks/pull/735) *evolution* · [#810](https://github.com/TeneikaAskew/stocks/pull/810) *structural* · [#811](https://github.com/TeneikaAskew/stocks/pull/811) *remediation*
 
-### FEAT-SIGNAL-001 — Signals / execution (10 open)
+### FEAT-SIGNAL-001 — Signals / execution (11 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -333,6 +335,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 | [#249](https://github.com/TeneikaAskew/stocks/issues/249) | ENH | feat(strategies): walk-forward IR-optimized RSI thresholds (Tier-A v2) |
 | [#808](https://github.com/TeneikaAskew/stocks/issues/808) | DECISION | Decision checkpoint (target 2026-09-11): flip signal.level_gate_mode to enforce, or don't |
 
+| [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) | P1 | [P1][Signals] Two mean-reversion implementations; only `lib.signals.evaluate_signal` applies the runtime gates |
 **PR lineage:** [#184](https://github.com/TeneikaAskew/stocks/pull/184) *origin* · [#186](https://github.com/TeneikaAskew/stocks/pull/186) *evolution* · [#191](https://github.com/TeneikaAskew/stocks/pull/191) *evolution* · [#201](https://github.com/TeneikaAskew/stocks/pull/201) *evolution* · [#203](https://github.com/TeneikaAskew/stocks/pull/203) *evolution* · [#227](https://github.com/TeneikaAskew/stocks/pull/227) *evolution* · [#231](https://github.com/TeneikaAskew/stocks/pull/231) *remediation* · [#248](https://github.com/TeneikaAskew/stocks/pull/248) *evolution* · [#262](https://github.com/TeneikaAskew/stocks/pull/262) *evolution* · [#279](https://github.com/TeneikaAskew/stocks/pull/279) *remediation* · [#289](https://github.com/TeneikaAskew/stocks/pull/289) *audit* · [#315](https://github.com/TeneikaAskew/stocks/pull/315) *remediation* · [#326](https://github.com/TeneikaAskew/stocks/pull/326) *origin* · [#327](https://github.com/TeneikaAskew/stocks/pull/327) *evolution* · [#358](https://github.com/TeneikaAskew/stocks/pull/358) *evolution* · [#419](https://github.com/TeneikaAskew/stocks/pull/419) *evolution* · [#504](https://github.com/TeneikaAskew/stocks/pull/504) *evolution* · [#510](https://github.com/TeneikaAskew/stocks/pull/510) *evolution* · [#727](https://github.com/TeneikaAskew/stocks/pull/727) *evolution* · [#785](https://github.com/TeneikaAskew/stocks/pull/785) *remediation* · [#803](https://github.com/TeneikaAskew/stocks/pull/803) *remediation*
 
 ### FEAT-CICD-001 — CI / testing (9 open)
@@ -410,7 +413,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 
 **PR lineage:** [#189](https://github.com/TeneikaAskew/stocks/pull/189) *origin* · [#192](https://github.com/TeneikaAskew/stocks/pull/192) *evolution* · [#200](https://github.com/TeneikaAskew/stocks/pull/200) *remediation* · [#235](https://github.com/TeneikaAskew/stocks/pull/235) *origin* · [#323](https://github.com/TeneikaAskew/stocks/pull/323) *remediation* · [#389](https://github.com/TeneikaAskew/stocks/pull/389) *origin* · [#392](https://github.com/TeneikaAskew/stocks/pull/392) *origin* · [#494](https://github.com/TeneikaAskew/stocks/pull/494) *evolution* · [#641](https://github.com/TeneikaAskew/stocks/pull/641) *origin* · [#644](https://github.com/TeneikaAskew/stocks/pull/644) *origin* · [#759](https://github.com/TeneikaAskew/stocks/pull/759) *origin* · [#771](https://github.com/TeneikaAskew/stocks/pull/771) *remediation*
 
-### FEAT-DEBT-001 — Technical debt (3 open)
+### FEAT-DEBT-001 — Technical debt (4 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -418,6 +421,7 @@ As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to so
 | [#841](https://github.com/TeneikaAskew/stocks/issues/841) | LOW | [audit] SEC-L4 — Broad exception handling (counted, not itemized) |
 | [#921](https://github.com/TeneikaAskew/stocks/issues/921) | P3 | [P3][Cleanup] Decide and remove orphan tables, dead API endpoints, and legacy apps |
 
+| [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) | P2 | [P2][Docs] Three module docstrings describe behaviour the code no longer has |
 **PR lineage:** [#259](https://github.com/TeneikaAskew/stocks/pull/259) *retirement*
 
 ### FEAT-JOURNAL-001 — Journal / portfolio (3 open)

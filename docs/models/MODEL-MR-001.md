@@ -46,6 +46,17 @@ both at or above 3 is decided by precedence. The live path has the same shape
 PUT mirrors: `consecutive_up`, `50 < RSI < 75` (`PUT_RSI_RANGE`), `Price_vs_VWAP > 0`,
 `StochRSI_K > 70` (`STOCH_RSI_OVERBOUGHT`), `Broke_Prev_Day_Low == 1`.
 
+**The two RSI bands are not fixed constants at runtime.** `gcp/signal_monitor.py:1084-1085`
+resolves both through `lib.strategies.calibration.get_call_rsi_range(ticker)` /
+`get_put_rsi_range(ticker)`, so a per-ticker Tier-A range written by
+[MODEL-CALIB-001](MODEL-CALIB-001.md) overrides the `(25, 50)` / `(50, 75)` defaults — subject to
+that document's four fallback gates. The values above are the **Tier-B** floor, which is what
+runs whenever no usable calibration row exists.
+
+This note existed on [MODEL-MOM-001](MODEL-MOM-001.md) and not here, although
+`signal_monitor.py` resolves the ranges for both strategies on the same two lines. A reader of
+this document alone would have taken the bands as literal.
+
 **There is no EMA condition.** EMA-proximity was removed, and the function docstring records
 why with the measurement: it *"fired on 84.6% of bars — the same 'free score' pathology
 momentum had with `stoch_rsi_not_overbought`"*.
