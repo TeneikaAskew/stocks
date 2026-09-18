@@ -45,10 +45,48 @@ newer confirmation factors cannot carry a fire on their own.
 Conditions 5–7 are NaN-guarded: a missing indicator scores zero rather than raising or
 defaulting true (`momentum.py:99-112`).
 
-**`StochRSI` is not scored.** It was removed in Phase 0.7.1. The function docstring records
-why, with the measurement: *"`stoch_rsi_not_overbought` (StochRSI_K < 80) fired on 72.2% of
-bars — pure free score that didn't discriminate setup quality"* (273 morning bars, 2026-05-01
-strategy audit).
+**`StochRSI` is not scored — but it still decides whether the bar is evaluated at all.**
+It was removed as a *condition* in Phase 0.7.1, and the function docstring records why with the
+measurement: *"`stoch_rsi_not_overbought` (StochRSI_K < 80) fired on 72.2% of bars — pure
+free score that didn't discriminate setup quality"* (273 morning bars, 2026-05-01 strategy
+audit). The **availability gate** on the same field was not removed — see below. The gate
+outlived the factor.
+
+## The availability gate — separate from the score
+
+Before any condition is scored, `MomentumStrategy.evaluate` returns `None` outright when either
+indicator is NaN (`momentum.py:190-195`):
+
+```python
+        # Skip warmup bars where indicators are still NaN.
+        rsi_val = row.get(_rsi_col_name(), row.get("RSI14"))
+        if pd.isna(rsi_val):
+            return None
+        if pd.isna(row.get("StochRSI_K")):
+            return None
+```
+
+So a bar can satisfy the 5-of-7 floor *and* the 2-core-condition rule and still produce
+nothing. This is not the same as the soft NaN handling documented for conditions 5-7, which
+scores zero and continues (`momentum.py:99-112`); this aborts.
+
+**Whether that is reachable depends on which implementation runs**, and the answer is not the
+same for both:
+
+| Path | Guard | Reachable? |
+|---|---|---|
+| `MomentumStrategy.evaluate` under the live engine | `momentum.py:190-195` | **No.** `lib.indicators` `fillna(50.0)`s RSI (`:50`) and fills `stoch_rsi` before the 3-bar rolling mean (`:85`), so `StochRSI_K` is NaN on bar indices **0-1 only**, and `min_bars_for_signals = 30` (`lib/config.py:192`) means the evaluated bar is always index ≥ 29 |
+| `MarketAnalyzer.generate_technical_signals` | `lib/trading_analysis.py:817-819` | **Yes.** It carries its own indicator math with no `fillna` (`:242-245`, `:335-336`), so `StochRSI_K` is NaN on indices **0-15**, while its loop starts at bar 3 (`:810`). Bars 3-15 are skipped |
+
+Measured on a 60-bar series. `MarketAnalyzer` is the path
+`scripts/run_historical_signals.py:40` uses to populate `historical_signals`, so the two halves
+of that table — live rows and backfilled rows — disagree about warm-up bars. Whether
+backfilled and live-generated signals over the same bars are statistically interchangeable is
+already an open decision in
+[15-OPEN-DECISIONS](../product/15-OPEN-DECISIONS.md); this is evidence for it.
+
+An earlier revision of this document described the scored conditions and the runtime layer and
+said nothing about the bar on which the strategy declines to run. Recorded as DOC-29.
 
 Per-ticker RSI ranges override the Tier-B default via
 `lib.strategies.calibration.get_call_rsi_range(ticker)`, written by
@@ -116,7 +154,6 @@ Recorded as DOC-18 in
 
 ## Known issues
 
-[#285](https://github.com/TeneikaAskew/stocks/issues/285) duplicate inline path ·
-[#701](https://github.com/TeneikaAskew/stocks/issues/701) two divergent voters.
+[#285](https://github.com/TeneikaAskew/stocks/issues/285) duplicate inline path · [#701](https://github.com/TeneikaAskew/stocks/issues/701) two divergent voters · [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) the module docstring describes behaviour the code no longer has.
 Titles and severity are owned by
 [12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).

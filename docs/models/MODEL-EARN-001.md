@@ -31,7 +31,7 @@ but not on missing data:
 
 So a watchlist row can carry `reversal_play` for a name whose canonical archetype is
 `quiet`, and the brief and the watchlist can disagree on the same ticker on the same
-morning. No issue tracks this; recorded as DOC-24 in
+morning. Tracked as [#1135](https://github.com/TeneikaAskew/stocks/issues/1135); recorded as DOC-24 in
 [07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
 This document does not change the job's behaviour — routing the refresh through
 `classify_archetype` is a code change for a code PR.
@@ -122,14 +122,30 @@ All environment variables; defaults are the Phase 0.5 locked values.
 | `BRIEF_REACTION_MIN_NQ` | 12 | — |
 | `RECOMMEND_LONG_ONLY` | **`true` in production** | `true` / `false` |
 
-**`RECOMMEND_LONG_ONLY` changes what the model recommends, and it is on.**
-`gcp/deploy.sh:1061-1066` sets it `true` for the deployed job, read by
-`lib/earnings_reactions.py:404-410`. With it on, `recommended_structure` never returns the
-default iron condor: it returns a long straddle, long call or long put, and `SKIP` when the
-implied move exceeds 15%. The deploy comment records the reason as an owner preference
-(*"I would always buy them sell"*, 2026-05-22), not a measured result. An earlier revision
-listed the knobs without it, so the document described a recommendation policy production
-does not run.
+**`RECOMMEND_LONG_ONLY` sets a default, and which surface it reaches matters.**
+`gcp/deploy.sh:1061-1066` sets it `true`, read by `_env_long_only()`
+(`lib/earnings_reactions.py:403-411`). The deploy comment scopes it in as many words — *"so
+the morning brief recommends LONG STRADDLE / LONG CALL / LONG PUT / SKIP instead of IC"* —
+and records the reason as an owner preference (*"I would always buy them sell"*, 2026-05-22),
+not a measured result.
+
+The mechanism is a **default, not a policy**: `recommended_structure`'s parameter is
+`long_only: Optional[bool] = None`, and the env var is consulted only when the caller omits the
+argument. So the two production consumers behave differently:
+
+| Consumer | Passes `long_only`? | What it publishes |
+|---|---|---|
+| The premarket brief | no — falls through to the env var | long straddle / call / put, and `SKIP` above a 15% implied move. Never `IC` |
+| `gcp/refresh_earnings_views.py:247-255` | **yes, both ways**, under a comment reading `# BOTH recommendation modes` | both `recommended_structure_long_only` and `recommended_structure_ic_mode` |
+
+`/api/earnings/upcoming` serves the whole row (`SELECT *`, `platform/api/routers/earnings.py:120-130`),
+its own docstring saying "**BOTH** recommendation modes (long-only + IC)". **So the watchlist
+can show `IC`** for a Q5 event whose calibration clears the overpricing thresholds, while the
+brief for the same event cannot — the env var never applies there.
+
+Two earlier revisions were wrong in opposite directions: the first listed the knobs without
+this one at all, and the second said "production never returns the default iron condor", which
+is true of the brief and false of the watchlist. Recorded as DOC-27's sibling.
 
 ## Entry points
 
@@ -190,6 +206,6 @@ docstring; recorded as DOC-19 in
 
 ## Known issues
 
-[#863](https://github.com/TeneikaAskew/stocks/issues/863) winners posted to Discord at 99
-days old. Titles and severity are owned by
+[#863](https://github.com/TeneikaAskew/stocks/issues/863) winners posted to Discord at 99 days old · [#1135](https://github.com/TeneikaAskew/stocks/issues/1135) `_derive_archetype` diverges from `classify_archetype` · [#1138](https://github.com/TeneikaAskew/stocks/issues/1138) the playability normalizer takes 64 returns, not 60.
+Titles and severity are owned by
 [12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).

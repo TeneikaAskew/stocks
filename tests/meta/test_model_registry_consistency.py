@@ -985,6 +985,48 @@ def test_registry_code_column_names_the_live_implementation():
     )
 
 
+def test_no_model_doc_denies_an_issue_the_register_names():
+    """A doc may not say "no issue tracks this" about a concern that has one.
+
+    Four issues were filed for DOC-18/23/24/27 and the register's dispositions
+    were repointed at them -- and not one of the eight `docs/models/*.md` was.
+    Two still read "No issue tracks this", and MODEL-BRIEF-001's Known issues
+    still said "None open." while the new issue named its stale header.
+
+    That is DOC-22's class exactly (fix the instance, not the claim), committed
+    in the commit whose message recorded DOC-22 as closed. The two invariants
+    added for DOC-22 both run doc -> registry; neither runs doc -> register
+    disposition, which is the direction that failed here.
+    """
+    text = REGISTRY.read_text()
+    disposition = text[text.index("### Disposition"):text.index("Merged-PR lineage")]
+
+    # DOC ids whose disposition names a GitHub issue.
+    tracked: set[str] = set()
+    for line in disposition.split("\n"):
+        if not re.match(r"^\|\s*DOC-", line):
+            continue
+        cells = [c.strip() for c in line.split("|")]
+        if re.search(r"/issues/\d+", cells[3]):
+            tracked |= _expand_doc_ranges(cells[1])
+    assert tracked, "no disposition names an issue -- did the table change shape?"
+
+    denial = re.compile(r"[Nn]o issue (?:tracks|is filed)|None open", re.M)
+    bad = []
+    for doc in sorted((REPO / "docs" / "models").glob("MODEL-*.md")):
+        body = doc.read_text()
+        for cid in sorted(set(re.findall(r"DOC-\d+", body)) & tracked):
+            for m in denial.finditer(body):
+                # Only the sentence that also cites this id.
+                window = body[max(0, m.start() - 400):m.start() + 400]
+                if cid in window:
+                    bad.append(f"{doc.name}: denies an issue for {cid} ({m.group(0)!r})")
+    assert not bad, (
+        f"model docs deny issues the register tracks: {sorted(set(bad))}. "
+        "Filing an issue means repointing every document that said there was none."
+    )
+
+
 def test_register_makes_no_uniqueness_claim_about_recorded_rationale():
     """No disposition may claim one model is the only one with a derivation.
 
@@ -1051,7 +1093,14 @@ MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds
                  # is why a curated list needs re-deriving, not just extending.
                  "premarket-brief", "auto-refresh-top-n",
                  "build-options-daily-features", "historical-signals-watchlist",
-                 "earnings-sweep")
+                 "earnings-sweep",
+                 # Added 2026-09-18, AFTER MODEL-FLOW-001 was registered. Review
+                 # filed this as a whitelist omission; the whitelist was right --
+                 # its rule is "executes code cited in a MODEL-* row", and
+                 # lib/features/flow_direction.py was cited by none. Adding the
+                 # job first would have made the gate demand a row that did not
+                 # exist. The registry was short a model, not the list an entry.
+                 "build-options-greeks")
 
 def _is_model_bearing(job: str) -> bool:
     return any(k in job for k in MODEL_BEARING)

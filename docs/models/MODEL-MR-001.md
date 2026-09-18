@@ -92,10 +92,49 @@ the score:
 | Fail-closed | malformed `disabled_conditions` (`:290`, `:306`) or a resolver failure (`:329`) | **no mean-reversion signal for that bar** — `return None`, logged, per CLAUDE.md Rule 3.7 |
 
 None of these gates exists in `MeanReversionStrategy.evaluate`, so a reader who reasons
-from the class alone will predict fires on a ticker whose PUT side is switched off. No
-issue tracks the duplicate mean-reversion path (the momentum twin is
-[#285](https://github.com/TeneikaAskew/stocks/issues/285)); recorded as DOC-23 in
+from the class alone will predict fires on a ticker whose PUT side is switched off.
+[#1136](https://github.com/TeneikaAskew/stocks/issues/1136) tracks the duplicate path, paired
+with [#285](https://github.com/TeneikaAskew/stocks/issues/285) for the momentum twin; recorded
+as DOC-23 in
 [07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
+
+### They also differ *before* the runtime layer
+
+The runtime gates above are not the only difference, and an earlier revision of this section
+implied they were. The class refuses the bar outright when either indicator is NaN
+(`mean_reversion.py:151-155`):
+
+```python
+        # Skip warmup bars where indicators are still NaN.
+        if pd.isna(row.get(_rsi_col_name())):
+            return None
+        if pd.isna(row.get("StochRSI_K")):
+            return None
+```
+
+`lib.signals.evaluate_signal` has **no such guard**. A NaN simply fails its comparison and
+scores zero (`lib/signals.py:64`, `:83`), so on a row with `Consecutive_Down >= 3`,
+`Price_vs_VWAP < 0` and `Broke_Prev_Day_High == 1` it returns a CALL at `base_score = 3` —
+the same row the class returns `None` for.
+
+**That divergence is unreachable in production, and the reason is worth stating**, because it
+looks like an inconsistency and is not. `lib.indicators` `fillna(50.0)`s RSI (`:50`) so it is
+never NaN, and fills `stoch_rsi` before the 3-bar rolling mean (`:85`) so `StochRSI_K` is NaN on
+bar indices 0-1 only — while `min_bars_for_signals = 30` (`lib/config.py:192`) means the live
+monitor never evaluates those bars. `Consecutive_Down` is NaN there too, so the scenario's own
+first point fails as well. Measured on a 60-bar series.
+
+Of the four mean-reversion implementations, the only one without a NaN guard is the one fed by
+an engine that never emits NaN:
+
+| Implementation | Guard | Engine |
+|---|---|---|
+| `lib.signals.evaluate_signal` (live) | none | `lib.indicators` — never NaN |
+| `lib.signals.generate_signals` (batch / backtest) | `lib/signals.py:379-383` | caller's |
+| `MeanReversionStrategy.evaluate` (offline) | `mean_reversion.py:151-155` | caller's |
+| `MarketAnalyzer` (historical) | `lib/trading_analysis.py:817-819` | its own, no `fillna` |
+
+The guard tracks the engine. Recorded as DOC-29.
 
 ## Rationale
 
@@ -130,6 +169,6 @@ Recorded as DOC-18 in
 
 ## Known issues
 
-[#249](https://github.com/TeneikaAskew/stocks/issues/249) walk-forward RSI thresholds.
+[#249](https://github.com/TeneikaAskew/stocks/issues/249) walk-forward RSI thresholds · [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) two implementations, only `lib.signals` applies the runtime gates · [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) the module docstring lists an EMA condition the code does not have, and calls `lib/signals.py` a thin shim.
 Titles and severity are owned by
 [12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).

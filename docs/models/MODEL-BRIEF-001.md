@@ -120,8 +120,8 @@ constant carries a derivation in code or tests.
 
 ## Known issues
 
-**None open.** [#900](https://github.com/TeneikaAskew/stocks/issues/900) (cache not keyed
-by session date) closed 2026-09-14. The registry's `RETEST` recommendation therefore
+[#1137](https://github.com/TeneikaAskew/stocks/issues/1137) — `lib/movement_statement.py:1-7` still says "PHASE 2 (feature-flagged, NOT user-facing)" while the flag is `true` and the card is served.
+[#900](https://github.com/TeneikaAskew/stocks/issues/900) (cache not keyed by session date) closed 2026-09-14. The registry's `RETEST` recommendation therefore
 rests on no current blocker and needs either a stated reason or a status change — tracked
 as DOC-01 in
 [07 § Documentation coverage](../product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
