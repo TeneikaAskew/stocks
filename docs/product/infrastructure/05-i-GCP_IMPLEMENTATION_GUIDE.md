@@ -4,7 +4,7 @@
 
 > **Project:** adept-mountain-474619-d4
 > **Region:** us-east1
-> **Last updated:** 2026-02-22
+> **Last updated:** 2026-09-15 (research image + magnitude jobs redeployed; `./gcp/deploy.sh magnitude-inference-only` added for deploy-without-rebuild)
 
 ---
 

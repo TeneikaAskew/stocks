@@ -58,18 +58,56 @@ def _toy_data(n_rows: int = 100, n_features: int = 4):
     return X, y
 
 
-def _promotable_model(y):
-    """A mock estimator whose argmax predictions pass the promotion gate.
+def _proba_for(y):
+    """Probabilities whose served DECISION reproduces `y` exactly.
 
-    Since 2026-08-28 _persist_production_model_artifact scores the fitted model
-    on X_full and refuses to flip LATEST when the argmax collapses onto one
-    bucket (mag_config.PROMOTION_COLLAPSE_MODAL_SHARE). A bare MagicMock returns a
-    MagicMock from .predict(), which reads as zero usable predictions and is
-    correctly blocked — so any test exercising the SUCCESSFUL publish path has
-    to hand back a realistic spread.
+    0.97 on the true class and 0.01 elsewhere. _toy_data samples ~60/27/10/3
+    over 100 rows, so the smallest prior a bucket can have while still
+    appearing is 0.01 and 2x that is 0.02: the 0.01 off-class mass never
+    names a bucket, 0.97 always does, and decide_bucket reproduces y: a
+    dispersed, promotable spread (tail share ~40%, modal ~60%). (0.05
+    off-class was enough to name EXPLOSIVE on every row when the sample
+    happened to hold two EXPLOSIVE bars.)
+    """
+    y = np.asarray(y)
+    proba = np.full((len(y), 4), 0.01)
+    proba[np.arange(len(y)), y] = 0.97
+    return proba
+
+
+def _constant_proba(n, priors=(0.64, 0.27, 0.07, 0.02)):
+    """The c49qf shape in probability space: every row emits the base rates,
+    so the decision rule names TIGHT on every row."""
+    return np.tile(np.asarray(priors, dtype=float), (n, 1))
+
+
+def _priors_of(y):
+    return np.bincount(np.asarray(y), minlength=4) / len(y)
+
+
+def _promotable_model(y):
+    """A mock estimator whose served decision passes the promotion gate.
+
+    _persist_production_model_artifact scores the fitted model's
+    predict_proba on X_full through the decision rule and refuses to flip
+    LATEST when that rule is stuck on one bucket (mag_config
+    .PROMOTION_COLLAPSE_MODAL_SHARE / PROMOTION_MIN_TAIL_CALL_SHARE). A bare
+    MagicMock returns a MagicMock from .predict_proba(), which reads as zero
+    usable predictions and is correctly blocked -- so any test exercising the
+    SUCCESSFUL publish path has to hand back a realistic spread.
     """
     m = MagicMock()
-    m.predict.return_value = np.asarray(y)
+    m.predict_proba.return_value = _proba_for(y)
+    return m
+
+
+def _collapsed_model(y):
+    """Constant output at the priors of `y` ITSELF. The persist path scales
+    the decision rule by y_full's own frequencies, so a constant model has
+    to emit those, not a fixed 64/27/7/2 -- against a sample whose EXPLOSIVE
+    prior is 1%, a fixed 2% would clear 2x and be named on every row."""
+    m = MagicMock()
+    m.predict_proba.return_value = _constant_proba(len(y), _priors_of(y))
     return m
 
 
@@ -438,128 +476,109 @@ def test_results_dataframe_coerces_all_none_float_cols():
 # ── Promotion gate (c49qf incident, 2026-08-27) ────────────────────────────
 
 
-def test_promotion_verdict_blocks_collapsed_model():
-    """The exact c49qf signature: one bucket on every row."""
+_PRIORS = np.array([0.64, 0.27, 0.07, 0.02])
+
+
+def test_promotion_verdict_blocks_a_constant_output_model():
+    """The exact c49qf signature in probability space: every row emits the
+    base rates. The decision rule names TIGHT on all of them; blocked on
+    every criterion, and the reason says so."""
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
-    v = mwf.promotion_verdict(np.zeros(588, dtype=np.int64))
+    v = mwf.promotion_verdict(_constant_proba(588), _PRIORS)
     assert v["ok"] is False
     assert v["modal_share"] == 1.0
+    assert v["tail_call_share"] == 0.0
     assert v["distinct_classes"] == 1
-    assert "only 1 distinct bucket" in v["reason"]
+    assert "names only 1 distinct bucket" in v["reason"]
+    assert "collapsed" in v["reason"]
+    assert "no tail calls" in v["reason"]
 
 
-def test_promotion_verdict_collapse_ceiling_is_inclusive():
-    """The absolute criterion: 90.0% in one bucket is collapsed whatever the
-    labels say; 89.9% is not (and with no labels passed, nothing else can
-    block it)."""
+def test_promotion_verdict_passes_a_calibrated_model_with_tail_signal():
+    """The case the old argmax criteria failed by construction. Rows sit at
+    the base rates except that a fifth of them carry 3x the EXPLOSIVE prior:
+    argmax is TIGHT on every row (97%+ under the old rule, blocked), the
+    decision rule names EXPLOSIVE on that fifth and passes."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    proba = _constant_proba(1000)
+    proba[:200, 3] = 0.06
+    proba[:200, 0] = 0.60
+    assert (proba.argmax(1) == 0).all(), "argmax never leaves TIGHT here"
+    v = mwf.promotion_verdict(proba, _PRIORS)
+    assert v["ok"] is True, v["reason"]
+    assert v["tail_call_share"] == pytest.approx(0.20)
+    assert v["modal_share"] == pytest.approx(0.80)
+    assert v["class_counts"] == {0: 800, 3: 200}
+    assert v["decision_lift_min"] == 2.0
+
+
+def test_promotion_verdict_collapse_ceiling_is_inclusive_and_exact():
+    """90.0% named one bucket is collapsed; one row fewer is not. Compared as
+    exact rationals so a boundary case is never lost to binary floating
+    point (Codex, #1042)."""
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
     from gcp.research.magnitude_engine.mag_config import PROMOTION_COLLAPSE_MODAL_SHARE
 
     assert PROMOTION_COLLAPSE_MODAL_SHARE == 0.90
-    at = np.array([0] * 900 + [1] * 100)
-    under = np.array([0] * 899 + [1] * 101)
-    v_at = mwf.promotion_verdict(at)
+
+    def with_tail(n_tail, n=1000):
+        proba = _constant_proba(n)
+        proba[:n_tail, 3] = 0.06
+        proba[:n_tail, 0] = 0.60
+        return proba
+
+    v_at = mwf.promotion_verdict(with_tail(100), _PRIORS)      # 900/1000 TIGHT
     assert v_at["ok"] is False and "collapsed" in v_at["reason"]
-    assert mwf.promotion_verdict(under)["ok"] is True
+    v_under = mwf.promotion_verdict(with_tail(101), _PRIORS)   # 899/1000
+    assert v_under["ok"] is True, v_under["reason"]
 
 
-def test_promotion_verdict_passes_realistic_base_rates():
-    """The real magnitude class balance (~64/27/7/2) must NOT be blocked —
-    the gate targets argmax collapse and over-prediction, not label
-    imbalance. A model that predicts exactly the label distribution has zero
-    excess."""
+def test_promotion_verdict_tail_floor_is_the_complement_of_the_ceiling():
+    """PROMOTION_MIN_TAIL_CALL_SHARE is 10% so that, when TIGHT is the modal
+    bucket, the tail floor and the 90% collapse ceiling are one number and
+    the live detector (which only sees modal share) reads the same line."""
+    from gcp.research.magnitude_engine.mag_config import (
+        PROMOTION_MIN_TAIL_CALL_SHARE, PROMOTION_COLLAPSE_MODAL_SHARE)
+    assert PROMOTION_MIN_TAIL_CALL_SHARE == pytest.approx(
+        1.0 - PROMOTION_COLLAPSE_MODAL_SHARE)
+
+
+def test_promotion_verdict_catches_a_model_collapsed_onto_the_tail():
+    """A model naming EXPLOSIVE on 95% of rows has a 95% tail-call share and
+    passes that floor; the collapse ceiling is what catches it. The two
+    criteria are kept separate for exactly this case."""
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
-    y = np.array([0] * 640 + [1] * 270 + [2] * 70 + [3] * 20)
-    v = mwf.promotion_verdict(y, y_true=y)
-    assert v["ok"] is True
-    assert v["distinct_classes"] == 4
-    assert v["class_counts"] == {0: 640, 1: 270, 2: 70, 3: 20}
-    assert v["true_modal_share"] == pytest.approx(0.64)
-    assert v["modal_excess"] == pytest.approx(0.0)
-
-
-def test_promotion_verdict_measures_the_model_not_the_labels():
-    """slv7m, 2026-09-07 (#1025): a 68.7% TIGHT base rate put a calibrated
-    model 1.5 points from the old fixed 70% ceiling. SPY/15m (68.7% predicted)
-    passed and IWM/15m (76.1% predicted) was blocked as if it were c49qf's
-    100%. Under the relative criterion IWM's +7.4 passes; a model 15 points
-    over the same labels does not; the reason names both shares."""
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-    from gcp.research.magnitude_engine.mag_config import PROMOTION_MAX_MODAL_EXCESS
-
-    assert PROMOTION_MAX_MODAL_EXCESS == 0.10
-    n = 1000
-    y_true = np.array([0] * 687 + [1] * 245 + [2] * 52 + [3] * 16)
-    assert y_true.size == n
-    iwm_like = np.array([0] * 761 + [1] * 191 + [2] * 42 + [3] * 6)
-    v = mwf.promotion_verdict(iwm_like, y_true=y_true)
-    assert v["ok"] is True, v["reason"]
-    assert v["modal_excess"] == pytest.approx(0.074)
-
-    over = np.array([0] * 840 + [1] * 120 + [2] * 30 + [3] * 10)
-    v = mwf.promotion_verdict(over, y_true=y_true)
+    proba = np.tile([0.30, 0.10, 0.10, 0.50], (1000, 1))
+    proba[:50] = _PRIORS
+    v = mwf.promotion_verdict(proba, _PRIORS)
     assert v["ok"] is False
-    assert "over-predicts bucket 0" in v["reason"]
-    assert "84.0% predicted vs 68.7% true" in v["reason"]
-    assert v["modal_share"] < 0.90, "this case must be caught by excess, not collapse"
-
-    # Exactly the allowed excess is still fine; one row more is not.
-    boundary = np.array([0] * 787 + [1] * 165 + [2] * 40 + [3] * 8)
-    assert mwf.promotion_verdict(boundary, y_true=y_true)["ok"] is True
-    beyond = np.array([0] * 788 + [1] * 164 + [2] * 40 + [3] * 8)
-    assert mwf.promotion_verdict(beyond, y_true=y_true)["ok"] is False
+    assert v["tail_call_share"] == pytest.approx(0.95)
+    assert "collapsed: bucket 3" in v["reason"]
+    assert "no tail calls" not in v["reason"]
 
 
-def test_promotion_verdict_excess_boundary_is_exact_not_floating_point():
-    """4/10 predicted vs 3/10 true is exactly the allowed +10 points; in
-    binary floating point the subtraction is 0.10000000000000003 and a
-    float compare blocked it with the contradictory reason "+10.0% > 10%"
-    (Codex, #1042). Counts are compared exactly."""
+def test_promotion_verdict_needs_no_labels():
+    """The verdict is exactly what the live rows can be checked against:
+    pred_bucket in the predictions table IS this decision, and live rows
+    carry no labels. The old relative criterion needed them and could not
+    be mirrored by the detector."""
+    import inspect
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
-
-    assert (4 / 10) - (3 / 10) > 0.10, "the hazard this test guards"
-    y_pred = np.array([0] * 4 + [1] * 3 + [2] * 3)
-    y_true = np.array([0] * 3 + [1] * 4 + [2] * 3)
-    v = mwf.promotion_verdict(y_pred, y_true=y_true)
-    assert v["ok"] is True, v["reason"]
-    assert v["modal_excess"] == pytest.approx(0.10)
-
-
-def test_promotion_verdict_judges_every_class_tied_for_the_mode():
-    """Predicted {0: 4, 1: 4, 2: 2} against true {0: 6, 1: 1, 2: 3}: class 0
-    is under-predicted by 20 points but class 1, equally modal, is over-
-    predicted by 30. Picking the lowest id would pass this (Codex, #1042);
-    the tied class with the greatest excess is judged and named."""
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-
-    y_pred = np.array([0] * 4 + [1] * 4 + [2] * 2)
-    y_true = np.array([0] * 6 + [1] * 1 + [2] * 3)
-    v = mwf.promotion_verdict(y_pred, y_true=y_true)
-    assert v["ok"] is False
-    assert v["modal_class"] == 1
-    assert v["true_modal_share"] == pytest.approx(0.1)
-    assert v["modal_excess"] == pytest.approx(0.3)
-    assert "over-predicts bucket 1" in v["reason"]
-    # Without labels a tie falls back to the lowest id, and only the collapse
-    # criterion can judge it.
-    assert mwf.promotion_verdict(y_pred)["modal_class"] == 0
-
-
-def test_promotion_verdict_refuses_mismatched_labels():
-    """A label vector for different rows would make the excess meaningless;
-    that is an error, never a silent skip of the criterion."""
-    from gcp.research.magnitude_engine import mag_walk_forward as mwf
-
-    with pytest.raises(ValueError, match="same rows"):
-        mwf.promotion_verdict(np.array([0, 0, 1]), y_true=np.array([0, 1]))
+    sig = inspect.signature(mwf.promotion_verdict)
+    assert list(sig.parameters) == ["y_proba", "class_priors"]
+    src = inspect.getsource(mwf.promotion_verdict)
+    body = src[src.index('"""', src.index('"""') + 3) + 3:]   # past the docstring
+    assert "y_true" not in body
+    assert "excess" not in body
 
 
 def test_promotion_verdict_handles_empty():
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
-    v = mwf.promotion_verdict(np.array([], dtype=np.int64))
+    v = mwf.promotion_verdict(np.zeros((0, 4)), _PRIORS)
     assert v["ok"] is False
     assert v["n"] == 0
 
@@ -576,8 +595,7 @@ def test_blocked_promotion_leaves_latest_untouched(monkeypatch, joblib_dump_stub
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
     X, y = _toy_data()
-    collapsed = MagicMock()
-    collapsed.predict.return_value = np.zeros(len(y), dtype=np.int64)
+    collapsed = _collapsed_model(y)
     fake_client, captured = _capture_blob_uploads()
 
     with patch.object(mwf, "make_lgbm", return_value=collapsed), \
@@ -596,6 +614,9 @@ def test_blocked_promotion_leaves_latest_untouched(monkeypatch, joblib_dump_stub
     marker = json.loads(captured[f"{prefix}/PROMOTION_BLOCKED"].decode())
     assert marker["ok"] is False
     assert marker["modal_share"] == 1.0
+    assert marker["tail_call_share"] == 0.0
+    # forensics carry the two settings the verdict turned on
+    assert "class_weight_power" in marker and "class_priors" in marker
 
 
 def test_isotonic_calibration_does_not_bypass_the_gate(monkeypatch, joblib_dump_stub):
@@ -605,8 +626,7 @@ def test_isotonic_calibration_does_not_bypass_the_gate(monkeypatch, joblib_dump_
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
     X, y = _toy_data()
-    collapsed = MagicMock()
-    collapsed.predict.return_value = np.zeros(len(y), dtype=np.int64)
+    collapsed = _collapsed_model(y)
     fake_client, captured = _capture_blob_uploads()
 
     with patch.object(mwf, "CalibratedClassifierCV", return_value=collapsed), \
@@ -696,8 +716,7 @@ def test_both_criteria_are_reported_when_both_fail(monkeypatch, joblib_dump_stub
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
     X, y = _toy_data()
-    collapsed = MagicMock()
-    collapsed.predict.return_value = np.zeros(len(y), dtype=np.int64)
+    collapsed = _collapsed_model(y)
     fake_client, captured = _capture_blob_uploads()
 
     with patch.object(mwf, "make_lgbm", return_value=collapsed), \
@@ -735,6 +754,14 @@ def test_passing_cell_still_promotes_and_records_its_gates(monkeypatch, joblib_d
     assert uri == "gs://test-bucket/magnitude-models/production/QQQ/15m/"
     assert captured["magnitude-models/production/QQQ/15m/LATEST"] == b"good-001"
     assert "magnitude-models/production/QQQ/15m/good-001/PROMOTION_BLOCKED" not in captured
+    # and the contract states the priors the decision rule will scale by,
+    # measured from the very labels the verdict was scored on
+    contract = json.loads(
+        captured["magnitude-models/production/QQQ/15m/good-001/CONTRACT.json"].decode())
+    expected = (np.bincount(y, minlength=4) / len(y)).tolist()
+    assert contract["class_priors"] == pytest.approx(expected)
+    assert contract["class_priors_source"] == "training_labels"
+    assert contract["decision_lift_min"] == 2.0
 
 
 def test_persist_call_site_hands_over_the_cells_own_gates():

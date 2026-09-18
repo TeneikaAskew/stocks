@@ -73,11 +73,26 @@ class MagnitudePrediction(BaseModel):
     tf: str
     ts: datetime
     probabilities: BucketProbabilities
-    pred_bucket: int           # 0..3 (TIGHT/NORMAL/EXPANDED/EXPLOSIVE)
+    # 0..3 (TIGHT/NORMAL/EXPANDED/EXPLOSIVE). The served DECISION, not argmax:
+    # the highest bucket whose probability clears DECISION_LIFT_MIN times its
+    # class prior, else TIGHT (mag_pred_train.decide_bucket, 2026-09-14).
+    pred_bucket: int
     pred_bucket_label: str
+    # Probability of the SERVED bucket (pred_bucket). Under the decision
+    # rule a tail call is made at P >= 2x its prior, so this is often the
+    # smaller number on the row: EXPLOSIVE at 0.08 against a 0.026 prior.
+    pred_bucket_proba: float
+    # Probability of the argmax bucket, which is TIGHT on nearly every bar
+    # of a calibrated model. Kept as the drift-monitoring metric
+    # (audit_magnitude_drift averages it); it is NOT the confidence of
+    # pred_bucket and must not be rendered beside it as if it were
+    # (Codex P1 on #1117).
     max_proba: float
     model_version: str
-    source: str                # 'walk_forward' | 'inference'
+    source: str                # always 'inference' on this surface
+    # Always 'lift' on this surface: the rule pred_bucket was made under.
+    # Rows tagged 'argmax' (scored before 2026-09-15) are never served here.
+    decision_rule: str
     computed_at: datetime
     usage_guidance: str
     not_for: list[str]
@@ -85,20 +100,25 @@ class MagnitudePrediction(BaseModel):
 
 
 _BUCKET_LABELS = ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
+# Row column holding each bucket's probability, indexed by pred_bucket.
+_BUCKET_PROBA_COLS = ("p_tight", "p_normal", "p_expanded", "p_explosive")
 
 
 def _row_to_response(row: dict) -> MagnitudePrediction:
+    bucket = int(row["pred_bucket"])
     return MagnitudePrediction(
         ticker=row["ticker"], tf=row["tf"], ts=row["ts"],
         probabilities=BucketProbabilities(
             p_tight=row["p_tight"], p_normal=row["p_normal"],
             p_expanded=row["p_expanded"], p_explosive=row["p_explosive"],
         ),
-        pred_bucket=int(row["pred_bucket"]),
-        pred_bucket_label=_BUCKET_LABELS[int(row["pred_bucket"])],
+        pred_bucket=bucket,
+        pred_bucket_label=_BUCKET_LABELS[bucket],
+        pred_bucket_proba=float(row[_BUCKET_PROBA_COLS[bucket]]),
         max_proba=float(row["max_proba"]),
         model_version=row["model_version"],
         source=row["source"],
+        decision_rule=row["decision_rule"],
         computed_at=row["computed_at"],
         usage_guidance=_USAGE_GUIDANCE,
         not_for=_NOT_FOR,
@@ -124,18 +144,28 @@ def get_latest_prediction(
     distribution — CLAUDE.md §3.7 explicit fail-loud envelope.
     """
     ticker = ticker.upper()
-    # PRIMARY KEY (ticker, tf, ts, model_version) intentionally allows
-    # multiple model versions per (ticker, tf, ts). Order by ts DESC
-    # gets the latest bar; computed_at DESC is the model-version
-    # tiebreaker so a fresher inference row beats a stale walk_forward
-    # backfill for the same timestamp. Without this tiebreaker,
-    # Postgres can return any row among the tie — Codex P2 on PR #597.
+    # Live reads serve INFERENCE rows scored under the served DECISION RULE
+    # only (decision_rule = 'lift'). Rows from before 2026-09-15 hold argmax
+    # in pred_bucket under the same column and model_version; presenting one
+    # as a decision would mislabel it (Codex P1 on #1117). Those rows are
+    # tagged 'argmax' and stay queryable by direct SQL.
+    # The walk-forward harness once wrote
+    # every phase0 fold's test predictions into the same table under
+    # source='walk_forward' (mag_walk_forward._persist_predictions_table),
+    # for promoted AND blocked candidates alike, with `ts` reaching the
+    # newest labelled bar. Without the filter a research run would beat the
+    # served model here on the strength of a fresher computed_at (Codex P1
+    # on #1117). PRIMARY KEY (ticker, tf, ts, model_version) still allows
+    # several inference versions per bar: ts DESC gets the latest bar and
+    # computed_at DESC breaks the tie toward the freshest write, since
+    # Postgres can otherwise return any row among the tie (Codex P2 on #597).
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, "
         "p_explosive, pred_bucket, max_proba, model_version, source, "
-        "computed_at "
+        "decision_rule, computed_at "
         "FROM magnitude_per_bar_predictions "
         f"WHERE ticker = '{ticker}' AND tf = '{tf}' "
+        "  AND source = 'inference' AND decision_rule = 'lift' "
         "ORDER BY ts DESC, computed_at DESC LIMIT 1"
     )
     df = query_to_dataframe(sql)
@@ -169,26 +199,31 @@ def get_prediction_at(
     silently mislead consumers about model confidence.
     """
     ticker = ticker.upper()
-    # When multiple model_versions exist for the same bar, prefer the
-    # most-recent computed_at — that's the freshest inference, while
-    # older walk_forward backfill rows stay queryable via direct SQL.
+    # Inference rows under the served decision rule only, for the reasons
+    # given on /latest; a bar scored only under argmax (before 2026-09-15)
+    # is a 404 here, not a mislabeled decision. When several inference
+    # versions scored the same bar, prefer the most recent computed_at, the
+    # freshest write.
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, "
         "p_explosive, pred_bucket, max_proba, model_version, source, "
-        "computed_at "
+        "decision_rule, computed_at "
         "FROM magnitude_per_bar_predictions "
         f"WHERE ticker = '{ticker}' AND tf = '{tf}' "
         f"  AND ts = '{ts.isoformat()}' "
+        "  AND source = 'inference' AND decision_rule = 'lift' "
         "ORDER BY computed_at DESC LIMIT 1"
     )
     df = query_to_dataframe(sql)
     if df.empty:
         raise HTTPException(
             status_code=404,
-            detail=(f"No prediction at {ts.isoformat()} for {ticker}:{tf}."
-                    " This bar was never scored — either inference "
-                    "skipped it (NaN features), the bar predates "
-                    "magnitude_per_bar_predictions coverage, or the "
-                    "cell isn't enabled."),
+            detail=(f"No prediction at {ts.isoformat()} for {ticker}:{tf} "
+                    "under the served decision rule. Either inference "
+                    "skipped the bar (NaN features), the bar predates "
+                    "magnitude_per_bar_predictions coverage or the "
+                    "2026-09-15 decision rule (earlier rows hold argmax and "
+                    "are not served as decisions), or the cell isn't "
+                    "enabled."),
         )
     return _row_to_response(df.iloc[0].to_dict())

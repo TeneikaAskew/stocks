@@ -39,8 +39,8 @@ from gcp.research.magnitude_engine.mag_config import (
     DEFAULT_CUTOFFS, MIN_TEST_BARS,
     MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds,
     DEFAULT_CALIBRATION, DEFAULT_CV,
-    PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MAX_MODAL_EXCESS,
-    PROMOTION_MIN_DISTINCT_CLASSES,
+    PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MIN_TAIL_CALL_SHARE,
+    PROMOTION_MIN_DISTINCT_CLASSES, DECISION_LIFT_MIN,
     ECE_CEILING_BY_TF, SUCCESS_BAR_EXPLOSIVE_LIFT_MIN,
     SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
@@ -50,7 +50,8 @@ from gcp.research.magnitude_engine.mag_config import (
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.mag_pred_train import (
-    featurize, make_lgbm, resolve_class_weight, expected_calibration_error,
+    featurize, make_lgbm, resolve_class_weight, class_weight_power,
+    decide_bucket, expected_calibration_error,
     decisive_call_hit_rate, explosive_lift,
 )
 from gcp.research.direction_program.phase2_features import (
@@ -108,12 +109,10 @@ CREATE INDEX IF NOT EXISTS ix_mwfr_cell ON
     magnitude_walk_forward_results (phase, ticker, tf, computed_at DESC)
 """
 
-# Per-bar predictions table — added 2026-06-02 to operationalize the
-# research artifact. Walk-forward already produces (ticker, tf, ts,
-# p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE, pred_bucket, max_proba)
-# per scored bar; this DDL gives them a queryable home so the live
-# inference job (mag_inference.py) and the FastAPI consumer route can
-# read them.
+# Per-bar predictions table — added 2026-06-02. Written by the live
+# inference job (mag_inference.py) only; the FastAPI route and the movement
+# statement read it. The DDL lives here beside the results table and is
+# applied by mag_inference.
 #
 # Gate-7 caveat: predictions are a SIZING / FILTERING / STRIKE-SELECTION
 # signal, not a standalone non-directional trade signal. See
@@ -128,20 +127,47 @@ CREATE TABLE IF NOT EXISTS magnitude_per_bar_predictions (
     p_normal      DOUBLE PRECISION NOT NULL,
     p_expanded    DOUBLE PRECISION NOT NULL,
     p_explosive   DOUBLE PRECISION NOT NULL,
-    -- Predicted bucket = argmax(probabilities). 0=TIGHT 1=NORMAL 2=EXPANDED 3=EXPLOSIVE.
+    -- The served DECISION (mag_pred_train.decide_bucket, 2026-09-14): the
+    -- highest bucket whose probability clears DECISION_LIFT_MIN x its class
+    -- prior, else TIGHT. 0=TIGHT 1=NORMAL 2=EXPANDED 3=EXPLOSIVE.
     pred_bucket   SMALLINT         NOT NULL,
+    -- max(probabilities): the ARGMAX bucket's probability, not pred_bucket's.
+    -- Drift-monitoring metric (audit_magnitude_drift averages it).
     max_proba     DOUBLE PRECISION NOT NULL,
     -- Provenance for reproducibility + drift detection.
     model_version VARCHAR(64)      NOT NULL,
     fold_label    VARCHAR(32),     -- NULL for live-inference rows
-    source        VARCHAR(16)      NOT NULL,  -- 'walk_forward' | 'inference'
+    -- 'inference' on every row. 'walk_forward' was the harness's intended
+    -- value, but its write never succeeded (ts bound as VARCHAR, SQLSTATE
+    -- 42804, 2026-06 to 2026-09) and was removed on 2026-09-16 rather than
+    -- fixed: the per-bar CSV in GCS is the evidence, and the SQL copy would
+    -- have been ~140k unread rows per cell per run. Live reads filter on it.
+    source        VARCHAR(16)      NOT NULL,
     computed_at   TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    -- What pred_bucket MEANS on this row: 'lift' (the served decision rule,
+    -- every row written since 2026-09-15 13:00 UTC) or 'argmax' (the rule
+    -- before it). Added 2026-09-16 (Codex P1 on #1117): pred_bucket changed
+    -- meaning under the same column and model_version, and every live read
+    -- now takes 'lift' rows only rather than presenting an argmax row as a
+    -- decision. See PREDICTIONS_DDL_MIGRATE for the column on existing tables.
+    decision_rule VARCHAR(8)       NOT NULL DEFAULT 'argmax',
     PRIMARY KEY (ticker, tf, ts, model_version)
 )
 """
 PREDICTIONS_DDL_INDEX = """
 CREATE INDEX IF NOT EXISTS ix_mpbp_ticker_tf_ts ON
     magnitude_per_bar_predictions (ticker, tf, ts DESC)
+"""
+# Idempotent column add for a table created before 2026-09-16. The default
+# is the truth for every row that predates the column: they were written
+# under argmax. Rows written under the decision rule before the column
+# existed (2026-09-15 13:00 UTC onward) were re-tagged once by hand, and
+# the c49qf rows from before that were recomputed from their stored
+# probabilities and the cell's training-label priors; both are recorded
+# in docs/MAGNITUDE_ENGINE_RESULTS.md section 12.
+PREDICTIONS_DDL_MIGRATE = """
+ALTER TABLE magnitude_per_bar_predictions
+    ADD COLUMN IF NOT EXISTS decision_rule VARCHAR(8) NOT NULL DEFAULT 'argmax'
 """
 
 
@@ -207,7 +233,17 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     ece_pass = ece <= ece_ceiling
 
     decisive = decisive_call_hit_rate(y_te, proba, SUCCESS_BAR_CONFIDENCE_THRESHOLDS)
-    explosive = explosive_lift(y_te, proba, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"])
+    # The decision rule scales by the TRAINING fold's class frequencies: that
+    # is what the model was fitted against and what a promoted model's
+    # CONTRACT.json will carry, so the gate names buckets exactly the way the
+    # served model will.
+    priors_tr = np.bincount(y_tr, minlength=len(LABEL_CLASSES)) / len(y_tr)
+    explosive = explosive_lift(y_te, proba, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"],
+                               class_priors=priors_tr)
+    # pred_bucket_idx in the per-bar CSV is the DECISION, not argmax, so the
+    # analysis scripts (gates 5 and 6) resample the same calls the gate
+    # counted and the consumer sees.
+    pred = decide_bucket(proba, priors_tr)
 
     # Per-bar predictions for downstream event-window concentration analysis
     # (check 3). Kept as a numpy struct → CSV row list, attached to the fold
@@ -313,151 +349,82 @@ def _persist_results_table(engine, phase: str, ticker: str, tf: str,
     log.info("persisted %d folds to magnitude_walk_forward_results", len(df))
 
 
-def _persist_predictions_table(engine, ticker: str, tf: str,
-                                folds: list[dict], run_id: str) -> None:
-    """Flush per-bar predictions from all folds into
-    magnitude_per_bar_predictions.
-
-    The fold dicts carry `_predictions` rows shaped as:
-        (fold_label, ts_str, true_bucket_idx, pred_bucket_idx,
-         max_proba, p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE)
-
-    We drop `true_bucket_idx` (the table is for inference; ground-truth
-    lives in the source bars) and shape into the table schema.
-
-    `model_version = run_id` ties every row to the specific
-    walk-forward execution that produced it. The PRIMARY KEY
-    (ticker, tf, ts, model_version) lets a later run from a different
-    model coexist with the original for A/B comparison.
-
-    Idempotent on re-run because the run_id changes; the same
-    walk-forward dispatch re-using the same run_id would conflict, which
-    is the intended safety net (operator must bump run_id to overwrite).
-    """
-    rows: list[dict] = []
-    for f in folds:
-        fold_label = f.get("fold", "?")
-        for r in (f.get("_predictions") or []):
-            # Unpack: (fold_label_x, ts, _true_idx, pred_idx, max_proba,
-            #          p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE)
-            _fl, ts_str, _true_idx, pred_idx, max_p, p_t, p_n, p_e, p_x = r
-            rows.append({
-                "ticker": ticker, "tf": tf,
-                "ts": ts_str,
-                "p_tight": p_t, "p_normal": p_n,
-                "p_expanded": p_e, "p_explosive": p_x,
-                "pred_bucket": int(pred_idx),
-                "max_proba": float(max_p),
-                "model_version": run_id,
-                "fold_label": fold_label,
-                "source": "walk_forward",
-            })
-
-    if not rows:
-        log.info("no per-bar predictions to persist (folds=%d)", len(folds))
-        return
-
-    df = pd.DataFrame(rows)
-    # Chunk size matters: pg8000's bind-param limit is 65535. With 13
-    # columns/row, max-safe chunk is ~5000. We use 2000 for headroom and
-    # to keep per-INSERT wall-clock under 5s.
-    with engine.begin() as conn:
-        df.to_sql("magnitude_per_bar_predictions", conn,
-                  if_exists="append", index=False,
-                  method="multi", chunksize=2000)
-    log.info("persisted %d per-bar predictions to magnitude_per_bar_predictions",
-             len(df))
-
-
-def promotion_verdict(y_pred: np.ndarray, y_true: np.ndarray | None = None) -> dict:
+def promotion_verdict(y_proba: np.ndarray, class_priors: np.ndarray) -> dict:
     """Decide whether a freshly-trained production candidate may be promoted.
 
-    Takes the candidate's argmax predictions over its own training matrix, and
-    the true buckets for the same rows, and applies two criteria (see
-    mag_config for the incidents each encodes):
+    Takes the candidate's PROBABILITIES over its own training matrix and the
+    class priors it was trained against, runs the served decision rule
+    (mag_pred_train.decide_bucket) and applies the criteria in mag_config:
 
-      * collapse — the modal bucket on >= PROMOTION_COLLAPSE_MODAL_SHARE of
-        rows, whatever the labels say. This is the criterion the
-        post-deployment detector (gcp/audit_magnitude_drift.py) applies to
-        live rows, which carry no labels.
-      * excess — the modal bucket's predicted share exceeds its TRUE share on
-        the same rows by more than PROMOTION_MAX_MODAL_EXCESS. A calibrated
-        model predicts TIGHT about as often as TIGHT happens (~68.5% on the
-        15m cells), and a fixed ceiling just above that measured the labels,
-        not the model (slv7m, #1025).
+      * distinct  -- the rule names at least PROMOTION_MIN_DISTINCT_CLASSES
+        buckets.
+      * collapse  -- no bucket is named on >= PROMOTION_COLLAPSE_MODAL_SHARE
+        of rows. This is the number the post-deployment detector
+        (gcp/audit_magnitude_drift.py) and the render backstop
+        (lib/movement_statement.py) apply to live pred_bucket rows, which
+        carry no labels; pred_bucket IS this decision, so all three read the
+        same thing.
+      * tail      -- a bucket other than TIGHT is named on at least
+        PROMOTION_MIN_TAIL_CALL_SHARE of rows. A constant-output model
+        scores 0 here.
 
-    Scored on the training matrix on purpose: it is the most generous possible
-    test, so a candidate that fails HERE cannot do better out-of-sample.
-    `y_true` is optional only so the collapse criterion can be evaluated where
-    labels are genuinely absent; the persist path always passes it.
+    Until 2026-09-14 this scored ARGMAX and also required the modal share to
+    sit within 10 points of the true modal share. Both failed a calibrated
+    model by construction (mag_config explains the measurement); neither
+    needed labels the live detector lacks in any case. No `y_true` now: the
+    verdict is exactly what the live rows can be checked against.
 
-    Returns a dict with `ok` plus the numbers behind the decision, so the caller
-    can log exactly why a promotion was refused (and the same dict lands in the
-    run summary and the PROMOTION_BLOCKED marker for later forensics).
+    Scored on the training matrix on purpose: it is the most generous
+    possible test, so a candidate that fails HERE cannot do better
+    out-of-sample.
+
+    Returns a dict with `ok` plus the numbers behind the decision, so the
+    caller can log exactly why a promotion was refused (and the same dict
+    lands in the run summary and the PROMOTION_BLOCKED marker for later
+    forensics).
     """
-    y_pred = np.asarray(y_pred)
-    n = int(y_pred.size)
+    proba = np.asarray(y_proba, dtype=float)
+    n = int(proba.shape[0]) if proba.ndim == 2 else 0
     if n == 0:
         return {"ok": False, "reason": "no predictions to evaluate",
-                "n": 0, "modal_share": None, "distinct_classes": 0,
-                "modal_class": None, "true_modal_share": None,
-                "modal_excess": None}
-    if y_true is not None:
-        y_true = np.asarray(y_true)
-        if y_true.size != n:
-            raise ValueError(
-                f"y_true has {y_true.size} rows but y_pred has {n}; the excess "
-                "criterion needs the labels for the same rows")
-    classes, counts = np.unique(y_pred, return_counts=True)
+                "n": 0, "modal_share": None, "modal_class": None,
+                "tail_call_share": None, "distinct_classes": 0,
+                "class_counts": {},
+                "decision_lift_min": float(DECISION_LIFT_MIN)}
+    decision = decide_bucket(proba, class_priors, DECISION_LIFT_MIN)
+    classes, counts = np.unique(decision, return_counts=True)
     modal_count = int(counts.max())
+    modal_class = int(classes[int(np.argmax(counts))])
     modal_share = modal_count / n
     distinct = int(classes.size)
-    # Every class tied for the mode is a candidate: np.argmax would pick the
-    # lowest class id, and the excess criterion must not depend on label
-    # numbering (Codex, #1042). With labels, the tied class with the greatest
-    # excess is the one reported and judged; without them, the lowest id.
-    tied = [int(c) for c, k in zip(classes, counts) if int(k) == modal_count]
-    modal_class = tied[0]
-    true_modal_share = None
-    modal_excess = None
-    excess_frac = None
-    if y_true is not None:
-        # Exact arithmetic on counts: 4/10 - 3/10 is 0.10000000000000003 in
-        # binary floating point, which would block a candidate sitting on
-        # the documented inclusive boundary (Codex, #1042).
-        best = None
-        for c in tied:
-            true_count = int(np.count_nonzero(y_true == c))
-            frac = Fraction(modal_count - true_count, n)
-            if best is None or frac > best[1]:
-                best = (c, frac, true_count)
-        modal_class, excess_frac, true_count = best
-        true_modal_share = true_count / n
-        modal_excess = float(excess_frac)
+    tail_count = int(np.count_nonzero(decision != 0))
+    # Exact rational comparisons: a share that sits on the documented boundary
+    # must not be blocked by binary floating point (Codex, #1042).
+    modal_frac = Fraction(modal_count, n)
+    tail_frac = Fraction(tail_count, n)
     reasons = []
     if distinct < PROMOTION_MIN_DISTINCT_CLASSES:
         reasons.append(
-            f"predicts only {distinct} distinct bucket(s) "
+            f"names only {distinct} distinct bucket(s) "
             f"(min {PROMOTION_MIN_DISTINCT_CLASSES})")
-    if modal_share >= PROMOTION_COLLAPSE_MODAL_SHARE:
+    if modal_frac >= Fraction(str(PROMOTION_COLLAPSE_MODAL_SHARE)):
         reasons.append(
-            f"collapsed: modal bucket {modal_class} on {modal_count}/{n} rows "
+            f"collapsed: bucket {modal_class} named on {modal_count}/{n} rows "
             f"({modal_share:.1%} >= {PROMOTION_COLLAPSE_MODAL_SHARE:.0%})")
-    if excess_frac is not None and excess_frac > Fraction(str(PROMOTION_MAX_MODAL_EXCESS)):
+    if tail_frac < Fraction(str(PROMOTION_MIN_TAIL_CALL_SHARE)):
         reasons.append(
-            f"over-predicts bucket {modal_class}: {modal_share:.1%} predicted "
-            f"vs {true_modal_share:.1%} true on the same rows "
-            f"(+{modal_excess:.1%} > {PROMOTION_MAX_MODAL_EXCESS:.0%})")
+            f"no tail calls: a bucket other than TIGHT named on {tail_count}/{n} "
+            f"rows ({tail_count / n:.1%} < {PROMOTION_MIN_TAIL_CALL_SHARE:.0%})")
     return {
         "ok": not reasons,
         "reason": "; ".join(reasons) if reasons else "passed",
         "n": n,
         "modal_share": modal_share,
         "modal_class": modal_class,
-        "true_modal_share": true_modal_share,
-        "modal_excess": modal_excess,
+        "tail_call_share": tail_count / n,
         "distinct_classes": distinct,
         "class_counts": {int(c): int(k) for c, k in zip(classes, counts)},
+        "decision_lift_min": float(DECISION_LIFT_MIN),
     }
 
 
@@ -621,13 +588,17 @@ def _persist_production_model_artifact(
         )
         model.fit(X_full, y_full)
 
-    # Promotion gate — refuse to make a collapsed or TIGHT-over-predicting
-    # model LATEST. Scored on the training matrix on purpose: it is the most
-    # generous test available, so a candidate that fails here cannot do
-    # better live. y_full is the true bucket for the same rows, which is what
-    # the excess criterion compares against. See mag_config for the c49qf
-    # and slv7m incidents.
-    verdict = promotion_verdict(model.predict(X_full), y_true=y_full)
+    # Promotion gate -- refuse to make a model LATEST whose served decision
+    # rule is stuck on one bucket. Scored on the training matrix on purpose:
+    # it is the most generous test available, so a candidate that fails here
+    # cannot do better live. The priors are the training-label frequencies
+    # the decision rule scales by, and they go into CONTRACT.json below so
+    # inference names buckets exactly as this verdict did. See mag_config for
+    # the c49qf, slv7m and alpha-sweep evidence.
+    class_priors = np.bincount(y_full, minlength=len(LABEL_CLASSES)) / len(y_full)
+    verdict = promotion_verdict(model.predict_proba(X_full), class_priors)
+    verdict["class_priors"] = [float(p) for p in class_priors]
+    verdict["class_weight_power"] = class_weight_power()
     # Second criterion (#1025, 2026-09-08): the cell's own walk-forward
     # verdict. Distribution sanity alone let three slv7m cells promote
     # without ever beating the class-prior baseline.
@@ -651,17 +622,16 @@ def _persist_production_model_artifact(
                              else f"{verdict['reason']}; {gate_reason}")
         verdict["ok"] = False
     log.info("promotion gate %s:%s — %s (n=%d wf_gates=%s modal_share=%s "
-             "true=%s excess=%s distinct=%d)",
+             "tail_call_share=%s distinct=%d lift_min=%.2f alpha=%.2f)",
              ticker, tf, "PASS" if verdict["ok"] else "BLOCK",
              verdict["n"],
              "PASS" if gates.get("cell_pass_gates_1_to_4") else "FAIL",
              "n/a" if verdict["modal_share"] is None
              else f"{verdict['modal_share']:.3f}",
-             "n/a" if verdict["true_modal_share"] is None
-             else f"{verdict['true_modal_share']:.3f}",
-             "n/a" if verdict["modal_excess"] is None
-             else f"{verdict['modal_excess']:+.3f}",
-             verdict["distinct_classes"])
+             "n/a" if verdict["tail_call_share"] is None
+             else f"{verdict['tail_call_share']:.3f}",
+             verdict["distinct_classes"],
+             verdict["decision_lift_min"], verdict["class_weight_power"])
 
     # Upload artifacts under run_prefix; update LATEST pointer LAST.
     try:
@@ -682,7 +652,9 @@ def _persist_production_model_artifact(
         # because mag_inference verifies it, and a reader that can only
         # check a value the writer never wrote is not a check at all.
         bucket.blob(f"{run_prefix}/{CONTRACT_BLOB}").upload_from_string(
-            json.dumps(contract_payload(label_mode, thresholds), indent=2),
+            json.dumps(contract_payload(label_mode, thresholds,
+                                        class_priors=class_priors),
+                       indent=2),
             content_type="application/json")
         # Artifacts are uploaded even when the gate blocks: the run-scoped
         # path is write-only forensics (nothing reads it without LATEST), and
@@ -883,23 +855,26 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
              gates["g4_lift_pass_folds"], "PASS" if gates["g4_pass"] else "FAIL")
     log.info("=" * 70)
 
-    # Pull predictions OUT of fold dicts (they'd bloat the JSON and aren't
-    # needed by downstream consumers of the summary). Upload as a single
-    # CSV per cell-run; analysis scripts read by run_id.
+    # Harvest predictions for the per-cell CSV, the one durable home of the
+    # per-bar rows. They come off the fold dicts just before the summary is
+    # serialised (below), never earlier.
     pred_columns = None
     pred_rows: list[tuple] = []
     for f in folds:
         if "_predictions" in f:
             pred_columns = f.get("predictions_columns") or pred_columns
             pred_rows.extend(f["_predictions"])
-            f.pop("_predictions", None)
-            f.pop("predictions_columns", None)
 
     summary = {
         "phase": phase, "ticker": ticker, "tf": tf,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration, "cv": cv,
+        # The exponent the class weighting actually used. Absent from every
+        # summary before 2026-09-14, which left the serving model's setting
+        # unrecoverable (see mag_pred_train.class_weight_power).
+        "class_weight_power": class_weight_power(),
+        "decision_lift_min": float(DECISION_LIFT_MIN),
         # Recorded so a run's own output says which labels it trained on.
         # Before #1048's follow-up the summary named neither, and three of the
         # four dispatch paths silently ignored --label-mode.
@@ -938,8 +913,6 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     try:
         execute_sql(RESULTS_DDL_CREATE)
         execute_sql(RESULTS_DDL_INDEX)
-        execute_sql(PREDICTIONS_DDL_CREATE)
-        execute_sql(PREDICTIONS_DDL_INDEX)
     except Exception as e:
         # Race on CREATE/INDEX — fine, table will already exist by the
         # time we try to insert.
@@ -964,13 +937,14 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                      "GCS under _research/%s/", research, research)
         else:
             _persist_results_table(engine, phase, ticker, tf, folds, run_id)
-            # Per-bar predictions go here BEFORE the pop loop below drops
-            # `_predictions` from each fold dict. Skipped on phase != 'phase0'
-            # to avoid duplicating identical rows across phases (phases share
-            # the same backbone features in our config; only phase0's per-bar
-            # output is canonical for live consumers).
-            if phase == "phase0":
-                _persist_predictions_table(engine, ticker, tf, folds, run_id)
+            # Per-bar predictions are NOT written to magnitude_per_bar_
+            # predictions. The GCS CSV above is the evidence (gates 5-7 read
+            # it); the SQL copy would add ~140k rows per cell per phase0 run,
+            # over a million for a nine-cell dispatch, with no reader (every
+            # live read and the auditor filter to source='inference') and no
+            # retention, and each run's history would sit in the auditor's
+            # computed_at scan window (Codex P2 on #1117). The write had in
+            # fact never succeeded (see the DDL comment on `source`).
     except Exception as e:
         # Hard failure — log loud, but DON'T fail the task because GCS
         # persistence is the canonical output anyway.
@@ -1000,6 +974,13 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf,
             label_mode=label_mode, thresholds=thresholds)
+    # Only now that the CSV harvest above has read them do the per-bar rows
+    # come off the folds -- they would otherwise bloat the summary JSON by
+    # orders of magnitude.
+    for f in folds:
+        f.pop("_predictions", None)
+        f.pop("predictions_columns", None)
+
     blob = f"{prefix}/walk_forward_{run_id}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved gs://%s/%s",

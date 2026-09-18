@@ -1,6 +1,6 @@
 # Dependency-Driven Roadmap
 
-**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-18 · **Owner:** TBD · Dates, releases and owners are **TBD**. Status is planning
+**Last reviewed:** 2026-09-14 · **Last scanned:** 2026-09-18 · **Owner:** TBD · Dates, releases and owners are **TBD**. Status is planning
 status, never a production claim.
 
 Sequenced by **dependency**, not severity: a CRITICAL issue whose fix cannot be validated
@@ -115,7 +115,7 @@ These two carry the dependency load; their issue sets are listed completely rath
 3. Establish replay/live clock, session and persistence parity — [#873](https://github.com/TeneikaAskew/stocks/issues/873), [#819](https://github.com/TeneikaAskew/stocks/issues/819), [#898](https://github.com/TeneikaAskew/stocks/issues/898) — [#818](https://github.com/TeneikaAskew/stocks/issues/818) is **done**, and its 42× measurement is the template for the rest: fix, then quantify
 4. Fail closed on authentication outside local development, **covering `iap` as well as `open`** — [#911](https://github.com/TeneikaAskew/stocks/issues/911) + the unfiled `/dev` exposure in [09](09-SECURITY-AUTH.md)
 5. Correct signal, level, stop and exit semantics — [#815](https://github.com/TeneikaAskew/stocks/issues/815), [#816](https://github.com/TeneikaAskew/stocks/issues/816), [#866](https://github.com/TeneikaAskew/stocks/issues/866), [#908](https://github.com/TeneikaAskew/stocks/issues/908)
-6. Stop training from auto-writing production — [#813](https://github.com/TeneikaAskew/stocks/issues/813), [#817](https://github.com/TeneikaAskew/stocks/issues/817)
+6. Stop training from auto-writing production — [#813](https://github.com/TeneikaAskew/stocks/issues/813), [#817](https://github.com/TeneikaAskew/stocks/issues/817) — 2026-09-14: the magnitude promotion criteria were measured mutually unsatisfiable (argmax-scored) and replaced with a decision-rule verdict; the sweep that established it promoted nothing (E-26). The serving cells' fate is an open decision in [15](15-OPEN-DECISIONS.md)
 7. Persist complete decision/config/model/code provenance — [#910](https://github.com/TeneikaAskew/stocks/issues/910)
 8. Make evaluation cohort-aware, baseline-compared and calibrated — [#909](https://github.com/TeneikaAskew/stocks/issues/909), [#890](https://github.com/TeneikaAskew/stocks/issues/890)
 9. Restore stale production surfaces or retire them — [#861](https://github.com/TeneikaAskew/stocks/issues/861), [#862](https://github.com/TeneikaAskew/stocks/issues/862), [#863](https://github.com/TeneikaAskew/stocks/issues/863)

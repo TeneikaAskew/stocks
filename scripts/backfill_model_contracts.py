@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Write CONTRACT.json for production model artifacts published before it existed.
+"""Write or upgrade CONTRACT.json for production model artifacts.
+
+Two jobs, one pass. Artifacts promoted before CONTRACT.json existed get one;
+artifacts stamped by the 2026-09-11 backfill, which carry the label contract
+but not the decision rule added on 2026-09-14 (`class_priors`,
+`decision_lift_min`), are upgraded in place -- as are the ones the
+2026-09-15 backfill stamped with priors measured from the walk-forward TEST
+labels (`class_priors_source: "walk_forward_test_labels"`), which omit the
+pre-2019 training rows (Codex P2 on #1117). mag_inference refuses every one
+of these until this has run; the priors it stamps now come from a sibling
+artifact's own training-label measurement (_training_priors_from_sibling).
 
 mag_inference refuses to score a model whose artifact does not state its own
 label contract (see mag_config.CONTRACT_BLOB). Artifacts promoted before that
@@ -51,7 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     TICKERS, TIMEFRAMES, CONTRACT_BLOB, ContractRejection,
-    GCS_BUCKET_DEFAULT,
+    GCS_BUCKET_DEFAULT, CLASS_PRIORS_TRAINING_LABELS, contract_mismatch,
 )
 from gcp.research.magnitude_engine import mag_inference  # noqa: E402
 
@@ -76,7 +86,78 @@ _AUDITED_LEGACY_CONTRACT = {
     "label_mode": "body",
     "thresholds": [0.5, 1.0, 1.5],
     "classes": ["TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE"],
+    # 2026-09-14: the served decision rule. A literal for the same reason as
+    # the rest: if the serving lift bar in mag_config moves, the reader must
+    # refuse an artifact stamped under the old bar rather than have this
+    # script quietly restamp it with the new one.
+    "decision_lift_min": 2.0,
 }
+
+# The keys a contract needs to carry to be servable now. A contract written
+# by the 2026-09-11 backfill carries only the first three; it is upgraded in
+# place below rather than overwritten, and only when what it says agrees with
+# the audited history.
+_LEGACY_KEYS = ("label_mode", "thresholds", "classes")
+_DECISION_KEYS = ("class_priors", "decision_lift_min")
+
+
+def _training_priors_from_sibling(bucket, ticker: str, tf: str):
+    """The cell's training-label class frequencies under the audited label
+    contract, taken from the newest sibling artifact whose CONTRACT.json the
+    walk-forward itself wrote from its training labels; None when the cell
+    has no such artifact.
+
+    Priors are per-cell facts, so unlike the rest of the contract they
+    cannot be a literal. The first version of this script measured them
+    from the cell's walk-forward prediction CSV, which holds only the
+    held-out TEST bars (2019 onward) and omits every pre-2019 training row
+    (Codex P2 on #1117): 16,575 of IWM 15m's 58,932 labels. The population
+    the decision rule has to be scaled by is the full label set, and the
+    walk-forward records exactly that in every CONTRACT.json it writes
+    (`class_priors_source: "training_labels"`, promoted or blocked alike),
+    so a run under the same label contract is the measurement -- taken
+    days later than the legacy model's own training set (the same rows
+    plus the sessions since), which the stamped contract discloses by
+    naming the run it came from.
+    """
+    base = f"magnitude-models/production/{ticker}/{tf}/"
+    best = None
+    for blob in bucket.list_blobs(prefix=base):
+        if not blob.name.endswith(f"/{CONTRACT_BLOB}"):
+            continue
+        sibling_run = blob.name[len(base):].split("/", 1)[0]
+        # Every candidate is judged on its own: a corrupt blob under a
+        # retired or blocked run skips that sibling rather than aborting
+        # the search and leaving the serving artifact unstamped (Codex P2
+        # on #1117). The reader's verdict on the serving artifact itself
+        # still comes from _load_model_and_version below.
+        try:
+            payload = json.loads(blob.download_as_text())
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("class_priors_source") != CLASS_PRIORS_TRAINING_LABELS:
+            continue
+        if any(payload.get(k) != _AUDITED_LEGACY_CONTRACT[k]
+               for k in _LEGACY_KEYS):
+            continue   # measured under another label contract; not this population
+        # The reader's own validation decides whether the sibling is a
+        # source of priors: malformed (a boolean, a non-distribution, a
+        # wrong-length list) raises and mismatched returns a reason, and
+        # either way the sibling is skipped. A local isinstance check let a
+        # JSON boolean through, since bool is an int in Python, and would
+        # have stamped (1, 0, 0, 0) into the serving artifact (Codex P2 on
+        # #1117). One validator, the one that serves.
+        try:
+            if contract_mismatch(payload) is not None:
+                continue
+        except ValueError:
+            continue
+        priors = [float(x) for x in payload["class_priors"]]
+        if best is None or blob.updated > best[2]:
+            best = (priors, sibling_run, blob.updated)
+    return best
 
 
 class _PointerMoved(RuntimeError):
@@ -138,7 +219,6 @@ def main() -> int:
     # two BUCKETS.
     os.environ["GCS_BUCKET"] = args.bucket
     bucket = gcs.Client().bucket(args.bucket)
-    payload = json.dumps(_AUDITED_LEGACY_CONTRACT, indent=2)
 
     # How many cells each run wrote. The task-parallel path fans out across
     # cells; the single-cell path writes exactly one. That is the signal
@@ -185,23 +265,57 @@ def main() -> int:
                 refused += 1
                 continue
             blob = bucket.blob(f"{base}/{run_id}/{CONTRACT_BLOB}")
+            existing = None
             if blob.exists():
-                print(f"{ticker}:{tf} run={run_id} — {CONTRACT_BLOB} already "
-                      f"present, left alone")
-                skipped += 1
+                existing = json.loads(blob.download_as_text())
+                if (all(existing.get(k) is not None for k in _DECISION_KEYS)
+                        and existing.get("class_priors_source")
+                        == CLASS_PRIORS_TRAINING_LABELS):
+                    print(f"{ticker}:{tf} run={run_id} — {CONTRACT_BLOB} "
+                          f"already carries the decision rule, left alone")
+                    skipped += 1
+                    continue
+                # An upgrade, not an overwrite: the three legacy keys must
+                # say what the audit says, or this is not the artifact the
+                # audit was about and nothing here may touch it.
+                disagree = [k for k in _LEGACY_KEYS
+                            if existing.get(k) != _AUDITED_LEGACY_CONTRACT[k]]
+                if disagree:
+                    print(f"{ticker}:{tf} run={run_id} — REFUSED: existing "
+                          f"{CONTRACT_BLOB} disagrees with the audited history "
+                          f"on {disagree}; not upgraded")
+                    refused += 1
+                    continue
+            found = _training_priors_from_sibling(bucket, ticker, tf)
+            if found is None:
+                print(f"{ticker}:{tf} run={run_id} — REFUSED: "
+                      "no sibling artifact under this cell carries training-label "
+                      f"class priors for the audited contract; run the "
+                      f"walk-forward for the cell (its CONTRACT.json is "
+                      f"written whether or not it promotes) and re-run")
+                refused += 1
                 continue
+            priors, priors_run, _ = found
+            payload = json.dumps({**_AUDITED_LEGACY_CONTRACT,
+                                  "class_priors": priors,
+                                  "class_priors_source": CLASS_PRIORS_TRAINING_LABELS,
+                                  "class_priors_from_run": priors_run},
+                                 indent=2)
+            action = "upgraded" if existing else "wrote"
+            what = (f"{action} {CONTRACT_BLOB} (priors="
+                    f"{[round(p, 4) for p in priors]} from {priors_run})")
             if args.commit:
                 blob.upload_from_string(payload,
                                         content_type="application/json")
                 print(f"{ticker}:{tf} run={run_id} (spans {span[run_id]} "
-                      f"cells) — wrote {CONTRACT_BLOB}")
+                      f"cells) — {what}")
             else:
                 print(f"{ticker}:{tf} run={run_id} (spans {span[run_id]} "
-                      f"cells) — WOULD write {CONTRACT_BLOB}")
+                      f"cells) — WOULD have {what}")
             written += 1
 
-    verb = "wrote" if args.commit else "would write"
-    print(f"\n{verb} {written}; {skipped} already had one; "
+    verb = "wrote/upgraded" if args.commit else "would write/upgrade"
+    print(f"\n{verb} {written}; {skipped} already complete; "
           f"{refused} refused as unverified; {missing} cells not serving")
     if not args.commit and written:
         print("dry run — re-run with --commit to apply")

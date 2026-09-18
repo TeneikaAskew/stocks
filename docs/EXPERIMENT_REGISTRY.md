@@ -23,7 +23,7 @@ Merged 2026-06-10 from:
 |---|---|---|
 | E-01, E-02, E-03, E-04, E-05, E-06 | A1, P-series | STRAT TYPE / next-candle structure |
 | E-07, E-08, E-17 | A3, B (E1–E5b), C | Direction probes & feature-family R&D |
-| E-09…E-15, E-16 | A2 | Magnitude (size) engine + intraday-momentum |
+| E-09…E-15, E-16, E-26 | A2 | Magnitude (size) engine + intraday-momentum |
 | E-18 (the one real edge) | B / breakout-meta | Meta-labeled breakout follow-through |
 | E-19, E-20 | L, G6 | Leakage audits + calibration |
 | E-21, E-22 | P (P1–P7), D | Archived P7 pipeline + pre-registered program + exec backtests |
@@ -348,7 +348,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 ## E-11 · MAG gate-6 — mechanism (event-conc, calendar decomp, naïve baseline)
 - **Engine/area:** magnitude (mechanism) · **Status:** validated · **Date:** 2026-05-28.
 - **Question:** does the EXPLOSIVE signal come from its claimed mechanism, or from calendar?
-- **Methods/results:** event-window concentration (`check_event_window_concentration.py`); model-vs-calendar decomposition (`model_vs_calendar_explosive_decomp.py`) — IWM 5m 3.09× cell-rate, 63% in top-10% cells; naïve DoW×30-min lookup (`naive_calendar_lookup_baseline.py`) passes gates 1–3, fails gate 4 by construction → calendar slot fully explains gates 1–3.
+- **Methods/results:** event-window concentration (`check_event_window_concentration.py`); model-vs-calendar decomposition (`model_vs_calendar_explosive_decomp.py`) — IWM 5m 3.09× cell-rate, 63% in top-10% cells; naïve DoW×30-min lookup (`naive_calendar_lookup_baseline.py`) passed gates 1–3 and failed gate 4 under argmax (it can never argmax EXPLOSIVE) → calendar slot fully explains gates 1–3. **Re-run 2026-09-16 under the E-26 decision rule** (P(EXPLOSIVE) ≥ 2× prior; `direction-probe-dcd6d/bk6xd/xdh45`): the lookup passes **all four gates** on SPY/QQQ/IWM 5m (g4 8/8, 8/8, 7/8; per-fold lift 2.2–3.4× against the promoted `6hp7l` models' 3.0–4.5×), so under the served rule the calendar slot explains gates 1–4 and the models' margin over it is the within-cell +0.5–1.0× lift. Results doc §12.
 - **Verdict:** ✅ "Phase 3" signal is a **calendar proxy**, not event causality.
 - **Artifacts:** the three scripts; `MAGNITUDE_ENGINE_RESULTS.md:284,336,374`.
 
@@ -357,7 +357,8 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Question:** on EXPLOSIVE bars, does the realized move beat the option-implied move?
 - **Method:** realized `|next_open−next_close|` vs `spot × ATM_IV × √(5/98280)`; ratio ≥ **1.25** in ≥6 IV-covered folds.
 - **Results:** **0/23 IV-covered folds pass**; mean ratio 0.83–0.92; best 1.23 (SPY 5m 2020). Within-cell boost is calendar + vol-clustering (priced).
-- **Verdict:** ❌ closed the magnitude project (2026-05-29). The empirical VRP/cost gate.
+- **Re-run 2026-09-16 (E-26 decision rule, `6hp7l` predictions, `direction-probe-cb4zw/m68nf/wtcqd`):** the called population is ~100× larger per fold (0.8k–3.2k bars) and the verdict is the same or worse: **0/24 IV-covered folds pass** (8/8 covered per cell once `bb005bbb` fixed the open-ended last fold's label; re-run `direction-probe-njwj8/hbk22/vtgsq`), mean ratio 0.67–0.73, best fold 0.86 (IWM 2025), the 2026 fold 0.60–0.61. Results doc §12.
+- **Verdict:** ❌ closed the magnitude project (2026-05-29); re-established under the served decision rule 2026-09-16. The empirical VRP/cost gate.
 - **Artifacts:** `scripts/implied_vs_realized_check.py`; `MAGNITUDE_ENGINE_RESULTS.md:444`.
 
 ## E-13 · MAG-SIZE `excursion` label
@@ -692,7 +693,14 @@ LightGBM, not HAR (open gap, §G6).
 - **Structure ≠ profitability:** an accurate next-bar/next-candle classifier
   (58–60%) still loses net after costs because a 2U can be a one-tick poke.
 - **Pre-committed gates are immutable once set** (magnitude 7-gate bar set before
-  results; strat hard gates log-loss<base AND ECE≤0.05).
+  results; strat hard gates log-loss<base AND ECE≤0.05). One dated amendment
+  on record: 2026-09-14, magnitude gate 4's *population* (decision rule, not
+  argmax); metric and threshold unchanged (E-26).
+- **Score the decision the consumer sees.** A gate on argmax and a consumer
+  on argmax are consistent but both wrong when argmax of a calibrated model
+  is constant; a gate on probabilities and a consumer on argmax disagree by
+  construction. One decision function, used everywhere a bucket is named
+  (E-26).
 
 ## G4. Literature anchors → experiments informed
 
@@ -1294,6 +1302,66 @@ cutoffs re-run via the reliable config-tagged GCS path shows the SIZE gate pass
 HOLDS across fold placements — prune: Jan-1 (8/7/6) and shifted (7/8/7), both
 3/3. No fold-fragility. FINAL: SIZE robustly predictable+calibrated at
 15m+isotonic+prune. See MAGNITUDE_ENGINE_RESULTS.md.
+## E-26 — Magnitude class-weight sweep + promotion-criteria audit (2026-09-14)
+
+**Frame:** which magnitude configuration belongs in production, and why
+did the June passers (rmcwj/r7c4q) and the serving c49qf disagree on
+gate 4. Body labels, default thresholds, calibration none throughout.
+
+**Runs:** `magnitude-engine-hbb6v` (27 cells, α=0.75 default, current
+data) → **0/27 pass**, gate 1 = 0/8 on 25 cells. Sweep on phase1
+(9 cells each): `54nrr` α=0.00, `tbkpt` α=0.30, `gfsnt` α=0.45,
+`mj95j` α=0.60. Gate 5 on every June passer; gate 6 on the three 5m
+leads (`direction-probe` `wptxx`/`kdr97`/`72pfg`, 0.23×/0.23×/0.63×).
+Nothing promoted (LATEST byte-identical before and after).
+
+**Result:** a strict monotone trade-off along α. SPY 5m: modal share
+97.3→70.6%, gate 1 folds 8→0, as α goes 0→0.75. **0 of 36 cells satisfy
+both** the walk-forward gates and the promotion distribution checks. The
+α=0 control reproduces rmcwj's 97% argmax collapse on today's data, so
+the feature diff between June and today was not the cause. Prior
+correction (divide out the weights) recovers log-loss on 23/24
+fold-cells and re-collapses argmax to 94-99.8%; robust to the weight
+proxy. Mechanism: at α=0 the mean predicted probabilities match the true
+rates to within a point *and* argmax is TIGHT on 97% of bars; the excess
+criterion's premise ("a calibrated model predicts TIGHT on ~68.5% of
+bars") conflated mean probability with argmax frequency. Gate 1 scores
+probabilities; the collapse/excess criteria scored argmax; the gap is the
+signal deficit. slv7m (withdrawn 09-08) and c49qf were the two ends of
+this one line.
+
+**Also found:** the serving c49qf artifacts are constants (TIGHT on
+99.9-100% of walk-forward bars; drift auditor HIGH every weekday); the
+walk-forward half of `magnitude_per_bar_predictions` was never written
+(pop-before-persist, fixed `66a2daae`); c49qf's α is unrecoverable (engine
+squashed into the repo the day after it ran, no summary recorded it).
+
+**Decision (shipped):** score the decision the consumer sees.
+`decide_bucket` names the highest bucket with P ≥ 2.0 × its training
+prior, else TIGHT; used by gate 4, the promotion verdict, the CSV and
+inference; recorded in CONTRACT.json (`class_priors`,
+`decision_lift_min`) and verified at serve time. Excess criterion
+removed; `PROMOTION_MIN_TAIL_CALL_SHARE=0.10` added; `class_weight_power`
+recorded in every summary. Operating point chosen from the measured
+curve (L=1.5/2.0/3.0 → EXPLOSIVE calls 19.6/13.1/7.0%, realised lift
+2.69/3.27/4.36×, modal 68.8/81.8/91.8%).
+
+**Not established:** only phase1 swept; no gate count before this date
+was computed under the amended gate 4; four constant-output cells still
+serve pending a product decision.
+
+**2026-09-15, deployed and re-run:** `magnitude-engine-vpj2r` (phase1, α=0,
+new engine) clears gates 1-4 on 6/9 cells with gate 4 scored on 78-2,076
+calls per fold; gate 5 keeps IWM/QQQ/SPY 5m (100%) and SPY 15m (86.5%),
+drops IWM 15m (34%) and SPY 30m (5%); gate 6 0.45-1.15× on all six (not a
+calendar proxy). Live under the rule, the serving c49qf cells make tail
+calls on 0 / 1.3 / 6.7 / 46.7% of bars (IWM 15m / SPY 5m / QQQ 5m / IWM 5m).
+Promotion test `6hp7l` (phase0, α=0): **SPY/QQQ/IWM 5m promoted** (8888 / 8888 / 7888; gate 5 100% each; gate 6 0.90/1.05/1.20×); six cells blocked, every one on gate 1 with the distribution checks passing. Live on the 09-14 session the promoted models named tail buckets on 32 / 10.7 / 2.7% of bars; the auditor's HIGH tier paged on SPY 5m's calm session (75 bars ≥ `DRIFT_MIN_SAMPLE`), a detector sample-size question now open. `MAGNITUDE_ENGINE_RESULTS.md` §9-10.
+
+**Artifacts:** `MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14; `mag_config.py`
+(`DECISION_LIFT_MIN` comment); `mag_pred_train.decide_bucket`;
+`scripts/backfill_model_contracts.py` (priors upgrade);
+`scripts/dispatch_magnitude_phase.sh --class-weight-power=`.
 
 ---
 
