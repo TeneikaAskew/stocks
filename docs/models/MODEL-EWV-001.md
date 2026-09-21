@@ -56,7 +56,7 @@ reading `market_data_intraday` — the table that, per CLAUDE.md §3.9, still ho
 conflicting conventions. A future change that swapped the source to that table would silently
 break the window.
 
-## One real defect: a vendor outage and an unsupported strategy are the same skip
+## Two real defects: an ambiguous skip, and a gap that never backfills
 
 `fetch_minute_data` returns an **empty DataFrame** when the API key is missing
 (`fetch_market_data.py:65-67`) — a §3.7 silent fallback in the fetcher. Downstream,
@@ -64,13 +64,36 @@ break the window.
 `v['verdict'] is None` and executes `continue  # unsupported strategy or no bars` (`:196-197`).
 
 The comment names both causes, and that is the problem: the two are not equivalent. A strangle
-has no verdict by design and never will. A missing bar set is a **failure** — the row stays
-NULL, the next run re-selects it (the loop's default filter is
-`AND ew_strike_verdict IS NULL`, `:149`), so it is self-healing, but nothing counts or logs the
-outage, and a run in which every ticker failed to fetch exits the same way as a run in which
-every pick was a straddle.
+has no verdict by design and never will. A missing bar set is a **failure**, and the row is
+simply left NULL.
 
-`--force` re-evaluates rows already scored (`:149`).
+> **It does not self-heal, and an earlier revision of this document said it did.** That claim
+> came from reading `where_force = '' if force else 'AND ew_strike_verdict IS NULL'` (`:149`)
+> and stopping there. The same query, six lines down, also binds
+> `AND earnings_date BETWEEN :s AND :e` (`:155`, one line above where `{where_force}` is
+> interpolated at `:156`) — and `main()` defaults that range to
+> **yesterday alone**, walked back over weekends (`:230-236`):
+>
+> ```python
+> y = date.today() - timedelta(days=1)
+> while y.weekday() >= 5:
+>     y -= timedelta(days=1)
+> start = end = y
+> ```
+>
+> So the NULL-verdict filter only ever re-offers rows from the one day the run is already
+> looking at. A day whose bars failed to fetch is **never revisited** by any later scheduled
+> run; its verdicts stay NULL indefinitely until somebody runs an explicit historical range:
+>
+> ```bash
+> python -m gcp.fetchers.evaluate_ew_strikes --start 2026-09-15 --end 2026-09-15
+> ```
+>
+> Nothing counts the outage, nothing logs it as distinct from a straddle, and nothing schedules
+> that backfill — so the repair depends on a person noticing NULL verdicts in the premarket
+> brief. Recorded here rather than fixed: the fix is a code PR.
+
+`--force` re-evaluates rows already scored (`:149`), within whatever range it is given.
 
 ## Rationale
 
@@ -101,4 +124,6 @@ is not.
 
 ## Known issues
 
-**None filed.** The ambiguous-skip finding above and the absent unit tests are recorded here.
+**None filed.** Three findings recorded here rather than left to be rediscovered: the
+ambiguous skip, the day-gap that no scheduled run ever revisits (both above), and the absent
+unit tests on `_compute_verdict`, which is a pure function and the obvious test surface.

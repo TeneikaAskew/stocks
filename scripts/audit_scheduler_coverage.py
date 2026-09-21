@@ -316,19 +316,31 @@ def main(argv: list[str]) -> int:
                      "entrypoint": j["entrypoint"], "args": j["args"],
                      "classified": where, "evidence": hints(ev), **ev})
 
+    # The reverse direction, added 2026-09-21. Everything above asks "is every
+    # declared scheduler written down"; nothing asked "does every scheduler
+    # written down still exist". A renamed or deleted entry left its registry row
+    # standing and this script exited 0, because a row about nothing cannot be
+    # unclassified. Same shape as the continuation bug in `resolve_schedulers`:
+    # a check that only walks one set says nothing about the other.
+    stale = sorted((listed | excluded) - set(scheds))
+    for s in stale:
+        where = "the scheduler table" if s in listed else "the deliberate-exclusion table"
+        print(f"STALE: {where} names {s!r}, which gcp/deploy.sh does not declare",
+              file=sys.stderr)
+
     if "--json" in argv:
         print(json.dumps(rows, indent=1))
     else:
         print(f"{len(scheds)} schedulers declared in deploy.sh, {len(rows)} resolved")
         print(f"{len(listed)} listed as model-bearing, {len(excluded)} deliberately excluded, "
-              f"{len(unclassified)} UNCLASSIFIED\n")
+              f"{len(unclassified)} UNCLASSIFIED, {len(stale)} STALE\n")
         for s, e, h in unclassified:
             print(f"  UNCLASSIFIED  {s:36} {e:44} {h}")
 
     for u in unresolved:
         print(f"UNRESOLVED (parser failure, not an exclusion): {u}", file=sys.stderr)
 
-    return 1 if (unresolved or unclassified) else 0
+    return 1 if (unresolved or unclassified or stale) else 0
 
 
 if __name__ == "__main__":

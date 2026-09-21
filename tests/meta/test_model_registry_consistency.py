@@ -1265,6 +1265,79 @@ def test_every_live_scheduler_is_classified():
     both = sorted(listed & excluded)
     assert not both, f"schedulers classified as BOTH model-bearing and not: {both}"
 
+    # The reverse direction. Review caught this as one-way on 2026-09-21: a
+    # scheduler deleted or renamed in deploy.sh left its exclusion row standing,
+    # `declared - listed - excluded` stayed empty, and the registry went on
+    # publishing a scheduler that does not exist. The LISTED table already had
+    # this check -- test_scheduler_table_matches_deploy_sh asserts `name in
+    # declared` per row -- so only the exclusion table could rot, which is
+    # exactly the table nobody reads closely.
+    stale = sorted(excluded - declared)
+    assert not stale, (
+        f"the deliberate-exclusion table names schedulers that gcp/deploy.sh does "
+        f"not declare: {stale}. Remove the row, or correct it if the scheduler was "
+        "renamed -- an exclusion for a job that no longer exists is not a record, "
+        "it is a claim about nothing."
+    )
+
+
+def test_status_summary_matches_the_tables_it_summarises():
+    """The published per-status counts, recomputed from the rows.
+
+    Measured 2026-09-21: merging `main` moved MODEL-MAG-001 `Invalidated` ->
+    `Experimental` (#1117 landed as 164b262), and the Status summary went on
+    publishing `Invalidated | 2 (MODEL-MAG-001, MODEL-SWEEP-001)` and
+    `Experimental | 7`. The whole suite stayed green -- every invariant here
+    checks rows against code or against other rows, and nothing checked the
+    SUMMARY against the rows it summarises.
+
+    That is the same defect this registry keeps recording about itself: a
+    number derived by hand from a table, drifting the moment the table moves.
+    The scheduler section's answer was to delete its count; a per-status
+    breakdown is worth keeping, so it gets a gate instead.
+
+    Names in a cell are checked too, not just the total: `2 (A, B)` is wrong
+    in a way `2` cannot be when the membership changes but the size does not.
+    """
+    text = REGISTRY.read_text()
+    actual: dict[str, set[str]] = {}
+    for table, col in (("## Deterministic and heuristic systems", 6),
+                       ("## Learned models", 6)):
+        assert table in text, f"registry no longer has the table {table!r}"
+        for line in text.split(table, 1)[1].split("\n##", 1)[0].split("\n"):
+            if not line.startswith("| MODEL-"):
+                continue
+            cells = [c.strip() for c in line.split("|")]
+            status = cells[col].strip("* ").split(" — ")[0].strip("* ")
+            actual.setdefault(status, set()).add(cells[1])
+    assert len(actual) >= 5 and sum(len(v) for v in actual.values()) >= 20, (
+        "too few rows parsed for the summary check to mean anything -- a column "
+        "index or heading has drifted."
+    )
+
+    summary = text.split("## Status summary", 1)[1].split("\n##", 1)[0]
+    published, bad = set(), []
+    for line in summary.split("\n"):
+        m = re.match(r"^\| ([^|]+?) \| (\d+)([^|]*)\|", line)
+        if not m:
+            continue
+        status = m.group(1).strip().strip("*")
+        if status not in actual:
+            bad.append(f"{status!r}: published, but no model row carries it")
+            continue
+        published.add(status)
+        n, rest = int(m.group(2)), m.group(3)
+        if n != len(actual[status]):
+            bad.append(f"{status}: published {n}, table has {len(actual[status])} "
+                       f"({sorted(actual[status])})")
+        named = set(re.findall(r"MODEL-[A-Z]+-[0-9X]+", rest))
+        if named and named != actual[status]:
+            bad.append(f"{status}: names {sorted(named)}, table has {sorted(actual[status])}")
+
+    for status in sorted(set(actual) - published):
+        bad.append(f"{status}: {len(actual[status])} model(s) carry it, absent from the summary")
+    assert not bad, "Status summary disagrees with the tables: " + "; ".join(bad)
+
 
 def test_scheduler_table_model_ids_have_registry_rows():
     """A `Serves` cell naming a model that does not exist.

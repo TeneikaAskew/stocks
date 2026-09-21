@@ -45,6 +45,44 @@ is_regression  = (not insufficient) and (delta < -threshold_pp)
 On a regression it posts a red Discord embed, logs an ERROR payload the failure-notifier turns
 into a GitHub issue, and exits non-zero.
 
+**There is a second alarm, and it is independent of the first.** An earlier revision of this
+document described only the clean-rate branch, which is half the job. `main()` also joins
+`signal_alerts.total_score` to `signal_metrics` on the same window
+(`fetch_score_quality_rows`, `:184-210`, live rows only), bins scores into quartiles, and
+correlates quartile rank against per-quartile hit rate:
+
+```python
+rho = compute_score_quality_correlation(quality_rows)          # :222-278
+quality_alarm = (rho is not None and abs(rho) < QUALITY_CORRELATION_THRESHOLD)   # :385-387
+```
+
+with `QUALITY_CORRELATION_THRESHOLD = 0.10` and `QUALITY_CORRELATION_MIN_SAMPLE = 50`
+(`:218-219`). It posts its own Discord embed, logs `signal_quality_correlation_low`, and
+**returns 1** (`:422-423`) — so *a stable clean rate does not mean the job passed*. The two
+checks answer different questions: the first asks whether the strategies still hit, the
+second whether the score still ranks.
+
+### `abs(rho)` means an inverted score reads as healthy
+
+Measured against the production function (80 synthetic rows per case, scores 1-8):
+
+| Score-to-outcome relationship | ρ | Alarms? |
+|---|---|---|
+| Healthy — high scores hit | **+0.894** | no |
+| Flat — every quartile hits alike | **0.000** | **yes** |
+| **Inverted — high scores MISS** | **−0.894** | **no** |
+| Fewer than 50 classified rows | `None` | no |
+
+The inverted row is the finding. The module's own comment (`:212-217`) says the alarm fires
+when *"the score's discriminative power decays … the scoring system is no longer
+predictive"*, but ρ = −0.894 is maximal discriminative power pointed the wrong way — a score
+that reliably predicts the **opposite** of what it claims. `abs()` scores that identically to
+a perfectly healthy system. Only the middle of the range alarms.
+
+The sample gate fails open by the same shape: below 50 classified rows `compute_score_quality_correlation`
+returns `None` (`:233`), `rho is not None` is false, and no alarm fires. That is the
+deliberate choice the clean-rate branch also makes and states; here it is unstated.
+
 It is about signals, not infrastructure, which is what separates it from the
 `freshness-watchdog` and `audit-infra-drift` alarms that this registry deliberately excludes.
 
@@ -70,9 +108,12 @@ regression than fire a noisy alarm on 5 vs 3 fires."* The comment at `:50` is ex
 the threshold is *"a regression detector, not a per-ticker tuning knob."*
 
 **UNKNOWN — not recorded:** `CLEAN_THRESHOLD = 0.005`, `NOISE_THRESHOLD = 0.003`,
-`REGRESSION_THRESHOLD_PP = 3.0`, the 7-day window length, and the extended 90/120/240-minute
-horizons. The 0.5% / 0.3% cut-points decide what counts as a hit for every strategy in the
-system and carry no derivation, which is why the recommendation is RETEST.
+`REGRESSION_THRESHOLD_PP = 3.0`, `QUALITY_CORRELATION_THRESHOLD = 0.10`,
+`QUALITY_CORRELATION_MIN_SAMPLE = 50`, the 7-day window length, and the extended
+90/120/240-minute horizons. The 0.5% / 0.3% cut-points decide what counts as a hit for every
+strategy in the system and carry no derivation, which is why the recommendation is RETEST.
+`QUALITY_CORRELATION_MIN_SAMPLE` carries a reason (*"below this, ρ is too noisy"*) but no
+derivation of the number; `0.10` carries neither.
 
 ## What it does right
 
@@ -94,7 +135,8 @@ system and carry no derivation, which is why the recommendation is RETEST.
 |---|---|
 | `signal_quality_report.main` | The classifier; `--mode=historical` / `--mode=rolling`, `--lookback-days` |
 | `classify` (`:84`) | The four-way verdict |
-| `signal_quality_alarm.detect_regression` (`:104`) | The alarm decision |
+| `signal_quality_alarm.detect_regression` (`:104`) | The clean-rate alarm decision |
+| `compute_score_quality_correlation` (`:222`) | The score-discrimination decision; `abs(rho) < 0.10` at `:385-387` |
 
 ## Tests
 
@@ -103,5 +145,7 @@ cut-points separate signal from noise on this data, which is the gap the status 
 
 ## Known issues
 
-**None filed.** The unread `ticker_calibration` thresholds above are the substantive finding
-and are recorded on both documents.
+**None filed.** Two substantive findings, both recorded here rather than left to be
+rediscovered: the unread `ticker_calibration` thresholds (also on
+[MODEL-CALIB-001](MODEL-CALIB-001.md)), and `abs(rho)` treating an inverted score as healthy —
+measured, not inferred.

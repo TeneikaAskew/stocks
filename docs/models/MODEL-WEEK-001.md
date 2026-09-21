@@ -42,27 +42,48 @@ docstring at face value would expect a variance report that has never existed.
 Recorded against [#1137](https://github.com/TeneikaAskew/stocks/issues/1137), which is the
 stale-module-docstring issue.
 
-## The zero-coercions, and why `RESTRUCTURE`
+## What actually happens on a degraded week, measured
 
-Seven financial fields are coerced to `0` when their source column is absent
-(`:46`, `:50`, `:51`, `:60`, `:74`, `:87`, `:88`). For example:
+**An earlier revision of this document described seven `else 0` coercions
+(`:46`, `:50`, `:51`, `:60`, `:74`, `:87`, `:88`) and said a `trades` frame without
+`return_pct` would publish "Total P&L: 0.0%" to Discord. That is wrong, and it was wrong on
+the day it was written** — asserted from reading the `else 0` branches rather than running
+them. Run through `generate_weekly_review` itself, with `TradeLogger` returning each frame:
+
+| `trades` returned | Result |
+|---|---|
+| empty | clean early return (`:38-41`); no numbers published |
+| **nonempty, no `return_pct` column** | **raises `IndexingError`** — the job fails |
+| **nonempty, `return_pct` all NULL** | `win_rate = 0.0`, `total_pnl = 0.0`, `avg_return = nan` |
+| nonempty, real returns | `win_rate = 0.5`, `total_pnl = 1.0` — correct |
+
+The missing-column case never reaches any `else 0`. Line 45 runs first:
 
 ```python
-review['total_pnl'] = float(trades['return_pct'].sum()) if 'return_pct' in trades.columns else 0
+winners = trades[trades.get('return_pct', pd.Series(dtype=float)) > 0]
 ```
 
-A `trades` frame without `return_pct` publishes **"Total P&L: 0.0%"** to Discord, which is
-indistinguishable from a genuinely flat week. That is CLAUDE.md §3.7 forbidden pattern 2 —
-`0` ambiguous with missing on a financial field — seven times in one file, on the surface a
-person reads to judge the system's performance. It is not a fallback between data sources and
-not a display-layer `—`; it is fabricated in the data layer.
+`trades.get(...)` returns an **empty** Series whose index does not match the frame's, so
+pandas refuses it as an indexer — `IndexingError: Unalignable boolean Series provided as
+indexer`. Every coercion below it is unreachable on that path. The job crashes, which is
+loud, and loud is not the complaint.
 
-`win_rate = len(winners) / total if total > 0 else 0` (`:46`) is the one defensible member of
-that list: the `total > 0` guard is division-by-zero protection on a branch that
-`if trades.empty` (`:38-41`) has already returned from, so it is unreachable rather than wrong.
+**The real §3.7 violation is the all-NULL row, and it is two values, not seven.** When every
+trade's `return_pct` is NULL:
 
-The recommendation is `RESTRUCTURE` rather than `RETEST` because there is no hypothesis here to
-retest — the arithmetic is correct and the reporting contract is what needs fixing.
+- `win_rate = len(winners) / total` (`:46`) → `NaN > 0` is False for every row, so `winners`
+  is empty and the rate is **`0.0`** — not via a fallback at all, but structurally.
+- `total_pnl = trades['return_pct'].sum()` (`:50`) → pandas sums all-NaN to **`0.0`**.
+- `avg_return = ...mean()` (`:51`) → `nan`, which is the honest answer and the one the other
+  two should give.
+
+So Discord publishes **"Win Rate: 0.0%"** and **"Total P&L: 0.0%"** for a week in which no
+trade has a known return — indistinguishable from a week where every trade lost. That is
+CLAUDE.md §3.7 forbidden pattern 2 on the surface a person reads to judge the system, and
+`avg_return` sitting beside them at `nan` shows the file already knows how to say "unknown".
+
+`RESTRUCTURE` still follows, on firmer ground than before: one input crashes the job and
+another publishes fabricated zeros, and neither is a hypothesis that retesting would settle.
 
 ## Where the data comes from
 

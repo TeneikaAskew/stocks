@@ -61,6 +61,30 @@ Two properties of the surrounding method are not careful, and together they are 
   evaluation set inflates the selected number by construction, and the selected hold is the one
   the card surfaces.
 
+- **The statistics do not score the rule the card tells you to trade.** A card displays a
+  setup, then a confirmation checklist, then `IF ALL CONFIRMED -> ENTRY`. What reaches
+  `compute_card_stats` is the **setup mask alone**; the checklist items are strings passed to
+  `generate_card` for display. Card 1 scores every occurrence of
+
+  ```python
+  mask = (prev2 == '2U') & (prev == '2U') & (labels == '2U')          # :434
+  ```
+
+  while telling the reader to enter only when RSI is 40-65, price is above VWAP, price is
+  above the fast EMA, the 30-minute ORB trend is bullish and the EMAs have crossed. None of
+  those five appears in the mask, so the published win rate describes a **strictly larger**
+  population than the trades the card instructs. Checked across all twelve call sites by
+  reading the mask actually passed:
+
+  | Cards | Mask contains its own confirmations? |
+  |---|---|
+  | 1-11 (continuations, reversals, outside bar, ORB breakout and failure, support, resistance, order block) | **no** — label patterns, and for 6-8 an ORB-state term |
+  | **12 — FTFC Maximum Conviction** | **yes**: `(ema_cross == 1) & (orb_trend == 1) & (labels == '2U') & rsi.between(40, 65)` (`:703`) |
+
+  Card 12 is the one card whose number answers its own instruction, and it shows the others
+  could. Confirmations only narrow, so for cards 1-11 the reported win rate is not a
+  conservative estimate of the confirmed rule — it is a number about a different rule.
+
 - **No costs are modelled.** `compute_card_stats`'s own docstring states it: *"All returns are
   price-only basis points — NO costs (commission / slippage / spread) are modelled anywhere."*
   On a 5-minute hold at a target measured in tens of basis points, that omission is the same
@@ -94,6 +118,8 @@ card's published win rate holds out of sample, which is the gap the status recor
 
 ## Known issues
 
-**None filed.** The three method findings above were established by reading the module on
-2026-09-18 and have not been triaged into an issue; they are stated here rather than left to
-the reader to rediscover.
+**None filed.** Four method findings, established by reading the module and re-checked
+against every `compute_card_stats` call site on 2026-09-21: in-sample statistics, an argmax
+over four holds on that same data, no costs modelled, and — the one a user is most likely to
+act on — eleven of twelve cards scoring a setup the card's own checklist then narrows. None
+has been triaged into an issue; they are stated here rather than left to be rediscovered.
