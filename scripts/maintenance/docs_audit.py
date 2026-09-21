@@ -931,7 +931,11 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             # replaced the first, so the audit reported a valid region map,
             # suppressed every unowned span and routed all prose findings to
             # one prompt while the registry claimed two.
+            # `continue`, like the neighbouring prompt-missing branch: without
+            # it `hit` is still False at the foot of the loop and the same spec
+            # was appended a SECOND time, so one contradiction reported twice.
             unmatched.append(spec)
+            continue
         elif spec.startswith("prose:") and prompt_exists is not None \
                 and not prompt_exists(spec[6:]):
             # A misspelled or deleted prompt path silently claimed the entire
@@ -1137,7 +1141,13 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     for j in range(h1 + 1, len(lines)):
         if j in fenced:
             continue
-        if lines[j].startswith("#"):
+        # The same one-to-three-space prefix ATX admits everywhere else. A
+        # column-zero test did not close the window at `  ## Later`, though
+        # CommonMark renders it as a heading, so a `Last reviewed` inside that
+        # section stood in for the whole document's provenance -- suppressing
+        # the missing-marker finding and letting --stamp rewrite the section's
+        # metadata instead of placing the document's own marker.
+        if re.match(r"^ {0,3}#", lines[j]):
             stop = j
             break
         # Setext is a section heading too, and its underline marks the heading

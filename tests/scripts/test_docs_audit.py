@@ -4235,3 +4235,29 @@ def test_a_settled_half_does_not_settle_the_blocking_half():
     j = plain.index("open")
     # The sentence-ending period is the clause boundary, so it is not included.
     assert m.citation_clause(plain, j, j + 4) == plain[:-1]
+
+
+def test_an_indented_atx_heading_closes_the_marker_window():
+    """`  ## Later` renders as a heading, but a column-zero test did not close
+    the window at it, so a `Last reviewed` inside that section stood in for the
+    whole document's provenance -- suppressing the missing-marker finding and
+    letting --stamp rewrite the section's metadata. Four spaces is code, not a
+    heading, and must NOT close it."""
+    lines = ["# T", "", "  ## Later", "**Last reviewed:** 2026-01-01"]
+    assert m.marker_window(lines) == range(1, 2)
+    assert m.find_marker(lines) is None
+    code = ["# T", "", "    # Code", "**Last reviewed:** 2026-01-01"]
+    assert m.marker_window(code) == range(1, 4)
+
+
+def test_a_second_prose_owner_is_reported_once():
+    """Two `prose:` specs on one Class A row is a contradiction the registry
+    cannot express, and it is reported -- but it was reported TWICE, because
+    the branch appended to `unmatched` and then fell through to the
+    end-of-loop `if not hit` append. One contradiction, one finding."""
+    owned, unmatched, prompt, orphans, exhaustive = m.owned_lines(
+        "# T\n\nprose\n", ["prose:a.md", "prose:b.md"])
+    assert unmatched == ["prose:b.md"], unmatched
+    assert prompt == "a.md"
+    # The same owner named twice is not a contradiction.
+    assert m.owned_lines("# T\n\nprose\n", ["prose:a.md", "prose:a.md"])[1] == []
