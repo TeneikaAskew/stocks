@@ -4132,3 +4132,106 @@ def test_a_parenthetical_is_a_clause_boundary_for_a_shorthand():
     assert m.enclosing_parenthetical("a (b (c) d) e", 6, 7) == (6, 7)
     assert m.enclosing_parenthetical("a (b c d) e", 5, 6) == (3, 8)
     assert m.enclosing_parenthetical("no parens here", 3, 6) is None
+
+
+def test_a_backticked_path_may_carry_spaces_in_its_basename():
+    """`docs/Morning Checklist Updated.md` is tracked in this tree and cited in
+    docs/BRIEFING_DECK.md; the no-space pattern never matched it, so deleting
+    the target reported clean. The directory part still refuses spaces, or
+    `run docs/a.md and docs/b.md` parses as one path and is reported dead."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    text = "# T\n\nSee `docs/Morning Checklist Updated.md` for the routine.\n"
+    out = m.check_dead_links("docs/d.md", text, {"docs/d.md"})
+    assert [f["detail"] for f in out] == [
+        "backticked path -> docs/Morning Checklist Updated.md"], out
+    assert m.check_dead_links(
+        "docs/d.md", "# T\n\nSee `docs/Morning Checklist Updated.md`.\n",
+        {"docs/d.md", "docs/Morning Checklist Updated.md"}) == []
+    assert m.BACKTICK_PATH_RE.search("`run docs/a.md and docs/b.md`") is None
+
+
+def test_a_link_label_may_contain_brackets():
+    """`[^\\]]*` stopped at the first `]`, so a link whose text carries brackets
+    never matched and its target went unchecked. docs/gamma_levels.md writes
+    ``[`ANALYST_PROMPTS[\"gamma\"]`](../lib/agents/prompts.py)``."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    text = '# T\n\n[`ANALYST_PROMPTS["gamma"]`](gone.md) is the prompt.\n'
+    out = m.check_dead_links("docs/d.md", text, {"docs/d.md"})
+    assert [f["detail"] for f in out] == ["relative link -> gone.md"], out
+
+
+def test_a_closed_issue_in_indented_code_is_not_a_finding():
+    """Only fences were excluded, so a four-space example carrying blocker
+    prose and a closed issue URL emitted a GATING P1 over content that renders
+    as code -- the same construct the dead-link pass already skips."""
+    states = {"stocks": {940: {"state": "closed", "reason": "completed"}}}
+    text = ("# T\n\nHow a blocker row is written:\n\n"
+            f"    | Blocked by | {U.format('stocks', 940)} |\n")
+    assert m.check_closed_issues("docs/d.md", text, states) == []
+    # Unindented, the same row is still reported.
+    live = f"# T\n\n| Blocked by | {U.format('stocks', 940)} |\n"
+    assert len(m.check_closed_issues("docs/d.md", live, states)) == 1
+
+
+def test_a_fenced_example_of_a_mark_pair_is_not_the_generated_region():
+    """A Class A document whose real block went missing had its own fenced
+    EXAMPLE of the pair accepted as the `mark:` region: the unmatched-region
+    finding was suppressed and the sample classified as renderer-owned."""
+    text = ("# T\n\nThe renderer writes:\n\n```\n<!-- BEGIN CAL -->\nrows\n"
+            "<!-- END CAL -->\n```\n\nand nothing else.\n")
+    owned, unmatched, prompt, exhaustive, orphans = m.owned_lines(text, ["mark:CAL"])
+    assert unmatched == ["mark:CAL"], (unmatched, owned)
+    # An INLINE-code mention is documentation too: "write `<!-- BEGIN CAL -->`
+    # above the block". Only the fence exclusion catches the block form.
+    inline = ("# T\n\nWrite `<!-- BEGIN CAL -->` above it and "
+              "`<!-- END CAL -->` below.\n")
+    _, unmatched_inline, _, _, _ = m.owned_lines(inline, ["mark:CAL"])
+    assert unmatched_inline == ["mark:CAL"], unmatched_inline
+    # The real pair, outside a fence, still matches.
+    real = "# T\n\n<!-- BEGIN CAL -->\nrows\n<!-- END CAL -->\n"
+    owned2, unmatched2, _, _, _ = m.owned_lines(real, ["mark:CAL"])
+    assert unmatched2 == [] and owned2, (unmatched2, owned2)
+
+
+def test_a_registry_path_with_spaces_survives_whatever_its_extension():
+    """The row was kept only when it ended `.md`, so a Class A
+    `docs/Generated Diagram.drawio` was silently dropped and fell through to a
+    broader rule, losing its code paths and region ownership."""
+    table = (f"{m.REGISTRY_HEADING}\n\n"
+             "| Class | Path glob | Declared code paths | Generated regions |\n"
+             "|---|---|---|---|\n"
+             "| A | docs/Generated Diagram.drawio | scripts/render.py | mark:DIAGRAM |\n")
+    rows = m.load_registry(table)
+    assert [r["glob"] for r in rows] == ["docs/Generated Diagram.drawio"], rows
+    assert rows[0]["regions"] == ["mark:DIAGRAM"] and rows[0]["cls"] == "A"
+
+
+def test_a_registry_glob_that_is_prose_is_refused_not_dropped():
+    """What the extension test was standing in for. A cell that is neither a
+    directory nor a filename cannot be a glob, and a silent skip is how a
+    declaration disappears; this is bad input, so it is exit 2."""
+    table = (f"{m.REGISTRY_HEADING}\n\n"
+             "| Class | Path glob | Declared code paths | Generated regions |\n"
+             "|---|---|---|---|\n"
+             "| A | every deck we hand write | | |\n")
+    with pytest.raises(m.AuditError, match="neither a directory nor an extension"):
+        m.load_registry(table)
+
+
+def test_a_settled_half_does_not_settle_the_blocking_half():
+    """One clause may carry both verdicts, and the first read wins for every
+    citation in it. The living sentence in 12-PR-ISSUE-TRACEABILITY.md says
+    three stocks records are closed WITH the work still open in solyra; the
+    solyra citation was being settled off the stocks half."""
+    line = ("All three stocks records are closed as not planned with the work "
+            f"still open in [solyra#28]({U.format('solyra', 28)}).")
+    i = line.index("[solyra#28]")
+    assert m.citation_clause(line, i, i + 11).startswith("with the work")
+    assert m.cites_live_work(line, i, i + 11) is True
+    states = {"solyra": {28: {"state": "closed", "reason": "completed"}}}
+    assert len(m.check_closed_issues("d.md", f"# T\n\n{line}\n", states)) == 1
+    # A clause carrying only ONE verdict is not re-split.
+    plain = "The work is still open with no owner assigned."
+    j = plain.index("open")
+    # The sentence-ending period is the clause boundary, so it is not included.
+    assert m.citation_clause(plain, j, j + 4) == plain[:-1]

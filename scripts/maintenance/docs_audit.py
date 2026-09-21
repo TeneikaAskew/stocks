@@ -261,7 +261,12 @@ MD_LINK_RE = re.compile(
     # -- and the bare form rejects whitespace, so the link did not match at all
     # and a missing target reported clean. Stripping the brackets afterwards
     # could not help: the pattern never reached it.
-    r"\[[^\]]*\]\(\s*(?:<(?P<btarget>[^<>#]*)(?:#(?P<bfrag>[^>\s]+))?>"
+    # One level of BALANCED brackets in the LABEL. `[^\]]*` stopped at the
+    # first `]`, so a link whose text contains brackets never matched at all
+    # and its target was never checked -- docs/gamma_levels.md writes
+    # ``[`lib/agents/prompts.py:ANALYST_PROMPTS["gamma"]`](../lib/agents/prompts.py)``
+    # and deleting that target reported clean.
+    r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*(?:<(?P<btarget>[^<>#]*)(?:#(?P<bfrag>[^>\s]+))?>"
     r"|(?P<target>(?:[^()#\s]|\([^()\s]*\))*)(?:#(?P<frag>[^)\s]+))?)"
     r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)""")
 # Reference-style Markdown, both halves. The definition's label may not open
@@ -291,9 +296,16 @@ REF_DEF_RE = re.compile(
 # the tree exactly so extensions like that are covered. The allowlist is what
 # keeps the wider bound honest: an extension this tree does not track is
 # skipped there, so widening the pattern adds reach, not false positives.
+# A space is admitted in the FINAL segment only. `docs/Morning Checklist
+# Updated.md` is tracked in this tree and cited in docs/BRIEFING_DECK.md, and
+# the no-space pattern never matched it, so deleting the target reported clean.
+# Spaces stay out of the directory part on purpose: the whole code span has to
+# match, and a directory part that admitted them would let `run docs/a.md and
+# docs/b.md` parse as one path and be reported dead -- a fabricated finding.
+# With the restriction, that span fails at the leading `run `, where it should.
 BACKTICK_PATH_RE = re.compile(
-    r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,10}"
-    r"(?::\d+(?:-\d+)?)?)`")
+    r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-](?:[A-Za-z0-9_. -]*[A-Za-z0-9_.-])?"
+    r"\.[A-Za-z0-9]{1,10}(?::\d+(?:-\d+)?)?)`")
 
 # The other shape a citation takes: a bare root-level filename. Requiring a
 # slash meant `requirements-gcp.txt` and `alert_config.json` -- both cited
@@ -643,8 +655,17 @@ def load_registry(text: str) -> list[dict]:
             raise AuditError(
                 f"{REGISTRY}: a class {cls} row has an empty path glob, so it "
                 "declares ownership of nothing; give it a glob or remove the row")
-        if " " in glob and not glob.endswith(".md"):
-            continue
+        # A glob with a space used to be kept only when it ended `.md`, which
+        # silently dropped every other real path carrying one -- a Class A
+        # `docs/Generated Diagram.drawio` fell through to a broader Class D
+        # rule and lost its code paths and region ownership with no finding
+        # anywhere. A space is valid in a git path, so the extension decides
+        # nothing; what the row must still look like is a PATH.
+        if " " in glob and not ("/" in glob or "." in glob):
+            raise AuditError(
+                f"{REGISTRY}: a class {cls} row declares `{glob}`, which carries a "
+                "space but has neither a directory nor an extension, so it cannot "
+                "be a path glob; the registry table takes paths, not prose")
         paths = []
         if len(cells) > 2 and _cell(cells[2]) not in {"", "—", "-"}:
             paths = [_cell(p) for p in cells[2].split(",") if _cell(p)]
@@ -852,8 +873,27 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             name = spec[5:]
             begin = re.compile(rf"<!--\s*BEGIN {re.escape(name)}\s*-->")
             end = re.compile(rf"<!--\s*END {re.escape(name)}\s*-->")
-            starts = [n for n, l in enumerate(lines, 1) if begin.search(l)]
-            ends = [n for n, l in enumerate(lines, 1) if end.search(l)]
+            # A fenced EXAMPLE of the marker pair is documentation, not the
+            # generated block. Unfiltered, a Class A document whose real block
+            # had gone missing had the example accepted as its `mark:` region:
+            # the unmatched-region finding was suppressed and the code sample
+            # was classified as renderer-owned. The inventory scanner already
+            # excludes both; so does this one now.
+            code = fenced_lines(lines) | indented_code_lines(lines)
+
+            def _marker_lines(pat: re.Pattern[str]) -> list[int]:
+                out = []
+                for n, l in enumerate(lines, 1):
+                    if n - 1 in code:
+                        continue
+                    spans = code_spans(l)
+                    if any(not any(lo <= mm.start() < hi for lo, hi in spans)
+                           for mm in pat.finditer(l)):
+                        out.append(n)
+                return out
+
+            starts = _marker_lines(begin)
+            ends = _marker_lines(end)
             if len(starts) > 1 or len(ends) > 1:
                 orphans.append(f"{name} appears {len(starts)}x BEGIN / {len(ends)}x END; "
                                "exactly one balanced pair is expected")
@@ -1796,6 +1836,13 @@ def fetch_issue_states(repo: str) -> dict[int, dict]:
 
 # ── checks ──────────────────────────────────────────────────────────────────
 
+# A word that turns a clause against itself. Used ONLY to separate a settled
+# half from a blocking half inside one clause, never as a general split.
+_CONTRAST_RE = re.compile(
+    r"\b(?:while|whilst|whereas|but|though|although|however|with|without|"
+    r"except|apart from|other than)\b", re.I)
+
+
 def citation_clause(line: str, start: int, end: int) -> str:
     """The clause a citation sits in, for judging what the prose says about IT.
 
@@ -1812,7 +1859,22 @@ def citation_clause(line: str, start: int, end: int) -> str:
     masked = _URL_RE.sub(lambda m: "\x00" * len(m.group(0)), line)
     lo = max((m.end() for m in _CLAUSE_SPLIT_RE.finditer(masked, 0, start)), default=0)
     nxt = _CLAUSE_SPLIT_RE.search(masked, end)
-    return line[lo:nxt.start() if nxt else len(line)]
+    hi = nxt.start() if nxt else len(line)
+    # One clause may still carry BOTH verdicts, and then the first one read
+    # wins for every citation in it: `all three stocks records are closed as
+    # not planned with the work still open in solyra` settles the solyra
+    # citation off the stocks half. A contrast word is a boundary the sentence
+    # split does not see, so it is applied -- only in that ambiguous case,
+    # because splitting on `with` unconditionally would shred ordinary prose
+    # and lose findings whose cue sits before one.
+    span = line[lo:hi]
+    if SETTLED_CUE_RE.search(span) and BLOCKING_CUE_RE.search(span):
+        rel = start - lo
+        bounds = [0] + [mm.start() for mm in _CONTRAST_RE.finditer(span)] + [len(span)]
+        for a, b in zip(bounds, bounds[1:]):
+            if a <= rel < b:
+                return span[a:b]
+    return span
 
 
 def cites_live_work(line: str, start: int, end: int) -> bool:
@@ -1861,7 +1923,11 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     # --check gates on these findings, so a document DEMONSTRATING what a
     # blocking citation looks like failed the audit over its own example. The
     # link, heading and marker checks already skip fenced lines.
-    fenced = fenced_lines(lines)
+    # Fenced AND indented code. Only fences were excluded, so a four-space
+    # Markdown example carrying blocker prose and a closed issue URL emitted a
+    # gating P1 over content that renders as code. The dead-link pass already
+    # treats both constructs the same way.
+    fenced = fenced_lines(lines) | indented_code_lines(lines)
     # And commented-OUT text, which is how a blocker list is retired without
     # losing it: the prose no longer renders, but it still held the build red.
     # Span-based rather than whole-line, matching check_dead_links -- a row
