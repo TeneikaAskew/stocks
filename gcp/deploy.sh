@@ -553,9 +553,27 @@ deploy_insight_pipeline() {
     admin_token="$(_secret admin-token 2>/dev/null || true)"
     admin_env="${ENV_STRING}${admin_token:+,ADMIN_TOKEN=${admin_token}}"
 
+    # 4Gi, raised from 2Gi on 2026-09-15 after the first real auto-refresh
+    # fan-out OOM-killed two of three children. Measured: NVDA and AMD both
+    # pinned run.googleapis.com/container/memory/utilizations at bucket 100
+    # (>=100% of 2Gi) for three consecutive minutes and were killed with
+    # signal 9; AVGO finished in the same run. The daily SPY/IWM/QQQ batch
+    # has never OOM'd, which is why this went unseen — auto-refresh ranks the
+    # top-N out of a ~16-ticker pool and reaches much heavier option chains.
+    #
+    # 4Gi is a doubling per CLAUDE.md Rule 0.5, NOT a measured requirement:
+    # the utilization metric is censored at the limit, so it proves the
+    # containers reached 2048 MiB, never how much they wanted. Verify by
+    # re-running NVDA and reading the now-uncensored peak; raise again if it
+    # lands above ~50%.
+    #
+    # --memory must be on BOTH paths. The job already exists, so `create`
+    # fails and `update` is what actually runs; before this change `update`
+    # passed no --memory at all, and a change to the `create` line alone
+    # would have silently no-op'd against the live job forever.
     gcloud run jobs create insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 2Gi --cpu 1 --max-retries 1 \
+        --memory 4Gi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.insight_pipeline_job" \
@@ -564,6 +582,7 @@ deploy_insight_pipeline() {
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi \
         --command "python,-m,gcp.insight_pipeline_job" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${admin_env}" \
@@ -884,10 +903,14 @@ setup_insight_tasks_queue() {
     # `set -euo pipefail` an unconditional binding call would abort every
     # routine `deploy.sh insights` run before the jobs were updated.
     #
-    # Missing the grant is not fatal to the deploy: every enqueue then
-    # fails and _dispatch_fanout runs those tickers in-process, which is
-    # slower but still writes all the reports. So warn loudly and carry on
-    # rather than blocking the deploy on an owner-only action.
+    # Missing the grant is not fatal to the DEPLOY, so warn loudly and carry
+    # on rather than blocking on an owner-only action. It is not harmless at
+    # RUNTIME though, and the two consumers differ: insight-pipeline's
+    # _dispatch_fanout falls back to running those tickers in-process and
+    # still writes every report, while auto_refresh_top_n deliberately has no
+    # such fallback and exits 1 when it dispatched nothing it had work for
+    # (bc27284, from the #1094 review). Keep the warning below in step with
+    # that asymmetry — it described only the first half until 2026-09-15.
     local enq_policy
     if ! enq_policy=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
             --flatten="bindings[].members" \
@@ -911,8 +934,11 @@ setup_insight_tasks_queue() {
         return 0
     fi
     echo "  WARNING: ${SA_EMAIL} lacks roles/cloudtasks.enqueuer and this" >&2
-    echo "           identity cannot grant it. The insight-pipeline fan-out will" >&2
-    echo "           fall back to running tickers in-process (correct, slower)." >&2
+    echo "           identity cannot grant it. Two DIFFERENT consequences:" >&2
+    echo "             insight-pipeline  — falls back to running tickers" >&2
+    echo "                                 in-process (correct, slower)." >&2
+    echo "             auto-refresh-top-n — has NO in-process fallback and" >&2
+    echo "                                 exits 1 on every run, by design." >&2
     echo "           A project owner can enable it with:" >&2
     echo "           gcloud projects add-iam-policy-binding ${PROJECT_ID} \\" >&2
     echo "             --member=serviceAccount:${SA_EMAIL} \\" >&2
@@ -5124,6 +5150,7 @@ case "${1:-help}" in
     direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
     magnitude-recal) deploy_magnitude_recal ;;   # research image (already built)   # research image; build separately (build-research)
     magnitude-inference) _run build_research_image deploy_magnitude_inference ;;
+    magnitude-inference-only) deploy_magnitude_inference ;;   # research image; build separately (build-research)
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend) _run build_image deploy_weekend ;;
     fetchers) _run build_image deploy_fetchers backfill_watchlist ;;

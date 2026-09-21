@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Decompose the model's EXPLOSIVE predictions: amplification-of-calendar vs bar-feature edge.
 
-Context: the naive (DoW, 30-min time-bucket) lookup baseline passes gates
-1-3 (log-loss-beat, ECE, monotone) every fold but fails gate 4 (EXPLOSIVE
-lift) by architectural construction — it can never argmax EXPLOSIVE
-because EXPLOSIVE has 3% base rate and no calendar cell has it as the
-modal class.
+Context (as written, 2026-05, under argmax): the naive (DoW, 30-min
+time-bucket) lookup baseline passes gates 1-3 (log-loss-beat, ECE,
+monotone) every fold but fails gate 4 (EXPLOSIVE lift) by architectural
+construction — it can never argmax EXPLOSIVE because EXPLOSIVE has 3% base
+rate and no calendar cell has it as the modal class.
+
+Superseded 2026-09-16: under the decision rule (P(EXPLOSIVE) >= 2x prior,
+mag_pred_train.decide_bucket) a calendar cell with twice the base rate
+makes the call, and the re-run lookup passes gate 4 on every promoted 5m
+cell (docs/MAGNITUDE_ENGINE_RESULTS.md section 12). The decomposition
+below still measures how much of the model's EXPLOSIVE calling is cell
+rate versus within-cell selection; the "cannot pass gate 4" premise no
+longer holds.
 
 So gate-4 is the one place the model could plausibly add value. The
 question is HOW it's adding value:

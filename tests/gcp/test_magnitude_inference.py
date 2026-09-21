@@ -39,8 +39,16 @@ from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     contract_payload, MAGNITUDE_THRESHOLDS, DEFAULT_LABEL_MODE,
 )
 
+# The ~64/27/7/2 magnitude class balance; what a promoted artifact records.
+_PRIORS = [0.64, 0.27, 0.07, 0.02]
 _SERVING_CONTRACT = contract_payload(DEFAULT_LABEL_MODE,
-                                     MAGNITUDE_THRESHOLDS)
+                                     MAGNITUDE_THRESHOLDS,
+                                     class_priors=_PRIORS)
+
+
+def _contract(**overrides):
+    """A complete, servable contract dict with fields overridden."""
+    return {**_SERVING_CONTRACT, **overrides}
 
 
 def _stub_missing_modules(mods: list[str]) -> None:
@@ -155,7 +163,7 @@ def test_score_and_persist_returns_zero_on_empty_features():
     engine = MagicMock()
     n = _score_and_persist(engine, "IWM", "5m",
                             _fake_model([]), ["rsi_14"], "v1",
-                            pd.DataFrame())
+                            pd.DataFrame(), _SERVING_CONTRACT)
     assert n == 0
     engine.begin.assert_not_called()
 
@@ -170,7 +178,7 @@ def test_score_and_persist_raises_on_feature_drift(fake_features):
         _score_and_persist(engine, "IWM", "5m",
                             _fake_model([[0.25] * 4] * 3),
                             ["rsi_14", "atr_14", "gone_feature"],
-                            "v1", fake_features)
+                            "v1", fake_features, _SERVING_CONTRACT)
 
 
 def test_score_and_persist_raises_on_wrong_class_count(fake_features):
@@ -183,7 +191,7 @@ def test_score_and_persist_raises_on_wrong_class_count(fake_features):
     feature_cols = ["rsi_14", "atr_14", "ema_9", "vwap"]
     with pytest.raises(RuntimeError, match="expected 4"):
         _score_and_persist(engine, "IWM", "5m",
-                            bad_model, feature_cols, "v1", fake_features)
+                            bad_model, feature_cols, "v1", fake_features, _SERVING_CONTRACT)
 
 
 def test_score_and_persist_skips_rows_missing_essential_ohlcv(fake_features):
@@ -202,7 +210,7 @@ def test_score_and_persist_skips_rows_missing_essential_ohlcv(fake_features):
     engine = MagicMock()
     feature_cols = ["rsi_14", "atr_14", "ema_9", "vwap"]
     n = _score_and_persist(engine, "IWM", "5m",
-                            model, feature_cols, "v1", fake_features)
+                            model, feature_cols, "v1", fake_features, _SERVING_CONTRACT)
     # 2 surviving bars persisted.
     assert n == 2
     # Model was called with 2 rows (not 3).
@@ -230,7 +238,7 @@ def test_score_and_persist_keeps_nan_in_sparse_nonessential_features(fake_featur
     engine = MagicMock()
     feature_cols = ["rsi_14", "atr_14", "ema_9", "vwap"]
     n = _score_and_persist(engine, "IWM", "5m",
-                            model, feature_cols, "v1", fake_features)
+                            model, feature_cols, "v1", fake_features, _SERVING_CONTRACT)
     # All 3 bars survive — the sparse NaN does not gate scoring.
     assert n == 3
     args, _ = model.predict_proba.call_args
@@ -245,7 +253,7 @@ def test_score_and_persist_zero_after_essential_nan_filter(fake_features):
     model = MagicMock()
     engine = MagicMock()
     n = _score_and_persist(engine, "IWM", "5m",
-                            model, ["rsi_14"], "v1", fake_features)
+                            model, ["rsi_14"], "v1", fake_features, _SERVING_CONTRACT)
     assert n == 0
     model.predict_proba.assert_not_called()
 
@@ -260,7 +268,7 @@ def test_score_and_persist_raises_when_an_essential_ohlcv_column_missing(fake_fe
     with pytest.raises(RuntimeError, match="essential OHLCV"):
         _score_and_persist(MagicMock(), "IWM", "5m",
                             _fake_model([[0.25] * 4] * 3),
-                            ["rsi_14"], "v1", frame)
+                            ["rsi_14"], "v1", frame, _SERVING_CONTRACT)
 
 
 # ──────────────────── main() exit-disposition contract ────────────────────
@@ -392,6 +400,69 @@ def test_main_exits_1_when_every_cell_is_never_promoted(monkeypatch):
     assert rc == 1
 
 
+# ─────────────── withdrawn cells: skip, don't page (same as never-promoted) ──
+#
+# SPY:15m and QQQ:15m WERE promoted 2026-09-07, then withdrawn 2026-09-08
+# once the walk-forward gate caught their FAIL verdict (#1025). Every
+# inference run since raised the generic "corrupted publish"
+# FileNotFoundError for both, which the failure notifier turned into a
+# same-day "GCP job failed" alert + auto-issue the hourly reconciler then
+# closed as "recovered" (#1092/#1093/#1105/#1110/#1113/#1119/#1120,
+# 8 Sep - 16 Sep). A withdrawn cell is a known, diagnosed state exactly
+# like NeverPromoted — it just needs its own bucket so the summary line
+# doesn't misreport a pulled promotion as "awaiting first promotion".
+
+def test_main_skips_withdrawn_cells_without_error(monkeypatch, caplog):
+    """Withdrawn cells warn and skip; the run exits 0 and logs no ERROR
+    for them, so the failure notifier stays quiet."""
+    import logging as _logging
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:15m,QQQ:15m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ModelWithdrawn
+
+    def fake_load(ticker, tf):
+        if tf == "15m":
+            raise ModelWithdrawn(f"production model for {ticker}:{tf} was "
+                                  f"deliberately withdrawn")
+        return (MagicMock(), ["rsi_14"], "v1", _SERVING_CONTRACT)
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=5), \
+         caplog.at_level(_logging.DEBUG, logger=mod.log.name):
+        rc = mod.main()
+
+    assert rc == 0
+    skip_records = [r for r in caplog.records
+                    if "SKIPPED (model withdrawn" in r.getMessage()]
+    assert len(skip_records) == 2
+    assert all(r.levelno == _logging.WARNING for r in skip_records), \
+        "the skip must be WARNING — ERROR is what pages the notifier"
+    assert not [r for r in caplog.records
+                if r.levelno >= _logging.ERROR], \
+        "a withdrawn-model skip must not produce any ERROR record"
+
+
+def test_main_exits_1_when_every_cell_is_withdrawn(monkeypatch):
+    """A fleet withdrawn on every cell writes nothing — the zero-output
+    guard still turns that into a hard failure, same as an all-
+    never-promoted fleet."""
+    monkeypatch.setenv("INFERENCE_CELLS", "SPY:15m,QQQ:15m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ModelWithdrawn
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version",
+                       side_effect=ModelWithdrawn("withdrawn")), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    assert rc == 1
+
+
 def test_main_majority_threshold_counts_servable_cells_only(monkeypatch):
     """2 skips + 2 real failures of 4 configured: every cell that COULD
     run failed, so the run must exit 1 — under the old arithmetic
@@ -507,6 +578,94 @@ def test_loader_keeps_hard_failure_when_an_unmarked_run_exists():
                            match="run artifacts exist") as excinfo:
             mod._load_model_and_version("SPY", "15m")
     assert not isinstance(excinfo.value, NeverPromoted)
+
+
+def _withdrawn_bucket(*, withdrawn_payload):
+    """A stub bucket whose LATEST pointer is missing but WITHDRAWN.json
+    exists at the cell's production prefix — the pulled-after-promotion
+    state (#1025), distinct from an empty or gate-blocked-only prefix."""
+    import json as _json
+
+    def make(name):
+        b = MagicMock()
+        if name == f"{_PFX}/WITHDRAWN.json":
+            b.exists.return_value = True
+            b.download_as_text.return_value = _json.dumps(withdrawn_payload)
+        else:
+            b.exists.return_value = False
+        return b
+    bucket = MagicMock()
+    bucket.blob.side_effect = make
+    client = MagicMock()
+    client.bucket.return_value = bucket
+    client.list_blobs.return_value = iter([])
+    return client
+
+
+def test_loader_treats_a_withdrawn_model_as_a_skip_not_a_hard_failure():
+    """A cell whose model was deliberately pulled (WITHDRAWN.json) after
+    promotion is a known, diagnosed state — not the corrupted-publish
+    FileNotFoundError the generic missing-LATEST branch raises. #1025:
+    SPY/15m and QQQ/15m were promoted then withdrawn 2026-09-08, and the
+    withdrawn run carries no PROMOTION_BLOCKED marker (it was never
+    gate-rejected), so only an explicit WITHDRAWN.json check catches it."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import (
+        ModelWithdrawn, NeverPromoted,
+    )
+
+    client = _withdrawn_bucket(withdrawn_payload={
+        "withdrawn_at": "2026-09-08T12:17:07Z",
+        "reason": "cell verdict was FAIL on gates 1 and 2",
+    })
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(ModelWithdrawn,
+                           match="deliberately") as excinfo:
+            mod._load_model_and_version("SPY", "15m")
+    assert not isinstance(excinfo.value, NeverPromoted)
+    # The marker answers the question outright — no need to paginate the
+    # cell's run directory to classify it.
+    assert not client.list_blobs.called
+
+
+def test_loader_names_the_withdrawal_reason_and_time():
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ModelWithdrawn
+
+    client = _withdrawn_bucket(withdrawn_payload={
+        "withdrawn_at": "2026-09-08T12:17:07Z",
+        "reason": "cell verdict was FAIL on gates 1 and 2",
+    })
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(ModelWithdrawn) as excinfo:
+            mod._load_model_and_version("SPY", "15m")
+    assert "2026-09-08T12:17:07Z" in str(excinfo.value)
+    assert "cell verdict was FAIL on gates 1 and 2" in str(excinfo.value)
+
+
+def test_loader_withdrawn_state_survives_a_malformed_marker():
+    """The marker's mere presence is what matters for classification; a
+    corrupt JSON body must not fall through to the hard corrupted-publish
+    error, it just can't be quoted verbatim."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import ModelWithdrawn
+
+    def make(name):
+        b = MagicMock()
+        if name == f"{_PFX}/WITHDRAWN.json":
+            b.exists.return_value = True
+            b.download_as_text.return_value = "{not valid json"
+        else:
+            b.exists.return_value = False
+        return b
+    bucket = MagicMock()
+    bucket.blob.side_effect = make
+    client = MagicMock()
+    client.bucket.return_value = bucket
+
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(ModelWithdrawn):
+            mod._load_model_and_version("SPY", "15m")
 
 
 def test_load_recent_features_joins_levels_table(monkeypatch):
@@ -836,7 +995,7 @@ def test_a_research_label_model_is_refused_not_served():
     """The case #1055 blocks at the writer, arriving at the reader anyway."""
     import json as _json
     from gcp.research.magnitude_engine.mag_config import contract_payload
-    bad = contract_payload("excursion", (0.5, 1.0, 1.5))
+    bad = contract_payload("excursion", (0.5, 1.0, 1.5), class_priors=_PRIORS)
     with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
         _load_with(_json.dumps(bad))
     assert "excursion" in str(e.value)
@@ -845,7 +1004,7 @@ def test_a_research_label_model_is_refused_not_served():
 def test_rebucketed_thresholds_are_refused():
     import json as _json
     from gcp.research.magnitude_engine.mag_config import contract_payload
-    bad = contract_payload("body", (0.35, 0.75, 1.25))
+    bad = contract_payload("body", (0.35, 0.75, 1.25), class_priors=_PRIORS)
     with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
         _load_with(_json.dumps(bad))
     assert "0.35" in str(e.value)
@@ -904,9 +1063,7 @@ def test_a_reordered_class_list_is_still_caught():
     from gcp.research.magnitude_engine.mag_config import (
         contract_mismatch, LABEL_CLASSES)
     reordered = list(LABEL_CLASSES)[::-1]
-    got = contract_mismatch({"label_mode": "body",
-                             "thresholds": [0.5, 1.0, 1.5],
-                             "classes": reordered})
+    got = contract_mismatch(_contract(classes=reordered))
     assert got and "classes=" in got
 
 
@@ -961,15 +1118,20 @@ def test_the_backfill_states_history_rather_than_rederiving_it():
     mean something else -- the precise evolution CONTRACT.json exists to
     catch. (Codex P2 on #1074.)"""
     src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
-    literal = src[src.index("_AUDITED_LEGACY_CONTRACT = {"):src.index("def main(")]
+    literal = src[src.index("_AUDITED_LEGACY_CONTRACT = {"):src.index("_LEGACY_KEYS = (")]
     assert '"label_mode": "body"' in literal
     assert "[0.5, 1.0, 1.5]" in literal
+    # the decision bar is a literal for the same reason: if DECISION_LIFT_MIN
+    # moves, the reader must refuse the old artifact, not have this script
+    # quietly restamp it
+    assert '"decision_lift_min": 2.0' in literal
     for derived in ("MAGNITUDE_THRESHOLDS", "LABEL_CLASSES",
-                    "DEFAULT_LABEL_MODE", "contract_payload"):
+                    "DEFAULT_LABEL_MODE", "contract_payload",
+                    "DECISION_LIFT_MIN"):
         assert derived not in literal, (
             f"the audited contract must not be derived from {derived}")
-    # and it is what gets written
-    assert "json.dumps(_AUDITED_LEGACY_CONTRACT" in src
+    # and it is what gets written, merged only with the per-cell priors
+    assert "{**_AUDITED_LEGACY_CONTRACT," in src
 
 
 def test_the_backfill_validates_rather_than_checking_existence():
@@ -1062,16 +1224,13 @@ def test_a_scalar_classes_is_malformed_not_an_ordinary_failure(bad):
     payload rather than naming it malformed. (Codex P2 on #1074.)"""
     from gcp.research.magnitude_engine.mag_config import contract_mismatch
     with pytest.raises(ValueError, match="is not a JSON array"):
-        contract_mismatch({"label_mode": "body",
-                           "thresholds": [0.5, 1.0, 1.5], "classes": bad})
+        contract_mismatch(_contract(classes=bad))
 
 
 def test_a_non_string_label_mode_is_malformed_not_merely_mismatched():
     from gcp.research.magnitude_engine.mag_config import contract_mismatch
     with pytest.raises(ValueError, match="is not a string"):
-        contract_mismatch({"label_mode": 3, "thresholds": [0.5, 1.0, 1.5],
-                           "classes": ["TIGHT", "NORMAL", "EXPANDED",
-                                       "EXPLOSIVE"]})
+        contract_mismatch(_contract(label_mode=3))
 
 
 def test_every_malformed_shape_reaches_the_fatal_path():
@@ -1312,10 +1471,7 @@ def test_threshold_coercion_fails_closed():
     #1074.)"""
     from gcp.research.magnitude_engine.mag_config import contract_mismatch
     with pytest.raises(ValueError, match="not a list of numbers"):
-        contract_mismatch({"label_mode": "body",
-                           "thresholds": [10 ** 400, 1.0, 1.5],
-                           "classes": ["TIGHT", "NORMAL", "EXPANDED",
-                                       "EXPLOSIVE"]})
+        contract_mismatch(_contract(thresholds=[10 ** 400, 1.0, 1.5]))
 
 
 def test_an_overflowing_threshold_reaches_the_fatal_path():
@@ -1551,3 +1707,202 @@ def test_the_fleet_sweep_iterates_a_materialised_copy():
         if v == 1:
             del d[k]
     assert d == {("b", "2"): 2}
+
+
+# ─── 2026-09-14: the served decision rule ───
+
+def test_pred_bucket_is_the_decision_not_argmax(fake_features):
+    """Three bars: one at the base rates, one carrying 3x the EXPLOSIVE
+    prior, one carrying ~3x the EXPANDED prior. Argmax says TIGHT for all
+    three (that is the constant column c49qf served for weeks); the decision
+    rule names TIGHT / EXPLOSIVE / EXPANDED, and that is what is persisted."""
+    from gcp.research.magnitude_engine.mag_inference import _score_and_persist
+    proba = np.array([
+        [0.64, 0.27, 0.07, 0.02],
+        [0.60, 0.27, 0.07, 0.06],
+        [0.55, 0.25, 0.17, 0.03],
+    ])
+    assert (proba.argmax(1) == 0).all()
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    n = _score_and_persist(engine, "IWM", "5m", _fake_model(proba),
+                            ["rsi_14", "atr_14"], "v1", fake_features,
+                            _SERVING_CONTRACT)
+    assert n == 3
+    params = conn.execute.call_args.args[1]
+    assert [params[f"pred_bucket_{i}"] for i in range(3)] == [0, 3, 2]
+    # probabilities are still served untouched
+    assert params["p_explosive_1"] == pytest.approx(0.06)
+
+
+def test_a_contract_without_the_decision_rule_is_malformed_not_served():
+    """An artifact stamped before 2026-09-14 carries the label contract but
+    no priors. Its probabilities cannot be turned into a decision the
+    consumer has been told the meaning of, so it is refused -- and the
+    refusal names the missing keys, so the operator reaches for the
+    backfill's upgrade path rather than guessing."""
+    import json as _json
+    legacy = {k: v for k, v in _SERVING_CONTRACT.items()
+              if k not in ("class_priors", "decision_lift_min",
+                           "class_priors_source")}
+    with pytest.raises(ValueError, match="class_priors") as e:
+        _load_with(_json.dumps(legacy))
+    assert "decision_lift_min" in str(e.value)
+
+
+def test_a_contract_under_a_different_lift_bar_is_refused():
+    """pred_bucket must mean one thing across the fleet: the API and the
+    movement statement read it without the contract. An artifact stamped
+    under another bar is a mismatch, exactly like other thresholds."""
+    import json as _json
+    with pytest.raises(RuntimeError, match="REFUSING to serve") as e:
+        _load_with(_json.dumps(_contract(decision_lift_min=3.0)))
+    assert "decision_lift_min=3.0" in str(e.value)
+
+
+@pytest.mark.parametrize("priors,why", [
+    ([0.5, 0.5, 0.5, 0.5], "sum to"),
+    ([0.9, 0.2, -0.1, 0.0], "probabilities in"),
+    ([0.64, 0.27, 0.09], "one per class"),
+    # JSON booleans coerce to 1.0 / 0.0 and would pass every distribution
+    # check as priors (1, 0, 0, 0): three unnameable buckets, TIGHT on every
+    # row (Codex P2 on #1117)
+    ([True, False, False, False], "boolean"),
+    ([0.64, 0.27, 0.07, True], "boolean"),
+    (["a", "b", "c", "d"], "not a list of numbers"),
+    ("0.64,0.27,0.07,0.02", "not a JSON array"),
+])
+def test_priors_that_are_not_a_distribution_are_malformed(priors, why):
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match=why):
+        contract_mismatch(_contract(class_priors=priors))
+
+
+@pytest.mark.parametrize("lift", [1.0, 0.5, 0.0, -2.0, "two", float("nan"), True])
+def test_a_lift_bar_at_or_under_one_is_malformed(lift):
+    """A bar at or under 1.0 would name a bucket at or BELOW its base rate;
+    that is not a decision rule, it is a bug, and it fails closed. A JSON
+    boolean is not a number either, however it would coerce."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="decision_lift_min"):
+        contract_mismatch(_contract(decision_lift_min=lift))
+
+
+def test_boolean_thresholds_are_malformed():
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="boolean"):
+        contract_mismatch(_contract(thresholds=[0.5, True, 1.5]))
+
+
+def test_the_backfill_upgrades_a_legacy_contract_in_place():
+    """A contract written by the 2026-09-11 backfill is upgraded, not
+    overwritten, and only when its three legacy keys agree with the audited
+    history -- otherwise it is not the artifact the audit was about."""
+    src = pathlib.Path("scripts/backfill_model_contracts.py").read_text()
+    body = src[src.index("def main("):]
+    assert "_DECISION_KEYS" in body and "_LEGACY_KEYS" in body
+    assert "already carries the decision rule" in body
+    assert "disagrees with the audited history" in body
+    assert "no sibling artifact under this cell carries training-label" in body
+    assert '"upgraded" if existing else "wrote"' in body
+    # a contract stamped from test labels is upgraded, not left alone
+    assert 'existing.get("class_priors_source")' in body
+
+
+def test_the_backfill_takes_priors_from_a_training_label_measurement():
+    """Priors are per-cell facts and cannot be a literal. The population the
+    decision rule scales by is the TRAINING label set; the prediction CSV
+    holds only the held-out test bars from 2019 on (Codex P2 on #1117). The
+    walk-forward writes its training-label priors into every CONTRACT.json,
+    promoted or blocked, so the newest sibling under the same label
+    contract is the measurement; a cell with none is refused."""
+    import json as _json
+    from datetime import datetime, timezone
+    from scripts.backfill_model_contracts import (
+        _AUDITED_LEGACY_CONTRACT, _training_priors_from_sibling)
+
+    def blob(name, payload, updated):
+        b = MagicMock()
+        b.name = name
+        b.download_as_text.return_value = _json.dumps(payload)
+        b.updated = datetime(2026, 9, *updated, tzinfo=timezone.utc)
+        return b
+    base = "magnitude-models/production/IWM/15m/"
+    same = {k: _AUDITED_LEGACY_CONTRACT[k]
+            for k in ("label_mode", "thresholds", "classes")}
+    bucket = MagicMock()
+    bucket.list_blobs.return_value = [
+        blob(base + "magnitude-engine-c49qf/CONTRACT.json",
+             {**same, "class_priors": [0.69, 0.25, 0.05, 0.01],
+              "class_priors_source": "walk_forward_test_labels"}, (15, 12)),
+        blob(base + "magnitude-engine-6hp7l/model.joblib", {}, (15, 21)),
+        blob(base + "magnitude-engine-6hp7l/CONTRACT.json",
+             {**same, "class_priors": [0.678, 0.2495, 0.0556, 0.0169],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (15, 21)),
+        blob(base + "magnitude-engine-older/CONTRACT.json",
+             {**same, "class_priors": [0.7, 0.2, 0.07, 0.03],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (10, 1)),
+        blob(base + "magnitude-engine-excursion/CONTRACT.json",
+             {**same, "label_mode": "excursion",
+              "class_priors": [0.4, 0.3, 0.2, 0.1],
+              "class_priors_source": "training_labels"}, (16, 1)),
+    ]
+    got = _training_priors_from_sibling(bucket, "IWM", "15m")
+    assert got is not None
+    priors, run, _ = got
+    assert run == "magnitude-engine-6hp7l"        # newest training-label sibling
+    assert priors == pytest.approx([0.678, 0.2495, 0.0556, 0.0169])
+    bucket.list_blobs.assert_called_with(prefix=base)
+    # only test-label or foreign-contract siblings: refused
+    bucket.list_blobs.return_value = bucket.list_blobs.return_value[:1] + \
+        bucket.list_blobs.return_value[4:]
+    assert _training_priors_from_sibling(bucket, "IWM", "15m") is None
+    # a sibling the READER would refuse is not a source of priors: booleans
+    # (an int to isinstance), a non-distribution, a foreign lift bar
+    # (Codex P2 on #1117)
+    bad = [
+        blob(base + "magnitude-engine-bool/CONTRACT.json",
+             {**same, "class_priors": [True, False, False, False],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (16, 2)),
+        blob(base + "magnitude-engine-sum/CONTRACT.json",
+             {**same, "class_priors": [0.5, 0.5, 0.5, 0.5],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (16, 3)),
+        blob(base + "magnitude-engine-lift/CONTRACT.json",
+             {**same, "class_priors": [0.7, 0.2, 0.07, 0.03],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 3.0}, (16, 4)),
+    ]
+    bucket.list_blobs.return_value = bad
+    assert _training_priors_from_sibling(bucket, "IWM", "15m") is None
+    bucket.list_blobs.return_value = bad + [
+        blob(base + "magnitude-engine-good/CONTRACT.json",
+             {**same, "class_priors": [0.7, 0.2, 0.07, 0.03],
+              "class_priors_source": "training_labels",
+              "decision_lift_min": 2.0}, (10, 1))]
+    got = _training_priors_from_sibling(bucket, "IWM", "15m")
+    assert got is not None and got[1] == "magnitude-engine-good"
+    # a corrupt sibling blob skips that sibling, not the search
+    broken = blob(base + "magnitude-engine-corrupt/CONTRACT.json", {}, (16, 5))
+    broken.download_as_text.return_value = "{not json"
+    bucket.list_blobs.return_value = [broken] + bucket.list_blobs.return_value
+    got = _training_priors_from_sibling(bucket, "IWM", "15m")
+    assert got is not None and got[1] == "magnitude-engine-good"
+
+
+def test_the_reader_refuses_priors_that_are_not_training_labels():
+    """The 2026-09-15 backfill stamped six contracts from the walk-forward
+    test CSV. Those priors omit the pre-2019 training rows, so the decision
+    rule scaled by them is the wrong rule; the reader refuses the
+    provenance rather than serving it (Codex P2 on #1117)."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    why = contract_mismatch(_contract(class_priors_source="walk_forward_test_labels"))
+    assert why is not None and "class_priors_source" in why
+    assert "backfill_model_contracts" in why
+    payload = _contract()
+    del payload["class_priors_source"]
+    assert "class_priors_source" in contract_mismatch(payload)
+    assert contract_mismatch(_contract()) is None

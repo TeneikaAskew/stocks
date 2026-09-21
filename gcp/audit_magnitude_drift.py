@@ -6,7 +6,7 @@ from `magnitude_per_bar_predictions` and flags degraded states that
 freshness alone can't catch:
 
 * **Modal-class dominance** — a healthy 4-class softmax should spread
-  probability mass across buckets. When >=90% of bars argmax-pick the
+  probability mass across buckets. When >=90% of bars decide on the
   same bucket for a (ticker, tf) cell, the model has collapsed (the
   promotion gate's collapse ceiling; the ~68% TIGHT base rate means a
   healthy model already sits in the MEDIUM tier). Was the
@@ -75,10 +75,15 @@ REGION = os.environ.get("GCP_REGION", "us-east1")
 # this same number as its collapse criterion. If the two drifted apart, a
 # model could pass promotion and then be flagged HIGH by this auditor every
 # day after (which is exactly what happened with c49qf, when no promotion
-# gate existed at all). The gate's second, relative criterion (predicted vs
-# true modal share, mag_config.PROMOTION_MAX_MODAL_EXCESS) needs labels, which
-# live rows do not carry, so it is not mirrored here; a healthy model on a
-# ~68% TIGHT base rate lands in MEDIUM, which is "eyeball", not "page".
+# gate existed at all).
+#
+# Since 2026-09-14 `pred_bucket` is the served DECISION (the highest bucket
+# whose probability clears DECISION_LIFT_MIN times its class prior, else
+# TIGHT), not argmax. The gate scores that same decision over the training
+# matrix, so this check reads exactly what the gate measured; there is no
+# longer a labels-only criterion left unmirrored. A calibrated model lands
+# around 82% modal share at the default lift bar, which is MEDIUM
+# ("eyeball", not "page"); a constant-output model is 100% and HIGH.
 MODAL_DOMINANCE_HIGH = PROMOTION_COLLAPSE_MODAL_SHARE  # >= 90% in one bucket = collapsed
 MODAL_DOMINANCE_MED = 0.55    # >= 55% in one bucket = worth eyeballing
 
@@ -88,6 +93,33 @@ LOOKBACK_DAYS = int(os.environ.get("DRIFT_LOOKBACK_DAYS", "7"))
 # Minimum sample size before any check fires — avoids false alarms on
 # the first day after a new cell is added or after a long weekend.
 MIN_SAMPLE = int(os.environ.get("DRIFT_MIN_SAMPLE", "50"))
+
+# The HIGH tier needs more than MIN_SAMPLE. Since 2026-09-14 `pred_bucket`
+# is the decision rule (P(bucket) >= 2x its prior), and under it a
+# calibrated model's modal share MOVES with the session: on the first day
+# it served, SPY 5m `magnitude-engine-6hp7l` named TIGHT on 73/75 bars of
+# a calm session (mean P(EXPLOSIVE) 0.007 against a 0.026 prior) and this
+# check paged HIGH on a model that names EXPLOSIVE on 11-13% of bars over
+# eight years at 100% bootstrap (audit-magnitude-drift-d9kkm). Under argmax
+# that never happened, because argmax share did not move with the session.
+# So HIGH requires the share to hold across at least MIN_SESSIONS_FOR_HIGH
+# distinct sessions; a >= 90% share on fewer is reported as MEDIUM with the
+# reason, so it stays visible without paging.
+#
+# Sessions are COUNTED (distinct ET dates in fetch_distribution), not
+# inferred from a bar quota. The first version of this rule multiplied
+# sessions by RTH bars per timeframe (5 x 78 = 390 at 5m), and that number
+# was unreachable: inference drops the three warmup bars of every session
+# (mag_inference._load_recent_features, prev3_candle NaN), so a session
+# contributes 75/23/10 bars at 5m/15m/30m and a 7-day window tops out at
+# 375/115/50 (Codex on #1117). A quota derived from the calendar was a
+# claim about the data that the data did not meet.
+#
+# The cost is that a genuinely constant model (c49qf's 100%) is MEDIUM
+# until it has served five sessions inside the LOOKBACK_DAYS window, which
+# a holiday week defers to the following week; the render backstop in
+# lib/movement_statement.py covers the user-facing card in the meantime.
+MIN_SESSIONS_FOR_HIGH = int(os.environ.get("DRIFT_MIN_SESSIONS_FOR_HIGH", "5"))
 
 # Cell-silence freshness threshold. A cell counts as "alive" only if it
 # produced predictions within this many hours. Codex P2 caught the
@@ -138,24 +170,49 @@ def fetch_distribution() -> list[dict]:
     """Pull per-cell prediction distribution for the lookback window.
 
     Returns one row per (ticker, tf, model_version, pred_bucket) with
-    counts and averaged probabilities. Empty list on any query failure
-    (caught + logged into report.errors by the caller).
+    counts and averaged probabilities (rows scored under the served
+    decision rule only, `decision_rule = 'lift'`; rows from before
+    2026-09-15 hold argmax and would mix two meanings of pred_bucket under
+    one model_version), plus `n_sessions`: the number of
+    distinct ET sessions the CELL (ticker, tf, model_version) served in the
+    window, repeated on each of its rows. It is a cell-level count, not a
+    per-bucket one, so a bucket named on two of five days still reads five.
+    Sessions are Eastern calendar dates (CLAUDE.md 3.9): a bar's UTC date
+    is the same today, but the check must be right by construction.
+    Empty list on any query failure (caught + logged into report.errors by
+    the caller).
     """
     from sqlalchemy import text
     engine = get_engine()
     sql = text("""
-        SELECT ticker, tf, model_version, pred_bucket,
+        WITH window_rows AS (
+            SELECT ticker, tf, model_version, pred_bucket, max_proba,
+                   p_tight, p_normal, p_expanded, p_explosive, computed_at,
+                   (ts AT TIME ZONE 'America/New_York')::date AS session
+              FROM magnitude_per_bar_predictions
+             WHERE source = 'inference'
+               AND decision_rule = 'lift'
+               AND computed_at >= NOW() - make_interval(days => :days)
+        ), cell_sessions AS (
+            SELECT ticker, tf, model_version,
+                   COUNT(DISTINCT session) AS n_sessions
+              FROM window_rows
+             GROUP BY ticker, tf, model_version
+        )
+        SELECT w.ticker, w.tf, w.model_version, w.pred_bucket,
                COUNT(*) AS n_predictions,
-               AVG(max_proba) AS avg_conf,
-               AVG(p_tight) AS avg_p_tight,
-               AVG(p_normal) AS avg_p_normal,
-               AVG(p_expanded) AS avg_p_expanded,
-               AVG(p_explosive) AS avg_p_explosive,
-               MAX(computed_at) AS last_computed
-          FROM magnitude_per_bar_predictions
-         WHERE source = 'inference'
-           AND computed_at >= NOW() - make_interval(days => :days)
-         GROUP BY ticker, tf, model_version, pred_bucket
+               AVG(w.max_proba) AS avg_conf,
+               AVG(w.p_tight) AS avg_p_tight,
+               AVG(w.p_normal) AS avg_p_normal,
+               AVG(w.p_expanded) AS avg_p_expanded,
+               AVG(w.p_explosive) AS avg_p_explosive,
+               MAX(w.computed_at) AS last_computed,
+               s.n_sessions
+          FROM window_rows w
+          JOIN cell_sessions s
+            ON s.ticker = w.ticker AND s.tf = w.tf
+           AND s.model_version = w.model_version
+         GROUP BY w.ticker, w.tf, w.model_version, w.pred_bucket, s.n_sessions
     """)
     with engine.connect() as conn:
         # SQLAlchemy 2.x Connection.execute() — statement positional, params
@@ -292,11 +349,70 @@ def _cell_key(row: dict) -> tuple[str, str, str]:
     return (row["ticker"], row["tf"], row["model_version"])
 
 
-def check_modal_dominance(rows: list[dict], report: Report) -> None:
-    """Per (ticker, tf, model_version), compute the modal-class share.
+def fetch_serving_versions() -> tuple[dict[tuple[str, str], str], list[str]]:
+    """The model version each (ticker, tf) is serving: the run id in its
+    `magnitude-models/production/{T}/{tf}/LATEST` pointer, the same blob
+    mag_inference follows to pick what to score with. Returns the map and
+    a list of per-cell errors. Cells with no pointer are absent from both;
+    a cell whose pointer is empty or unreadable is absent from the map and
+    named in the errors, so one bad cell cannot take the check away from
+    the others (Codex P2 on #1117). Raises only when the registry itself
+    cannot be reached; the caller records that and the check does not run.
 
-    HIGH: modal >= MODAL_DOMINANCE_HIGH (collapsed model)
-    MEDIUM: modal >= MODAL_DOMINANCE_MED (worth eyeballing)
+    Read from the registry rather than inferred from the rows: the newest
+    `computed_at` per version does not identify the serving one, because
+    the inference upsert preserves a row's first-insert time. After a
+    rollback and restore, the restored model's rescoring of bars it had
+    already scored advances nothing, so recency kept pointing at the
+    rolled-back version until a genuinely new bar arrived (Codex P2 on
+    #1117).
+    """
+    from google.cloud import storage as gcs
+    from google.api_core import exceptions as gapi
+    from gcp.research.magnitude_engine.mag_config import (
+        GCS_BUCKET_DEFAULT, TICKERS, TIMEFRAMES,
+    )
+    bucket = gcs.Client().bucket(os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT))
+    out: dict[tuple[str, str], str] = {}
+    errors: list[str] = []
+    for ticker in TICKERS:
+        for tf in TIMEFRAMES:
+            name = f"magnitude-models/production/{ticker}/{tf}/LATEST"
+            try:
+                run_id = bucket.blob(name).download_as_text().strip()
+            except gapi.NotFound:
+                continue
+            except Exception as e:      # EXTERNAL: GCS -- surface per cell
+                errors.append(f"{ticker}:{tf} LATEST unreadable: "
+                              f"{type(e).__name__}: {e}")
+                continue
+            # An empty pointer is a corrupt registry, not "nothing serving":
+            # inference cannot resolve an artifact from it, and recording ""
+            # would make the check skip every real version for the cell
+            # while cell-silence still saw fresh rows.
+            if not run_id:
+                errors.append(f"{ticker}:{tf} LATEST is empty "
+                              f"(gs://{bucket.name}/{name})")
+                continue
+            out[(ticker, tf)] = run_id
+    return out, errors
+
+
+def check_modal_dominance(rows: list[dict], report: Report,
+                          serving: dict[tuple[str, str], str]) -> None:
+    """Per (ticker, tf), compute the modal-class share of the SERVING
+    model version (`serving`, from fetch_serving_versions).
+
+    HIGH: modal >= MODAL_DOMINANCE_HIGH across at least MIN_SESSIONS_FOR_HIGH
+          distinct sessions (collapsed model)
+    MEDIUM: modal >= MODAL_DOMINANCE_MED (worth eyeballing), or over the
+            HIGH ceiling on too few sessions to page
+
+    Only the serving version is judged. A replaced model's rows stay in the
+    window for LOOKBACK_DAYS after the pointer moves (measured 2026-09-16:
+    c49qf's five sessions of IWM 5m rows sat beside 6hp7l's one), and
+    paging on a model that no longer serves is a page nobody can act on.
+    A cell with rows but no pointer is likewise skipped: nothing serves it.
     """
     if not rows:
         return
@@ -305,22 +421,37 @@ def check_modal_dominance(rows: list[dict], report: Report) -> None:
         by_cell.setdefault(_cell_key(r), []).append(r)
 
     for cell, cell_rows in sorted(by_cell.items()):
+        ticker, tf, mv = cell
+        if serving.get((ticker, tf)) != mv:
+            continue
         total = sum(r["n_predictions"] for r in cell_rows)
         if total < MIN_SAMPLE:
             continue
+        # Cell-level, identical on every row of the cell (fetch_distribution).
+        # A row without it is a query drift, and KeyError is the right
+        # failure: the number that decides whether to page cannot default.
+        n_sessions = int(cell_rows[0]["n_sessions"])
         modal = max(cell_rows, key=lambda r: r["n_predictions"])
         share = modal["n_predictions"] / total
-        ticker, tf, mv = cell
         target = f"{ticker}:{tf}"
         bucket_name = {0: "TIGHT", 1: "NORMAL", 2: "EXPANDED", 3: "EXPLOSIVE"}.get(
             modal["pred_bucket"], f"bucket-{modal['pred_bucket']}"
         )
-        detail = (f"argmax={bucket_name} on {modal['n_predictions']}/{total} bars "
+        detail = (f"decision={bucket_name} on {modal['n_predictions']}/{total} bars "
                   f"({share:.1%}, avg_conf={modal['avg_conf']:.3f}) "
                   f"over last {LOOKBACK_DAYS}d (model={mv})")
         if share >= MODAL_DOMINANCE_HIGH:
-            report.add(severity="HIGH", check="modal-dominance",
-                       target=target, detail=detail)
+            if n_sessions >= MIN_SESSIONS_FOR_HIGH:
+                report.add(severity="HIGH", check="modal-dominance",
+                           target=target, detail=detail)
+            else:
+                noun = "session" if n_sessions == 1 else "sessions"
+                report.add(severity="MEDIUM", check="modal-dominance",
+                           target=target,
+                           detail=(f"{detail}; at or over the {MODAL_DOMINANCE_HIGH:.0%} "
+                                   f"ceiling but only {n_sessions} {noun} "
+                                   f"({total} bars), under the "
+                                   f"{MIN_SESSIONS_FOR_HIGH}-session minimum for HIGH"))
         elif share >= MODAL_DOMINANCE_MED:
             report.add(severity="MEDIUM", check="modal-dominance",
                        target=target, detail=detail)
@@ -401,7 +532,17 @@ def main() -> int:
         report.errors.append(f"fetch_distribution: {e}")
         rows = []
 
-    check_modal_dominance(rows, report)
+    # The check needs to know which version each cell serves; without that
+    # it would judge retired versions, so a failed registry read is an error
+    # in the summary and the check is skipped, never run on a guess.
+    try:
+        serving, registry_errors = fetch_serving_versions()
+    except Exception as e:
+        report.errors.append(f"fetch_serving_versions: {e}")
+    else:
+        for err in registry_errors:
+            report.errors.append(f"fetch_serving_versions: {err}")
+        check_modal_dominance(rows, report, serving)
     check_cell_silence(rows, report, EXPECTED_CELLS)
 
     # Feature-join coverage — the movement-statement sizing calculator reads

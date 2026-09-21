@@ -52,13 +52,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gcp.database import get_engine, query_to_dataframe  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
-    LABEL_CLASSES, LABEL_TO_IDX,
+    LABEL_CLASSES, LABEL_TO_IDX, DECISION_RULE_LIFT,
     CONTRACT_BLOB, contract_mismatch,
     ContractRejection, ContractMissing, ContractMalformed,
-    ContractMismatch, NeverPromoted,
+    ContractMismatch, NeverPromoted, ModelWithdrawn,
 )
 from gcp.research.magnitude_engine.mag_walk_forward import (  # noqa: E402
-    PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX,
+    PREDICTIONS_DDL_CREATE, PREDICTIONS_DDL_INDEX, PREDICTIONS_DDL_MIGRATE,
 )
 from lib.logging_config import setup_logging  # noqa: E402
 
@@ -202,7 +202,7 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
     # LATEST after all three uploads succeed.
     latest_blob = bucket.blob(f"{base_prefix}/LATEST")
     if not latest_blob.exists():
-        # Three different states hide behind a missing pointer, and they
+        # Four different states hide behind a missing pointer, and they
         # need different responses. An EMPTY prefix means the cell has never
         # been promoted — a standing config gap the operator already knows
         # about, skipped upstream with a WARNING (see NeverPromoted). A
@@ -210,14 +210,38 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
         # same state one step later: _persist_production_model uploads a
         # gate-rejected candidate's artifacts WITH that marker and leaves
         # LATEST unwritten on purpose (mag_walk_forward), so blocked-only
-        # runs mean no model was ever promoted either. Only a run that has
-        # artifacts but NEITHER a marker NOR a pointer is an interrupted or
-        # corrupted publish — new, real breakage that must fail loud.
+        # runs mean no model was ever promoted either. A prefix carrying a
+        # WITHDRAWN.json is a THIRD state — the cell WAS promoted and an
+        # operator pulled it after the fact (see ModelWithdrawn) — checked
+        # before the run listing below because the marker answers the
+        # question outright without needing to paginate the prefix. Only a
+        # run that has artifacts but NEITHER a marker NOR a pointer NOR a
+        # withdrawal notice is an interrupted or corrupted publish — new,
+        # real breakage that must fail loud.
+        withdrawn_blob = bucket.blob(f"{base_prefix}/WITHDRAWN.json")
+        if withdrawn_blob.exists():
+            try:
+                info = json.loads(withdrawn_blob.download_as_text())
+                reason = info.get("reason", "no reason recorded")
+                withdrawn_at = info.get("withdrawn_at", "unknown time")
+            except Exception:                             # noqa: BLE001
+                # The marker's mere PRESENCE is what drives classification;
+                # a malformed body doesn't turn this back into a corrupted
+                # publish, it just can't be quoted verbatim.
+                reason = "WITHDRAWN.json present but unreadable"
+                withdrawn_at = "unknown time"
+            raise ModelWithdrawn(
+                f"production model for {ticker}:{tf} was deliberately "
+                f"withdrawn at {withdrawn_at} and nothing has been "
+                f"promoted since: {reason} See "
+                f"gs://{bucket_name}/{base_prefix}/WITHDRAWN.json for the "
+                f"restore pointer."
+            )
         #
         # Cost: one paginated listing of the cell's production prefix,
-        # only on the LATEST-missing path. Runs accumulate one directory
-        # of ~5 blobs per training attempt, so even years of attempts stay
-        # within a few pages.
+        # only on the LATEST-missing, non-withdrawn path. Runs accumulate
+        # one directory of ~5 blobs per training attempt, so even years of
+        # attempts stay within a few pages.
         runs: dict[str, set[str]] = {}
         for b in client.list_blobs(bucket_name, prefix=f"{base_prefix}/"):
             rel = b.name[len(base_prefix) + 1:]
@@ -556,10 +580,27 @@ def _load_recent_features(ticker: str, tf: str,
 
 def _score_and_persist(engine, ticker: str, tf: str,
                         model, feature_cols: list[str], version: str,
-                        features: pd.DataFrame) -> int:
-    """Run model.predict_proba and upsert results. Returns rows written."""
+                        features: pd.DataFrame, contract: dict) -> int:
+    """Run model.predict_proba, apply the served decision rule, upsert.
+    Returns rows written.
+
+    `contract` is the artifact's CONTRACT.json, already verified by
+    _load_model_and_version. Its `class_priors` and `decision_lift_min` are
+    what turn four probabilities into `pred_bucket`: the highest bucket whose
+    probability is at least lift_min times its prior, else TIGHT
+    (mag_pred_train.decide_bucket). Before 2026-09-14 pred_bucket was argmax,
+    which on a 64%-TIGHT label set is TIGHT on ~97% of bars for a calibrated
+    model and 100% for the c49qf artifacts; the column was a constant and
+    every consumer that read it read nothing.
+    """
     if features.empty:
         return 0
+    # Required, not defaulted: a contract without priors cannot produce a
+    # decision the consumer has been told the meaning of, and the reader
+    # already refuses such an artifact before this point. Re-checking here
+    # keeps this function honest when driven directly.
+    class_priors = np.asarray(contract["class_priors"], dtype=float)
+    decision_lift_min = float(contract["decision_lift_min"])
 
     # NaN guard on the RAW frame — drop rows whose ESSENTIAL price inputs
     # (OHLCV) are NaN, BEFORE featurize() fills the rest with 0. A settled bar
@@ -581,7 +622,6 @@ def _score_and_persist(engine, ticker: str, tf: str,
     #     data (QQQ's order blocks: 27/156 populated) lost every bar, while one
     #     with none (IWM: all-NULL order_block) passed — a ticker-dependent
     #     asymmetry that produced QQQ's persistent ZERO-OUTPUT.
-    import numpy as np
     _ESSENTIAL_RAW = ("open", "high", "low", "close", "volume")
     present = {c.lower(): c for c in features.columns}
     missing = [c for c in _ESSENTIAL_RAW if c not in present]
@@ -661,7 +701,8 @@ def _score_and_persist(engine, ticker: str, tf: str,
             f" expected {len(LABEL_CLASSES)} ({LABEL_CLASSES})"
         )
 
-    pred_bucket = proba.argmax(axis=1)
+    from gcp.research.magnitude_engine.mag_pred_train import decide_bucket
+    pred_bucket = decide_bucket(proba, class_priors, decision_lift_min)
     max_proba = proba.max(axis=1)
 
     rows = []
@@ -678,6 +719,7 @@ def _score_and_persist(engine, ticker: str, tf: str,
             "model_version": version,
             "fold_label": None,
             "source": "inference",
+            "decision_rule": DECISION_RULE_LIFT,
         })
 
     df = pd.DataFrame(rows)
@@ -730,21 +772,27 @@ def main() -> int:
     with engine.begin() as conn:
         conn.execute(text(PREDICTIONS_DDL_CREATE))
         conn.execute(text(PREDICTIONS_DDL_INDEX))
+        conn.execute(text(PREDICTIONS_DDL_MIGRATE))
 
     total_written = 0
     failures: list[tuple[str, str, str]] = []
     contract_failures: list[tuple[str, str, str]] = []
     never_promoted: list[tuple[str, str]] = []
+    withdrawn: list[tuple[str, str]] = []
     for ticker, tf in cells:
         try:
             model, feature_cols, version, contract = \
                 _load_model_and_version(ticker, tf)
             log.info("%s:%s — serving contract verified: label_mode=%s "
-                     "thresholds=%s", ticker, tf, contract.get("label_mode"),
-                     contract.get("thresholds"))
+                     "thresholds=%s decision_lift_min=%s class_priors=%s",
+                     ticker, tf, contract.get("label_mode"),
+                     contract.get("thresholds"),
+                     contract.get("decision_lift_min"),
+                     contract.get("class_priors"))
             features = _load_recent_features(ticker, tf, args.lookback_hours)
             n = _score_and_persist(engine, ticker, tf,
-                                    model, feature_cols, version, features)
+                                    model, feature_cols, version, features,
+                                    contract)
             log.info("%s:%s — %d predictions written (model_version=%s)",
                      ticker, tf, n, version)
             total_written += n
@@ -767,14 +815,24 @@ def main() -> int:
             log.warning("%s:%s SKIPPED (awaiting first promotion): %s",
                         ticker, tf, e)
             never_promoted.append((ticker, tf))
+        except ModelWithdrawn as e:
+            # Same disposition as NeverPromoted and for the same reason —
+            # a known, already-diagnosed state that carries no new
+            # information run over run — but tracked separately so the
+            # summary line below doesn't misreport a pulled promotion as
+            # "awaiting first promotion". See ModelWithdrawn.
+            log.warning("%s:%s SKIPPED (model withdrawn, awaiting "
+                        "re-promotion): %s", ticker, tf, e)
+            withdrawn.append((ticker, tf))
         except Exception as e:
             log.exception("%s:%s failed: %s", ticker, tf, e)
             failures.append((ticker, tf, str(e)))
 
     log.info("mag_inference done — %d total predictions, %d cell failure(s), "
-             "%d cell(s) awaiting first promotion%s",
+             "%d cell(s) awaiting first promotion%s, %d cell(s) withdrawn%s",
              total_written, len(failures), len(never_promoted),
-             f" ({never_promoted})" if never_promoted else "")
+             f" ({never_promoted})" if never_promoted else "",
+             len(withdrawn), f" ({withdrawn})" if withdrawn else "")
 
     # Zero-output is itself a silent-failure mode (Codex P1 on PR #597):
     # if every cell quietly produces 0 scorable rows (empty features
@@ -810,12 +868,12 @@ def main() -> int:
     # docs/incidents/2026-06-01-pipeline-failures-audit.md.
     #
     # The threshold is applied against SERVABLE cells (cells minus the
-    # never-promoted skips), not the configured list. Counting a standing
-    # awaiting-first-promotion cell in the denominator would let a fleet
-    # whose every servable cell failed still exit 0 — e.g. 2 skipped +
-    # 2 failed of 6 configured is 2/6 under the old arithmetic but 2/2 of
-    # what could actually run.
-    servable = len(cells) - len(never_promoted)
+    # never-promoted and withdrawn skips), not the configured list. Counting
+    # a standing awaiting-first-promotion or withdrawn cell in the
+    # denominator would let a fleet whose every servable cell failed still
+    # exit 0 — e.g. 2 skipped + 2 failed of 6 configured is 2/6 under the
+    # old arithmetic but 2/2 of what could actually run.
+    servable = len(cells) - len(never_promoted) - len(withdrawn)
     if failures and len(failures) > servable // 2:
         log.error("TOO-MANY-FAILURES — %d/%d servable cells failed: %s",
                   len(failures), servable, failures)

@@ -325,3 +325,17 @@ the priced option skew. So the reframe sharpens the *forecast*, not an *edge ove
 the option* — consistent with the unifying insight above, not a hole in it. It
 still owes gate-7 on the forward-window target. See `EXPERIMENT_REGISTRY.md`
 §2026-07-06 and `MODEL_REGISTRY.md` §C-mf.
+
+---
+
+### 2026-09-14 addendum — the promotion wall was a measurement artefact, not a new one
+The magnitude engine's two promotion criteria (beat the class prior on
+log-loss; keep argmax share within 10 points of the true modal share) were
+mutually unsatisfiable for *any* class weighting or probability transform,
+because a calibrated model on a 64%-TIGHT label set argmax-picks TIGHT on
+~97% of bars by construction. The serving artifacts were constants. Fixed by
+scoring the decision the consumer sees (P(bucket) ≥ 2× prior) everywhere a
+bucket is named. This does not move the gate-7 wall above: the honest tail
+signal at that operating point is an EXPLOSIVE call on ~13% of bars at 8-9%
+precision (base 2.6%). See `EXPERIMENT_REGISTRY.md` E-26 and
+`MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14.

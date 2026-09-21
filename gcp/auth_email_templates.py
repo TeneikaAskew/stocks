@@ -27,11 +27,14 @@ Usage
     python -m gcp.auth_email_templates --apply               # PATCH + verify
     python -m gcp.auth_email_templates --render-dir /tmp/x   # write HTML previews
 
-What Google currently allows on this project (probed 2026-09-06, see
-docs/AUTH_EMAILS.md "What Google blocks"): the sender display name and
-reply-to are accepted; subject and the action URL are refused with
+What Google allows on this project (re-probed 2026-09-15, see
+docs/AUTH_EMAILS.md "Template state"): the sender display name and reply-to
+are accepted; subject and the action URL are refused with
 EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED; an HTML body PATCH returns 200 but is not
-persisted. So --apply runs in phases — sender fields first (always applied), a
+persisted. The branded subjects, bodies and action URL that are live today
+were applied by Firebase engineering through a support case, not by this
+script, and the lock is still in force for the next change. So --apply runs
+in phases — sender fields first (always applied), a
 changed sender local part on its own, then subject/body/action URL — and
 reports exactly which phase landed. Phase two is expected to start passing once the project is allowed
 to customize templates (custom SMTP, or a console-side unlock); nothing in
@@ -159,7 +162,7 @@ def _substitutions(branding: Branding, subject: str, preheader: str) -> dict[str
     if branding.support_email:
         support_line = (
             f' Questions? Write to <a href="mailto:{html.escape(branding.support_email)}"'
-            f' style="color:#0072c6;text-decoration:none;">{html.escape(branding.support_email)}</a>.'
+            f' style="color:#c2410c;text-decoration:none;">{html.escape(branding.support_email)}</a>.'
         )
     return {
         "{{APP_NAME}}": html.escape(branding.app_name),
@@ -495,6 +498,8 @@ def _branding_from_args(args: argparse.Namespace) -> Branding:
         sender_local_part=args.sender_local_part,
         reply_to=args.reply_to,
         support_email=args.support_email,
+        # None keeps Branding's default_factory (the current year).
+        **({"year": args.year} if args.year is not None else {}),
     )
 
 
@@ -508,6 +513,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sender-local-part", default=DEFAULTS.sender_local_part)
     p.add_argument("--reply-to", default=None, help="reply-to address; omitted = keep the live value")
     p.add_argument("--support-email", default=None, help="adds a 'Questions? Write to …' line to the footer")
+    p.add_argument("--year", type=int, default=None,
+                   help="footer copyright year; default is the current year. Pin it to the year the live "
+                        "bodies were applied to diff against them without the year showing as a change.")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--show", action="store_true", help="print the live email config and exit")
     mode.add_argument("--dry-run", action="store_true", help="print the exact phased PATCH requests --apply would send, no write")
@@ -574,8 +582,9 @@ def main(argv: list[str] | None = None) -> int:
     if locked:
         print(
             "\nTemplate content is LOCKED on this project: Google refuses subject / action URL"
-            "\nchanges and drops HTML bodies. Sender name and reply-to were applied. To unlock,"
-            "\nsee docs/AUTH_EMAILS.md 'What Google blocks' (console edit, or custom SMTP).",
+            "\nchanges and drops HTML bodies. Sender name and reply-to were applied. Changing"
+            "\nthe live content needs a Firebase support request — see docs/AUTH_EMAILS.md"
+            "\n'Template state'.",
             file=sys.stderr,
         )
     if problems:
