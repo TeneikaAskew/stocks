@@ -4,7 +4,6 @@ Extracted from lib/signals.py. CALL fires on:
   - Consecutive_Down >= 3 bars
   - RSI in (25, 50) — oversold but not extreme
   - Below VWAP
-  - Near or below EMA fast / EMA mid
   - StochRSI < 30 (oversold)
   - level_break_pdh (Strat v2 — Broke_Prev_Day_High aligned with bullish reversal)
 

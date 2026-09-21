@@ -1,10 +1,10 @@
-"""Movement-statement assembler — PHASE 2 (feature-flagged, NOT user-facing).
+"""Movement-statement assembler.
 
 This module is the SINGLE SOURCE OF TRUTH for the "movement statement": one
 structured object that combines the proven, already-validated pieces into the
-exact same read that the website, Discord, and any other surface will later
-render identically (Phase 3). Nothing here renders to users; everything is
-gated behind a feature flag that defaults OFF.
+exact same read that the website, Discord, and other dashboard surfaces
+render identically (served via platform/api/routers/dashboard.py and
+governed by MOVEMENT_STATEMENT_ENABLED).
 
 What it assembles (and where each piece comes from):
 

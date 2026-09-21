@@ -4,9 +4,11 @@ Extracted from lib/trading_analysis.py:799-836 (the inline signal-gen
 block inside MarketAnalyzer.generate_technical_signals). CALL fires on:
   - Consecutive_Up >= 3 bars (price rising)
   - RSI in (25, 50) — bullish recovery range
-  - StochRSI < 80 — not yet overbought
   - Above VWAP
   - Above EMA9
+  - RVol_Recent_20 > RVOL_RECENT_THRESHOLD (volume confirmation)
+  - ATR_Expansion > ATR_EXPANSION_THRESHOLD (volatility regime gate)
+  - RSI_Thrust_3 > RSI_THRUST_THRESHOLD (directional RSI velocity)
 
 PUT mirrors. This is the OPPOSITE call logic from mean_reversion —
 that's why both strategies fire opposite directions on the same bar
@@ -54,7 +56,7 @@ def _check_call_conditions(
     call_rsi_range: tuple[float, float] = CALL_RSI_RANGE,
 ) -> tuple[int, list[str]]:
     """Phase 0.7.1: dropped `stoch_rsi_not_overbought`.
-    Phase 0.7.2: relaxed `consecutive_up` from 3-of-3 to 3-of-5.
+    Phase 0.7.2: retention of 3-of-3 consecutive bars (3-of-5 relaxation was reverted per config.py).
     Phase 0.7.x: added `rvol_above_recent` (volume confirmation),
     `atr_expansion` (volatility regime gate), and `rsi_thrust`
     (directional RSI velocity).
@@ -64,7 +66,7 @@ def _check_call_conditions(
     — pure free score that didn't discriminate setup quality. Removing
     it tightens the score distribution.
 
-    Seven conditions total; min_conditions=3 still gates fires. Bars
+    Seven conditions total; MIN_CONDITIONS_MOMENTUM=5 gates fires. Bars
     with full alignment reach score=7 (max conviction, room for tiered
     scoring to differentiate).
 
@@ -118,7 +120,7 @@ def _check_put_conditions(
     put_rsi_range: tuple[float, float] = PUT_RSI_RANGE,
 ) -> tuple[int, list[str]]:
     """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score).
-    Phase 0.7.2 mirror: relaxed `consecutive_down` from 3-of-3 to 3-of-5.
+    Phase 0.7.2 mirror: retention of 3-of-3 consecutive bars (3-of-5 relaxation was reverted).
     Phase 0.7.x mirror: added `rvol_above_recent` and `atr_expansion`
     (direction-agnostic confirmers) and `rsi_thrust` (directional —
     fires on negative RSI delta, opposite of CALL's positive-delta gate).
