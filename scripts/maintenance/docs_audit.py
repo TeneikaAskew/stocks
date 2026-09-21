@@ -971,7 +971,12 @@ def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list
     region drift against a code sample. Every other check here already skips
     fences for the same reason.
     """
-    fenced = fenced_lines(lines)
+    # Indented code as well as fenced. A four-space example of the pair was
+    # accepted as the real generated region, so a Class A document whose
+    # renderer-owned block had gone missing had its own sample suppress the
+    # unmatched-region finding and get classified as generated content. The
+    # `mark:` and link scanners already exclude both constructs.
+    fenced = fenced_lines(lines) | indented_code_lines(lines)
     pairs: dict[str, tuple[int, int]] = {}
     unbalanced: list[str] = []
     open_at: dict[str, int] = {}
@@ -1949,7 +1954,13 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             continue
         if not has_blocking_cue(line):
             continue
-        hidden = commented.get(n - 1, [])
+        # Commented-out spans AND inline code. Inline code renders literally,
+        # never as a live citation, so a document explaining what a blocker row
+        # looks like -- `` `.../issues/123 is still open` `` -- drew a gating P1
+        # once that sample issue closed. The fenced and indented forms of the
+        # same example were already excluded; this is the third, and it covers
+        # the shorthand pass and the URL pass alike because both read `hidden`.
+        hidden = commented.get(n - 1, []) + code_spans(line)
         # URL spans, so a shorthand scan does not re-read the `/issues/940`
         # inside one it has already reported.
         url_spans = [(mm.start(), mm.end()) for mm in _URL_RE.finditer(line)]
@@ -2141,8 +2152,18 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             if not bare:
                 return
             decoded = urllib.parse.unquote(bare)
-            resolved = (decoded.lstrip("/") if decoded.startswith("/")
-                        else posixpath.join(str(base), decoded))
+            if decoded.startswith("/"):
+                # Site-absolute. GitHub resolves it from the HOST root, not the
+                # repository root, so stripping the slash and looking it up in
+                # `tracked` answered a different question than the one asked:
+                # `[g](/docs/guide.md)` passed because `docs/guide.md` exists
+                # although the link navigates to github.com/docs/guide.md, and
+                # a real host route like `/settings/profile` was called dead.
+                # Neither verdict is available without knowing the host, so
+                # this audit declines to give one. Zero such destinations exist
+                # in this tree, measured; the change is reach, not a catch.
+                return
+            resolved = posixpath.join(str(base), decoded)
             norm = posixpath.normpath(resolved)
             if norm.startswith(".."):
                 # Climbs out of the repository: cross-repo prose, which
@@ -3011,7 +3032,17 @@ def main(argv: list[str] | None = None) -> int:
     if not reg_path.exists():
         print(f"error: {REGISTRY} not found; every doc would be unclassified", file=sys.stderr)
         return 2
-    registry = load_registry(reg_path.read_text(encoding="utf-8"))
+    try:
+        registry_text = reg_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # Unreadable, a directory, or not UTF-8. Left unguarded these walk past
+        # the AuditError handler, so the CLI printed a traceback and exited 1 --
+        # the status it documents for FINDINGS, which makes a run that could not
+        # happen indistinguishable from detected drift.
+        raise AuditError(
+            f"{REGISTRY} could not be read: {exc}; without it every document is "
+            "unclassified, so the audit did not run") from exc
+    registry = load_registry(registry_text)
 
     tracked = set(git_paths(["git", "ls-tree", "-r", base_ref, "--name-only"]))
     TOP_LEVEL_DIRS.update(p.split("/", 1)[0] for p in tracked if "/" in p)

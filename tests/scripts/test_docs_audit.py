@@ -4261,3 +4261,62 @@ def test_a_second_prose_owner_is_reported_once():
     assert prompt == "a.md"
     # The same owner named twice is not a contradiction.
     assert m.owned_lines("# T\n\nprose\n", ["prose:a.md", "prose:a.md"])[1] == []
+
+
+def test_an_inventory_pair_in_indented_code_is_not_a_region():
+    """A four-space example of the pair was accepted as the real generated
+    region, so a Class A document whose renderer-owned block had gone missing
+    had its own sample suppress the unmatched-region finding. `mark:` and the
+    link scanners already excluded both code constructs."""
+    text = ("# T\n\nThe renderer writes:\n\n"
+            "    <!-- inventory:routes:start -->\n    rows\n"
+            "    <!-- inventory:routes:end -->\n")
+    pairs, unbalanced = m.inventory_blocks(m.doc_lines(text))
+    assert pairs == {} and unbalanced == [], (pairs, unbalanced)
+    real = ("# T\n\n<!-- inventory:routes:start -->\nrows\n"
+            "<!-- inventory:routes:end -->\n")
+    assert m.inventory_blocks(m.doc_lines(real))[0] == {"routes": (3, 5)}
+
+
+def test_a_blocker_citation_in_inline_code_is_not_a_citation():
+    """Inline code renders literally, never as a live citation, so a document
+    explaining what a blocker row looks like drew a gating P1 once its sample
+    issue closed. Both the URL pass and the shorthand pass read `hidden`."""
+    states = {"stocks": {123: {"state": "closed", "reason": "completed"}}}
+    url = f"See `{U.format('stocks', 123)} is still open` as an example."
+    assert m.check_closed_issues("d.md", f"# T\n\n{url}\n", states) == []
+    assert m.check_closed_issues(
+        "d.md", "# T\n\nStill blocked by `#123` in the example.\n", states) == []
+    live = f"Blocked by {U.format('stocks', 123)}, still open."
+    assert len(m.check_closed_issues("d.md", f"# T\n\n{live}\n", states)) == 1
+
+
+def test_a_site_absolute_link_is_not_a_repository_path():
+    """GitHub resolves a leading `/` from the HOST root. Stripping it and
+    looking the result up in `tracked` answered a different question:
+    `/docs/guide.md` passed because `docs/guide.md` exists although the link
+    navigates to github.com/docs/guide.md, and `/settings/profile` was called
+    dead. Neither verdict is available without knowing the host."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    assert m.check_dead_links(
+        "docs/d.md", "# T\n\n[g](/docs/guide.md)\n", {"docs/d.md"}) == []
+    assert m.check_dead_links(
+        "docs/d.md", "# T\n\n[s](/settings/profile)\n", {"docs/d.md"}) == []
+    # A repo-relative link is still checked.
+    assert [f["detail"] for f in m.check_dead_links(
+        "docs/d.md", "# T\n\n[g](gone.md)\n", {"docs/d.md"})] == [
+            "relative link -> gone.md"]
+
+
+def test_an_unreadable_registry_is_exit_two_not_a_traceback(audit_repo):
+    """Unguarded, an OSError or UnicodeDecodeError walks past the AuditError
+    handler: the CLI printed a traceback and exited 1, the status it documents
+    for FINDINGS, making a run that could not happen indistinguishable from
+    detected drift."""
+    # Committed first, so the base ref resolves and the registry read is the
+    # only thing that can fail.
+    _commit(audit_repo, "tree")
+    (audit_repo / "docs" / "DOC_REGISTRY.md").write_bytes(b"\xff\xfe not utf-8 \xff")
+    with pytest.raises(m.AuditError, match="could not be read"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json")])
