@@ -3938,3 +3938,197 @@ def test_a_completed_success_beneath_an_in_flight_run_is_still_clean():
     rows = [("", "2026-09-18T10:00:00Z"), ("success", "2026-09-17T10:00:00Z")]
     assert m.last_delivering_conclusion(rows) == ("success", "2026-09-17T10:00:00Z")
     assert m.last_delivering_conclusion([("", "x")]) is None
+
+
+# ── round 22 ────────────────────────────────────────────────────────────────
+
+def test_stamping_refuses_a_symlinked_document(tmp_path, monkeypatch):
+    """The write follows the link, so `--stamp` edited the TARGET rather than a
+    repository document -- and a symlink committed on a branch can point
+    anywhere writable. `is_file()` follows symlinks too, so the preflight did
+    not stop it. Codex filed this as a P1 on the Node twin (solyra#69) and the
+    same hazard was live here."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Outside\n\nuntouched\n")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "link.md").symlink_to(outside)
+    with pytest.raises(m.AuditError, match="symlink"):
+        m.write_stamps([("docs/link.md", "# X\n")])
+    assert outside.read_text() == "# Outside\n\nuntouched\n"
+
+
+def test_stamping_still_writes_an_ordinary_document(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "d.md").write_text("# D\n")
+    m.write_stamps([("docs/d.md", "# D\n\nmarker\n")])
+    assert (tmp_path / "docs" / "d.md").read_text() == "# D\n\nmarker\n"
+
+
+def test_not_yet_resolved_is_not_settled():
+    """`is not yet resolved and still blocking` says the issue is live, and the
+    positive substring `resolved` read as a completion cue -- so a closed
+    blocker described this way produced no finding at all."""
+    assert not m.is_settled("is not yet resolved and still blocking")
+    assert not m.is_settled("has not yet merged")
+    assert m.is_settled("resolved in #12")
+
+
+def test_indented_code_inside_a_list_item_is_still_code():
+    """The previous rule excluded every run whose preceding content was a list
+    marker, which is right for a wrapped bullet and wrong for a code block
+    nested IN the item: after `- item` and a blank line, four spaces past the
+    item's content indent is CommonMark indented code."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    lines = ["- item", "", "      [demo](missing.md)"]
+    assert sorted(m.indented_code_lines(lines)) == [2], lines
+    text = "# T\n\n- item\n\n      [demo](missing.md)\n"
+    assert m.check_dead_links("docs/d.md", text, {"docs/d.md"}) == []
+    # And the floor has to MOVE with the item, not sit at 4: four spaces is
+    # short of this item's content column plus four, so it is a second
+    # paragraph OF the item and still prose. A fixed floor of 4 calls it code
+    # and loses the link -- which is why the assertion above cannot stand
+    # alone, it passes under either floor.
+    assert m.indented_code_lines(["- item", "", "    [demo](missing.md)"]) == set()
+    lazy = "# T\n\n- item\n\n    [demo](missing.md)\n"
+    assert [f["detail"] for f in m.check_dead_links("docs/d.md", lazy, {"docs/d.md"})] \
+        == ["relative link -> missing.md"]
+
+
+def test_a_wrapped_bullet_is_still_prose():
+    """The case the exclusion existed for: a continuation indented to the
+    item's content column is the bullet's own text, not a code block."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    text = "# T\n\n- item\n  [demo](missing.md)\n"
+    out = m.check_dead_links("docs/d.md", text, {"docs/d.md"})
+    assert [f["detail"] for f in out] == ["relative link -> missing.md"], out
+
+
+def test_a_single_hyphen_underlines_a_setext_heading():
+    """CommonMark allows one `-` when nonblank heading text precedes it, and
+    the preceding-line check is what tells it from a list marker."""
+    assert m.heading_anchors("# T\n\nTitle\n-\n") == {"t", "title"}
+    # A `-` after a blank line is a list bullet, not an underline.
+    assert m.heading_anchors("# T\n\n-\n") == {"t"}
+
+
+def test_an_indented_atx_h1_is_the_document_heading():
+    """heading_anchors learned the three-space prefix; H1_RE did not, so the
+    audit reported a missing marker while --stamp answered `skipped-no-h1` and
+    could not repair its own finding."""
+    assert m.h1_index(["  # Title", "body"]) == 0
+    assert m.h1_index(["    # Code", "body"]) is None
+
+
+def test_an_angle_bracketed_reference_definition_keeps_its_spaces():
+    """`[g]: <docs/my guide.md>` is the form a destination with a space takes,
+    and `\\S+` stopped at the first space and validated `docs/my`."""
+    mo = m.REF_DEF_RE.match("[g]: <docs/my guide.md>")
+    assert mo and mo.group("target") == "<docs/my guide.md>", mo
+    plain = m.REF_DEF_RE.match("[g]: docs/guide.md")
+    assert plain and plain.group("target") == "docs/guide.md"
+
+
+def test_a_shorthand_blocker_reference_is_resolved():
+    """`#940` is how docs/product/16-CONSOLIDATION-AUDIT.md cites a blocker,
+    and a URL-only pattern never saw it -- so closing the issue produced no
+    finding. Only on a line that already carries a blocking cue, because a
+    bare `#940` in ordinary prose is not a citation."""
+    states = {"stocks": {940: {"state": "closed", "reason": "completed"}}}
+    out = m.check_closed_issues("d.md", "# T\n\nStill blocked by #940.\n", states)
+    assert len(out) == 1 and out[0]["ref"] == "stocks#940", out
+    assert m.check_closed_issues("d.md", "# T\n\nsection #940 of the spec\n",
+                                 states) == []
+
+
+def test_one_citation_written_both_ways_is_reported_once():
+    """`[#861](.../issues/861)` is the ordinary Markdown shape and carries the
+    shorthand AND the URL. Read independently the two passes reported one
+    citation twice, which double-counted every blocker row in
+    docs/product/12-PR-ISSUE-TRACEABILITY.md. The URL-span guard could not see
+    it: the `#861` in the link LABEL sits outside the URL it hides."""
+    states = {"stocks": {861: {"state": "closed", "reason": "completed"}}}
+    line = f"| Blocking issues | [#861]({U.format('stocks', 861)}) |"
+    out = m.check_closed_issues("d.md", f"# T\n\n{line}\n", states)
+    assert len(out) == 1 and out[0]["ref"] == "stocks#861", out
+    # Two DIFFERENT numbers on one line stay two findings.
+    states["stocks"][940] = {"state": "closed", "reason": "completed"}
+    both = m.check_closed_issues(
+        "d.md", f"# T\n\nBlocked by #940 and [#861]({U.format('stocks', 861)}).\n",
+        states)
+    assert sorted(f["ref"] for f in both) == ["stocks#861", "stocks#940"], both
+
+
+def test_a_document_whose_name_is_not_ascii_is_audited(audit_repo, capsys):
+    """git C-QUOTES a non-ASCII path unless the read passes `-z`, so
+    `docs/café.md` came back as the literal `"docs/caf\\303\\251.md"`. That name
+    is in no inventory, resolves no link, and the document itself was never
+    opened -- it simply vanished from the audit. Through main(), because the
+    quoting happens in the git reads main() does."""
+    (audit_repo / "docs" / "café.md").write_text(
+        "# Café\n\n<!-- docs-audit: reviewed 2026-09-18 -->\n\n[x](missing.md)\n",
+        encoding="utf-8")
+    _audit(audit_repo)
+    report = json.loads(capsys.readouterr().out)
+    docs = {f["doc"] for f in report["findings"]}
+    assert "docs/café.md" in docs, sorted(docs)
+
+
+def test_a_shorthand_is_held_to_its_own_clause_not_the_line():
+    """A bare `#N` is weaker evidence than a URL, so it carries the stricter
+    cue rule the URL pass reserves for PRs. Measured on this tree, the
+    line-level fallback attributed one row's `open` to every number in a long
+    sentence: `ten more canonical issues closed ... (#820, #833, ...)` was
+    reported as live work, which is the opposite of what the line says."""
+    states = {"stocks": {820: {"state": "closed", "reason": "completed"}}}
+    # The citation's own clause carries NO cue either way, so only the absent
+    # line-level fallback can decide it. A clause that says `closed` would be
+    # caught by the settled-cue test instead and prove nothing about the
+    # fallback.
+    line = "Outstanding work remains; the #820 primitive shipped in September."
+    i = line.index("#820")
+    assert m.cites_live_work(line, i, i + 4) is True, "the fallback must fire here"
+    assert m.check_closed_issues("d.md", f"# T\n\n{line}\n", states) == []
+    # The cue in the citation's OWN clause still reports.
+    assert len(m.check_closed_issues(
+        "d.md", "# T\n\nThe shared #820 primitive is outstanding.\n", states)) == 1
+
+
+def test_a_heading_anchor_is_not_a_shorthand_citation():
+    """`\\b` holds between the `6` and the `-` of
+    `(#16-outstanding-work--known-gaps)`, so a table of contents read as a
+    citation of stocks#16 -- on a line whose own word `Outstanding` supplied
+    the cue."""
+    states = {"stocks": {16: {"state": "closed", "reason": "completed"}}}
+    toc = "16. [Outstanding Work & Known Gaps](#16-outstanding-work--known-gaps)"
+    assert m.check_closed_issues("d.md", f"# T\n\n{toc}\n", states) == []
+
+
+def test_a_number_from_another_numbering_domain_is_not_an_issue():
+    """`Plan #4` and `plans #5 and #10` are plan numbering that happens to
+    share the spelling. The second number is reached by coordination, so
+    testing only the text immediately before each `#` skipped half a list and
+    reported the other half."""
+    states = {"stocks": {n: {"state": "closed", "reason": "completed"}
+                         for n in (4, 5, 10)}}
+    assert m.check_closed_issues(
+        "d.md", "# T\n\nPlan #4 is still outstanding.\n", states) == []
+    assert m.check_closed_issues(
+        "d.md", "# T\n\nOutstanding: closes the gap in plans #5 and #10.\n",
+        states) == []
+
+
+def test_a_parenthetical_is_a_clause_boundary_for_a_shorthand():
+    """`In progress -- the provenance half is done (#1095: every API-served
+    table now labels replay rows)` gave the shorthand the row's `In progress`.
+    The innermost parenthetical containing the citation is its real clause."""
+    states = {"stocks": {1095: {"state": "closed", "reason": "completed"}}}
+    line = ("| In progress -- the **provenance half is done** "
+            "(#1095: every API-served table now labels replay rows) |")
+    assert m.check_closed_issues("d.md", f"# T\n\n{line}\n", states) == []
+    # "a (b (c) d) e" -- the inner pair is 5..7, and it is the one returned
+    # even though the outer pair also contains the span.
+    assert m.enclosing_parenthetical("a (b (c) d) e", 6, 7) == (6, 7)
+    assert m.enclosing_parenthetical("a (b c d) e", 5, 6) == (3, 8)
+    assert m.enclosing_parenthetical("no parens here", 3, 6) is None

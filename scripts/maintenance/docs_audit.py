@@ -134,7 +134,11 @@ def legacy_tail_is_bare(rest: str) -> bool:
     """
     return bool(_BARE_TAIL_RE.match(rest or ""))
 
-H1_RE = re.compile(r"^#\s+\S")
+# Up to three leading spaces, as CommonMark renders and `heading_anchors`
+# already admitted. At column zero only, `  # Title` gave no H1, so the audit
+# reported a missing marker while --stamp answered `skipped-no-h1` and could
+# not repair its own finding. Four spaces is indented code, so the bound holds.
+H1_RE = re.compile(r"^ {0,3}#\s+\S")
 _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
 
 # A reference only counts as a staleness finding when the surrounding line
@@ -152,7 +156,14 @@ BLOCKING_CUE_RE = re.compile(
 # Text immediately before a cue that inverts it. `not started` is itself a cue,
 # so what precedes THAT phrase is what is tested -- its own leading `not` is
 # never read as negating the phrase it belongs to.
-CUE_NEGATOR_RE = re.compile(r"\b(?:not|non|never|no longer|without|un)[\s-]*$", re.I)
+# An adverb may sit between the negator and the cue: `is not yet resolved` and
+# `has not yet merged` both say the citation is LIVE, and requiring the negator
+# flush against the cue read the positive substring as a completion cue --
+# suppressing the finding on a closed blocker whose own clause says otherwise.
+# Bounded to one intervening word so a negation cannot reach across a clause it
+# does not govern.
+CUE_NEGATOR_RE = re.compile(
+    r"\b(?:not|non|never|no longer|without|un)[\s-]*(?:yet|still|quite)?[\s-]*$", re.I)
 
 
 def has_blocking_cue(line: str) -> bool:
@@ -208,6 +219,30 @@ ISSUE_URL_RE = re.compile(
     r"github\.com/" + OWNER + r"/(?P<repo>solyra|stocks)/(?P<kind>issues|pull)/(?P<num>\d+)",
     re.I,
 )
+# The shorthand a document uses when it is talking about its OWN repository:
+# docs/product/16-CONSOLIDATION-AUDIT.md calls `#940` outstanding and blocking
+# without linking it, and a URL-only pattern never saw it -- so closing the
+# issue produced no finding. Read only on a line that already carries a
+# blocking cue, because `#940` in ordinary prose (a section number, a column)
+# is not a citation; the cue is what makes it one. Not preceded by a word
+# character, so `abc#940` and a URL's own `#fragment` are left alone.
+# `\b` is not the right closing boundary: it holds between the `6` and the `-`
+# of the heading anchor `(#16-outstanding-work--known-gaps)`, so a table of
+# contents read as a citation of stocks#16. An issue number is followed by
+# neither a word character nor a hyphen.
+SHORTHAND_ISSUE_RE = re.compile(r"(?<![\w#/-])#(?P<num>\d{1,6})(?![\w-])")
+# A `#N` that belongs to some OTHER numbering. Measured on this tree, a bare
+# scan reported `Plan #4`, `plans #5 and #10` and `PRs #81` as issue citations;
+# they are plan and PR numbering that happens to share the spelling. PR words
+# are here too because a shorthand cannot tell an issue from a PR, and the
+# URL pass already holds PRs to a stricter cue rule.
+SHORTHAND_OTHER_DOMAIN_RE = re.compile(
+    r"\b(?:plans?|prs?|pull|pulls|sections?|phases?|steps?|items?|figures?|"
+    r"tables?|chapters?|slides?|rules?|rows?|questions?|parts?|versions?|"
+    r"revs?|chapters?)\s+(?:and\s+)?$", re.I)
+# What may sit between two `#N`s that name the same thing: `#5 and #10`,
+# `#5, #10`, `#818/#816`.
+_COORDINATOR_RE = re.compile(r"[\s,;/&]*(?:and|or)?[\s,;/&]*")
 # The fragment is CAPTURED, not discarded. Dropping it meant a link to a real
 # file but a heading that does not exist always passed -- 35 such links in this
 # tree, including all 16 feature links in docs/product/02-FEATURE-CATALOG.md,
@@ -231,7 +266,13 @@ MD_LINK_RE = re.compile(
     r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)""")
 # Reference-style Markdown, both halves. The definition's label may not open
 # with `^`: that is a footnote, which defines a note rather than a destination.
-REF_DEF_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:\s+(?P<target>\S+)")
+# The destination may be angle-bracketed, which is how one containing a space
+# is written: `[g]: <docs/my guide.md>`. `\S+` stopped at the first space and
+# validated `docs/my`, so a tracked file was reported dead. The brackets are
+# part of the capture and `strip("<>")` at the call site removes them, as it
+# already did for the bare form.
+REF_DEF_RE = re.compile(
+    r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:\s+(?P<target><[^>]*>|\S+)")
 # A USE (`[text][label]`) is deliberately NOT checked. Measured over the 322
 # markdown documents in this tree: 1 reference definition, 204 bracket pairs.
 # Almost every pair is an issue-title tag -- `[P0][Replay]`, `[audit] R2 --` --
@@ -422,6 +463,29 @@ def run(cmd: list[str], *, cwd: pathlib.Path | None = None,
     if proc.returncode != 0 and proc.returncode not in ok_exit_codes:
         raise AuditError(f"{' '.join(cmd[:4])}... exited {proc.returncode}: {proc.stderr.strip()[:400]}")
     return proc.stdout
+
+
+def git_paths(cmd: list[str]) -> list[str]:
+    r"""Paths from a `-z` git read, NUL-split.
+
+    Without `-z`, git C-QUOTES any path outside the configured charset and
+    wraps it in double quotes: `docs/caf\u00e9.md` comes back as the eleven
+    literal characters `"docs/caf\303\251.md"`. Newline-separated output then
+    splits fine and every downstream comparison misses -- the document is
+    absent from the inventory, its links resolve against a name nothing holds,
+    and a link TO it reads as dead. `-z` disables the quoting entirely and
+    terminates each record with NUL, which no path may contain, so this is
+    also the only split that survives a path with a newline in it.
+
+    Measured on this tree: `git ls-tree -r HEAD --name-only` returns
+    `"docs/caf\303\251.md"`; the same read with `-z` returns `docs/caf\u00e9.md`.
+    """
+    # Inserted after the SUBCOMMAND, not appended: `git ls-files ... -- "*.md"`
+    # ends in a pathspec, and a trailing `-z` there is read as another pathspec
+    # rather than as a flag. That silently left the output newline-separated,
+    # so the single `.split("\0")` returned one string with the newline still
+    # on it and every path carried a trailing blank line.
+    return [p for p in run(cmd[:2] + ["-z"] + cmd[2:]).split("\0") if p]
 
 
 # ── the base ref ────────────────────────────────────────────────────────────
@@ -1231,32 +1295,36 @@ def indented_code_lines(lines: list[str]) -> set[int]:
     written that way was inspected as live prose, so `[demo](missing.md)` or a
     backticked path in it could fail --check over content that renders as code.
 
-    Deliberately narrow. Indented code cannot interrupt a paragraph, and inside
-    a list item the indentation is the LIST's -- so a run starts only after a
-    blank line whose own preceding content is neither a list item nor a table
-    row. Anything less careful masks list continuations and turns real findings
-    invisible, which is the worse direction. Ported from the Node twin
-    (solyra#69).
+    Indented code cannot interrupt a paragraph, so a run starts only after a
+    blank line. Inside a list item the indentation is partly the LIST's: the
+    item opens a container whose content column is where the text after the
+    bullet begins, and a code block within it starts four columns past THAT.
+    Excluding every run after a list marker -- the first version of this, and
+    right only for a wrapped bullet -- turned a code block nested in an item
+    back into live prose. Ported from the Node twin (solyra#69) and corrected
+    here first.
     """
     out: set[int] = set()
-    last_content: str | None = None
     blank_seen = True
+    floor = 4
     in_code = False
     for i, line in enumerate(lines):
         if not line.strip():
             blank_seen = True
             continue
-        indented = bool(re.match(r"^ {4,}\S", line) or line.startswith("\t"))
-        if in_code and indented:
+        indent = 4 if line.startswith("\t") else len(line) - len(line.lstrip(" "))
+        if in_code and indent >= floor:
             out.add(i)
             continue
         in_code = False
-        if indented and blank_seen and not (
-                last_content is not None
-                and re.match(r"^\s*([-*+]|\d+[.)]|\|)", last_content)):
+        if indent >= floor and blank_seen:
             in_code = True
             out.add(i)
-        last_content = line
+        else:
+            # A table row is not a container, so it leaves the floor alone; a
+            # list marker sets it to its own content column plus four.
+            bullet = re.match(r"^(\s*(?:[-*+]|\d+[.)])\s+)", line)
+            floor = len(bullet.group(1)) + 4 if bullet else 4
         blank_seen = False
     return out
 
@@ -1373,7 +1441,11 @@ def find_marker(lines: list[str]) -> tuple[int, dict] | None:
 
 # `-` needs two or more: a single `-` under text is a list bullet's sibling far
 # more often than a heading, and CommonMark's own `---` case is covered.
-_SETEXT_UNDERLINE_RE = re.compile(r" {0,3}(?P<rule>=+|-{2,})\s*")
+# One `-` is enough: CommonMark accepts it as a level-two underline, and the
+# preceding-line check below is what tells it from a standalone list marker --
+# a bullet has no heading text above it. Requiring two omitted a valid heading
+# from the anchor index and made a working link to it a gating finding.
+_SETEXT_UNDERLINE_RE = re.compile(r" {0,3}(?P<rule>=+|-+)\s*")
 
 
 def is_setext_underline(lines: list[str], i: int,
@@ -1511,6 +1583,50 @@ def write_stamp(doc: str, new: str) -> None:
     nl = existing_newline(path)
     with path.open("w", encoding="utf-8", newline="") as fh:
         fh.write(new if nl == "\n" else new.replace("\n", nl))
+
+
+def write_stamps(writes: list[tuple[str, str]]) -> None:
+    """Write every stamped document, or refuse before writing any.
+
+    A tracked `.md` SYMLINK is not a document this command may write: the open
+    follows it, so `--stamp` edited the link's TARGET rather than a repository
+    file -- and a symlink committed on a branch can point anywhere writable,
+    inside the checkout or outside it. `is_file()` follows symlinks too, so the
+    writability preflight did not stop it. Codex filed this as a P1 on the Node
+    twin (solyra#69); the same hazard was live here.
+
+    Everything is checked before anything is written. A deleted or read-only
+    document is the common case, and finding it on file 60 of 93 leaves the
+    tree half stamped with no record of where it stopped. This narrows that
+    window; it does not close it -- a full disk still fails mid-loop, and
+    os.access answers for the calling uid, which under root calls a mode-444
+    file writable. So the loop reports what it HAD written rather than
+    pretending the operation was atomic.
+    """
+    links = sorted(doc for doc, _ in writes if (REPO / doc).is_symlink())
+    if links:
+        raise AuditError(
+            f"--stamp refuses {', '.join(links)}: a tracked symlink, so the write "
+            "would land on its target rather than a document in this repository. "
+            "Nothing was written.")
+    unwritable = [doc for doc, _ in writes
+                  if not (REPO / doc).is_file() or not os.access(REPO / doc, os.W_OK)]
+    if unwritable:
+        raise AuditError(
+            f"--stamp cannot write {', '.join(sorted(unwritable))}: missing or "
+            "not writable. Nothing was written.")
+    done: list[str] = []
+    for doc, new in writes:
+        try:
+            write_stamp(doc, new)
+        except OSError as exc:
+            # Exit 2, not the traceback-and-exit-1 that means "findings".
+            raise AuditError(
+                f"--stamp failed writing {doc}: {exc}. {len(done)} of "
+                f"{len(writes)} documents were already stamped"
+                + (f" ({', '.join(done)})" if done else "")
+                + "; the tree is partially stamped.") from exc
+        done.append(doc)
 
 
 def stamp(text: str, date: str, depth: str, sha: str,
@@ -1717,6 +1833,28 @@ def cites_live_work(line: str, start: int, end: int) -> bool:
     return has_blocking_cue(line)
 
 
+def enclosing_parenthetical(line: str, start: int, end: int) -> tuple[int, int] | None:
+    """The innermost `(...)` containing this span, if any.
+
+    A parenthetical is a clause boundary the sentence-level split does not
+    see. `In progress -- the provenance half is done (#820, #1095: every
+    API-served table now labels ...)` gave the shorthand a clause carrying the
+    row's `In progress`, so a closed issue named INSIDE a parenthetical that
+    says the work is done was reported as cited live. Scanning left to right
+    and returning on the first pair that closes around the span yields the
+    innermost one, because an inner pair always closes first.
+    """
+    opens: list[int] = []
+    for i, ch in enumerate(line):
+        if ch == "(":
+            opens.append(i)
+        elif ch == ")" and opens:
+            o = opens.pop()
+            if o < start and i >= end:
+                return o + 1, i
+    return None
+
+
 def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[dict]:
     out = []
     lines = text.split("\n")
@@ -1736,6 +1874,59 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         if not has_blocking_cue(line):
             continue
         hidden = commented.get(n - 1, [])
+        # URL spans, so a shorthand scan does not re-read the `/issues/940`
+        # inside one it has already reported.
+        url_spans = [(mm.start(), mm.end()) for mm in _URL_RE.finditer(line)]
+        # And the numbers the URL pass below will name, so one citation
+        # written in the ordinary Markdown shape -- `[#861](.../issues/861)`,
+        # which carries BOTH spellings -- is reported once rather than twice.
+        # The span guard alone cannot see this: it hides the digits inside the
+        # URL, not the `#861` in the link label sitting outside it.
+        url_nums = {int(mm.group("num")) for mm in ISSUE_URL_RE.finditer(line)}
+        skipped_end: int | None = None
+        for m in SHORTHAND_ISSUE_RE.finditer(line):
+            if any(lo <= m.start() < hi for lo, hi in hidden + url_spans):
+                continue
+            # A shorthand is weaker evidence than a URL, so it carries the
+            # stricter test the URL pass reserves for PRs: the cue must be in
+            # the citation's OWN clause, with no line-level fallback. Without
+            # it the fallback attributed one row's cue to every number in a
+            # long sentence -- `ten more canonical issues closed ... (#820,
+            # #825, ...)` was reported as live work off an `open` elsewhere in
+            # the same line, which is the opposite of what it says.
+            paren = enclosing_parenthetical(line, m.start(), m.end())
+            clause = (line[paren[0]:paren[1]] if paren
+                      else citation_clause(line, m.start(), m.end()))
+            # The same two cue families cites_live_work reads, against the
+            # clause chosen above -- and with NO line-level fallback, which is
+            # the stricter half of the rule.
+            if SETTLED_CUE_RE.search(clause) and is_settled(clause):
+                continue
+            if not BLOCKING_CUE_RE.search(clause) or not has_blocking_cue(clause):
+                continue
+            # `plans #5 and #10` names the domain once and then coordinates.
+            # Testing only the text immediately before each `#` saw `plans`
+            # for #5 and `and` for #10, so half a list was skipped and half
+            # reported. A coordinating separator inherits the decision.
+            if SHORTHAND_OTHER_DOMAIN_RE.search(line[:m.start()]) or (
+                    skipped_end is not None
+                    and _COORDINATOR_RE.fullmatch(line[skipped_end:m.start()])):
+                skipped_end = m.end()
+                continue
+            num = int(m.group("num"))
+            if num in url_nums:
+                continue
+            st = states.get(THIS_REPO, {}).get(num)
+            if st is None or st["state"] != "closed":
+                # An unresolvable SHORTHAND is not reported: unlike a URL, it
+                # may be a section number the cue happens to share a line with.
+                continue
+            reason = st.get("reason") or "completed"
+            out.append({"check": "closed-issue", "doc": doc, "line": n,
+                        "detail": f"{THIS_REPO}#{num} is CLOSED ({reason}) but cited "
+                                  "as live work",
+                        "severity": "P1" if reason != "not_planned" else "P2",
+                        "ref": f"{THIS_REPO}#{num}", "reason": reason})
         for m in ISSUE_URL_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in hidden):
                 continue
@@ -2746,7 +2937,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     registry = load_registry(reg_path.read_text(encoding="utf-8"))
 
-    tracked = set(run(["git", "ls-tree", "-r", base_ref, "--name-only"]).strip().split("\n"))
+    tracked = set(git_paths(["git", "ls-tree", "-r", base_ref, "--name-only"]))
     TOP_LEVEL_DIRS.update(p.split("/", 1)[0] for p in tracked if "/" in p)
     # Root names as the BASE REF holds them, captured before the staged and
     # deleted adjustments below. That is what makes a bare citation of a root
@@ -2770,15 +2961,15 @@ def main(argv: list[str] | None = None) -> int:
     # cleanly before it is committed, the one moment the audit is most useful.
     # An UNTRACKED file is different: it may never be committed, and letting it
     # satisfy a link is the bug is_tracked_dir was written to close.
-    staged = {p for p in run(["git", "diff", "--cached", "--name-only",
-                              "--diff-filter=A"]).strip().split("\n") if p}
+    staged = set(git_paths(["git", "diff", "--cached", "--name-only",
+                            "--diff-filter=A"]))
     # And a DELETION, staged or not, leaves it. Keeping a deleted path in
     # `tracked` let a surviving document link to an asset that is gone and
     # pass, let a deleted declared code path satisfy the registry check, and --
     # when the deleted path was itself a document -- aborted the whole audit on
     # the working-tree read instead.
-    deleted = {p for p in run(["git", "diff", "--name-only", "--diff-filter=D",
-                               "HEAD"]).strip().split("\n") if p}
+    deleted = set(git_paths(["git", "diff", "--name-only", "--diff-filter=D",
+                             "HEAD"]))
     # A pure RENAME is neither, and `--diff-filter` cannot express it: `git mv
     # docs/old.md docs/new.md` produces one `R100` line that both queries above
     # skip. The old path therefore stayed in the inventory while the new one
@@ -2787,18 +2978,26 @@ def main(argv: list[str] | None = None) -> int:
     # staged-addition support exists for. Both sides are consumed here: the
     # source joins the deletions, the destination joins the additions.
     renamed_from: set[str] = set()
-    for line in run(["git", "diff", "--cached", "--name-status",
-                     "--diff-filter=R"]).strip().split("\n"):
-        parts = line.split("\t")
-        if len(parts) == 3 and parts[0].startswith("R"):
-            renamed_from.add(parts[1])
-            staged.add(parts[2])
+    # `--name-status -z` does NOT put a rename on one tab-separated line: it
+    # emits three NUL-terminated records, `R100`, then the source, then the
+    # destination. Walked as a token stream rather than split per line.
+    toks = git_paths(["git", "diff", "--cached", "--name-status",
+                      "--diff-filter=R"])
+    i = 0
+    while i < len(toks):
+        status = toks[i]
+        if status[:1] in ("R", "C") and i + 2 < len(toks):
+            renamed_from.add(toks[i + 1])
+            staged.add(toks[i + 2])
+            i += 3
+        else:
+            i += 2
     deleted |= renamed_from
     if staged or deleted:
         tracked = (tracked | staged) - deleted
         docs = document_set(tracked, registry)
-    untracked = [p for p in run(["git", "ls-files", "--others", "--exclude-standard",
-                                 "--", "*.md"]).strip().split("\n") if p]
+    untracked = git_paths(["git", "ls-files", "--others", "--exclude-standard",
+                           "--", "*.md"])
     docs = sorted(set(docs) | set(untracked))
 
     if args.issues_snapshot:
@@ -3077,24 +3276,7 @@ def main(argv: list[str] | None = None) -> int:
         # calling uid, which under root says "writable" about a mode-444 file.
         # So the loop reports what it had already written, rather than
         # pretending the operation was atomic.
-        unwritable = [doc for doc, _ in writes
-                      if not (REPO / doc).is_file() or not os.access(REPO / doc, os.W_OK)]
-        if unwritable:
-            raise AuditError(
-                f"--stamp cannot write {', '.join(sorted(unwritable))}: missing or "
-                "not writable. Nothing was written.")
-        done: list[str] = []
-        for doc, new in writes:
-            try:
-                write_stamp(doc, new)
-            except OSError as exc:
-                # Exit 2, not the traceback-and-exit-1 that means "findings".
-                raise AuditError(
-                    f"--stamp failed writing {doc}: {exc}. {len(done)} of "
-                    f"{len(writes)} documents were already stamped"
-                    + (f" ({', '.join(done)})" if done else "")
-                    + "; the tree is partially stamped.") from exc
-            done.append(doc)
+        write_stamps(writes)
 
     report = {
         "date": today, "base_ref": base_ref, "head": head, "docs": len(docs),
