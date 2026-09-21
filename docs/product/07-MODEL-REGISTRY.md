@@ -475,12 +475,12 @@ here — that one belongs to code defects and is owned by
 | DOC-11 | **FLAGGED — needs your decision** | Which learned models deserve a master-matrix row is a capability question, not a correction |
 | DOC-12 | **FLAGGED — deferred** | [#1060](https://github.com/TeneikaAskew/stocks/pull/1060) is an open PR refreshing the infrastructure docs; fixing the same counts here would collide |
 | DOC-13 | **FIXED HERE** (mostly) | The two relocatable paths are repointed, and the test now classifies solyra-owned paths instead of counting them as rot — the backlog drops from 57 to **2**, both genuinely deleted scripts. A new invariant replaces the count: any doc citing a solyra path must say where the frontend went, which caught `16-CONSOLIDATION-AUDIT.md` doing so silently |
-
-Merged-PR lineage for every model is owned by
-[12](12-PR-ISSUE-TRACEABILITY.md#audit-prs); this section records only open work.
 | DOC-35 | **FIXED HERE** | The inclusion rule is rewritten and published: *a scheduled job is model-bearing when it produces a decision, a label or a verdict about a trade, a signal or a position that reaches a person or a served surface — wherever its thresholds live.* Imports become one sufficient signal, not the definition. `phase6-playbook-daily` is registered as **MODEL-PLAY-001**, and every one of the 63 live schedulers now appears in the scheduler table or in a new **deliberate-exclusion table** with its reason, gated by `test_every_live_scheduler_is_classified` |
 | DOC-36 | **RECORDED** | Stated in [MODEL-WEEK-001](../models/MODEL-WEEK-001.md) and added to [#1137](https://github.com/TeneikaAskew/stocks/issues/1137), which owns the stale-module-docstring class. Not fixed here: the code change is the docstring's, and the registry's job is to say what runs |
 | DOC-37 | **FIXED HERE** | The parser joins backslash continuations before matching, and the module docstring records the failure in the terms that matter — *an assertion that every item resolves says nothing about items the enumeration missed.* The two schedulers it had hidden, `signal-quality-report-nightly` and `signal-quality-alarm-daily`, are registered as **MODEL-QUAL-001**. The durable lesson is that the second parser is what found it: `test_every_live_scheduler_is_classified` enumerates independently and disagreed by two |
+
+Merged-PR lineage for every model is owned by
+[12](12-PR-ISSUE-TRACEABILITY.md#audit-prs); this section records only open work.
 
 ### Open pull requests touching this surface
 
