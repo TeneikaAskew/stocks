@@ -3682,6 +3682,15 @@ def stamp(text: str, date: str, depth: str, sha: str,
     extras = extra_segments(lines[found[0]]) if found and not prev.get("legacy") else []
     marker = render_marker(r_date, r_depth, r_sha, date, owner, extras)
     if found:
+        # TWO valid markers in the opening section. `find_marker` picks the
+        # first and this path rewrites only that line, so `--stamp --verify`
+        # returned "updated" and exited successfully while leaving a second,
+        # contradictory date, owner and SHA in place -- in a document the same
+        # run had already reported as carrying duplicate markers. The refusal
+        # was a property of which branch the document took rather than of the
+        # document. Codex filed it on the Node twin (solyra#69).
+        if len(find_markers(lines)) > 1:
+            return text, "skipped-duplicate-marker"
         idx, _ = found
         if lines[idx].strip() == marker:
             return text, "unchanged"
@@ -4546,7 +4555,28 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # delimiter either: a file really named with a percent-escaped `?`
         # would otherwise lose its name. The Node twin has split in this order
         # since it was raised there.
-        bare = decode_char_refs(unescape_markdown(bare)).split("?")[0]
+        # A decoded `#` IS the fragment delimiter. `&#35;` resolves to `#`
+        # when the link is constructed, so `[x](README.md&#35;tests)` gives
+        # the href `README.md#tests` and the browser splits there -- while
+        # this looked for a tracked file literally named `README.md#tests`
+        # and reported a gating dead link against one that exists. The
+        # caller's `split_outside_refs` consumes references as UNITS,
+        # deliberately, so it cannot see this one; the split has to happen
+        # after decoding.
+        #
+        # Only a reference, not a BACKSLASH escape. `[x](a\#b.md)` is
+        # asserted elsewhere to target the tracked `a#b.md`, and whether
+        # CommonMark percent-encodes that `#` is a question I have not put to
+        # a reference implementation -- so the escape is left alone rather
+        # than changed on an argument. That is why the decode happens in two
+        # steps here: the references first, the split, then the escapes.
+        # Codex filed it on the Node twin (solyra#69).
+        decoded_ref = decode_char_refs(bare)
+        cut = next((k for k, ch in enumerate(decoded_ref)
+                    if ch == "#" and not is_escaped(decoded_ref, k)), -1)
+        decoded_frag = decoded_ref[cut + 1:] or None if cut != -1 else None
+        bare = unescape_markdown(
+            decoded_ref if cut == -1 else decoded_ref[:cut]).split("?")[0]
         if not bare:
             norm = doc
         else:
@@ -4595,7 +4625,10 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
                             "detail": what, "severity": "P2"})
                 return
         # The target resolves; does the heading it names?
-        if frag and norm.endswith(".md"):
+        # A fragment the DESTINATION carried as a character reference, which
+        # the caller's reference-aware split could not separate.
+        want_frag = frag or decoded_frag
+        if want_frag and norm.endswith(".md"):
             have = anchors_of(norm)
             # The fragment as the BROWSER resolves it. `#caf%C3%A9` is the
             # ordinary spelling of a link to `## Cafe\u0301`, and comparing the
@@ -4608,9 +4641,9 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             # accepted a link that does not work. `heading_anchors` already
             # yields the generated (lowercased) ids, so the comparison is
             # against what the renderer actually emits.
-            if have is not None and decode_fragment(frag) not in have:
+            if have is not None and decode_fragment(want_frag) not in have:
                 out.append({"check": "dead-anchor", "doc": doc, "line": n,
-                            "detail": f"{anchor_what}#{frag}: the target has no "
+                            "detail": f"{anchor_what}#{want_frag}: the target has no "
                                       "such heading",
                             "severity": "P2"})
 
@@ -6335,7 +6368,10 @@ def main(argv: list[str] | None = None) -> int:
                        "audit would report changed-since; commit the edits first",
                    "skipped-no-h1": "no H1 to place a marker after",
                    "skipped-legacy-content": "a legacy marker carrying prose that "
-                                             "rewriting would delete"}
+                                             "rewriting would delete",
+                   "skipped-duplicate-marker": "two review markers in the opening "
+                                               "section; rewriting one would leave "
+                                               "the other contradicting it"}
             named = ", ".join(
                 f"{d} ({why.get(stamp_refusals[d], stamp_refusals[d])})"
                 if d in stamp_refusals else d

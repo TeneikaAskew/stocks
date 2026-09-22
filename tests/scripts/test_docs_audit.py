@@ -228,6 +228,51 @@ def test_an_orphan_end_marker_is_a_finding():
     assert orphans == ["inventory:a ends at line 2 with no start"]
 
 
+def test_two_review_markers_stop_the_stamp(audit_repo):
+    """`find_marker` picks the first and the update path rewrote only that
+    line, so `--stamp --verify` returned "updated" and exited successfully
+    while leaving a second, contradictory date and SHA in place -- in a
+    document the same run had already reported as carrying duplicates. The
+    INSERTION path has refused a misplaced marker for rounds on exactly this
+    reasoning; the update path had no such check, so the refusal was a
+    property of which branch the document took. Codex filed it on the Node
+    twin (solyra#69)."""
+    two = ("# T\n\n**Last reviewed:** 2026-01-01 · **Depth:** scanned "
+           "· **Last scanned:** 2026-01-01\n**Last reviewed:** 2026-02-02 "
+           "· **Depth:** scanned · **Last scanned:** 2026-02-02\n\nbody\n")
+    text, action = m.stamp(two, "2026-09-18", "scanned", "abc1234", False)
+    assert action == "skipped-duplicate-marker"
+    assert text == two
+    # One marker is still updated, so this refuses a shape rather than
+    # switching the update path off.
+    one = ("# T\n\n**Last reviewed:** 2026-01-01 · **Depth:** scanned "
+           "· **Last scanned:** 2026-01-01\n\nbody\n")
+    assert m.stamp(one, "2026-09-18", "scanned", "abc1234", False)[1] == "updated"
+
+
+def test_a_fragment_written_as_a_character_reference_is_a_fragment(tmp_path, monkeypatch):
+    """`&#35;` resolves to `#` when the link is constructed, so
+    `[x](README.md&#35;tests)` gives the href `README.md#tests` and the browser
+    splits there -- while this looked for a tracked file literally named
+    `README.md#tests` and reported a gating dead link against one that exists.
+    `split_outside_refs` consumes references as UNITS, deliberately, so it
+    cannot see this one."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "README.md").write_text("# Target\n\n## Tests\n\nbody\n")
+    checks = lambda doc: [f["check"] for f in
+                          m.check_dead_links("d.md", doc, {"d.md", "README.md"})]
+    assert checks("[x](README.md&#35;tests)\n") == []
+    # And the anchor is CHECKED rather than merely skipped.
+    assert checks("[x](README.md&#35;gone)\n") == ["dead-anchor"]
+    # A BACKSLASH-escaped hash is left alone: whether CommonMark
+    # percent-encodes it is a question I have not put to a reference
+    # implementation, and an assertion elsewhere says `[x](a\\#b.md)` targets
+    # the tracked `a#b.md`. That is why the decode runs in two steps -- the
+    # references, the split, then the escapes.
+    assert [f["check"] for f in
+            m.check_dead_links("d.md", "[x](a\\#b.md)\n", {"d.md", "a#b.md"})] == []
+
+
 def test_tag_shaped_text_that_is_not_a_tag_stays_in_the_slug():
     """`## A <span ???>B` renders the tag-shaped text LITERALLY and anchors
     `a-span-b`, but a pattern that accepted "anything that is not an angle
@@ -6071,7 +6116,19 @@ def test_a_reference_destination_is_decoded_before_its_fragment_is_split():
     consumed: `[g]: a\\#b.md` targets the tracked `a#b.md` and was reported dead
     as `a\\`."""
     assert m.check_dead_links("d.md", "[g]: a\\#b.md\n", {"d.md", "a#b.md"}) == []
-    assert m.check_dead_links("d.md", "[g]: a&#35;b.md\n", {"d.md", "a#b.md"}) == []
+    # `&#35;` is NOT the same case, and this line used to assert it was. A
+    # character reference resolves to `#` when the link is constructed, so the
+    # href is `a#b.md` and the browser splits there: the destination names a
+    # file called `a` with the fragment `b.md`, not a file called `a#b.md`. A
+    # filename really containing a hash has to be written `a%23b.md`. Codex
+    # made that argument on the Node twin (solyra#69) and it is right; the
+    # expectation here encoded the older belief.
+    out = m.check_dead_links("d.md", "[g]: a&#35;b.md\n", {"d.md", "a#b.md"})
+    assert [f["detail"] for f in out] == ["reference link [g] -> a&#35;b.md"], out
+    # The percent-encoded spelling is the one that names the file, and it is
+    # still resolved -- so this is a split on the DECODED reference rather
+    # than on any hash.
+    assert m.check_dead_links("d.md", "[g]: a%23b.md\n", {"d.md", "a#b.md"}) == []
     # A real fragment still separates.
     out = m.check_dead_links("d.md", "[g]: gone.md#x\n", {"d.md"})
     assert [f["detail"] for f in out] == ["reference link [g] -> gone.md"], out
