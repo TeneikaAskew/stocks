@@ -550,6 +550,31 @@ def _strip_heading_links(s: str, ref_labels: frozenset[str]) -> str:
     return "".join(out)
 
 
+# A code span delimited by a matching run of backticks, contents in group 2.
+_CODE_SPAN_RUN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
+
+
+def _heading_markup(part: str, ref_labels: frozenset[str]) -> str:
+    """The markup passes that must NOT see code-span contents.
+
+    Character references, link syntax and inline HTML are all markup in
+    ordinary heading text and literal characters inside a code span, so each
+    runs per part rather than over the whole heading.
+    """
+    part = decode_char_refs(part)
+    # See _strip_heading_links: the destination is scanned rather than
+    # matched, so parentheses inside it cannot end it early, and a DEFINED
+    # reference link resolves to its visible label.
+    part = _strip_heading_links(part, ref_labels)
+    # An AUTOLINK is not a tag: `## <https://example.com>` renders as the URL
+    # and derives a real anchor from it, so only a tag NAME is stripped.
+    # Quoted attribute values may CONTAIN `>`, so they are walked rather than
+    # excluded -- `[^<>]*` stopped inside `data-x="a>b"` and left `b">` to be
+    # slugged as visible text.
+    return re.sub(r"</?[A-Za-z][A-Za-z0-9-]*"
+                  r"""(?:\s(?:"[^"]*"|'[^']*'|[^<>"'])*)?/?>""", "", part)
+
+
 def heading_slug(heading: str,
                  ref_labels: frozenset[str] = frozenset()) -> str:
     """GitHub's anchor for a heading.
@@ -570,18 +595,26 @@ def heading_slug(heading: str,
     # bogus `#atampt` was accepted. Outside code spans only, because
     # CommonMark treats a reference inside one as literal text: `` `&amp;` ``
     # renders the six characters, not an ampersand.
-    s = "".join(p if p.startswith("`") else decode_char_refs(p)
-                for p in re.split(r"(`[^`]*`)", heading))
-    s = re.sub(r"`([^`]*)`", r"\1", s)
+    # Tokenised on a matching backtick RUN, and the parts are processed
+    # separately. A code span renders its contents LITERALLY, so the link, tag
+    # and character-reference passes below must not see them: unwrapping the
+    # span first handed `` `[x](y)` `` to the link stripper, which discarded
+    # the destination and recorded `x` where GitHub exposes `xy`. The run form
+    # matters too -- `` ``[x](y)`` `` is one span, and a single-backtick
+    # pattern saw no span at all.
+    literal: list[str] = []
+    at = 0
+    for mm in _CODE_SPAN_RUN_RE.finditer(heading):
+        literal.append(_heading_markup(heading[at:mm.start()], ref_labels))
+        literal.append(mm.group(2))
+        at = mm.end()
+    literal.append(_heading_markup(heading[at:], ref_labels))
+    s = "".join(literal)
     # Only where the opening bracket is NOT escaped. `## Literal \\[x](guide.md)`
     # renders the brackets and the destination as TEXT -- CommonMark makes no
     # link -- so GitHub's anchor includes `xguidemd`, while stripping the
     # destination unconditionally recorded `literal-x`: a working fragment
     # reported dead AND an anchor the page does not expose accepted.
-    # See _strip_heading_links: the destination is scanned rather than matched,
-    # so parentheses inside it cannot end it early, and a DEFINED reference
-    # link resolves to its visible label.
-    s = _strip_heading_links(s, ref_labels)
     # Inline HTML is MARKUP and does not belong to the visible text:
     # `## Hello <em>world</em>` renders as "Hello world" and GitHub's id is
     # `hello-world`, but keeping the tag names recorded `hello-emworldem` --
@@ -593,8 +626,6 @@ def heading_slug(heading: str,
     # inside `data-x="a>b"` and left `b">` to be slugged as visible text, so
     # `## <span data-x="a>b">Hello</span>` recorded `bhello` -- the valid
     # fragment rejected and one the page does not expose accepted.
-    s = re.sub(r"</?[A-Za-z][A-Za-z0-9-]*"
-               r"""(?:\s(?:"[^"]*"|'[^']*'|[^<>"'])*)?/?>""", "", s)
     # Emphasis MARKUP only. Stripping every underscore turned `## API_FIELD`
     # into `apifield`, so a valid link to `#api_field` read as a dead anchor
     # AND an incorrect `#apifield` was accepted -- wrong in both directions.
@@ -654,13 +685,25 @@ def heading_anchors(text: str) -> set[str]:
     # defined, and the slug keeps both labels. Read through the same
     # exclusions as everything else here -- a definition inside a fence or a
     # comment defines nothing.
-    ref_labels = frozenset(
-        _ref_key(mm.group("label"))
-        for i, ln in enumerate(lines) if i not in fenced
-        for mm in (REF_DEF_RE.match(
-            _LIST_MARKER_RE.sub(
-                "", _BLOCKQUOTE_PREFIX_RE.sub("", ln, count=1), count=1)),)
-        if mm)
+    # And only where a definition may BEGIN. `paragraph` then `[g]: x.md`
+    # renders literally -- CommonMark registers no reference there -- so
+    # collecting it let `## [Guide][g]` resolve to `guide` when the page
+    # actually exposes `guideg`. The dead-link scan has applied this rule
+    # since the round it was raised; this collector did not, which is the
+    # same two-halves-disagreeing shape as the label keying before it.
+    _def_starts = {lo for lo, _ in _paragraph_blocks(lines, fenced)}
+    _def_seen: set[int] = set()
+    _labels: set[str] = set()
+    for i, ln in enumerate(lines):
+        if i in fenced:
+            continue
+        mm = REF_DEF_RE.match(_LIST_MARKER_RE.sub(
+            "", _BLOCKQUOTE_PREFIX_RE.sub("", ln, count=1), count=1))
+        if not mm or not (i in _def_starts or (i - 1) in _def_seen):
+            continue
+        _def_seen.add(i)
+        _labels.add(_ref_key(mm.group("label")))
+    ref_labels = frozenset(_labels)
     # A comment INSIDE a rendered heading is not part of its text. `## <!-- note
     # --> Real` slugged to `---note----real`, so a valid link to `#real` was
     # emitted as a gating dead-anchor finding AND the fabricated anchor was
@@ -2595,7 +2638,12 @@ def h1_index(lines: list[str]) -> int | None:
         # still line up.
         if i == 0:
             bare = bare.lstrip("\ufeff")
-        if H1_RE.match(bare):
+        # The LIST MARKER is a container prefix too. `- # Title` renders a
+        # real H1 and heading_anchors has read it that way for rounds, but
+        # this tested the unstripped line -- so the audit reported the marker
+        # missing while --stamp answered `skipped-no-h1` and could not repair
+        # its own finding.
+        if H1_RE.match(_LIST_MARKER_RE.sub("", bare, count=1)):
             return i
         # Setext level one (`Title` over `===`). Without it the audit reported
         # a missing marker on such a document while --stamp answered

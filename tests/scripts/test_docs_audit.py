@@ -6240,3 +6240,44 @@ def test_a_heading_reference_label_is_keyed_like_a_definition():
     assert sorted(m.heading_anchors("# T\n\n## See [guide][g]\n")) == \
         ["see-guideg", "t"]
     assert m._ref_key("  Foo   BAR ") == "foo bar"
+
+
+def test_a_heading_code_span_keeps_its_contents_literal():
+    """A code span renders its contents LITERALLY, so link and tag syntax
+    inside one is text. Unwrapping the span before the markup passes handed
+    `` `[x](y)` `` to the link stripper, which discarded the destination and
+    recorded `x` where GitHub exposes `xy`."""
+    assert m.heading_slug("`[x](y)`") == "xy"
+    # The RUN form is one span too; a single-backtick pattern saw none at all.
+    assert m.heading_slug("``[x](missing.md)``") == "xmissingmd"
+    # Outside a span all three passes still apply, which is the whole point of
+    # doing them per part rather than dropping them.
+    assert m.heading_slug("Real [x](guide.md)") == "real-x"
+    assert m.heading_slug("Hello <em>world</em>") == "hello-world"
+    assert sorted(m.heading_anchors("# T\n\n## AT&amp;T\n")) == ["att", "t"]
+
+
+def test_an_h1_introduced_by_a_list_marker_is_the_h1():
+    """`- # Title` renders a real H1 and `heading_anchors` has read it that way
+    for rounds, but this tested the unstripped line -- so the audit reported
+    the marker missing while `--stamp` answered `skipped-no-h1` and could not
+    repair its own finding."""
+    assert m.h1_index(["- # Title", "", "body"]) == 0
+    assert m.h1_index(["1. # Title", "", "body"]) == 0
+    assert m.h1_index(["# Title", "", "body"]) == 0
+    # A list item that is NOT a heading is still not one.
+    assert m.h1_index(["- item", "", "body"]) is None
+
+
+def test_a_heading_reference_definition_must_open_a_block():
+    """`paragraph` then `[g]: x.md` renders literally -- CommonMark registers
+    no reference there -- so collecting it let `## [Guide][g]` resolve to
+    `guide` when the page actually exposes `guideg`. The dead-link scan has
+    applied this rule since it was raised; this collector did not."""
+    interrupted = "paragraph\n[g]: README.md\n\n## [Guide][g]\n"
+    assert sorted(m.heading_anchors(interrupted)) == ["guideg"]
+    # A definition that DOES open a block still defines, colon space or not.
+    assert sorted(m.heading_anchors("# T\n\n[g]: README.md\n\n## [Guide][g]\n")) == \
+        ["guide", "t"]
+    assert sorted(m.heading_anchors("# T\n\n[g]:README.md\n\n## [Guide][g]\n")) == \
+        ["guide", "t"]
