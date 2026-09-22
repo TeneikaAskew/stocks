@@ -640,6 +640,55 @@ def _strip_heading_links(s: str, ref_labels: frozenset[str]) -> str:
 _CODE_SPAN_RUN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
 
 
+# One complete HTML tag: a name, optional attributes whose quoted values may
+# contain `>`, and the close. Walked rather than excluded, because `[^<>]*`
+# stopped inside `data-x="a>b"` and left `b">` to be slugged as visible text.
+_HTML_TAG_RE = re.compile(
+    r"</?[A-Za-z][A-Za-z0-9-]*"
+    r"""(?:\s(?:"[^"]*"|'[^']*'|[^<>"'])*)?/?>""")
+
+
+def _strip_heading_tags(s: str) -> str:
+    r"""Inline HTML removed from heading text, escapes left as they are.
+
+    `## Hello <em>world</em>` renders as "Hello world", so the tag names are
+    not part of the anchor. An ESCAPED `<` opens nothing: CommonMark renders
+    `## \<em>foo` as the literal text `<em>foo`, whose id is `emfoo`, and an
+    unconditional substitution removed the tag-shaped run and recorded `foo`
+    -- a working `#emfoo` link rejected and a nonexistent `#foo` accepted.
+    An AUTOLINK is not a tag either: `## <https://example.com>` renders as the
+    URL, and only a tag NAME is matched, never a `<scheme:...>`.
+    """
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] == "\\" and i + 1 < n:
+            out.append(s[i:i + 2])
+            i += 2
+            continue
+        m = _HTML_TAG_RE.match(s, i)
+        if m:
+            i = m.end()
+            continue
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
+def _code_span_text(body: str) -> str:
+    """A code span's contents as they RENDER.
+
+    CommonMark strips one leading AND trailing space when the content begins
+    and ends with one and is not all spaces, so `` ` foo ` `` renders `foo`
+    and anchors `a-foo-b` rather than `a--foo--b`. Line endings inside a span
+    render as spaces for the same reason the surrounding text's do.
+    """
+    body = re.sub(r"\r\n|\r|\n", " ", body)
+    if len(body) >= 2 and body[0] == " " and body[-1] == " " and body.strip():
+        body = body[1:-1]
+    return body
+
+
 def _heading_markup(part: str, ref_labels: frozenset[str]) -> str:
     """The markup passes that must NOT see code-span contents.
 
@@ -647,18 +696,17 @@ def _heading_markup(part: str, ref_labels: frozenset[str]) -> str:
     ordinary heading text and literal characters inside a code span, so each
     runs per part rather than over the whole heading.
     """
+    # Tags BEFORE character references are decoded. A `<` that a reference
+    # PRODUCES is literal text, not markup: `## &lt;em&gt;foo` renders the
+    # characters `<em>foo` and anchors `emfoo`, and decoding first handed the
+    # tag stripper something the source never contained -- recording `foo`,
+    # so a working link was rejected and a nonexistent one accepted.
+    part = _strip_heading_tags(part)
     part = decode_char_refs(part)
     # See _strip_heading_links: the destination is scanned rather than
     # matched, so parentheses inside it cannot end it early, and a DEFINED
     # reference link resolves to its visible label.
-    part = _strip_heading_links(part, ref_labels)
-    # An AUTOLINK is not a tag: `## <https://example.com>` renders as the URL
-    # and derives a real anchor from it, so only a tag NAME is stripped.
-    # Quoted attribute values may CONTAIN `>`, so they are walked rather than
-    # excluded -- `[^<>]*` stopped inside `data-x="a>b"` and left `b">` to be
-    # slugged as visible text.
-    return re.sub(r"</?[A-Za-z][A-Za-z0-9-]*"
-                  r"""(?:\s(?:"[^"]*"|'[^']*'|[^<>"'])*)?/?>""", "", part)
+    return _strip_heading_links(part, ref_labels)
 
 
 def heading_slug(heading: str,
@@ -692,7 +740,7 @@ def heading_slug(heading: str,
     at = 0
     for mm in _CODE_SPAN_RUN_RE.finditer(heading):
         literal.append(_heading_markup(heading[at:mm.start()], ref_labels))
-        literal.append(mm.group(2))
+        literal.append(_code_span_text(mm.group(2)))
         at = mm.end()
     literal.append(_heading_markup(heading[at:], ref_labels))
     s = "".join(literal)
@@ -723,15 +771,49 @@ def heading_slug(heading: str,
     # emphasis and the audit recorded `apifield`: a valid link to `#api_field`
     # rejected AND a nonexistent `#apifield` accepted. The escape is markup
     # either way, so removing it before the classification loses nothing.
+    # An ESCAPED emphasis character is literal text and must survive the
+    # strip below. Unescaping first was right for the INTRAWORD case
+    # (`API\_FIELD` keeps its underscore) and wrong at a boundary: `## \_foo`
+    # renders `_foo`, whose GitHub id keeps the underscore, but the escape was
+    # gone by the time the boundary rule ran and the audit recorded `foo` --
+    # a working `#_foo` link rejected and a nonexistent `#foo` accepted. The
+    # escaped characters are parked out of the pattern's reach instead, which
+    # leaves the intraword case exactly as it was.
+    # Only the underscore is parked: an asterisk is stripped by the slug rule
+    # below whether or not the emphasis pass removed it, so protecting one
+    # would change no output -- measured, not assumed.
+    s = re.sub(r"\\_", "\x00", s)
     s = unescape_markdown(s)
     s = re.sub(r"\*", "", s)
-    s = re.sub(r"(?<!\w)_+|_+(?!\w)", "", s).strip().lower()
+    s = re.sub(r"(?<!\w)_+|_+(?!\w)", "", s)
+    s = s.replace("\x00", "_").strip().lower()
     # EVERY run of rendered whitespace, not only the literal space.
     # `## Hello<TAB>World` anchors as `hello-world` on GitHub, but keeping the
     # tab recorded an unusable slug -- so a valid `#hello-world` link was a
     # gating dead anchor while the tab-bearing spelling nothing exposes was
     # accepted. Parity with the Node twin (solyra#69).
     return re.sub(r"\s", "-", _SLUG_STRIP_RE.sub("", s))
+
+
+def _drop_spans(line: str, spans: list[tuple[int, int]]) -> str:
+    """The line with `spans` REMOVED rather than blanked.
+
+    `mask_spans` keeps every other offset where it was, which is what a
+    scanner reporting positions needs. A heading's SLUG is whitespace
+    sensitive -- runs are not collapsed -- so blanking turned
+    `## Hello <!-- note --> Real` into `hello---------------real` where GitHub
+    exposes `hello--real`, and pushed a comment sitting before the `#` past
+    the three-column limit so the heading stopped matching at all. Nothing
+    downstream of this reads an offset.
+    """
+    out: list[str] = []
+    at = 0
+    for lo, hi in sorted(spans):
+        if lo > at:
+            out.append(line[at:lo])
+        at = max(at, hi)
+    out.append(line[at:])
+    return "".join(out)
 
 
 def heading_anchors(text: str) -> set[str]:
@@ -820,7 +902,7 @@ def heading_anchors(text: str) -> set[str]:
     for i, line in enumerate(lines):
         if i in fenced:
             continue
-        line = mask_spans(line, heading_hidden.get(i, []))
+        line = _drop_spans(line, heading_hidden.get(i, []))
         # Setext (`Title` over `===` or `---`) renders as a heading and
         # GitHub exposes its anchor, but an ATX-only scan recorded none -- so a
         # valid link to one was emitted as a gating dead-anchor finding.
@@ -860,9 +942,17 @@ def heading_anchors(text: str) -> set[str]:
         # space, which is how the soft break renders.
         if setext:
             lo = _setext_starts.get(i, i)
+            # Each line read through the SAME comment mask the ATX branch
+            # applies. This branch rereads the raw text, so `Hello <!-- note
+            # -->` over `---` slugged `hello----note---`: the valid `#hello`
+            # fragment reported dead and an anchor the page does not expose
+            # accepted -- wrong in both directions, from one pass missing a
+            # mask its sibling already had.
             text = " ".join(
-                _BLOCKQUOTE_PREFIX_RE.sub("", ln, count=1).strip()
-                for ln in lines[lo:i + 1])
+                _BLOCKQUOTE_PREFIX_RE.sub(
+                    "", _drop_spans(ln, heading_hidden.get(k, [])),
+                    count=1).strip()
+                for k, ln in enumerate(lines[lo:i + 1], lo))
             head_text = _LIST_MARKER_RE.sub("", text.strip(), count=1)
         else:
             head_text = m.group(1)
@@ -3038,11 +3128,52 @@ def existing_newline(path: pathlib.Path) -> str:
 
 
 def write_stamp(doc: str, new: str) -> None:
-    """Write a stamped document, preserving the line endings it arrived with."""
+    """Write a stamped document, preserving the line endings it arrived with.
+
+    Through a temp file in the SAME directory, then `os.replace`. Writing in
+    place opens with O_TRUNC, so a failure part-way through -- a full disk is
+    the ordinary cause -- left the document truncated while the error named
+    only the documents already finished. A rename within a directory is
+    atomic, so a failed stamp leaves the original byte-for-byte as it was.
+
+    The temp file is created EXCLUSIVELY, under a name that is not
+    predictable. `write_stamps` refuses a symlinked DOCUMENT; it does not
+    cover this path, and an ordinary open would follow a symlink found here --
+    truncating a file anywhere writable and then renaming the link itself into
+    place as the document. Codex filed exactly that as a P1 on the Node twin
+    (solyra#69); this side had no temp file at all, so it is ported with the
+    guard already in it. `x` is O_CREAT|O_EXCL, which fails on an existing
+    path, symlink included; the suffix keeps a stale temp file from a
+    hard-killed run from turning that refusal into a permanent one.
+    """
     path = REPO / doc
     nl = existing_newline(path)
-    with path.open("w", encoding="utf-8", newline="") as fh:
-        fh.write(new if nl == "\n" else new.replace("\n", nl))
+    text = new if nl == "\n" else new.replace("\n", nl)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}-{os.urandom(4).hex()}"
+                         ".stamp-tmp")
+    try:
+        with open(tmp, "x", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        # The temp file is created with default permissions and then REPLACES
+        # the original, so stamping a tracked executable Markdown file would
+        # turn it from mode 100755 to 100644 -- an unrelated diff, and a broken
+        # consumer wherever the bit mattered. Best effort: a filesystem that
+        # cannot report or set a mode is not a reason to refuse the stamp, and
+        # the replace below is still atomic.
+        try:
+            os.chmod(tmp, path.stat().st_mode)
+        except OSError:
+            pass  # cleanup -- mode unavailable; the write itself still stands
+        os.replace(tmp, path)
+    except OSError:
+        # Best effort, and never masking the original error: the temp file is
+        # this function's litter, and failing to remove it is not the failure
+        # worth reporting.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass  # cleanup -- the original error is already propagating
+        raise
 
 
 def write_stamps(writes: list[tuple[str, str]]) -> None:
@@ -3082,8 +3213,14 @@ def write_stamps(writes: list[tuple[str, str]]) -> None:
         except OSError as exc:
             # Exit 2, not the traceback-and-exit-1 that means "findings".
             raise AuditError(
-                f"--stamp failed writing {doc}: {exc}. {len(done)} of "
-                f"{len(writes)} documents were already stamped"
+                # `{doc} is unchanged` is now true, and was not before: the
+                # write goes to a temp file and is renamed into place, so a
+                # failure leaves the original byte-for-byte as it was. The
+                # earlier wording said only "the tree is partially stamped",
+                # which left a reader unable to tell whether the named
+                # document had been truncated.
+                f"--stamp failed writing {doc}: {exc}. {doc} is unchanged; "
+                f"{len(done)} of {len(writes)} documents were already stamped"
                 + (f" ({', '.join(done)})" if done else "")
                 + "; the tree is partially stamped.") from exc
         done.append(doc)

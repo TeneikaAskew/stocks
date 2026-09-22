@@ -6508,3 +6508,95 @@ def test_a_heading_label_reads_the_two_line_definition_form():
     assert m.heading_anchors("[g]: guide.md\n\n## See [guide][g]\n") == \
         {"see-guide"}
     assert m.heading_anchors("## See [guide][g]\n") == {"see-guideg"}
+
+
+def test_a_code_span_renders_without_its_boundary_spaces():
+    """CommonMark strips ONE leading and trailing space when a span's content
+    begins and ends with one, so ``## A ` foo ` B`` anchors `a-foo-b`.
+    Appending the raw capture recorded `a--foo--b` -- a working fragment
+    rejected and one GitHub does not expose accepted."""
+    assert m.heading_slug("A ` foo ` B") == "a-foo-b"
+    # Content that is ENTIRELY spaces is left alone, which is the rule's own
+    # exception, so the rendered width is unchanged.
+    assert m.heading_slug("a `  ` b") == "a----b"
+    assert m.heading_slug("A `x` B") == "a-x-b"
+
+
+def test_an_escaped_emphasis_character_is_heading_text():
+    """`## \\_foo` renders `_foo` and GitHub's id keeps the underscore.
+    Unescaping before the boundary rule ran recorded `foo`, so a working
+    `#_foo` link was rejected and a nonexistent `#foo` accepted."""
+    assert m.heading_slug("\\_foo") == "_foo"
+    assert m.heading_slug("foo\\_") == "foo_"
+    # The intraword case this grew out of, and genuine emphasis, are unchanged.
+    assert m.heading_slug("API\\_FIELD") == "api_field"
+    assert m.heading_slug("API_FIELD") == "api_field"
+    assert m.heading_slug("_emphasis_") == "emphasis"
+
+
+def test_only_source_html_is_stripped_from_a_heading():
+    """`## \\<em>foo` and `## &lt;em&gt;foo` both render the characters
+    `<em>foo`, whose id is `emfoo`. Stripping the tag-shaped run regardless of
+    the escape, and after decoding, recorded `foo` -- reversing the validity
+    of `#emfoo` and `#foo`."""
+    assert m.heading_slug("\\<em>foo") == "emfoo"
+    assert m.heading_slug("&lt;em&gt;foo") == "emfoo"
+    # Real inline HTML is still markup, an autolink is still not a tag, and a
+    # quoted attribute value may still contain `>`.
+    assert m.heading_slug("Hello <em>world</em>") == "hello-world"
+    assert m.heading_slug("<https://example.com>") == "httpsexamplecom"
+    assert m.heading_slug('<span data-x="a>b">Hello</span>') == "hello"
+
+
+def test_a_heading_comment_is_removed_from_the_text_not_blanked():
+    """A slug does not collapse whitespace runs, so blanking a comment to keep
+    offsets recorded `hello---------------real` where GitHub exposes
+    `hello--real`. The Setext branch reread the raw line and did not mask at
+    all, recording `hello----note---`."""
+    assert m.heading_anchors("Hello <!-- note -->\n---\n") == {"hello"}
+    assert m.heading_anchors("## Hello <!-- note --> Real\n") == {"hello--real"}
+    # A comment BEFORE the `#` no longer pushes the heading past the
+    # three-column limit, so it is still a heading.
+    assert m.heading_anchors("<!-- x --> ## H\n") == {"h"}
+    assert m.heading_anchors("Hello\nworld\n---\n") == {"hello-world"}
+
+
+def test_a_stamp_write_is_atomic_and_refuses_a_symlinked_temp_path(
+        tmp_path, monkeypatch):
+    """The write went straight at the document, so a failure part-way through
+    left it truncated. It goes through a temp file and a rename now -- and
+    that path is created EXCLUSIVELY, because an ordinary open would follow a
+    symlink found there and truncate a file anywhere writable before renaming
+    the link itself into place as the document. Codex filed that as a P1 on
+    the Node twin."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "a.md").write_text("# A\n")
+    canary = tmp_path / "canary.txt"
+    canary.write_text("do not touch\n")
+    # The temp name carries a random suffix, so the attack is reproduced by
+    # pinning the randomness, capturing the name one run picks and
+    # pre-creating THAT path as a link on the next.
+    monkeypatch.setattr(m.os, "urandom", lambda n: b"\xab" * n)
+    m.write_stamp("a.md", "first\n")
+    assert (tmp_path / "a.md").read_text() == "first\n"
+    # The rename leaves no litter behind.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.md", "canary.txt"]
+    tmp = tmp_path / f".a.md.{os.getpid()}-abababab.stamp-tmp"
+    assert tmp.name != ".a.md.stamp-tmp"
+    tmp.symlink_to(canary)
+    with pytest.raises(OSError):
+        m.write_stamp("a.md", "second\n")
+    assert canary.read_text() == "do not touch\n"
+    assert (tmp_path / "a.md").read_text() == "first\n"
+    # The refusal's cleanup already removed the planted link -- it removes the
+    # link, never its target, which the canary above is what proves.
+    assert not tmp.is_symlink()
+    # And the write is ATOMIC: a failure at the rename leaves the document as
+    # it was rather than truncated, which is what writing in place did.
+    def boom(*_a, **_k):
+        raise OSError("ENOSPC")
+    monkeypatch.setattr(m.os, "replace", boom)
+    with pytest.raises(OSError):
+        m.write_stamp("a.md", "third\n")
+    assert (tmp_path / "a.md").read_text() == "first\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.md", "canary.txt"]
