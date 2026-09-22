@@ -17,7 +17,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [05 Infrastructure references](05-INFRASTRUCTURE.md#reference-documents) | Where are the long-form architecture, ERD, API, cost and pipeline documents? (`docs/product/infrastructure/`) |
 | [06 Data Architecture](06-DATA-ARCHITECTURE.md) | What are the 64 relations and how does data flow? |
 | [07 Model Registry](07-MODEL-REGISTRY.md) | Which rules and models exist, and are they trustworthy? |
-| [07 Experiment traceability](07-MODEL-REGISTRY.md#experiment-traceability) | Which experiments (`E-01…E-34`) produced each model's verdict, and where is the long-form evidence? |
+| [07 Experiment traceability](07-MODEL-REGISTRY.md#experiment-traceability) | Which experiments (`E-01…E-35`) produced each model's verdict, and where is the long-form evidence? |
 | [07 Documentation coverage](07-MODEL-REGISTRY.md#documentation-coverage-and-freshness) | Which model documentation is missing, stale or contradicted by the code, and what is being done about it? |
 | [08 Ai Agent Architecture](08-AI-AGENT-ARCHITECTURE.md) | What are the 14 LLM nodes actually wired today? |
 | [09 Security Auth](09-SECURITY-AUTH.md) | How are identity, access, tenancy and perimeter separated? |
@@ -37,7 +37,7 @@ outside `docs/product/`. It is joined to this plan by the
 
 | Doc | Question answered |
 |---|---|
-| [EXPERIMENT_REGISTRY.md](../EXPERIMENT_REGISTRY.md) | **The experiment log** — what was tried, `E-01…E-34`, and what each returned |
+| [EXPERIMENT_REGISTRY.md](../EXPERIMENT_REGISTRY.md) | **The experiment log** — what was tried, `E-01…E-35`, and what each returned |
 | [RESEARCH_COMPENDIUM.md](../RESEARCH_COMPENDIUM.md) | Why each approach and feature set was picked; the correlation analyses |
 | [MODEL_REGISTRY.md](../MODEL_REGISTRY.md) | Research-side model inventory: target, features, data, status |
 | [INVESTMENT_MODELS_SUMMARY.md](../INVESTMENT_MODELS_SUMMARY.md) | Models #1–#5, `lib/`, the Strat classifier, the backtest engine |

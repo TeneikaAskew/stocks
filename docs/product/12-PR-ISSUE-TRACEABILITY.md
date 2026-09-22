@@ -282,6 +282,7 @@ As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from
 
 | [#1135](https://github.com/TeneikaAskew/stocks/issues/1135) | P1 | [P1][Earnings] `_derive_archetype` reimplements `classify_archetype` and diverges on missing consistency data |
 | [#1138](https://github.com/TeneikaAskew/stocks/issues/1138) | P2 | [P2][Earnings] `query_typical_daily_return` normalizes over 64 returns, not the 60 its parameter names |
+| [#1158](https://github.com/TeneikaAskew/stocks/issues/1158) | P2 | [P2][Earnings] playability quintile boundaries were calibrated on a score with two of five inputs frozen, and bucketed by rank rather than the absolute cut-points production applies |
 | [#1151](https://github.com/TeneikaAskew/stocks/issues/1151) | P1 | [P1][Earnings] `evaluate-ew-strikes` scores the pre-announcement session for after-close reporters — 1,261 of 2,372 scored rows |
 **PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation*
 

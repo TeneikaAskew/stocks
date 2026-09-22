@@ -156,23 +156,62 @@ is true of the brief and false of the watchlist. Recorded as DOC-27's sibling.
 
 ## Rationale
 
-**RECORDED — the best-evidenced derivation among the seven, not the only one.** The
-quintile boundaries are *"calibrated against the 21,592-prediction backtest
-(`scripts/backtest_playability.py`, 2026-05-14)"*, and the per-quintile hit rates above
-are quoted from that calibration. The monotonic 34.8% → 58.9% progression is what
-justifies routing Q1 to the compact line and the size-up-at-Q5 guidance.
+**RECORDED, and narrower than it reads.** The quintile boundaries are *"calibrated
+against the 21,592-prediction backtest (`scripts/backtest_playability.py`, 2026-05-14)"*,
+and the per-quintile hit rates above are quoted from that calibration. The monotonic
+34.8% → 58.9% progression establishes that the score's **three measured inputs**
+rank-order outcomes. It does **not** establish that the absolute cut-points select the
+same populations in production, and until 2026-09-22 this section said it "justifies"
+Q1 routing and Q5 size-up. DOC-55.
+
+**Two of the score's five inputs were frozen in that backtest.**
+
+```
+scripts/backtest_playability.py:1253   TYPICAL_DAILY_RETURN_PCT = 1.0
+scripts/backtest_playability.py:1294   options_volume=10000.0
+lib/earnings_reactions.py:907-922      production varies BOTH, per ticker and per row
+```
+
+Both enter multiplicatively (`lib/earnings_reactions.py:199-201`:
+`move / typical × confidence × log(volume + 1)`), so freezing them does not scale rows
+equally — it deletes the per-ticker dispersion the normalizer exists to capture. The
+function's own docstring (`:176-178`) makes that the feature's stated purpose: quiet
+stocks that erupt on earnings should outrank already-active ones. Worked rank flips:
+
+| Flip driver | A | B | Proxy order | Production order |
+|---|---|---|---|---|
+| `typical_daily_return_pct` | move 8.0%, typ 0.8% | move 9.0%, typ 1.5% | B above A | **A above B** |
+| `options_volume` | move 8.0%, vol 500k | move 9.0%, vol 400 | B above A | **A above B** |
+
+**And the backtest never produced these numbers at all.** Every bucket it forms is a
+relative `pd.qcut` over its own proxy-scored distribution (`:162`, `:294`, `:594`,
+`:761`, `:1057`); `compute_quintile_spread` returns a rank statistic. The absolute
+`15.7 / 21.2 / 28.2 / 41.9` exist only at `lib/earnings_reactions.py:227`, as midpoints
+between proxy-scored quintile averages, then applied as fixed thresholds to scores on a
+different scale. A single fixed event (move 8.0%, typ 1.0%) lands **Q4 at 400 volume and
+Q5 at 10,000** — the proxy's own value — purely on the frozen input.
+
+So the transfer from rank buckets to absolute cut-points is **untested**, and the in-code
+comments claiming the constants "preserve relative ordering" were false reasoning; both
+were corrected on 2026-09-22. Re-deriving the boundaries against production-scale scores
+is filed as [#1158](https://github.com/TeneikaAskew/stocks/issues/1158).
 
 For comparison, [MODEL-MOM-001](MODEL-MOM-001.md) records a score-bucket walk-forward for
 its floor of 5 and a 72.2% fire-rate measurement for dropping StochRSI, and
 [MODEL-MR-001](MODEL-MR-001.md) records the 84.6% fire-rate that removed EMA proximity —
 real derivations, but each covers a single change, and both models' operating bands remain
-`UNKNOWN`. What is unique here is that the *whole* threshold set traces to one measured
-backtest.
+`UNKNOWN`. What is unusual here is that the threshold set traces to one measured backtest
+at all — though, per above, that backtest measured a score built from three of the five
+inputs production uses. An earlier revision said the *whole* threshold set traced to it.
 
 Two caveats a reader should carry:
 
 1. The hit rates are **from the calibration backtest, not from live outcomes**. Nothing
    in this document claims they have held prospectively.
+0. **The backtest scored a different function from production** — two of five inputs
+   frozen, buckets formed by rank rather than by the absolute cut-points. This caveat was
+   absent until 2026-09-22; the words `proxy`, `constant` and `10000` appeared nowhere in
+   this file.
 2. `scripts/calibrate_earnings.py` sweeps `(min_nq, lookback_quarters)` and
    `scripts/backtest_playability.py` is a walk-forward, so the machinery to re-measure
    exists — see CLAUDE.md Rule 3.5 rather than waiting for live data.

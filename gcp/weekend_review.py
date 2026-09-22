@@ -64,16 +64,53 @@ def generate_weekly_review(cfg=None, trades_dir: str = None) -> dict:
     max_score = cfg.risk.max_score
     if 'signal_strength' in trades.columns or 'total_score' in trades.columns:
         score_col = 'total_score' if 'total_score' in trades.columns else 'signal_strength'
+
+        # Grouped by LABEL, computed from the UNROUNDED score.
+        #
+        # Until 2026-09-22 this called `get_signal_strength_label(int(score))`
+        # while the live monitor passes the unrounded `total_score`
+        # (`gcp/signal_monitor.py:1343`). Fractional scores are the normal
+        # case, not an edge one: four of six catalyst-proximity multipliers are
+        # non-integral (`lib/config.py:370-376`) and `strat_bonus` moves in
+        # quarter points (`lib/strat.py:29-54`). Because `int()` truncates
+        # toward zero, every mismatch was a DOWNGRADE -- a live `strong` at 5.1
+        # was reported `medium`, a live `perfect` at 6.6 reported `strong` --
+        # so each rung's win rate was contaminated by trades from the rung
+        # above it, in the one report that shows the ladder's realized
+        # performance to anyone. DOC-56.
+        #
+        # Grouping by the raw float compounded it: 4.25 and 4.5 were two groups
+        # both rendered `score: 4`, so the embed showed duplicate rows with
+        # conflicting win rates. One rung is now one row, with the observed
+        # score span rather than a single misleading integer.
+        scores = pd.to_numeric(trades[score_col], errors='coerce')
+        scored = trades[scores.notna()]
+
+        # A NaN score cannot be labelled, and must not be guessed at: every
+        # `<=` comparison against NaN is False, so the ladder's else-branch
+        # would have returned `perfect` -- the worst possible silent default
+        # for a missing value (CLAUDE.md Rule 3.7). Counted and surfaced.
+        unlabelled = int(scores.isna().sum())
+        if unlabelled:
+            review['strength_unlabelled_trades'] = unlabelled
+
         strength_data = []
-        for score in trades[score_col].unique():
-            score_trades = trades[trades[score_col] == score]
-            strength_data.append({
-                'score': int(score),
-                'label': get_signal_strength_label(int(score), cfg.risk),
-                'trades': len(score_trades),
-                'win_rate': float((score_trades['return_pct'] > 0).mean()) if 'return_pct' in score_trades.columns else 0,
-                'max_score': max_score,
-            })
+        if not scored.empty:
+            labels = scores[scores.notna()].map(
+                lambda s: get_signal_strength_label(float(s), cfg.risk)
+            )
+            for label in labels.unique():
+                rung = scored[labels == label]
+                rung_scores = scores[rung.index]
+                strength_data.append({
+                    'label': label,
+                    'score_min': float(rung_scores.min()),
+                    'score_max': float(rung_scores.max()),
+                    'trades': len(rung),
+                    'win_rate': float((rung['return_pct'] > 0).mean()) if 'return_pct' in rung.columns else 0,
+                    'max_score': max_score,
+                })
+            strength_data.sort(key=lambda r: r['score_min'])
         review['by_strength'] = strength_data
 
     # By ticker
@@ -140,8 +177,18 @@ def format_discord_message(review: dict, max_score: int = 8) -> dict:
         strength_lines = []
         for s in review['by_strength']:
             s_max = s.get('max_score', max_score)
+            lo, hi = s['score_min'], s['score_max']
+            # One rung, one row. The span is shown because a rung genuinely
+            # covers a range of fractional scores; printing a single rounded
+            # integer is what produced duplicate rows with conflicting win
+            # rates before 2026-09-22.
+            span = f"{lo:g}" if lo == hi else f"{lo:g}-{hi:g}"
             strength_lines.append(
-                f"{s['label']} ({s['score']}/{s_max}): {s['trades']} trades, {s['win_rate']:.1%} win rate"
+                f"{s['label']} ({span}/{s_max}): {s['trades']} trades, {s['win_rate']:.1%} win rate"
+            )
+        if review.get('strength_unlabelled_trades'):
+            strength_lines.append(
+                f"_{review['strength_unlabelled_trades']} trade(s) with no score — not labelled_"
             )
         fields.append({
             'name': 'By Signal Strength',

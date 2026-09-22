@@ -384,7 +384,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `tests/lib/test_walk_forward*.py`, `tests/*/test_magnitude*.py` |
 | Open issues | 11 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-model-001--models--research-11-open) |
 | Blocking issues | [#817](https://github.com/TeneikaAskew/stocks/issues/817) [#813](https://github.com/TeneikaAskew/stocks/issues/813) [#910](https://github.com/TeneikaAskew/stocks/issues/910) [#909](https://github.com/TeneikaAskew/stocks/issues/909) [#888](https://github.com/TeneikaAskew/stocks/issues/888) [#875](https://github.com/TeneikaAskew/stocks/issues/875) |
-| Next action | 2026-09-14 (E-26): magnitude promotion criteria were measured mutually unsatisfiable and replaced with a decision-rule verdict; `pred_bucket` on `/api/magnitude` is now that decision, not argmax. The four constant-output `c49qf` cells still serve pending the decision in [15](15-OPEN-DECISIONS.md). Then sequence from [13](13-ROADMAP.md) Phase 4 |
+| Next action | 2026-09-14 (E-35): magnitude promotion criteria were measured mutually unsatisfiable and replaced with a decision-rule verdict; `pred_bucket` on `/api/magnitude` is now that decision, not argmax. The four constant-output `c49qf` cells still serve pending the decision in [15](15-OPEN-DECISIONS.md). Then sequence from [13](13-ROADMAP.md) Phase 4 |
 
 ### FEAT-JOURNAL-001
 

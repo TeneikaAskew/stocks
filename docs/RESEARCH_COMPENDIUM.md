@@ -180,7 +180,7 @@ differences (CLAUDE.md "one source of truth").
 
 ### 5.2 A2 — Magnitude engine ⚠️ (predictable, but priced)
 
-- **2026-09-14 update (E-26):** the engine's two promotion criteria (beat the class prior on log-loss; argmax share within 10 pp of the true modal share) were measured mutually unsatisfiable for any class weighting, because a calibrated model on a 64%-TIGHT label set argmax-picks TIGHT on ~97% of bars by construction. The serving artifacts were constants. Every place a bucket is named now uses one decision rule (P(bucket) ≥ 2× its prior); the honest tail signal at that point is an EXPLOSIVE call on ~13% of bars at 8–9% precision (base 2.6%). The naive calendar lookup, re-run under that rule on 2026-09-16, now clears all four gates on the promoted 5m cells (it could never argmax EXPLOSIVE before), so gates 1–4 no longer separate the models from a calendar table; gate 7, re-run on the decision-rule population the same day (~100× more called bars per fold), fails again on every cell: 0/24 IV-covered folds, mean realised/implied 0.67–0.73 against 0.83–0.92 in May. The priced verdict stands; results doc §12. `docs/MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14 and §12.
+- **2026-09-14 update (E-35):** the engine's two promotion criteria (beat the class prior on log-loss; argmax share within 10 pp of the true modal share) were measured mutually unsatisfiable for any class weighting, because a calibrated model on a 64%-TIGHT label set argmax-picks TIGHT on ~97% of bars by construction. The serving artifacts were constants. Every place a bucket is named now uses one decision rule (P(bucket) ≥ 2× its prior); the honest tail signal at that point is an EXPLOSIVE call on ~13% of bars at 8–9% precision (base 2.6%). The naive calendar lookup, re-run under that rule on 2026-09-16, now clears all four gates on the promoted 5m cells (it could never argmax EXPLOSIVE before), so gates 1–4 no longer separate the models from a calendar table; gate 7, re-run on the decision-rule population the same day (~100× more called bars per fold), fails again on every cell: 0/24 IV-covered folds, mean realised/implied 0.67–0.73 against 0.83–0.92 in May. The priced verdict stands; results doc §12. `docs/MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14 and §12.
 
 - **Predicts:** `magnitude_bucket` of |next_close−next_open|/ATR20 — TIGHT (<0.5),
   NORMAL (0.5–1.0), EXPANDED (1.0–1.5), **EXPLOSIVE (≥1.5)**.
@@ -822,7 +822,7 @@ Detail: [`docs/MODEL_RETHINK_PLANS.md`](MODEL_RETHINK_PLANS.md) §RESULTS,
 - Direction R&D: `docs/DIRECTION_FEATURES_R&D.md`.
 - Rethink models + verdicts: [`docs/MODEL_REGISTRY.md`](MODEL_REGISTRY.md) Part B
   (formerly `MODEL_CATALOG.md`), [`docs/MODEL_RETHINK_PLANS.md`](MODEL_RETHINK_PLANS.md).
-- Experiment ledger: [`docs/EXPERIMENT_REGISTRY.md`](EXPERIMENT_REGISTRY.md) (`E-01…E-34`).
+- Experiment ledger: [`docs/EXPERIMENT_REGISTRY.md`](EXPERIMENT_REGISTRY.md) (`E-01…E-35`).
 - Governance / lifecycle: [`docs/product/07-MODEL-REGISTRY.md`](product/07-MODEL-REGISTRY.md).
 - Code: `gcp/research/strat_engine/` (strat + the 3 rethink models),
   `gcp/research/magnitude_engine/` (magnitude), `scripts/implied_vs_realized_check.py`

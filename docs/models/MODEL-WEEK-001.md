@@ -25,11 +25,55 @@ the published strength label to each score bucket:
 | Trades, win rate, total return | by ticker | `:78-90` |
 | Count and average return | by `exit_reason` | `:92-99` |
 
-The label comes from `get_signal_strength_label(int(score), cfg.risk)` (`:72`) — the same
-function `gcp/signal_monitor.py:1343` uses to label a live fire, reading the same
+The label comes from `get_signal_strength_label`, the same function
+`gcp/signal_monitor.py:1343` uses to label a live fire, reading the same
 `RiskConfig.score_thresholds` ladder. That is the whole reason this job is model-bearing: the
 weekly report is the only place the score ladder's **realized** performance is shown to anyone,
 and a person reading "score 6 (`strong`): 40% win rate" acts on it.
+
+### It passed a different argument to that function until 2026-09-22
+
+The call was `get_signal_strength_label(**int(score)**, cfg.risk)`, while the live monitor
+passes the unrounded `total_score`. **The function and the ladder were the same; the argument
+was not** — and an earlier revision of this section quoted the `int(score)` call and asserted
+equivalence with the live path in the same sentence.
+
+Fractional scores are the normal case, not an edge one: four of six catalyst-proximity
+multipliers are non-integral (`lib/config.py:370-376`) and `strat_bonus` moves in quarter
+points (`lib/strat.py:29-54`). Because `int()` truncates toward zero, **every mismatch was a
+downgrade**:
+
+| Raw | Bucket | Mult | Product | Live | Reported |
+|---|---|---|---|---|---|
+| 4 | `next_day` | 1.10 | 4.4 | medium | **weak** |
+| 5 | `post` | 0.85 | 4.25 | medium | **weak** |
+| 5 | `imminent` | 0.95 | 4.75 | medium | **weak** |
+| 5 | `next_day` | 1.10 | 5.5 | strong | **medium** |
+| 6 | `during` | 0.75 | 4.5 | medium | **weak** |
+| 6 | `post` | 0.85 | 5.1 | strong | **medium** |
+| 6 | `imminent` | 0.95 | 5.7 | strong | **medium** |
+| 6 | `next_day` | 1.10 | 6.6 | perfect | **strong** |
+| 7 | `during` | 0.75 | 5.25 | strong | **medium** |
+| 7 | `post` | 0.85 | 5.95 | strong | **medium** |
+| 7 | `imminent` | 0.95 | 6.65 | perfect | **strong** |
+| 8 | `post` | 0.85 | 6.8 | perfect | **strong** |
+
+Only `pre` and `quiet` (both `1.00`) were ever safe. So each rung's win rate was contaminated
+by trades from the rung above it — **in the one report used to judge the ladder**.
+
+Two further defects in the same block, both fixed:
+
+- It grouped by the raw float and rendered `int(score)`, so 4.25 and 4.5 became two rows both
+  printed `score: 4` with different win rates. One rung is now one row, showing the observed
+  score span.
+- A `NaN` score fell through the ladder to its else-branch and was labelled **`perfect`** —
+  every `<=` against `NaN` is False. Scoreless trades are now counted and reported separately
+  (CLAUDE.md Rule 3.7).
+
+Fixed in `gcp/weekend_review.py`, covered by
+`tests/gcp/test_weekend_review_score_labels.py` (11 cases, mutation-tested against the
+pre-fix behaviour). **This is a behaviour change**: weekly reports before this date used the
+truncated labels, so their per-rung win rates are not comparable with later ones. DOC-56.
 
 ## What its own docstring claims and the code does not do
 

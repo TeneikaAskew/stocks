@@ -1298,6 +1298,254 @@ def _ledger_ids() -> set[str]:
     return ids
 
 
+#: Claims this PR retracted, with the finding that retracted each. A retraction
+#: that leaves the claim standing somewhere else is not a retraction, which is
+#: what DOC-53 recorded: DOC-51 declared the momentum conclusion "RETRACTED in
+#: both documents" while DOC-42's disposition still carried it, nine rows above,
+#: in the same table.
+RETRACTED_CLAIMS = {
+    "costs so little": "DOC-53",
+    "costs little because there is little to discard": "DOC-53",
+    "not eligible on 765 of 782 bars": "DOC-53",
+}
+
+
+def test_cited_readers_actually_read_the_table():
+    """A sentence claiming a file reads a table must be true of that file.
+
+    DOC-52: a correction written in round 15 said `ticker_calibration` reaches
+    the live fire path through `lib/strategies/exit_config_overrides.py`. That
+    file contains ZERO occurrences of `ticker_calibration` -- it reads
+    `FROM exit_config_overrides` (`:124`), a different table written by a
+    different model. The error was made twice, in the prose and in the
+    disposition of the correction itself, and repeated in the review reply as
+    the evidence for being careful.
+
+    Mechanically checkable, like the test-coverage claims of DOC-44: take every
+    prose sentence naming both a repo `.py` path and a table from
+    `gcp/schema.sql` with a reading verb, and open the file.
+
+    Scoped to PROSE. Table rows are excluded because a cell legitimately lists
+    several files beside several tables with no claim that each reads each --
+    including them cross-products the two lists and flagged ten clean pairs.
+    Eleven pairs survive the scoping, so the gate is doing work rather than
+    passing vacuously.
+    """
+    tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)",
+                            (REPO / "gcp" / "schema.sql").read_text()))
+    assert len(tables) > 20, f"only {len(tables)} tables parsed from schema.sql"
+    verb = re.compile(r"\b(reads|resolves|serves|selects|queries)\b", re.I)
+
+    def prose_sentences(text: str):
+        for block in text.split("\n\n"):
+            keep = [l for l in block.splitlines()
+                    if not l.lstrip().startswith(("|", ">", "```", "#"))]
+            for s in re.split(r"(?<=[.;])\s+", " ".join(keep)):
+                yield s
+
+    offenders, checked = [], 0
+    for md in [REGISTRY] + sorted(MODELS.glob("*.md")):
+        for s in prose_sentences(md.read_text()):
+            if not verb.search(s):
+                continue
+            pys = {p for p in re.findall(r"`((?:lib|gcp|scripts|platform)/[\w/]+\.py)[^`]*`", s)}
+            tbs = {t for t in re.findall(r"`(\w+)`", s) if t in tables}
+            for f in pys:
+                path = REPO / f
+                if not path.exists():
+                    continue
+                body = path.read_text()
+                for t in tbs:
+                    checked += 1
+                    if t not in body:
+                        offenders.append(f"{md.name}: `{f}` never mentions `{t}` — {s[:110]}")
+    assert checked >= 5, (
+        f"only {checked} (file, table) pairs examined — the sentence scoping has "
+        "stopped matching the documents, so a green result means nothing"
+    )
+    assert not offenders, (
+        "documents claim a file reads a table it never names: " + "; ".join(offenders)
+    )
+
+
+def test_retracted_claims_stay_retracted():
+    """A withdrawn claim may appear only where it is being withdrawn.
+
+    Every document in this PR quotes the wording it retracts, which is the
+    point -- a correction that hides what it corrected is not auditable. So the
+    rule is about CONTEXT, not presence: the phrase may sit inside a blockquote
+    or an italic correction note, and nowhere else.
+
+    Same scoping as the round-14 test-coverage gates, and for the same reason:
+    there the historical note quoting a wrong file citation would otherwise have
+    failed the gate the correction was made to satisfy.
+    """
+    offenders = []
+    for md in sorted(PRODUCT.glob("*.md")) + sorted(MODELS.glob("*.md")):
+        text = md.read_text()
+        for i, line in enumerate(text.splitlines(), 1):
+            stripped = line.lstrip()
+            # A blockquote, or a table cell whose claim is wrapped in the
+            # italics this repo uses for "what this used to say".
+            retracting = stripped.startswith(">") or "*" in line
+            for phrase, doc in RETRACTED_CLAIMS.items():
+                if phrase in line and not retracting:
+                    offenders.append(f"{md.name}:{i} asserts {phrase!r} ({doc} retracted it)")
+    assert not offenders, (
+        "retracted claims asserted outside a retraction context: "
+        + "; ".join(offenders)
+        + ". Quote it inside a blockquote or an italic correction note, or remove it."
+    )
+
+
+def test_book_membership_matches_heading_position():
+    """Every advertised experiment range must match the file it describes.
+
+    The repository shipped TWO contradictory contracts, and neither matched
+    `EXPERIMENT_REGISTRY.md`:
+
+        EXPERIMENT_REGISTRY.md (x3)   "Book I = E-01…E-24"
+        ten other documents            "per-experiment ledger E-01…E-34"
+
+    Book I is `E-01…E-25` plus `E-32`; Book II is `E-26…E-31`, `E-33`, `E-34`
+    and `E-35`, by position relative to the `# BOOK II` heading. The first
+    contract silently dropped `E-25` and `E-32` -- the latter the follow-up to
+    the ledger's only claimed real edge. The second swept all of Book II into
+    Book I.
+
+    Nothing caught it because the one code consumer (`_ledger_ids`) collects by
+    heading position and is book-agnostic. The contract lived only in prose, so
+    only prose could be wrong -- the same reason the coverage claims in DOC-44
+    survived a green suite. DOC-55.
+    """
+    led = LEDGER.read_text()
+    assert "\n# BOOK II" in led, "the BOOK II heading moved; membership is defined by it"
+    head = led[: led.index("\n# BOOK II")]
+
+    book1 = {int(e[2:]) for e in re.findall(r"^## (E-\d+)", head, re.M)}
+    every = {int(e[2:]) for e in _ledger_ids()}
+    assert book1 and every, "parsed no experiment ids at all"
+
+    # Any `E-aa…E-bb` span advertised anywhere in docs/ is a claim about this
+    # file, and must not name an id the file does not carry.
+    # Scanned per BLOCK, not per line. The Book I bullet in EXPERIMENT_REGISTRY
+    # wraps across four lines and names E-24, E-25 and E-32 on the continuation
+    # lines; a per-line scan saw only `E-01…E-23` and called the correction
+    # wrong. A gate that cannot read the shape its document actually uses is
+    # the DOC-45 failure in a new place.
+    claims: list[tuple[str, int, str, int, int]] = []
+    for md in sorted((REPO / "docs").rglob("*.md")):
+        lineno = 1
+        for block in md.read_text().split("\n\n"):
+            flat = block.replace("`", "").replace("\n", " ")
+            for m in re.finditer(r"E-(\d+)\s*(?:…|\.\.\.)\s*E-(\d+)", flat):
+                claims.append((md.relative_to(REPO).as_posix(), lineno, flat,
+                               int(m.group(1)), int(m.group(2))))
+            lineno += block.count("\n") + 2
+    assert claims, "no ranges found — did the advertising move out of docs/?"
+
+    # Two crisp checks, and one deliberately NOT attempted.
+    #
+    # The defect: `E-01…E-24` silently dropped E-25 and E-32; ten other docs
+    # said `E-01…E-34` and swept Book II into Book I. So the direction that
+    # matters is COVERAGE — an advertised whole-ledger span must not omit an
+    # id the ledger declares. The first draft only rejected spans reaching
+    # PAST the ledger, and a mutation renaming an experiment to E-44 passed,
+    # which is the one-way shape of DOC-37, DOC-41 and DOC-48.
+    #
+    # NOT attempted: set-equality against Book I. Book I is non-contiguous
+    # (`E-01…E-25` plus `E-32`), so prose must enumerate the extras, and three
+    # successive versions of that check were wrong in three different
+    # granularities — per line it missed a wrapped bullet, per block it merged
+    # two adjacent bullets. A gate I cannot state precisely is not a weaker
+    # gate, it is a misleading one, so the membership RULE is asserted instead
+    # and Book I's composition is left to the reader the rule points at.
+    WHOLE = re.compile(r"per-experiment ledger|the experiment log", re.I)
+
+    def _ids_in(text: str) -> set[int]:
+        text = text.replace("`", "")
+        ids = {int(n) for n in re.findall(r"E-(\d+)", text)}
+        for a, b in re.findall(r"E-(\d+)\s*(?:…|\.\.\.)\s*E-(\d+)", text):
+            ids |= set(range(int(a), int(b) + 1))
+        return ids
+
+    wrong = []
+    for f, i, block, lo, hi in claims:
+        if hi > max(every) or lo < min(every):
+            wrong.append(
+                f"{f}:{i} names E-{lo:02d}…E-{hi:02d}, outside the ledger's "
+                f"E-{min(every):02d}…E-{max(every):02d}"
+            )
+        elif WHOLE.search(block):
+            missing = sorted(every - _ids_in(block))
+            if missing:
+                wrong.append(
+                    f"{f}:{i} advertises the ledger but omits "
+                    + ", ".join(f"E-{n:02d}" for n in missing)
+                )
+    assert not wrong, "experiment ranges that disagree with the ledger: " + "; ".join(wrong)
+
+    # The durable fix is the rule, not any one range: ids are not contiguous
+    # across the book boundary, so membership can only be read off position.
+    assert "position relative to the `# BOOK II` heading" in led, (
+        "EXPERIMENT_REGISTRY must state that book membership is defined by heading "
+        "position, not by id number — that sentence is what stops the next range "
+        "from drifting away from the file"
+    )
+
+
+def test_experiment_ids_are_unique_in_the_ledger():
+    """One id, one experiment.
+
+    Round 1 of PR #1111 was about ID collisions in the registry. The ledger it
+    joins against still had one, unnoticed through fifteen further rounds:
+    `E-26` named BOTH the vol-regime-features probe (a row in the 2026-07-06
+    session table) and the magnitude class-weight sweep (its own `## E-26`
+    section, 2026-09-14). Nine documents cited it, meaning one or the other,
+    and nothing could tell which -- `07-MODEL-REGISTRY.md` cited it for the
+    magnitude work while `LEDGER_SCOPE_OVERRIDES` described it as vol-regime
+    features.
+
+    The overrides table made it worse rather than catching it: `E-26` had a
+    hand-written scope, so the MAGNITUDE entry's MISSING `Engine/area:` field
+    -- which every other section carries -- was masked by an override written
+    for the SESSION entry. Two defects covering for each other under one id.
+
+    The collision is not detectable from ids alone: a session-table row and a
+    `##` section are different declaration forms, and an id may legitimately
+    appear in both a session header and its own row. What is never legitimate
+    is one id owning a standalone section AND a separate session-table entry.
+    Resolved 2026-09-22 by renumbering the later entry to `E-35`, following the
+    `E-24` -> `E-32` precedent. DOC-57.
+    """
+    text = LEDGER.read_text()
+    sections = set(re.findall(r"^## (E-\d+)", text, re.M))
+
+    # Ids a SESSION HEADER claims, ranges expanded -- e.g.
+    # `# 2026-07-06 SESSION ... (E-26 ... E-31, E-33 + P0.1)`. Those entries
+    # live as rows in the session's own table, so an id holding both a `##`
+    # section and a session claim is two experiments wearing one number.
+    #
+    # NOT the `| E-nn |` row form on its own: the Book I/II cross-map at the
+    # top of the file uses it legitimately, and keying on it flagged six clean
+    # ids. Caught because the gate failed on the unmutated tree -- a gate that
+    # is red before the defect is reintroduced is measuring something else.
+    claimed_by_session: set[str] = set()
+    for m in re.finditer(r"^# [^\n]*SESSION[^\n]*\(([^)]*E-\d+[^)]*)\)", text, re.M):
+        claimed_by_session |= _expand_experiment_ranges(m.group(1))
+
+    collisions = sorted(sections & claimed_by_session)
+    assert not collisions, (
+        f"experiment ids declared BOTH as a standalone section and as a session-table "
+        f"row: {collisions}. One id, one experiment — renumber the later entry and "
+        "record it in the ID-collisions note, as E-24 -> E-32 and E-26 -> E-35 were."
+    )
+
+    dupes = sorted({e for e in re.findall(r"^## (E-\d+)", text, re.M)
+                    if len(re.findall(rf"^## {re.escape(e)}\b", text, re.M)) > 1})
+    assert not dupes, f"experiment ids with more than one `##` section: {dupes}"
+
+
 def _ownerless_rows() -> list[str]:
     """The raw Experiments cell of each row in the ownerless table."""
     body = REGISTRY.read_text().split("### Experiments with no `MODEL-*` owner", 1)[1]

@@ -27,7 +27,7 @@ merged or reworded; only the ordinal label changed. Part B's `B.` (deferred) and
 
 | Doc | Holds |
 |---|---|
-| [`EXPERIMENT_REGISTRY.md`](EXPERIMENT_REGISTRY.md) | Per-experiment ledger `E-01…E-34` + thematic Book II |
+| [`EXPERIMENT_REGISTRY.md`](EXPERIMENT_REGISTRY.md) | Per-experiment ledger `E-01…E-35` + thematic Book II |
 | [`RESEARCH_COMPENDIUM.md`](RESEARCH_COMPENDIUM.md) | Master narrative (Part A) + end-to-end experiment log (Part B) |
 | [`INVESTMENT_MODELS_SUMMARY.md`](INVESTMENT_MODELS_SUMMARY.md) | Models #1–#5, `lib/`, Strat classifier, backtest engine |
 | [`MAGNITUDE_ENGINE_RESULTS.md`](MAGNITUDE_ENGINE_RESULTS.md) · [`DIRECTION_RESEARCH_RESULTS.md`](DIRECTION_RESEARCH_RESULTS.md) · [`DIRECTION_FEATURES_R&D.md`](DIRECTION_FEATURES_R&D.md) | Per-program verdict docs (all FAIL / null) |

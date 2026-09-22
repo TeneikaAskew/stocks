@@ -3,12 +3,22 @@
 **This registry is the UNION of the two organizational schemes the research
 program produced. Nothing is dropped: every section from both editions is
 preserved below in full. Where the two describe the same experiment with
-different wording, BOTH wordings are kept — Book I (per-experiment, `E-01…E-24`)
+different wording, BOTH wordings are kept — Book I (per-experiment, `E-01`…`E-25` + `E-32`)
 and Book II (thematic, `G1–G7` globals + `A/B/C/D/P/L` entries).**
 
 Merged 2026-06-10 from:
-- **Book I** — the per-experiment ledger (`E-01…E-23` + the `E-24` data-quality/
-  gamma bridge entry). Granular, one section per experiment surface.
+- **Book I** — the per-experiment ledger: `E-01…E-23`, the `E-24` data-quality/
+  gamma bridge entry, `E-25` (STRAT-NEXTBAR) and `E-32` (BREAKOUT-META execution
+  quality, renumbered out of a second `E-24` and kept beside its parent `E-18`).
+  Granular, one section per experiment surface.
+- **Book membership is defined by position relative to the `# BOOK II` heading, not
+  by id number.** The id space is not contiguous across the boundary: Book II holds
+  `E-26`…`E-31`, `E-33`, `E-34` and `E-35`. Until 2026-09-22 this section advertised
+  Book I as `E-01…E-24`, which silently dropped `E-25` and `E-32` — the latter being
+  the follow-up to the ledger's only claimed real edge. Ten other documents
+  simultaneously advertised `E-01…E-34`, sweeping all of Book II into Book I, so the
+  repository shipped two contradictory contracts and neither matched the file.
+  Gated by `test_book_membership_matches_heading_position`. DOC-55.
 - **Book II** — the thematic ledger ("2026-06-05 edition"). Global indexes
   (`G1` architectures, `G2` datasets, `G3` decision rules, `G4` literature,
   `G5` conventions, `G6` open items, `G7` sources) + thematic entries
@@ -21,7 +31,7 @@ Merged 2026-06-10 from:
 |---|---|---|
 | E-01, E-02, E-03, E-04, E-05, E-06 | A1, P-series | STRAT TYPE / next-candle structure |
 | E-07, E-08, E-17 | A3, B (E1–E5b), C | Direction probes & feature-family R&D |
-| E-09…E-15, E-16, E-26 | A2 | Magnitude (size) engine + intraday-momentum |
+| E-09…E-15, E-16, E-35 | A2 | Magnitude (size) engine + intraday-momentum |
 | E-18 (the one real edge) | B / breakout-meta | Meta-labeled breakout follow-through |
 | E-19, E-20 | L, G6 | Leakage audits + calibration |
 | E-21, E-22 | P (P1–P7), D | Archived P7 pipeline + pre-registered program + exec backtests |
@@ -46,13 +56,16 @@ into free IDs above the previous maximum (`E-31`). Nothing was deleted or merged
 
 | Was | Now | Entry | Why this one moved |
 |---|---|---|---|
-| `E-24` (2nd) | **`E-32`** | BREAKOUT-META execution-quality + OFI-proxy follow-up (2026-06-05) | `E-24` is fixed by this doc's own header (`E-01…E-23` + "the `E-24` data-quality/gamma bridge entry"), the cross-map row above, and the §DQ3 back-reference "Continues **E-24/DQ1**" |
+| `E-24` (2nd) | **`E-32`** | BREAKOUT-META execution-quality + OFI-proxy follow-up (2026-06-05) | `E-24` is fixed by this doc's own header (`E-01…E-23` + "the `E-24` data-quality/gamma bridge entry", now stated in full above), the cross-map row above, and the §DQ3 back-reference "Continues **E-24/DQ1**" |
 | `E-25` (2nd) | **`E-33`** | Feature-family ablation, 2026-07-06 scratch session | table row only; no external citation |
 | `E-25` (3rd) | **`E-34`** | Direction-Predictability Program Phase 2 (2026-07-09) | `E-25` = STRAT-NEXTBAR is cited by `scripts/strat_clv_demech.py`, `scripts/strat_struct_backtest.py`, `docs/MODEL_REGISTRY.md` and `docs/RESEARCH_COMPENDIUM.md` |
 
 **If you are reading an older PR, issue or commit message:** an `E-25` dated
 2026-07-09 or later means **E-34**; an `E-24` describing breakout-meta execution
-quality means **E-32**. Next free ID is **E-35**.
+quality means **E-32**; an `E-26` describing the magnitude class-weight sweep or
+the 2026-09-14 gate-4 decision-rule amendment means **E-35** (renumbered 2026-09-22 —
+`E-26` itself is the vol-regime-features probe in the 2026-07-06 session).
+Next free ID is **E-36**.
 
 ### Where the rest of the corpus lives
 
@@ -389,7 +402,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 ## E-11 · MAG gate-6 — mechanism (event-conc, calendar decomp, naïve baseline)
 - **Engine/area:** magnitude (mechanism) · **Status:** validated · **Date:** 2026-05-28.
 - **Question:** does the EXPLOSIVE signal come from its claimed mechanism, or from calendar?
-- **Methods/results:** event-window concentration (`check_event_window_concentration.py`); model-vs-calendar decomposition (`model_vs_calendar_explosive_decomp.py`) — IWM 5m 3.09× cell-rate, 63% in top-10% cells; naïve DoW×30-min lookup (`naive_calendar_lookup_baseline.py`) passed gates 1–3 and failed gate 4 under argmax (it can never argmax EXPLOSIVE) → calendar slot fully explains gates 1–3. **Re-run 2026-09-16 under the E-26 decision rule** (P(EXPLOSIVE) ≥ 2× prior; `direction-probe-dcd6d/bk6xd/xdh45`): the lookup passes **all four gates** on SPY/QQQ/IWM 5m (g4 8/8, 8/8, 7/8; per-fold lift 2.2–3.4× against the promoted `6hp7l` models' 3.0–4.5×), so under the served rule the calendar slot explains gates 1–4 and the models' margin over it is the within-cell +0.5–1.0× lift. Results doc §12.
+- **Methods/results:** event-window concentration (`check_event_window_concentration.py`); model-vs-calendar decomposition (`model_vs_calendar_explosive_decomp.py`) — IWM 5m 3.09× cell-rate, 63% in top-10% cells; naïve DoW×30-min lookup (`naive_calendar_lookup_baseline.py`) passed gates 1–3 and failed gate 4 under argmax (it can never argmax EXPLOSIVE) → calendar slot fully explains gates 1–3. **Re-run 2026-09-16 under the E-35 decision rule** (P(EXPLOSIVE) ≥ 2× prior; `direction-probe-dcd6d/bk6xd/xdh45`): the lookup passes **all four gates** on SPY/QQQ/IWM 5m (g4 8/8, 8/8, 7/8; per-fold lift 2.2–3.4× against the promoted `6hp7l` models' 3.0–4.5×), so under the served rule the calendar slot explains gates 1–4 and the models' margin over it is the within-cell +0.5–1.0× lift. Results doc §12.
 - **Verdict:** ✅ "Phase 3" signal is a **calendar proxy**, not event causality.
 - **Artifacts:** the three scripts; `MAGNITUDE_ENGINE_RESULTS.md:284,336,374`.
 
@@ -398,7 +411,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Question:** on EXPLOSIVE bars, does the realized move beat the option-implied move?
 - **Method:** realized `|next_open−next_close|` vs `spot × ATM_IV × √(5/98280)`; ratio ≥ **1.25** in ≥6 IV-covered folds.
 - **Results:** **0/23 IV-covered folds pass**; mean ratio 0.83–0.92; best 1.23 (SPY 5m 2020). Within-cell boost is calendar + vol-clustering (priced).
-- **Re-run 2026-09-16 (E-26 decision rule, `6hp7l` predictions, `direction-probe-cb4zw/m68nf/wtcqd`):** the called population is ~100× larger per fold (0.8k–3.2k bars) and the verdict is the same or worse: **0/24 IV-covered folds pass** (8/8 covered per cell once `bb005bbb` fixed the open-ended last fold's label; re-run `direction-probe-njwj8/hbk22/vtgsq`), mean ratio 0.67–0.73, best fold 0.86 (IWM 2025), the 2026 fold 0.60–0.61. Results doc §12.
+- **Re-run 2026-09-16 (E-35 decision rule, `6hp7l` predictions, `direction-probe-cb4zw/m68nf/wtcqd`):** the called population is ~100× larger per fold (0.8k–3.2k bars) and the verdict is the same or worse: **0/24 IV-covered folds pass** (8/8 covered per cell once `bb005bbb` fixed the open-ended last fold's label; re-run `direction-probe-njwj8/hbk22/vtgsq`), mean ratio 0.67–0.73, best fold 0.86 (IWM 2025), the 2026 fold 0.60–0.61. Results doc §12.
 - **Verdict:** ❌ closed the magnitude project (2026-05-29); re-established under the served decision rule 2026-09-16. The empirical VRP/cost gate.
 - **Artifacts:** `scripts/implied_vs_realized_check.py`; `MAGNITUDE_ENGINE_RESULTS.md:444`.
 
@@ -740,12 +753,12 @@ LightGBM, not HAR (open gap, §G6).
 - **Pre-committed gates are immutable once set** (magnitude 7-gate bar set before
   results; strat hard gates log-loss<base AND ECE≤0.05). One dated amendment
   on record: 2026-09-14, magnitude gate 4's *population* (decision rule, not
-  argmax); metric and threshold unchanged (E-26).
+  argmax); metric and threshold unchanged (E-35).
 - **Score the decision the consumer sees.** A gate on argmax and a consumer
   on argmax are consistent but both wrong when argmax of a calibrated model
   is constant; a gate on probabilities and a consumer on argmax disagree by
   construction. One decision function, used everywhere a bucket is named
-  (E-26).
+  (E-35).
 
 ## G4. Literature anchors → experiments informed
 
@@ -1353,7 +1366,14 @@ cutoffs re-run via the reliable config-tagged GCS path shows the SIZE gate pass
 HOLDS across fold placements — prune: Jan-1 (8/7/6) and shifted (7/8/7), both
 3/3. No fold-fragility. FINAL: SIZE robustly predictable+calibrated at
 15m+isotonic+prune. See MAGNITUDE_ENGINE_RESULTS.md.
-## E-26 — Magnitude class-weight sweep + promotion-criteria audit (2026-09-14)
+## E-35 — Magnitude class-weight sweep + promotion-criteria audit (2026-09-14)
+
+> **Renumbered 2026-09-22** — was a second `E-26`. The id already belonged to the
+> vol-regime-features probe in the 2026-07-06 session (see the Book II table), so two
+> unrelated experiments shared it: this magnitude sweep and that probe. The earlier
+> entry keeps `E-26`, following the `E-24` → `E-32` precedent. DOC-57.
+
+- **Engine/area:** magnitude · **Status:** committed · **Date:** 2026-09-14.
 
 **Frame:** which magnitude configuration belongs in production, and why
 did the June passers (rmcwj/r7c4q) and the serving c49qf disagree on

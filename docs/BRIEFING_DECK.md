@@ -1450,7 +1450,7 @@ Per CLAUDE.md and memory:
 | `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` | Phase-by-phase migration tracker |
 | `docs/INVESTMENT_MODELS_SUMMARY.md` | 5-model system, 195 features breakdown |
 | `docs/product/07-MODEL-REGISTRY.md` | Model lifecycle status, promotion criteria, experiment traceability |
-| `docs/EXPERIMENT_REGISTRY.md` | The experiment log — `E-01…E-34` with verdicts |
+| `docs/EXPERIMENT_REGISTRY.md` | The experiment log — `E-01…E-35` with verdicts |
 | `docs/RESEARCH_COMPENDIUM.md` | Master research narrative + end-to-end experiment log |
 | [`docs/DESIGN_SYSTEM.md`](https://github.com/TeneikaAskew/solyra/blob/main/docs/DESIGN_SYSTEM.md) | "The Obsidian Analyst" theme, color tokens, typography — now in the solyra repo |
 | `docs/product/infrastructure/05-e-API.md` | FastAPI router/endpoint catalog (PR #92) |

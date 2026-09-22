@@ -337,5 +337,5 @@ because a calibrated model on a 64%-TIGHT label set argmax-picks TIGHT on
 scoring the decision the consumer sees (P(bucket) ≥ 2× prior) everywhere a
 bucket is named. This does not move the gate-7 wall above: the honest tail
 signal at that operating point is an EXPLOSIVE call on ~13% of bars at 8-9%
-precision (base 2.6%). See `EXPERIMENT_REGISTRY.md` E-26 and
+precision (base 2.6%). See `EXPERIMENT_REGISTRY.md` E-35 and
 `MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14.

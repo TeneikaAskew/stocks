@@ -1248,8 +1248,19 @@ def run_backtest(min_nq: int, lookback: int | None = None) -> pd.DataFrame:
     # Typical daily return baseline — used by compute_playability_score's
     # move_magnitude_norm. We don't have per-ticker per-date typical
     # daily return at hand here, so we use a constant proxy (median
-    # daily return on a broad index). The score's *relative* ordering
-    # is preserved as long as this is consistent across rows.
+    # daily return on a broad index).
+    #
+    # NOTE (2026-09-22): the original comment here claimed "the score's
+    # *relative* ordering is preserved as long as this is consistent across
+    # rows." That is FALSE. `move_magnitude_pct / typical_daily_return_pct`
+    # is a DIVISION (lib/earnings_reactions.py:199), so freezing the divisor
+    # does not scale every row equally — it removes the per-ticker dispersion
+    # the normalizer exists to capture. Worked counter-example: move 8.0% at
+    # typ 0.8% vs move 9.0% at typ 1.5% ranks B above A under the proxy and
+    # A above B in production. Results from this script are therefore
+    # rank-valid only WITHIN the proxy scoring, and its quintiles are
+    # `pd.qcut` rank buckets, not the absolute cut-points production
+    # applies. See docs/models/MODEL-EARN-001.md. DOC-55.
     TYPICAL_DAILY_RETURN_PCT = 1.0
 
     predictions: list[dict] = []
@@ -1284,8 +1295,16 @@ def run_backtest(min_nq: int, lookback: int | None = None) -> pd.DataFrame:
 
             # options_volume is unknown for this walk-forward (we don't
             # have it at-time on the historical row). Use a constant
-            # 10000 as a proxy — preserves relative ordering across
-            # rows since log(opt_vol + 1) scales the same.
+            # 10000 as a proxy.
+            #
+            # NOTE (2026-09-22): the original comment claimed this
+            # "preserves relative ordering across rows since log(opt_vol + 1)
+            # scales the same." Also FALSE — `log_liquidity` is a
+            # MULTIPLICATIVE factor (lib/earnings_reactions.py:201), not an
+            # additive offset, and it spans log(101)=4.62 to log(1e6)=13.82,
+            # about 3x. Worked counter-example: move 8.0% at 500k volume vs
+            # move 9.0% at 400 ranks B above A under the proxy and A above B
+            # in production. DOC-55.
             score = compute_playability_score(
                 move_magnitude_pct=stats['move_magnitude_pct'],
                 typical_daily_return_pct=TYPICAL_DAILY_RETURN_PCT,
