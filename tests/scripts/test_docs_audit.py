@@ -228,6 +228,71 @@ def test_an_orphan_end_marker_is_a_finding():
     assert orphans == ["inventory:a ends at line 2 with no start"]
 
 
+def test_an_uppercase_url_scheme_is_masked_like_any_other():
+    """`ISSUE_URL_RE` accepts an uppercase scheme and the clause mask did not,
+    so `HTTPS://...` was left unmasked, the periods inside it became clause
+    boundaries, and a second citation on the line lost the cue it shared --
+    the stale claim passing while the identical lowercase spelling was
+    reported. Two patterns reading the same URLs and disagreeing about which
+    ones are URLs. Reproduced against the pre-fix code before it was
+    written: `upper` returned solyra#1 alone."""
+    states = {"solyra": {1: {"state": "closed", "reason": "completed",
+                             "kind": "ISSUE"},
+                         2: {"state": "closed", "reason": "completed",
+                             "kind": "PR"}}}
+    url = "https://github.com/TeneikaAskew/solyra/issues/1"
+    pr = "https://github.com/TeneikaAskew/solyra/pull/2"
+    cited = lambda doc: sorted(f["detail"].split()[0] for f in
+                               m.check_closed_issues("d.md", doc, states))
+    assert cited(f"Outstanding: {url} and {pr}\n") == ["solyra#1", "solyra#2"]
+    assert cited(f"Outstanding: {url.replace('https', 'HTTPS')} and "
+                 f"{pr.replace('https', 'HTTPS')}\n") == ["solyra#1", "solyra#2"]
+
+
+def test_a_reference_label_is_compared_by_case_folding():
+    """CommonMark compares labels by Unicode case folding, under which
+    `Stra\u00dfe` and `STRASSE` are the same label. `.lower()` leaves the sharp s
+    alone and made them two, so a heading resolving one recorded the invented
+    anchor `titlestrasse` and a valid link to `#title` was reported dead."""
+    assert m._ref_key("Stra\u00dfe") == m._ref_key("STRASSE")
+    # The whitespace and trimming rules it already carried are unchanged.
+    assert m._ref_key("[my   ref]") == m._ref_key("[MY REF]")
+    # And two genuinely different labels stay different, so folding is not
+    # collapsing everything.
+    assert m._ref_key("guide") != m._ref_key("guides")
+
+
+def test_an_ordered_marker_stops_at_nine_digits():
+    """CommonMark caps an ordered-list marker at nine digits, so
+    `1234567890. # Fake` is ordinary paragraph text -- while stripping it as a
+    container let h1_index invent an H1, heading_anchors invent `#fake`, and
+    --stamp place provenance after a heading that does not exist."""
+    assert m.h1_index(["1234567890. # Fake", "", "body"]) is None
+    assert m.heading_anchors("1234567890. # Fake\n") == set()
+    # Nine digits is still a list, so this bounds the rule rather than
+    # removing it.
+    assert m.h1_index(["123456789. # Real", "", "body"]) == 0
+    assert m.heading_anchors("123456789. # Real\n") == {"real"}
+
+
+def test_a_registry_row_with_extra_cells_is_refused():
+    """An unescaped pipe in a value -- a `line:^foo|bar$` region pattern is the
+    shape -- splits into a fifth cell, and the parser silently kept `line:^foo`
+    and dropped `bar$`: a BROADER ownership map than the row displays, so
+    hand-written lines routed as generated and stamping decisions came from a
+    declaration nobody wrote. Refused rather than truncated, because the
+    truncation is invisible in the rendered table."""
+    base = ("## Registry\n\n| Class | Path glob | Declared code paths "
+            "| Generated regions |\n|---|---|---|---|\n| D | real.md | | |\n")
+    assert [r["glob"] for r in m.load_registry(base)] == ["real.md"]
+    with pytest.raises(m.AuditError, match=r"5 cells where the table declares 4"):
+        m.load_registry(base + "| A | gen/y.md | lib | line:^foo|bar$ |\n")
+    # A row with FEWER cells is a different case and still parses: the
+    # fourth column is optional and only meaningful for Class A.
+    assert [r["glob"] for r in m.load_registry(base + "| D | other.md | lib |\n")] \
+        == ["real.md", "other.md"]
+
+
 def test_a_definition_shaped_line_needs_a_whole_definition(tmp_path, monkeypatch):
     """CommonMark renders `[g]: missing.md nonsense` as ordinary text -- no
     definition, no clickable link -- while a prefix-only match registered the

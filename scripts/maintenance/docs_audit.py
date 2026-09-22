@@ -243,7 +243,12 @@ _CLAUSE_SPLIT_RE = re.compile(r"[.;|]")
 # Not `\S*`: a table may omit padding (`| .../issues/1| still open ...|`), and
 # swallowing the `|` merged adjacent cells -- so an issue described as no
 # longer blocking inherited a live-work cue from the next one.
-_URL_RE = re.compile(r"https?://[^\s|]*[^\s|.,;:!?)\]]")
+# Case-INSENSITIVE, because `ISSUE_URL_RE` beside it is. `HTTPS://...` was
+# left unmasked here, so the periods inside it became clause boundaries and a
+# second citation on the line lost the cue it shared -- the stale claim passed
+# while the identical lowercase spelling was reported. Two patterns reading
+# the same URLs and disagreeing about which ones are URLs.
+_URL_RE = re.compile(r"https?://[^\s|]*[^\s|.,;:!?)\]]", re.I)
 # Case-insensitive, because GitHub resolves `teneikaaskew/Stocks` to the same
 # repository and a document may cite it that way. The `i` flag ALONE would be
 # worse than the bug: the captured name would index states["Stocks"], miss, and
@@ -609,7 +614,12 @@ def _ref_key(label: str) -> str:
     label goes through here so the definition side and the use side cannot
     drift apart.
     """
-    return re.sub(r"\s+", " ", label).strip().lower()
+    # CASEFOLD, not lower(). CommonMark compares labels by Unicode case
+    # folding, under which `Stra\u00dfe` and `STRASSE` are the same label --
+    # `.lower()` leaves the sharp s alone and made them two, so a heading
+    # resolving one of them recorded the invented anchor `titlestrasse` and a
+    # valid link to `#title` was reported dead. Codex filed it here.
+    return re.sub(r"\s+", " ", label).strip().casefold()
 
 
 def _balanced_close(text: str, at: int) -> int:
@@ -1594,6 +1604,19 @@ def load_registry(text: str) -> list[dict]:
         cells = split_table_row(line)
         if len(cells) < 2:
             continue
+        # And no MORE than the four declared columns. An unescaped pipe in a
+        # value -- a `line:^foo|bar$` region pattern is the shape -- splits
+        # into a fifth cell, and the parser silently kept `line:^foo` and
+        # dropped `bar$`: a BROADER ownership map than the row displays, so
+        # hand-written lines routed as generated and stamping decisions came
+        # from a declaration nobody wrote. Refused rather than truncated,
+        # because the truncation is invisible in the rendered table.
+        if len(cells) > 4 and _cell(cells[0]).upper() in {"A", "B", "C", "D", "X"}:
+            raise AuditError(
+                f"{REGISTRY}: a class {_cell(cells[0]).upper()} row has "
+                f"{len(cells)} cells where the table declares 4 -- an unescaped "
+                "`|` in a value splits it, and the parser would read a broader "
+                "declaration than the row displays; escape it as `\\|`")
         cls = _cell(cells[0]).upper()
         if cls not in {"A", "B", "C", "D", "X"}:
             # A mistyped class was discarded in silence. If the document it
@@ -2438,7 +2461,7 @@ def is_future_date(date: str, today: str) -> bool:
 # block. The Node twin has admitted the marker for rounds; this did not.
 _FENCE_RE = re.compile(
     r"^(?P<pre>[ \t]*)(?P<quote>(?:> ?)*)"
-    r"(?P<item>(?:[-*+]|\d+[.)])\s+)?"
+    r"(?P<item>(?:[-*+]|\d{1,9}[.)])\s+)?"
     r"(?P<lead>[ \t]*)(?P<delim>`{3,}|~{3,})(?P<info>.*)$")
 _QUOTE_PREFIX_RE = re.compile(r"^ {0,3}((?:> ?)*)")
 # At least ONE marker, for STRIPPING the container. The counting pattern above
@@ -2594,7 +2617,7 @@ def indented_code_lines(lines: list[str]) -> set[int]:
         else:
             # A table row is not a container, so it leaves the floor alone; a
             # list marker sets it to its own content column plus four.
-            bullet = re.match(r"^(\s*(?:[-*+]|\d+[.)])\s+)", line)
+            bullet = re.match(r"^(\s*(?:[-*+]|\d{1,9}[.)])\s+)", line)
             if bullet:
                 # COLUMNS, as every other measurement here is. `-\titem`
                 # advances the tab to column 4, but counting characters said
@@ -2878,7 +2901,12 @@ def _comment_hidden(lines: list[str]) -> set[int]:
     return out
 
 
-_LIST_MARKER_RE = re.compile(r"^(\s*(?:[-*+]|\d+[.)])\s+)")
+# NINE digits at most. CommonMark caps an ordered-list marker there, so
+# `1234567890. # Fake` is ordinary paragraph text -- while stripping it as a
+# container let `h1_index` invent an H1, `heading_anchors` invent `#fake`, and
+# `--stamp` place provenance after a heading that does not exist. Codex filed
+# it here.
+_LIST_MARKER_RE = re.compile(r"^(\s*(?:[-*+]|\d{1,9}[.)])\s+)")
 
 
 def _column_width(text: str) -> int:
@@ -3254,7 +3282,7 @@ def is_setext_underline(lines: list[str], i: int,
     # A list item is a container too: `- Example` then `---` at column 0 ends
     # the list. An underline indented to the item's CONTENT column is still an
     # underline, which is why this is an indentation test rather than a ban.
-    item = re.match(r"^(\s*)((?:[-*+]|\d+[.)])\s+)", above)
+    item = re.match(r"^(\s*)((?:[-*+]|\d{1,9}[.)])\s+)", above)
     if item and len(re.match(r"^\s*", under).group(0)) < len(item.group(0)):
         return False
     return True
