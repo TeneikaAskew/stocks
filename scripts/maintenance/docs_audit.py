@@ -2000,6 +2000,15 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
     block_starts = {lo for lo, _ in _paragraph_blocks(lines, fenced)}
     in_comment = False
     open_tag: str | None = None
+    # The quote depth the open block STARTED at. A raw HTML block opened
+    # inside a blockquote ends with that quote, closing tag or not: CommonMark
+    # ends the nested block where its container ends. Holding it open added
+    # every later line to the block, so the dead-link, heading, marker and
+    # blocker scans suppressed live body content -- potentially to the end of
+    # the document. The fence scanner has had this rule for rounds; this is
+    # the same rule one construct over. An unquoted block opens at depth 0 and
+    # nothing is below 0, so it is untouched.
+    open_depth = 0
     # The closer a type-3/4/5 block waits for. None for the tag-closed and
     # blank-line-closed kinds.
     closer: str | None = None
@@ -2016,11 +2025,19 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
         # renders literally, and testing the physical line saw the `>` and
         # recognised no opener.
         line = _BLOCKQUOTE_PREFIX_RE.sub("", raw, count=1)
+        if open_tag is not None and quote_depth(raw) < open_depth:
+            open_tag, closer = None, None
         if in_comment:
             if "-->" in line:
                 in_comment = False
             continue
         if open_tag is None:
+            # Whatever opens on THIS line opens at this line's depth. Recorded
+            # before the opener tests rather than at each of the four places a
+            # block can start, so none of them can be missed; it is only read
+            # while a block is open, so a line that opens nothing leaves a
+            # stale value nothing consults.
+            open_depth = quote_depth(raw)
             if i in indented:
                 continue
             # A comment OPENING on this line hides anything after it, including
@@ -3312,6 +3329,7 @@ def _paragraph_blocks(lines: list[str], fenced: set[int]) -> list[tuple[int, int
     """
     blocks: list[tuple[int, int]] = []
     start: int | None = None
+    open_depth = 0
 
     def flush(end: int) -> None:
         nonlocal start
@@ -3329,8 +3347,19 @@ def _paragraph_blocks(lines: list[str], fenced: set[int]) -> list[tuple[int, int
             flush(i - 1)
             blocks.append((i, i))
             continue
+        # A CONTAINER transition ends the block too. A new list item opens its
+        # own paragraph, and so does a change of blockquote depth: `- [open`
+        # over `- label](missing.md)` is two items, not one paragraph, and
+        # joining them paired the brackets into a link no reader can click.
+        # The same grouping feeds code_span_lines, where delimiters in
+        # separate containers were masking live content between them.
+        depth = quote_depth(line)
+        if start is not None and (depth != open_depth
+                                  or _LIST_MARKER_RE.match(bare)):
+            flush(i - 1)
         if start is None:
             start = i
+            open_depth = depth
     flush(len(lines) - 1)
     return blocks
 

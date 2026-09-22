@@ -6119,3 +6119,35 @@ def test_every_kind_of_heading_whitespace_becomes_a_hyphen():
     gating dead anchor while the tab-bearing slug was accepted."""
     assert m.heading_slug("Hello\tWorld") == "hello-world"
     assert m.heading_slug("Hello World") == "hello-world"
+
+
+def test_a_raw_html_block_ends_with_its_blockquote():
+    """CommonMark ends a nested block where its container ends, so `> <pre>`
+    is closed by the quote whether or not a `</pre>` ever arrives. Holding it
+    open added every later line to the block, so the dead-link, heading,
+    marker and blocker scans suppressed live body content to the end of the
+    document. The fence scanner has had this rule for rounds."""
+    doc = ["> <pre>", "> sample", "", "[x](missing.md)"]
+    assert m.raw_html_block_lines(doc) == {0, 1}
+    out = m.check_dead_links("d.md", "\n".join(doc) + "\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+    # An UNQUOTED block opens at depth 0 and nothing is below 0, so it still
+    # runs to its closing tag across blank lines.
+    assert m.raw_html_block_lines(["<pre>", "a", "", "b", "</pre>"]) == {0, 1, 2, 3, 4}
+
+
+def test_inline_content_ends_at_a_container_boundary():
+    """A new list item opens its own paragraph, and so does a change of
+    blockquote depth. Grouping them into one block paired delimiters across
+    the boundary: `- [open` over `- label](missing.md)` became a link no
+    reader can click, and a stray backtick masked a live one."""
+    assert m._paragraph_blocks(["- [open", "- label](missing.md)"], set()) == \
+        [(0, 0), (1, 1)]
+    assert m.check_dead_links("d.md", "- [open\n- label](missing.md)\n", {"d.md"}) == []
+    # The masking direction: a backtick before the item no longer swallows it.
+    out = m.check_dead_links("d.md", "a ` b\n- [x](missing.md) `\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+    # A quote-depth change splits too.
+    assert m._paragraph_blocks(["> a ` b", "c ` d"], set()) == [(0, 0), (1, 1)]
+    # A CONTINUATION of an item carries no marker and stays in its block.
+    assert m._paragraph_blocks(["- one", "  two"], set()) == [(0, 1)]
