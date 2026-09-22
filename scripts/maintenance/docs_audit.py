@@ -231,7 +231,14 @@ _URL_RE = re.compile(r"https?://[^\s|]*[^\s|.,;:!?)\]]")
 # is deliberately still accepted -- documents here write it -- so the boundary
 # is "start, whitespace, or a scheme/`//`", not "https:// only".
 ISSUE_URL_RE = re.compile(
-    r"(?:(?<=^)|(?<=[\s(\[<])|(?<=//))"
+    # The `//` must be the SCHEME's. Any double slash satisfied the old
+    # lookbehind, so `https://example.com//github.com/<owner>/stocks/issues/1`
+    # read as a citation of stocks#1 and a closed issue 1 produced a gating
+    # stale-blocker finding for a URL whose host is example.com. The bare-host
+    # spelling this repo's docs use is still admitted, by the
+    # start/whitespace/bracket alternatives beside it. Parity with the Node
+    # twin (solyra#69).
+    r"(?:(?<=^)|(?<=[\s(\[<])|(?<=://))"
     # And the number ENDS where the number ends. Without a trailing boundary
     # `.../issues/1foo` captured the numeric prefix and was read as a citation
     # of issue 1 -- so a closed issue 1 produced a gating stale-blocker finding
@@ -423,7 +430,100 @@ def decode_char_refs(text: str) -> str:
     return _CHAR_REF_RE.sub(lambda m: html.unescape(m.group(0)), text)
 
 
-def heading_slug(heading: str) -> str:
+
+def _balanced_close(text: str, at: int) -> int:
+    """Index just past the `)` that closes the `(` at `at`, or -1.
+
+    CommonMark allows a destination to carry balanced parentheses to any
+    depth, and the regex alternative that handled it stopped at two -- so
+    `[x](a(b(c)).md)` did not match at all and a deleted target with that
+    spelling passed the audit clean. A scan has no depth limit to get wrong.
+    A backslash escapes the character after it, there as everywhere.
+    """
+    depth = 0
+    i, n = at, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _strip_heading_links(s: str, ref_labels: frozenset[str]) -> str:
+    """A heading's visible text, with link syntax removed but labels kept.
+
+    `## See [x](guide.md) now` renders as "See x now". Two shapes were wrong:
+    a destination containing parentheses ended the old pattern at the first
+    `)` and left `.md)` in the slug, and a REFERENCE link (`[guide][g]` with
+    `[g]` defined) was not recognised at all, so its second label survived as
+    `guideg`. Both were wrong in the same two directions -- a working fragment
+    reported dead, and one the page does not expose accepted.
+
+    A SHORTCUT reference (`[guide]` alone) is deliberately not resolved. This
+    corpus is full of bracketed prose that is indistinguishable from one, and
+    the existing REF_USE_RE measurement is why uses are not scanned elsewhere.
+    """
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        # An escaped bracket is literal text, so it opens nothing.
+        if ch == "\\" and i + 1 < n:
+            out.append(s[i:i + 2])
+            i += 2
+            continue
+        if ch != "[":
+            out.append(ch)
+            i += 1
+            continue
+        depth, j, end = 0, i, -1
+        while j < n:
+            if s[j] == "\\":
+                j += 2
+                continue
+            if s[j] == "[":
+                depth += 1
+            elif s[j] == "]":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+            j += 1
+        if end == -1:
+            out.append(ch)
+            i += 1
+            continue
+        label, k = s[i + 1:end], end + 1
+        if k < n and s[k] == "(":
+            close = _balanced_close(s, k)
+            if close != -1:
+                out.append(label)
+                i = close
+                continue
+        if k < n and s[k] == "[":
+            shut = s.find("]", k)
+            if shut != -1:
+                # A COLLAPSED reference (`[guide][]`) names itself.
+                ref = (s[k + 1:shut].strip() or label.strip()).lower()
+                if ref in ref_labels:
+                    out.append(label)
+                    i = shut + 1
+                    continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def heading_slug(heading: str,
+                 ref_labels: frozenset[str] = frozenset()) -> str:
     """GitHub's anchor for a heading.
 
     The order is what matters and what makes this worth a helper: GitHub
@@ -450,10 +550,10 @@ def heading_slug(heading: str) -> str:
     # link -- so GitHub's anchor includes `xguidemd`, while stripping the
     # destination unconditionally recorded `literal-x`: a working fragment
     # reported dead AND an anchor the page does not expose accepted.
-    _linked = s
-    s = re.sub(r"\[([^\]]*)\]\([^)]*\)",
-               lambda m: m.group(0) if is_escaped(_linked, m.start()) else m.group(1),
-               _linked)
+    # See _strip_heading_links: the destination is scanned rather than matched,
+    # so parentheses inside it cannot end it early, and a DEFINED reference
+    # link resolves to its visible label.
+    s = _strip_heading_links(s, ref_labels)
     # Inline HTML is MARKUP and does not belong to the visible text:
     # `## Hello <em>world</em>` renders as "Hello world" and GitHub's id is
     # `hello-world`, but keeping the tag names recorded `hello-emworldem` --
@@ -476,7 +576,12 @@ def heading_slug(heading: str) -> str:
     s = unescape_markdown(s)
     s = re.sub(r"\*", "", s)
     s = re.sub(r"(?<!\w)_+|_+(?!\w)", "", s).strip().lower()
-    return _SLUG_STRIP_RE.sub("", s).replace(" ", "-")
+    # EVERY run of rendered whitespace, not only the literal space.
+    # `## Hello<TAB>World` anchors as `hello-world` on GitHub, but keeping the
+    # tab recorded an unusable slug -- so a valid `#hello-world` link was a
+    # gating dead anchor while the tab-bearing spelling nothing exposes was
+    # accepted. Parity with the Node twin (solyra#69).
+    return re.sub(r"\s", "-", _SLUG_STRIP_RE.sub("", s))
 
 
 def heading_anchors(text: str) -> set[str]:
@@ -510,6 +615,19 @@ def heading_anchors(text: str) -> set[str]:
               # table rather than as Markdown -- a `# note` inside it exposes
               # no anchor, and recording one let a link to it pass.
               | front_matter_lines(lines))
+    # The reference labels this document DEFINES, so a heading carrying
+    # `[guide][g]` can resolve to its visible label. Undefined ones must not
+    # resolve: CommonMark renders `[guide][g]` literally when `[g]` is not
+    # defined, and the slug keeps both labels. Read through the same
+    # exclusions as everything else here -- a definition inside a fence or a
+    # comment defines nothing.
+    ref_labels = frozenset(
+        mm.group("label").strip().lower()
+        for i, ln in enumerate(lines) if i not in fenced
+        for mm in (REF_DEF_RE.match(
+            _LIST_MARKER_RE.sub(
+                "", _BLOCKQUOTE_PREFIX_RE.sub("", ln, count=1), count=1)),)
+        if mm)
     # A comment INSIDE a rendered heading is not part of its text. `## <!-- note
     # --> Real` slugged to `---note----real`, so a valid link to `#real` was
     # emitted as a gating dead-anchor finding AND the fabricated anchor was
@@ -543,7 +661,17 @@ def heading_anchors(text: str) -> set[str]:
         m = _HEADING_RE.match(_LIST_MARKER_RE.sub("", line, count=1))
         if not (m or setext):
             continue
-        base = heading_slug(line.strip() if setext else m.group(1))
+        # The LIST MARKER is stripped for a Setext heading too. `- Title`
+        # over an indented `===` is a heading is_setext_underline deliberately
+        # accepts, but the raw `- Title` reached the slug and recorded
+        # `--title` -- so a working `#title` fragment was reported dead while
+        # a `#--title` the page does not expose was accepted. Safe here
+        # precisely because is_setext_underline already refuses the case the
+        # ATX-only comment above was guarding: `- Example` over a column-zero
+        # `---` ends the list and renders a thematic break.
+        base = heading_slug(
+            _LIST_MARKER_RE.sub("", line.strip(), count=1) if setext
+            else m.group(1), ref_labels)
         n = seen.get(base, 0)
         slug = base if n == 0 else f"{base}-{n}"
         while slug in out:
@@ -3410,7 +3538,12 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
                 return
             resolved = posixpath.join(str(base), decoded)
             norm = posixpath.normpath(resolved)
-            if norm.startswith(".."):
+            # A PARENT component, not any name that starts with two dots.
+            # `..missing.md` is a legal repository filename that normalises to
+            # itself, and treating it as traversal meant a deleted or
+            # misspelled dot-prefixed target was never reported at all. Parity
+            # with the Node twin (solyra#69).
+            if norm == ".." or norm.startswith("../"):
                 # Climbs out of the repository: cross-repo prose, which
                 # this repo cannot resolve and must not call rot.
                 return

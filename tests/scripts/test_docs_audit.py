@@ -6040,3 +6040,82 @@ def test_a_byte_order_mark_is_not_heading_text():
     # heading marker, and the line above still wins.
     assert m.h1_index(["﻿# First", "﻿# Second"]) == 0
     assert m.h1_index(["# Plain", "", "body"]) == 0
+
+
+def test_a_heading_link_destination_may_carry_parentheses():
+    """`## See [x](a(b).md) now` renders as "See x now", but the pattern
+    stopped at the first `)` and left `.md)` in the slug -- so a working
+    fragment was reported dead while one the page does not expose was
+    accepted. A scan has no depth limit to get wrong."""
+    assert m.heading_slug("See [x](a(b).md) now") == "see-x-now"
+    assert m.heading_slug("See [x](a(b(c)).md) now") == "see-x-now"
+    # The controls from the rounds that shaped this: an ESCAPED bracket makes
+    # no link, and an ordinary one still loses its destination.
+    assert m.heading_slug("Literal \\[x](guide.md)") == "literal-xguidemd"
+    assert m.heading_slug("Real [x](guide.md)") == "real-x"
+
+
+def test_a_defined_reference_link_in_a_heading_slugs_by_its_label():
+    """`## See [guide][g]` with `[g]` defined renders as "See guide", but only
+    inline destinations were stripped, so the second label survived as
+    `see-guideg`. Definedness is what decides it: CommonMark renders an
+    UNDEFINED reference literally, and the slug keeps both labels."""
+    defined = "# T\n\n## See [guide][g]\n\n[g]: guide.md\n"
+    assert sorted(m.heading_anchors(defined)) == ["see-guide", "t"]
+    assert sorted(m.heading_anchors("# T\n\n## See [guide][g]\n")) == \
+        ["see-guideg", "t"]
+    # A definition inside a fence defines nothing, so the reference stays
+    # literal -- the same exclusion every other read here applies.
+    fenced = "# T\n\n## See [guide][g]\n\n```\n[g]: guide.md\n```\n"
+    assert sorted(m.heading_anchors(fenced)) == ["see-guideg", "t"]
+    # The collapsed form names itself.
+    assert m.heading_slug("See [guide][]", frozenset({"guide"})) == "see-guide"
+    # A SHORTCUT reference is deliberately not resolved: bracketed prose in
+    # this corpus cannot be told apart from one.
+    assert m.heading_slug("See [guide]", frozenset({"guide"})) == "see-guide"
+
+
+def test_a_setext_heading_opening_a_list_item_drops_its_marker():
+    """`- Title` over an indented `===` is a heading `is_setext_underline`
+    deliberately accepts, but the raw `- Title` reached the slug and recorded
+    `--title` -- so a working `#title` fragment was reported dead while a
+    `#--title` the page does not expose was accepted."""
+    assert sorted(m.heading_anchors("- Title\n  ===\n")) == ["title"]
+    # The case the ATX-only rule was guarding is still refused: `- Example`
+    # over a column-zero `---` ends the list and renders a thematic break.
+    assert m.heading_anchors("- Example\n---\n") == set()
+    assert sorted(m.heading_anchors("Title\n===\n")) == ["title"]
+
+
+def test_the_github_host_boundary_belongs_to_the_url_scheme():
+    """Any double slash satisfied the lookbehind, so a URL whose host is
+    example.com read as a citation of stocks#1 and a closed issue 1 produced
+    a gating stale-blocker finding for it."""
+    states = {"stocks": {1: {"state": "closed", "reason": "completed",
+                             "kind": "ISSUE"}}}
+    ref = lambda line: [f["ref"] for f in m.check_closed_issues("d.md", line, states)]
+    assert ref("Blocked by https://example.com//github.com/TeneikaAskew/stocks/issues/1") == []
+    # The real URL, and the bare-host spelling this repo's docs use.
+    assert ref("Blocked by https://github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
+    assert ref("Blocked by github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
+
+
+def test_two_leading_dots_are_traversal_only_as_a_parent_component():
+    """`..missing.md` is a legal repository filename that normalises to
+    itself, and treating it as traversal meant a deleted or misspelled
+    dot-prefixed target was never reported at all."""
+    out = m.check_dead_links("d.md", "[x](..missing.md)\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+    # A real parent component still leaves the repository and is exempt.
+    assert m.check_dead_links("d.md", "[x](../outside.md)\n", {"d.md"}) == []
+    # And a tracked dot-prefixed file is not a finding.
+    assert m.check_dead_links("d.md", "[x](..missing.md)\n",
+                              {"d.md", "..missing.md"}) == []
+
+
+def test_every_kind_of_heading_whitespace_becomes_a_hyphen():
+    """`## Hello<TAB>World` anchors as `hello-world` on GitHub, but only the
+    literal space was hyphenated -- so a valid `#hello-world` link was a
+    gating dead anchor while the tab-bearing slug was accepted."""
+    assert m.heading_slug("Hello\tWorld") == "hello-world"
+    assert m.heading_slug("Hello World") == "hello-world"
