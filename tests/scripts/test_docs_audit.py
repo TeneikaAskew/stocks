@@ -6673,3 +6673,32 @@ def test_a_query_is_removed_from_the_rendered_destination():
     # keeps its name.
     assert [f["check"] for f in m.check_dead_links(
         "d.md", "# T\n\n[x](guide.md%3Fplain=1)\n", tracked)] == ["dead-link"]
+
+
+def test_a_backslash_escape_survives_every_link_delimiter():
+    """Three delimiters stopped at an ESCAPED copy of themselves, and each
+    failure left the whole link unmatched -- so a missing destination produced
+    no finding at all, which is the hiding direction."""
+    tracked = {"d.md", "a>b.md", "g.md"}
+
+    def dead(body):
+        return [f["detail"] for f in m.check_dead_links(
+            "d.md", f"# T\n\n{body}\n", tracked)]
+
+    # An angle-bracketed destination: `[x](<a\>b.md>)` resolves to `a>b.md`.
+    assert dead(r"[x](<a\>b.md>)") == []
+    assert m.check_dead_links("d.md", "# T\n\n[x](<a\\>b.md>)\n", {"d.md"}) != []
+    # A title may carry its own delimiter when escaped, in all three forms.
+    assert dead(r'[x](g.md "a \" quote")') == []
+    assert dead(r"[x](g.md 'a \' quote')") == []
+    assert dead(r"[x](g.md (a \) title))") == []
+    assert dead(r'[x](missing.md "a \" quote")') == ["relative link -> missing.md"]
+    # A reference label may carry an escaped bracket.
+    assert dead(r"[x\]]: missing.md") == [r"reference link [x\]] -> missing.md"]
+    assert m.REF_DEF_HEAD_RE.match(r"[x\]]:") is not None
+    # And the forms these grew out of are unchanged: a footnote still defines
+    # no destination, a plain title still closes a link, and the angle form
+    # still admits a space.
+    assert m.REF_DEF_RE.match("[^1]: note") is None
+    assert next(m.md_links('[x](g.md "t")')).group("target") == "g.md"
+    assert next(m.md_links("[x](<my guide.md>)")).group("btarget") == "my guide.md"

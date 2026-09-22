@@ -307,8 +307,12 @@ _MD_LINK_OPEN_RE = re.compile(
 # but CommonMark forbids a newline there -- so `[x](<missing\n.md>)` is
 # literal text, and the multiline pass matched it anyway and emitted a gating
 # dead-link finding over something no reader can click.
+# A BACKSLASH ESCAPE is destination content: `[x](<a\>b.md>)` resolves to
+# `a>b.md`, and stopping at the escaped `>` left the candidate unmatched
+# altogether, so a missing target produced no finding. Consumed as a unit
+# before the fragment split, so `\#` stays in the path as well.
 _MD_LINK_ANGLE_RE = re.compile(
-    r"<(?P<btarget>(?:&\#?[0-9A-Za-z]{1,32};|[^<>#\r\n])*)"
+    r"<(?P<btarget>(?:&\#?[0-9A-Za-z]{1,32};|\\[^\r\n]|[^<>#\\\r\n])*)"
     r"(?:#(?P<bfrag>[^>\s]+))?>")
 # One atom of a BARE destination. A CHARACTER REFERENCE is matched as a unit
 # before the fragment split, so the `#` inside `&#38;` is not read as the
@@ -317,8 +321,14 @@ _MD_LINK_ANGLE_RE = re.compile(
 # file dead. An ESCAPED hash is part of the PATH for the same reason:
 # `[x](a\#b.md)` resolves to the tracked `a#b.md`.
 _MD_DEST_ATOM_RE = re.compile(r"&\#?[0-9A-Za-z]{1,32};|\\.|[^()#\s]")
+# A TITLE may contain its own delimiter when the delimiter is escaped:
+# `[x](missing.md "a \" quote")` is a valid link. Stopping at the escaped
+# quote left the whole candidate unmatched, so the missing destination passed
+# the audit -- the hiding direction. Each of the three title forms consumes
+# escapes as units, exactly as the destination scan does.
 _MD_LINK_TAIL_RE = re.compile(
-    r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)""")
+    r"""(?:\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"""
+    r"""|\((?:\\.|[^)\\])*\)))?\s*\)""")
 
 
 class _LinkMatch:
@@ -418,7 +428,7 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
 # reported a tracked file dead -- the false direction. An unescaped `<`
 # is not destination content either, so it ends the alternative too.
 REF_DEF_RE = re.compile(
-    r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*"
+    r"^ {0,3}\[(?P<label>(?:\\.|[^\]\\^])(?:\\.|[^\]\\])*)\]:[ \t]*"
     r"(?P<target><(?:\\.|[^<>\\\n])*>|\S+)")
 # The same definition with its destination on the FOLLOWING line, which
 # CommonMark resolves and a per-line pattern cannot see. Split in two so the
@@ -446,7 +456,11 @@ HTML_HREF_RE = re.compile(
     rf"""<a(?:\s+{_HTML_ATTR})*?\s+href\s*=\s*"""
     r"""(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'`=<>]+))""",
     re.I | re.S)
-REF_DEF_HEAD_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*$")
+# A label may carry an ESCAPED bracket: `[x\]]: missing.md` is a definition
+# CommonMark registers, and stopping at that bracket collected nothing -- so a
+# missing destination behind that spelling produced no finding at all.
+REF_DEF_HEAD_RE = re.compile(
+    r"^ {0,3}\[(?P<label>(?:\\.|[^\]\\^])(?:\\.|[^\]\\])*)\]:[ \t]*$")
 REF_DEF_CONT_RE = re.compile(
     r"^[ \t]*(?P<target><(?:\\.|[^<>\\\n])*>|\S+)")
 # A USE (`[text][label]`) is deliberately NOT checked. Measured over the 322
