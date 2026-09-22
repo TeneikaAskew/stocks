@@ -507,7 +507,7 @@ BACKTICK_PATH_RE = re.compile(
 # check_dead_links), because `v1.2` and `api.md` in prose are otherwise
 # indistinguishable from a path.
 BACKTICK_ROOT_FILE_RE = re.compile(
-    r"`(?P<path>[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z0-9]{1,10}"
+    r"`(?P<path>[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{1,10}"
     r"(?::\d+(?:-\d+)?)?)`")
 
 # The `:line` or `:start-end` suffix above, which is a citation's coordinate
@@ -1432,6 +1432,53 @@ def load_registry(text: str) -> list[dict]:
     return rows
 
 
+def registry_rule_key(row: dict) -> tuple:
+    """What a registry row DECLARES, for comparing two equally specific rows.
+
+    The code-path and region columns are SETS: `lib/a, lib/b` and
+    `lib/b, lib/a` declare the same thing and drive identical checks, yet a
+    positional tuple compared them unequal and raised a gating P1 over a
+    disagreement the registry does not contain -- which also made
+    `classification_is_ambiguous` refuse `--stamp`. Sorted, so order is not a
+    decision.
+
+    Named, because `classification_is_ambiguous` carried a COPY of this tuple
+    and its docstring claimed the two could not disagree about what a tie
+    means. They could, and after the sort went into one of them they did.
+    """
+    return (row["cls"], tuple(sorted(row.get("code_paths") or ())),
+            tuple(sorted(row.get("regions") or ())))
+
+
+def glob_specificity(glob: str) -> tuple:
+    """How specific a registry glob is, most significant first.
+
+    Raw character length is not specificity: `docs/[a-z]*.md` is longer than
+    `docs/a.md`, so a wildcard row outranked the exact row it overlaps -- and
+    because the lengths DIFFER, the tie that would have raised an ambiguity
+    finding never happened, so a machine-owned document could be classified
+    writable and `--stamp` could modify it. An exact row wins outright; among
+    wildcards, the one matching more literal characters, and failing that the
+    one using fewer open-ended wildcards, is the more specific.
+
+    Ported from the Node twin (solyra#69), which has ranked this way for
+    rounds; this side still compared `len(glob)`. The comments there record
+    the four narrowings each of which was its own defect: a `**/` segment is
+    ranked DOWN rather than counted as literal, a bracket expression counts as
+    ONE position rather than as its contents, and `?` is counted with the
+    literals it stands in for because it constrains width where `*` does not.
+    """
+    wildcards = len(re.findall(r"[*?\[]", glob))
+    recursive = len(re.findall(r"\*\*", glob))
+    literals = len(re.sub(r"[*?]", "",
+                          re.sub(r"\[[^\]]*\]", "",
+                                 re.sub(r"\*\*/", "", glob))))
+    fixed = len(re.findall(r"\?", glob)) + len(re.findall(r"\[[^\]]*\]", glob))
+    stars = wildcards - fixed
+    return (1 if wildcards == 0 else 0, -recursive, literals + fixed,
+            -stars, -wildcards)
+
+
 def check_registry_paths(tracked: set[str], registry: list[dict]) -> list[dict]:
     """Every explicit registry declaration must name something that exists.
 
@@ -1465,17 +1512,13 @@ def check_registry_paths(tracked: set[str], registry: list[dict]) -> list[dict]:
         matches = [r for r in registry if fnmatch.fnmatch(path, r["glob"])]
         if not matches:
             continue
-        top = max(len(r["glob"]) for r in matches)
-        tied = [r for r in matches if len(r["glob"]) == top]
-        def _rule(r: dict) -> tuple:
-            # What classify() hands the caller. Two tied rows agreeing on the
-            # class but declaring different code paths still silently drop one
-            # set: duplicate Class D rows naming `lib/a` and `lib/b` produced
-            # no finding, and changes under `lib/b` could never trigger drift.
-            return (r["cls"], tuple(r.get("code_paths") or ()),
-                    tuple(r.get("regions") or ()))
-
-        if len({_rule(r) for r in tied}) > 1:
+        top = max(glob_specificity(r["glob"]) for r in matches)
+        tied = [r for r in matches if glob_specificity(r["glob"]) == top]
+        # What classify() hands the caller. Two tied rows agreeing on the class
+        # but declaring different code paths still silently drop one set:
+        # duplicate Class D rows naming `lib/a` and `lib/b` produced no
+        # finding, and changes under `lib/b` could never trigger drift.
+        if len({registry_rule_key(r) for r in tied}) > 1:
             rules = ", ".join(sorted({"{} -> {}".format(r["glob"], r["cls"])
                                       for r in tied}))
             out.append({"check": "registry", "doc": path, "severity": "P1",
@@ -1536,8 +1579,8 @@ def registry_rules(doc: str, registry: list[dict]) -> list[dict]:
     matches = [r for r in registry if fnmatch.fnmatch(doc, r["glob"])]
     if not matches:
         return []
-    top = max(len(r["glob"]) for r in matches)
-    return [r for r in matches if len(r["glob"]) == top]
+    top = max(glob_specificity(r["glob"]) for r in matches)
+    return [r for r in matches if glob_specificity(r["glob"]) == top]
 
 
 def classification_is_ambiguous(doc: str, registry: list[dict]) -> bool:
@@ -1551,12 +1594,13 @@ def classification_is_ambiguous(doc: str, registry: list[dict]) -> bool:
     disagreement the audit cannot resolve must disable the writes that depend
     on it, not merely be mentioned.
 
-    The comparison is the same tuple check_registry_paths compares, so the
-    finding and the refusal cannot disagree about what a tie means.
+    The comparison is `registry_rule_key`, which `check_registry_paths` calls
+    too -- one function rather than two copies, so the finding and the refusal
+    cannot disagree about what a tie means. They were copies until a sort went
+    into one of them and not the other, which is how this file keeps failing.
     """
     tied = registry_rules(doc, registry)
-    return len({(r["cls"], tuple(r.get("code_paths") or ()),
-                 tuple(r.get("regions") or ())) for r in tied}) > 1
+    return len({registry_rule_key(r) for r in tied}) > 1
 
 
 def classify(doc: str, registry: list[dict]) -> tuple[str | None, list[str], list[str]]:
@@ -2041,7 +2085,27 @@ def is_calendar_date(value: str | None) -> bool:
 _MARKER_FIELD_RE = re.compile(r"\*\*(Depth|Against|Last scanned|Last reviewed):\*\*", re.I)
 
 
-def check_marker_fields(doc: str, info: dict) -> list[dict]:
+def repeated_owned_fields(line: str) -> list[str]:
+    """Owned fields the marker line carries more than once.
+
+    `extra_segments` CONSUMES a parseable owned value and pushes only its
+    tail, so `**Owner:** Alice · **Owner:** Bob` left no extra text at all:
+    nothing reported it, and the rewrite kept the FIRST and deleted the
+    second -- arbitrarily discarding a contradictory ownership claim while
+    reporting the document updated. Case-insensitively, for the same reason
+    every other owned-field test here is.
+    """
+    seen: dict[str, int] = {}
+    for raw in line.split(DOT):
+        seg = raw.strip().lower()
+        field = next((f for f in OWNED_FIELDS
+                      if seg.startswith(f"**{f}".lower())), None)
+        if field:
+            seen[field] = seen.get(field, 0) + 1
+    return sorted(f for f, n in seen.items() if n > 1)
+
+
+def check_marker_fields(doc: str, info: dict, line: str | None = None) -> list[dict]:
     """A field the parser recognised the NAME of but could not read.
 
     Every optional group in MARKER_RE declines silently: `**Against:** `zzzz``
@@ -2068,6 +2132,16 @@ def check_marker_fields(doc: str, info: dict) -> list[dict]:
     # emitted only the non-gating P3 for the unknown date -- so it passed
     # --check while a drift calculation ran off provenance `stamp` never
     # writes. A combination the writer cannot produce is malformed on read.
+    # A field written TWICE, both copies well formed. Every one of them
+    # parses, so the tail check above sees nothing, and the parser silently
+    # takes the first -- a document asserting two different owners, or two
+    # different review dates, that no check reported and `--stamp` resolved by
+    # deleting one of them.
+    for field in repeated_owned_fields(line or ""):
+        out.append({"check": "marker", "doc": doc, "severity": "P2",
+                    "detail": f"the marker carries {field.rstrip(':')} twice; the parser "
+                              "reads the first and a restamp would delete the rest, so "
+                              "which one is true has to be decided by hand"})
     claims = [f for f, v in (("Depth", info.get("depth")), ("Against", info.get("sha"))) if v]
     if info.get("date") == "unknown" and claims:
         out.append({"check": "marker", "doc": doc, "severity": "P2",
@@ -3126,6 +3200,11 @@ def owner_of(lines: list[str], marker_idx: int | None) -> str | None:
     return m.group(1).strip() if m else None
 
 
+# Far past any real first line, and bounded so a file with no terminator at
+# all is not read whole just to answer this.
+_NEWLINE_SCAN_CAP = 1 << 20
+
+
 def existing_newline(path: pathlib.Path) -> str:
     """The line ending the file on disk already uses.
 
@@ -3141,12 +3220,32 @@ def existing_newline(path: pathlib.Path) -> str:
     # ending in it -- the whole-file diff this helper exists to prevent.
     # `readline` stops at the first `\n`, so the read stays bounded by one
     # line rather than by the file.
+    # A lone CR is a line ending too, and `readline` does not stop at one --
+    # so on a classic-Mac document the "first line" it returned was the whole
+    # file and the CRLF test then reported LF, which made `write_stamp`
+    # rewrite every ending in it: the whole-file diff this helper exists to
+    # prevent, in the one format it did not recognise. Read in chunks until
+    # the first terminator of ANY kind, bounded so a file with none does not
+    # pull itself into memory.
+    sample = b""
     try:
         with path.open("rb") as fh:
-            first = fh.readline()
+            while len(sample) < _NEWLINE_SCAN_CAP:
+                chunk = fh.read(8192)
+                if not chunk:
+                    break
+                sample += chunk
+                if b"\r" in sample or b"\n" in sample:
+                    break
     except OSError:
         return "\n"
-    return "\r\n" if first.endswith(b"\r\n") else "\n"
+    at = min((i for i in (sample.find(b"\r"), sample.find(b"\n")) if i != -1),
+             default=-1)
+    if at == -1:
+        return "\n"
+    if sample[at:at + 1] == b"\n":
+        return "\n"
+    return "\r\n" if sample[at + 1:at + 2] == b"\n" else "\r"
 
 
 def write_stamp(doc: str, new: str) -> None:
@@ -3293,6 +3392,14 @@ def stamp(text: str, date: str, depth: str, sha: str,
         if any(seg.strip().lower().startswith(f"**{f}".lower())
                for seg in tail.split(DOT)
                for f in OWNED_FIELDS if f != "Owner:"):
+            return text, "skipped-malformed-marker"
+        # And a field written TWICE, both copies well formed -- the case the
+        # refusal above cannot see, because `extra_segments` consumes a
+        # parseable owned value and leaves no tail. The rewrite would keep the
+        # first and delete the rest, resolving a contradiction the document
+        # states by discarding half of it. `check_marker_fields` reports it;
+        # this declines to paper over it.
+        if repeated_owned_fields(lines[found[0]]):
             return text, "skipped-malformed-marker"
     owner = owner_of(lines, found[0] if found else None) or "TBD"
     prev = found[1] if found else None
@@ -4680,8 +4787,17 @@ def check_doc_changed_since(doc: str, sha: str | None, base_ref: str, *,
     old = run(["git", "show", f"{sha}:{doc}"], cwd=cwd, ok_exit_codes=(128,))
     try:
         new = (REPO / doc).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
+    except OSError as exc:
+        # A read that could not happen is not a measurement. The main loop
+        # read this document a moment ago, so a failure here means it vanished
+        # or became unreadable mid-run -- and returning the same empty result
+        # as an UNCHANGED document let the audit report clean having never
+        # compared the prose against the reviewed revision at all. Exit 2, the
+        # status for "the audit could not run", not 0 for "nothing to report".
+        raise AuditError(
+            f"{doc} could not be read to measure drift since {sha} ({exc}); "
+            "the comparison never happened, so no result for it is available"
+        ) from exc
     if _without_marker(old) == _without_marker(new):
         return []
     return [{"check": "changed-since", "doc": doc, "severity": "P2",
@@ -5677,7 +5793,7 @@ def main(argv: list[str] | None = None) -> int:
             # the future check used to live here and read `info["date"]` only,
             # which left `Last scanned` in the future entirely unchecked.
             findings += check_marker_dates(doc, info, today)
-            findings += check_marker_fields(doc, info)
+            findings += check_marker_fields(doc, info, lines[found[0]])
             # A second marker in the window is a document making two review
             # claims at once. Reading the first and ignoring the rest let
             # `--stamp` rewrite the top one, report `updated` or `unchanged`,

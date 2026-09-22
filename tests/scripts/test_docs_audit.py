@@ -6756,3 +6756,108 @@ def test_a_verified_stamp_still_lands_when_the_document_holds_up(
     assert [s["doc"] for s in report["stamped"] if s["doc"] == "docs/d.md"] == \
         ["docs/d.md"]
     assert "**Depth:** verified" in doc.read_text()
+
+
+def test_a_carriage_return_only_document_keeps_its_line_endings(tmp_path):
+    """A lone `\\r` is a line ending too, and `readline` does not stop at one --
+    so the "first line" was the whole file and the CRLF test then reported LF,
+    making `write_stamp` rewrite every ending in it: the whole-file diff this
+    helper exists to prevent, in the one format it did not recognise."""
+    cases = {"cr.md": (b"# T\rbody\r", "\r"), "crlf.md": (b"# T\r\nbody\r\n", "\r\n"),
+             "lf.md": (b"# T\nbody\n", "\n"), "none.md": (b"# T", "\n"),
+             # A first line longer than one read chunk is still answered.
+             "long.md": (b"x" * 20000 + b"\r\n", "\r\n")}
+    for name, (data, want) in cases.items():
+        (tmp_path / name).write_bytes(data)
+        assert m.existing_newline(tmp_path / name) == want, name
+
+
+def test_a_marker_that_names_an_owned_field_twice_is_not_rewritten():
+    """Both copies parse, so the malformed-tail refusal cannot see them --
+    `extra_segments` CONSUMES a parseable owned value and left no tail. The
+    rewrite kept the FIRST and deleted the second, resolving a contradiction
+    the document states by discarding half of it, and reported it updated."""
+    dup = "**Last reviewed:** 2026-01-01 · **Owner:** Alice · **Owner:** Bob"
+    assert m.repeated_owned_fields(dup) == ["Owner:"]
+    out, action = m.stamp(f"# T\n\n{dup}\n\nBody.\n", "2026-09-22", "scanned",
+                          "abc1234")
+    assert action == "skipped-malformed-marker"
+    assert "Bob" in out and out == f"# T\n\n{dup}\n\nBody.\n"
+    # And it is REPORTED, so --check sees the contradiction rather than only
+    # --stamp declining to touch it.
+    found = m.find_marker([dup])
+    assert [f["check"] for f in m.check_marker_fields("d.md", found[1], dup)] == \
+        ["marker"]
+    # One copy of each field still stamps.
+    single = "**Last reviewed:** 2026-01-01 · **Owner:** Alice"
+    assert m.stamp(f"# T\n\n{single}\n\nBody.\n", "2026-09-22", "scanned",
+                   "abc1234")[1] == "updated"
+    assert m.repeated_owned_fields(single) == []
+
+
+def test_a_root_file_citation_may_carry_a_non_ascii_name():
+    """`known_root` holds a deleted root file specifically so a citation to it
+    can be reported, but an ASCII-only pattern never reached that check -- so
+    a broken `café.md` citation passed cleanly. BACKTICK_PATH_RE has used the
+    Unicode classes for rounds."""
+    assert m.BACKTICK_ROOT_FILE_RE.search("see `café.md` here") is not None
+    assert m.BACKTICK_ROOT_FILE_RE.search("see `vite.config.ts` here") is not None
+    # The narrowings that keep this from matching prose are unchanged: it
+    # needs an extension, and a path with a slash belongs to the other pattern.
+    assert m.BACKTICK_ROOT_FILE_RE.search("see `hello world` here") is None
+    assert m.BACKTICK_ROOT_FILE_RE.search("see `docs/g.md` here") is None
+
+
+def test_registry_specificity_is_not_pattern_length():
+    """`docs/[a-z]*.md` is LONGER than `docs/a.md`, so a wildcard row outranked
+    the exact row it overlaps -- and because the lengths differ, the tie that
+    would have raised an ambiguity finding never happened, so a machine-owned
+    document could be classified writable and --stamp could modify it. The
+    Node twin has ranked this way for rounds."""
+    def wins(a, b):
+        return m.glob_specificity(a) > m.glob_specificity(b)
+    assert wins("docs/a.md", "docs/[a-z]*.md")       # exact beats any wildcard
+    assert wins("docs/*.md", "docs/**/*.md")         # narrower beats recursive
+    assert wins("docs/??.md", "docs/*.md")           # fixed width beats open
+    # Adding alternatives to a bracket must not raise specificity, or a
+    # broader row silently outranks a narrower one instead of tying.
+    assert m.glob_specificity("docs/[ab].md") == m.glob_specificity("docs/[a].md")
+
+
+def test_two_registry_rows_declaring_the_same_sets_do_not_disagree():
+    """`lib/a, lib/b` and `lib/b, lib/a` declare the same thing and drive
+    identical checks, yet compared unequal -- a gating P1 that made
+    `classification_is_ambiguous` refuse --stamp over a disagreement the
+    registry does not contain."""
+    # Two rows of EQUAL specificity -- the same glob twice is the clearest
+    # case -- declaring the same two code paths in different orders.
+    rows = [{"glob": "docs/*.md", "cls": "D", "code_paths": ["lib/a", "lib/b"],
+             "regions": []},
+            {"glob": "docs/*.md", "cls": "D", "code_paths": ["lib/b", "lib/a"],
+             "regions": []}]
+    tracked = {"docs/x.md", "lib/a", "lib/b", "lib/c"}
+    assert [f for f in m.check_registry_paths(tracked, rows)
+            if "equal specificity" in f["detail"]] == []
+    assert not m.classification_is_ambiguous("docs/x.md", rows)
+    # A genuine disagreement is still reported, and still blocks --stamp.
+    rows[1]["code_paths"] = ["lib/c"]
+    assert [f["severity"] for f in m.check_registry_paths(tracked, rows)
+            if "equal specificity" in f["detail"]] == ["P1"]
+    assert m.classification_is_ambiguous("docs/x.md", rows)
+
+
+def test_a_drift_reread_that_fails_is_not_a_clean_result(tmp_path, monkeypatch):
+    """If the document became unreadable between the main-loop read and this
+    one, the OSError branch returned the same empty result as an UNCHANGED
+    document -- so the audit could report clean having never compared the
+    prose against the reviewed revision at all."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+
+    def boom(*_a, **_k):
+        raise OSError("ENOENT")
+
+    monkeypatch.setattr(m, "path_in_commit", lambda *a, **k: True)
+    monkeypatch.setattr(m, "run", lambda *a, **k: "old prose\n")
+    monkeypatch.setattr(m.pathlib.Path, "read_text", boom)
+    with pytest.raises(m.AuditError, match="could not be read to measure drift"):
+        m.check_doc_changed_since("docs/d.md", "abc1234", "origin/main")
