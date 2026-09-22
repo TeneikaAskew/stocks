@@ -3537,7 +3537,13 @@ def _paragraph_blocks(lines: list[str], fenced: set[int]) -> list[tuple[int, int
         # otherwise be read as; `is_setext_underline` is the same predicate
         # heading_anchors uses, so the two cannot disagree about where a
         # heading ends.
-        if start is not None and is_setext_underline(lines, i, fenced):
+        # The cheap shape test first: `is_setext_underline` strips the
+        # container again and reads the line above, and this runs on every
+        # non-blank line of every block scan. Same pattern the predicate
+        # applies, against the copy already stripped here, so the guard
+        # cannot disagree with it.
+        if (start is not None and _SETEXT_UNDERLINE_RE.fullmatch(bare)
+                and is_setext_underline(lines, i, fenced)):
             flush(i)
             continue
         if _ATX_HEADING_RE.match(bare) or _THEMATIC_BREAK_RE.match(bare):
