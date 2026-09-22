@@ -232,7 +232,14 @@ _URL_RE = re.compile(r"https?://[^\s|]*[^\s|.,;:!?)\]]")
 # is "start, whitespace, or a scheme/`//`", not "https:// only".
 ISSUE_URL_RE = re.compile(
     r"(?:(?<=^)|(?<=[\s(\[<])|(?<=//))"
-    r"github\.com/" + OWNER + r"/(?P<repo>solyra|stocks)/(?P<kind>issues|pull)/(?P<num>\d+)",
+    # And the number ENDS where the number ends. Without a trailing boundary
+    # `.../issues/1foo` captured the numeric prefix and was read as a citation
+    # of issue 1 -- so a closed issue 1 produced a gating stale-blocker finding
+    # for a URL that identifies no issue at all. A query, a fragment,
+    # punctuation and whitespace are legitimate suffixes, so the boundary is
+    # "not another word character", not "end of string".
+    r"github\.com/" + OWNER + r"/(?P<repo>solyra|stocks)/(?P<kind>issues|pull)/(?P<num>\d+)"
+    r"(?![\w-])",
     re.I,
 )
 # The shorthand a document uses when it is talking about its OWN repository:
@@ -445,6 +452,14 @@ def heading_slug(heading: str) -> str:
     # into `apifield`, so a valid link to `#api_field` read as a dead anchor
     # AND an incorrect `#apifield` was accepted -- wrong in both directions.
     # CommonMark does not treat an intraword `_` as emphasis.
+    # UNESCAPED first. CommonMark removes the escape and renders
+    # `## API\_FIELD` as `API_FIELD`, whose slug keeps the intraword
+    # underscore -- but the raw backslash sat between the letter and the `_`,
+    # so the lookbehind saw no word character, the underscore was stripped as
+    # emphasis and the audit recorded `apifield`: a valid link to `#api_field`
+    # rejected AND a nonexistent `#apifield` accepted. The escape is markup
+    # either way, so removing it before the classification loses nothing.
+    s = unescape_markdown(s)
     s = re.sub(r"\*", "", s)
     s = re.sub(r"(?<!\w)_+|_+(?!\w)", "", s).strip().lower()
     return _SLUG_STRIP_RE.sub("", s).replace(" ", "-")
@@ -1813,6 +1828,13 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> se
     fenced = fenced_lines(lines)
     # An INDENTED example of an opener is an example, not a block.
     indented = indented_code_lines(lines)
+    # Where a paragraph could START. A type-7 block may not INTERRUPT one, but
+    # it may begin right after a completed block -- `# Title` then
+    # `<x-widget>` -- and the blank-previous-line proxy missed exactly that, so
+    # the example below it was audited as live prose. A heading and a thematic
+    # break are blocks of their own to _paragraph_blocks, so the line after
+    # either starts a new block.
+    block_starts = {lo for lo, _ in _paragraph_blocks(lines, fenced)}
     in_comment = False
     open_tag: str | None = None
     # The closer a type-3/4/5 block waits for. None for the tag-closed and
@@ -1871,7 +1893,8 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> se
                 # `<x-widget>` after a quoted blank opened nothing and a
                 # `[x](missing.md)` inside the block was audited as live.
                 prev = _BLOCKQUOTE_PREFIX_RE.sub("", lines[i - 1] or "", count=1)
-                if _HTML_TYPE7_RE.match(line) and (i == 0 or not prev.strip()):
+                if _HTML_TYPE7_RE.match(line) and (
+                        i == 0 or not prev.strip() or i in block_starts):
                     open_tag = "\0"
                     out.add(i)
                 continue
@@ -3042,6 +3065,13 @@ def code_spans(line: str) -> list[tuple[int, int]]:
     return out
 
 
+# ATX syntax, the same shape marker_window tests with.
+_ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:\s|$)")
+# Three or more `*`, `-` or `_`, optionally spaced, and nothing else.
+_THEMATIC_BREAK_RE = re.compile(
+    r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+
+
 def _paragraph_blocks(lines: list[str], fenced: set[int]) -> list[tuple[int, int]]:
     """Runs of consecutive lines that can hold ONE paragraph, as (first, last).
 
@@ -3050,19 +3080,37 @@ def _paragraph_blocks(lines: list[str], fenced: set[int]) -> list[tuple[int, int
     boundary as a scan WINDOW rather than as masking: a blank line has no
     characters to mask, so masking leaves the neighbouring paragraphs adjacent
     and the pairing happens regardless.
+
+    A HEADING and a thematic break are blocks of their OWN, not merely
+    boundaries. An unmatched backtick, then `# Heading`, then a live
+    `[x](missing.md)` had the two backticks paired across the heading and the
+    broken link masked out of the audit -- none of those lines is blank, so
+    the blank rule alone does not reach it. Making each its own block also
+    gives the type-7 HTML scan the "a paragraph could start here" test it
+    needs. Ported from the Node twin (solyra#69).
     """
     blocks: list[tuple[int, int]] = []
     start: int | None = None
+
+    def flush(end: int) -> None:
+        nonlocal start
+        if start is not None and end >= start:
+            blocks.append((start, end))
+        start = None
+
     for i, line in enumerate(lines):
-        broken = (not line.strip()) or i in fenced
-        if broken:
-            if start is not None:
-                blocks.append((start, i - 1))
-                start = None
-        elif start is None:
+        if (not line.strip()) or i in fenced:
+            flush(i - 1)
+            continue
+        # Read through the container prefix, as every other block test here is.
+        bare = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
+        if _ATX_HEADING_RE.match(bare) or _THEMATIC_BREAK_RE.match(bare):
+            flush(i - 1)
+            blocks.append((i, i))
+            continue
+        if start is None:
             start = i
-    if start is not None:
-        blocks.append((start, len(lines) - 1))
+    flush(len(lines) - 1)
     return blocks
 
 
@@ -3101,17 +3149,11 @@ def code_span_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
     # between and silently dropping their findings. Blank lines are kept in the
     # joined text (as blanks) so offsets still map back to a line; the scan is
     # simply restarted at each one.
-    blocks: list[tuple[int, int]] = []
-    start = None
-    for i, line in enumerate(lines):
-        if line.strip():
-            if start is None:
-                start = i
-        elif start is not None:
-            blocks.append((start, i))
-            start = None
-    if start is not None:
-        blocks.append((start, len(lines)))
+    # The same block model the link scan uses, so the two cannot disagree
+    # about where inline content ends. Half-open (first, last + 1) here, which
+    # is what the slice arithmetic below expects. No fenced set: this runs
+    # underneath fenced_lines, and asking for one would be a cycle.
+    blocks = [(lo, hi + 1) for lo, hi in _paragraph_blocks(lines, set())]
 
     starts: list[int] = []
     at = 0
@@ -3357,6 +3399,13 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # definition went unchecked -- and a quoted use resolving to a dead
         # path is exactly as broken as an unquoted one.
         line = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
+        # A LIST MARKER is a container prefix too: `- [g]: missing.md` is the
+        # first content of an item, and CommonMark resolves a use of `[g]`
+        # inside that item as a clickable link. The anchored pattern saw the
+        # marker where it needs a bracket, so such a definition went unparsed
+        # -- and because reference USES are deliberately not scanned, its
+        # broken destination produced no finding at all.
+        line = _LIST_MARKER_RE.sub("", line, count=1)
         rm = REF_DEF_RE.match(line)
         # The destination may sit on the FOLLOWING line: `[guide]:` then
         # `  missing.md` is a definition CommonMark resolves, and `[x][guide]`

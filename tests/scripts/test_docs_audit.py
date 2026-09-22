@@ -5815,3 +5815,71 @@ def test_an_escaped_link_in_a_heading_keeps_its_destination():
     accepted."""
     assert m.heading_slug("Literal \\[x](guide.md)") == "literal-xguidemd"
     assert m.heading_slug("Real [x](guide.md)") == "real-x"
+
+
+def test_an_issue_url_ends_where_its_number_ends():
+    """`.../issues/1foo` identifies no issue, but without a trailing boundary
+    the pattern captured the numeric prefix and read it as a citation of issue
+    1 -- so a closed issue 1 produced a gating stale-blocker finding for a URL
+    that points at nothing. A query, a fragment and punctuation ARE legitimate
+    suffixes, so the boundary is "not another word character"."""
+    states = {"stocks": {1: {"state": "closed", "reason": "completed",
+                             "kind": "ISSUE"}}}
+    blocking = "Blocking: https://github.com/TeneikaAskew/stocks/issues/1{}"
+    assert m.check_closed_issues("d.md", blocking.format("foo"), states) == []
+    assert m.check_closed_issues("d.md", blocking.format("-2"), states) == []
+    # The real citation, and the suffixes that do not change which issue it is.
+    for suffix in ("", "?x=1", "#comment", ".", ")"):
+        out = m.check_closed_issues("d.md", blocking.format(suffix), states)
+        assert [f["ref"] for f in out] == ["stocks#1"], (suffix, out)
+
+
+def test_an_escaped_underscore_in_a_heading_survives_slugging():
+    """CommonMark removes the escape and renders `## API\\_FIELD` as
+    `API_FIELD`, whose GitHub id keeps the intraword underscore. The raw
+    backslash sat between the letter and the `_`, so the lookbehind saw no
+    word character, the underscore was stripped as emphasis and the audit
+    recorded `apifield` -- a valid link to `#api_field` rejected AND a
+    nonexistent `#apifield` accepted."""
+    assert m.heading_slug("API\\_FIELD") == "api_field"
+    assert m.heading_slug("API_FIELD") == "api_field"
+    # A LEADING underscore is still emphasis syntax once unescaped, and an
+    # escaped one is a literal the slug drops as punctuation either way.
+    assert m.heading_slug("_Note_") == "note"
+
+
+def test_a_type_7_html_block_opens_after_a_completed_block():
+    """A type-7 opener may not INTERRUPT a paragraph, but it may begin right
+    after a block that has ended -- `# Title` then `<x-widget>` needs no blank
+    line between them. The blank-previous-line proxy missed exactly that, so
+    the sample below the tag was audited as live prose."""
+    assert m.raw_html_block_lines(["# Title", "<x-widget>", "[x](m.md)"]) == {1, 2}
+    assert m.raw_html_block_lines(["---", "<x-widget>", "[x](m.md)"]) == {1, 2}
+    # Interrupting real prose still opens nothing, which is the whole rule.
+    assert m.raw_html_block_lines(["prose", "<x-widget>", "[x](m.md)"]) == set()
+
+
+def test_a_reference_definition_introduced_by_a_list_marker_still_defines():
+    """`- [g]: missing.md` is the first content of a list item, and CommonMark
+    resolves a use of `[g]` inside that item as a clickable link. The anchored
+    pattern saw the marker where it needs a bracket, so such a definition went
+    unparsed -- and because reference USES are deliberately not scanned, its
+    broken destination produced no finding at all."""
+    for marker in ("- ", "* ", "1. ", "2) "):
+        out = m.check_dead_links("d.md", f"{marker}[g]: missing.md\n", {"d.md"})
+        assert [f["detail"] for f in out] == ["reference link [g] -> missing.md"], marker
+    assert m.check_dead_links("d.md", "- [g]: ok.md\n", {"d.md", "ok.md"}) == []
+
+
+def test_inline_content_ends_at_a_heading_not_only_at_a_blank_line():
+    """A heading and a thematic break are blocks of their OWN, so inline
+    content cannot span one. An unmatched backtick above `# Heading` paired
+    with another below it and masked every live link in between -- none of
+    those lines is blank, so the blank-line rule alone never reached it."""
+    assert m.code_span_lines(["a ` b", "# H", "c ` d"]) == {}
+    assert m.code_span_lines(["a ` b", "---", "c ` d"]) == {}
+    # Within one paragraph the span still wraps across the line break.
+    assert m.code_span_lines(["a ` b", "c ` d"]) != {}
+    # And the link scan reads the same boundary: the brackets do not pair.
+    assert m.check_dead_links("d.md", "text [label\n# H\nmore](missing.md)\n",
+                              {"d.md"}) == []
