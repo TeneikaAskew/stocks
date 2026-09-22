@@ -4873,3 +4873,110 @@ def test_an_ordinary_document_is_still_read(audit_repo, capsys):
             "--issues-snapshot", str(audit_repo / "issues.json")])
     report = json.loads(capsys.readouterr().out)
     assert any(f["doc"] == "docs/d.md" for f in report["findings"]), report
+
+
+# ── round 34 (Codex on 3f39d446) ────────────────────────────────────────────
+
+def test_an_inline_generated_example_is_not_production_evidence(tmp_path, monkeypatch):
+    """A third syntax for a defect already fixed twice, after the fenced and
+    indented forms. A document that LOST its real footer but still shows
+    `` `Generated 2026-09-20` `` as an example had the example accepted as
+    evidence, so the delivery audit reported it current although readers see
+    no production date in it at all.
+
+    Driven through check_owning_job, not the comprehension: the skip set and
+    the span set are computed there, and a test asserting code_spans alone
+    passes with the call site still reading raw lines."""
+    doc = m.OWNING_JOB["docs"][0]
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / doc).parent.mkdir(parents=True)
+    monkeypatch.setattr(m, "run", lambda cmd, **k: "success\t2026-09-10T00:00:00Z\n"
+                        if "runs?" in " ".join(cmd) else "")
+    (tmp_path / doc).write_text(
+        "# A\n\nThe footer reads `Generated 2026-09-20`.\n")
+    detail = [f["detail"] for f in m.check_owning_job("2026-09-21")
+              if f["doc"] == doc]
+    assert any("no `Generated <date>` stamp" in d for d in detail), detail
+    # A REAL stamp is still evidence -- the fix is not "never find one".
+    (tmp_path / doc).write_text("# A\n\nGenerated 2026-09-20\n")
+    assert [f for f in m.check_owning_job("2026-09-21")
+            if f["doc"] == doc and "no `Generated" in f["detail"]] == []
+
+
+def test_a_registry_cell_may_carry_an_escaped_pipe():
+    """A raw `split("|")` cut `line:^(foo\\|bar)$` at the escaped pipe, so the
+    region was truncated to `line:^(foo\\` and the row raised an audit error
+    instead of applying the ownership rule it declares.
+
+    Driven through load_registry, since the split is there. The second
+    assertion is the one that keeps the fix narrow: these cells hold REGULAR
+    EXPRESSIONS, so unescaping anything but `\\|` would silently widen them."""
+    rows = m.load_registry(
+        REGISTRY + r"| A | gen/x.md | lib | line:^(foo\|bar)$ |" + "\n")
+    row = [r for r in rows if r["glob"] == "gen/x.md"][0]
+    assert row["regions"] == [r"line:^(foo|bar)$"], row
+    kept = m.load_registry(REGISTRY + r"| A | gen/y.md | lib | line:^\.env |" + "\n")
+    assert [r for r in kept if r["glob"] == "gen/y.md"][0]["regions"] == [r"line:^\.env"]
+
+
+def test_a_fence_opened_in_a_blockquote_closes_with_the_quote():
+    """CommonMark ends a quoted code block with its container, closing fence or
+    not. Holding it open classified everything after the quote as code, so the
+    dead link, the heading and any marker below it were silently skipped --
+    the hiding direction, which is the worse one."""
+    lines = ["# T", "", "> ```", "> sample", "",
+             "[guide](missing.md)", "", "## Real"]
+    assert sorted(m.fenced_lines(lines)) == [2, 3]
+    # An ordinary fence is untouched: it opens at depth 0 and nothing is below
+    # 0, so its blank lines and its content still read as code.
+    assert sorted(m.fenced_lines(
+        ["# T", "```", "code", "", "more", "```", "after"])) == [1, 2, 3, 4, 5]
+    # And a quoted fence that DOES close normally still closes there.
+    assert sorted(m.fenced_lines(["# T", "> ```", "> s", "> ```", "> prose"])) == [1, 2, 3]
+
+
+def test_an_h1_hidden_in_a_partial_comment_is_not_the_h1():
+    """A comment closing partway through a heading-shaped line leaves a visible
+    suffix, so commented_lines does not exclude the line while H1_RE still
+    matches the hidden prefix. --stamp then inserted the marker after a heading
+    no reader can see and above the document's real H1."""
+    assert m.h1_index(["<!--", "# Fake --> visible", "", "# Real Title", ""]) == 3
+    # The ordinary and fenced cases still behave: a change to H1 selection is
+    # dangerous in both directions.
+    assert m.h1_index(["# Real", "", "body"]) == 0
+    assert m.h1_index(["```", "# Fake", "```", "", "# Real"]) == 4
+
+
+def test_a_heading_character_reference_is_decoded_before_slugging():
+    """`## AT&amp;T` renders as `AT&T`, so GitHub's id is `att`. Keeping the
+    letters `amp` recorded `atampt` -- wrong in BOTH directions at once: a
+    valid link to `#att` read as a dead anchor and a bogus `#atampt` was
+    accepted."""
+    assert sorted(m.heading_anchors("# T\n\n## AT&amp;T\n")) == ["att", "t"]
+    # A bare ampersand is an ampersand: `html.unescape` alone also decodes the
+    # semicolon-less legacy forms, which would eat the second T here.
+    assert m.heading_slug("AT&T Corp") == "att-corp"
+    # And a reference inside a code span is literal text per CommonMark, so it
+    # keeps its letters.
+    assert m.heading_slug("the `&amp;` operator") == "the-amp-operator"
+
+
+def test_verify_refuses_a_since_baseline_that_predates_code_drift(audit_repo):
+    """`--since` names an ancestor, so the worktree can be clean and the
+    document identical at that revision while a declared code path has commits
+    between it and the base. The marker then records a baseline the very next
+    audit reports `changed-since` against, invalidating the review that just
+    wrote it -- the same self-defeating stamp as the uncommitted guards,
+    reached by committed rather than pending work."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nProse.\n")
+    _commit(audit_repo, "add d")
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=audit_repo,
+                          capture_output=True, text=True).stdout.strip()
+    # A committed change under the declared path, AFTER that baseline.
+    (audit_repo / "scripts" / "tool.py").write_text("x = 2\n")
+    _commit(audit_repo, "edit tool")
+    with pytest.raises(m.AuditError, match="commits between"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json"),
+                "--since", base, "--stamp", "--verify", "docs/d.md"])
+    assert "Last reviewed" not in (audit_repo / "docs" / "d.md").read_text()

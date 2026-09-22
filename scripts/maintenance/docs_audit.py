@@ -83,6 +83,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import fnmatch
+import html
 import json
 import os
 import pathlib
@@ -350,6 +351,17 @@ _SLUG_STRIP_RE = re.compile(r"[^\w\s-]")
 _HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$", re.M)
 
 
+# Well-formed references only -- `&name;`, `&#12;`, `&#x1F;`. A bare `&` is
+# an ampersand and must stay one: `html.unescape` alone also decodes the
+# semicolon-less legacy forms, so `AT&T Corp` would lose the `T`.
+_CHAR_REF_RE = re.compile(r"&(?:[A-Za-z][A-Za-z0-9]{1,31}|#[0-9]{1,7}|#[Xx][0-9A-Fa-f]{1,6});")
+
+
+def decode_char_refs(text: str) -> str:
+    """HTML character references decoded, as a Markdown renderer decodes them."""
+    return _CHAR_REF_RE.sub(lambda m: html.unescape(m.group(0)), text)
+
+
 def heading_slug(heading: str) -> str:
     """GitHub's anchor for a heading.
 
@@ -362,7 +374,16 @@ def heading_slug(heading: str) -> str:
     16 links pointing at it spell single ones. Collapsing whitespace here
     reproduces the links' spelling and would call every one of them valid.
     """
-    s = re.sub(r"`([^`]*)`", r"\1", heading)
+    # A character reference is RENDERED before GitHub derives the id, so
+    # `## AT&amp;T` is `AT&T` on the page and its working fragment is `#att`.
+    # Keeping the letters `amp` recorded `atampt` instead -- wrong in both
+    # directions at once: a valid link to `#att` read as a dead anchor, and a
+    # bogus `#atampt` was accepted. Outside code spans only, because
+    # CommonMark treats a reference inside one as literal text: `` `&amp;` ``
+    # renders the six characters, not an ampersand.
+    s = "".join(p if p.startswith("`") else decode_char_refs(p)
+                for p in re.split(r"(`[^`]*`)", heading))
+    s = re.sub(r"`([^`]*)`", r"\1", s)
     s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
     # Emphasis MARKUP only. Stripping every underscore turned `## API_FIELD`
     # into `apifield`, so a valid link to `#api_field` read as a dead anchor
@@ -637,6 +658,44 @@ def _cell(raw: str) -> str:
     return text.strip("`").strip()
 
 
+def split_table_row(line: str) -> list[str]:
+    """Cells of a GFM table row, splitting on unescaped pipes only.
+
+    `split("|")` cut `line:^(foo\\|bar)$` in half at the escaped pipe, so the
+    region was truncated to `line:^(foo\\` -- which then raised an audit error
+    instead of applying the ownership rule the row declares. GFM: a pipe is
+    included in a cell by escaping it, including inside other inline spans.
+
+    Only `\\|` is unescaped. Every other backslash pair is left exactly as
+    written, because these cells carry REGULAR EXPRESSIONS: unescaping `\\.`
+    to `.` would silently widen `line:^\\.env` to match any character.
+    """
+    cells: list[str] = []
+    cur: list[str] = []
+    k = 0
+    while k < len(line):
+        ch = line[k]
+        if ch == "\\" and k + 1 < len(line):
+            cur.append("|" if line[k + 1] == "|" else line[k:k + 2])
+            k += 2
+            continue
+        if ch == "|":
+            cells.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        k += 1
+    cells.append("".join(cur))
+    # The leading and trailing delimiters produce empty edge cells, which the
+    # `strip("|")` this replaced removed. Exactly-empty, not blank: a cell of
+    # spaces is a declared-empty column and the caller reports it.
+    while cells and cells[0] == "":
+        cells.pop(0)
+    while cells and cells[-1] == "":
+        cells.pop()
+    return cells
+
+
 def load_registry(text: str) -> list[dict]:
     """Parse the pipe table under `## Registry` in docs/DOC_REGISTRY.md.
 
@@ -658,7 +717,7 @@ def load_registry(text: str) -> list[dict]:
             continue
         if not in_registry or not line.startswith("|"):
             continue
-        cells = [c for c in line.strip("|").split("|")]
+        cells = split_table_row(line)
         if len(cells) < 2:
             continue
         cls = _cell(cells[0]).upper()
@@ -1325,6 +1384,12 @@ def is_future_date(date: str, today: str) -> bool:
 # `>` instead of the fence marked none of the block as code, so links and
 # blocker citations in the sample were audited as live prose.
 _FENCE_RE = re.compile(r"^ {0,3}(?:> ?)*\s{0,3}(`{3,}|~{3,})(.*)$")
+_QUOTE_PREFIX_RE = re.compile(r"^ {0,3}((?:> ?)*)")
+
+
+def quote_depth(line: str) -> int:
+    """How many blockquote levels this line sits inside."""
+    return _QUOTE_PREFIX_RE.match(line).group(1).count(">")
 
 
 def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
@@ -1504,12 +1569,25 @@ def fenced_lines(lines: list[str]) -> set[int]:
     # comment_spans, which reaches back here.
     hidden = _comment_hidden(lines)
     open_fence: str | None = None
+    open_depth = 0
     for i, line in enumerate(lines):
         m = None if i in hidden else _FENCE_RE.match(line)
+        # A fence opened INSIDE a blockquote ends with its container, closing
+        # fence or not: CommonMark ends the quoted code block where the quote
+        # ends. Holding it open classified everything after the quote as code,
+        # so dead links, blocker citations, headings and markers below it were
+        # all silently skipped until some later line happened to look like a
+        # matching fence. A blank line drops to depth 0 and ends the quote,
+        # which is why this is a depth comparison rather than a `>` test.
+        # Unquoted fences open at depth 0 and nothing is below 0, so they are
+        # untouched.
+        if open_fence is not None and quote_depth(line) < open_depth:
+            open_fence = None
         if open_fence is None:
             # An opening ``` fence may not carry a backtick in its info string.
             if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
                 open_fence = m.group(1)
+                open_depth = quote_depth(line)
                 out.add(i)
             continue
         out.add(i)
@@ -1653,10 +1731,17 @@ def h1_index(lines: list[str]) -> int | None:
     # --stamp inserted the provenance marker INSIDE the code block: the example
     # was rewritten and the document left effectively unstamped.
     fenced = fenced_lines(lines) | commented_lines(lines)
+    # SPANS too, not only whole lines. A comment that closes partway through a
+    # heading-shaped line -- `<!--` then `# Fake --> visible` -- leaves the
+    # line with a visible suffix, so commented_lines does not exclude it while
+    # H1_RE still matches the hidden `# Fake` prefix. --stamp then inserted the
+    # marker after a heading no reader can see and above the document's real
+    # H1, putting provenance outside the opening section.
+    hidden_spans = comment_spans(lines)
     for i, line in enumerate(lines):
         if i in fenced:
             continue
-        if H1_RE.match(line):
+        if H1_RE.match(mask_spans(line, hidden_spans.get(i, []))):
             return i
         # Setext level one (`Title` over `===`). Without it the audit reported
         # a missing marker on such a document while --stamp answered
@@ -3277,9 +3362,18 @@ def check_owning_job(today: str) -> list[dict]:
         # stamp and the delivery audit reported a document fresh that shows
         # its readers no Generated line at all.
         hidden = comment_spans(body_lines)
+        # INLINE CODE as well as fenced and indented. A document that lost its
+        # real stamp but still shows `` `Generated 2026-09-20` `` as an example
+        # had the example accepted as production evidence, so the freshness
+        # check reported it current though readers see no Generated line at
+        # all -- the same defect as the fenced case, a third syntax over.
+        # Wrapped spans included, since a code span may cross a line break.
+        wrapped = code_span_lines(body_lines)
         stamps = [mm.group(1) for i, line in enumerate(body_lines) if i not in skip
                   for mm in GENERATED_RE.finditer(line)
-                  if not any(lo <= mm.start() < hi for lo, hi in hidden.get(i, []))]
+                  if not any(lo <= mm.start() < hi
+                             for lo, hi in (hidden.get(i, []) + code_spans(line)
+                                            + wrapped.get(i, [])))]
         if not stamps:
             # Silently skipping this is the same clean-run-on-no-evidence the
             # best-effort artifact check already refuses. For 05-a, 05-c and
@@ -3763,6 +3857,19 @@ def main(argv: list[str] | None = None) -> int:
             ).strip():
                 stamp_refusals[doc] = "uncommitted-code"
                 continue
+            # And the baseline must not PREDATE committed drift. `--since`
+            # names an ancestor, so the worktree can be clean and the document
+            # identical at that revision while a declared code path has
+            # commits in `head..base_ref`. The marker then records a baseline
+            # the very next audit reports `changed-since` against, invalidating
+            # the review that just wrote it -- the same self-defeating stamp as
+            # the two guards above, reached by committed rather than pending
+            # work. Runs the same diff check_changed_since runs, so the guard
+            # and the check it protects cannot disagree about what drift is.
+            if reviewed and head != base_ref and check_changed_since(
+                    doc, head, list(code_paths), base_ref):
+                stamp_refusals[doc] = "code-drift-since-baseline"
+                continue
             new, action = stamp(text, today, "verified" if reviewed else "scanned",
                                 head, reviewed=reviewed)
             # Consumed only if the review was actually recorded. `stamp` can
@@ -3792,6 +3899,10 @@ def main(argv: list[str] | None = None) -> int:
                        "a declared code path has uncommitted changes, so the review "
                        f"would name {head} as its baseline and the next audit would "
                        "report drift against code that was reviewed; commit it first",
+                   "code-drift-since-baseline":
+                       f"a declared code path has commits between {head} and {base_ref}, "
+                       f"so a review named against {head} would be reported as drifted by "
+                       "the next audit; drop --since, or review against the current base",
                    "uncommitted-content":
                        f"its prose differs from {head}, so the review would name a "
                        "baseline that does not hold what was reviewed and the next "
