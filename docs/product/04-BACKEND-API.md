@@ -282,4 +282,4 @@ not just a cleanup question.
 | Test coverage | [#503](https://github.com/TeneikaAskew/stocks/pull/503) 12 hermetic API test classes · [#505](https://github.com/TeneikaAskew/stocks/pull/505) real-SQL integration tests on ephemeral Postgres · [#509](https://github.com/TeneikaAskew/stocks/pull/509) |
 | Remediation | [#518](https://github.com/TeneikaAskew/stocks/pull/518) INT-column coercion (22P02 bug class) · [#483](https://github.com/TeneikaAskew/stocks/pull/483) `pool_pre_ping` for Cloud SQL TLS drops · [#507](https://github.com/TeneikaAskew/stocks/pull/507) CPU throttling |
 | Code | `platform/api/main.py`, `platform/api/routers/*.py`, `platform/api/auth.py`, `lib/data_loader.py` |
-| Tests | `tests/test_api_*.py`, `platform/tests/api-smoke.spec.ts` |
+| Tests | `tests/api/test_*.py`, `platform/tests/api-smoke.spec.ts` |

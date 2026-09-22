@@ -135,14 +135,18 @@ def _is_solyra_owned(path: str) -> bool:
 #: per `gcp/deploy.sh:2471`) and `lib/data_loader` -> `lib/data_loader.py`.
 #: These may only go DOWN — the test asserts both directions, so fixing one
 #: without lowering its number here also fails.
+#: Now an EXCEPTIONS table, not the list of documents that get checked. It
+#: used to be both, and naming seven of the sixteen product docs meant the
+#: other nine had no dead-path gate at all -- including
+#: `08-AI-AGENT-ARCHITECTURE.md`, which carried two dead pointers found only
+#: because the parser rewrite happened to print them.
+#:
+#: Same shape as the scheduler tables in round 10: an allowlist answers "is
+#: this entry clean", never "is every entry listed". The parametrisation below
+#: now enumerates `docs/product/*.md` and defaults to zero, so a new document
+#: is gated the day it lands rather than the day someone remembers to add it.
 KNOWN_BACKLOG = {
-    "02-FEATURE-CATALOG.md": 0,
-    "04-BACKEND-API.md": 0,
-    "09-SECURITY-AUTH.md": 0,
-    "11-CODE-TRACEABILITY.md": 0,
     "14-WORK-BREAKDOWN.md": 2,
-    "16-CONSOLIDATION-AUDIT.md": 0,
-    "README.md": 0,
 }
 
 
@@ -159,23 +163,113 @@ def _strip_exempt(text: str) -> str:
     return text
 
 
-#: A backticked repo path, with the `:NN` / `:NN-NN` line suffix the registry
-#: writes on most of its pointers stripped off.
+#: Any backticked token with no whitespace. Deliberately permissive: what the
+#: token MEANS is decided afterwards, by `_resolve_pointer`, not by a character
+#: class.
 #:
-#: The first version's character class had no `:`, so `gcp/signal_monitor.py:1107`
-#: matched NOTHING and was silently never checked -- 7 of the registry's pointers,
-#: while the invariant table published "every repo-rooted path cited here exists".
-#: A gate that cannot express the form its document actually uses is not a
-#: narrower gate, it is an absent one.
-_PATH_RE = re.compile(r"`([A-Za-z0-9_./-]+?)(?::\d+(?:[-–]\d+)?)?`")
+#: This has now been the wrong shape twice, the same way both times. The first
+#: version's class had no `:`, so `gcp/signal_monitor.py:1107` matched NOTHING --
+#: 7 registry pointers silently unchecked while the invariant table published
+#: "every repo-rooted path cited here exists". Adding `:\d+` fixed those seven
+#: and left FIVE other forms still matching nothing (DOC-45):
+#:
+#:     gcp/.../strat_walk_forward{,_adaptive}.py   brace expansion  -- 8 files
+#:     gcp/research/_archive/p7*.py                glob             -- 9 files
+#:     lib/gamma.py::compute_gamma_flip_bs         symbol qualifier -- lib/gamma.py
+#:     lib/config.py:SignalConfig                  non-numeric ":"  -- lib/config.py
+#:     lib/walk_forward.py:83-97,153-163           comma range      -- lib/walk_forward.py
+#:
+#: `lib/gamma.py` and `lib/walk_forward.py` were checked by nothing at all.
+#: Encoding the accepted forms in the regex means every form it does not
+#: anticipate is dropped in silence -- Rule 3.7's forbidden pattern wearing a
+#: test's clothes: on input it cannot handle it returns empty and reports
+#: success. So the class is now open and unresolvable tokens RAISE.
+_POINTER_RE = re.compile(r"`([^`\s]+)`")
+
+#: `:12`, `:12-34`, and the comma-separated form `:83-97,153-163`.
+_LINE_SUFFIX_RE = re.compile(r":\d+(?:[-–]\d+)?(?:,\d+(?:[-–]\d+)?)*$")
+#: `::symbol` -- e.g. `lib/gamma.py::compute_gamma_flip_bs`.
+_SYMBOL_SUFFIX_RE = re.compile(r"::[A-Za-z_][A-Za-z0-9_.]*$")
+#: `:Symbol` -- e.g. `lib/config.py:SignalConfig`.
+_NAME_SUFFIX_RE = re.compile(r":[A-Za-z_][A-Za-z0-9_.]*$")
+
+#: Characters that mean "this pointer stands for files I cannot enumerate".
+#: A brace that survived expansion is unbalanced; an ellipsis is prose.
+_UNRESOLVABLE = ("{", "}", "…", "...")
+
+#: Glob metacharacters. `[1-7]` counts, so `phase[1-7]_*.py` resolves.
+_GLOB_CHARS = ("*", "?", "[")
+
+
+class UnresolvablePointer(ValueError):
+    """A backticked token looks like a repo path but names no definite files."""
+
+
+def _strip_suffixes(token: str) -> str:
+    """Drop one trailing line-range / symbol qualifier, leaving the file part."""
+    for rx in (_LINE_SUFFIX_RE, _SYMBOL_SUFFIX_RE, _NAME_SUFFIX_RE):
+        stripped = rx.sub("", token)
+        if stripped != token:
+            return stripped
+    return token
+
+
+def _expand_braces(token: str) -> list[str]:
+    """`a{,_b}.py` -> ['a.py', 'a_b.py']. Empty alternatives are the point."""
+    m = re.search(r"\{([^{}]*)\}", token)
+    if not m:
+        return [token]
+    out: list[str] = []
+    for alt in m.group(1).split(","):
+        out.extend(_expand_braces(token[: m.start()] + alt + token[m.end() :]))
+    return out
+
+
+def _resolve_pointer(raw: str) -> list[str]:
+    """One backticked token -> the concrete repo-relative paths it names.
+
+    Returns [] for tokens that are not repo-rooted paths (module references,
+    bare filenames, API routes, SQL identifiers) -- those were never in scope.
+    A glob that matches nothing returns the glob itself, so it surfaces through
+    the normal dead-path assertion rather than vanishing.
+
+    Raises UnresolvablePointer when a token IS repo-rooted but cannot be turned
+    into a definite set of files. Silently returning [] there is exactly the
+    bug this function was rewritten to fix.
+    """
+    out: list[str] = []
+    for cand in _expand_braces(_strip_suffixes(raw)):
+        if not (cand.startswith(ROOTS) and "/" in cand):
+            continue
+        if any(mark in cand for mark in _UNRESOLVABLE):
+            raise UnresolvablePointer(raw)
+        if any(ch in cand for ch in _GLOB_CHARS):
+            hits = sorted(p.relative_to(REPO).as_posix() for p in REPO.glob(cand))
+            out.extend(hits or [cand])
+            continue
+        out.append(cand)
+    return out
 
 
 def _cited_paths(text: str) -> set[str]:
-    return {
-        m.group(1)
-        for m in _PATH_RE.finditer(text)
-        if m.group(1).startswith(ROOTS) and "/" in m.group(1)
-    }
+    paths: set[str] = set()
+    for m in _POINTER_RE.finditer(text):
+        try:
+            paths.update(_resolve_pointer(m.group(1)))
+        except UnresolvablePointer:
+            continue  # reported by test_doc_pointers_are_all_validatable
+    return paths
+
+
+def _unresolvable_pointers(md: Path) -> set[str]:
+    """Repo-rooted tokens this parser refuses to guess at."""
+    bad: set[str] = set()
+    for m in _POINTER_RE.finditer(_strip_exempt(md.read_text())):
+        try:
+            _resolve_pointer(m.group(1))
+        except UnresolvablePointer as exc:
+            bad.add(str(exc))
+    return bad
 
 
 def _dead_paths(md: Path) -> set[str]:
@@ -220,8 +314,32 @@ def test_model_reference_docs_cite_no_dead_code_path():
     )
 
 
-@pytest.mark.parametrize("name,expected", sorted(KNOWN_BACKLOG.items()))
-def test_known_dead_path_backlog_only_shrinks(name, expected):
+def test_doc_pointers_are_all_validatable():
+    """No repo-rooted pointer may use shorthand the gate cannot resolve.
+
+    The companion to the parser rewrite. Braces and globs are EXPANDED, so
+    `strat_walk_forward{,_adaptive}.py` and `p7*.py` are fine and every file
+    they name is checked. Anything left -- an unbalanced brace, an ellipsis
+    standing in for a range -- is rejected with its pointer named, because the
+    alternative is the behaviour that caused DOC-45: quietly checking nothing
+    and reporting success.
+
+    `scripts/analysis/phase1…phase7` was the only instance, and it is exactly
+    the shape the rule is about: seven real files, named in prose, validated by
+    nothing. It is now `scripts/analysis/phase[1-7]_*.py`, which resolves.
+    """
+    docs = sorted(PRODUCT.glob("*.md")) + sorted((REPO / "docs" / "models").glob("*.md"))
+    bad = {md.name: sorted(_unresolvable_pointers(md)) for md in docs if _unresolvable_pointers(md)}
+    assert not bad, (
+        f"pointers the path gate cannot validate: {bad}. Rewrite each as a plain "
+        "path, a brace group, or a glob -- any of which the parser expands and "
+        "checks. A pointer no gate can read is a pointer no gate is checking."
+    )
+
+
+@pytest.mark.parametrize("name", sorted(p.name for p in PRODUCT.glob("*.md")))
+def test_known_dead_path_backlog_only_shrinks(name):
+    expected = KNOWN_BACKLOG.get(name, 0)
     actual = len(_dead_paths(PRODUCT / name))
     assert actual <= expected, (
         f"{name} gained dead paths ({actual} > {expected}). Fix the path, or if "
@@ -236,15 +354,315 @@ def test_known_dead_path_backlog_only_shrinks(name, expected):
 # ---------------------------------------------------------------- 2. links --
 
 def test_product_docs_have_no_dead_relative_links():
+    """Both `docs/product/` and `docs/models/`.
+
+    It globbed `docs/product/*.md` only, which left the directory the registry's
+    `Doc` column sends every reader to with no link gate at all. That is how
+    `MODEL-WEEK-001.md` shipped a link to `MODEL-IND-001.md`, a file that has
+    never existed -- MODEL-IND-001 is a registry row, not a reference document.
+    DOC-46.
+
+    The gate was named for the directory it happened to check rather than the
+    invariant it claims, which is the same reason it was never noticed.
+    """
+    roots = [PRODUCT, REPO / "docs" / "models"]
     broken = []
-    for md in sorted(PRODUCT.glob("*.md")):
-        for m in re.finditer(r"\[([^\]]+)\]\(([^)]+)\)", md.read_text()):
-            target = urllib.parse.unquote(m.group(2).split("#")[0])
-            if not target or target.startswith(("http://", "https://", "mailto:")):
-                continue
-            if not (md.parent / target).exists():
-                broken.append(f"{md.name} -> {target}")
+    for root in roots:
+        for md in sorted(root.glob("*.md")):
+            for m in re.finditer(r"\[([^\]]+)\]\(([^)]+)\)", md.read_text()):
+                target = urllib.parse.unquote(m.group(2).split("#")[0])
+                if not target or target.startswith(("http://", "https://", "mailto:")):
+                    continue
+                if not (md.parent / target).exists():
+                    broken.append(f"{root.name}/{md.name} -> {target}")
     assert broken == [], f"dead relative links: {broken}"
+
+
+# ------------------------------------------------- 2b. test-coverage claims --
+#
+# This PR's own description said "what the suite cannot check is whether a
+# document's prose matches the code it describes". That is true of prose about
+# BEHAVIOUR. It is not true of claims about TEST COVERAGE, which are three
+# mechanical questions: does the cited file exist, does it reference the module,
+# and if the doc says no test exists, does a search agree. Round 14 found five
+# wrong coverage claims across fifteen documents (DOC-44) under the shelter of
+# that sentence. These two gates are what it was excusing.
+
+MODELS = REPO / "docs" / "models"
+
+#: The `**Code:**` field of a model reference doc's header, up to the next
+#: `**Field:**` marker. The header wraps, so this cannot be line-anchored.
+_CODE_FIELD_RE = re.compile(r"\*\*Code:\*\*(.*?)(?=\*\*[A-Z][A-Za-z ]*:\*\*)", re.S)
+
+#: The exact sentence the wrong documents used. Matched literally rather than
+#: fuzzily: a gate that guesses at prose is a gate nobody can predict.
+_NO_TEST_CLAIM = "No test file targets this module"
+
+
+def _model_code_paths(md: Path) -> list[str]:
+    """Existing repo paths named in the document's `**Code:**` header field."""
+    m = _CODE_FIELD_RE.search(md.read_text())
+    if not m:
+        return []
+    return [
+        t
+        for t in (_strip_suffixes(x) for x in re.findall(r"`([^`\s]+)`", m.group(1)))
+        if "/" in t and (REPO / t).exists()
+    ]
+
+
+def _tests_section(md: Path) -> str:
+    text = md.read_text()
+    if "## Tests" not in text:
+        return ""
+    return text.split("## Tests", 1)[1].split("\n## ", 1)[0]
+
+
+def _claims_no_test(md: Path) -> bool:
+    """Whether the doc ASSERTS that nothing tests its module.
+
+    Blockquoted lines are excluded. Each corrected section now carries a
+    `> Until 2026-09-22 this section read ...` note quoting the wrong claim
+    verbatim, and a record of a retracted claim is not a claim. Scoping to the
+    `## Tests` section body rather than the whole file also stops a passing
+    mention elsewhere from tripping the gate.
+    """
+    return any(
+        _NO_TEST_CLAIM in line
+        for line in _tests_section(md).splitlines()
+        if not line.lstrip().startswith(">")
+    )
+
+
+def _cited_test_files(md: Path) -> list[str]:
+    """`tests/...` paths named in the doc's `## Tests` section.
+
+    Honours the section's own shorthand, where a bare filename inherits the
+    directory of the last full path: `tests/lib/test_a.py` · `test_b.py`.
+    """
+    # Blockquoted lines are history, not citation -- each corrected section
+    # quotes the wrong file it used to name, and re-reading that as a live
+    # citation would make the correction fail the gate it was made to satisfy.
+    section = "\n".join(
+        line for line in _tests_section(md).splitlines() if not line.lstrip().startswith(">")
+    )
+    out, last_dir = [], None
+    for tok in re.findall(r"`([^`\s]+)`", section):
+        tok = _strip_suffixes(tok)
+        if "/" in tok:
+            last_dir = tok.rsplit("/", 1)[0] + "/"
+            cand = tok
+        elif last_dir and tok.endswith(".py"):
+            cand = last_dir + tok
+        else:
+            continue
+        # `.py` guard: the section also names the directory in prose ("the only
+        # file under `tests/`"), and a bare directory is not a citation.
+        if cand.startswith("tests/") and cand.endswith(".py"):
+            out.append(cand)
+    return out
+
+
+def _test_files_importing(module_path: str) -> list[str]:
+    """Every file under tests/ that IMPORTS the given module.
+
+    Import, not mention, is the discriminator, and the distinction is the whole
+    gate. `MODEL-EWV-001` correctly says no test targets
+    `gcp/fetchers/evaluate_ew_strikes.py` while the name appears in a docstring
+    in `test_premarket_brief.py`; a content grep calls that document a liar. An
+    import check agrees with it, and still catches `weekend_review` and
+    `earnings_long_watchlist`, which are imported outright.
+    """
+    parts = Path(module_path).with_suffix("").parts
+    dotted, pkg, name = ".".join(parts), ".".join(parts[:-1]), parts[-1]
+    pats = [
+        rf"^\s*from\s+{re.escape(dotted)}\b",
+        rf"^\s*import\s+{re.escape(dotted)}\b",
+        rf"^\s*from\s+{re.escape(pkg)}\s+import\s+[^\n]*\b{re.escape(name)}\b",
+    ]
+    return [
+        t.relative_to(REPO).as_posix()
+        for t in sorted((REPO / "tests").rglob("test_*.py"))
+        if any(re.search(p, t.read_text(), re.M) for p in pats)
+    ]
+
+
+def test_cited_test_files_cover_the_model():
+    """A cited test file must reference the model it is cited under.
+
+    `MODEL-CALIB-001` and `MODEL-PLAY-001` both carried the identical sentence
+    "`tests/scripts/test_scripts.py` covers the CLI surface." Neither model is
+    mentioned in that file. Both live under `scripts/`, so a file named
+    `test_scripts.py` was assumed to cover them and never opened -- the same
+    move as citing a module docstring instead of reading the scoring function,
+    which is what rounds 3 and 4 were about.
+
+    Meanwhile the real suites -- 28 tests for the calibrator, 23 across two
+    files for the playbook -- went uncredited, so the documents understated
+    coverage and misdirected anyone looking for it in one stroke.
+    """
+    offenders = {}
+    for md in sorted(MODELS.glob("MODEL-*.md")):
+        stems = [Path(c).stem for c in _model_code_paths(md)]
+        if not stems:
+            continue
+        for tf in _cited_test_files(md):
+            path = REPO / tf
+            if not path.exists():
+                offenders[f"{md.name} -> {tf}"] = "file does not exist"
+            elif not any(s in path.read_text() for s in stems):
+                offenders[f"{md.name} -> {tf}"] = f"references none of {stems}"
+    assert not offenders, (
+        f"model docs cite test files that do not cover them: {offenders}. Name "
+        "the suite that actually imports the module, or say plainly that none does."
+    )
+
+
+def test_every_model_doc_states_its_test_surface():
+    """A `## Tests` section must name a file or say plainly that none exists.
+
+    The third failure mode, and the quietest. `MODEL-QUAL-001` called the pure
+    helpers "the stated unit-test surface" and named **no file**, while
+    `tests/scripts/test_signal_quality_report.py` (50 tests, importing
+    `CLEAN_THRESHOLD`, `NOISE_THRESHOLD` and `classify` by name) and
+    `tests/scripts/test_signal_quality_alarm.py` (20 tests) both target it.
+
+    Neither of the other two gates could see it: nothing was cited, so there was
+    nothing to check, and no claim was made, so there was nothing to refute.
+    Saying nothing is how a coverage claim avoids being wrong without becoming
+    right.
+    """
+    silent = [
+        md.name
+        for md in sorted(MODELS.glob("MODEL-*.md"))
+        if "## Tests" in md.read_text()
+        and not _cited_test_files(md)
+        and not _claims_no_test(md)
+    ]
+    assert not silent, (
+        f"model docs whose Tests section names no file and makes no explicit "
+        f"'{_NO_TEST_CLAIM}' claim: {silent}. An unstated test surface reads as "
+        "'none' and is not checkable either way."
+    )
+
+
+def test_no_test_claims_are_true():
+    """"No test file targets this module" must survive a search.
+
+    `MODEL-WEEK-001` and `MODEL-WATCH-001` both said it; both were wrong. In
+    each case the real test lives in a file whose NAME does not contain the
+    module name -- `test_trade_logger_reads.py` and a `_freshness` suffix -- so
+    a filename glob misses it and a content grep finds it at once. I evidently
+    looked for the former.
+
+    `MODEL-WATCH-001` went further and justified the absence: a test "would need
+    a real or fixture database; none exists." The suite that exists monkeypatches
+    `get_engine` and needs no database, so the reasoning was refuted by the file
+    it was written to explain away.
+    """
+    offenders = {}
+    for md in sorted(MODELS.glob("MODEL-*.md")):
+        if not _claims_no_test(md):
+            continue
+        for code in _model_code_paths(md):
+            importers = _test_files_importing(code)
+            if importers:
+                offenders[f"{md.name} ({code})"] = importers
+    assert not offenders, (
+        f"docs claim no test targets a module that tests import: {offenders}. "
+        "Name the suite and narrow the claim to what is genuinely uncovered, as "
+        "MODEL-EWV-001 does when it separates the consumer test from the derivation."
+    )
+
+
+_NUMBER_WORDS = {
+    1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven",
+    8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve", 13: "thirteen",
+    14: "fourteen", 15: "fifteen", 16: "sixteen", 17: "seventeen", 18: "eighteen",
+    19: "nineteen", 20: "twenty",
+}
+
+
+def _registry_model_ids() -> list[str]:
+    """Ids in the two non-LLM inventory tables.
+
+    Anchored on the closing cell pipe with a LAZY capture. The shape used
+    elsewhere in this file, `MODEL-[A-Z-]+(?:-[0-9X]+)?`, is only correct
+    because its callers happen to follow it with ` \\|`: on its own the greedy
+    `[A-Z-]+` swallows the hyphen and both `MODEL-EARN-001` and
+    `MODEL-EARN-002` capture as `MODEL-EARN-`, collapsing to one id in a set.
+    Found while writing the gate below, which counted 28 models instead of 29.
+    """
+    text = REGISTRY.read_text()
+    ids: list[str] = []
+    for table in ("## Deterministic and heuristic systems", "## Learned models"):
+        body = text.split(table, 1)[1].split("\n##", 1)[0]
+        ids += [m.group(1) for m in re.finditer(r"^\| \**(MODEL-[A-Z0-9X-]+?)\**\s*\|", body, re.M)]
+    return ids
+
+
+def test_open_decisions_coverage_row_matches_the_registry():
+    """The model-documentation decision row must agree with what it links to.
+
+    Every number in it was wrong (DOC-47). It claimed "a reference doc per
+    model" against 29 models and 15 files; it said "seven models are absent
+    from the master matrix" while **linking to DOC-11**, which says fourteen
+    and records the 9 -> 14 recomputation that made it fourteen; and it called
+    MODEL-EARN-001 the exception to the `UNKNOWN` rationale although that
+    document records its `window_days + 5` as "not recorded anywhere".
+
+    All of it sat beside a disclaimer reading *"No bare count is published
+    here"*, added after DOC-28 for exactly this reason, in the same sentence as
+    two bare counts. A warning is not a gate, which is why this is one.
+    """
+    decisions = PRODUCT / "15-OPEN-DECISIONS.md"
+    row = next(
+        line for line in decisions.read_text().splitlines()
+        if line.startswith("| Model documentation ownership |")
+    )
+    models = set(_registry_model_ids())
+    documented = {p.stem for p in MODELS.glob("MODEL-*.md")}
+    undocumented = models - documented
+
+    # Each claim is matched as its OWN clause, not as a substring of the row.
+    # The first version of this gate searched the whole row, and two of its
+    # three mutations passed: the row legitimately repeats "fourteen" and
+    # "MODEL-STRAT-001" in the correction note, so deleting the real claim left
+    # the search satisfied. A substring check over long prose is the vacuous
+    # gate this round is about, caught here by mutations that refused to go red.
+    assert re.search(
+        rf"reference doc for \*\*{len(documented)} of the {len(models)}\*\* models", row
+    ), (
+        f"the row must state the measured coverage as '**{len(documented)} of the "
+        f"{len(models)}** models'. Counting is what it got wrong four ways."
+    )
+
+    listed_here = re.search(rf"The {len(undocumented)} without one: (.+?)\.\s", row)
+    assert listed_here, (
+        f"the row must enumerate the {len(undocumented)} undocumented models as "
+        f"'The {len(undocumented)} without one: ...'"
+    )
+    named = set(re.findall(r"MODEL-[A-Z0-9X-]+", listed_here.group(1)))
+    assert named == undocumented, (
+        f"the row's undocumented list disagrees with the filesystem. "
+        f"missing from the row: {sorted(undocumented - named)}; "
+        f"named but documented: {sorted(named - undocumented)}"
+    )
+
+    # DOC-11 owns the master-matrix number; this row cites DOC-11 as evidence,
+    # so it may not disagree with it.
+    doc11 = next(line for line in REGISTRY.read_text().splitlines() if line.startswith("| DOC-11 |"))
+    # Only the bolded list. The rest of the row names further ids in its
+    # recomputation note, and counting those gave 19 instead of 14.
+    listed = re.search(r"Absent:\s*\*\*(.+?)\*\*", doc11)
+    assert listed, "DOC-11 no longer carries a bolded 'Absent: **...**' list"
+    absent = re.findall(r"MODEL-[A-Z0-9X-]+", listed.group(1))
+    word = _NUMBER_WORDS[len(absent)]
+    assert re.search(rf"\*\*{word}\*\* models are absent from the master matrix", row), (
+        f"DOC-11 lists {len(absent)} models absent from the master matrix, so "
+        f"this row must say '**{word}** models are absent from the master matrix'. "
+        "It said seven while linking to DOC-11 as its own evidence."
+    )
 
 
 # ------------------------------------------------------- 3. ids + schedule --

@@ -5,7 +5,7 @@
 **Job:** `build-options-greeks` — scheduled `options-daily-greeks`, `15 23 * * 1-5`, **ENABLED** ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** **Failed** · **Rec:** PAUSE
-**Doc health:** CURRENT · **Last verified:** 2026-09-18
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > **Registered 2026-09-18, after running unregistered on a daily cron.** Until this document
 > existed, `lib/features/flow_direction.py` was named by no `MODEL-*` row, so the
@@ -102,7 +102,11 @@ which is what produced the materialized table and the scan-once builder, per CLA
 
 ## Tests
 
-`tests/lib/test_flow_direction.py`
+`tests/lib/test_flow_direction.py` — the scorer.
+
+**`gcp/build_options_daily_greeks.py`, the other half of the Code line, is imported by no test
+and mentioned by none.** The scorer is covered; the job that runs it daily and writes its
+output is not. Recorded here because an unstated gap reads as no gap. DOC-44.
 
 ## Known issues
 

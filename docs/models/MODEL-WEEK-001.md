@@ -6,7 +6,7 @@
 **Output:** a Discord embed — no table ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RESTRUCTURE
-**Doc health:** CURRENT · **Last verified:** 2026-09-18
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > Registered 2026-09-18 by the round-10 sweep. It is the weakest member of the model-bearing
 > set and it is listed anyway, because it labels realized outcomes with the **same score ladder
@@ -98,7 +98,8 @@ comment records as deliberate: *"Only an outage reaches the Parquet files; a def
 
 **UNKNOWN — not recorded.** The 7-day window, the score-bucket grouping and the choice to
 report win rate rather than expectancy carry no derivation. The score→label ladder itself is
-`RiskConfig.score_thresholds`, owned by [MODEL-IND-001](MODEL-IND-001.md)'s score path, not by
+`RiskConfig.score_thresholds`, owned by [MODEL-IND-001](../product/07-MODEL-REGISTRY.md#deterministic-and-heuristic-systems)'s
+score path, not by
 this job.
 
 ## Entry points
@@ -111,7 +112,19 @@ this job.
 
 ## Tests
 
-No test file targets this module.
+`tests/gcp/test_trade_logger_reads.py` — one of its 15 tests,
+`test_weekend_review_reads_live_trades_only`, imports `gcp.weekend_review`, takes
+`inspect.getsource(generate_weekly_review)` and asserts that every `get_weekly_trades(...)` call
+omits `run_kind`, so the report keeps the live-only default and backfill and replay rows stay
+out of the summary. It is a source-inspection guard on data scope, not a behavioural test.
+
+**The statistics themselves are untested.** Nothing exercises win rate, total P&L, average
+return, the score-bucket grouping, or the all-NULL week that publishes `0.0` for two of them
+(see Known issues). That is the gap, and it is what RESTRUCTURE rests on.
+
+> Until 2026-09-22 this section read "No test file targets this module." — unqualified, and
+> false. The test lives in a file whose name does not contain the module's, so a filename search
+> misses it and a content search finds it at once. DOC-44.
 
 ## Known issues
 

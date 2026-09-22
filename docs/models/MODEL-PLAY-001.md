@@ -5,7 +5,7 @@
 (`30 4 * * 1-5`) · **Served by:** `/api/playbook` ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-18
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > **This system ran unregistered, and the sentence excluding it said what it does.** Until
 > 2026-09-18 the registry excluded `phase6-playbook-daily` because it *"has no `from lib.`
@@ -113,8 +113,22 @@ selection among them is what the card publishes.
 
 ## Tests
 
-`tests/scripts/test_scripts.py` covers the CLI surface. There is no test asserting that a
-card's published win rate holds out of sample, which is the gap the status records.
+`tests/scripts/test_phase6_playbook.py` — **16 tests** over the card mechanics: target-before-stop
+and stop-before-target resolution, the same-bar tie assumed against the trade, the time stop
+marking to close, overnight gaps kept out of the trade, and insufficient forward bars skipped
+rather than zeroed. `test_write_playbook_cards_upserts_typed_rows` covers persistence.
+
+`tests/gcp/test_phase6_playbook_scheduler.py` — **7 tests** over the deployment: that the daily
+scheduler exists, runs before the premarket brief, is a `--write-db` job, and is in the
+freshness watchdog.
+
+One finding below is already covered and was filed here as untested:
+`test_horizon_sweep_attached_and_best_is_argmax` asserts `best_horizon` is the argmax over the
+four holds. The gap that remains is the out-of-sample one — nothing asserts a card's published
+win rate holds on data the card was not mined from.
+
+> Until 2026-09-22 this section cited `tests/scripts/test_scripts.py`, which contains no
+> reference to this model at all. DOC-44.
 
 ## Known issues
 

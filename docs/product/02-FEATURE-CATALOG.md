@@ -197,7 +197,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `signal_alerts`, `historical_signals`, `exit_config_overrides` |
 | Models | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 |
 | Code | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py` |
-| Tests | `signals.spec.ts`, `tests/test_signal*.py` |
+| Tests | `signals.spec.ts`, `tests/*/test_signal*.py` |
 | Open issues | 10 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-11-open) |
 | Blocking issues | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#285](https://github.com/TeneikaAskew/stocks/issues/285) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
@@ -243,7 +243,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `strat_levels`, `strat_combo_results` |
 | Models | MODEL-STRAT-001, MODEL-FTFC-001, MODEL-LEVEL-001 |
 | Code | `lib/strat.py`, `lib/strat_levels.py`, `lib/exec_backtest/ftfc.py` |
-| Tests | `tests/test_strat*.py` |
+| Tests | `tests/*/test_strat*.py` |
 | Open issues | 4 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-strat-001--levels--strat-4-open) |
 | Blocking issues | [#908](https://github.com/TeneikaAskew/stocks/issues/908) [#866](https://github.com/TeneikaAskew/stocks/issues/866) [#907](https://github.com/TeneikaAskew/stocks/issues/907) [#884](https://github.com/TeneikaAskew/stocks/issues/884) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
@@ -266,7 +266,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `market_data_*` |
 | Models | MODEL-IND-001 |
 | Code | `lib/indicators.py`, `lib/signals.py` |
-| Tests | `tests/test_indicators*.py` |
+| Tests | `tests/lib/test_indicators*.py` |
 | Open issues | 4 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ind-001--indicators-4-open) |
 | Blocking issues | [#894](https://github.com/TeneikaAskew/stocks/issues/894) [#892](https://github.com/TeneikaAskew/stocks/issues/892) [#870](https://github.com/TeneikaAskew/stocks/issues/870) [#912](https://github.com/TeneikaAskew/stocks/issues/912) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
@@ -289,7 +289,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `insight_reports`, `insight_runs`, `model_routing` |
 | Models | 14 LLM nodes — see [08](08-AI-AGENT-ARCHITECTURE.md) |
 | Code | `lib/agents/`, `platform/api/routers/insights.py`, `gcp/insight_pipeline_job.py` |
-| Tests | `insights.spec.ts`, `tests/test_agents_*.py` |
+| Tests | `insights.spec.ts`, `tests/agents/test_agent_*.py` |
 | Open issues | 4 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-insight-001--ai-insights-4-open) |
 | Blocking issues | [#827](https://github.com/TeneikaAskew/stocks/issues/827) [#867](https://github.com/TeneikaAskew/stocks/issues/867) [#916](https://github.com/TeneikaAskew/stocks/issues/916) [#442](https://github.com/TeneikaAskew/stocks/issues/442) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 4 |
@@ -358,7 +358,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `backtest_*`, `signal_alerts` |
 | Models | — |
 | Code | `lib/backtest.py`, `lib/walk_forward.py`, `lib/exec_backtest/`, `scripts/replay_signal_monitor.py`, `gcp/signal_monitor_eod_resolver.py` |
-| Tests | `replay-trainer.spec.ts`, `tests/test_backtest*.py` |
+| Tests | `replay-trainer.spec.ts`, `tests/*/test_backtest*.py` |
 | Open issues | 21 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-replay-001--replay--backtest--evaluation-21-open) |
 | Blocking issues | [#824](https://github.com/TeneikaAskew/stocks/issues/824) [#823](https://github.com/TeneikaAskew/stocks/issues/823) [#822](https://github.com/TeneikaAskew/stocks/issues/822) [#821](https://github.com/TeneikaAskew/stocks/issues/821) [#820](https://github.com/TeneikaAskew/stocks/issues/820) [#819](https://github.com/TeneikaAskew/stocks/issues/819) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 2 |
@@ -381,7 +381,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `ticker_calibration`, `user_style_results` |
 | Models | see [07](07-MODEL-REGISTRY.md) |
 | Code | `gcp/research/`, `lib/walk_forward.py`, `platform/api/routers/magnitude.py` |
-| Tests | `tests/test_walk_forward*.py`, `tests/test_magnitude*.py` |
+| Tests | `tests/lib/test_walk_forward*.py`, `tests/*/test_magnitude*.py` |
 | Open issues | 11 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-model-001--models--research-11-open) |
 | Blocking issues | [#817](https://github.com/TeneikaAskew/stocks/issues/817) [#813](https://github.com/TeneikaAskew/stocks/issues/813) [#910](https://github.com/TeneikaAskew/stocks/issues/910) [#909](https://github.com/TeneikaAskew/stocks/issues/909) [#888](https://github.com/TeneikaAskew/stocks/issues/888) [#875](https://github.com/TeneikaAskew/stocks/issues/875) |
 | Next action | 2026-09-14 (E-26): magnitude promotion criteria were measured mutually unsatisfiable and replaced with a decision-rule verdict; `pred_bucket` on `/api/magnitude` is now that decision, not argmax. The four constant-output `c49qf` cells still serve pending the decision in [15](15-OPEN-DECISIONS.md). Then sequence from [13](13-ROADMAP.md) Phase 4 |
@@ -426,8 +426,8 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `gcp/discord_interactions/` |
 | Data | `signal_alerts` |
 | Models | — |
-| Code | `gcp/discord_interactions/main.py`, `gcp/notifier*.py` |
-| Tests | `tests/test_notifier*.py` |
+| Code | `gcp/discord_interactions/main.py`, `gcp/failure_notifier.py` |
+| Tests | `tests/gcp/test_notifier*.py` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |
@@ -519,7 +519,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |
 | Models | — |
 | Code | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py` |
-| Tests | `tests/test_data_loader*.py`, integration suite |
+| Tests | `tests/lib/test_data_loader*.py`, integration suite |
 | Open issues | 12 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-data-001--data-platform-14-open) |
 | Blocking issues | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#927](https://github.com/TeneikaAskew/stocks/issues/927) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
@@ -564,7 +564,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/health/freshness` |
 | Data | `job_runs` |
 | Models | — |
-| Code | `scripts/audit_data_freshness.py`, `gcp/notifier*.py`, `platform/api/routers/health.py` |
+| Code | `scripts/audit_data_freshness.py`, `gcp/failure_notifier.py`, `platform/api/routers/health.py` |
 | Tests | `data-pipeline-status.spec.ts` deleted in #957: widget guard ported in [solyra#29](https://github.com/TeneikaAskew/solyra/pull/29); live `/api/health/freshness` tests tracked in [#971](https://github.com/TeneikaAskew/stocks/issues/971) |
 | Open issues | 5 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ops-001--operations--reliability-5-open) |
 | Blocking issues | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) [#944](https://github.com/TeneikaAskew/stocks/issues/944) |

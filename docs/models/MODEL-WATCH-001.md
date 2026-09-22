@@ -6,7 +6,7 @@
 **Output:** a Discord embed — no table ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-18
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > Registered 2026-09-18, found by the round-10 scheduler sweep. It has no `lib/` import at
 > all, which is exactly why the registry's old "imports `lib/` code" proxy never saw it.
@@ -76,8 +76,21 @@ refresh).
 
 ## Tests
 
-No test file targets this module. The SQL carries the decision, so a test would need a real or
-fixture database; none exists.
+`tests/gcp/test_earnings_long_watchlist_freshness.py` — **five test functions, nine cases**,
+importing this module directly. It covers `_normalize_source_date` across `date`, `datetime`,
+tz-aware `pd.Timestamp`, ISO string and `None`; a stale snapshot suppressing both the query and
+the post; a fresh snapshot reaching the posting path; a failed freshness probe reported as
+"cannot determine" rather than a missing snapshot; and a failed candidate query refusing to
+post an empty watchlist.
+
+**The SQL ranking itself is untested** — the `>= :min_wins` gate, the ordering and the
+`LIMIT` carry no assertion. That is the real gap.
+
+> Until 2026-09-22 this section read "No test file targets this module. The SQL carries the
+> decision, so a test would need a real or fixture database; none exists." Both halves were
+> wrong, and the second was refuted by the first: the suite monkeypatches
+> `is_cloud_sql_configured`, `_latest_source_date`, `_query_watchlist` and
+> `gcp.database.get_engine`, and needs no database. DOC-44.
 
 ## Known issues
 

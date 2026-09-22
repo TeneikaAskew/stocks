@@ -5,7 +5,7 @@
 (`0 2 1 1,4,7,10 *`, quarterly) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** **Retest Required** · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-18
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > **This model is not Invalidated, and until 2026-09-18 this document said it was.** One
 > registry row used to cover both this and the walk-forward sweep, so the `Invalidated`
@@ -128,8 +128,18 @@ percentile cut-points are stated as constants. Nothing records why 60 days rathe
 
 ## Tests
 
-`tests/scripts/test_scripts.py` covers the CLI surface. There is no test asserting that the
-thresholds it produces generalise, which is the gap the status records.
+`tests/scripts/test_calibrate_thresholds.py` — **28 tests**, and the only file under `tests/`
+that imports this model. It covers the helpers (`compute_atr_pct`, `compute_rsi`,
+`compute_rvol`, `resample_to_tf`), the full `calibrate_ticker` output shape, `parse_as_of` date
+handling including the future-date rejection, and all four drift branches.
+
+The gap the status records is narrower than "untested": nothing asserts the thresholds
+**generalise**. The closest is `test_high_vol_ticker_has_higher_thresholds_than_low_vol_ticker`,
+which is cross-ticker discrimination on synthetic bars — a weaker claim than out-of-sample
+stability, and the one RETEST rests on.
+
+> Until 2026-09-22 this section cited `tests/scripts/test_scripts.py`, which contains no
+> reference to this model at all. DOC-44.
 
 ## Known issues
 

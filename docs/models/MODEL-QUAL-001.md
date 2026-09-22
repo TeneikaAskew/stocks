@@ -62,6 +62,54 @@ with `QUALITY_CORRELATION_THRESHOLD = 0.10` and `QUALITY_CORRELATION_MIN_SAMPLE 
 checks answer different questions: the first asks whether the strategies still hit, the
 second whether the score still ranks.
 
+### Return units — the thresholds are applied 100x too lenient on four of seven horizons
+
+`returns_by_tf` carries **two units in one dict**, and the constants are compared against both.
+
+```
+lib/trading_analysis.py:933          (max - last) / last * 100      <- PERCENTAGE POINTS
+scripts/run_historical_signals.py:62-68, :254-256   identity mapping, no conversion
+  => historical_signals.return_{5,15,30,60}min store 0.5 for a 0.5% move
+
+scripts/signal_quality_report.py:177 (best - entry) / entry         <- RAW FRACTION
+  => return_{90,120,240}m store 0.005 for a 0.5% move
+
+scripts/signal_quality_report.py:316 returns_by_tf.update(extended) <- merged, one dict
+```
+
+The comment above the constants states the assumption that fails:
+
+```python
+# scripts/signal_quality_report.py:64-65
+# Returns are FRACTIONS (0.005 = 0.5%), matching historical_signals
+# return_*min columns.                   <- those columns are NOT fractions
+CLEAN_THRESHOLD: float = 0.005
+NOISE_THRESHOLD: float = 0.003
+```
+
+`classify` is applied to all seven horizons (`:329-335`), so on **5m / 15m / 30m / 60m** the
+effective cut-point is **0.005%, not 0.5%** — 100x too lenient. Nearly every non-zero fire
+scores `CLEAN_HIT` or `WRONG_DIRECTION`, and almost nothing scores `NOISE`. On 90/120/240m the
+thresholds behave as documented. `best_clean_timeframe` (`:110-121`) iterates ascending, so it
+meets the mis-scaled horizons first.
+
+`mfe_60m_atrs` (`:322-323`) divides a percentage-point return by `atr_5m_pct`, a fraction, and
+is therefore **100x inflated**.
+
+**This is not latent.** `signal-quality-alarm-daily` (`gcp/deploy.sh:4835-4836`) passes no
+`--tf`, and the default is `cls_60m` (`gcp/signal_quality_alarm.py:315-318`) — one of the four
+affected horizons. The daily clean-rate regression alarm reads a column computed with a
+100x-wrong threshold.
+
+And the suite agrees with the code: `tests/scripts/test_signal_quality_report.py:281-282`
+feeds `return_60min = 0.0150` and asserts `0.015 / 0.02 = 0.75`, a fraction where production
+supplies percentage points. A test that shares the code's wrong assumption cannot detect it.
+
+Filed as [#1154](https://github.com/TeneikaAskew/stocks/issues/1154). This is the **second**
+independent defect in this model, alongside the dead join below; both were found by measuring
+a system that was registered `Production` on the reasoning that a measurement system has
+nothing to validate.
+
 ### The alarm cannot fire on live data at all
 
 **Measured against production on 2026-09-22: the join returns zero rows.**
@@ -179,8 +227,25 @@ derivation of the number; `0.10` carries neither.
 
 ## Tests
 
-The pure helpers are the stated unit-test surface. No test asserts that the `0.005` / `0.003`
-cut-points separate signal from noise on this data, which is the gap the status records.
+`tests/scripts/test_signal_quality_report.py` — **50 tests**, importing `CLEAN_THRESHOLD`,
+`NOISE_THRESHOLD`, `classify`, `main` and `parse_args` by name.
+`test_classify_noise_below_noise_threshold` and `test_classify_mixed_between_noise_and_clean`
+exercise the cut-points directly.
+`tests/scripts/test_signal_quality_alarm.py` — **20 tests** over the alarm entry point.
+
+Two gaps remain, and the second is worse than a gap:
+
+1. Nothing asserts the cut-points separate signal from noise **on production data**. The 50
+   tests establish that `classify` implements the constants, not that the constants are right.
+2. **The unit test encodes the same wrong assumption production violates.**
+   `test_signal_quality_report.py:281-282` feeds `return_60min = 0.0150` and asserts
+   `0.015 / 0.02 = 0.75` — a *fraction*, where production supplies *percentage points*. A suite
+   that agrees with the code about the wrong unit cannot detect the wrong unit. See
+   "Return units" below.
+
+> Until 2026-09-22 this section named **no file at all**, calling the pure helpers "the stated
+> unit-test surface" while 70 tests across two files targeted this model. Saying nothing is how
+> a coverage claim avoids being wrong without becoming right. DOC-44.
 
 ## Known issues
 

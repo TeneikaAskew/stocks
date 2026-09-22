@@ -3,7 +3,7 @@
 **Code:** `lib/earnings_reactions.py` (958 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-17
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > **Scope of this document.** It records what the code does, read from the source and
 > its tests. This one's quintile thresholds carry the **most complete recorded derivation**
@@ -203,6 +203,10 @@ docstring; recorded as DOC-19 in
 `tests/lib/test_lib_earnings_reactions.py` · `test_conditional_lean.py` ·
 `test_brief_two_track_redesign.py` · `tests/gcp/test_compute_earnings_reactions.py` ·
 `test_earnings_reactions_brief.py` · `tests/scripts/test_calibrate_earnings.py`
+
+**`gcp/refresh_earnings_views.py`, also on the Code line, is imported by no test.** Its only
+appearance under `tests/` is a docstring mention in
+`tests/gcp/test_earnings_upcoming_numeric_overflow.py`, which is not coverage of it. DOC-44.
 
 ## Known issues
 

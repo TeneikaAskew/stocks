@@ -5,7 +5,7 @@
 **Table:** `exit_config_overrides` · **Job:** `param-sweep` — deployed but **unscheduled**, run by hand ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** **Invalidated** · **Rec:** RESTRUCTURE
-**Doc health:** CURRENT · **Last verified:** 2026-09-18
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > **Read this before using a swept parameter set.** The status is **Invalidated** and the
 > reasons are not cosmetic — see [Why this is Invalidated](#why-this-is-invalidated).
@@ -26,8 +26,35 @@ The two share the word "calibration" and nothing else:
 | Scheduled? | **Yes** — `calibrate-thresholds-quarterly`, `0 2 1 1,4,7,10 *` | No — run by hand |
 | Algorithm | ATR / RVOL / RSI distributions over a **rolling 60-day** bar history | **Anchored walk-forward** via `WalkForwardValidator`, winner by `select_calibration_winner` |
 | Writes | `ticker_calibration` | `exit_config_overrides` |
-| Read by | [MODEL-MOM-001](MODEL-MOM-001.md), [MODEL-MR-001](MODEL-MR-001.md), the live signal monitor | the live exit path ([MODEL-EXIT-001](../product/07-MODEL-REGISTRY.md)) |
+| Read by | [MODEL-MOM-001](MODEL-MOM-001.md), [MODEL-MR-001](MODEL-MR-001.md), the live signal monitor | the live exit path ([MODEL-EXIT-001](../product/07-MODEL-REGISTRY.md)) **and the live mean-reversion entry path ([MODEL-MR-001](MODEL-MR-001.md))** — see below |
 | Implicated by #813 / #817 | No | **Yes** |
+
+### The sweep reaches entry, not only exit
+
+`exit_config_overrides` is not exit-only, and the column that escapes is `consecutive_periods`:
+
+```
+scripts/run_param_sweep.py:64        "consecutive_periods": [2, 3, 4]   # swept
+scripts/run_param_sweep.py:152,161   -> exit_config_overrides
+lib/strategies/exit_config_overrides.py:220   get_consecutive_periods(ticker)
+gcp/signal_monitor.py:1110           -> evaluate_signal(..., consecutive_periods=...)
+lib/signals.py:57-60, :125-128       Consecutive_Down >= consecutive_periods  -> score += 1
+```
+
+That score is compared against `min_conditions` to decide **whether a signal fires at all**, so
+a winner of `4` instead of `3` makes one of five entry factors strictly harder to earn, both
+directions, for that ticker, on the live fire path. `gcp/signal_monitor.py:729` also builds the
+`Consecutive_Up` / `Consecutive_Down` columns with the same per-ticker value, and
+`lib/walk_forward.py:174-175` records the coupling: *"a check of `>= 4` against a column built
+with window 3 can never fire."*
+
+`apply_winner` writes to production on every run (#813), so although the sweep is listed above
+as "run by hand", a hand-run sweep silently retunes live mean-reversion entry.
+
+> Until 2026-09-22 the `Read by` cell named only MODEL-EXIT-001, and the row above it
+> (`Writes | exit_config_overrides`) reinforced the reading that the table is exit-only. The
+> sweep's own docstring (`scripts/run_param_sweep.py:15-21`) says otherwise and has all along.
+> DOC-44.
 
 `scripts/calibrate_thresholds.py` does not import `WalkForwardValidator` at all. Everything
 below belongs to **this** model, not to [MODEL-CALIB-001](MODEL-CALIB-001.md).
