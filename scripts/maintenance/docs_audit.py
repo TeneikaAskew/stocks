@@ -296,6 +296,18 @@ ISSUE_URL_RE = re.compile(
 # contents read as a citation of stocks#16. An issue number is followed by
 # neither a word character nor a hyphen.
 SHORTHAND_ISSUE_RE = re.compile(r"(?<![\w#/-])#(?P<num>\d{1,6})(?![\w-])")
+# `stocks#861` and `solyra#8`: repository-qualified shorthand, which GitHub
+# renders as a link to that issue and which carries everything needed to
+# resolve it -- the state map is already loaded. The scan recognised only full
+# URLs, so a blocker written that way went unreported once the issue closed.
+# Only the QUALIFIED form; the bare one above keeps its much stricter clause
+# rule, because `#123` may be a section number. The owner prefix is optional
+# because `TeneikaAskew/stocks#861` is the same citation. The lookbehind
+# refuses a path component (`docs/stocks#861`) and a second `#`. Codex filed
+# it on the Node twin (solyra#69).
+QUALIFIED_ISSUE_RE = re.compile(
+    rf"(?<![\w#/-])(?:{OWNER}/)?(?P<repo>solyra|stocks)#(?P<num>\d{{1,6}})(?![\w-])",
+    re.I)
 # A `#N` that belongs to some OTHER numbering. Measured on this tree, a bare
 # scan reported `Plan #4`, `plans #5 and #10` and `PRs #81` as issue citations;
 # they are plan and PR numbering that happens to share the spelling. PR words
@@ -4319,6 +4331,50 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                                   "as live work",
                         "severity": "P1" if reason != "not_planned" else "P2",
                         "ref": f"{THIS_REPO}#{num}", "reason": reason})
+        # The QUALIFIED shorthand, before the URL pass so the two are read
+        # against the same decoded copy. What the URL pass will name, and
+        # where -- `[solyra#8](.../issues/8)` carries BOTH spellings of one
+        # citation, and reporting it twice would double the finding. Measured
+        # across both corpora: every cue-bearing qualified shorthand citing a
+        # closed or unresolved issue ALREADY has its URL on the same line, so
+        # the risk this carries is doubled findings, not missed ones. Scoped
+        # to the CLAUSE for the same reason the bare pass is: two clauses can
+        # say opposite things about one number.
+        qual_here = [(_src_at(scan_map, mm.start()), mm.group("repo").lower(),
+                      int(mm.group("num")))
+                     for mm in ISSUE_URL_RE.finditer(scan)
+                     if not any(lo <= _src_at(scan_map, mm.start()) < hi
+                                for lo, hi in hidden)]
+        for m in QUALIFIED_ISSUE_RE.finditer(scan):
+            q_start = _src_at(scan_map, m.start())
+            q_end = _src_at(scan_map, m.end())
+            if any(lo <= q_start < hi for lo, hi in hidden + url_spans):
+                continue
+            repo, num = m.group("repo").lower(), int(m.group("num"))
+            c_lo, c_hi = clause_bounds(line, q_start, q_end)
+            if any(u_repo == repo and u_num == num and c_lo <= u_at < c_hi
+                   for u_at, u_repo, u_num in qual_here):
+                continue
+            # `visible`, not `line`, for the reason the URL pass below reads
+            # the mask: a HIDDEN cue is not evidence.
+            if not cites_live_work(visible, q_start, q_end):
+                continue
+            st = states.get(repo, {}).get(num)
+            label = f"{repo}#{num}"
+            if st is None:
+                # Unlike a bare number, this one IS reported: the qualified
+                # form can only be an issue, so a number naming none is a
+                # defect in the document rather than an ambiguous match.
+                out.append({"check": "closed-issue", "doc": doc, "line": n,
+                            "detail": f"{label} could not be resolved",
+                            "severity": "P2"})
+            elif st["state"] == "closed":
+                reason = st.get("reason") or "completed"
+                out.append({"check": "closed-issue", "doc": doc, "line": n,
+                            "detail": f"{label} is CLOSED ({reason}) but cited "
+                                      "as live work",
+                            "severity": "P1" if reason != "not_planned" else "P2",
+                            "ref": f"{repo}#{num}", "reason": reason})
         for m in ISSUE_URL_RE.finditer(scan):
             m_start = _src_at(scan_map, m.start())
             m_end = _src_at(scan_map, m.end())
@@ -4857,13 +4913,16 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     # Retired Markdown kept in a comment is not rendered, so it is not a
     # citation -- but only the commented SPAN is invisible, not the line.
     commented = comment_spans(lines)
-    # The CODE-BLOCK boundaries, not the whole `fenced` set. A fenced or
-    # indented code block interrupts a paragraph, so an inline span cannot
-    # pair across one -- an unmatched backtick above a fence paired with one
-    # below it and masked a live `[x](missing.md)` in between out of this very
-    # check. The wider set is not the right boundary here: a rendered HTML
-    # block does not end a paragraph the way a code block does.
-    wrapped_code = code_span_lines(lines, _fence_only)
+    # Every BLOCK boundary, not just the code ones. An unmatched backtick
+    # above a fence paired with one below it and masked a live
+    # `[x](missing.md)` in between out of this very check, and the comment
+    # here used to say a rendered HTML block does not end a paragraph the way
+    # a code block does. It does: CommonMark lets an HTML block of types 1
+    # through 6 interrupt one, and type 7 only opens where a paragraph is not
+    # already running -- which `raw_html_block_lines` already enforces. So
+    # `` ` `` above `<pre></pre>` paired with one below it and hid the broken
+    # link between them. Codex filed it on the Node twin (solyra#69).
+    wrapped_code = code_span_lines(lines, fenced)
 
     # Reference-style Markdown: `[guide][g]` with `[g]: docs/guide.md` further
     # down. Neither shape is an inline link, so a broken reference link -- the

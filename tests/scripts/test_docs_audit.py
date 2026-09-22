@@ -6585,6 +6585,86 @@ def test_the_github_host_boundary_belongs_to_the_url_scheme():
     assert ref("Blocked by github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
 
 
+def test_a_repository_qualified_shorthand_is_a_citation():
+    """`Blocked by stocks#861` is a form GitHub renders as a link and this
+    corpus uses, and it carries everything needed to resolve it -- the state
+    map is already loaded. The scan recognised only full URLs, so a blocker
+    written that way went unreported once the issue closed. Only the
+    QUALIFIED form: a bare `#123` keeps its much stricter clause rule, since
+    it may be a section number. Codex filed it on the Node twin (solyra#69)."""
+    states = {"stocks": {861: {"state": "closed", "reason": "completed"}},
+              "solyra": {8: {"state": "closed", "reason": "completed"}}}
+    ref = lambda line: [f["ref"] for f in m.check_closed_issues("d.md", line + "\n", states)]
+    assert ref("Blocked by stocks#861.") == ["stocks#861"]
+    assert ref("Pending solyra#8.") == ["solyra#8"]
+    # `owner/repo#num` is the same citation.
+    assert ref("Blocked by TeneikaAskew/stocks#861.") == ["stocks#861"]
+    # An unresolvable one IS reported, unlike a bare number: the qualified
+    # form can only be an issue, so a number naming none is a defect in the
+    # document rather than an ambiguous match.
+    assert [f["detail"] for f in m.check_closed_issues(
+        "d.md", "Blocked by stocks#99999.\n", states)] == \
+        ["stocks#99999 could not be resolved"]
+
+
+def test_a_qualified_shorthand_and_its_url_are_one_citation():
+    """`[solyra#8](.../issues/8)` carries both spellings of ONE citation, and
+    this is the shape the corpus actually uses: measured across both
+    repositories, every cue-bearing qualified shorthand citing a closed or
+    unresolved issue already has its URL on the same line. A missing dedup
+    would have doubled four real findings rather than adding one."""
+    states = {"stocks": {861: {"state": "closed", "reason": "completed"}},
+              "solyra": {8: {"state": "closed", "reason": "completed"}}}
+    url = "https://github.com/TeneikaAskew/solyra/issues/8"
+    ref = lambda line: [f["ref"] for f in m.check_closed_issues("d.md", line + "\n", states)]
+    assert ref(f"Blocked by [solyra#8]({url}).") == ["solyra#8"]
+    assert ref(f"Blocked by solyra#8 {url}.") == ["solyra#8"]
+    # Scoped to the CLAUSE, not the line: two clauses can say opposite things
+    # about one number, and a line-wide set would suppress the live one. The
+    # SETTLED spelling, because `Landed in` is not in SETTLED_CUE_RE on this
+    # side -- so that clause carries no cue of its own, the line-level
+    # fallback lends it the `Blocked by`, and the URL is a second live
+    # citation rather than a suppressed one. That fallback is deliberate (it
+    # is what reports a table row whose cue is the row label) and predates
+    # this pass; the corpus diff confirms no document hits the shape.
+    assert ref(f"Blocked by solyra#8. Resolved in {url}.") == ["solyra#8"]
+    # A path component is not a repository qualifier, and a fragment inside a
+    # destination is not a citation of its own. The QUERY spelling, because
+    # `.../x/stocks#861` is already refused by the lookbehind and would leave
+    # the URL-span guard reading as dead code.
+    assert ref("Blocked by docs/stocks#861.") == []
+    assert ref("Blocked by https://example.com/?q=stocks#861 now.") == []
+    # The cue rules are the URL pass's rules, not looser ones.
+    assert ref("Landed in stocks#861.") == []
+    assert ref("stocks#861 is no longer blocking.") == []
+    assert ref("Blocked by <!-- stocks#861 -->.") == []
+    assert ref("stocks#861 is resolved. Still blocked by solyra#8.") == ["solyra#8"]
+
+
+def test_inline_content_ends_at_a_raw_html_block():
+    """An HTML block of types 1 through 6 INTERRUPTS a paragraph, and type 7
+    only opens where one is not already running -- so every line
+    raw_html_block_lines returns is a block boundary. The comment here said a
+    rendered HTML block does not end a paragraph the way a code block does, so
+    an unmatched backtick above `<pre></pre>` paired with one below it and
+    masked the live broken link in between out of the audit."""
+    ctx = {"tracked": {"d.md"}, "top_level_dirs": set(), "root_files": set(),
+           "known_root": set(), "exts": {".md"}, "basenames": set()}
+    check = lambda text: [f["check"] for f in m.check_dead_links("d.md", text, ctx)]
+    assert check("` unmatched\n<pre></pre>\n[x](missing.md) `\n") == ["dead-link"]
+    # The blank-line spelling of the same document, which already worked --
+    # the two must agree, because a reader sees the same broken link.
+    assert check("` unmatched\n\n[x](missing.md) `\n") == ["dead-link"]
+    # A REAL code span on one line is still a code span: this widens a
+    # boundary set, it does not stop masking.
+    assert check("`[x](missing.md)`\n") == []
+    # And a type-6 block runs to the blank line, so the third line here is
+    # still INSIDE it -- its Markdown is not parsed and there is nothing to
+    # report. Asserted so the boundary is not mistaken for "every HTML line is
+    # its own block".
+    assert check("` unmatched\n<div></div>\n[x](missing.md) `\n") == []
+
+
 def test_an_issue_url_spelled_with_a_character_reference_is_still_a_citation():
     """A destination is decoded before a reader follows it, so
     `github&#46;com/.../issues/1` IS a link to the real issue. The scan read
