@@ -328,9 +328,23 @@ REF_DEF_RE = re.compile(
 # admitted too: `<a href=guide.md>` is valid HTML and renders a real link. An
 # unquoted value ends at whitespace or any of `"\'=<>` and a backtick, which is
 # what HTML says delimits it. Ported from the Node twin (solyra#69).
+# `href` must be a whole ATTRIBUTE NAME, not a suffix of one and not text
+# inside another attribute's value. `[^>]*?` matched the `href` in
+# `<a data-href="missing.md">`, which is not a clickable link, and would match
+# one written inside `<a title="href=x.md">` too -- both produced a gating
+# dead-link finding for a destination no reader can reach. So the attributes
+# before it are walked as whole name/value pairs, atomically, which both puts
+# `href` at a real boundary and keeps the walk from backtracking into a
+# quoted value.
+# Each attribute is preceded by whitespace, and so is `href`. Without that
+# separator the name could backtrack to the `data-` of `data-href` and match
+# the rest as a real attribute -- the very case this exists to reject.
+_HTML_ATTR = (r"""[a-zA-Z_:][-\w:.]*(?:\s*=\s*(?:"[^"]*"|'[^']*'"""
+              r"""|[^\s"'`=<>]+))?""")
 HTML_HREF_RE = re.compile(
-    r"""<a\s[^>]*?href\s*=\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'"""
-    r"""|(?P<bare>[^\s"'`=<>]+))""", re.I | re.S)
+    rf"""<a(?:\s+{_HTML_ATTR})*?\s+href\s*=\s*"""
+    r"""(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'`=<>]+))""",
+    re.I | re.S)
 REF_DEF_HEAD_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*$")
 REF_DEF_CONT_RE = re.compile(r"^[ \t]*(?P<target><[^>]*>|\S+)")
 # A USE (`[text][label]`) is deliberately NOT checked. Measured over the 322
@@ -1765,7 +1779,13 @@ def indented_code_lines(lines: list[str]) -> set[int]:
             # list marker sets it to its own content column plus four.
             bullet = re.match(r"^(\s*(?:[-*+]|\d+[.)])\s+)", line)
             if bullet:
-                list_indent = len(bullet.group(1))
+                # COLUMNS, as every other measurement here is. `-\titem`
+                # advances the tab to column 4, but counting characters said
+                # 2 and set the nested-code floor to 6 instead of 8 -- so a
+                # six-space rendered paragraph after a blank line was
+                # classified as code and skipped by the dead-link and blocker
+                # audits. `_list_content_col` already measured it this way.
+                list_indent = _column_width(bullet.group(1))
                 floor = list_indent + 4
             elif indent >= list_indent > 0:
                 # A CONTINUATION of the item, which carries no new bullet.
@@ -2375,6 +2395,14 @@ def h1_index(lines: list[str]) -> int | None:
         # unable to repair its own finding. The mask is applied first so the
         # offsets it preserves still line up. Ported from the Node twin.
         bare = _BLOCKQUOTE_PREFIX_RE.sub("", mask_spans(line, hidden_spans.get(i, [])), count=1)
+        # A leading BYTE ORDER MARK is encoding metadata, not heading text. It
+        # sits before the `#`, so H1_RE saw no heading and the document was
+        # reported as missing its marker while --stamp answered
+        # `skipped-no-h1` -- the finding it raises and then refuses to act on.
+        # Stripped after masking, which preserves offsets, so the spans above
+        # still line up.
+        if i == 0:
+            bare = bare.lstrip("\ufeff")
         if H1_RE.match(bare):
             return i
         # Setext level one (`Title` over `===`). Without it the audit reported
@@ -2482,11 +2510,18 @@ def existing_newline(path: pathlib.Path) -> str:
     a one-line stamp, and the opposite of what --stamp promises. The file is
     the authority on its own endings, so it is asked at write time.
     """
+    # Through the FIRST LINE, however long it is. A fixed 8 KiB sample of a
+    # document whose first line is longer than that holds no line ending at
+    # all, so a CRLF file was reported LF and `write_stamp` rewrote every
+    # ending in it -- the whole-file diff this helper exists to prevent.
+    # `readline` stops at the first `\n`, so the read stays bounded by one
+    # line rather than by the file.
     try:
-        head = path.open("rb").read(8192)
+        with path.open("rb") as fh:
+            first = fh.readline()
     except OSError:
         return "\n"
-    return "\r\n" if b"\r\n" in head else "\n"
+    return "\r\n" if first.endswith(b"\r\n") else "\n"
 
 
 def write_stamp(doc: str, new: str) -> None:
@@ -3423,8 +3458,12 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     # as `<pre>` does. That is the opposite of the blocker scan's rule, and
     # deliberately: an `<a href>` inside a rendered block IS a citation, while
     # Markdown syntax there is not.
+    # And YAML FRONT MATTER, which GitHub renders as a metadata table rather
+    # than as body text: `title: "[guide](missing.md)"` is not a link a reader
+    # can click, so the destination produced a gating finding over nothing.
+    # Heading discovery already excludes these lines; the link scan did not.
     fenced = (fenced_lines(lines) | indented_code_lines(lines)
-              | raw_html_block_lines(lines))
+              | raw_html_block_lines(lines) | front_matter_lines(lines))
     # Retired Markdown kept in a comment is not rendered, so it is not a
     # citation -- but only the commented SPAN is invisible, not the line.
     commented = comment_spans(lines)
@@ -4400,7 +4439,14 @@ def check_owning_job(today: str) -> list[dict]:
         # check reported a document current although readers see no production
         # date in it at all -- the same defect as the fenced case, one syntax
         # over. The Node twin masks both wherever it masks either.
-        skip = fenced_lines(body_lines) | indented_code_lines(body_lines)
+        # And a RAW-TEXT HTML block, a fourth syntax that displays its
+        # contents literally: `<pre>` carrying `Generated 2026-09-20` was
+        # accepted as production evidence, so a document that lost its real
+        # stamp was reported current though readers see no Generated line.
+        # Raw-text only -- a rendered `<div>` shows its text, so a stamp
+        # inside one is a stamp.
+        skip = (fenced_lines(body_lines) | indented_code_lines(body_lines)
+                | raw_html_block_lines(body_lines, raw_text_only=True))
         # Per MATCH against the comment SPANS, not per line. A comment can
         # occupy part of a visible line -- `text <!-- Generated 2026-09-20 -->`
         # -- so a whole-line rule let a hidden date stand in for a missing

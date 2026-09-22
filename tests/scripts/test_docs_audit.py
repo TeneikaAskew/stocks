@@ -5953,3 +5953,90 @@ def test_an_html_opener_inside_a_real_fence_still_opens_nothing():
     # And the ordinary cases the two passes must leave exactly as they were.
     assert m.fenced_lines(["```", "x", "```", "y"]) == {0, 1, 2}
     assert m.fenced_lines(["~~~", "```", "~~~", "y"]) == {0, 1, 2}
+
+
+def test_href_must_be_a_whole_attribute_name(monkeypatch, tmp_path):
+    """`<a data-href="missing.md">` is not a clickable link, but the pattern
+    matched the `href` suffix and emitted a gating dead-link finding for a
+    destination no reader can reach. The same held for an `href=` written
+    inside another attribute's VALUE."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    check = lambda text: [f["check"] for f in
+                          m.check_dead_links("d.md", text, {"d.md"})]
+    assert check('<a data-href="missing.md">x</a>\n') == []
+    assert check('<a title="href=missing.md">x</a>\n') == []
+    # A real href is still a real link, quoted or not, and so is one that
+    # follows other attributes.
+    assert check('<a href="missing.md">x</a>\n') == ["dead-link"]
+    assert check("<a href=missing.md>x</a>\n") == ["dead-link"]
+    assert check('<a class="c" data-x=\'1\' href="missing.md">x</a>\n') == ["dead-link"]
+
+
+def test_front_matter_is_metadata_not_a_body_link():
+    """GitHub renders YAML front matter as a metadata table, so
+    `title: "[guide](missing.md)"` is not a link a reader can click. The link
+    scan omitted the exclusion that heading discovery already applies, and
+    emitted a gating finding over nothing."""
+    fm = '---\ntitle: "[guide](missing.md)"\n---\n\n# T\n'
+    assert m.check_dead_links("d.md", fm, {"d.md"}) == []
+    # A definition in front matter defines nothing either.
+    assert m.check_dead_links("d.md", "---\n[g]: missing.md\n---\n\n# T\n", {"d.md"}) == []
+    # The same link in the BODY is still a real link.
+    out = m.check_dead_links("d.md", "# T\n\n[guide](missing.md)\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+
+
+def test_a_generated_date_in_a_raw_text_html_example_is_not_provenance(
+        tmp_path, monkeypatch):
+    """A `<pre>` block displays its contents literally, so the date in it is
+    sample output. Accepting it let a document that lost its real stamp report
+    as current though readers see no production date in it."""
+    out = _owning_doc(tmp_path, monkeypatch,
+                      "# G\n\n<pre>\nGenerated 2026-09-15\n</pre>\n")
+    assert [f["detail"] for f in out if "no `Generated <date>` stamp" in f["detail"]], out
+    # A RENDERED block shows its text, so a stamp inside one is a stamp.
+    out = _owning_doc(tmp_path, monkeypatch,
+                      "# G\n\n<div>\nGenerated 2026-09-15\n</div>\n")
+    assert [f for f in out if "no `Generated <date>` stamp" in f["detail"]] == [], out
+
+
+def test_a_crlf_document_is_detected_past_an_eight_kilobyte_line(tmp_path):
+    """A fixed 8 KiB sample of a document whose first line is longer than that
+    holds no line ending at all, so a CRLF file was reported LF and
+    `write_stamp` rewrote every ending in it -- the whole-file diff this
+    helper exists to prevent."""
+    crlf = tmp_path / "crlf.md"
+    crlf.write_bytes(b"# " + b"x" * 9000 + b"\r\nbody\r\n")
+    assert m.existing_newline(crlf) == "\r\n"
+    lf = tmp_path / "lf.md"
+    lf.write_bytes(b"# " + b"x" * 9000 + b"\nbody\n")
+    assert m.existing_newline(lf) == "\n"
+    # A file with no newline at all, and one that cannot be read, are both LF.
+    (tmp_path / "bare.md").write_bytes(b"# Title")
+    assert m.existing_newline(tmp_path / "bare.md") == "\n"
+    assert m.existing_newline(tmp_path / "nope.md") == "\n"
+
+
+def test_a_tab_list_marker_is_measured_in_columns():
+    """CommonMark advances `-\\titem` to column 4, but counting characters said
+    2 and set the nested-code floor to 6 instead of 8 -- so a six-space
+    rendered paragraph after a blank line was classified as code and skipped
+    by the dead-link and blocker audits. `_list_content_col` already measured
+    it this way."""
+    doc = ["-\titem", "", "      [x](missing.md)"]
+    assert m.indented_code_lines(doc) == set()
+    out = m.check_dead_links("d.md", "\n".join(doc) + "\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+    # A SPACE marker puts the floor at 6, so six spaces there really is code.
+    assert m.indented_code_lines(["- item", "", "      [x](missing.md)"]) == {2}
+
+
+def test_a_byte_order_mark_is_not_heading_text():
+    """A BOM sits before the `#`, so `H1_RE` saw no heading: the document was
+    reported as missing its marker while `--stamp` answered `skipped-no-h1`,
+    the finding it raises and then refuses to act on."""
+    assert m.h1_index(["﻿# Title", "", "body"]) == 0
+    # Only the FIRST line carries one; a stray BOM further down is not a
+    # heading marker, and the line above still wins.
+    assert m.h1_index(["﻿# First", "﻿# Second"]) == 0
+    assert m.h1_index(["# Plain", "", "body"]) == 0
