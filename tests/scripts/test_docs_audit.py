@@ -228,6 +228,29 @@ def test_an_orphan_end_marker_is_a_finding():
     assert orphans == ["inventory:a ends at line 2 with no start"]
 
 
+def test_a_definition_shaped_line_needs_a_whole_definition(tmp_path, monkeypatch):
+    """CommonMark renders `[g]: missing.md nonsense` as ordinary text -- no
+    definition, no clickable link -- while a prefix-only match registered the
+    destination and reported a gating dead link for a target no reader can
+    reach. Codex filed it twice on the same line."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    checks = lambda doc: [f["check"] for f in
+                          m.check_dead_links("d.md", doc, {"d.md"})]
+    assert checks("[g]: missing.md nonsense\n") == []
+    assert checks('[g]: missing.md "unclosed\n') == []
+    # Each of the three title forms, and no title at all, is still a
+    # definition -- so this requires a VALID remainder rather than an empty
+    # one, which is the reading that would have dropped every titled
+    # definition in the corpus.
+    for tail in ("", ' "t"', " 't'", " (t)"):
+        assert checks(f"[g]: missing.md{tail}\n") == ["dead-link"], tail
+    # And the heading collector reads the same rule, so a definition it
+    # accepts and one the link pass accepts cannot diverge.
+    assert m.heading_anchors("## See [guide][g]\n\n[g]: ok.md nonsense\n") \
+        == {"see-guideg"}
+    assert m.heading_anchors("## See [guide][g]\n\n[g]: ok.md\n") == {"see-guide"}
+
+
 def test_two_review_markers_stop_the_stamp(audit_repo):
     """`find_marker` picks the first and the update path rewrote only that
     line, so `--stamp --verify` returned "updated" and exited successfully

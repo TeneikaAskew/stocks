@@ -465,6 +465,14 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
 # `a>b.md`. `[^>]*` stopped at the escaped `>`, captured `<a\\>` and
 # reported a tracked file dead -- the false direction. An unescaped `<`
 # is not destination content either, so it ends the alternative too.
+# What may follow the destination: nothing, or an optional title, to the end
+# of the line. CommonMark renders a definition with any other suffix as
+# ORDINARY TEXT -- `[g]: missing.md nonsense` defines nothing and links
+# nowhere -- while a prefix-only match registered the destination and reported
+# a gating dead link for a target no reader can reach. Codex filed it twice on
+# this line.
+REF_DEF_TAIL_RE = re.compile(
+    r"""[ \t]*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\((?:\\.|[^)\\])*\))?[ \t]*$""")
 REF_DEF_RE = re.compile(
     r"^ {0,3}\[(?P<label>(?:\\.|[^\]\\^])(?:\\.|[^\]\\])*)\]:[ \t]*"
     r"(?P<target><(?:\\.|[^<>\\\n])*>|\S+)")
@@ -1000,6 +1008,9 @@ def heading_anchors(text: str) -> set[str]:
         stripped = _LIST_MARKER_RE.sub(
             "", _BLOCKQUOTE_PREFIX_RE.sub("", ln, count=1), count=1)
         mm = REF_DEF_RE.match(stripped)
+        # The REMAINDER has to be a definition too -- see REF_DEF_TAIL_RE.
+        if mm is not None and not REF_DEF_TAIL_RE.match(stripped, mm.end()):
+            mm = None
         # The destination may sit on the FOLLOWING line. `[g]:` over
         # `  guide.md` defines `g`, so `## See [guide][g]` renders anchored
         # `see-guide` -- and reading only the single-line form recorded
@@ -4733,6 +4744,12 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         if not ((n - 1) in _def_starts or (n - 2) in _def_seen):
             continue
         rm = REF_DEF_RE.match(line)
+        # The REMAINDER has to be a definition too. A prefix match accepted
+        # `[g]: missing.md nonsense`, which CommonMark renders as ordinary
+        # text -- no definition, no link -- and reported its destination as a
+        # gating dead link for something no reader can click.
+        if rm is not None and not REF_DEF_TAIL_RE.match(line, rm.end()):
+            rm = None
         # The destination may sit on the FOLLOWING line: `[guide]:` then
         # `  missing.md` is a definition CommonMark resolves, and `[x][guide]`
         # renders as a clickable link to it. A per-line pattern could not
