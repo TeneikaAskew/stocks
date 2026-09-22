@@ -1,6 +1,6 @@
 # Model and Algorithm Registry
 
-**Last reviewed:** 2026-09-21 · **Owner:** TBD
+**Last reviewed:** 2026-09-22 · **Owner:** TBD
 
 Covers deterministic rules, heuristics, statistical systems, trained estimators and LLM
 nodes — a model is anything that produces a decision, not only a fitted estimator.
@@ -44,9 +44,9 @@ see [#906](https://github.com/TeneikaAskew/stocks/issues/906).
 | MODEL-EARN-002 | Earnings-reaction setup classifier | Heuristic | one of four setup labels per upcoming reporter | `gcp/earnings_reactions_brief.py` (`classify_context`) | Experimental | RETEST | CURRENT · [doc](../models/MODEL-EARN-002.md) | **None filed.** Unevaluated — no experiment tests whether the labels precede the moves they name, and the output is a Discord embed with no table behind it |
 | MODEL-PLAY-001 | Phase 6 playbook cards | Heuristic | per-ticker entry cards — setup, direction, confirmation checklist, target/stop | `scripts/analysis/phase6_playbook.py` | Experimental | RETEST | CURRENT · [doc](../models/MODEL-PLAY-001.md) | **None filed.** Card statistics are **in-sample** (no train/test split anywhere in the module) and the published `best_horizon` is an argmax over four holds scored on that same data (`:110`); no costs are modelled (`compute_card_stats` docstring). **And the statistics do not score the rule the card states**: 11 of 12 cards pass a setup-only mask to `compute_card_stats` while displaying a confirmation checklist that narrows it; Card 12 (`:703`) is the only one whose mask carries its own RSI / EMA / ORB terms |
 | MODEL-WATCH-001 | Long-side earnings watchlist | Heuristic | which upcoming reporters to consider a long-premium position on | `gcp/earnings_long_watchlist.py` | Experimental | RETEST | CURRENT · [doc](../models/MODEL-WATCH-001.md) | **None filed.** Unevaluated — `min_wins = 2` and the prior-winners-repeat premise carry no derivation and no experiment |
-| MODEL-EWV-001 | Earnings Whispers strike verdicts | Deterministic | HIT / MISS / KEPT / ASSIGNED on each strike pick | `gcp/fetchers/evaluate_ew_strikes.py` | Production | KEEP | CURRENT · [doc](../models/MODEL-EWV-001.md) | **None filed.** A vendor-fetch failure and an unsupported strategy take the same `continue` (`:196-197`), so an outage is uncounted |
+| MODEL-EWV-001 | Earnings Whispers strike verdicts | Deterministic | HIT / MISS / KEPT / ASSIGNED on each strike pick | `gcp/fetchers/evaluate_ew_strikes.py` | Production but needs remediation | RESTRUCTURE | CURRENT · [doc](../models/MODEL-EWV-001.md) | [#1151](https://github.com/TeneikaAskew/stocks/issues/1151) after-close reporters are scored against the **pre-announcement** session — `earnings_time` is never read, so the job measures the session of `earnings_date` itself. **1,261 of 2,372 scored rows (53.2%)**, measured 2026-09-22 · a vendor-fetch failure and an unsupported strategy also take the same `continue` (`:196-197`), so an outage is uncounted |
 | MODEL-WEEK-001 | Weekend performance review | Heuristic | realized win rate per score bucket, labelled on the live ladder | `gcp/weekend_review.py` | Production but needs remediation | RESTRUCTURE | CURRENT · [doc](../models/MODEL-WEEK-001.md) | [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) the module docstring claims a backtest comparison the code does not perform · **§3.7**: on a week whose `return_pct` is entirely NULL, `win_rate` (`:46`) and `total_pnl` (`:50`) both publish `0.0` to Discord while `avg_return` (`:51`) correctly reports `nan`; a `trades` frame missing the column raises `IndexingError` at `:45` instead. Measured through `generate_weekly_review`, not inferred |
-| MODEL-QUAL-001 | Signal-quality classification and regression alarm | Deterministic / statistical | CLEAN_HIT / WRONG_DIRECTION / NOISE / MIXED per fire per horizon, and whether the clean rate has regressed | `scripts/signal_quality_report.py`, `gcp/signal_quality_alarm.py` | Production | RETEST | CURRENT · [doc](../models/MODEL-QUAL-001.md) | **None filed.** `CLEAN_THRESHOLD = 0.005` and `NOISE_THRESHOLD = 0.003` decide what counts as a hit for every strategy and carry no derivation; `ticker_calibration.threshold_clean` / `_wrong` / `_noise`, written quarterly by MODEL-CALIB-001, are never read by it |
+| MODEL-QUAL-001 | Signal-quality classification and regression alarm | Deterministic / statistical | CLEAN_HIT / WRONG_DIRECTION / NOISE / MIXED per fire per horizon, and whether the clean rate has regressed | `scripts/signal_quality_report.py`, `gcp/signal_quality_alarm.py` | Production but needs remediation | RETEST | CURRENT · [doc](../models/MODEL-QUAL-001.md) | [#1152](https://github.com/TeneikaAskew/stocks/issues/1152) the score-discrimination half has **never run**: its join needs a wall-clock `alert_ts` to equal a bar-timestamp `entry_time` and matches **0** live rows (230 when truncated to the minute), measured 2026-09-22 · `CLEAN_THRESHOLD = 0.005` and `NOISE_THRESHOLD = 0.003` decide what counts as a hit for every strategy and carry no derivation; `ticker_calibration.threshold_clean` / `_wrong` / `_noise`, written quarterly by MODEL-CALIB-001, are never read by it |
 | MODEL-RANK-001 | Candidate ranker | Heuristic / ensemble | rank trade candidates | `lib/agents/ranker` | Experimental | RESTRUCTURE | UNVERIFIED | — |
 
 ### MODEL-GAMMA-001 — what was and was not reproduced, 2026-08-30
@@ -119,8 +119,7 @@ are **Experimental**; none has promotion evidence.
 
 | Status | Models |
 |---|---|
-| Production but needs remediation | 9 |
-| **Production** | 2 (MODEL-EWV-001, MODEL-QUAL-001) |
+| Production but needs remediation | 11 |
 | Broken | 1 (MODEL-EXIT-001) |
 | Retest Required | 2 (MODEL-GAMMA-001, MODEL-CALIB-001) |
 | Invalidated | 1 (MODEL-SWEEP-001) |
@@ -137,9 +136,18 @@ on SPY / QQQ / IWM 5m. This branch had described that PR as *"In flight"* in thr
 
 **29 `MODEL-*` rows**, up from 24 on 2026-09-18 when the scheduler sweep registered five
 systems that had been running unregistered: MODEL-PLAY-001, MODEL-WATCH-001, MODEL-EWV-001,
-MODEL-WEEK-001 and MODEL-QUAL-001. The two new `Production` rows are the first on this table —
-both are **measurement** systems (strike verdicts, signal classification) rather than
-predictors, which is the only reason they clear a bar nothing else here does.
+MODEL-WEEK-001 and MODEL-QUAL-001.
+
+> **The two `Production` rows lasted four days.** MODEL-EWV-001 and MODEL-QUAL-001 were
+> registered `Production` on the reasoning that a **measurement** system has no edge to
+> validate — no threshold to derive, one right answer. Review then found that each measures
+> the wrong thing: EWV scores the session *before* the news for 53% of its picks
+> ([#1151](https://github.com/TeneikaAskew/stocks/issues/1151)), and QUAL's score-discrimination
+> half joins on timestamps that never match, so it has never run
+> ([#1152](https://github.com/TeneikaAskew/stocks/issues/1152)). Both are now
+> `Production but needs remediation`, and **no row on this table is plain `Production`.**
+> "It only measures" turned out to be a reason to check the measurement, not a reason to
+> trust it.
 
 **No model in this repository currently meets the promotion bar.** Two carry explicit
 recorded FAIL/DEAD-END verdicts ([#575](https://github.com/TeneikaAskew/stocks/pull/575),
@@ -349,25 +357,25 @@ omission. Each row was classified by reading the entrypoint, with
 | Scheduler | Job | Why it is not model-bearing |
 |---|---|---|
 | `fetch-market-data-daily` | `fetch-market-data` | Vendor bars → `market_data_daily`. It **does** import `lib.indicators` and `lib.strat` (`gcp/fetchers/fetch_market_data.py:290`, `:333`) and writes their output as columns — those are model *inputs*, materialised for later readers. No decision is emitted |
-| `backfill-indicators-daily` | `backfill-indicators` | Same computation over history (`gcp/fetchers/backfill_daily_indicators.py:304`, `:320`). Backfill of inputs |
-| `premarket-refresh-daily` | `premarket-refresh` | Refreshes the current session's `market_data_daily` row before the brief reads it. Imports `lib.indicators`; emits no decision |
-| `av-intraday-nightly` · `av-intraday-monthly` | `av-intraday` | AlphaVantage 1-min bars → `market_data_intraday`. Pure ingest |
-| `av-options-daily` · `av-options-monthly` | `av-historical-options` | Historical options chains → `etf_options_snapshots`. Pure ingest |
-| `av-options-realtime` | `av-realtime-options` | Intraday chain snapshot → `etf_options_snapshots`. Pure ingest |
+| `backfill-indicators-daily` | `backfill-daily-indicators` | Same computation over history (`gcp/fetchers/backfill_daily_indicators.py:304`, `:320`). Backfill of inputs |
+| `premarket-refresh-daily` | `fetch-premarket-refresh` | Refreshes the current session's `market_data_daily` row before the brief reads it. Imports `lib.indicators`; emits no decision |
+| `av-intraday-nightly` · `av-intraday-monthly` | `fetch-alphavantage-intraday` | AlphaVantage 1-min bars → `market_data_intraday`. Pure ingest |
+| `av-options-daily` · `av-options-monthly` | `fetch-av-options-backfill` | Historical options chains → `etf_options_snapshots`. Pure ingest |
+| `av-options-realtime` | `fetch-av-options-realtime` | Intraday chain snapshot → `etf_options_snapshots`. Pure ingest |
 | `daily-earnings-refresh-calendar` · `weekly-earnings-refresh-calendar` | `fetch-earnings-calendar` | Earnings dates → `earnings_calendar`. Ingest. (The **verdict** columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above) |
 | `daily-earnings-refresh-history` · `weekly-earnings-refresh-history` | `fetch-earnings-history` | Reported EPS / surprise → `earnings_history`. Ingest |
 | `daily-earnings-refresh-reactions` · `weekly-earnings-refresh-reactions` | `compute-earnings-reactions` | Derives post-earnings move statistics into `earnings_reactions`. Descriptive statistics over history, not a call on any position; MODEL-EARN-001 is the model that reads them |
-| `economic-events-daily` | `economic-events` | Calendar → `economic_events`. Ingest |
-| `fred-rates-daily` | `fred-rates` | FRED series → `daily_rates`. Ingest. Its only `lib` import is `lib.logging_config` |
-| `insider-transactions-daily` | `insider-transactions` | Form 4 filings → `insider_transactions`. Ingest |
-| `sec-filings-intraday` | `sec-filings` | EDGAR filings → `sec_filings`. Ingest |
-| `news-sentiment-hourly` · `news-sentiment-earnings-0600` · `news-topics-hourly` | `news-sentiment` | Vendor-scored sentiment → `news_sentiment`. The score is the **vendor's**; this job stores it |
-| `top-movers-daily` · `top-movers-intraday-hourly` · `top-movers-intraday-close` | `top-movers` | Ranks by realized % change → `top_movers_daily` / `top_movers_intraday`. A sort of what already happened, with no threshold and no call |
+| `economic-events-daily` | `fetch-economic-events` | Calendar → `economic_events`. Ingest |
+| `fred-rates-daily` | `fetch-fred-rates` | FRED series → `daily_rates`. Ingest. Its only `lib` import is `lib.logging_config` |
+| `insider-transactions-daily` | `fetch-insider-transactions` | Form 4 filings → `insider_transactions`. Ingest |
+| `sec-filings-intraday` | `fetch-sec-filings` | EDGAR filings → `sec_filings`. Ingest |
+| `news-sentiment-hourly` · `news-sentiment-earnings-0600` · `news-topics-hourly` | `fetch-news-sentiment` · `fetch-news-sentiment-earnings` · `fetch-news-sentiment-topics` | Vendor-scored sentiment → `news_sentiment`. The score is the **vendor's**; this job stores it |
+| `top-movers-daily` · `top-movers-intraday-hourly` · `top-movers-intraday-close` | `fetch-top-movers` | Ranks by realized % change → `top_movers_daily` / `top_movers_intraday`. A sort of what already happened, with no threshold and no call |
 | `freshness-watchdog-hourly` · `freshness-watchdog-nightly` | `freshness-watchdog` | Alarms when a table stops being written. Reaches a person, decides nothing about a position — the clause that keeps ops alarms out |
 | `audit-infra-drift-daily` | `audit-infra-drift` | Same shape: deployed GCP state vs `gcp/deploy.sh`, Discord on drift. Infrastructure, not markets |
-| `options-retention-daily` | `options-retention` | Prunes aged `etf_options_snapshots` rows. Storage housekeeping |
+| `options-retention-daily` | `etf-options-retention` | Prunes aged `etf_options_snapshots` rows. Storage housekeeping |
 | `cloud-sql-weekly-export-sunday` | `cloud-sql-weekly-export` | `pg_dump` → GCS. The third backup layer; see CLAUDE.md § Backup and disaster recovery |
-| `discord-warm-open` · `discord-warm-close` | *(service `discord-interactions`)* | Pings a Cloud Run **service** to beat the cold start inside Discord's 3-second interaction ack. Not a job at all |
+| `discord-warm-open` · `discord-warm-close` | `discord-interactions` | Pings a Cloud Run **service** to beat the cold start inside Discord's 3-second interaction ack. Not a job at all |
 
 ### Research documentation corpus
 
@@ -459,6 +467,10 @@ here — that one belongs to code defects and is owned by
 | DOC-35 | `07` (this file) | The deliberate-exclusion paragraph excluded `phase6-playbook-daily` because it *"has no `from lib.` import of its own and writes markdown **decision cards** from earlier phases' output"* — a sentence arguing a job is not a decision system, containing the phrase "decision cards". It passes `--write-db` (`gcp/deploy.sh:4430`) and upserts `playbook_cards` (`scripts/analysis/phase6_playbook.py:942-993`), which `/api/playbook` serves. The exclusion was written to make near-misses visible; the first one written down was false | wrong-claim | **H** | MODEL-PLAY-001 |
 | DOC-36 | `gcp/weekend_review.py` | Module docstring (`:3-7`) says the job *"compares actual performance to backtest expectations"*. It does not — there is no backtest, expectation or prior referenced anywhere in the file; every number is a realized statistic over `trades`. Tracked under [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) with the other stale module docstrings | wrong-claim | **M** | MODEL-WEEK-001 |
 | DOC-37 | `scripts/audit_scheduler_coverage.py` | The sweep written to end the missed-scheduler pattern enumerated **61 of 63** schedulers and reported "61 declared, 61 resolved". Its parser matched line by line, so two `_schedule` calls split across a backslash continuation were never seen — and an entry a parser never sees cannot fail the assertion that every entry resolves. Caught by a *second* parser (the registry gate's `_declared_schedulers`) disagreeing by two, not by the check designed for it | wrong-claim | **H** | MODEL-QUAL-001 |
+| DOC-38 | [MODEL-EWV-001](../models/MODEL-EWV-001.md) | Called the session handling *"right, and non-obviously so"* and used that to justify `Production` / `KEEP`. `evaluate_ew_strikes.py` never reads `earnings_time`: it selects by `earnings_date` (`:155`) and fetches bars for that same date (`:190`), so every **after-close** reporter is scored against the session *before* the announcement. Measured 2026-09-22: **1,261 of 2,372 scored rows, 53.2%**. The timezone of the window was verified; which day the window was on was never asked | wrong-claim | **H** | MODEL-EWV-001 |
+| DOC-39 | [MODEL-QUAL-001](../models/MODEL-QUAL-001.md) | Presented the score-discrimination alarm as operating, giving its threshold and its non-zero exit, without checking whether its query returns anything. The join needs a wall-clock `alert_ts` (`signal_monitor.py:1662`, `:1849-1877`) to equal a bar-timestamp `entry_time` (`signal_quality_report.py:380-382`). Measured 2026-09-22: **0** live rows join, **230** when truncated to the minute. That half of the job has never run | wrong-claim | **H** | MODEL-QUAL-001 |
+| DOC-40 | [MODEL-MOM-001](../models/MODEL-MOM-001.md) | Described the firing rule without `SignalConfig.enable_standalone_momentum`, which is `False` (`lib/config.py:444`, executed via `load_config()`) and which `gcp/signal_monitor.py:1139` requires before keeping a momentum-only result. Momentum alone never reaches a person; it contributes only by agreeing with a mean-reversion fire. The document overstated this model's production exposure | wrong-claim | **M** | MODEL-MOM-001 |
+| DOC-41 | `07` (this file) | The deliberate-exclusion table's **Job** column named jobs that do not exist on **12 of 21 rows** — `fred-rates` for `fetch-fred-rates`, `av-intraday` for `fetch-alphavantage-intraday`, and one row collapsing **three** distinct jobs into a single invented `news-sentiment`. Derived by stripping each scheduler's suffix instead of reading `deploy.sh`. Both parsers read only the FIRST cell, so every gate stayed green; the listed table's Job cell was already checked, so only the exclusion table could rot | wrong-claim | **H** | (12 excluded schedulers) |
 
 ### Disposition
 
@@ -493,6 +505,10 @@ here — that one belongs to code defects and is owned by
 | DOC-35 | **FIXED HERE** | The inclusion rule is rewritten and published: *a scheduled job is model-bearing when it produces a decision, a label or a verdict about a trade, a signal or a position that reaches a person or a served surface — wherever its thresholds live.* Imports become one sufficient signal, not the definition. `phase6-playbook-daily` is registered as **MODEL-PLAY-001**, and every one of the 63 live schedulers now appears in the scheduler table or in a new **deliberate-exclusion table** with its reason, gated by `test_every_live_scheduler_is_classified` |
 | DOC-36 | **RECORDED — and its issue may close without it** | Stated in [MODEL-WEEK-001](../models/MODEL-WEEK-001.md) and added to [#1137](https://github.com/TeneikaAskew/stocks/issues/1137), which owns the stale-module-docstring class. Not fixed here: the code change is the docstring's. **Watch [#1139](https://github.com/TeneikaAskew/stocks/pull/1139)** — it says `Closes #1137` and fixes three docstrings, none of them `gcp/weekend_review.py`'s. If it merges as written, DOC-36's issue closes with DOC-36 unfixed, and this row is the only place that says so |
 | DOC-37 | **FIXED HERE** | The parser joins backslash continuations before matching, and the module docstring records the failure in the terms that matter — *an assertion that every item resolves says nothing about items the enumeration missed.* Both schedulers it had hidden — `signal-quality-report-nightly` and `signal-quality-alarm-daily` — are registered as **MODEL-QUAL-001**. The durable lesson is that the second parser is what found it: `test_every_live_scheduler_is_classified` enumerates independently and disagreed by two |
+| DOC-38 | **FILED — [#1151](https://github.com/TeneikaAskew/stocks/issues/1151)** | Status moves `Production` / `KEEP` → `Production but needs remediation` / `RESTRUCTURE`: the arithmetic is right and the input is the wrong day's bars. The doc now leads with the measured table and keeps the timezone reasoning below it, marked as the thing that was true and was not the thing to be confident about. The fix is code — resolve a `postmarket` row to the next trading session — and existing rows need re-evaluation with an explicit `--start`/`--end` |
+| DOC-39 | **FILED — [#1152](https://github.com/TeneikaAskew/stocks/issues/1152)** | Status moves `Production` → `Production but needs remediation`. The issue proposes truncating both sides of the join to the minute, which the 230-row measurement shows would clear the alarm's own `QUALITY_CORRELATION_MIN_SAMPLE = 50`. The `abs(rho)` finding rides the same issue. Note what separates the two findings in this document: `abs(rho)` was measured by calling the function with synthetic rows and is sound; the join was described rather than queried, and the function works — nothing reaches it |
+| DOC-40 | **FIXED HERE** | A new section separates **eligibility** from **persistence**: the conditions and thresholds govern whether momentum would be eligible, and the flag governs whether anything survives. Not filed — the flag is a deliberate setting, not a defect; what was wrong was the document |
+| DOC-41 | **FIXED HERE** | All 12 cells regenerated from `deploy.sh` by script rather than retyped, with the `news-sentiment` row now naming its three jobs. Gated by `test_exclusion_table_job_cells_match_deploy_sh`, mirrored in `scripts/audit_scheduler_coverage.py`, and mutation-tested both ways — a single wrong name, and the subtler case of three jobs collapsed to one. **This is the second consecutive round whose defect was "the other direction, or the other column, was never checked"** (DOC-37 was the scheduler set; this is the job column). The pattern is worth naming: a parser written for one purpose gets reused as though it validated everything it touched |
 
 Merged-PR lineage for every model is owned by
 [12](12-PR-ISSUE-TRACEABILITY.md#audit-prs); this section records only open work.

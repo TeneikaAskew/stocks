@@ -5,8 +5,8 @@
 **Table:** `signal_metrics` ·
 **Jobs:** `signal-quality-report` (`0 1 * * 2-6`), `signal-quality-alarm` (`0 2 * * 2-6`) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
-**Status:** Production · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-18
+**Status:** Production but needs remediation · **Rec:** RETEST
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > **Registered 2026-09-18, and it was the round-10 sweep's own blind spot.** Both schedulers are
 > declared in `gcp/deploy.sh` across a backslash line continuation, and
@@ -61,6 +61,45 @@ with `QUALITY_CORRELATION_THRESHOLD = 0.10` and `QUALITY_CORRELATION_MIN_SAMPLE 
 **returns 1** (`:422-423`) — so *a stable clean rate does not mean the job passed*. The two
 checks answer different questions: the first asks whether the strategies still hit, the
 second whether the score still ranks.
+
+### The alarm cannot fire on live data at all
+
+**Measured against production on 2026-09-22: the join returns zero rows.**
+
+`fetch_score_quality_rows` joins on exact timestamp equality (`:198-200`):
+
+```sql
+JOIN signal_metrics sm
+  ON sm.ticker = sa.ticker
+ AND sm.entry_time = sa.alert_ts
+```
+
+The two sides are written by different clocks. `signal_alerts.alert_ts` is `self._now()`
+(`gcp/signal_monitor.py:1662`), and a live run has `replay_clock_ts is None`, so that returns
+`datetime.now(tz)` — **wall clock, with seconds and microseconds** (`:1849-1877`).
+`signal_metrics.entry_time` comes from `historical_signals.entry_time`
+(`scripts/signal_quality_report.py:380-382`), which is a **bar timestamp**. A wall-clock
+instant equals a minute-aligned bar timestamp only by coincidence.
+
+| Join condition, `run_kind='live'` and `status='final'` | Rows |
+|---|---:|
+| `sm.entry_time = sa.alert_ts` — what the code does | **0** |
+| `date_trunc('minute', …)` on both sides | **230** |
+
+So `rho` is `None` on every live run, `quality_alarm` is `rho is not None and …` (`:385-387`)
+and therefore always `False`, and the branch that would `return 1` is unreachable. **Score
+discrimination is not monitored in production**, and has not been since the alarm shipped.
+
+The second row is what makes this fixable rather than merely broken: truncating both sides to
+the minute yields 230 joinable rows, comfortably above the alarm's own
+`QUALITY_CORRELATION_MIN_SAMPLE = 50`. Tracked as
+[#1152](https://github.com/TeneikaAskew/stocks/issues/1152).
+
+> **An earlier revision of this document presented this alarm as operating**, describing its
+> threshold and its non-zero exit without checking whether its query returns anything. The
+> `abs(rho)` finding below was measured by calling the function directly with synthetic rows,
+> which is why that one is sound and this one was missed: the function works, and nothing
+> reaches it.
 
 ### `abs(rho)` means an inverted score reads as healthy
 
@@ -145,7 +184,11 @@ cut-points separate signal from noise on this data, which is the gap the status 
 
 ## Known issues
 
-**None filed.** Two substantive findings, both recorded here rather than left to be
-rediscovered: the unread `ticker_calibration` thresholds (also on
-[MODEL-CALIB-001](MODEL-CALIB-001.md)), and `abs(rho)` treating an inverted score as healthy —
-measured, not inferred.
+[#1152](https://github.com/TeneikaAskew/stocks/issues/1152) the score-discrimination alarm's
+timestamp join matches zero live rows, so that half of the job has never run in production.
+
+Two further findings recorded here rather than filed: the unread `ticker_calibration`
+thresholds (also on [MODEL-CALIB-001](MODEL-CALIB-001.md)), and `abs(rho)` treating an
+inverted score as healthy. Both measured, not inferred.
+Titles and severity are owned by
+[12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).

@@ -241,6 +241,32 @@ LISTED_HEADER = "| Scheduler | Cron (`America/New_York`) | Job | Serves |"
 EXCLUDED_HEADER = "| Scheduler | Job | Why it is not model-bearing |"
 
 
+def excluded_job_cells() -> dict[str, set[str]]:
+    """scheduler -> the job names its exclusion row CLAIMS.
+
+    The second column, which nothing read until 2026-09-22 and which was wrong
+    on 12 of 21 rows. `registry_tables()` deliberately parses only the first
+    cell (see its comment), so this is a separate pass rather than a widening
+    of that one -- a name in a later cell must never make a scheduler count as
+    classified.
+    """
+    text = (REPO / "docs" / "product" / "07-MODEL-REGISTRY.md").read_text()
+    if EXCLUDED_HEADER not in text:
+        return {}
+    body = text.split(EXCLUDED_HEADER, 1)[1].split("\n\n", 1)[0]
+    out: dict[str, set[str]] = {}
+    for row in body.split("\n"):
+        if not row.startswith("| `"):
+            continue
+        cells = row.split("|")
+        if len(cells) < 4:
+            continue
+        claimed = set(re.findall(r"`([\w-]+)`", cells[2]))
+        for name in re.findall(r"`([\w-]+)`", cells[1]):
+            out[name] = claimed
+    return out
+
+
 def registry_tables() -> tuple[set[str], set[str]]:
     """(listed, excluded) scheduler names from the registry's two tables."""
     text = (REPO / "docs" / "product" / "07-MODEL-REGISTRY.md").read_text()
@@ -322,6 +348,20 @@ def main(argv: list[str]) -> int:
     # standing and this script exited 0, because a row about nothing cannot be
     # unclassified. Same shape as the continuation bug in `resolve_schedulers`:
     # a check that only walks one set says nothing about the other.
+    # The Job column of the exclusion table, checked against what each scheduler
+    # actually targets. Rows that group several schedulers must name every job
+    # they target: `news-sentiment` stood for three different ones.
+    claims = excluded_job_cells()
+    wrong = []
+    for name, claimed in sorted(claims.items()):
+        if name not in scheds or not claimed:
+            continue
+        real = {scheds[name][1]}
+        if not real <= claimed:
+            wrong.append(f"{name}: row says {sorted(claimed)}, deploy.sh says {sorted(real)}")
+    for w in wrong:
+        print(f"WRONG JOB CELL: {w}", file=sys.stderr)
+
     stale = sorted((listed | excluded) - set(scheds))
     for s in stale:
         where = "the scheduler table" if s in listed else "the deliberate-exclusion table"
@@ -333,14 +373,15 @@ def main(argv: list[str]) -> int:
     else:
         print(f"{len(scheds)} schedulers declared in deploy.sh, {len(rows)} resolved")
         print(f"{len(listed)} listed as model-bearing, {len(excluded)} deliberately excluded, "
-              f"{len(unclassified)} UNCLASSIFIED, {len(stale)} STALE\n")
+              f"{len(unclassified)} UNCLASSIFIED, {len(stale)} STALE, "
+              f"{len(wrong)} WRONG JOB CELL\n")
         for s, e, h in unclassified:
             print(f"  UNCLASSIFIED  {s:36} {e:44} {h}")
 
     for u in unresolved:
         print(f"UNRESOLVED (parser failure, not an exclusion): {u}", file=sys.stderr)
 
-    return 1 if (unresolved or unclassified or stale) else 0
+    return 1 if (unresolved or unclassified or stale or wrong) else 0
 
 
 if __name__ == "__main__":

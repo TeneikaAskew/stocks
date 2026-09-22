@@ -30,6 +30,37 @@ Core conditions are the four structural ones — `consecutive_up`, `rsi_bullish_
 `above_vwap`, `above_ema9` (`config.py:129-134`; PUT mirrors at `:136-141`). So the three
 newer confirmation factors cannot carry a fire on their own.
 
+### Clearing both gates does not produce a live signal
+
+**This section describes eligibility. In production, momentum alone never reaches anyone.**
+
+`SignalMonitor._evaluate_strategies_for_bar` keeps a momentum-only result only behind a flag:
+
+```python
+if mom_signal is not None and self.signal_cfg.enable_standalone_momentum:   # :1139
+```
+
+and that flag is `False`. Executed rather than read:
+
+```
+SignalConfig().enable_standalone_momentum          -> False
+load_config().signal.enable_standalone_momentum    -> False
+```
+
+The only override path is `lib/config.py:856`, which reads the key from config data, and
+nothing in this repository sets it. The default is declared at `lib/config.py:444`.
+
+So a bar where momentum scores 5 of 7 with 2 core conditions and mean reversion does **not**
+fire produces no alert at all. Momentum reaches live output only when mean reversion has
+already fired on the same bar and the two agree, which is
+[MODEL-AGREE-001](MODEL-AGREE-001.md)'s path, not this one.
+
+That distinction matters for reading everything below: the conditions, thresholds and
+rationale here govern **whether momentum would be eligible**, and the calibration
+[MODEL-CALIB-001](MODEL-CALIB-001.md) writes into its RSI band changes what momentum
+*contributes to agreement*, not what it fires on its own. An earlier revision of this document
+described the firing rule without the flag and so overstated this model's production exposure.
+
 ## The seven scored conditions (CALL; PUT mirrors)
 
 | # | Condition name | Test | Threshold | Source |

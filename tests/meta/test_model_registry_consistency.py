@@ -452,6 +452,45 @@ def test_concern_ids_are_unique():
     assert not dupes, f"the same DOC id names more than one finding: {dupes}"
 
 
+def test_every_disposition_row_is_inside_the_disposition_table():
+    """A `DOC-nn` disposition below the paragraph that ends the table.
+
+    This has now happened twice — DOC-35..37 on 2026-09-21 and DOC-38..41 on
+    2026-09-22 — because appending "before the next heading" lands after the
+    prose that closes the table, where a row renders as loose text. Both times
+    it was caught by the design board's data builder refusing to find a
+    disposition, never by this suite: `test_no_concern_carries_two_different_
+    dispositions` and friends search the whole SECTION, so a row outside the
+    table still reads as present.
+
+    The fix is to check position, not presence: every `| DOC-nn |` line in the
+    Disposition section must sit in the contiguous run of table rows.
+    """
+    text = REGISTRY.read_text()
+    section = text.split("### Disposition", 1)[1].split("\n###", 1)[0]
+    lines = section.split("\n")
+
+    rows = [n for n, l in enumerate(lines) if re.match(r"^\| DOC-\d+ \|", l)]
+    assert len(rows) >= 10, (
+        f"only {len(rows)} disposition rows parsed -- the section shape has "
+        "drifted and this test would check nothing."
+    )
+    # The table is the run starting at its header separator; anything after a
+    # blank line that follows the last contiguous row is outside it.
+    first = rows[0]
+    contiguous = {first}
+    for n in rows[1:]:
+        if all(lines[k].startswith("|") for k in range(max(contiguous) + 1, n + 1)):
+            contiguous.add(n)
+    orphans = [lines[n].split("|")[1].strip() for n in rows if n not in contiguous]
+    assert not orphans, (
+        f"disposition rows sit outside the table, after the prose that ends it: "
+        f"{orphans}. They render as loose text and the concern-data builder "
+        "cannot find them. Insert after the last existing row, not before the "
+        "next heading."
+    )
+
+
 def test_no_concern_carries_two_different_dispositions():
     """One DOC id, one verdict.
 
@@ -1337,6 +1376,54 @@ def test_status_summary_matches_the_tables_it_summarises():
     for status in sorted(set(actual) - published):
         bad.append(f"{status}: {len(actual[status])} model(s) carry it, absent from the summary")
     assert not bad, "Status summary disagrees with the tables: " + "; ".join(bad)
+
+
+def test_exclusion_table_job_cells_match_deploy_sh():
+    """The exclusion table's SECOND column, which nothing read.
+
+    Measured 2026-09-22: 12 of 21 exclusion rows named a job that does not
+    exist, because the names were derived by stripping the scheduler's suffix
+    instead of reading deploy.sh -- `fred-rates` for `fetch-fred-rates`,
+    `av-intraday` for `fetch-alphavantage-intraday`, and one row collapsing
+    THREE distinct jobs into a single invented `news-sentiment`.
+
+    Every gate stayed green because `_table_schedulers` and the audit script's
+    `registry_tables()` parse only the FIRST cell. The listed table's Job cell is
+    checked -- test_scheduler_table_matches_deploy_sh asserts
+    `declared[name] == (cron, job)` per row -- so once again only the exclusion
+    table could rot. That is the second consecutive round where the defect was
+    "the other direction, or the other column, was never checked".
+    """
+    declared = _declared_schedulers()
+    text = REGISTRY.read_text()
+    assert _EXCLUDED_HEADER in text, "the deliberate-exclusion table is gone"
+    body = text.split(_EXCLUDED_HEADER, 1)[1].split("\n\n", 1)[0]
+
+    checked, bad = 0, []
+    for row in body.split("\n"):
+        if not row.startswith("| `"):
+            continue
+        cells = row.split("|")
+        if len(cells) < 4:
+            continue
+        names = re.findall(r"`([\w-]+)`", cells[1])
+        claimed = set(re.findall(r"`([\w-]+)`", cells[2]))
+        real = {declared[n][1] for n in names if n in declared}
+        if not real:
+            continue
+        checked += 1
+        if real != claimed:
+            bad.append(f"{', '.join(names)}: table says {sorted(claimed)}, "
+                       f"deploy.sh says {sorted(real)}")
+    assert checked >= 15, (
+        f"only {checked} exclusion rows parsed -- the table shape has drifted and "
+        "this test would compare nothing."
+    )
+    assert not bad, (
+        "exclusion-table Job cells disagree with gcp/deploy.sh: " + "; ".join(bad) +
+        ". Name the job deploy.sh declares, and list all of them when the "
+        "schedulers on one row target different jobs."
+    )
 
 
 def test_scheduler_table_model_ids_have_registry_rows():

@@ -4,8 +4,8 @@
 **Writes:** `earnings_calendar.ew_*` columns ·
 **Job:** `evaluate-ew-strikes` (`0 23 * * 1-5`, after the close) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
-**Status:** Production · **Rec:** KEEP
-**Doc health:** CURRENT · **Last verified:** 2026-09-18
+**Status:** Production but needs remediation · **Rec:** RESTRUCTURE
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > Registered 2026-09-18 by the round-10 sweep. It was invisible to the sweep's own first pass
 > too: the audit script's write-detector matched `INSERT INTO` and `upsert_dataframe(...)` but
@@ -31,11 +31,14 @@ Alongside the verdict it writes `ew_strike_move_pct` (signed, relative to the st
 `ew_minutes_to_hit`, `ew_minutes_in_zone`, `ew_day_change_pct`, and the session high / low /
 close.
 
-This is a **measurement, not a prediction** — which is why the status is `Production` and the
-recommendation `KEEP` while every other system registered in the round-10 sweep is
-`Experimental`. There is no threshold to derive and no edge to validate: the question "did the
-underlying trade through the strike" has one right answer, and the code computes it. What it
-still needs is to be correct about the session, and that part is checkable.
+This is a **measurement, not a prediction**: there is no threshold to derive and no edge to
+validate. That is why it was registered `Production` / `KEEP` while every other system from
+the round-10 sweep is `Experimental` — the question "did the underlying trade through the
+strike" has one right answer.
+
+**It has one right answer about one specific session, and for 53% of picks the job measures a
+different one.** The arithmetic is correct and the input is wrong, which is why the status is
+now `Production but needs remediation` / `RESTRUCTURE` rather than `KEEP`.
 
 ## Where the verdict goes
 
@@ -46,7 +49,41 @@ renders it at `:2391-2396` and `:2616` — gated, per the comment there, to *"on
 [MODEL-BRIEF-001](MODEL-BRIEF-001.md). Nothing else in the repository reads these columns; no
 router serves them.
 
-## The session window is right, and the reason is not obvious
+## The session it scores is the wrong one for most picks
+
+**53% of the scored verdicts in this table describe the session BEFORE the news.**
+
+`evaluate_range` selects rows by `earnings_date` (`:155`), passes that same date to
+`fetch_minute_data` (`:190`), and scores `09:30-15:59` of it. `earnings_time` — the column
+that says whether the company reports before the open, after the close, or intraday — is
+**never read**: it appears nowhere in the file. For an after-close reporter the announcement
+lands *after* the session being measured, so the verdict answers "did the underlying trade
+through the strike" about a session in which the market had not yet heard the news.
+
+Measured against production on 2026-09-22:
+
+| `earnings_time` | picks | with a verdict written |
+|---|---:|---:|
+| **`postmarket`** | **1,269** | **1,261** |
+| `premarket` | 1,120 | 1,106 |
+| `intraday` | 5 | 5 |
+
+So **1,261 of 2,372 scored rows (53.2%)** are wrong-session. `premarket` is correct — the news
+is out before 09:30, so the same day's session is the right one — and `intraday` is ambiguous
+by nature. This is the majority of the surface, not a corner, and the verdicts are already
+written and already rendered by the premarket brief.
+
+Tracked as [#1151](https://github.com/TeneikaAskew/stocks/issues/1151). The fix is code:
+resolve a `postmarket` row to the **next** trading session before fetching bars.
+
+> **An earlier revision of this document called the session handling "right, and non-obviously
+> so", and used that to justify `Production` / `KEEP`.** The reasoning it gave was sound as far
+> as it went and is kept below, because it is still true and still worth knowing. It was simply
+> the wrong thing to have been confident about: I verified the timezone of the window and never
+> asked which day the window was on. Status is now `Production but needs remediation` /
+> `RESTRUCTURE`.
+
+### The timezone of the window is right, and that part is not obvious
 
 `bars.between_time('09:30', '15:59')` (`:191`) filters on the index's **wall clock**, which is
 only correct if the index is Eastern. It is: `fetch_minute_data` states *"Timestamps are
@@ -124,6 +161,12 @@ is not.
 
 ## Known issues
 
-**None filed.** Three findings recorded here rather than left to be rediscovered: the
-ambiguous skip, the day-gap that no scheduled run ever revisits (both above), and the absent
-unit tests on `_compute_verdict`, which is a pure function and the obvious test surface.
+[#1151](https://github.com/TeneikaAskew/stocks/issues/1151) after-close reporters are scored
+against the pre-announcement session — 1,261 of 2,372 scored rows, measured 2026-09-22.
+
+Two further findings recorded here rather than filed: the ambiguous skip (a vendor outage and
+an unsupported strategy take the same `continue`), and the day-gap that no scheduled run ever
+revisits. The absent unit tests on `_compute_verdict` — a pure function and the obvious test
+surface — are the third.
+Titles and severity are owned by
+[12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).
