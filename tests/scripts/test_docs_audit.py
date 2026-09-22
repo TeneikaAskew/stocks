@@ -4320,3 +4320,92 @@ def test_an_unreadable_registry_is_exit_two_not_a_traceback(audit_repo):
     with pytest.raises(m.AuditError, match="could not be read"):
         m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
                 "--issues-snapshot", str(audit_repo / "issues.json")])
+
+
+def test_a_hashtag_is_not_a_heading_that_closes_the_marker_window():
+    """A regression in my own indented-ATX fix: `^ {0,3}#` admits `#123
+    remains open` and `####### x`, neither of which CommonMark renders as a
+    heading. The window went empty, the real marker was reported missing, and
+    --stamp would have inserted a second one above the hashtag."""
+    tag = ["# T", "", "#123 remains open", "**Last reviewed:** 2026-01-01"]
+    assert m.marker_window(tag) == range(1, 4)
+    assert m.find_marker(tag)[0] == 3
+    seven = ["# T", "", "####### x", "**Last reviewed:** 2026-01-01"]
+    assert m.find_marker(seven)[0] == 3
+    # A real heading, indented or not, still closes it.
+    assert m.marker_window(["# T", "", "  ## Later", "x"]) == range(1, 2)
+    assert m.marker_window(["# T", "", "#", "x"]) == range(1, 2)
+
+
+def test_every_inventory_delimiter_on_a_line_is_read():
+    """`break` after the first non-code match read a complete pair written on
+    one line as a start with no end, and hid a duplicate or orphan sharing a
+    line with a real delimiter from the balance check."""
+    one_line = "# T\n\n<!-- inventory:x:start --><!-- inventory:x:end -->\n"
+    pairs, unbalanced = m.inventory_blocks(m.doc_lines(one_line))
+    assert pairs == {"x": (3, 3)} and unbalanced == [], (pairs, unbalanced)
+    # The ordinary multi-line pair is unchanged, and an orphan still reports.
+    assert m.inventory_blocks(m.doc_lines(
+        "# T\n\n<!-- inventory:x:start -->\nrow\n<!-- inventory:x:end -->\n"))[0] \
+        == {"x": (3, 5)}
+    assert m.inventory_blocks(m.doc_lines("# T\n\n<!-- inventory:x:start -->\n"))[1] \
+        == ["inventory:x starts at line 3 with no end"]
+
+
+def test_a_malformed_claim_beside_a_valid_marker_blocks_stamping():
+    """The refusal was conditioned on there being NO valid marker, so a
+    document carrying one valid marker and a second unparseable claim was
+    still writable: --stamp updated the valid one, --verify counted the target
+    as consumed, and the contradiction stayed on the page."""
+    both = ("# T\n\n**Last reviewed:** 2026-01-01 · **Owner:** TBD\n"
+            "**Last reviewed:** 2026-1-1\n")
+    assert m.stamp(both, "2026-09-18", "scanned", "abc1234")[1] \
+        == "skipped-malformed-marker"
+    # A clean marker still stamps, and a malformed one alone still refuses.
+    clean = "# T\n\n**Last reviewed:** 2026-01-01 · **Owner:** TBD\n"
+    assert m.stamp(clean, "2026-09-18", "scanned", "abc1234")[1] == "updated"
+    assert m.stamp("# T\n\n**Last reviewed:** 2026-1-1\n", "2026-09-18",
+                   "scanned", "abc1234")[1] == "skipped-malformed-marker"
+
+
+def test_an_anchor_fragment_is_compared_case_sensitively(audit_repo):
+    """A browser matches a fragment against an element id case-SENSITIVELY, so
+    `#Details` does not navigate to the heading whose generated id is
+    `details`. Folding the case accepted a link that does not work.
+
+    Driven through check_dead_links, not against heading_anchors: the first
+    version of this test asserted the anchor SET, which is lowercase either
+    way, so it passed with the fix reverted."""
+    (audit_repo / "docs" / "t.md").write_text("# Details\n\nbody\n")
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    tracked = {"docs/d.md", "docs/t.md"}
+    bad = m.check_dead_links("docs/d.md", "# D\n\n[x](t.md#Details)\n", tracked)
+    assert [f["check"] for f in bad] == ["dead-anchor"], bad
+    assert m.check_dead_links("docs/d.md", "# D\n\n[x](t.md#details)\n", tracked) == []
+
+
+def test_an_anchored_delivery_title_excludes_a_repair_pr():
+    """Only the generation regex had been anchored; the filter actually passed
+    to fetch_owned_prs stayed unanchored, so a merged `Fix Monthly architecture
+    doc refresh: 2026-09 authentication` entered `deliveries` while carrying no
+    generation -- and superseded() then fell back to merge time."""
+    rx = m.OWNING_JOB["delivery_title_re"]
+    assert rx.search("Monthly architecture doc refresh: 2026-09")
+    assert not rx.search("Fix Monthly architecture doc refresh: 2026-09 authentication")
+    # The broad ATTEMPT pattern still matches the repair, which is its job.
+    assert m.OWNING_JOB["pr_title_re"].search(
+        "Fix: Monthly architecture doc refresh failed")
+
+
+def test_an_extension_emptied_by_a_deletion_is_still_checkable():
+    """`tracked` has staged deletions removed, so deriving the allowed suffixes
+    from it alone defeated the guarantee in the case it was written for:
+    deleting the last `.ipynb` took `.ipynb` out of the set and the surviving
+    citations to the deleted file were skipped rather than reported."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    text = "# T\n\nSee `docs/analysis.ipynb` for the workings.\n"
+    # The deletion is already applied to `tracked`; the base ref still had it.
+    assert m.check_dead_links("docs/d.md", text, {"docs/d.md"}) == []
+    out = m.check_dead_links("docs/d.md", text, {"docs/d.md"}, None, {".ipynb"})
+    assert [f["detail"] for f in out] == [
+        "backticked path -> docs/analysis.ipynb"], out

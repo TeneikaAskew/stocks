@@ -983,40 +983,40 @@ def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
-        # And an INLINE-code example, which is the other way a document
-        # explaining the convention writes it. Every delimiter on the line is
-        # read, not just the first, so a real one beside an example still
-        # counts -- `.search` returning only the first was itself a gap.
+        # An INLINE-code example is the other way a document explaining the
+        # convention writes it, and EVERY visible delimiter on the line is
+        # read. `.search` saw only the first; so did a `break` after the first
+        # non-code match, which read
+        # `<!-- inventory:x:start --><!-- inventory:x:end -->` -- a complete
+        # pair on one line -- as a start with no end, and hid a duplicate or
+        # orphan sharing a line with a real delimiter from the balance check.
         spans = code_spans(line)
         for m in INVENTORY_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in spans):
                 continue
-            break
-        else:
-            continue
-        name = m.group("name")
-        if m.group("edge") == "start":
-            if name in open_at:
-                unbalanced.append(f"inventory:{name} opened twice (lines "
-                                  f"{open_at[name]} and {n})")
-            open_at[name] = n
-        elif name in open_at:
-            lo = open_at.pop(name)
-            if name in pairs:
-                # Neither pair is unbalanced, so this assignment used to
-                # replace the first silently. `insert_blocks()` refreshes only
-                # the FIRST occurrence (`count=1`), so the copy that is not
-                # refreshed can stay stale indefinitely while the region map
-                # reports itself valid. Keep the pair the renderer actually
-                # writes and report the duplicate.
-                unbalanced.append(f"inventory:{name} completes a second time (lines "
-                                  f"{lo}-{n}); the renderer refreshes only the first "
-                                  f"pair at {pairs[name][0]}-{pairs[name][1]}, so this "
-                                  "copy can never be refreshed")
-                continue
-            pairs[name] = (lo, n)
-        else:
-            unbalanced.append(f"inventory:{name} ends at line {n} with no start")
+            name = m.group("name")
+            if m.group("edge") == "start":
+                if name in open_at:
+                    unbalanced.append(f"inventory:{name} opened twice (lines "
+                                      f"{open_at[name]} and {n})")
+                open_at[name] = n
+            elif name in open_at:
+                lo = open_at.pop(name)
+                if name in pairs:
+                    # Neither pair is unbalanced, so this assignment used to
+                    # replace the first silently. `insert_blocks()` refreshes
+                    # only the FIRST occurrence (`count=1`), so the copy that is
+                    # not refreshed can stay stale indefinitely while the region
+                    # map reports itself valid. Keep the pair the renderer
+                    # actually writes and report the duplicate.
+                    unbalanced.append(f"inventory:{name} completes a second time (lines "
+                                      f"{lo}-{n}); the renderer refreshes only the first "
+                                      f"pair at {pairs[name][0]}-{pairs[name][1]}, so this "
+                                      "copy can never be refreshed")
+                    continue
+                pairs[name] = (lo, n)
+            else:
+                unbalanced.append(f"inventory:{name} ends at line {n} with no start")
     for name, n in sorted(open_at.items(), key=lambda kv: kv[1]):
         unbalanced.append(f"inventory:{name} starts at line {n} with no end")
     return pairs, unbalanced
@@ -1152,7 +1152,13 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
         # section stood in for the whole document's provenance -- suppressing
         # the missing-marker finding and letting --stamp rewrite the section's
         # metadata instead of placing the document's own marker.
-        if re.match(r"^ {0,3}#", lines[j]):
+        # Valid ATX syntax, not merely a leading `#`. CommonMark requires one
+        # to six hashes followed by whitespace or end of line, so `#123 remains
+        # open` and `####### x` are ordinary prose -- and my first version of
+        # this boundary closed the window on both, emptying it so the real
+        # marker was reported missing and --stamp inserted a second one above
+        # the hashtag. Same rule _HEADING_RE uses.
+        if re.match(r"^ {0,3}#{1,6}(?:\s|$)", lines[j]):
             stop = j
             break
         # Setext is a section heading too, and its underline marks the heading
@@ -1696,7 +1702,15 @@ def stamp(text: str, date: str, depth: str, sha: str,
     # Inserting a valid marker above one that merely fails to PARSE leaves the
     # document carrying two review claims, and the duplicate check cannot see
     # it because only one of them is a marker as far as this script knows.
-    if found is None and marker_shaped_lines(lines):
+    # ANY malformed claim left in the window, not only the case where it is
+    # the sole one. Conditioning on `found is None` meant a document carrying a
+    # valid marker AND a second line like `**Last reviewed:** 2026-1-1` was
+    # still writable: --stamp updated the valid one, --verify counted the
+    # target as consumed, and the contradictory claim stayed on the page where
+    # the duplicate-marker check cannot see it -- only one of the two parses.
+    malformed = [i for i in marker_shaped_lines(lines)
+                 if found is None or i != found[0]]
+    if malformed:
         return text, "skipped-malformed-marker"
     owner = owner_of(lines, found[0] if found else None) or "TBD"
     prev = found[1] if found else None
@@ -2082,13 +2096,22 @@ def code_spans(line: str) -> list[tuple[int, int]]:
 
 
 def check_dead_links(doc: str, text: str, tracked: set[str],
-                     root_files: set[str] | None = None) -> list[dict]:
+                     root_files: set[str] | None = None,
+                     base_exts: set[str] | None = None) -> list[dict]:
     out = []
     # Every extension this tree actually tracks. CODE_EXTS is the floor, so a
     # rename that empties an extension out of the tree does not make its
     # citations silently uncheckable.
-    cited_exts = CODE_EXTS | {pathlib.PurePosixPath(p).suffix for p in tracked
-                              if pathlib.PurePosixPath(p).suffix}
+    #
+    # `tracked` has already had staged deletions removed, so deriving the set
+    # from it alone defeated that guarantee in exactly the case it was written
+    # for: deleting the last `.ipynb` took `.ipynb` out of the allowed
+    # suffixes, and the surviving citations to the deleted file were skipped
+    # rather than reported. The BASE REF's suffixes are passed in and unioned,
+    # the same way its root filenames already are.
+    cited_exts = CODE_EXTS | (base_exts or set()) | {
+        pathlib.PurePosixPath(p).suffix for p in tracked
+        if pathlib.PurePosixPath(p).suffix}
     # Names the BASE REF's root held. A bare citation is this repo's to resolve
     # only when the root actually had a file by that name, because a basename
     # alone is otherwise indistinguishable from prose -- and from a
@@ -2181,7 +2204,13 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             # encoded form against the decoded slug reported a working link
             # dead -- the false direction, which is the one that makes an audit
             # untrustworthy rather than merely incomplete.
-            if have is not None and decode_fragment(frag).lower() not in have:
+            # Decoded but NOT lowercased. A browser matches a fragment against
+            # an element id case-SENSITIVELY, so `#Details` does not navigate
+            # to the heading whose generated id is `details`; folding the case
+            # accepted a link that does not work. `heading_anchors` already
+            # yields the generated (lowercased) ids, so the comparison is
+            # against what the renderer actually emits.
+            if have is not None and decode_fragment(frag) not in have:
                 out.append({"check": "dead-anchor", "doc": doc, "line": n,
                             "detail": f"{anchor_what}#{frag}: the target has no "
                                       "such heading",
@@ -2369,6 +2398,30 @@ def drift_commits(out: str, paths: list[str] | None = None) -> list[str]:
     return [line for line, drift in commits if drift]
 
 
+def _add_is_a_pure_rename(commit: str, paths: list[str],
+                          cwd: pathlib.Path | None = None) -> bool:
+    """Was every declared path this commit touched arrived at by a pure move?
+
+    Only asked about a commit the scoped log already called drift, so the
+    unlimited read happens once per suspicious commit rather than once per
+    audit. Rename detection needs both sides of the pair, and a cross-directory
+    move puts the old one outside the declared path's parent.
+    """
+    out = run(["git", "show", "--format=", "--name-status", "-M", commit],
+              cwd=cwd or REPO, ok_exit_codes=(128,))
+    touched = [l for l in out.split("\n") if _touches(l, paths)]
+    if not touched:
+        return False
+    for line in touched:
+        status = _DRIFT_STATUS_RE.match(line)
+        if not status:
+            return False
+        kind, score = status.group(1), status.group(2)
+        if kind != "R" or int(score or 100) < 100:
+            return False
+    return True
+
+
 def path_in_commit(sha: str, doc: str, *, cwd: pathlib.Path | None = None) -> bool:
     """Does this commit contain this path?
 
@@ -2492,6 +2545,15 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
                "--diff-filter=AMDRT", f"{sha}..{base_ref}", "--"] + scopes,
               cwd=cwd or REPO)
     commits = drift_commits(out, code_paths)
+    # The directory scope keeps a rename pair intact only while both sides
+    # share a parent. A file moved BETWEEN directories, with the registry
+    # updated to the new path, leaves the old side outside every scope, so git
+    # reports `A new/path.py` and the pure-rename exemption never fires.
+    # Re-read only the commits that an ADD put on the list, and only without a
+    # path limit: cost scales with the suspicious answer rather than the tree.
+    if commits:
+        commits = [c for c in commits
+                   if not _add_is_a_pure_rename(c.split("\t", 1)[0], code_paths, cwd)]
     if not commits:
         return []
     return [{"check": "changed-since", "doc": doc,
@@ -2513,7 +2575,13 @@ OWNING_JOB = {
     # and `delivered` was computed from every merged match -- so merging a
     # workflow REPAIR could supersede and hide a refresh that never delivered
     # a document.
-    "delivery_title_re": re.compile(r"Monthly architecture doc refresh:\s*\d{4}-\d{2}",
+    # ANCHORED, like _REFRESH_GEN_RE. Unanchored, a merged maintenance PR
+    # titled `Fix Monthly architecture doc refresh: 2026-09 authentication`
+    # entered `deliveries` while _refresh_generation() read no generation from
+    # it, so `superseded()` fell back to merge time and could hide a genuinely
+    # unmerged refresh. Only the generation regex had been anchored; this is
+    # the filter actually passed to fetch_owned_prs.
+    "delivery_title_re": re.compile(r"^\s*Monthly architecture doc refresh:\s*\d{4}-\d{2}\s*$",
                                     re.I),
     "docs": [
         "docs/product/infrastructure/05-a-ARCHITECTURE.md",
@@ -2906,9 +2974,16 @@ def check_owning_job(today: str) -> list[dict]:
         # does not model; it removes the non-rendered sources, which is the
         # case reported.
         body_lines = body.split("\n")
-        skip = fenced_lines(body_lines) | commented_lines(body_lines)
-        stamps = [d for i, line in enumerate(body_lines) if i not in skip
-                  for d in GENERATED_RE.findall(line)]
+        skip = fenced_lines(body_lines)
+        # Per MATCH against the comment SPANS, not per line. A comment can
+        # occupy part of a visible line -- `text <!-- Generated 2026-09-20 -->`
+        # -- so a whole-line rule let a hidden date stand in for a missing
+        # stamp and the delivery audit reported a document fresh that shows
+        # its readers no Generated line at all.
+        hidden = comment_spans(body_lines)
+        stamps = [mm.group(1) for i, line in enumerate(body_lines) if i not in skip
+                  for mm in GENERATED_RE.finditer(line)
+                  if not any(lo <= mm.start() < hi for lo, hi in hidden.get(i, []))]
         if not stamps:
             # Silently skipping this is the same clean-run-on-no-evidence the
             # best-effort artifact check already refuses. For 05-a, 05-c and
@@ -3052,6 +3127,11 @@ def main(argv: list[str] | None = None) -> int:
     # name is gone from `tracked`, and the audit would have nothing to compare
     # the citation against.
     base_root_files = {p for p in tracked if "/" not in p}
+    # And the suffixes the base ref held, captured here for the same reason:
+    # a staged deletion that empties an extension must not make the citations
+    # to the deleted file uncheckable.
+    base_exts = {pathlib.PurePosixPath(p).suffix for p in tracked
+                 if pathlib.PurePosixPath(p).suffix}
     docs = document_set(tracked, registry)
     # A document staged or still untracked is absent from `ls-tree`, so a
     # contributor could run the audit clean and then commit a new unclassified
@@ -3232,7 +3312,7 @@ def main(argv: list[str] | None = None) -> int:
         # checks still apply to these artefacts; only the MARKDOWN content
         # checks are skipped.
         content = ((check_closed_issues(doc, text, states)
-                    + check_dead_links(doc, text, tracked, base_root_files))
+                    + check_dead_links(doc, text, tracked, base_root_files, base_exts))
                    if doc.endswith(".md") else [])
         if cls == "A":
             for f in content:
