@@ -5560,3 +5560,175 @@ def test_an_internal_parent_segment_resolves_from_the_repository_root():
     # the repository is still declined.
     assert m.repo_relative("../scripts/tool.py", "docs/d.md") == "scripts/tool.py"
     assert m.repo_relative("../../elsewhere/tool.py", "docs/d.md") is None
+
+
+def test_a_link_inside_a_raw_html_block_is_not_a_link():
+    """CommonMark does not parse Markdown inside an HTML block, so `<div>`
+    followed by `[x](missing.md)` renders the bracket syntax LITERALLY -- and
+    the destination was reported dead over a link no reader can click. Every
+    kind, not only the raw-text ones."""
+    assert m.check_dead_links("d.md", "<div>\n[x](missing.md)\n</div>\n", {"d.md"}) == []
+    assert m.check_dead_links("d.md", "<pre>\n[x](missing.md)\n</pre>\n", {"d.md"}) == []
+    # Outside one it is still a link.
+    out = m.check_dead_links("d.md", "<div>\n</div>\n\n[x](missing.md)\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"], out
+
+
+def test_a_blocker_cited_in_a_rendered_html_block_is_still_checked():
+    """A `<div>` around `Blocked by <a href=".../issues/861">#861</a>` produces
+    a clickable citation a reader acts on, so masking every HTML block would
+    suppress a real closed blocker. Only pre/script/style/textarea -- and the
+    PI/declaration/CDATA kinds the same option covers -- display their contents
+    literally."""
+    url = U.format("stocks", 861)
+    rendered = f'<div>\nBlocking issues: <a href="{url}">#861</a>\n</div>\n'
+    assert [f["ref"] for f in m.check_closed_issues("d.md", rendered, STATES)] == \
+        ["stocks#861"]
+    raw = f"<pre>\nBlocking issues: {url}\n</pre>\n"
+    assert m.check_closed_issues("d.md", raw, STATES) == []
+
+
+def test_a_case_variant_marker_field_refuses_the_stamp():
+    """`check_marker_fields` carries `re.I` deliberately, so `**depth:**
+    verified` is a field the reader recognises and the parser declines. A
+    case-SENSITIVE refusal let --stamp keep it as extra prose AND add a
+    canonical `**Depth:**` beside it: the line then carried two contradictory
+    depth fields and the next audit reported the same P2 again."""
+    text = ("# T\n\n**Last reviewed:** 2026-08-31 · **depth:** verified · "
+            "**Owner:** TBD\n\nBody\n")
+    out, action = m.stamp(text, "2026-09-18", "scanned", "abc1234")
+    assert action == "skipped-malformed-marker" and out == text
+    # The reader reports it, which is what asks a human to fix it.
+    found = m.find_marker(m.doc_lines(text))
+    assert [f["check"] for f in m.check_marker_fields("d.md", found[1])] == ["marker"]
+
+
+def test_the_registry_is_refused_BEFORE_it_is_read(audit_repo, monkeypatch):
+    """ORDER is the whole finding, so order is what this asserts. The
+    per-document loop refuses a symlinked registry too -- it is a tracked
+    document -- but it does so AFTER this read has already taken the target's
+    classification and ownership rules for the whole run, and a target such as
+    `/dev/zero` hangs here before that loop is ever reached. A test that only
+    checked "the run refuses" passed with the early guard removed; that is what
+    made this the ordering test it should have been.
+    """
+    trace = []
+    real_refuse = m.refuse_symlink
+    real_load = m.load_registry
+    monkeypatch.setattr(m, "refuse_symlink",
+                        lambda doc: (trace.append(("refuse", doc)), real_refuse(doc))[1])
+    monkeypatch.setattr(m, "load_registry",
+                        lambda text: (trace.append(("registry-loaded",)), real_load(text))[1])
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nBody\n")
+    _audit(audit_repo)
+    assert trace[0] == ("refuse", m.REGISTRY), trace[:4]
+    assert trace.index(("refuse", m.REGISTRY)) < trace.index(("registry-loaded",)), trace[:4]
+
+
+def test_a_symlinked_registry_is_refused(audit_repo):
+    """The behaviour the ordering test above leaves implicit: a symlinked
+    registry stops the run rather than supplying machine-local rules."""
+    reg = audit_repo / "docs" / "DOC_REGISTRY.md"
+    real = audit_repo / "docs" / "elsewhere.md"
+    real.write_text(reg.read_text())
+    reg.unlink()
+    reg.symlink_to("elsewhere.md")
+    with pytest.raises(m.AuditError, match="tracked symlink"):
+        _audit(audit_repo)
+
+
+def test_git_output_that_is_not_utf8_is_read_leniently(repo, monkeypatch):
+    """`text=True` decodes strictly, so `git show` on a document containing
+    invalid UTF-8 raised UnicodeDecodeError -- past the AuditError handler, a
+    traceback and exit 1, the status documented for FINDINGS. The working-tree
+    read of the same document already uses `errors="replace"`, so the two
+    halves of one comparison disagreed about whether the file is readable."""
+    monkeypatch.setattr(m, "REPO", repo)
+    (repo / "d.md").write_bytes(b"# T\n\nCaf\xe9 body\n")
+    sha = _commit(repo, "bad bytes")
+    # The read itself no longer raises, and the comparison completes.
+    assert "Caf" in m.run(["git", "show", f"{sha}:d.md"], cwd=repo)
+    assert m.check_changed_since("d.md", sha, ["scripts"], sha, cwd=repo) == []
+
+
+def test_an_unknown_review_date_cannot_carry_a_depth_or_a_baseline():
+    """`Last reviewed: unknown` says no review happened; a Depth or an Against
+    beside it claims one at a named baseline. Every field parses, so nothing
+    reported it, and the run emitted only the non-gating P3 -- so it passed
+    --check while a drift calculation ran off provenance `stamp` never writes."""
+    line = ("**Last reviewed:** unknown · **Depth:** verified · "
+            "**Against:** `abc1234` · **Last scanned:** 2026-09-18 · **Owner:** TBD")
+    found = m.find_marker(["# T", "", line])
+    out = m.check_marker_fields("d.md", found[1])
+    assert [f["severity"] for f in out] == ["P2"], out
+    assert "did not happen" in out[0]["detail"]
+    # A real review date carrying the same fields is fine.
+    ok = line.replace("unknown", "2026-08-31")
+    assert m.check_marker_fields("d.md", m.find_marker(["# T", "", ok])[1]) == []
+
+
+def test_yaml_front_matter_is_not_where_the_h1_lives():
+    """GitHub renders front matter as a metadata table, not as Markdown, so a
+    `# note` comment inside it is not a heading. Treating one as the H1 put
+    --stamp's marker and its blank lines INSIDE the `---` delimiters,
+    corrupting the front matter and leaving the real H1 unstamped."""
+    lines = ["---", "title: x", "# note", "---", "", "# Real title", ""]
+    assert sorted(m.front_matter_lines(lines)) == [0, 1, 2, 3]
+    assert m.h1_index(lines) == 5
+    assert m.heading_anchors("\n".join(lines)) == {"real-title"}
+    # A marker-shaped line inside it is invisible to a reader too.
+    assert m.find_markers(["---", "**Last reviewed:** 2026-09-20 (depth: full)",
+                           "---", "", "# T"]) == []
+    # An UNTERMINATED opener is a thematic break, not front matter: masking the
+    # whole document would hide every finding below it.
+    assert m.front_matter_lines(["---", "a", "b"]) == set()
+
+
+def test_the_remaining_commonmark_html_block_types_mask_their_contents():
+    """A processing instruction, a declaration and a CDATA section each run raw
+    to their own closer, so Markdown inside one renders literally. None was
+    recognised, and `[x](missing.md)` in such a block produced a false gating
+    dead-link finding over content displayed verbatim."""
+    assert m.raw_html_block_lines(["<?php", "[x](m.md)", "?>", "# Real"]) == {0, 1, 2}
+    assert m.raw_html_block_lines(["<![CDATA[", "[x](m.md)", "]]>", "# Real"]) == {0, 1, 2}
+    assert m.raw_html_block_lines(["<!DOCTYPE html>", "[x](m.md)"]) == {0}
+    # They display their contents, so the raw-text-only callers want them too.
+    assert m.raw_html_block_lines(["<?php", "x", "?>"], raw_text_only=True) == {0, 1, 2}
+    assert m.raw_html_block_lines(["<div>", "x"], raw_text_only=True) == set()
+
+
+def test_a_quoted_type_7_block_opens_after_a_quoted_blank_line():
+    """Inside a blockquote the blank line is spelled `>`, which is nonempty
+    raw -- so the interruption check saw a paragraph still open, the custom tag
+    started nothing, and `[x](missing.md)` inside the block was audited as a
+    live link."""
+    assert m.raw_html_block_lines(
+        ["> prose", ">", "> <x-widget>", "> [x](m.md)"]) == {2, 3}
+
+
+def test_a_heading_introduced_by_a_list_marker_is_a_heading():
+    """`- # Install` and `1. ## Setup` render real headings and GitHub exposes
+    their anchors, but stripping only the blockquote prefix left the marker in
+    front of the ATX syntax -- so a valid link to `#install` was a gating
+    dead-anchor finding."""
+    assert m.heading_anchors("- # Install\n") == {"install"}
+    assert m.heading_anchors("1. ## Setup\n") == {"setup"}
+    # The ATX branch only: `- Example` over a column-zero `---` ENDS the list
+    # and renders a thematic break, so stripping the marker there would invent
+    # a heading.
+    assert m.heading_anchors("- Example\n---\n") == set()
+    assert m.heading_anchors("Title\n---\n") == {"title"}
+
+
+def test_a_reference_definition_may_put_its_destination_on_the_next_line():
+    """`[guide]:` then `  missing.md` is a definition CommonMark resolves, and
+    a per-line pattern could not capture it -- so, because reference USES are
+    deliberately not scanned, the broken destination produced no finding at
+    all. The finding is reported against the destination's line."""
+    out = m.check_dead_links("d.md", "[guide]:\n  missing.md\n", {"d.md"})
+    assert [(f["check"], f["line"]) for f in out] == [("dead-link", 2)], out
+    assert m.check_dead_links("d.md", "[guide]:\n  ok.md\n", {"d.md", "ok.md"}) == []
+    # A label with a BLANK line after it defines nothing.
+    assert m.check_dead_links("d.md", "[g]:\n\nmissing.md\n", {"d.md"}) == []
+    # And the continuation is read through the same exclusions as any line.
+    assert m.check_dead_links("d.md", "`a\n[g]:\n  missing.md\nb`\n", {"d.md"}) == []

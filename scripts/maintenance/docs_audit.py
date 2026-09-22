@@ -312,6 +312,11 @@ MD_LINK_RE = re.compile(
 # already did for the bare form.
 REF_DEF_RE = re.compile(
     r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:\s+(?P<target><[^>]*>|\S+)")
+# The same definition with its destination on the FOLLOWING line, which
+# CommonMark resolves and a per-line pattern cannot see. Split in two so the
+# continuation is read through the same exclusions as any other line.
+REF_DEF_HEAD_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*$")
+REF_DEF_CONT_RE = re.compile(r"^[ \t]*(?P<target><[^>]*>|\S+)")
 # A USE (`[text][label]`) is deliberately NOT checked. Measured over the 322
 # markdown documents in this tree: 1 reference definition, 204 bracket pairs.
 # Almost every pair is an issue-title tag -- `[P0][Replay]`, `[audit] R2 --` --
@@ -454,7 +459,11 @@ def heading_anchors(text: str) -> set[str]:
     # literally, so `# Heading` there is text -- recording its slug invented an
     # anchor the document does not offer and a link to that fragment PASSED.
     fenced = (fenced_lines(lines) | commented_lines(lines)
-              | indented_code_lines(lines) | raw_html_block_lines(lines))
+              | indented_code_lines(lines) | raw_html_block_lines(lines)
+              # And YAML front matter, which GitHub renders as a metadata
+              # table rather than as Markdown -- a `# note` inside it exposes
+              # no anchor, and recording one let a link to it pass.
+              | front_matter_lines(lines))
     # A comment INSIDE a rendered heading is not part of its text. `## <!-- note
     # --> Real` slugged to `---note----real`, so a valid link to `#real` was
     # emitted as a gating dead-anchor finding AND the fabricated anchor was
@@ -476,7 +485,16 @@ def heading_anchors(text: str) -> set[str]:
         line = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
         setext = (i + 1 < len(lines)
                   and is_setext_underline(lines, i + 1, fenced))
-        m = _HEADING_RE.match(line)
+        # A LIST MARKER is a container prefix too. `- # Install` and
+        # `1. ## Setup` render real headings and GitHub exposes their anchors,
+        # but stripping only the blockquote prefix left the marker in front of
+        # the ATX syntax -- so the anchor was omitted and a valid link to it
+        # was a gating dead-anchor finding. The ATX branch only: for Setext,
+        # `- Example` over a column-zero `---` ENDS the list and renders a
+        # thematic break, which is_setext_underline already refuses, and
+        # stripping the marker there would invent a heading. Ported from the
+        # Node twin (solyra#69).
+        m = _HEADING_RE.match(_LIST_MARKER_RE.sub("", line, count=1))
         if not (m or setext):
             continue
         base = heading_slug(line.strip() if setext else m.group(1))
@@ -589,14 +607,23 @@ def run(cmd: list[str], *, cwd: pathlib.Path | None = None,
     # past the AuditError handler, printed a traceback and exited 1: the
     # status documented for FINDINGS, so automation could not tell "the audit
     # did not run" from "the documentation is wrong".
+    # Bytes, decoded LENIENTLY. `text=True` decodes strictly, so `git show`
+    # on a document containing invalid UTF-8 raised UnicodeDecodeError -- past
+    # the AuditError handler, a traceback and exit 1, the status documented for
+    # FINDINGS. The working-tree read of the same document already uses
+    # `errors="replace"`, so strict decoding here made the two halves of one
+    # comparison disagree about whether the file is readable at all. This is
+    # not a silent fallback: the lossy read is the contract the other half
+    # already states, and the alternative is a crash rather than an answer.
     try:
-        proc = subprocess.run(cmd, cwd=cwd or REPO, capture_output=True, text=True)
+        proc = subprocess.run(cmd, cwd=cwd or REPO, capture_output=True)
     except OSError as exc:
         raise AuditError(
             f"{cmd[0]} could not be run ({exc}); the audit did not happen") from exc
+    stderr = proc.stderr.decode("utf-8", errors="replace")
     if proc.returncode != 0 and proc.returncode not in ok_exit_codes:
-        raise AuditError(f"{' '.join(cmd[:4])}... exited {proc.returncode}: {proc.stderr.strip()[:400]}")
-    return proc.stdout
+        raise AuditError(f"{' '.join(cmd[:4])}... exited {proc.returncode}: {stderr.strip()[:400]}")
+    return proc.stdout.decode("utf-8", errors="replace")
 
 
 def git_paths(cmd: list[str]) -> list[str]:
@@ -1448,14 +1475,27 @@ def check_marker_fields(doc: str, info: dict) -> list[dict]:
     resolve_marker_sha guards the WRITE side; this is the read side, which
     sees markers written by hand or by an older version of this script.
     """
+    out: list[dict] = []
     rest = info.get("rest") or ""
     names = sorted({m.group(1).lower() for m in _MARKER_FIELD_RE.finditer(rest)})
-    if not names:
-        return []
-    return [{"check": "marker", "doc": doc, "severity": "P2",
-             "detail": f"marker field(s) {', '.join(names)} could not be parsed and were "
-                       f"read as free text ({rest.strip()[:60]!r}); the values they carry "
-                       "are invisible to every check"}]
+    if names:
+        out.append({"check": "marker", "doc": doc, "severity": "P2",
+                    "detail": f"marker field(s) {', '.join(names)} could not be parsed and were "
+                              f"read as free text ({rest.strip()[:60]!r}); the values they carry "
+                              "are invisible to every check"})
+    # A marker that CONTRADICTS itself. `Last reviewed: unknown` says no review
+    # has happened; a `Depth` or an `Against` beside it claims one at a named
+    # baseline. Every field parses, so nothing above reports it, and the run
+    # emitted only the non-gating P3 for the unknown date -- so it passed
+    # --check while a drift calculation ran off provenance `stamp` never
+    # writes. A combination the writer cannot produce is malformed on read.
+    claims = [f for f, v in (("Depth", info.get("depth")), ("Against", info.get("sha"))) if v]
+    if info.get("date") == "unknown" and claims:
+        out.append({"check": "marker", "doc": doc, "severity": "P2",
+                    "detail": f"the marker records no review (`unknown`) and still carries "
+                              f"{' and '.join(claims)}; those claim a review that the same "
+                              "line says did not happen"})
+    return out
 
 
 def check_marker_dates(doc: str, info: dict, today: str | None = None) -> list[dict]:
@@ -1694,6 +1734,20 @@ _HTML_BLOCK_OPEN_RE = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?:[\s/>]|$)
 # it from swallowing ordinary prose.
 _HTML_TYPE7_RE = re.compile(r"^ {0,3}</?[a-zA-Z][a-zA-Z0-9-]*(?:\s+[^<>]*?)?/?>\s*$")
 
+# Types 3, 4 and 5 -- processing instruction, document declaration and CDATA.
+# Each runs raw to its OWN closer, over as many lines as it takes, so Markdown
+# inside one renders literally; none was recognised, and `[x](missing.md)` in
+# such a block produced a false gating dead-link finding over content displayed
+# verbatim. Type 2 is the HTML comment, which this scanner tracks separately.
+# CDATA is tested before the declaration form because `<![CDATA[` also opens
+# `<!`; the declaration pattern requires a LETTER after it, so they cannot
+# collide, and the order is belt and braces.
+_HTML_RAW_DELIMITED = (
+    (re.compile(r"^ {0,3}<\?"), "?>"),
+    (re.compile(r"^ {0,3}<!\[CDATA\["), "]]>"),
+    (re.compile(r"^ {0,3}<![A-Za-z]"), ">"),
+)
+
 
 def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> set[int]:
     """Indices inside a raw HTML block, whose Markdown renders literally.
@@ -1715,6 +1769,9 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> se
     indented = indented_code_lines(lines)
     in_comment = False
     open_tag: str | None = None
+    # The closer a type-3/4/5 block waits for. None for the tag-closed and
+    # blank-line-closed kinds.
+    closer: str | None = None
     for i, raw in enumerate(lines):
         if i in fenced:
             continue
@@ -1741,6 +1798,17 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> se
                     continue
             m = _RAW_TEXT_OPEN_RE.match(line)
             if not m:
+                # Types 3, 4 and 5, BEFORE the raw_text_only gate: each renders
+                # its contents literally exactly as `<pre>` does, so a caller
+                # asking for "only blocks that display their contents" wants
+                # these too.
+                delim = next(((p, c) for p, c in _HTML_RAW_DELIMITED
+                              if p.match(line)), None)
+                if delim is not None:
+                    out.add(i)
+                    if delim[1] not in line:
+                        open_tag, closer = "\x01", delim[1]
+                    continue
                 if raw_text_only:
                     continue
                 b = _HTML_BLOCK_OPEN_RE.match(line)
@@ -1751,8 +1819,13 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> se
                     open_tag = "\0"
                     out.add(i)
                     continue
-                if _HTML_TYPE7_RE.match(line) and (
-                        i == 0 or not (lines[i - 1] or "").strip()):
+                # The previous line is read THROUGH its container, as this
+                # line already is. Inside a blockquote the blank line is
+                # spelled `>`, which is nonempty raw -- so a quoted
+                # `<x-widget>` after a quoted blank opened nothing and a
+                # `[x](missing.md)` inside the block was audited as live.
+                prev = _BLOCKQUOTE_PREFIX_RE.sub("", lines[i - 1] or "", count=1)
+                if _HTML_TYPE7_RE.match(line) and (i == 0 or not prev.strip()):
                     open_tag = "\0"
                     out.add(i)
                 continue
@@ -1763,6 +1836,10 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> se
                 open_tag = None
             continue
         out.add(i)
+        if closer is not None:
+            if closer in line:
+                open_tag, closer = None, None
+            continue
         if open_tag == "\0":
             if not line.strip():
                 out.discard(i)
@@ -1952,6 +2029,10 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     # _span_hidden: it is the third hiding mechanism, and the content checks
     # learned about wrapped spans a round before marker discovery did.
     spanned = _span_hidden(lines)
+    # And front matter, which renders as a metadata table: a marker-shaped line
+    # inside it is invisible to a reader, so accepting it passed the provenance
+    # check over a document that shows none.
+    front = front_matter_lines(lines)
     # Whole-line commenting is not the only way a marker hides in a comment.
     # A comment opened on an earlier line and closed PART WAY through this one
     # leaves visible text after the `-->`, so the line is not wholly commented
@@ -1969,7 +2050,7 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
         # finding, and `--stamp` then REPLACED the example with an unindented
         # live marker: a write straight through this module's one hard rule.
         # Fenced blocks are excluded for the same reason.
-        if (i in fenced or i in commented or i in spanned
+        if (i in fenced or i in commented or i in spanned or i in front
                 or is_code_indented(lines[i])):
             continue
         raw = lines[i]
@@ -2126,6 +2207,26 @@ def is_setext_underline(lines: list[str], i: int,
     return True
 
 
+def front_matter_lines(lines: list[str]) -> set[int]:
+    """Indices of a leading YAML front-matter block, delimiters included.
+
+    GitHub renders front matter as a metadata table, not as Markdown, so a
+    `# note` comment inside it is not a heading. Treating one as the document
+    H1 put `--stamp`'s marker and its surrounding blank lines INSIDE the `---`
+    delimiters: the front matter is corrupted and the real H1 left unstamped.
+
+    An UNTERMINATED opener is not front matter -- GitHub renders a lone `---`
+    as a thematic break -- so this returns nothing rather than masking the
+    whole document, which would hide every finding below it.
+    """
+    if not lines or lines[0].strip() != "---":
+        return set()
+    for i in range(1, len(lines)):
+        if lines[i].strip() in ("---", "..."):
+            return set(range(0, i + 1))
+    return set()
+
+
 def h1_index(lines: list[str]) -> int | None:
     """Index of the first H1.
 
@@ -2136,7 +2237,10 @@ def h1_index(lines: list[str]) -> int | None:
     # A fenced `# Example` before the real title was returned as the H1, so
     # --stamp inserted the provenance marker INSIDE the code block: the example
     # was rewritten and the document left effectively unstamped.
-    fenced = fenced_lines(lines) | commented_lines(lines)
+    # Front matter too: a `# note` comment inside it is metadata, not a
+    # heading, and taking it as the H1 made --stamp write inside the `---`
+    # delimiters.
+    fenced = fenced_lines(lines) | commented_lines(lines) | front_matter_lines(lines)
     # SPANS too, not only whole lines. A comment that closes partway through a
     # heading-shaped line -- `<!--` then `# Fake --> visible` -- leaves the
     # line with a visible suffix, so commented_lines does not exclude it while
@@ -2345,7 +2449,14 @@ def stamp(text: str, date: str, depth: str, sha: str,
     # refused every document with an owner -- which is all of them.
     if found and not found[1].get("legacy"):
         tail = found[1].get("rest") or ""
-        if any(seg.strip().startswith(f"**{f}")
+        # Case-INSENSITIVELY, matching `_MARKER_FIELD_RE`, which carries
+        # `re.I` deliberately. A case variant such as `**depth:** verified` is
+        # a field the reader recognises and the parser declines, so a
+        # case-sensitive refusal let `stamp` keep it as extra prose AND add a
+        # canonical `**Depth:**` beside it: `--verify` reported the target
+        # updated while the line now carried two contradictory depth fields,
+        # and the next audit reported the same P2 again.
+        if any(seg.strip().lower().startswith(f"**{f}".lower())
                for seg in tail.split(DOT)
                for f in OWNED_FIELDS if f != "Owner:"):
             return text, "skipped-malformed-marker"
@@ -2623,7 +2734,14 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     # Markdown example carrying blocker prose and a closed issue URL emitted a
     # gating P1 over content that renders as code. The dead-link pass already
     # treats both constructs the same way.
-    fenced = fenced_lines(lines) | indented_code_lines(lines)
+    # RAW-TEXT HTML blocks too, and only those. `<pre>` displays a blocker URL
+    # literally, so citing one inside an example produced a gating finding over
+    # content nobody can act on -- while a type-6 or type-7 block is RENDERED:
+    # `<div>` around `Blocked by <a href=".../issues/1">#1</a>` is a citation a
+    # reader follows, and masking it would suppress a real closed blocker.
+    # Same distinction the Node twin draws (solyra#69).
+    fenced = (fenced_lines(lines) | indented_code_lines(lines)
+              | raw_html_block_lines(lines, raw_text_only=True))
     # And commented-OUT text, which is how a blocker list is retired without
     # losing it: the prose no longer renders, but it still held the build red.
     # Span-based rather than whole-line, matching check_dead_links -- a row
@@ -2986,6 +3104,21 @@ def code_span_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
     return out
 
 
+def _refdef_span_hidden(lines: list[str],
+                        wrapped: dict[int, list[tuple[int, int]]], i: int) -> bool:
+    """Is line `i` covered ENTIRELY by one code span, single-line or wrapped?
+
+    A definition-shaped line inside a span is an EXAMPLE of a definition.
+    Shared by the single-line form and by the continuation line of the
+    two-line form, so the two cannot disagree about what is hidden.
+    """
+    line = lines[i]
+    stop = len(line.rstrip())
+    return bool(stop) and any(
+        lo <= 0 and hi >= stop
+        for lo, hi in code_spans(line) + wrapped.get(i, []))
+
+
 def check_dead_links(doc: str, text: str, tracked: set[str],
                      root_files: set[str] | None = None,
                      base_exts: set[str] | None = None) -> list[dict]:
@@ -3136,7 +3269,16 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     # Four-space-indented blocks are code too, and this repo's documents use
     # that form for examples: without it `    [demo](missing.md)` was read as a
     # rendered link. See indented_code_lines for why the rule is narrow.
-    fenced = fenced_lines(lines) | indented_code_lines(lines)
+    # And a raw HTML block. `<div>` followed by `[x](missing.md)` with no blank
+    # line between them renders the bracket syntax LITERALLY -- CommonMark does
+    # not parse Markdown inside an HTML block -- so the destination was
+    # reported dead over a link no reader can click. Every kind, not only the
+    # raw-text ones: a type-6 or type-7 block suppresses Markdown parsing just
+    # as `<pre>` does. That is the opposite of the blocker scan's rule, and
+    # deliberately: an `<a href>` inside a rendered block IS a citation, while
+    # Markdown syntax there is not.
+    fenced = (fenced_lines(lines) | indented_code_lines(lines)
+              | raw_html_block_lines(lines))
     # Retired Markdown kept in a comment is not rendered, so it is not a
     # citation -- but only the commented SPAN is invisible, not the line.
     commented = comment_spans(lines)
@@ -3161,9 +3303,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # on an earlier line covers this one whole, and `[g]: missing.md`
         # displayed inside such a span was validated as a live destination.
         # Same mechanism the inline-link pass below already excludes.
-        stop = len(line.rstrip())
-        if stop and any(lo <= 0 and hi >= stop
-                        for lo, hi in code_spans(line) + wrapped_code.get(n - 1, [])):
+        if _refdef_span_hidden(lines, wrapped_code, n - 1):
             continue
         # A definition inside a blockquote still defines: `> [g]: docs/g.md`
         # renders as a working reference for uses inside that quote. The
@@ -3172,12 +3312,34 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # path is exactly as broken as an unquoted one.
         line = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
         rm = REF_DEF_RE.match(line)
+        # The destination may sit on the FOLLOWING line: `[guide]:` then
+        # `  missing.md` is a definition CommonMark resolves, and `[x][guide]`
+        # renders as a clickable link to it. A per-line pattern could not
+        # capture that, and because reference USES are deliberately not
+        # scanned, the broken destination produced no finding at all. The
+        # continuation is read through the same exclusions as any other line,
+        # and the finding is reported against the line the destination is on,
+        # which is where a fix goes. Ported from the Node twin (solyra#69).
+        label = rm.group("label") if rm else None
+        target = rm.group("target") if rm else None
+        dest_line = n
+        if rm is None:
+            head = REF_DEF_HEAD_RE.match(line)
+            j = n  # zero-based index of the NEXT line
+            if (head and j < len(lines) and j not in fenced
+                    and not (j in commented
+                             and any(a == 0 for a, _ in commented[j]))
+                    and not _refdef_span_hidden(lines, wrapped_code, j)):
+                cont = _BLOCKQUOTE_PREFIX_RE.sub("", lines[j], count=1)
+                dm = REF_DEF_CONT_RE.match(cont)
+                if dm:
+                    label, target, dest_line = head.group("label"), dm.group("target"), j + 1
         # The FIRST definition wins, as Markdown renders it. Overwriting with
         # the last meant `[g]: missing.md` followed by `[g]: good.md` rendered
         # as a broken link while the audit validated only `good.md`.
-        if rm:
-            ref_defs.setdefault(rm.group("label").strip().lower(),
-                                (rm.group("target").strip("<>"), n))
+        if label is not None:
+            ref_defs.setdefault(label.strip().lower(),
+                                (target.strip("<>"), dest_line))
     for label, (target, n) in ref_defs.items():
         tgt, _, frag = target.partition("#")
         check_target(tgt, frag or None, n, label)
@@ -4189,6 +4351,14 @@ def main(argv: list[str] | None = None) -> int:
     if not reg_path.exists():
         print(f"error: {REGISTRY} not found; every doc would be unclassified", file=sys.stderr)
         return 2
+    # The registry is a tracked document and gets the same refusal they do.
+    # This read happens BEFORE the per-document loop, so `refuse_symlink` there
+    # is not reached late but not at all: a symlinked DOC_REGISTRY.md supplied
+    # machine-local classification and ownership rules for the whole run, and
+    # one pointing at a non-terminating special file hangs here. Same shape as
+    # the Class A freshness reads, which carry the preflight for the same
+    # reason.
+    refuse_symlink(REGISTRY)
     try:
         registry_text = reg_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
