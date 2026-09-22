@@ -162,8 +162,15 @@ BLOCKING_CUE_RE = re.compile(
 # suppressing the finding on a closed blocker whose own clause says otherwise.
 # Bounded to one intervening word so a negation cannot reach across a clause it
 # does not govern.
+# An ARTICLE may sit there too: `is not an open issue` and `is no longer an
+# open issue` both say the citation is finished, and without the article the
+# positive `open issue` substring read as a live-work cue -- a gating P1 on
+# text that says the exact opposite. One adverb and one article, in that order
+# (`not yet an open issue`), and the whole thing stays anchored to the end of
+# the prefix so a negator elsewhere in the sentence cannot reach the cue.
 CUE_NEGATOR_RE = re.compile(
-    r"\b(?:not|non|never|no longer|without|un)[\s-]*(?:yet|still|quite)?[\s-]*$", re.I)
+    r"\b(?:not|non|never|no longer|without|un)[\s-]*(?:(?:yet|still|quite)[\s-]*)?"
+    r"(?:(?:an?|the)[\s-]*)?$", re.I)
 
 
 def has_blocking_cue(line: str) -> bool:
@@ -921,7 +928,19 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             except re.error as exc:
                 raise AuditError(f"registry region `{spec}` is not a valid regular "
                                  f"expression: {exc}") from exc
+            # Not inside a fenced or indented example, and not commented
+            # out -- the `mark:` and `inventory:` scanners already filter
+            # these. A Class A document that LOST its real generated content
+            # but kept a matching sample (a fenced `img.shields.io` line in
+            # README) still set `hit`, so the registry's claim of coverage
+            # survived the content's disappearance: no unmatched-region
+            # finding, and the example's lines routed to the renderer as
+            # though generated.
+            example = fenced_lines(lines) | indented_code_lines(lines) \
+                | commented_lines(lines)
             for n, line in enumerate(lines, 1):
+                if n - 1 in example:
+                    continue
                 if pat.search(line):
                     owned.add(n)
                     hit = True
@@ -1442,7 +1461,7 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
         # finding, and `--stamp` then REPLACED the example with an unindented
         # live marker: a write straight through this module's one hard rule.
         # Fenced blocks are excluded for the same reason.
-        if i in fenced or i in commented or (lines[i] and lines[i][0].isspace()):
+        if i in fenced or i in commented or is_code_indented(lines[i]):
             continue
         line = lines[i].strip()
         m = MARKER_RE.match(line)
@@ -1462,6 +1481,20 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
 _MARKER_SHAPE_RE = re.compile(r"^\*\*Last reviewed:\*\*", re.I)
 
 
+def is_code_indented(line: str) -> bool:
+    """Is this line indented ENOUGH to be a code example rather than a paragraph?
+
+    Any leading whitespace used to disqualify a marker, but CommonMark needs a
+    tab or four spaces for indented code -- one to three spaces still render as
+    an ordinary paragraph. A visibly rendered marker written that way was
+    dropped as an example, so `find_marker` and `marker_shaped_lines` both saw
+    nothing, `--stamp` inserted a second marker ABOVE the still-visible
+    original, and the document carried two contradictory review claims. The
+    Node twin has had this rule since solyra#69; this is the parity fix.
+    """
+    return bool(line) and (line[0] == "\t" or line[:4] == "    ")
+
+
 def marker_shaped_lines(lines: list[str]) -> list[int]:
     """Indices that LOOK like a marker in the window but parse as neither form.
 
@@ -1475,7 +1508,7 @@ def marker_shaped_lines(lines: list[str]) -> list[int]:
     fenced = fenced_lines(lines) | commented_lines(lines)
     out = []
     for i in marker_window(lines):
-        if i in fenced or (lines[i] and lines[i][0].isspace()):
+        if i in fenced or is_code_indented(lines[i]):
             continue
         line = lines[i].strip()
         if not _MARKER_SHAPE_RE.match(line):
@@ -1966,8 +1999,6 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
-        if not has_blocking_cue(line):
-            continue
         # Commented-out spans AND inline code. Inline code renders literally,
         # never as a live citation, so a document explaining what a blocker row
         # looks like -- `` `.../issues/123 is still open` `` -- drew a gating P1
@@ -1975,6 +2006,18 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # same example were already excluded; this is the third, and it covers
         # the shorthand pass and the URL pass alike because both read `hidden`.
         hidden = commented.get(n - 1, []) + code_spans(line)
+        # The cue precheck reads the line with those spans BLANKED, and that
+        # ordering is the fix. Masking only the citation is not enough: a
+        # hidden span can supply the CUE for a different, visible citation --
+        # `See https://.../issues/1 <!-- still open -->` renders as a bare
+        # URL and nothing else, yet the raw-line precheck saw `still open`,
+        # and so did the clause analysis below, so a closed issue was reported
+        # as a live blocker and could fail --check.
+        # Spaces, not deletion: every span offset computed below is an offset
+        # into this line, so the masked copy has to be the same length.
+        visible = mask_spans(line, hidden)
+        if not has_blocking_cue(visible):
+            continue
         # URL spans, so a shorthand scan does not re-read the `/issues/940`
         # inside one it has already reported.
         url_spans = [(mm.start(), mm.end()) for mm in _URL_RE.finditer(line)]
@@ -2084,6 +2127,22 @@ def is_tracked_dir(tracked: set[str], norm: str) -> bool:
 
 
 _CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
+
+
+def mask_spans(line: str, spans: list[tuple[int, int]]) -> str:
+    """The line with `spans` blanked, keeping every other offset where it was.
+
+    Spaces rather than deletion on purpose: the callers compute match offsets
+    against the ORIGINAL line, so a shorter masked copy would silently shift
+    every span that follows one.
+    """
+    if not spans:
+        return line
+    out = list(line)
+    for lo, hi in spans:
+        for i in range(max(lo, 0), min(hi, len(out))):
+            out[i] = " "
+    return "".join(out)
 
 
 def code_spans(line: str) -> list[tuple[int, int]]:
@@ -2358,6 +2417,25 @@ _DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{4,40}\t")
 _DRIFT_STATUS_RE = re.compile(r"^([AMDRCT])(\d{3})?\t")
 
 
+def _git_unquote(cell: str) -> str:
+    """Decode git's C-style quoting of a path, if it used any.
+
+    The readers set `core.quotePath=false`, which covers the non-ASCII case
+    that prompted this. A path containing a quote, a backslash or a control
+    character is still quoted regardless of that setting, so decoding here
+    means neither half is load-bearing on its own. A cell that is not quoted,
+    or that does not decode, is returned unchanged -- guessing at a path would
+    be worse than comparing the spelling git actually gave.
+    """
+    if len(cell) < 2 or not (cell[0] == '"' and cell[-1] == '"'):
+        return cell
+    try:
+        return cell[1:-1].encode("latin-1", "strict").decode("unicode_escape") \
+            .encode("latin-1", "strict").decode("utf-8", "strict")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return cell
+
+
 def _touches(status_line: str, paths: list[str]) -> bool:
     """Does this `--name-status` line name one of the declared paths?
 
@@ -2365,7 +2443,7 @@ def _touches(status_line: str, paths: list[str]) -> bool:
     path whichever end carries it.
     """
     for cell in status_line.split("\t")[1:]:
-        cell = cell.strip()
+        cell = _git_unquote(cell.strip())
         if any(cell == p or cell.startswith(f"{p}/") for p in paths):
             return True
     return False
@@ -2407,7 +2485,12 @@ def _add_is_a_pure_rename(commit: str, paths: list[str],
     audit. Rename detection needs both sides of the pair, and a cross-directory
     move puts the old one outside the declared path's parent.
     """
-    out = run(["git", "show", "--format=", "--name-status", "-M", commit],
+    # Same `core.quotePath=false` as the drift log: a C-quoted non-ASCII path
+    # would fail the declared-path comparison here too, and this read decides
+    # whether a commit is a PURE rename -- getting it wrong drops a real
+    # content change off the drift list.
+    out = run(["git", "-c", "core.quotePath=false",
+               "show", "--format=", "--name-status", "-M", commit],
               cwd=cwd or REPO, ok_exit_codes=(128,))
     touched = [l for l in out.split("\n") if _touches(l, paths)]
     if not touched:
@@ -2537,7 +2620,15 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # afterwards, so the widened query never widens the answer.
     scopes = sorted({p if not posixpath.splitext(p)[1] else (posixpath.dirname(p) or ".")
                      for p in code_paths})
-    out = run(["git", "log", "--format=%H%x09%s", "--name-status", "-M",
+    # `-c core.quotePath=false`: git C-quotes any path with a non-ASCII byte,
+    # so modifying `src/caf\u00e9.py` emits `M\t"src/caf\\303\\251.py"` and
+    # `_touches` compared that escaped spelling against the decoded registry
+    # path, matched nothing, and reported the document current -- drift
+    # silently invisible for every non-ASCII declared path. `git_paths()`
+    # already avoids this with `-z`, which `--name-status` cannot use here
+    # without changing the record framing this parser depends on.
+    out = run(["git", "-c", "core.quotePath=false",
+               "log", "--format=%H%x09%s", "--name-status", "-M",
                # T as well: git files a regular-file-to-symlink conversion as a
                # TYPE change, and AMDR dropped the commit before drift_commits
                # could look at it -- so replacing a declared implementation path
@@ -2819,6 +2910,18 @@ def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
             f"{OWNING_JOB['workflow']}: {len(rows)} runs read across "
             f"{RUNS_PAGE_LIMIT} pages and every one is a dry run; refusing to report "
             "on a history with no delivering execution in it")
+    # A history made entirely of QUEUED or in-progress non-dry runs is not a
+    # dry-run history, so the guard ABOVE is false -- but it is equally no
+    # evidence: last_delivering_conclusion() yields None, no run-status finding
+    # is produced, and recent stamps let the delivery audit pass without any
+    # completed execution behind them. The walk above returns early on a
+    # delivering run with a REAL conclusion, so reaching here with none means
+    # the history holds none.
+    if rows and not any(not _is_dry_run(r) and r[0].strip() for r in rows):
+        raise AuditError(
+            f"{OWNING_JOB['workflow']}: {len(rows)} runs read and not one is a "
+            "completed delivering execution; refusing to report on a history with "
+            "no finished run in it")
     return rows
 
 
@@ -2974,7 +3077,13 @@ def check_owning_job(today: str) -> list[dict]:
         # does not model; it removes the non-rendered sources, which is the
         # case reported.
         body_lines = body.split("\n")
-        skip = fenced_lines(body_lines)
+        # Indented code as well as fenced. `indented_code_lines` was missing
+        # from this filter, so a four-space example carrying a recent
+        # `Generated` date stood in for a missing real stamp and the freshness
+        # check reported a document current although readers see no production
+        # date in it at all -- the same defect as the fenced case, one syntax
+        # over. The Node twin masks both wherever it masks either.
+        skip = fenced_lines(body_lines) | indented_code_lines(body_lines)
         # Per MATCH against the comment SPANS, not per line. A comment can
         # occupy part of a visible line -- `text <!-- Generated 2026-09-20 -->`
         # -- so a whole-line rule let a hidden date stand in for a missing

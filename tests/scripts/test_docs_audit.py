@@ -4409,3 +4409,144 @@ def test_an_extension_emptied_by_a_deletion_is_still_checkable():
     out = m.check_dead_links("docs/d.md", text, {"docs/d.md"}, None, {".ipynb"})
     assert [f["detail"] for f in out] == [
         "backticked path -> docs/analysis.ipynb"], out
+
+
+_MARK = ("**Last reviewed:** 2026-01-01 · **Depth:** scanned · "
+         "**Against:** `abc123def456` · **Last scanned:** 2026-02-02 · **Owner:** me")
+
+
+def test_a_line_region_does_not_claim_a_code_example():
+    """A Class A document that LOST its generated content but kept a matching
+    sample still set `hit`, so the registry's claim of coverage survived the
+    content's disappearance: no unmatched-region finding, and the example's
+    lines routed to the renderer as though a job wrote them."""
+    fenced = "# T\n\nprose\n\n```md\n![b](https://img.shields.io/x)\n```\n\nmore\n"
+    owned, unmatched = m.owned_lines(fenced, ["line:img\\.shields\\.io"])[:2]
+    assert sorted(owned) == []
+    assert unmatched == ["line:img\\.shields\\.io"]
+    # The fix is not "line: matches nothing": a real badge still claims its line.
+    owned, unmatched = m.owned_lines(
+        "# T\n\n![b](https://img.shields.io/x)\n\nmore\n",
+        ["line:img\\.shields\\.io"])[:2]
+    assert sorted(owned) == [3]
+    assert unmatched == []
+
+
+def test_a_blocker_cue_hidden_in_a_comment_does_not_arm_a_visible_citation():
+    """Masking the CITATION is not enough: a hidden span can supply the cue for
+    a different, visible citation. `See <url> <!-- still open -->` renders as a
+    bare URL, yet the raw-line precheck read `still open` and a closed issue was
+    reported as a live blocker."""
+    hidden = f"See {U.format('stocks', 861)} <!-- still open -->"
+    assert m.check_closed_issues("d.md", hidden, STATES) == []
+    # The same line with the cue VISIBLE is still a P1 -- the fix is not
+    # "never report a blocker".
+    visible = f"See {U.format('stocks', 861)}, still open"
+    out = m.check_closed_issues("d.md", visible, STATES)
+    assert len(out) == 1 and out[0]["severity"] == "P1", out
+    # And the inline-code form, which shares the `hidden` span list.
+    assert m.check_closed_issues(
+        "d.md", f"See {U.format('stocks', 861)} `still open`", STATES) == []
+    # Masking preserves offsets, which every span computed afterwards needs.
+    assert m.mask_spans("abcdef", [(1, 3)]) == "a  def"
+
+
+@pytest.mark.parametrize("line,cue", [
+    ("#12 is not an open issue", False),
+    ("#12 is no longer an open issue", False),
+    ("#12 is not a blocker", False),
+    ("#12 is not yet resolved", False),
+    ("#12 is an open issue", True),
+    ("#12 is still open", True),
+])
+def test_an_article_between_the_negator_and_the_cue_still_negates(line, cue):
+    """`is not an open issue` left `an` between the negator and the cue, which
+    the pattern did not admit, so the positive substring read as live work and
+    produced a gating P1 on text saying the exact opposite."""
+    assert m.has_blocking_cue(line) is cue
+
+
+def test_a_marker_indented_one_to_three_spaces_is_still_the_marker():
+    """CommonMark needs a tab or four spaces for indented code; one to three
+    still render as an ordinary paragraph. Treating any leading whitespace as
+    an example made find_marker and marker_shaped_lines both see nothing, so
+    --stamp inserted a second marker ABOVE the still-visible original.
+    Parity with the Node twin (solyra#69)."""
+    two = ["# T", "", "  " + _MARK, "", "Body."]
+    assert m.find_marker(two) is not None
+    assert m.stamp("\n".join(two), "2026-03-03", None, None)[1] == "updated"
+    # Real indented code is still an example, in both recognizers.
+    assert m.find_marker(["# T", "", "    " + _MARK, "", "Body."]) is None
+    assert m.find_marker(["# T", "", "\t" + _MARK, "", "Body."]) is None
+    assert (m.is_code_indented("    x"), m.is_code_indented("\tx"),
+            m.is_code_indented("  x"), m.is_code_indented("")) == (
+        True, True, False, False)
+    # marker_shaped_lines carries its OWN copy of the guard, and a test that
+    # drives only find_marker passes with that copy still broken: a visibly
+    # rendered malformed claim has to block stamping.
+    malformed = ["# T", "", "  **Last reviewed:** 2026-9-1", "", "Body."]
+    assert m.marker_shaped_lines(malformed) == [2]
+    assert m.stamp("\n".join(malformed), "2026-03-03", None,
+                   None)[1] == "skipped-malformed-marker"
+    # Indented four spaces it is an example again, and stamping proceeds.
+    example = ["# T", "", "    **Last reviewed:** 2026-9-1", "", "Body."]
+    assert m.marker_shaped_lines(example) == []
+
+
+def test_a_c_quoted_path_is_compared_decoded():
+    """git C-quotes any path with a non-ASCII byte, so `src/café.py` arrives as
+    `"src/caf\\303\\251.py"` and the comparison against the decoded registry path
+    matched nothing -- drift silently invisible for every non-ASCII declared
+    path."""
+    assert m._git_unquote('"src/caf\\303\\251.py"') == "src/café.py"
+    assert m._git_unquote("src/a.py") == "src/a.py"
+    assert m._touches('M\t"src/caf\\303\\251.py"', ["src/café.py"])
+    # And a sibling is still not a match, so the decode did not widen anything.
+    assert not m._touches("M\tsrc/other.py", ["src/café.py"])
+
+
+def test_a_history_with_no_finished_run_is_refused(monkeypatch):
+    """A history of only QUEUED or in-progress non-dry runs is not a dry-run
+    history, so that guard is false -- but last_delivering_conclusion() yields
+    None and the delivery audit passed with no completed execution behind it."""
+    def rows(rs):
+        return lambda cmd, **kw: "\n".join("\t".join(r) for r in rs)
+
+    monkeypatch.setattr(m, "run", rows([["", "2026-09-20T00:00:00Z", "schedule", ""]] * 3))
+    with pytest.raises(m.AuditError, match="completed delivering execution"):
+        m.fetch_owning_runs(page_size=10)
+    # The dry-run case is a subset and keeps its own, more specific message.
+    monkeypatch.setattr(m, "run", rows(
+        [["success", "2026-09-20T00:00:00Z", "workflow_dispatch", "true"]] * 2))
+    with pytest.raises(m.AuditError, match="dry run"):
+        m.fetch_owning_runs(page_size=10)
+    # One finished delivering run is evidence, so the walk returns.
+    monkeypatch.setattr(m, "run", rows([
+        ["", "2026-09-20T00:00:00Z", "schedule", ""],
+        ["failure", "2026-09-19T00:00:00Z", "schedule", ""]]))
+    assert len(m.fetch_owning_runs(page_size=10)) == 2
+
+
+def test_an_indented_generated_date_is_not_production_provenance():
+    """`indented_code_lines` was missing from the freshness scan's filter, so a
+    four-space example carrying a recent `Generated` date stood in for a missing
+    real stamp -- the same defect as the fenced case, one syntax over."""
+    def drive(doc_body, monkeypatch):
+        def fake_run(cmd, **kw):
+            if "runs?per_page=10" in " ".join(cmd):
+                return "success\t2026-09-16T06:00:00Z\t schedule\t\n"
+            return ("1200\tclosed\t2026-09-16T07:00:00Z\t2026-09-16T06:10:00Z\t"
+                    "Monthly architecture doc refresh: 2026-09\n")
+        monkeypatch.setattr(m, "run", fake_run)
+        monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: True)
+        monkeypatch.setattr(m.pathlib.Path, "read_text",
+                            lambda self, **kw: doc_body)
+        return m.check_owning_job("2026-09-16")
+
+    with pytest.MonkeyPatch.context() as mp:
+        # No real stamp anywhere, only one inside an indented example.
+        out = drive("# T\n\nprose\n\n    Generated 2026-09-16\n\nmore\n", mp)
+        assert any(f["check"] == "class-a" for f in out), out
+    with pytest.MonkeyPatch.context() as mp:
+        # A REAL stamp is still read, so the fix is not "never find one".
+        assert drive("# T\n\nGenerated 2026-09-16\n\nprose\n", mp) == []
