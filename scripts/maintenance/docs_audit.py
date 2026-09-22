@@ -440,6 +440,19 @@ def decode_char_refs(text: str) -> str:
 
 
 
+def _ref_key(label: str) -> str:
+    """A reference label reduced to what CommonMark compares.
+
+    Case-folded, trimmed, and with internal whitespace collapsed to one space
+    -- `[foo bar]` and `[foo   bar]` are the SAME label, so keying on the raw
+    text validated a duplicate definition independently and reported a
+    destination no rendered reference resolves to. Every place that keys a
+    label goes through here so the definition side and the use side cannot
+    drift apart.
+    """
+    return re.sub(r"\s+", " ", label).strip().lower()
+
+
 def _balanced_close(text: str, at: int) -> int:
     """Index just past the `)` that closes the `(` at `at`, or -1.
 
@@ -521,7 +534,13 @@ def _strip_heading_links(s: str, ref_labels: frozenset[str]) -> str:
             shut = s.find("]", k)
             if shut != -1:
                 # A COLLAPSED reference (`[guide][]`) names itself.
-                ref = (s[k + 1:shut].strip() or label.strip()).lower()
+                # Internal whitespace COLLAPSED, as CommonMark collapses it
+                # when matching labels -- `[guide][my   ref]` resolves against
+                # `[my ref]:`. Normalising only the DEFINITIONS left the use
+                # unmatched, so the reference stayed literal bracket syntax
+                # and slugged as `see-guidemy---ref`. Both sides key the same
+                # way now, which is what makes them comparable at all.
+                ref = _ref_key(s[k + 1:shut] or label)
                 if ref in ref_labels:
                     out.append(label)
                     i = shut + 1
@@ -636,7 +655,7 @@ def heading_anchors(text: str) -> set[str]:
     # exclusions as everything else here -- a definition inside a fence or a
     # comment defines nothing.
     ref_labels = frozenset(
-        mm.group("label").strip().lower()
+        _ref_key(mm.group("label"))
         for i, ln in enumerate(lines) if i not in fenced
         for mm in (REF_DEF_RE.match(
             _LIST_MARKER_RE.sub(

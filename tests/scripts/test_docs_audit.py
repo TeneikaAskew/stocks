@@ -6223,3 +6223,20 @@ def test_a_heading_tag_may_quote_a_greater_than_sign():
     # An AUTOLINK is text, not a tag, and must survive -- the control from the
     # round that shaped this strip.
     assert m.heading_slug("<https://example.com>") != ""
+
+
+def test_a_heading_reference_label_is_keyed_like_a_definition():
+    """CommonMark collapses internal whitespace when matching labels, so
+    `[guide][my   ref]` resolves against `[my ref]:`. Normalising only the
+    DEFINITIONS left the use unmatched, so the reference stayed literal
+    bracket syntax and slugged as `see-guidemy---ref` -- a working fragment
+    reported dead and one the page does not expose accepted."""
+    doc = "# T\n\n## See [guide][my   ref]\n\n[my ref]: guide.md\n"
+    assert sorted(m.heading_anchors(doc)) == ["see-guide", "t"]
+    # Both sides go through the same key, so the exact spelling still works
+    # and an UNDEFINED label is still left literal.
+    assert sorted(m.heading_anchors("# T\n\n## See [guide][g]\n\n[g]: guide.md\n")) == \
+        ["see-guide", "t"]
+    assert sorted(m.heading_anchors("# T\n\n## See [guide][g]\n")) == \
+        ["see-guideg", "t"]
+    assert m._ref_key("  Foo   BAR ") == "foo bar"
