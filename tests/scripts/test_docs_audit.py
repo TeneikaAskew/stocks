@@ -5152,3 +5152,114 @@ def test_a_quoted_h1_is_the_document_h1():
     # A quoted HEADING offers its anchor too: matching the raw line recorded
     # none, so a valid link to it was emitted as a gating dead-anchor finding.
     assert m.heading_anchors("# T\n\n> ## Quoted section\n") == {"t", "quoted-section"}
+
+
+# ── round 37 (Codex on c0713ae1) ────────────────────────────────────────────
+
+_MK37 = "**Last reviewed:** 2026-09-01 · **Owner:** TBD"
+
+
+def test_a_marker_inside_a_wrapped_code_span_is_an_example():
+    """A span that opens above the marker-shaped line and closes below it makes
+    that line an EXAMPLE of a marker. Accepting it suppressed the
+    missing-marker finding and --stamp then rewrote the example, leaving the
+    document with no rendered provenance -- the same failure the fenced and
+    commented exclusions beside it exist to prevent, a third hiding mechanism
+    over. The content checks learned about wrapped spans a round earlier."""
+    assert m.find_markers(["# T", "", "`open", _MK37, "close`", ""]) == []
+    # A real marker is still found, and a fenced example is still excluded.
+    assert len(m.find_markers(["# T", "", _MK37, ""])) == 1
+    assert m.find_markers(["# T", "", "```", _MK37, "```", ""]) == []
+
+
+def test_a_destination_character_reference_is_decoded():
+    """`[t](caf&eacute;.md)` RENDERS as a link to `café.md`, and normalising
+    only percent escapes and backslashes reported a tracked file dead."""
+    assert m.check_dead_links("d.md", "[t](caf&eacute;.md)\n", {"café.md"}) == []
+    # A destination that really is missing is still reported.
+    assert len(m.check_dead_links("d.md", "[t](gone&eacute;.md)\n", {"café.md"})) == 1
+    # And the fragment side, which has the same omission.
+    assert m.decode_fragment("caf&eacute;") == "café"
+    assert m.decode_fragment("caf%C3%A9") == "café"
+
+
+def test_a_class_a_freshness_read_refuses_a_symlink(tmp_path, monkeypatch):
+    """The Class A reads happen BEFORE the per-document loop, so its guard is
+    not reached -- and a link to a non-terminating special file can hang or
+    exhaust memory, which means it is never reached at all rather than merely
+    late."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "real.md").write_text("# Real\n")
+    (tmp_path / "docs" / "art.md").symlink_to("real.md")
+    spec = dict(m.BEST_EFFORT_ARTIFACTS[0])
+    with pytest.raises(m.AuditError, match="tracked symlink"):
+        m.check_best_effort_artifacts("2026-09-22", [{**spec, "doc": "docs/art.md"}])
+    # An ordinary file is still read: no exception, and it reports the missing
+    # region rather than aborting.
+    (tmp_path / "docs" / "art2.md").write_text("# A\n\nbody\n")
+    out = m.check_best_effort_artifacts(
+        "2026-09-22", [{**spec, "doc": "docs/art2.md"}])
+    assert all(f["doc"] == "docs/art2.md" for f in out)
+
+
+def test_a_comma_separates_two_citations_but_not_one_statement():
+    """`#1 is resolved, #2 is still open` carries no contrast word, so the whole
+    sentence was returned for both citations and each was settled by the first
+    `resolved` it saw -- a stale live claim about #2 producing no finding.
+
+    The narrowing is the load-bearing half: only a comma with a citation on
+    EACH side splits. `#1 was still open, now resolved` is one statement about
+    one citation, and splitting there invents a finding."""
+    assert m.citation_clause("#1 is resolved, #2 is still open", 16, 18).strip() \
+        == "#2 is still open"
+    assert m.citation_clause("#1 is resolved, #2 is still open", 0, 2).strip() \
+        == "#1 is resolved,"
+    # One citation, a comma introducing its resolution: not a boundary.
+    assert m.citation_clause("#1 was still open, now resolved", 0, 2).strip() \
+        == "#1 was still open, now resolved"
+
+
+def test_a_comment_inside_a_heading_is_not_part_of_its_anchor():
+    """`## <!-- note --> Real` slugged to `---note----real`, so a valid link to
+    `#real` was emitted as a gating dead-anchor finding AND the fabricated
+    anchor was accepted -- wrong in both directions at once."""
+    assert m.heading_anchors("# T\n\n## <!-- note --> Real\n") == {"t", "real"}
+    # An ordinary heading is unchanged.
+    assert m.heading_anchors("# T\n\n## Real\n") == {"t", "real"}
+
+
+def test_an_escaped_backtick_does_not_open_a_code_span():
+    """`` \\` [x](y.md) \\` `` renders two literal backticks and a LIVE link, and
+    masking the range between them made the dead-link and blocker passes skip a
+    real citation -- the hiding direction."""
+    assert m.code_spans("\\` [guide](missing.md) \\`") == []
+    # A real span still masks, and a literal backslash still opens one.
+    assert m.code_spans("a `code` b") == [(2, 8)]
+    assert len(m.check_dead_links("d.md", "\\` [guide](missing.md) \\`\n", set())) == 1
+
+
+def test_an_indented_code_block_inside_a_blockquote_is_code():
+    """The raw line has zero leading spaces because of the `>` prefix, and `>`
+    alone was not seen as the blank line a code run must start after -- so the
+    block never entered indented_code_lines and the link and blocker checks
+    audited a rendered code example as live prose."""
+    assert sorted(m.indented_code_lines(
+        ["# T", ">", ">     [guide](missing.md)", ">"])) == [2]
+    # Unquoted indented code still works, and quoted PROSE is not code.
+    assert sorted(m.indented_code_lines(["# T", "", "    [x](y.md)", ""])) == [2]
+    assert sorted(m.indented_code_lines(["# T", ">", "> ordinary prose", ">"])) == []
+
+
+def test_an_inline_comment_example_opens_no_comment_for_the_fence_scan():
+    """`` `<!--` `` in prose was read as a real unclosed comment, so
+    fenced_lines ignored every later fence delimiter -- a heading inside the
+    fenced example could then terminate marker_window before the real marker
+    and --stamp inserted a second, contradictory one. comment_spans learned
+    this a round ago; this standalone helper, which exists to break the
+    recursion between the two, did not."""
+    doc = ["# T", "", "see `<!--` here", "", "```", "# Fake", "```", "", "# Real"]
+    assert sorted(m._comment_hidden(doc)) == []
+    assert sorted(m.fenced_lines(doc)) == [4, 5, 6]
+    # A REAL unclosed comment still hides what follows it.
+    assert sorted(m._comment_hidden(["# T", "<!-- open", "still hidden"])) == [1, 2]

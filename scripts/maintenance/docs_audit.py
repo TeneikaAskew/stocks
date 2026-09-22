@@ -417,9 +417,16 @@ def heading_anchors(text: str) -> set[str]:
     # does not offer, so a link to it PASSED. marker_window already excludes
     # indented code for the same reason.
     fenced = fenced_lines(lines) | commented_lines(lines) | indented_code_lines(lines)
+    # A comment INSIDE a rendered heading is not part of its text. `## <!-- note
+    # --> Real` slugged to `---note----real`, so a valid link to `#real` was
+    # emitted as a gating dead-anchor finding AND the fabricated anchor was
+    # accepted -- wrong in both directions at once. Spans, because the heading
+    # around the comment still renders.
+    heading_hidden = comment_spans(lines)
     for i, line in enumerate(lines):
         if i in fenced:
             continue
+        line = mask_spans(line, heading_hidden.get(i, []))
         # Setext (`Title` over `===` or `---`) renders as a heading and
         # GitHub exposes its anchor, but an ATX-only scan recorded none -- so a
         # valid link to one was emitted as a gating dead-anchor finding.
@@ -454,7 +461,10 @@ def decode_fragment(frag: str) -> str:
     what makes this safe to apply to every fragment rather than guessing which
     ones are encoded.
     """
-    return urllib.parse.unquote(frag)
+    # And character references: `#caf&eacute;` is how a link to `## Café` may
+    # be written and it resolves, while comparing the encoded spelling against
+    # the decoded slug reported it dead.
+    return decode_char_refs(urllib.parse.unquote(frag))
 
 
 def strip_dot_segments(path: str) -> str:
@@ -1517,7 +1527,16 @@ def indented_code_lines(lines: list[str]) -> set[int]:
     blank_seen = True
     floor = 4
     in_code = False
-    for i, line in enumerate(lines):
+    for i, raw in enumerate(lines):
+        # Every measurement reads the CONTENT, not the raw line. Counting
+        # indentation on the raw line returned zero for a QUOTED example, and
+        # `>` alone was not seen as the blank line that a code run must start
+        # after -- so `>` then `>     [guide](missing.md)` never entered a code
+        # run at all and the link and blocker checks audited a rendered code
+        # example as live prose. Leaving the blank/heading/list tracking on the
+        # raw line would be worse than either: the two views would disagree
+        # about where a block starts. Ported from the Node twin (solyra#69).
+        line = _BLOCKQUOTE_PREFIX_RE.sub("", raw, count=1)
         if not line.strip():
             blank_seen = True
             continue
@@ -1568,7 +1587,17 @@ def _comment_hidden(lines: list[str]) -> set[int]:
             if "-->" in line:
                 inside = False
             continue
+        spans = code_spans(line)
         at = line.find("<!--")
+        # An inline EXAMPLE opens nothing: `` `<!--` `` in prose was read as a
+        # real unclosed comment, so fenced_lines ignored every later fence
+        # delimiter -- a heading inside the fenced example could then terminate
+        # marker_window before the real marker and --stamp inserted a second,
+        # contradictory one. comment_spans learned this a round ago; this
+        # standalone helper, which exists to break the recursion between the
+        # two, did not. `code_spans` is line-local and depends on nothing here.
+        while at != -1 and any(lo <= at < hi for lo, hi in spans):
+            at = line.find("<!--", at + 1)
         if at != -1 and "-->" not in line[at:]:
             # The comment opens here and does not close on this line, so this
             # line and everything up to the closing delimiter is hidden.
@@ -1624,6 +1653,25 @@ def fenced_lines(lines: list[str]) -> set[int]:
     return out
 
 
+def _span_hidden(lines: list[str]) -> set[int]:
+    """Lines a code span covers ENTIRELY, single-line or wrapped.
+
+    A marker-shaped line inside a span that opens above it and closes below is
+    an EXAMPLE of a marker. Accepting it suppressed the missing-marker finding
+    and `--stamp` then rewrote the example, leaving the document with no
+    rendered provenance at all -- the same failure the fenced and commented
+    exclusions beside it exist to prevent, a third hiding mechanism over.
+    """
+    wrapped = code_span_lines(lines)
+    out: set[int] = set()
+    for i, line in enumerate(lines):
+        spans = code_spans(line) + wrapped.get(i, [])
+        stop = len(line.rstrip())
+        if stop and any(lo <= 0 and hi >= stop for lo, hi in spans):
+            out.add(i)
+    return out
+
+
 def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     """Every marker in the window, not just the first.
 
@@ -1641,6 +1689,10 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     # inside the comment: the command reported success over a document with no
     # rendered provenance at all.
     commented = commented_lines(lines)
+    # And one inside a code SPAN that opens above it and closes below. See
+    # _span_hidden: it is the third hiding mechanism, and the content checks
+    # learned about wrapped spans a round before marker discovery did.
+    spanned = _span_hidden(lines)
     for i in marker_window(lines):
         # An INDENTED marker-shaped line is an example of a marker, not the
         # document's provenance -- and stripping before matching threw away
@@ -1649,7 +1701,8 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
         # finding, and `--stamp` then REPLACED the example with an unindented
         # live marker: a write straight through this module's one hard rule.
         # Fenced blocks are excluded for the same reason.
-        if i in fenced or i in commented or is_code_indented(lines[i]):
+        if (i in fenced or i in commented or i in spanned
+                or is_code_indented(lines[i])):
             continue
         line = lines[i].strip()
         m = MARKER_RE.match(line)
@@ -2208,7 +2261,25 @@ def citation_clause(line: str, start: int, end: int) -> str:
     span = line[lo:hi]
     if SETTLED_CUE_RE.search(span) and BLOCKING_CUE_RE.search(span):
         rel = start - lo
-        bounds = [0] + [mm.start() for mm in _CONTRAST_RE.finditer(span)] + [len(span)]
+        # A COMMA is a boundary here too: `#1 is resolved, #2 is still open`
+        # carries no contrast word, so the whole sentence was returned for both
+        # citations and each was settled by the first `resolved` it saw -- a
+        # stale live claim about #2 producing no finding at all.
+        #
+        # Only a comma that SEPARATES TWO CITATIONS, which is the narrowest
+        # rule that fixes it. Splitting on every comma in this branch settles
+        # nothing and breaks the opposite shape: `#1 was still open, now
+        # resolved` is one statement about one citation, where the comma
+        # introduces the resolution -- an existing test caught exactly that,
+        # and it is the direction that INVENTS a finding.
+        cite_at = [mm.start() for mm in SHORTHAND_ISSUE_RE.finditer(span)]
+        cite_at += [mm.start() for mm in ISSUE_URL_RE.finditer(span)]
+        commas = {mm.start() + 1 for mm in re.finditer(r",", span)
+                  if any(c < mm.start() for c in cite_at)
+                  and any(c > mm.start() for c in cite_at)}
+        bounds = sorted({0, len(span)}
+                        | {mm.start() for mm in _CONTRAST_RE.finditer(span)}
+                        | commas)
         for a, b in zip(bounds, bounds[1:]):
             if a <= rel < b:
                 return span[a:b]
@@ -2494,7 +2565,13 @@ def code_spans(line: str) -> list[tuple[int, int]]:
     A run of N backticks opens a span that only a run of exactly N closes, so
     ``` ``a ` b`` ``` is one span rather than two.
     """
-    return [(m.start(), m.end()) for m in _CODE_SPAN_RE.finditer(line)]
+    # An ESCAPED run is a literal backtick, not a delimiter. `` \` [x](y.md) \` ``
+    # renders two backticks and a LIVE link, and masking the range between them
+    # made the dead-link and blocker passes skip a real citation -- the hiding
+    # direction. Parity, via is_escaped, so `\\\`` (a literal backslash) still
+    # opens a span.
+    return [(m.start(), m.end()) for m in _CODE_SPAN_RE.finditer(line)
+            if not is_escaped(line, m.start())]
 
 
 _CODE_SPAN_MULTILINE_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", re.S)
@@ -2534,6 +2611,9 @@ def code_span_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
         at += len(line) + 1
     out: dict[int, list[tuple[int, int]]] = {}
     for m in _CODE_SPAN_MULTILINE_RE.finditer(text):
+        # Escaped delimiters are literal here too -- same rule as code_spans.
+        if is_escaped(text, m.start()):
+            continue
         lo, hi = m.start(), m.end()
         for i, line in enumerate(lines):
             a, b = starts[i], starts[i] + len(line)
@@ -2626,7 +2706,10 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             # removes them when the destination renders, so
             # `[x](docs/a\(b\).md)` resolves to the tracked `docs/a(b).md`
             # and keeping them reported that valid link dead.
-            decoded = unescape_markdown(urllib.parse.unquote(bare))
+            # Character references too. `[t](caf&eacute;.md)` RENDERS as a
+            # link to `café.md`, and normalising only percent escapes and
+            # backslashes reported a tracked file dead.
+            decoded = decode_char_refs(unescape_markdown(urllib.parse.unquote(bare)))
             if decoded.startswith("/"):
                 # Site-absolute. GitHub resolves it from the HOST root, not the
                 # repository root, so stripping the slash and looking it up in
@@ -3213,6 +3296,7 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
         path = REPO / art["doc"]
         if not path.exists():
             continue
+        refuse_symlink(art["doc"])
         body = path.read_text(encoding="utf-8", errors="replace")
         # Scoped to the DECLARED region. A whole-file search accepted a date
         # from an unrelated paragraph, so a generated block that lost its own
@@ -3408,6 +3492,23 @@ def last_delivering_conclusion(rows: list) -> tuple[str, str] | None:
     return None
 
 
+def refuse_symlink(doc: str) -> None:
+    """Refuse to READ a tracked symlink, before anything opens it.
+
+    Following one audits the target's machine-local bytes as though they were
+    committed under this path, so a clean result is one another clone does not
+    reproduce -- and a link to a non-terminating special file such as
+    `/dev/zero` can hang or exhaust memory, which means a guard placed only in
+    the per-document loop is never reached at all. The Class A freshness reads
+    happen BEFORE that loop, so they carry the preflight themselves.
+    """
+    if (REPO / doc).is_symlink():
+        raise AuditError(
+            f"{doc} is a tracked symlink, so reading it would audit its target "
+            "rather than a document in this repository; the result would not "
+            "reproduce in another clone")
+
+
 def check_owning_job(today: str) -> list[dict]:
     """Did the job that owns the Class A docs actually deliver?
 
@@ -3484,6 +3585,7 @@ def check_owning_job(today: str) -> list[dict]:
         path = REPO / doc
         if not path.exists():
             continue
+        refuse_symlink(doc)
         body = path.read_text(encoding="utf-8", errors="replace")
         # Not from a fenced example or an HTML comment. A scan of the whole
         # document let any `Generated YYYY-MM-DD` in sample output stand in for
@@ -3799,11 +3901,9 @@ def main(argv: list[str] | None = None) -> int:
         # refusal a property of the COMMAND rather than of the tree: --stamp
         # was guarded and a read-only --check was not. Ported from the Node
         # twin (solyra#69, `bd0126a`).
-        if (REPO / doc).is_symlink():
-            raise AuditError(
-                f"{doc} is a tracked symlink, so reading it would audit its target "
-                "rather than a document in this repository; the result would not "
-                "reproduce in another clone")
+        # One helper, so the per-document guard and the Class A freshness
+        # preflights cannot drift apart about what a refusal says.
+        refuse_symlink(doc)
         try:
             # STRICT when a write may follow. errors="replace" substitutes
             # U+FFFD for any invalid byte, and --stamp writes the whole decoded
