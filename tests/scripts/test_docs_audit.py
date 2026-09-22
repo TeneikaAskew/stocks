@@ -4708,3 +4708,139 @@ def test_verify_refuses_a_document_whose_prose_is_uncommitted(audit_repo, capsys
             "--stamp", "--verify", "docs/d.md"])
     capsys.readouterr()
     assert "**Depth:** verified" in doc.read_text()
+
+
+_U31 = "https://github.com/TeneikaAskew/stocks/issues/{}"
+_ST31 = {"stocks": {1: {"state": "closed", "reason": "completed", "kind": "ISSUE"},
+                    123: {"state": "closed", "reason": "completed", "kind": "ISSUE"}},
+         "solyra": {}}
+
+
+def test_a_hidden_settled_cue_does_not_suppress_a_visible_citation():
+    """The PRECHECK was masked a round ago and the per-citation analysis was
+    not, so a hidden settled cue still reached it: `<url> is still open
+    <!-- resolved -->` renders as live work, passed the precheck, and was
+    then suppressed by a phrase no reader can see."""
+    assert len(m.check_closed_issues(
+        "d.md", f"{_U31.format(1)} is still open <!-- resolved -->", _ST31)) == 1
+    assert len(m.check_closed_issues(
+        "d.md", f"{_U31.format(1)} is still open `resolved`", _ST31)) == 1
+    # The SHORTHAND pass carries its own clause computation, and a test
+    # driving only the URL pass passes with that copy still reading raw text.
+    assert len(m.check_closed_issues(
+        "d.md", "#1 is still open <!-- resolved -->", _ST31)) == 1
+    # A VISIBLE settled cue still settles, and a plain live blocker is still
+    # reported -- the fix is not "ignore settled cues". Both spellings.
+    assert m.check_closed_issues(
+        "d.md", f"{_U31.format(1)} was still open, now resolved", _ST31) == []
+    assert m.check_closed_issues("d.md", "#1 was still open, now resolved", _ST31) == []
+    assert len(m.check_closed_issues("d.md", f"{_U31.format(1)} is still open", _ST31)) == 1
+    assert len(m.check_closed_issues("d.md", "#1 is still open", _ST31)) == 1
+
+
+def test_a_code_span_that_crosses_a_line_break_is_still_code():
+    """`code_spans` is per physical line and cannot see either delimiter of a
+    span opened on one line and closed on the next, so a blocker-shaped URL or
+    a link inside one was audited as live prose."""
+    assert m.check_closed_issues("d.md", f"`still open {_U31.format(1)}\n`", _ST31) == []
+    assert len(m.check_closed_issues("d.md", f"still open {_U31.format(1)}", _ST31)) == 1
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    assert m.check_dead_links("docs/d.md", "# T\n\n`see\n[x](missing.md)`\n",
+                              {"docs/d.md"}) == []
+    assert [f["detail"] for f in m.check_dead_links(
+        "docs/d.md", "# T\n\n[x](missing.md)\n", {"docs/d.md"})] == [
+        "relative link -> missing.md"]
+    assert m.code_span_lines(["`a", "b`"]) == {0: [(0, 2)], 1: [(0, 2)]}
+
+
+def test_a_fence_delimiter_inside_a_comment_opens_nothing():
+    """An unmatched ``` inside `<!-- ... -->` opened a fence, and every visible
+    line after the comment was then classified as code -- dead-link, blocker,
+    marker and heading checks all suppressed until another fence occurred."""
+    assert m.fenced_lines(["# T", "<!--", "```", "-->", "", "[x](m.md)", "",
+                           "[y](n.md)"]) == set()
+    # A real fence still opens, and a comment INSIDE a fence is part of the
+    # example rather than a reason to stop.
+    assert m.fenced_lines(["# T", "", "```", "x", "```", ""]) == {2, 3, 4}
+    assert m.fenced_lines(["```", "<!-- x -->", "```"]) == {0, 1, 2}
+
+
+def test_a_line_region_does_not_match_an_inline_code_example():
+    """A pattern surviving only inside inline code kept the region's claim of
+    coverage alive after the real content went away, and routed the sample's
+    line to the renderer as generated."""
+    owned, unmatched = m.owned_lines(
+        "# T\n\nExample: `https://img.shields.io/x`\n\nmore\n",
+        ["line:img\\.shields\\.io"])[:2]
+    assert sorted(owned) == []
+    assert unmatched == ["line:img\\.shields\\.io"]
+    # A real badge still claims its line.
+    owned, unmatched = m.owned_lines(
+        "# T\n\n![b](https://img.shields.io/x)\n\nmore\n",
+        ["line:img\\.shields\\.io"])[:2]
+    assert sorted(owned) == [3] and unmatched == []
+
+
+def test_an_indented_code_line_offers_no_heading_anchor():
+    """`    Fake` followed by `---` is a code block and a thematic break, not a
+    Setext heading -- omitted from the skip set, a `fake` anchor the rendered
+    document does not offer was recorded and a link to it PASSED."""
+    assert sorted(m.heading_anchors("# T\n\n    Fake\n---\n")) == ["t"]
+    # A real Setext heading still offers its anchor.
+    assert sorted(m.heading_anchors("# T\n\nSub\n---\n")) == ["sub", "t"]
+
+
+def test_a_hidden_url_does_not_dedup_a_visible_shorthand():
+    """A commented URL ending in the same number suppressed the visible
+    shorthand, while the URL pass skips the hidden citation too -- so a closed
+    issue produced no finding from either spelling."""
+    assert len(m.check_closed_issues(
+        "d.md", f"#123 is still open <!-- {_U31.format(123)} -->", _ST31)) == 1
+    # A VISIBLE URL still dedups to one finding, which is what the set is for.
+    assert len(m.check_closed_issues(
+        "d.md", f"#123 is still open {_U31.format(123)}", _ST31)) == 1
+
+
+def test_a_command_that_cannot_launch_is_an_audit_error():
+    """`gh` missing from PATH raises before a result exists, and that exception
+    went past the AuditError handler: a traceback and exit 1, the status
+    documented for FINDINGS, so automation could not tell "the audit did not
+    run" from "the documentation is wrong"."""
+    with pytest.raises(m.AuditError, match="could not be run"):
+        m.run(["definitely-not-a-real-command-zzz", "--version"])
+
+
+def test_a_link_path_with_backslash_escapes_resolves():
+    """CommonMark removes the escapes when the destination renders, so
+    `[x](docs/a\\(b\\).md)` resolves to the tracked `docs/a(b).md`."""
+    m.TOP_LEVEL_DIRS.update({"docs"})
+    assert m.check_dead_links("docs/d.md", "# T\n\n[x](a\\(b\\).md)\n",
+                              {"docs/d.md", "docs/a(b).md"}) == []
+    # A genuinely missing one is still dead, and a backslash before a
+    # non-punctuation character is a literal character.
+    assert len(m.check_dead_links("docs/d.md", "# T\n\n[x](no\\(z\\).md)\n",
+                                  {"docs/d.md", "docs/a(b).md"})) == 1
+    assert m.unescape_markdown("a\\qb") == "a\\qb"
+
+
+def test_verify_refuses_uncommitted_declared_code(audit_repo, capsys):
+    """The document matching `head` is not enough: check_changed_since reads
+    committed history, so a staged change under a declared path is invisible
+    to it, `head` is recorded as the baseline, and the moment that code and
+    the marker are committed the next audit reports drift."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nProse.\n")
+    _commit(audit_repo, "add d")
+    # A declared code path with an uncommitted edit.
+    (audit_repo / "scripts" / "tool.py").write_text("x = 2\n")
+    with pytest.raises(m.AuditError, match="declared code path has uncommitted"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json"),
+                "--stamp", "--verify", "docs/d.md"])
+    assert "Last reviewed" not in (audit_repo / "docs" / "d.md").read_text()
+    # Committed, the same request succeeds.
+    _commit(audit_repo, "edit tool")
+    m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json"),
+            "--stamp", "--verify", "docs/d.md"])
+    capsys.readouterr()
+    assert "**Depth:** verified" in (audit_repo / "docs" / "d.md").read_text()

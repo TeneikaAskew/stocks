@@ -390,7 +390,12 @@ def heading_anchors(text: str) -> set[str]:
     # dead-anchor check. Marker parsing already excludes fenced lines; the Node
     # twin already excluded them here.
     lines = text.split("\n")
-    fenced = fenced_lines(lines) | commented_lines(lines)
+    # Indented code too. `    Fake` followed by `---` is a code block and a
+    # thematic break, not a Setext heading -- omitted here,
+    # is_setext_underline recorded a `fake` anchor that the rendered document
+    # does not offer, so a link to it PASSED. marker_window already excludes
+    # indented code for the same reason.
+    fenced = fenced_lines(lines) | commented_lines(lines) | indented_code_lines(lines)
     for i, line in enumerate(lines):
         if i in fenced:
             continue
@@ -486,7 +491,17 @@ def run(cmd: list[str], *, cwd: pathlib.Path | None = None,
     # `cwd=REPO` as a default ARGUMENT binds the repo root at import time, so
     # a test that points the module at a throwaway tree still shelled out
     # against this checkout. Resolved per call instead.
-    proc = subprocess.run(cmd, cwd=cwd or REPO, capture_output=True, text=True)
+    # A command that cannot be LAUNCHED raises before a result exists --
+    # `gh` missing from PATH is the reachable case, since the issue and
+    # owning-job reads need it on the default invocation. That exception went
+    # past the AuditError handler, printed a traceback and exited 1: the
+    # status documented for FINDINGS, so automation could not tell "the audit
+    # did not run" from "the documentation is wrong".
+    try:
+        proc = subprocess.run(cmd, cwd=cwd or REPO, capture_output=True, text=True)
+    except OSError as exc:
+        raise AuditError(
+            f"{cmd[0]} could not be run ({exc}); the audit did not happen") from exc
     if proc.returncode != 0 and proc.returncode not in ok_exit_codes:
         raise AuditError(f"{' '.join(cmd[:4])}... exited {proc.returncode}: {proc.stderr.strip()[:400]}")
     return proc.stdout
@@ -944,12 +959,21 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             # survived the content's disappearance: no unmatched-region
             # finding, and the example's lines routed to the renderer as
             # though generated.
-            example = fenced_lines(lines) | indented_code_lines(lines) \
-                | commented_lines(lines)
+            example = fenced_lines(lines) | indented_code_lines(lines)
+            # SPANS as well as whole lines. A pattern surviving only inside
+            # inline code or a partial comment -- ``Example:
+            # `https://img.shields.io/x` `` -- still matched the raw line, so
+            # the missing-region finding stayed suppressed after the real
+            # content went away and the sample's line was routed and stamped
+            # as generated. Blanked rather than removed, since `pat` may be
+            # anchored and a shorter line would move what it anchors to.
+            spans = comment_spans(lines)
             for n, line in enumerate(lines, 1):
                 if n - 1 in example:
                     continue
-                if pat.search(line):
+                visible_line = mask_spans(
+                    line, spans.get(n - 1, []) + code_spans(line))
+                if pat.search(visible_line):
                     owned.add(n)
                     hit = True
         elif spec.startswith("prose:") and prompt is not None \
@@ -1436,6 +1460,31 @@ def indented_code_lines(lines: list[str]) -> set[int]:
     return out
 
 
+def _comment_hidden(lines: list[str]) -> set[int]:
+    """Indices wholly inside an HTML comment, computed WITHOUT the fence scan.
+
+    `fenced_lines` needs this and `commented_lines` cannot supply it: the two
+    would be mutually recursive. An HTML comment is delimited by text, not by
+    block structure, so a standalone scan is enough for the one question the
+    fence scan asks -- is this delimiter commented out?
+    """
+    out: set[int] = set()
+    inside = False
+    for i, line in enumerate(lines):
+        if inside:
+            out.add(i)
+            if "-->" in line:
+                inside = False
+            continue
+        at = line.find("<!--")
+        if at != -1 and "-->" not in line[at:]:
+            # The comment opens here and does not close on this line, so this
+            # line and everything up to the closing delimiter is hidden.
+            out.add(i)
+            inside = True
+    return out
+
+
 def fenced_lines(lines: list[str]) -> set[int]:
     """Indices inside a fenced code block, which are examples, not content.
 
@@ -1447,9 +1496,16 @@ def fenced_lines(lines: list[str]) -> set[int]:
     string. Raised on the Node twin (solyra#69).
     """
     out: set[int] = set()
+    # A delimiter inside an HTML COMMENT is commented-out HTML, not a fence.
+    # An unmatched ``` inside `<!-- ... -->` opened one, and every visible
+    # line after the comment was then classified as code -- dead-link,
+    # blocker, marker and heading checks all suppressed until another fence
+    # happened to occur. Computed standalone because commented_lines reaches
+    # comment_spans, which reaches back here.
+    hidden = _comment_hidden(lines)
     open_fence: str | None = None
     for i, line in enumerate(lines):
-        m = _FENCE_RE.match(line)
+        m = None if i in hidden else _FENCE_RE.match(line)
         if open_fence is None:
             # An opening ``` fence may not carry a backtick in its info string.
             if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
@@ -2023,6 +2079,10 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     # retired with a trailing `<!-- superseded: ... -->` is the common shape,
     # and a whole-line rule cannot see it.
     commented = comment_spans(lines)
+    # Code spans that CROSS line breaks. `code_spans` is per physical line and
+    # cannot see either delimiter of a span opened on one line and closed on
+    # the next, so a blocker-shaped URL inside one was audited as live prose.
+    wrapped = code_span_lines(lines)
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
@@ -2032,7 +2092,8 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # once that sample issue closed. The fenced and indented forms of the
         # same example were already excluded; this is the third, and it covers
         # the shorthand pass and the URL pass alike because both read `hidden`.
-        hidden = commented.get(n - 1, []) + code_spans(line)
+        hidden = (commented.get(n - 1, []) + code_spans(line)
+                  + wrapped.get(n - 1, []))
         # The cue precheck reads the line with those spans BLANKED, and that
         # ordering is the fix. Masking only the citation is not enough: a
         # hidden span can supply the CUE for a different, visible citation --
@@ -2059,8 +2120,14 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # `stocks #123 is still open; .../solyra/issues/123 is still open`,
         # with stocks#123 closed and solyra#123 open, NEITHER citation
         # reported and a stale blocker passed the audit.
+        # And not one inside a HIDDEN span. A commented or inline-code URL
+        # ending in the same number suppressed the visible shorthand, while
+        # the URL pass below skips the hidden citation too -- so a closed
+        # issue produced no finding from either spelling. `hidden` is already
+        # computed above; the dedup simply was not reading it.
         url_nums = {int(mm.group("num")) for mm in ISSUE_URL_RE.finditer(line)
-                    if mm.group("repo").lower() == THIS_REPO}
+                    if mm.group("repo").lower() == THIS_REPO
+                    and not any(lo <= mm.start() < hi for lo, hi in hidden)}
         skipped_end: int | None = None
         for m in SHORTHAND_ISSUE_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in hidden + url_spans):
@@ -2072,9 +2139,15 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # long sentence -- `ten more canonical issues closed ... (#820,
             # #825, ...)` was reported as live work off an `open` elsewhere in
             # the same line, which is the opposite of what it says.
-            paren = enclosing_parenthetical(line, m.start(), m.end())
-            clause = (line[paren[0]:paren[1]] if paren
-                      else citation_clause(line, m.start(), m.end()))
+            # `visible`, not `line`. The precheck was masked one round ago
+            # and this was not, so a hidden SETTLED cue still reached the
+            # clause analysis: `<url> is still open <!-- resolved -->`
+            # renders as live work, passed the precheck, and was then
+            # suppressed by a phrase no reader can see. Offsets are
+            # preserved by the mask, so the same spans index both.
+            paren = enclosing_parenthetical(visible, m.start(), m.end())
+            clause = (visible[paren[0]:paren[1]] if paren
+                      else citation_clause(visible, m.start(), m.end()))
             # The same two cue families cites_live_work reads, against the
             # clause chosen above -- and with NO line-level fallback, which is
             # the stricter half of the rule.
@@ -2112,7 +2185,14 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # the opposite? Both cue families are read against the clause now
             # (see cites_live_work), with the line as the fallback when the
             # clause carries no cue of its own.
-            if not cites_live_work(line, m.start(), m.end()):
+            # `visible`, not `line` -- this is the call Codex named. The
+            # PRECHECK was masked one round ago and the per-citation analysis
+            # was not, so a hidden SETTLED cue still reached it:
+            # `<url> is still open <!-- resolved -->` renders as live work,
+            # passed the precheck, and was then suppressed by a phrase no
+            # reader can see. The mask preserves offsets, so the same spans
+            # index both strings.
+            if not cites_live_work(visible, m.start(), m.end()):
                 continue
             # A pull request cited as a blocker is live work too. `/pull/`
             # used to be skipped outright, so a document calling PR #937 the
@@ -2186,6 +2266,52 @@ def code_spans(line: str) -> list[tuple[int, int]]:
     ``` ``a ` b`` ``` is one span rather than two.
     """
     return [(m.start(), m.end()) for m in _CODE_SPAN_RE.finditer(line)]
+
+
+_CODE_SPAN_MULTILINE_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", re.S)
+
+_MD_ESCAPE_RE = re.compile(r"\\([!-/:-@\[-`{-~])")
+
+
+def unescape_markdown(text: str) -> str:
+    """CommonMark backslash escapes removed, as rendering removes them.
+
+    `[x](docs/a\\(b\\).md)` links to the tracked `docs/a(b).md`; keeping the
+    backslashes reported that valid link as dead. Only before ASCII
+    punctuation, which is the whole set CommonMark allows an escape before --
+    a backslash anywhere else is a literal character, and dropping it would
+    name a different path.
+    """
+    return _MD_ESCAPE_RE.sub(r"\1", text)
+
+
+def code_span_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
+    """Code-span ranges per line index, for spans that CROSS line breaks.
+
+    `code_spans` is per physical line and so cannot see a span whose opening
+    and closing backticks are on different lines -- a blocker-shaped URL or a
+    `[x](missing.md)` inside one was audited as live prose and could fail
+    --check. The document is scanned once here and the ranges split back per
+    line, so every caller keeps its per-line offsets.
+    """
+    # A separate DOTALL pattern rather than widening the shared one: every
+    # other caller passes a single line, where the two behave identically, and
+    # a shared `re.S` would be a change none of them asked for.
+    text = "\n".join(lines)
+    starts: list[int] = []
+    at = 0
+    for line in lines:
+        starts.append(at)
+        at += len(line) + 1
+    out: dict[int, list[tuple[int, int]]] = {}
+    for m in _CODE_SPAN_MULTILINE_RE.finditer(text):
+        lo, hi = m.start(), m.end()
+        for i, line in enumerate(lines):
+            a, b = starts[i], starts[i] + len(line)
+            if hi <= a or lo >= b:
+                continue
+            out.setdefault(i, []).append((max(lo - a, 0), min(hi - a, len(line))))
+    return out
 
 
 def check_dead_links(doc: str, text: str, tracked: set[str],
@@ -2267,7 +2393,11 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             bare = bare.split("?")[0]
             if not bare:
                 return
-            decoded = urllib.parse.unquote(bare)
+            # Backslash escapes as well as percent escapes: CommonMark
+            # removes them when the destination renders, so
+            # `[x](docs/a\(b\).md)` resolves to the tracked `docs/a(b).md`
+            # and keeping them reported that valid link dead.
+            decoded = unescape_markdown(urllib.parse.unquote(bare))
             if decoded.startswith("/"):
                 # Site-absolute. GitHub resolves it from the HOST root, not the
                 # repository root, so stripping the slash and looking it up in
@@ -2325,6 +2455,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     # Retired Markdown kept in a comment is not rendered, so it is not a
     # citation -- but only the commented SPAN is invisible, not the line.
     commented = comment_spans(lines)
+    wrapped_code = code_span_lines(lines)
 
     # Reference-style Markdown: `[guide][g]` with `[g]: docs/guide.md` further
     # down. Neither shape matches MD_LINK_RE, so a broken reference link -- the
@@ -2358,7 +2489,10 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # findings over a document's own syntax examples. Only this pass is
         # masked -- the backtick pass below needs those code spans, because a
         # backticked path IS its subject.
-        spans = code_spans(line) + commented.get(n - 1, [])
+        # Wrapped spans too: a `[x](missing.md)` inside a code span opened on
+        # one line and closed on the next was scanned as a live link.
+        spans = (code_spans(line) + commented.get(n - 1, [])
+                 + wrapped_code.get(n - 1, []))
         for m in MD_LINK_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in spans):
                 continue
@@ -3603,6 +3737,19 @@ def main(argv: list[str] | None = None) -> int:
             ) != _without_marker(text):
                 stamp_refusals[doc] = "uncommitted-content"
                 continue
+            # And the DECLARED CODE PATHS have to be committed too. The
+            # document matching `head` is not enough: check_changed_since
+            # reads committed history, so a staged or unstaged change under a
+            # declared path is invisible to it, `head` is recorded as the
+            # reviewed baseline, and the moment that code and the marker are
+            # committed the next audit reports drift and invalidates the
+            # review that just ran. Same shape as the document guard above,
+            # one level out.
+            if reviewed and code_paths and run(
+                    ["git", "status", "--porcelain", "--"] + list(code_paths),
+            ).strip():
+                stamp_refusals[doc] = "uncommitted-code"
+                continue
             new, action = stamp(text, today, "verified" if reviewed else "scanned",
                                 head, reviewed=reviewed)
             # Consumed only if the review was actually recorded. `stamp` can
@@ -3628,6 +3775,10 @@ def main(argv: list[str] | None = None) -> int:
             why = {"baseline-predates-doc":
                        f"the document does not exist at {head}, so the review would "
                        "name a baseline predating it; commit it first",
+                   "uncommitted-code":
+                       "a declared code path has uncommitted changes, so the review "
+                       f"would name {head} as its baseline and the next audit would "
+                       "report drift against code that was reviewed; commit it first",
                    "uncommitted-content":
                        f"its prose differs from {head}, so the review would name a "
                        "baseline that does not hold what was reviewed and the next "
