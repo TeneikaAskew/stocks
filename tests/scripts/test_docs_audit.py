@@ -1496,7 +1496,7 @@ def audit_repo(tmp_path, monkeypatch):
     (tmp_path / "scripts" / "tool.py").write_text("x = 1\n")
     (tmp_path / "docs" / "DOC_REGISTRY.md").write_text(E2E_REGISTRY)
     (tmp_path / "issues.json").write_text(
-        json.dumps({"capturedAt": NOW, "stocks": {"1": {"state": "open"}}, "solyra": {"9": {"state": "open"}}}))
+        json.dumps({"capturedAt": NOW, "stocks": {"1": {"state": "open", "kind": "ISSUE"}}, "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
     monkeypatch.setattr(m, "REPO", tmp_path)
     monkeypatch.setattr(m, "TOP_LEVEL_DIRS", set())
     monkeypatch.chdir(tmp_path)
@@ -1544,20 +1544,20 @@ def test_a_structurally_wrong_issues_snapshot_is_exit_two(tmp_path):
     """A JSON file with no `stocks` entry makes every stocks citation read as
     unresolvable -- 24 fabricated findings, not an empty result."""
     half = tmp_path / "half.json"
-    half.write_text(json.dumps({"capturedAt": NOW, "solyra": {"1": {"state": "open"}}}))
+    half.write_text(json.dumps({"capturedAt": NOW, "solyra": {"1": {"state": "open", "kind": "ISSUE"}}}))
     with pytest.raises(m.AuditError, match='no "stocks" entry'):
         m.load_issues_snapshot(str(half))
     nonnumeric = tmp_path / "keys.json"
-    nonnumeric.write_text(json.dumps({"capturedAt": NOW, "stocks": {"abc": {}}, "solyra": {"9": {"state": "open"}}}))
+    nonnumeric.write_text(json.dumps({"capturedAt": NOW, "stocks": {"abc": {}}, "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
     with pytest.raises(m.AuditError, match="issue number"):
         m.load_issues_snapshot(str(nonnumeric))
 
 
 def test_a_good_issues_snapshot_still_loads(tmp_path):
     good = tmp_path / "good.json"
-    good.write_text(json.dumps({"capturedAt": NOW, "stocks": {"7": {"state": "closed"}}, "solyra": {"9": {"state": "open"}}}))
-    assert m.load_issues_snapshot(str(good)) == {"stocks": {7: {"state": "closed"}},
-                                                 "solyra": {9: {"state": "open"}}}
+    good.write_text(json.dumps({"capturedAt": NOW, "stocks": {"7": {"state": "closed", "kind": "ISSUE"}}, "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
+    assert m.load_issues_snapshot(str(good)) == {"stocks": {7: {"state": "closed", "kind": "ISSUE"}},
+                                                 "solyra": {9: {"state": "open", "kind": "ISSUE"}}}
 
 
 def test_a_snapshot_issue_record_must_carry_a_state(tmp_path):
@@ -1568,22 +1568,22 @@ def test_a_snapshot_issue_record_must_carry_a_state(tmp_path):
     unresolvable branch, so a malformed snapshot FABRICATES a finding against
     a document that cites a perfectly live issue (CLAUDE.md §3.7)."""
     missing_state = tmp_path / "a.json"
-    missing_state.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": {}}, "solyra": {"9": {"state": "open"}}}))
+    missing_state.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": {}}, "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(missing_state))
 
     null_row = tmp_path / "b.json"
-    null_row.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": None}, "solyra": {"9": {"state": "open"}}}))
+    null_row.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": None}, "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(null_row))
 
     non_string = tmp_path / "c.json"
-    non_string.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": {"state": 7}}, "solyra": {"9": {"state": "open"}}}))
+    non_string.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": {"state": 7}}, "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(non_string))
 
     listed = tmp_path / "d.json"
-    listed.write_text(json.dumps({"capturedAt": NOW, "stocks": [], "solyra": {"9": {"state": "open"}}}))
+    listed.write_text(json.dumps({"capturedAt": NOW, "stocks": [], "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
     with pytest.raises(m.AuditError, match='no "stocks" entry'):
         m.load_issues_snapshot(str(listed))
 
@@ -1601,7 +1601,7 @@ def test_a_snapshot_state_must_be_one_the_checks_understand(tmp_path):
     bogus.write_text(json.dumps(
         {"capturedAt": NOW,
          "stocks": {"8": {"state": "bogus", "reason": "", "kind": "ISSUE"}},
-         "solyra": {"9": {"state": "open"}}}))
+         "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
     with pytest.raises(m.AuditError, match="stocks#8"):
         m.load_issues_snapshot(str(bogus))
 
@@ -1610,7 +1610,7 @@ def test_a_snapshot_state_must_be_one_the_checks_understand(tmp_path):
         good.write_text(json.dumps(
             {"capturedAt": NOW,
              "stocks": {"8": {"state": state, "reason": "", "kind": "ISSUE"}},
-             "solyra": {"9": {"state": "open"}}}))
+             "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
         assert m.load_issues_snapshot(str(good))["stocks"][8]["state"] == state
 
 
@@ -2837,8 +2837,8 @@ def test_a_snapshot_that_names_both_repos_but_records_nothing_is_bad_input(tmp_p
 
 def test_a_snapshot_with_one_record_per_repo_still_loads(tmp_path):
     f = tmp_path / "snap.json"
-    f.write_text(json.dumps({"capturedAt": NOW, "solyra": {"1": {"state": "open"}},
-                             "stocks": {"2": {"state": "closed"}}}))
+    f.write_text(json.dumps({"capturedAt": NOW, "solyra": {"1": {"state": "open", "kind": "ISSUE"}},
+                             "stocks": {"2": {"state": "closed", "kind": "ISSUE"}}}))
     assert m.load_issues_snapshot(str(f))["stocks"][2]["state"] == "closed"
 
 
@@ -5507,7 +5507,7 @@ def test_a_marker_whose_tail_holds_owned_fields_is_not_rewritten():
 def _states():
     return {"stocks": {123: {"state": "closed", "reason": "completed"},
                        861: {"state": "closed", "reason": "completed"},
-                       1: {"state": "open"}},
+                       1: {"state": "open", "kind": "ISSUE"}},
             "solyra": {}}
 
 
@@ -6585,6 +6585,140 @@ def test_the_github_host_boundary_belongs_to_the_url_scheme():
     assert ref("Blocked by github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
 
 
+def test_a_type_7_opener_may_carry_a_quoted_angle_bracket():
+    """`[^<>]*?` was not the attribute grammar every other tag scan here uses.
+    A quoted value may contain `>` -- `<x-widget title=">">` is ONE tag -- and
+    rejecting it opened no block, so the Markdown-looking lines below were
+    audited as live content and the example became a gating dead link. Codex
+    filed it, and the impact is on the line BELOW the opener, not on it."""
+    tracked = {"d.md"}
+    check = lambda t: [f["check"] for f in m.check_dead_links("d.md", t, tracked)]
+    assert check('<x-widget title=">">\n[x](missing.md)\n') == []
+    assert check("<x-widget title='>'>\n[x](missing.md)\n") == []
+    # The shapes that already worked, so the grammar swap cannot drop one.
+    assert check("<x-widget>\n[x](missing.md)\n") == []
+    assert check("<x-widget data-a>\n[x](missing.md)\n") == []
+    assert check("</x-widget>\n[x](missing.md)\n") == []
+    # And the pattern was too LAX in the other direction: `<x-widget ===>` is
+    # not a tag CommonMark accepts, so the line below really is live Markdown
+    # and its broken link really is a finding.
+    assert check("<x-widget ===>\n[x](missing.md)\n") == ["dead-link"]
+
+
+def test_a_byte_order_mark_does_not_hide_front_matter():
+    """A UTF-8 BOM precedes `---` in a file some editors write, and the opener
+    test read the raw first line -- so the metadata was audited as body
+    Markdown. A `# note` inside it then became the document H1, which is where
+    --stamp writes the marker: INSIDE the YAML block, corrupting it."""
+    assert sorted(m.front_matter_lines(["\ufeff---", "title: x", "---", "body"])) \
+        == [0, 1, 2]
+    assert sorted(m.front_matter_lines(["---", "title: x", "---", "body"])) == [0, 1, 2]
+    # A BOM does not turn something else into front matter.
+    assert m.front_matter_lines(["\ufeff# H", "body"]) == set()
+    assert m.front_matter_lines(["\ufeff---", "title: x"]) == set()
+
+
+def test_an_internal_current_directory_segment_names_the_same_file():
+    """`scripts/./tool.py` IS `scripts/tool.py`, and leaving the long spelling
+    alone meant the citation was absent from `tracked` and reported as a
+    gating dead link against a file that exists. Only the LEADING `./` was
+    stripped and only `/../` was normalised -- two thirds of one rule."""
+    assert m.strip_dot_segments("scripts/./tool.py") == "scripts/tool.py"
+    assert m.strip_dot_segments("a/./b/./c.py") == "a/b/c.py"
+    # The cases that already worked.
+    assert m.strip_dot_segments("./scripts/tool.py") == "scripts/tool.py"
+    assert m.strip_dot_segments("docs/../x.py") == "x.py"
+    # A path that climbs OUT is still handed back for the caller to decline,
+    # and a dot-prefixed NAME is not a dot segment.
+    assert m.strip_dot_segments("../outside.md") == "../outside.md"
+    assert m.strip_dot_segments("a/.hidden/b.md") == "a/.hidden/b.md"
+
+
+def test_a_pull_url_backed_by_an_issue_record_is_unresolved():
+    """GitHub's issues API returns issues and PRs from one endpoint, so the
+    lookup found the numbered ISSUE and accepted its state -- and because that
+    issue was open, a URL naming a pull request that does not exist passed the
+    audit clean. `kind` was already collected and was the one column nothing
+    read."""
+    states = {"stocks": {5: {"state": "open", "reason": "", "kind": "ISSUE"}},
+              "solyra": {6: {"state": "open", "reason": "", "kind": "PR"}}}
+    det = lambda line: [f["detail"] for f in
+                        m.check_closed_issues("d.md", line + "\n", states)]
+    assert det("Blocked by https://github.com/TeneikaAskew/stocks/pull/5") == \
+        ["stocks#5 (PR) could not be resolved"]
+    # ONLY this direction. GitHub redirects `/issues/N` to `/pull/N` for a PR,
+    # so that spelling IS a link that resolves.
+    assert det("Blocked by https://github.com/TeneikaAskew/solyra/issues/6") == []
+    assert det("Blocked by https://github.com/TeneikaAskew/solyra/pull/6") == []
+    assert det("Blocked by https://github.com/TeneikaAskew/stocks/issues/5") == []
+
+
+def test_a_snapshot_row_must_carry_its_kind(tmp_path):
+    """A snapshot row without `kind` would make the check above unreachable
+    and the citation pass in silence -- "missing data reads as fine" wearing a
+    different hat (CLAUDE.md §3.7). The loader refuses it, as it already
+    refuses a row with no usable state."""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    f = tmp_path / "nokind.json"
+    f.write_text(json.dumps({"capturedAt": now,
+                             "stocks": {"1": {"state": "open"}},
+                             "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
+    with pytest.raises(m.AuditError, match="stocks#1 has no usable kind"):
+        m.load_issues_snapshot(str(f))
+    g = tmp_path / "badkind.json"
+    g.write_text(json.dumps({"capturedAt": now,
+                             "stocks": {"1": {"state": "open", "kind": "issue"}},
+                             "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}))
+    with pytest.raises(m.AuditError, match="has no usable kind"):
+        m.load_issues_snapshot(str(g))
+
+
+def test_an_html_destination_inside_its_block_is_still_checked():
+    """The joined href pass took its windows from `fenced`, which makes every
+    raw-HTML line a boundary -- so a type-6 block formed no window at all and
+    a wrapped anchor inside one was scanned by NEITHER pass. `<div>` around a
+    wrapped `<a>` is the ordinary shape of an href in a document.
+
+    And `<img src>` rides the same scanner now: a missing image is exactly as
+    broken as a missing link, and the audit was loud about one and silent
+    about the other."""
+    tracked = {"d.md", "img/logo.png"}
+    check = lambda t: [f["check"] for f in m.check_dead_links("d.md", t, tracked)]
+    assert check('<div>\n<a\n href="missing.md">g</a>\n</div>\n') == ["dead-link"]
+    assert check('<div>\n<a\n href="img/logo.png">g</a>\n</div>\n') == []
+    assert check('<img src="img/gone.png">\n') == ["dead-link"]
+    assert check('<img src="img/logo.png">\n') == []
+    assert check('<div>\n<img\n src="img/gone.png">\n</div>\n') == ["dead-link"]
+    # Nothing unsafe widened with it. A raw-TEXT block still displays its
+    # tags, a fence is still an example, a tag still may not span a blank
+    # line, and an escaped opener is still text.
+    assert check('<pre>\n<a\n href="missing.md">g</a>\n</pre>\n') == []
+    assert check('```\n<a\n href="missing.md">g</a>\n```\n') == []
+    assert check('<a\n\n href="missing.md">g</a>\n') == []
+    assert check('<div>\n\\<a\n href="missing.md">g</a>\n</div>\n') == []
+
+
+def test_a_quoted_heading_closes_the_marker_window():
+    """`heading_anchors` recognises `> ## Later` as a real heading and this
+    raw-line test did not, so a `Last reviewed` inside that quoted section
+    stayed in the document-level window -- suppressing the missing-marker
+    finding and letting --stamp rewrite the section's metadata instead of
+    placing the document's own marker under the H1."""
+    assert list(m.marker_window(["# Title", "body", "> ## Later", "x"])) == [1]
+    assert list(m.marker_window(["# Title", "body", "> > ## Later", "x"])) == [1]
+    # The unquoted and indented spellings already closed it; all three have to
+    # agree, because a reader sees a heading in every one.
+    assert list(m.marker_window(["# Title", "body", "## Later", "x"])) == [1]
+    assert list(m.marker_window(["# Title", "body", "  ## Later", "x"])) == [1]
+    # And a quoted line that is NOT a heading still does not close it, or the
+    # window would empty on ordinary prose.
+    assert list(m.marker_window(["# Title", "body", "> #123 remains open", "x"])) \
+        == [1, 2, 3]
+    assert list(m.marker_window(["# Title", "body", "> ordinary quote", "x"])) \
+        == [1, 2, 3]
+
+
 def test_a_reference_style_blocker_citation_is_resolved():
     """`Blocked by [#1][issue].` with `[issue]:` and the URL further down
     renders as a clickable issue link, and NEITHER half carries both pieces:
@@ -6592,7 +6726,7 @@ def test_a_reference_style_blocker_citation_is_resolved():
     issue cited the standard CommonMark way passed the audit clean -- the
     hiding direction. Codex filed it twice on the Node twin (solyra#69)."""
     states = {"solyra": {1: {"state": "closed", "reason": "completed"}},
-              "stocks": {1: {"state": "open"}}}
+              "stocks": {1: {"state": "open", "kind": "ISSUE"}}}
     url = "https://github.com/TeneikaAskew/solyra/issues/1"
     D = f"\n\n[issue]: {url}\n"
     ref = lambda doc: [f["ref"] for f in m.check_closed_issues("d.md", doc, states)]
@@ -6610,7 +6744,7 @@ def test_a_reference_use_that_resolves_to_nothing_is_not_a_citation():
     only because a use is acted on ONLY when its label resolves to a
     definition whose destination is an issue URL."""
     states = {"solyra": {1: {"state": "closed", "reason": "completed"}},
-              "stocks": {1: {"state": "open"}}}
+              "stocks": {1: {"state": "open", "kind": "ISSUE"}}}
     url = "https://github.com/TeneikaAskew/solyra/issues/1"
     D = f"\n\n[issue]: {url}\n"
     ref = lambda doc: [f["ref"] for f in m.check_closed_issues("d.md", doc, states)]
@@ -6793,7 +6927,7 @@ def test_an_issues_snapshot_the_audit_cannot_date_is_refused(tmp_path):
     under a report dated today: a fabricated clean bill of health, which is
     the one outcome this tool exists to prevent (CLAUDE.md §3.7). Codex filed
     it on the Node twin (solyra#69)."""
-    rows = {"stocks": {"1": {"state": "open"}}, "solyra": {"9": {"state": "open"}}}
+    rows = {"stocks": {"1": {"state": "open", "kind": "ISSUE"}}, "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}
 
     def write(name, **extra):
         f = tmp_path / name
@@ -6814,7 +6948,7 @@ def test_an_issues_snapshot_expires(tmp_path):
     Measured against the WALL CLOCK, not against --date: a report dated in the
     past does not make month-old issue data accurate, and keying the window to
     --date would let one flag switch the guard off."""
-    rows = {"stocks": {"1": {"state": "open"}}, "solyra": {"9": {"state": "open"}}}
+    rows = {"stocks": {"1": {"state": "open", "kind": "ISSUE"}}, "solyra": {"9": {"state": "open", "kind": "ISSUE"}}}
     now = datetime.datetime.now(datetime.timezone.utc)
 
     def write(name, offset):
@@ -6848,8 +6982,8 @@ def test_a_written_snapshot_carries_its_capture_time(tmp_path):
     rows, and load_issues_snapshot returns only the maps for the same
     reason."""
     f = tmp_path / "out.json"
-    m.write_issues_snapshot(str(f), {"stocks": {1: {"state": "open"}},
-                                     "solyra": {9: {"state": "open"}}})
+    m.write_issues_snapshot(str(f), {"stocks": {1: {"state": "open", "kind": "ISSUE"}},
+                                     "solyra": {9: {"state": "open", "kind": "ISSUE"}}})
     raw = json.loads(f.read_text())
     assert m.is_calendar_date(raw["capturedAt"][:10])
     assert sorted(raw) == ["capturedAt", "solyra", "stocks"]

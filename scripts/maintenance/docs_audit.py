@@ -520,8 +520,14 @@ REF_DEF_RE = re.compile(
 # the rest as a real attribute -- the very case this exists to reject.
 _HTML_ATTR = (r"""[a-zA-Z_:][-\w:.]*(?:\s*=\s*(?:"[^"]*"|'[^']*'"""
               r"""|[^\s"'`=<>]+))?""")
+# `<img src>` rides the same scanner as `<a href>`. Both are destinations a
+# reader resolves -- a missing image is exactly as broken as a missing link,
+# and the audit was loud about one and silent about the other. Changing the
+# PRESENTATION syntax should not change what the audit sees. The tag name and
+# its attribute are one alternation rather than two patterns, so the two cannot
+# drift apart. Parity with the Node twin (solyra#69).
 HTML_HREF_RE = re.compile(
-    rf"""<a(?:\s+{_HTML_ATTR})*?\s+href\s*=\s*"""
+    rf"""<(?:a(?:\s+{_HTML_ATTR})*?\s+href|img(?:\s+{_HTML_ATTR})*?\s+src)\s*=\s*"""
     r"""(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'`=<>]+))""",
     re.I | re.S)
 # A label may carry an ESCAPED bracket: `[x\]]: missing.md` is a definition
@@ -1357,7 +1363,13 @@ def strip_dot_segments(path: str) -> str:
     # file was reported dead. normpath resolves from the repository root, which
     # is what a path with no leading `../` already means; one that climbs out
     # is not this repository's to resolve and the caller declines it.
-    if "/../" in path:
+    # And an INTERNAL current-directory segment, for the same reason:
+    # `scripts/./tool.py` NAMES the tracked `scripts/tool.py`, and leaving the
+    # long spelling alone meant the citation was absent from `tracked` and
+    # reported as a gating dead link against a file that exists. Only the
+    # leading one was stripped, above, and only `/../` was normalised below --
+    # two thirds of one rule. Codex filed it (stocks#1121).
+    if "/../" in path or "/./" in path:
         path = posixpath.normpath(path)
         if path.startswith(".."):
             return path
@@ -2362,7 +2374,15 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
         # this boundary closed the window on both, emptying it so the real
         # marker was reported missing and --stamp inserted a second one above
         # the hashtag. Same rule _HEADING_RE uses.
-        if re.match(r"^ {0,3}#{1,6}(?:\s|$)", lines[j]):
+        # Read THROUGH the blockquote container, as every other block test
+        # here is. `heading_anchors` recognises `> ## Later` as a real heading
+        # and this raw-line test did not, so a `Last reviewed` inside that
+        # quoted section stayed in the document-level window -- suppressing
+        # the missing-marker finding, and letting --stamp rewrite the
+        # section's metadata instead of placing the document's own marker
+        # under the H1. Codex filed it (stocks#1121).
+        if re.match(r"^ {0,3}#{1,6}(?:\s|$)",
+                    _QUOTE_PREFIX_RE.sub("", lines[j], count=1)):
             stop = j
             break
         # Setext is a section heading too, and its underline marks the heading
@@ -2729,7 +2749,16 @@ _HTML_BLOCK_OPEN_RE = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?:[\s/>]|$)
 # `<x-widget>` is in no tag list. It ends at a blank line like type 6, and per
 # CommonMark it cannot INTERRUPT a paragraph, which is the condition that keeps
 # it from swallowing ordinary prose.
-_HTML_TYPE7_RE = re.compile(r"^ {0,3}</?[a-zA-Z][a-zA-Z0-9-]*(?:\s+[^<>]*?)?/?>\s*$")
+# A type-7 opener is a COMPLETE tag, and its attributes follow the same grammar
+# every other tag scan here uses. `[^<>]*?` was not that grammar: a quoted value
+# may contain `>` -- `<x-widget title=">">` is ONE tag -- and rejecting it opened
+# no block, so the Markdown-looking lines below it were audited as live content
+# and `[x](missing.md)` in the example became a gating dead link. It was also too
+# LAX in the other direction, accepting `<x-widget ===>`, which CommonMark does
+# not; that line really does start live Markdown. Reusing `_HTML_ATTR` fixes both
+# and means one grammar rather than two.
+_HTML_TYPE7_RE = re.compile(
+    rf"^ {{0,3}}</?[a-zA-Z][a-zA-Z0-9-]*(?:\s+{_HTML_ATTR})*\s*/?>\s*$")
 
 # Types 3, 4 and 5 -- processing instruction, document declaration and CDATA.
 # Each runs raw to its OWN closer, over as many lines as it takes, so Markdown
@@ -3370,7 +3399,14 @@ def front_matter_lines(lines: list[str]) -> set[int]:
     # opener, but trimming the line accepted it -- so every line to the next
     # indented `---` was excluded as metadata and a rendered link between them
     # passed the audit unchecked.
-    if not lines or lines[0].rstrip() != "---":
+    # The BOM is stripped BEFORE the opener test, not after. A UTF-8 BOM
+    # precedes `---` in a file some editors write, and testing the raw first
+    # line returned nothing at all -- so the metadata was audited as body
+    # Markdown, and a `# note` inside it became the document H1, which is
+    # where `--stamp` writes the marker: inside the YAML block, corrupting
+    # the front matter. Only line zero can carry one. Codex filed it
+    # (stocks#1121).
+    if not lines or lines[0].lstrip("\ufeff").rstrip() != "---":
         return set()
     for i in range(1, len(lines)):
         # COLUMN ZERO, as the opener already requires. An indented `---` is
@@ -3824,6 +3860,8 @@ def stamp(text: str, date: str, depth: str, sha: str,
 # same clean-bill-of-health failure the row check above exists to stop, one
 # value in. GitHub's issues API returns exactly these two.
 ISSUE_STATES = frozenset({"open", "closed"})
+# What `fetch_issue_states` records in the `kind` column, and nothing else.
+ISSUE_KINDS = frozenset({"PR", "ISSUE"})
 
 
 ISSUE_SNAPSHOT_MAX_AGE_DAYS = 1
@@ -3951,6 +3989,18 @@ def load_issues_snapshot(file: str, *,
                     f"--issues-snapshot {file}: {repo}#{num} has no usable state "
                     f"({rec!r}); expected one of {sorted(ISSUE_STATES)}. A row the "
                     "audit cannot read is not a row it may report on")
+            # And `kind`, which the live read has always collected and nothing
+            # used to check. A `/pull/N` citation backed by an ISSUE record
+            # names no pull request at all, and that check reads this column
+            # -- so a snapshot without it would silently switch the check off,
+            # which is "missing data reads as fine" wearing a different hat
+            # (CLAUDE.md §3.7).
+            if rec.get("kind") not in ISSUE_KINDS:
+                raise AuditError(
+                    f"--issues-snapshot {file}: {repo}#{num} has no usable kind "
+                    f"({rec.get('kind')!r}); expected one of {sorted(ISSUE_KINDS)}. "
+                    "Without it a /pull/ citation backed by an issue cannot be told "
+                    "from a real one, and the check would pass in silence")
         states[repo] = rows
     return states
 
@@ -4409,7 +4459,18 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             if not cites_live_work(visible, r_start, r_end):
                 continue
             is_pr = hit.group("kind").lower() == "pull"
+            # A `/pull/N` citation backed by an ISSUE record names no pull
+            # request at all. GitHub's issues API returns issues and PRs from
+            # one endpoint, so the lookup found the numbered ISSUE and
+            # accepted its state -- and if that issue was open, a URL pointing
+            # at a pull request that does not exist passed the audit clean.
+            # `kind` was already collected and was the one column nothing
+            # read. Only this direction: GitHub redirects `/issues/N` to
+            # `/pull/N` for a PR, so that spelling IS a link that resolves.
+            # Codex filed it (stocks#1121).
             st = states.get(repo, {}).get(num)
+            if is_pr and st is not None and st.get("kind") == "ISSUE":
+                st = None
             label = f"{repo}#{num}" + (" (PR)" if is_pr else "")
             if st is None:
                 out.append({"check": "closed-issue", "doc": doc, "line": n,
@@ -4467,7 +4528,10 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                 continue
             repo, num = m.group("repo").lower(), int(m.group("num"))
             label = f"{repo}#{num}" + (" (PR)" if is_pr else "")
+            # Same kind check the reference pass applies; see there.
             st = states.get(repo, {}).get(num)
+            if is_pr and st is not None and st.get("kind") == "ISSUE":
+                st = None
             if st is None:
                 out.append({"check": "closed-issue", "doc": doc, "line": n,
                             "detail": f"{label} could not be resolved", "severity": "P2"})
@@ -5319,7 +5383,18 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         href_doc.append(mask_spans(line, code_spans(line) + commented.get(i, [])
                                    + wrapped_code.get(i, [])))
     href_joined = "\n".join(href_doc)
-    for lo_i, hi_i in _paragraph_blocks(lines, fenced):
+    # Windowed WITHOUT the HTML-block lines as boundaries, unlike every other
+    # scan here. `fenced` makes each of them a boundary, so a type-6 block
+    # formed no window at all and `<div>` then `<a` then ` href="missing.md">`
+    # -- a clickable link a reader follows -- was scanned by neither pass: the
+    # per-line one cannot see the tag and its href together, and this one never
+    # looked. An HTML block is exactly where an href lives. Nothing unsafe
+    # widens with it: every line this pass may not read is already blanked in
+    # `href_doc` above, and a blank line still ends both a paragraph and a
+    # type-6 block, which is the constraint the windowing exists for. Codex
+    # filed it here; the Node twin had the same defect.
+    href_bounds = _fence_only | front_matter_lines(lines)
+    for lo_i, hi_i in _paragraph_blocks(lines, href_bounds):
         lo = starts[lo_i]
         hi = starts[hi_i] + len(lines[hi_i])
         for mm in HTML_HREF_RE.finditer(href_joined, lo, hi):
@@ -5793,7 +5868,18 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
         if not path.exists():
             continue
         refuse_symlink(art["doc"])
-        body = path.read_text(encoding="utf-8", errors="replace")
+        doc_name = art["doc"]
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError) as exc:
+            # Unreadable, or replaced in the working tree by a directory.
+            # Left unguarded this walks past the AuditError handler, so the
+            # CLI printed a traceback and exited 1 -- the status it documents
+            # for FINDINGS, which makes a run that could not happen look like
+            # a run that found something. The registry and per-document reads
+            # have carried this guard for rounds. Codex filed it (stocks#1121).
+            raise AuditError(f"{doc_name} could not be read ({exc}); its freshness "
+                             "was never checked") from exc
         # Scoped to the DECLARED region. A whole-file search accepted a date
         # from an unrelated paragraph, so a generated block that lost its own
         # provenance still reported fresh -- the artifact's evidence has to
@@ -6141,7 +6227,18 @@ def check_owning_job(today: str) -> list[dict]:
         if not path.exists():
             continue
         refuse_symlink(doc)
-        body = path.read_text(encoding="utf-8", errors="replace")
+        doc_name = doc
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError) as exc:
+            # Unreadable, or replaced in the working tree by a directory.
+            # Left unguarded this walks past the AuditError handler, so the
+            # CLI printed a traceback and exited 1 -- the status it documents
+            # for FINDINGS, which makes a run that could not happen look like
+            # a run that found something. The registry and per-document reads
+            # have carried this guard for rounds. Codex filed it (stocks#1121).
+            raise AuditError(f"{doc_name} could not be read ({exc}); its freshness "
+                             "was never checked") from exc
         # Not from a fenced example or an HTML comment. A scan of the whole
         # document let any `Generated YYYY-MM-DD` in sample output stand in for
         # a missing footer, so removing the real stamp while keeping a recent
