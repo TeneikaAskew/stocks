@@ -987,77 +987,62 @@ def heading_anchors(text: str) -> set[str]:
     return out
 
 
-# The UNQUOTED attribute form too: `<div id=section>` is valid HTML and the
-# browser exposes `section`. The tag and attribute NAMES fold case; the
-# VALUE's case is preserved, because a browser matches an explicit id exactly.
-_HTML_ID_RE = re.compile(
-    r"""<[a-zA-Z][^>]*?\s(?:id|name)\s*=\s*"""
-    r"""("(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'`=<>]+))""", re.I)
-
-
 def html_anchors(lines: list[str]) -> set[str]:
     """Ids a RENDERED document exposes through `id=` or `name=` attributes.
+
+    Tokenised through the same tag scanner the attribute mask uses, rather
+    than by searching for `id=` in arbitrary text. A loose search invented
+    anchors from `<div data-note=" id=fake">`, where the text sits inside
+    ANOTHER attribute's value, and missed the real one in
+    `<div title="a > b" id="section">`, where the `>` inside a quoted value
+    ended the search early -- wrong in both directions at once, and the
+    invented ids were the worse half, because a link to one PASSED.
+
+    `id` exposes a fragment destination on any element. `name` does so only
+    on an anchor: `<meta name="viewport">` is not a destination, and
+    recording it let a link to `#viewport` pass against nothing.
 
     A NARROWER mask than the heading scan's: a type-6 or type-7 block such as
     `<div id="x">` IS the anchor, so masking every HTML line would discard the
     very thing being read. Only the raw-text kinds -- `<pre>`, `<script>`,
     `<style>`, `<textarea>` -- display their contents instead of rendering
     them, and only those hide an id.
+
+    One scan over the joined document, so an element whose `id` sits on a
+    LATER physical line is read as the one tag it is.
     """
     literal = (raw_html_block_lines(lines, raw_text_only=True)
                | fenced_lines(lines) | indented_code_lines(lines)
                | front_matter_lines(lines))
     wrapped = code_span_lines(lines)
     comments = comment_spans(lines)
-
-    def _id(m: re.Match[str]) -> str:
-        # Character references DECODED, as the heading slug already decodes
-        # them: `<div id="a&amp;b">` exposes `a&b`, and recording the raw
-        # value reported a valid `[x](#a%26b)` dead while accepting the
-        # literal `a&amp;b` nothing exposes.
-        value = m.group("dq")
-        if value is None:
-            value = m.group("sq")
-        if value is None:
-            value = m.group("bare")
-        return decode_char_refs(value or "")
-
-    def _visible(i: int, line: str) -> str:
-        # Comment SPANS as well as code spans. `text <!-- <a id="fake"></a> -->`
-        # shares a line with prose, so a whole-line exclusion never reached it
-        # and `fake` was registered as a destination the document does not
-        # offer -- letting a link to it pass.
-        return mask_spans(line, code_spans(line) + wrapped.get(i, [])
-                          + comments.get(i, []))
-
-    out: set[str] = set()
-    for i, raw in enumerate(lines):
-        if i in literal:
-            continue
-        for m in _HTML_ID_RE.finditer(_visible(i, raw)):
-            ident = _id(m)
-            if ident:
-                out.add(ident)
-    # And an element whose `id` sits on a LATER physical line: `<div\n
-    # id="section">` still exposes `section`, and a per-line scan can never
-    # see the tag and its attribute together. A tag may not span a blank line,
-    # so the joined scan is windowed per paragraph block exactly as the link
-    # and href scans are, and only matches that CONTAIN a newline are read --
-    # the single-line ones belong to the loop above.
-    starts: list[int] = []
-    at = 0
-    for line in lines:
-        starts.append(at)
-        at += len(line) + 1
+    # Comment SPANS as well as code spans. `text <!-- <a id="fake"></a> -->`
+    # shares a line with prose, so a whole-line exclusion never reached it and
+    # `fake` was registered as a destination the document does not offer.
     joined = "\n".join(
-        mask_spans(line, [(0, len(line))]) if i in literal else _visible(i, line)
+        mask_spans(line, [(0, len(line))]) if i in literal
+        else mask_spans(line, code_spans(line) + wrapped.get(i, [])
+                        + comments.get(i, []))
         for i, line in enumerate(lines))
-    for lo, hi in _paragraph_blocks(lines, fenced_lines(lines)):
-        for m in _HTML_ID_RE.finditer(joined, starts[lo],
-                                      starts[hi] + len(lines[hi])):
-            if "\n" not in m.group(0):
+    out: set[str] = set()
+    for tag in _TAG_OPEN_RE.finditer(joined):
+        name = _TAG_NAME_RE.match(tag.group(0))
+        anchor = bool(name) and name.group(1).lower() == "a"
+        for attr in _TAG_ATTR_RE.finditer(tag.group(0)):
+            key = attr.group(1).lower()
+            if key != "id" and not (key == "name" and anchor):
                 continue
-            ident = _id(m)
+            value = attr.group(2)
+            if value is None:
+                value = attr.group(3)
+            if value is None:
+                value = attr.group(4)
+            # Character references DECODED, as the heading slug already
+            # decodes them: `<div id="a&amp;b">` exposes `a&b`, and recording
+            # the raw value reported a valid `[x](#a%26b)` dead. Case is
+            # PRESERVED: a browser matches an explicit id exactly, so
+            # `<a name="Install">` is reached by `#Install` and not `#install`.
+            ident = decode_char_refs(value or "")
             if ident:
                 out.add(ident)
     return out

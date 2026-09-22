@@ -6485,6 +6485,17 @@ def test_an_explicit_html_anchor_is_a_destination_the_page_offers():
     assert m.heading_anchors('<a name="custom"></a>\n\n# T\n') == {"custom", "t"}
     # The unquoted attribute form is valid HTML and the browser exposes it.
     assert m.html_anchors(["<div id=section>"]) == {"section"}
+    # Tokenised as real attributes, not searched for as text. `id=` inside
+    # ANOTHER attribute's value invented an anchor a link could then resolve
+    # against, and a `>` inside a quoted value hid a real one.
+    assert m.html_anchors(['<div data-note=" id=fake">']) == set()
+    assert m.html_anchors(["<div title=' id=\"fake\"'>"]) == set()
+    assert m.html_anchors(['<div title="a > b" id="section">']) == {"section"}
+    # `id` names a destination on any element; `name` only on an anchor.
+    assert m.html_anchors(['<meta name="viewport">']) == set()
+    assert m.html_anchors(['<a name="legacy">']) == {"legacy"}
+    # Case is PRESERVED: a browser matches an explicit id exactly.
+    assert m.html_anchors(['<a name="Install">']) == {"Install"}
     # And an attribute on a LATER physical line, which no per-line scan sees.
     assert m.html_anchors(["<div", '  id="section">']) == {"section"}
     # Character references are decoded, as a heading slug already decodes them.
