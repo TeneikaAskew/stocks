@@ -3553,6 +3553,19 @@ def main(argv: list[str] | None = None) -> int:
         # tree, so an ordinary staged or unstaged deletion left the path in
         # `docs` and raised FileNotFoundError here: a traceback and exit 1, the
         # status reserved for documentation findings.
+        # A tracked SYMLINK is refused before it is read, not only before it is
+        # written. Following one audits the target's machine-local bytes as
+        # though they were committed under this path, so a clean result is one
+        # another clone does not reproduce -- and the read can leave the
+        # checkout entirely. write_stamps already refuses them, which made the
+        # refusal a property of the COMMAND rather than of the tree: --stamp
+        # was guarded and a read-only --check was not. Ported from the Node
+        # twin (solyra#69, `bd0126a`).
+        if (REPO / doc).is_symlink():
+            raise AuditError(
+                f"{doc} is a tracked symlink, so reading it would audit its target "
+                "rather than a document in this repository; the result would not "
+                "reproduce in another clone")
         try:
             # STRICT when a write may follow. errors="replace" substitutes
             # U+FFFD for any invalid byte, and --stamp writes the whole decoded

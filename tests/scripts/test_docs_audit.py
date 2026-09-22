@@ -4844,3 +4844,32 @@ def test_verify_refuses_uncommitted_declared_code(audit_repo, capsys):
             "--stamp", "--verify", "docs/d.md"])
     capsys.readouterr()
     assert "**Depth:** verified" in (audit_repo / "docs" / "d.md").read_text()
+
+
+# ── round 33 (parity with solyra#69 `bd0126a`) ──────────────────────────────
+
+def test_a_tracked_symlink_is_refused_on_read_not_only_when_stamping(audit_repo):
+    """write_stamps refused symlinks from round 22 and the READ path did not,
+    which made the refusal a property of the COMMAND rather than of the tree:
+    --stamp was guarded and an ordinary read-only --check followed the link.
+    Following one audits the TARGET's machine-local bytes as though they were
+    committed under this path, so a clean result is one another clone does not
+    reproduce -- and the read can leave the checkout entirely. Codex made the
+    reproducibility argument on the Node twin; it changed the call there and
+    the same hazard was live here."""
+    (audit_repo / "docs" / "real.md").write_text("# Real\n\nbody\n")
+    (audit_repo / "docs" / "d.md").symlink_to("real.md")
+    _commit(audit_repo, "doc")
+    with pytest.raises(m.AuditError, match="tracked symlink"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json")])
+
+
+def test_an_ordinary_document_is_still_read(audit_repo, capsys):
+    """The half that keeps the guard from being 'never read anything'."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "doc")
+    m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    assert any(f["doc"] == "docs/d.md" for f in report["findings"]), report
