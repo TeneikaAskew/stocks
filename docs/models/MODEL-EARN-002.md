@@ -83,7 +83,7 @@ should have.
 ## The sufficiency gate counts rows, not clean quarters
 
 `aggregate_history` (`:416`) sets `n_quarters = len(rows)` — the number of rows in the
-12-quarter window, full stop — and `has_sufficient_history` (`:152`) compares that to
+12-quarter window, full stop — and `has_sufficient_history` (`:143`) compares that to
 `MIN_QUARTERS_FOR_CLASSIFICATION = 4`. No row is checked for completeness.
 
 That matters because every rate the classifier then reads is computed over a *different*

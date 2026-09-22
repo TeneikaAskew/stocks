@@ -1054,15 +1054,28 @@ def test_last_reviewed_is_not_older_than_the_body():
 def test_cited_issues_also_appear_in_pr_issue_traceability():
     """Issue open/closed state needs the network. What IS checkable offline is
     that the registry has not drifted away from the reconciled issue map in 12,
-    which is refreshed against GitHub on its own cadence."""
-    def issues(p: Path) -> set[str]:
-        return set(re.findall(r"/issues/(\d+)", p.read_text()))
+    which is refreshed against GitHub on its own cadence.
 
-    orphans = issues(REGISTRY) - issues(PRODUCT / "12-PR-ISSUE-TRACEABILITY.md")
+    Scoped to the MODEL TABLE ROWS, where a citation asserts "this is an open
+    blocker on this model". It read the whole file until 2026-09-22, and the
+    2026-09-22 reconciliation of `12` exposed why that was wrong: removing the
+    stale rows for #825 and #900 made this gate red on DOC-01, the register
+    entry whose entire subject is that those two were cited after closing, and
+    on the narrative paragraph explaining it. A gate that goes red when a
+    document correctly discusses a closed issue is measuring the wrong thing;
+    it had only been green because `12` still carried rows it should not have.
+    """
+    cited = set()
+    for line in REGISTRY.read_text().split("\n"):
+        if re.match(r"^\| MODEL-", line):
+            cited |= set(re.findall(r"/issues/(\d+)", line))
+
+    assert cited, "no model row cites an issue -- did the tables change shape?"
+    orphans = cited - set(re.findall(r"/issues/(\d+)", (PRODUCT / "12-PR-ISSUE-TRACEABILITY.md").read_text()))
     assert not orphans, (
-        f"issues cited by the registry but absent from 12-PR-ISSUE-TRACEABILITY.md: "
+        f"issues cited by a model row but absent from 12-PR-ISSUE-TRACEABILITY.md: "
         f"{sorted(orphans, key=int)}. 12 owns the issue map; either it needs a refresh "
-        "or the registry is citing something that no longer belongs to a capability."
+        "or the row is citing something that no longer belongs to a capability."
     )
 
 
@@ -1740,7 +1753,7 @@ def test_cross_document_anchors_resolve():
 
 
 def test_registry_code_column_names_the_live_implementation():
-    """Every `.py` in a model doc's **Code:** header is in its registry Code cell.
+    r"""Every `.py` in a model doc's **Code:** header is in its registry Code cell.
 
     MODEL-MR-001's doc was corrected to say `lib.signals.evaluate_signal` is the
     production path while the registry row still listed only the class that
@@ -1753,6 +1766,27 @@ def test_registry_code_column_names_the_live_implementation():
     gate had nothing to match on. A gate keyed to a phrase only covers documents
     that happen to use it. This one is total -- the header is the doc's own claim
     about what code the model is, so the row must carry it.
+
+    Vacuous TWICE OVER until 2026-09-22, and fixing either half alone left it
+    green (DOC-60):
+
+    1. `` `([A-Za-z0-9_./]+\.py)` `` has no `:` in its class, so a backtick span
+       of the form `path.py:Symbol` did not match AT ALL and was skipped in
+       silence -- 25 of 26 header tokens matched, and the single miss was the
+       only one that disagreed with its row.
+    2. the comparison took the BASENAME and tested it as a SUBSTRING of the cell,
+       so even had the regex matched, `config.py` would have been satisfied by
+       the cell's entirely different `lib/strategies/config.py`.
+
+    The `found >= 8` tripwire is what made it feel safe: a corpus-wide count
+    satisfied by 25 unrelated paths says nothing about the one that matters. It
+    is replaced below by a per-document assertion, because the failure mode was
+    never "the parser matched nothing" -- it was "the parser matched everything
+    except the interesting case".
+
+    Underneath it sat a real disagreement: `lib/config.py:424` defines
+    `SignalConfig`, `lib/signals.py:15` imports it, MODEL-MR-001's header names
+    it, and the registry row listed a different `config.py` instead.
     """
     text = REGISTRY.read_text()
     code_cell = {}
@@ -1762,19 +1796,37 @@ def test_registry_code_column_names_the_live_implementation():
                 cells = [c.strip() for c in line.split("|")]
                 code_cell[cells[1]] = cells[5]
 
-    missing, found = [], 0
+    # `lib/config.py`, `lib/config.py:SignalConfig`, `lib/config.py:424` all
+    # match; the suffix is captured separately so a symbol-qualified pointer is
+    # checked as its path rather than skipped.
+    token = re.compile(r"`([A-Za-z0-9_./]+\.py)(?::([A-Za-z0-9_.]+))?`")
+
+    def cell_paths(cell: str) -> set[str]:
+        return {m.group(1) for m in token.finditer(cell)}
+
+    missing, checked = [], {}
     for doc in sorted((REPO / "docs" / "models").glob("MODEL-*.md")):
         mid, body = doc.stem, doc.read_text()
         if mid not in code_cell or "**Code:**" not in body:
             continue
         header = body.split("**Code:**", 1)[1].split("**Registry:**")[0]
-        for path in sorted(set(re.findall(r"`([A-Za-z0-9_./]+\.py)`", header))):
-            found += 1
-            if path.rsplit("/", 1)[-1] not in code_cell[mid]:
-                missing.append(f"{mid}: doc header names {path}; registry Code cell omits it")
-    assert found >= 8, (
-        f"only {found} header paths parsed -- the parser matched almost nothing, "
-        "so this test would pass no matter what the registry said."
+        named = {m.group(1) for m in token.finditer(header)}
+        checked[mid] = len(named)
+        in_cell = cell_paths(code_cell[mid])
+        for path in sorted(named - in_cell):
+            # Full path, not basename: `config.py` must not be answered by
+            # `lib/strategies/config.py`.
+            missing.append(
+                f"{mid}: doc header names `{path}`; registry Code cell names "
+                f"{sorted(in_cell) or 'no .py path at all'}"
+            )
+
+    assert checked, "no model doc has both a registry row and a **Code:** header"
+    silent = sorted(m for m, n in checked.items() if n == 0)
+    assert not silent, (
+        f"parsed zero header paths for {silent} -- a **Code:** header that names "
+        "no `.py` file makes this gate vacuous for that model, which is how the "
+        "regex defect hid. State the path or drop the row."
     )
     assert not missing, (
         f"registry Code cells disagree with their model docs: {missing}. "
@@ -2341,4 +2393,395 @@ def test_rec_cells_use_the_declared_vocabulary():
     assert not bad, (
         f"Rec values outside {sorted(allowed)}: {bad}. Put any qualifier in prose, "
         "not in the column a machine reads."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Line pointers. DOC-59.
+#
+# Round 16 inserted 38 lines into `gcp/weekend_review.py` and updated none of
+# the references below it, so MODEL-WEEK-001's entry-point table named lines
+# that no longer held the symbol. That became two of the next review's five
+# findings -- drift found by a reviewer reading prose, which is the slowest
+# and least reliable way to find it.
+#
+# A diff-based gate ("if the diff touches X, every doc naming X must be in the
+# diff") was considered and rejected: it needs a reliable merge base in CI and
+# it only ever catches the author's own commit. This one is content-based, so
+# it fails on drift from any source, on every run.
+# ---------------------------------------------------------------------------
+
+#: `` `symbol` (`:123`) `` -- a backticked symbol followed by a bare line ref.
+_SYMBOL_POINTER = re.compile(r"`([A-Za-z_][\w.]*)`\s*\(`:(\d+)`\)")
+
+#: any backtick-opened `.py` path, used to resolve a bare `:N` to a file.
+_PY_MENTION = re.compile(r"`([\w/]+\.py)")
+
+#: how far from the cited line the symbol may have moved before it is drift.
+#: 3 absorbs a decorator or a wrapped signature; 10 was enough to hide the
+#: weekend-review shift, so the window must stay small enough to catch it.
+_POINTER_SLACK = 3
+
+
+def _defines(sym: str, line: str) -> bool:
+    """True if `line` is where `sym` comes into existence in a module.
+
+    A def, a class, or a module- or class-level assignment. Deliberately does
+    NOT match a bare mention, because a mention is what let an unrelated file
+    answer a stale pointer.
+    """
+    return bool(
+        re.match(rf"\s*(?:async\s+def|def|class)\s+{re.escape(sym)}\b", line)
+        or re.match(rf"\s*{re.escape(sym)}\s*(?::[^=]+)?=[^=]", line)
+    )
+
+
+def _pointer_candidates(body: str, at: int) -> list[str]:
+    """Files a bare `:N` at offset `at` could be pointing into, best first.
+
+    Nearest PRECEDING `.py` mention wins, then the `**Code:**` header. Both
+    halves are load-bearing, and each was measured wrong on its own:
+
+    * header-only reports `MODEL-BRIEF-001: _resolve_signal_status (:1767)` as
+      drift. It is CORRECT, at `gcp/premarket_brief.py:1767` -- a file that
+      doc's header does not name. A false positive on a true pointer.
+    * "any `.py` the doc mentions anywhere" reports MODEL-WEEK-001's
+      `format_discord_message (:103)` as fine, because the doc also cites
+      `tests/gcp/test_weekend_review_score_labels.py`, which happens to
+      mention that symbol near ITS line 103. Green on the drift it exists to
+      catch -- the same shape as DOC-41, DOC-45 and DOC-60.
+
+    Reading the pass/fail COUNT separated neither of them. Reading which file
+    answered each pointer separated both.
+    """
+    out = [m.group(1) for m in _PY_MENTION.finditer(body) if m.start() < at]
+    out.reverse()
+    if "**Code:**" in body:
+        header = body.split("**Code:**", 1)[1].split("**Registry:**")[0]
+        out += _PY_MENTION.findall(header)
+    seen, keep = set(), []
+    for p in out:
+        # Test files are excluded. A model doc's bare `:N` never means a line
+        # in the suite that tests the module, and a doc that really means one
+        # must write the path out.
+        #
+        # This was load-bearing against an earlier draft of this gate, which
+        # accepted a MENTION: with `tests/` in the list, re-introducing the real
+        # `format_discord_message (:103)` drift stayed GREEN, answered at line
+        # ~103 of the test file. Once `_defines` replaced "mentions" the same
+        # mutation went red with or without this exclusion -- a test file that
+        # merely imports a symbol does not define it. Kept because a test CAN
+        # define a same-named local helper, but it is now a second line of
+        # defence, not the fix. Saying which is the point: a comment that
+        # describes the previous version's measurement is how this PR's
+        # findings keep being generated.
+        if p.startswith("tests/"):
+            continue
+        if p not in seen and (REPO / p).is_file():
+            seen.add(p)
+            keep.append(p)
+    return keep
+
+
+def test_symbol_anchored_line_pointers_resolve():
+    """`` `sym` (`:N`) `` in a model doc must find `sym` at or near line N.
+
+    Measured 2026-09-22 across all 15 model docs: 29 such pointers, 3 stale,
+    0 unresolvable. All three were real drift, and only two of them had been
+    filed by review:
+
+        MODEL-EARN-002  `has_sufficient_history` (`:152`)  really :143
+        MODEL-WEEK-001  `main`                  (`:163`)  really :294
+        MODEL-WEEK-001  `format_discord_message` (`:103`)  really :214
+
+    Scope and sensitivity, stated rather than implied. This PR's recurring
+    defect is gates that read as though they check more than they do.
+
+    * **30 of 33** pointers are in scope. The other three are call sites and
+      values rather than definitions -- `earnings_date` (a column), `None` (a
+      return value) and `fetch_minute_data` (called in a file that imports it,
+      defined in one this doc does not cite). All three were checked by hand
+      and all three are CORRECT, so the exclusion costs nothing here; they are
+      named in the assertion message rather than dropped, so a reader can see
+      what is not covered.
+    * **Sensitivity is exactly `_POINTER_SLACK`.** Mutation-tested: with the
+      slack at 3 the real 111-line drift goes red; widened to 150 the same
+      drift passes. The constant is the gate, and a generous one would be
+      decorative.
+    * **Bare `` `:A-B` `` ranges are not covered at all** -- 93 of them. See
+      `test_explicit_path_line_pointers_are_within_their_file` for why
+      resolving them by proximity produces false positives rather than
+      findings, and what to write instead.
+    * **Bounds only, within the owning file.** A pointer that has slid onto
+      different code in the same module, by less than the slack, passes.
+    """
+    stale, checked, unresolved, unanchored = [], 0, [], []
+    for doc in sorted((REPO / "docs" / "models").glob("MODEL-*.md")):
+        body = doc.read_text()
+        for m in _SYMBOL_POINTER.finditer(body):
+            sym, line = m.group(1).split(".")[-1], int(m.group(2))
+            cands = _pointer_candidates(body, m.start())
+            if not cands:
+                unresolved.append(f"{doc.name}: `{sym}` (`:{line}`) names no readable .py file")
+                continue
+            checked += 1
+            word = re.compile(rf"\b{re.escape(sym)}\b")
+
+            # Pick the file FIRST -- the nearest cited source that DEFINES this
+            # symbol -- then check the line in that file and nowhere else.
+            # Two deliberate choices, each measured:
+            #
+            # * "defines", not "mentions". Mentions made an unrelated file
+            #   answer a stale pointer. It also scopes the gate to code
+            #   pointers: `` `earnings_date` (`:155`) `` names a COLUMN and
+            #   `` returns `None` (`:233`) `` names a return VALUE -- neither
+            #   is a symbol with a definition line, and asking where they are
+            #   defined produces noise, not drift.
+            # * no fall-through on a line miss. Falling through is what turns
+            #   "this pointer is stale" into "some other file happened to
+            #   mention the word".
+            owner, src = None, []
+            for path in cands:
+                lines = (REPO / path).read_text().split("\n")
+                if any(_defines(sym, l) for l in lines):
+                    owner, src = path, lines
+                    break
+            if owner is None:
+                unanchored.append(f"{doc.name}: `{sym}` (`:{line}`)")
+                checked -= 1
+                continue
+
+            lo = max(0, line - 1 - _POINTER_SLACK)
+            if not any(word.search(l) for l in src[lo:line + _POINTER_SLACK]):
+                real = [
+                    f"{owner}:{i}"
+                    for i, l in enumerate(src, 1)
+                    if re.match(rf"\s*(?:async def|def|class)\s+{re.escape(sym)}\b", l)
+                ]
+                stale.append(
+                    f"{doc.name}: `{sym}` (`:{line}`) -- {sym!r} is not within "
+                    f"{_POINTER_SLACK} lines of {line} in {owner}"
+                    + (f"; defined at {real}" if real else "")
+                )
+
+    assert not unresolved, (
+        f"pointers with no file to resolve against: {unresolved}. A bare `:N` "
+        "is only meaningful beside a path; name one or write the path out."
+    )
+    # Reported, not silently dropped: a pointer whose symbol has no definition
+    # line is out of scope, and the count is how a reader tells whether this
+    # gate covers the document they care about.
+    assert checked >= 24, (
+        f"only {checked} of {checked + len(unanchored)} symbol-anchored pointers "
+        f"resolve to a defined symbol (was 30 of 33 on 2026-09-22); "
+        f"out of scope: {unanchored}. If that number has fallen, the regex or "
+        "the doc convention changed and this gate measures less than it reports."
+    )
+    assert not stale, (
+        f"model docs cite lines that no longer hold the symbol: {stale}. "
+        "Inserting lines into a module invalidates every pointer below the "
+        "insertion; that is how DOC-59 reached review twice."
+    )
+
+
+def test_explicit_path_line_pointers_are_within_their_file():
+    """`` `path.py:N` `` and `` `path.py:A-B` `` must land inside that file.
+
+    Only pointers that NAME their file are checked. A bare `` `:A-B` `` range
+    is deliberately excluded, and the exclusion is the finding: nearest-
+    preceding resolution works for `` `sym` (`:N`) `` and does NOT work for
+    ranges, because in a table the nearest preceding path is usually a
+    different column's. Measured -- it called all three of these drift, and all
+    three pointers are correct:
+
+        MODEL-BRIEF-001 `:1816-1817`  resolved to lib/config.py (1096 lines);
+                                      really gcp/premarket_brief.py:1817
+        MODEL-EARN-001  `:481-482`    resolved to gcp/refresh_earnings_views.py
+        MODEL-WEEK-001  `:214-292`    resolved to the doc's cited TEST file
+
+    So the 93 bare ranges in `docs/models/` have no gate. Guessing a file for
+    them produces false positives, and a gate that cries wolf gets read past --
+    which is how `2385c240` happened. The remedy is a documentation convention,
+    not a cleverer parser: write the path when the pointer is not adjacent to
+    one.
+
+    This check is bounds-only even where it applies. A pointer that has slid
+    onto different code inside the same file passes, and nothing here claims
+    otherwise.
+    """
+    bad, checked = [], 0
+    ptr = re.compile(r"`([\w/]+\.py):(\d+)(?:-(\d+))?`")
+    for doc in sorted((REPO / "docs" / "models").glob("MODEL-*.md")):
+        for m in ptr.finditer(doc.read_text()):
+            path, lo, hi = m.group(1), int(m.group(2)), int(m.group(3) or m.group(2))
+            f = REPO / path
+            if not f.is_file():
+                continue  # dead paths are test_doc_pointers_are_all_validatable's
+            checked += 1
+            n = len(f.read_text().split("\n"))
+            if hi > n or lo > hi or lo < 1:
+                bad.append(f"{doc.name}: `{path}:{m.group(2)}"
+                           f"{'-' + m.group(3) if m.group(3) else ''}` but {path} has {n} lines")
+    assert checked >= 70, (
+        f"only {checked} explicit path:line pointers resolved to a readable file, "
+        "was 83 on 2026-09-22. A sharp fall means the convention changed and this "
+        "gate is checking less than it reports."
+    )
+    assert not bad, f"line pointers outside their file: {bad}"
+
+
+# ---------------------------------------------------------------------------
+# Issue counts. DOC-63.
+#
+# Five totals existed on 2026-09-22 and no two agreed: 02's summary column
+# 121, its detail blocks 123, the anchor slugs those blocks link to 127, the
+# rows behind those anchors 131, and 12's severity table 121.
+#
+# `test_cross_document_anchors_resolve` could not catch it -- it checks that a
+# fragment RESOLVES, never that the displayed count matches the `-N-open` in
+# the slug it resolves to. That gap creates pressure toward the wrong fix:
+# renaming a heading breaks the anchor, and the smallest green-making edit is
+# to change the slug and leave the number, which is what `2385c240` did.
+# ---------------------------------------------------------------------------
+
+CATALOG = REPO / "docs" / "product" / "02-FEATURE-CATALOG.md"
+TRACE = REPO / "docs" / "product" / "12-PR-ISSUE-TRACEABILITY.md"
+
+
+def _catalog_counts() -> tuple[dict[str, str], dict[str, tuple[str, str | None]]]:
+    """(summary column, detail block) counts per capability, as written."""
+    summary, detail, cur = {}, {}, None
+    for line in CATALOG.read_text().split("\n"):
+        m = re.match(r"\| \[(FEAT-[A-Z]+-\d+)\]\(#", line)
+        if m:
+            summary[m.group(1)] = line.split("|")[10].strip()
+            continue
+        m = re.match(r"^#+\s+(FEAT-[A-Z]+-\d+)", line)
+        if m:
+            cur = m.group(1)
+            continue
+        m = re.match(r"\| Open issues \| (\d+) .*?12-PR-ISSUE-TRACEABILITY\.md(#\S*?)?\)", line)
+        if m and cur:
+            in_slug = re.search(r"-(\d+)-open$", m.group(2) or "")
+            detail[cur] = (m.group(1), in_slug.group(1) if in_slug else None)
+    return summary, detail
+
+
+def _trace_rows() -> dict[str, list[str]]:
+    """capability -> the Sev cell of each issue row under its heading."""
+    lines = TRACE.read_text().split("\n")
+    heads = [
+        (i, m.group(1))
+        for i, l in enumerate(lines)
+        if (m := re.match(r"^### (FEAT-[A-Z]+-\d+) — .*? \(\d+ open\)\s*$", l))
+    ]
+    out: dict[str, list[str]] = {}
+    for i, fid in heads:
+        end = len(lines)
+        for j in range(i + 1, len(lines)):
+            if re.match(r"^#{2,3}\s", lines[j]):
+                end = j
+                break
+        out[fid] = [
+            m.group(1).strip()
+            for l in lines[i + 1:end]
+            if (m := re.match(r"^\| \[(?:solyra)?#\d+\]\([^)]+\) \| ([^|]+?) \|", l))
+        ]
+    return out
+
+
+def _trace_sections() -> dict[str, tuple[str, int]]:
+    """capability -> (count claimed by its heading, rows actually present)."""
+    lines = TRACE.read_text().split("\n")
+    heads = [
+        (i, m.group(1), m.group(2))
+        for i, l in enumerate(lines)
+        if (m := re.match(r"^### (FEAT-[A-Z]+-\d+) — .*? \((\d+) open\)\s*$", l))
+    ]
+    out = {}
+    for n, (i, fid, claimed) in enumerate(heads):
+        end = len(lines)
+        for j in range(i + 1, len(lines)):
+            if re.match(r"^#{2,3}\s", lines[j]):
+                end = j
+                break
+        rows = sum(1 for l in lines[i + 1:end] if re.match(r"^\| \[(?:solyra)?#\d+\]", l))
+        out[fid] = (claimed, rows)
+    return out
+
+
+def test_issue_counts_agree_across_layers():
+    """One number per capability, in all five places it is written down.
+
+    Summary cell == detail cell == the `-N-open` in the anchor == the `(N
+    open)` in the heading that anchor resolves to == the rows under it.
+
+    What this gate does NOT check, because CI has no network: whether those
+    rows match the repository. On 2026-09-22 they did not -- 16 issues listed
+    as open were closed and 13 open ones had no row at all, including #1154,
+    filed by this PR two rounds earlier and cited from MODEL-QUAL-001 without
+    a row ever being added. Reconciling the five layers to each other WITHOUT
+    that refresh would have made them agree on a wrong number, which is worse
+    than visibly disagreeing. `12`'s maintenance procedure owns the refresh;
+    this owns the arithmetic.
+    """
+    summary, detail = _catalog_counts()
+    trace = _trace_sections()
+
+    assert len(summary) >= 20, f"only {len(summary)} summary rows parsed"
+    assert len(trace) >= 14, f"only {len(trace)} traceability sections parsed"
+
+    bad = []
+    for fid, (shown, in_slug) in sorted(detail.items()):
+        if summary.get(fid) != shown:
+            bad.append(f"{fid}: summary table says {summary.get(fid)}, its own detail block says {shown}")
+        if in_slug is not None and in_slug != shown:
+            bad.append(f"{fid}: detail block shows {shown} but links to an anchor saying {in_slug}")
+        if fid in trace:
+            claimed, rows = trace[fid]
+            if claimed != shown:
+                bad.append(f"{fid}: 02 says {shown}, 12's heading says {claimed}")
+            if str(rows) != claimed:
+                bad.append(f"{fid}: 12's heading says {claimed}, {rows} rows follow it")
+        elif in_slug is not None:
+            bad.append(f"{fid}: 02 links to a 12 section that does not exist")
+    assert not bad, (
+        "open-issue counts disagree across the documents that carry them: "
+        + "; ".join(bad)
+        + ". Five different totals existed before this gate; changing one place "
+        "and not the others is how."
+    )
+
+
+def test_severity_table_totals_the_rows_it_summarises():
+    """12's severity distribution must add up to the rows in 12.
+
+    It said 121 while 131 rows existed. A table nothing recomputes drifts from
+    the thing it describes, and a bolded **Total** reads as authoritative.
+    """
+    text = TRACE.read_text()
+    assert "| Severity | Count |" in text, "the severity table is gone"
+    body = text.split("| Severity | Count |", 1)[1].split("\n\n", 1)[0]
+    rows = dict(re.findall(r"^\| \*{0,2}([\w ]+?)\*{0,2} \| \*{0,2}(\d+)\*{0,2} \|$", body, re.M))
+    claimed = rows.pop("Total", None)
+    assert claimed is not None, f"the severity table has no Total row: {body}"
+
+    # Only the `Issue | Sev | Title` tables under a `### FEAT-` heading. A
+    # file-wide scan also swept the PR-lineage tables, whose first cell is a
+    # pull-request link of the same shape.
+    tally: dict[str, int] = {}
+    for sevs in _trace_rows().values():
+        for sev in sevs:
+            tally[sev] = tally.get(sev, 0) + 1
+
+    assert sum(tally.values()) == int(claimed), (
+        f"severity table totals {claimed}; {sum(tally.values())} issue rows exist"
+    )
+    mismatched = {
+        sev: (rows.get(sev), n) for sev, n in sorted(tally.items())
+        if rows.get(sev) != str(n)
+    }
+    assert not mismatched, (
+        f"severity table rows disagree with the issue rows {{severity: (table, actual)}}: "
+        f"{mismatched}"
     )

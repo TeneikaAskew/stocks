@@ -293,29 +293,39 @@ LISTED_HEADER = "| Scheduler | Cron (`America/New_York`) | Job | Serves |"
 EXCLUDED_HEADER = "| Scheduler | Job | Why it is not model-bearing |"
 
 
-def excluded_job_cells() -> dict[str, set[str]]:
-    """scheduler -> the job names its exclusion row CLAIMS.
+def excluded_job_cells() -> list[tuple[set[str], set[str]]]:
+    """One (schedulers, claimed jobs) pair PER ROW of the exclusion table.
 
     The second column, which nothing read until 2026-09-22 and which was wrong
     on 12 of 21 rows. `registry_tables()` deliberately parses only the first
     cell (see its comment), so this is a separate pass rather than a widening
     of that one -- a name in a later cell must never make a scheduler count as
     classified.
+
+    **Returns rows, not a flattened `scheduler -> claimed` map.** It returned
+    the map until 2026-09-22, and the grouping it discarded is load-bearing:
+    three schedulers share one row naming three jobs (`news-sentiment-hourly`,
+    `news-sentiment-earnings-0600`, `news-topics-hourly`). Flattened, each
+    scheduler's `real` is a singleton against that three-job claim, so the only
+    comparison that type-checks is a SUBSET test -- which is exactly the hole
+    DOC-61 describes. With the row intact, `real` is the union of what the
+    row's schedulers target and equality is both correct and strict.
     """
     text = (REPO / "docs" / "product" / "07-MODEL-REGISTRY.md").read_text()
     if EXCLUDED_HEADER not in text:
-        return {}
+        return []
     body = text.split(EXCLUDED_HEADER, 1)[1].split("\n\n", 1)[0]
-    out: dict[str, set[str]] = {}
+    out: list[tuple[set[str], set[str]]] = []
     for row in body.split("\n"):
         if not row.startswith("| `"):
             continue
         cells = row.split("|")
         if len(cells) < 4:
             continue
+        names = set(re.findall(r"`([\w-]+)`", cells[1]))
         claimed = set(re.findall(r"`([\w-]+)`", cells[2]))
-        for name in re.findall(r"`([\w-]+)`", cells[1]):
-            out[name] = claimed
+        if names:
+            out.append((names, claimed))
     return out
 
 
@@ -405,14 +415,24 @@ def main(argv: list[str]) -> int:
     # The Job column of the exclusion table, checked against what each scheduler
     # actually targets. Rows that group several schedulers must name every job
     # they target: `news-sentiment` stood for three different ones.
-    claims = excluded_job_cells()
+    # EQUALITY per row, not subset. `real <= claimed` until 2026-09-22 caught a
+    # MISSING job and never an EXTRA one, so a bogus `fred-rates` sitting beside
+    # the real `fetch-fred-rates` left this script at exit 0 while
+    # `test_exclusion_table_job_cells_match_deploy_sh` failed on the same text.
+    # The permissive surface was the one the registry tells reviewers to run.
+    # DOC-61 -- and the third consecutive round whose defect was "the other
+    # direction was never checked".
     wrong = []
-    for name, claimed in sorted(claims.items()):
-        if name not in scheds or not claimed:
+    for names, claimed in excluded_job_cells():
+        known = sorted(n for n in names if n in scheds)
+        if not known or not claimed:
             continue
-        real = {scheds[name][1]}
-        if not real <= claimed:
-            wrong.append(f"{name}: row says {sorted(claimed)}, deploy.sh says {sorted(real)}")
+        real = {scheds[n][1] for n in known}
+        if real != claimed:
+            wrong.append(
+                f"{', '.join(known)}: row says {sorted(claimed)}, "
+                f"deploy.sh says {sorted(real)}"
+            )
     for w in wrong:
         print(f"WRONG JOB CELL: {w}", file=sys.stderr)
 
