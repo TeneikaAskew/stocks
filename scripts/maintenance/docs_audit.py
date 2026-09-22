@@ -4179,6 +4179,10 @@ def tag_attribute_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
 def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[dict]:
     out = []
     lines = text.split("\n")
+    # The SAME builder the dead-link scan uses, so the fence, comment,
+    # code-span and paragraph-interrupt exclusions apply here without any of
+    # them being restated. See the reference-use pass below.
+    _ref_defs = reference_definitions(lines)
     # --check gates on these findings, so a document DEMONSTRATING what a
     # blocking citation looks like failed the audit over its own example. The
     # link, heading and marker checks already skip fenced lines.
@@ -4370,6 +4374,49 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                             "severity": "P2"})
             elif st["state"] == "closed":
                 reason = st.get("reason") or "completed"
+                out.append({"check": "closed-issue", "doc": doc, "line": n,
+                            "detail": f"{label} is CLOSED ({reason}) but cited "
+                                      "as live work",
+                            "severity": "P1" if reason != "not_planned" else "P2",
+                            "ref": f"{repo}#{num}", "reason": reason})
+        # Reference-style citations: `Blocked by [#1][issue]` with `[issue]:`
+        # and the URL further down. That renders as a clickable issue link,
+        # and neither half carries both pieces -- the cue line has no URL and
+        # the definition line has no cue -- so a closed issue cited the
+        # standard CommonMark way passed the audit clean. The SAME builder
+        # the dead-link scan uses, rather than a second copy of the rules.
+        # Codex filed it twice on the Node twin (solyra#69).
+        for u_at, u_end, u_label in reference_uses(scan):
+            target = _ref_defs.get(_ref_key(u_label))
+            if target is None:
+                continue
+            # The destination as a READER resolves it, in the order every
+            # other destination here is read in.
+            dest = decode_char_refs(unescape_markdown(target[0]))
+            hit = ISSUE_URL_RE.search(dest)
+            if hit is None:
+                continue
+            r_start = _src_at(scan_map, u_at)
+            r_end = _src_at(scan_map, u_end)
+            if any(lo <= r_start < hi for lo, hi in hidden):
+                continue
+            repo, num = hit.group("repo").lower(), int(hit.group("num"))
+            # One citation, however many spellings of it share the clause.
+            c_lo, c_hi = clause_bounds(line, r_start, r_end)
+            if any(u_repo == repo and u_num == num and c_lo <= u_at2 < c_hi
+                   for u_at2, u_repo, u_num in qual_here):
+                continue
+            if not cites_live_work(visible, r_start, r_end):
+                continue
+            is_pr = hit.group("kind").lower() == "pull"
+            st = states.get(repo, {}).get(num)
+            label = f"{repo}#{num}" + (" (PR)" if is_pr else "")
+            if st is None:
+                out.append({"check": "closed-issue", "doc": doc, "line": n,
+                            "detail": f"{label} could not be resolved",
+                            "severity": "P2"})
+            elif st["state"] == "closed":
+                reason = st.get("reason") or ("closed" if is_pr else "completed")
                 out.append({"check": "closed-issue", "doc": doc, "line": n,
                             "detail": f"{label} is CLOSED ({reason}) but cited "
                                       "as live work",
@@ -4696,6 +4743,171 @@ def _refdef_span_hidden(lines: list[str],
         for lo, hi in code_spans(line) + wrapped.get(i, []))
 
 
+def reference_uses(text: str):
+    """Reference-style link USES in one line: `[t][label]`, `[label][]`, `[label]`.
+
+    Yielded as `(at, end, label)` with the offsets of the WHOLE use, because
+    that is where a reader sees the citation and what every gate around it
+    indexes.
+
+    The dead-link scan deliberately does NOT check uses -- measured on this
+    corpus, 204 bracket pairs against 1 definition, nearly all of them
+    issue-title tags like `[P0][Replay]`, and checking them produced 79
+    fabricated findings. That reasoning does not carry to the blocker scan: a
+    use is acted on there ONLY when its label resolves to a definition whose
+    destination is an issue URL, and a title tag resolves to nothing. Ported
+    from the Node twin (solyra#69).
+    """
+    i = 0
+    while i < len(text):
+        if text[i] != "[" or is_escaped(text, i):
+            i += 1
+            continue
+        close = _label_close(text, i)
+        if close == -1:
+            i += 1
+            continue
+        after = text[close + 1] if close + 1 < len(text) else ""
+        # An INLINE link is not a reference use: without this, `[issue](x.md)`
+        # reads as a shortcut use of `issue` and invents a citation the
+        # document does not make.
+        #
+        # The `:` half is NOT pinned by a test, and saying so is the honest
+        # version: a definition is not a use of itself, but every input that
+        # reaches it (`[g]: <url> "still open"`, the only definition shape
+        # carrying a cue) is already collapsed to one finding by the clause
+        # dedup, so no test can distinguish it. Kept because reading a
+        # definition as a use is wrong about the grammar rather than merely
+        # redundant.
+        if after in ("(", ":"):
+            i = close + 1
+            continue
+        label = text[i + 1:close]
+        end = close + 1
+        if after == "[":
+            close2 = _label_close(text, close + 1)
+            if close2 == -1:
+                i = close + 1
+                continue
+            second = text[close + 2:close2]
+            # FULL form takes the second label; COLLAPSED (`[label][]`) keeps
+            # the first, which is what CommonMark resolves it by.
+            if second.strip():
+                label = second
+            end = close2 + 1
+        yield i, end, label
+        i = end
+
+
+def reference_definitions(lines: list[str]) -> dict[str, tuple[str, int]]:
+    """Every reference definition in the document, keyed by its normalised label.
+
+    ONE implementation, because two consumers now ask the same question and a
+    second copy is how the two would drift: the dead-link scan validates a
+    definition's destination, and the blocker scan resolves a reference USE to
+    see whether it cites an issue. A definition is registered only where
+    CommonMark registers one, and every exclusion below is a case where it
+    does not. Ported from the Node twin (solyra#69).
+    """
+    fenced = (fenced_lines(lines) | indented_code_lines(lines)
+              | raw_html_block_lines(lines) | front_matter_lines(lines))
+    commented = comment_spans(lines)
+    wrapped_code = code_span_lines(lines, fenced)
+    # Reference-style Markdown: `[guide][g]` with `[g]: docs/guide.md` further
+    # down. Neither shape is an inline link, so a broken reference link -- the
+    # form CommonMark calls standard and readers see as an ordinary link --
+    # produced a clean audit. The DEFINITION's destination is validated exactly
+    # as an inline link's is. A footnote (`[^1]: ...`) is excluded: it defines
+    # a note, not a destination. A
+    # A use is excluded too -- see REF_USE_RE for the measurement that says
+    # bracketed prose in this corpus cannot be told apart from one.
+    ref_defs: dict[str, tuple[str, int]] = {}
+    # And only where a definition may BEGIN. CommonMark does not let a
+    # definition interrupt a paragraph, so `paragraph` over `[g]: missing.md`
+    # renders both lines as prose and registers no reference at all -- yet
+    # this loop validated the second line and emitted a gating dead-link
+    # finding for text that produces no link. `heading_anchors` has applied
+    # the rule since the round it was raised; this half of the same rule did
+    # not, which is the two-implementations shape again. Consecutive
+    # definitions still count: a block of them is one run, so each accepted
+    # definition opens the line after it.
+    _def_starts = {lo for lo, _ in _paragraph_blocks(lines, fenced)}
+    _def_seen: set[int] = set()
+    for n, line in enumerate(lines, 1):
+        if n - 1 in fenced or (n - 1) in commented and any(
+                a == 0 for a, _ in commented[n - 1]):
+            continue
+        # A definition-shaped line inside a code span is an EXAMPLE of one, not
+        # a definition. The single-line form cannot match anyway -- the opening
+        # backtick sits where `^ {0,3}\[` needs a bracket -- but a span opened
+        # on an earlier line covers this one whole, and `[g]: missing.md`
+        # displayed inside such a span was validated as a live destination.
+        # Same mechanism the inline-link pass below already excludes.
+        if _refdef_span_hidden(lines, wrapped_code, n - 1):
+            continue
+        # A definition inside a blockquote still defines: `> [g]: docs/g.md`
+        # renders as a working reference for uses inside that quote. The
+        # anchored pattern saw `>` where it needs a bracket, so every quoted
+        # definition went unchecked -- and a quoted use resolving to a dead
+        # path is exactly as broken as an unquoted one.
+        line = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
+        # A LIST MARKER is a container prefix too: `- [g]: missing.md` is the
+        # first content of an item, and CommonMark resolves a use of `[g]`
+        # inside that item as a clickable link. The anchored pattern saw the
+        # marker where it needs a bracket, so such a definition went unparsed
+        # -- and because reference USES are deliberately not scanned, its
+        # broken destination produced no finding at all.
+        line = _LIST_MARKER_RE.sub("", line, count=1)
+        if not ((n - 1) in _def_starts or (n - 2) in _def_seen):
+            continue
+        rm = REF_DEF_RE.match(line)
+        # The REMAINDER has to be a definition too. A prefix match accepted
+        # `[g]: missing.md nonsense`, which CommonMark renders as ordinary
+        # text -- no definition, no link -- and reported its destination as a
+        # gating dead link for something no reader can click.
+        if rm is not None and not REF_DEF_TAIL_RE.match(line, rm.end()):
+            rm = None
+        # The destination may sit on the FOLLOWING line: `[guide]:` then
+        # `  missing.md` is a definition CommonMark resolves, and `[x][guide]`
+        # renders as a clickable link to it. A per-line pattern could not
+        # capture that, and because reference USES are deliberately not
+        # scanned, the broken destination produced no finding at all. The
+        # continuation is read through the same exclusions as any other line,
+        # and the finding is reported against the line the destination is on,
+        # which is where a fix goes. Ported from the Node twin (solyra#69).
+        label = rm.group("label") if rm else None
+        target = rm.group("target") if rm else None
+        dest_line = n
+        if rm is None:
+            head = REF_DEF_HEAD_RE.match(line)
+            j = n  # zero-based index of the NEXT line
+            if (head and j < len(lines) and j not in fenced
+                    and not (j in commented
+                             and any(a == 0 for a, _ in commented[j]))
+                    and not _refdef_span_hidden(lines, wrapped_code, j)):
+                cont = _BLOCKQUOTE_PREFIX_RE.sub("", lines[j], count=1)
+                dm = REF_DEF_CONT_RE.match(cont)
+                if dm:
+                    label, target, dest_line = head.group("label"), dm.group("target"), j + 1
+        # The FIRST definition wins, as Markdown renders it. Overwriting with
+        # the last meant `[g]: missing.md` followed by `[g]: good.md` rendered
+        # as a broken link while the audit validated only `good.md`.
+        if label is not None:
+            # Through _ref_key, like every other label site. This map was the
+            # third place keying a label its own way, so `[my ref]` and
+            # `[my   ref]` were stored as two definitions and the second --
+            # which CommonMark never resolves, the first wins -- was validated
+            # and reported dead. Found by sweeping for the pattern rather than
+            # by waiting for it to be reported a third time.
+            # The LAST line this definition occupied, so the two-line form
+            # opens the line after its destination rather than the line after
+            # its label.
+            _def_seen.add(dest_line - 1)
+            ref_defs.setdefault(_ref_key(label),
+                                (target.strip("<>"), dest_line))
+    return ref_defs
+
+
 def check_dead_links(doc: str, text: str, tracked: set[str],
                      root_files: set[str] | None = None,
                      base_exts: set[str] | None = None) -> list[dict]:
@@ -4924,98 +5136,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     # link between them. Codex filed it on the Node twin (solyra#69).
     wrapped_code = code_span_lines(lines, fenced)
 
-    # Reference-style Markdown: `[guide][g]` with `[g]: docs/guide.md` further
-    # down. Neither shape is an inline link, so a broken reference link -- the
-    # form CommonMark calls standard and readers see as an ordinary link --
-    # produced a clean audit. The DEFINITION's destination is validated exactly
-    # as an inline link's is. A footnote (`[^1]: ...`) is excluded: it defines
-    # a note, not a destination. A
-    # A use is excluded too -- see REF_USE_RE for the measurement that says
-    # bracketed prose in this corpus cannot be told apart from one.
-    ref_defs: dict[str, tuple[str, int]] = {}
-    # And only where a definition may BEGIN. CommonMark does not let a
-    # definition interrupt a paragraph, so `paragraph` over `[g]: missing.md`
-    # renders both lines as prose and registers no reference at all -- yet
-    # this loop validated the second line and emitted a gating dead-link
-    # finding for text that produces no link. `heading_anchors` has applied
-    # the rule since the round it was raised; this half of the same rule did
-    # not, which is the two-implementations shape again. Consecutive
-    # definitions still count: a block of them is one run, so each accepted
-    # definition opens the line after it.
-    _def_starts = {lo for lo, _ in _paragraph_blocks(lines, fenced)}
-    _def_seen: set[int] = set()
-    for n, line in enumerate(lines, 1):
-        if n - 1 in fenced or (n - 1) in commented and any(
-                a == 0 for a, _ in commented[n - 1]):
-            continue
-        # A definition-shaped line inside a code span is an EXAMPLE of one, not
-        # a definition. The single-line form cannot match anyway -- the opening
-        # backtick sits where `^ {0,3}\[` needs a bracket -- but a span opened
-        # on an earlier line covers this one whole, and `[g]: missing.md`
-        # displayed inside such a span was validated as a live destination.
-        # Same mechanism the inline-link pass below already excludes.
-        if _refdef_span_hidden(lines, wrapped_code, n - 1):
-            continue
-        # A definition inside a blockquote still defines: `> [g]: docs/g.md`
-        # renders as a working reference for uses inside that quote. The
-        # anchored pattern saw `>` where it needs a bracket, so every quoted
-        # definition went unchecked -- and a quoted use resolving to a dead
-        # path is exactly as broken as an unquoted one.
-        line = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
-        # A LIST MARKER is a container prefix too: `- [g]: missing.md` is the
-        # first content of an item, and CommonMark resolves a use of `[g]`
-        # inside that item as a clickable link. The anchored pattern saw the
-        # marker where it needs a bracket, so such a definition went unparsed
-        # -- and because reference USES are deliberately not scanned, its
-        # broken destination produced no finding at all.
-        line = _LIST_MARKER_RE.sub("", line, count=1)
-        if not ((n - 1) in _def_starts or (n - 2) in _def_seen):
-            continue
-        rm = REF_DEF_RE.match(line)
-        # The REMAINDER has to be a definition too. A prefix match accepted
-        # `[g]: missing.md nonsense`, which CommonMark renders as ordinary
-        # text -- no definition, no link -- and reported its destination as a
-        # gating dead link for something no reader can click.
-        if rm is not None and not REF_DEF_TAIL_RE.match(line, rm.end()):
-            rm = None
-        # The destination may sit on the FOLLOWING line: `[guide]:` then
-        # `  missing.md` is a definition CommonMark resolves, and `[x][guide]`
-        # renders as a clickable link to it. A per-line pattern could not
-        # capture that, and because reference USES are deliberately not
-        # scanned, the broken destination produced no finding at all. The
-        # continuation is read through the same exclusions as any other line,
-        # and the finding is reported against the line the destination is on,
-        # which is where a fix goes. Ported from the Node twin (solyra#69).
-        label = rm.group("label") if rm else None
-        target = rm.group("target") if rm else None
-        dest_line = n
-        if rm is None:
-            head = REF_DEF_HEAD_RE.match(line)
-            j = n  # zero-based index of the NEXT line
-            if (head and j < len(lines) and j not in fenced
-                    and not (j in commented
-                             and any(a == 0 for a, _ in commented[j]))
-                    and not _refdef_span_hidden(lines, wrapped_code, j)):
-                cont = _BLOCKQUOTE_PREFIX_RE.sub("", lines[j], count=1)
-                dm = REF_DEF_CONT_RE.match(cont)
-                if dm:
-                    label, target, dest_line = head.group("label"), dm.group("target"), j + 1
-        # The FIRST definition wins, as Markdown renders it. Overwriting with
-        # the last meant `[g]: missing.md` followed by `[g]: good.md` rendered
-        # as a broken link while the audit validated only `good.md`.
-        if label is not None:
-            # Through _ref_key, like every other label site. This map was the
-            # third place keying a label its own way, so `[my ref]` and
-            # `[my   ref]` were stored as two definitions and the second --
-            # which CommonMark never resolves, the first wins -- was validated
-            # and reported dead. Found by sweeping for the pattern rather than
-            # by waiting for it to be reported a third time.
-            # The LAST line this definition occupied, so the two-line form
-            # opens the line after its destination rather than the line after
-            # its label.
-            _def_seen.add(dest_line - 1)
-            ref_defs.setdefault(_ref_key(label),
-                                (target.strip("<>"), dest_line))
+    ref_defs = reference_definitions(lines)
     for label, (target, n) in ref_defs.items():
         # Not `partition("#")`: a reference definition bypasses `md_links`, so
         # it was the one destination still split before escapes and character

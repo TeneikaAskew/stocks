@@ -6585,6 +6585,58 @@ def test_the_github_host_boundary_belongs_to_the_url_scheme():
     assert ref("Blocked by github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
 
 
+def test_a_reference_style_blocker_citation_is_resolved():
+    """`Blocked by [#1][issue].` with `[issue]:` and the URL further down
+    renders as a clickable issue link, and NEITHER half carries both pieces:
+    the cue line has no URL and the definition line has no cue. So a closed
+    issue cited the standard CommonMark way passed the audit clean -- the
+    hiding direction. Codex filed it twice on the Node twin (solyra#69)."""
+    states = {"solyra": {1: {"state": "closed", "reason": "completed"}},
+              "stocks": {1: {"state": "open"}}}
+    url = "https://github.com/TeneikaAskew/solyra/issues/1"
+    D = f"\n\n[issue]: {url}\n"
+    ref = lambda doc: [f["ref"] for f in m.check_closed_issues("d.md", doc, states)]
+    # All three use forms CommonMark defines.
+    assert ref(f"Blocked by [#1][issue].{D}") == ["solyra#1"]
+    assert ref(f"Still blocked by [issue].{D}") == ["solyra#1"]
+    assert ref(f"Blocked by [issue][].{D}") == ["solyra#1"]
+
+
+def test_a_reference_use_that_resolves_to_nothing_is_not_a_citation():
+    """The dead-link scan deliberately does not check reference USES: measured
+    on this corpus, 204 bracket pairs against 1 definition, nearly all of them
+    issue-title tags like `[P0][Replay]`, and checking them produced 79
+    fabricated findings. That reasoning does not carry to the blocker scan
+    only because a use is acted on ONLY when its label resolves to a
+    definition whose destination is an issue URL."""
+    states = {"solyra": {1: {"state": "closed", "reason": "completed"}},
+              "stocks": {1: {"state": "open"}}}
+    url = "https://github.com/TeneikaAskew/solyra/issues/1"
+    D = f"\n\n[issue]: {url}\n"
+    ref = lambda doc: [f["ref"] for f in m.check_closed_issues("d.md", doc, states)]
+    assert ref(f"Blocked by [P0][Replay].{D}") == []
+    assert ref("Blocked by [#1][g].\n\n[g]: https://example.com/x\n") == []
+    # A definition inside a fence defines nothing, so the use resolves to
+    # nothing -- the same exclusions the dead-link scan applies, because it is
+    # now literally the same builder.
+    assert ref(f"Blocked by [#1][issue].\n\n```\n[issue]: {url}\n```\n") == []
+    # An INLINE link is not a reference use. The second spelling is the one
+    # that TESTS that: a shortcut `[issue]` reading of `[issue](README.md)`
+    # invents a citation the document does not make, while `[#1](url)` has a
+    # label that resolves to nothing either way.
+    assert ref(f"Blocked by [#1]({url}).{D}") == ["solyra#1"]
+    assert ref(f"Blocked by [issue](README.md).{D}") == []
+    # The cue rules are the URL pass's rules, and the clause decides, not the
+    # line -- `[#1][issue] is resolved.` ALONE would be stopped by the
+    # line-level precheck instead, so it tests nothing about the filter.
+    assert ref(f"Landed in [#1][issue].{D}") == []
+    assert ref(f"[#1][issue] is no longer blocking.{D}") == []
+    assert ref(f"Blocked by <!-- [#1][issue] -->.{D}") == []
+    assert ref(f"Still blocked by other work. [#1][issue] is resolved.{D}") == []
+    # The URL spelled out beside the reference is the same citation.
+    assert ref(f"Blocked by [#1][issue] {url}.{D}") == ["solyra#1"]
+
+
 def test_a_repository_qualified_shorthand_is_a_citation():
     """`Blocked by stocks#861` is a form GitHub renders as a link and this
     corpus uses, and it carries everything needed to resolve it -- the state
