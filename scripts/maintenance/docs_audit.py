@@ -306,7 +306,11 @@ MD_LINK_RE = re.compile(
     # structural class read the `]` as the label's end, so the link never
     # matched and a deleted target passed the audit.
     r"\[(?:\\.|[^\\\[\]]|\[(?:\\.|[^\\\[\]])*\])*\]\(\s*"
-    r"(?:<(?P<btarget>(?:&\#?[0-9A-Za-z]{1,32};|[^<>#])*)(?:#(?P<bfrag>[^>\s]+))?>"
+    # NO line endings. `<...>` may hold a space, which is why an author uses
+    # it, but CommonMark forbids a newline there -- so `[x](<missing\n.md>)`
+    # is literal text. The multiline pass matched it anyway and emitted a
+    # gating dead-link finding over something no reader can click.
+    r"(?:<(?P<btarget>(?:&\#?[0-9A-Za-z]{1,32};|[^<>#\r\n])*)(?:#(?P<bfrag>[^>\s]+))?>"
     # An ESCAPED hash is part of the PATH, not the fragment separator:
     # `[x](a\#b.md)` resolves to the tracked `a#b.md` and splitting first gave
     # the target `a\`. Consumed as a unit, like a character reference.
@@ -324,8 +328,13 @@ MD_LINK_RE = re.compile(
 # validated `docs/my`, so a tracked file was reported dead. The brackets are
 # part of the capture and `strip("<>")` at the call site removes them, as it
 # already did for the bare form.
+# The whitespace after the colon is OPTIONAL. CommonMark registers
+# `[g]:missing.md` and resolves `[x][g]` against it, but `\s+` skipped the
+# definition -- and because reference USES are deliberately not scanned, its
+# broken destination produced no finding at all. The head form below still
+# matches when nothing follows the colon, because `\S+` needs a character.
 REF_DEF_RE = re.compile(
-    r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:\s+(?P<target><[^>]*>|\S+)")
+    r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*(?P<target><[^>]*>|\S+)")
 # The same definition with its destination on the FOLLOWING line, which
 # CommonMark resolves and a per-line pattern cannot see. Split in two so the
 # continuation is read through the same exclusions as any other line.
@@ -561,7 +570,12 @@ def heading_slug(heading: str,
     # accepted. An AUTOLINK is not a tag: `## <https://example.com>` renders
     # as the URL and derives a real anchor from it, so only a tag NAME is
     # stripped, never a `<scheme:...>` or a bare `<` in prose.
-    s = re.sub(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>", "", s)
+    # Quoted attribute values may CONTAIN `>`. `[^<>]*` stopped at the one
+    # inside `data-x="a>b"` and left `b">` to be slugged as visible text, so
+    # `## <span data-x="a>b">Hello</span>` recorded `bhello` -- the valid
+    # fragment rejected and one the page does not expose accepted.
+    s = re.sub(r"</?[A-Za-z][A-Za-z0-9-]*"
+               r"""(?:\s(?:"[^"]*"|'[^']*'|[^<>"'])*)?/?>""", "", s)
     # Emphasis MARKUP only. Stripping every underscore turned `## API_FIELD`
     # into `apifield`, so a valid link to `#api_field` read as a dead anchor
     # AND an incorrect `#apifield` was accepted -- wrong in both directions.
@@ -1757,7 +1771,13 @@ def is_future_date(date: str, today: str) -> bool:
 # inside the quote, and SETUP.md and CLAUDE.md both use that shape. Seeing the
 # `>` instead of the fence marked none of the block as code, so links and
 # blocker citations in the sample were audited as live prose.
-_FENCE_RE = re.compile(r"^ {0,3}(?:> ?)*\s{0,3}(`{3,}|~{3,})(.*)$")
+# `\s{0,3}` counts a TAB as one character, but CommonMark expands it to four
+# columns -- so `\t```` is an indented code line, not a fence opener. Opening
+# on it held a false fence across live paragraphs and suppressed their
+# findings. The lead is captured instead and measured in columns by the
+# caller, which is the same rule indentedCodeLines and _list_content_col use.
+_FENCE_RE = re.compile(
+    r"^(?P<pre>[ \t]*)(?:> ?)*(?P<lead>[ \t]*)(?P<delim>`{3,}|~{3,})(?P<info>.*)$")
 _QUOTE_PREFIX_RE = re.compile(r"^ {0,3}((?:> ?)*)")
 # At least ONE marker, for STRIPPING the container. The counting pattern above
 # matches the empty prefix by design, so using it to strip also ate up to three
@@ -2252,15 +2272,19 @@ def _fenced_scan(lines: list[str], html: frozenset[int] | set[int]) -> set[int]:
             # a fence that outlived the block and swallowed every later link,
             # blocker, heading and marker as "code".
             if (m and i not in html
-                    and not (m.group(1)[0] == "`" and "`" in m.group(2))):
-                open_fence = m.group(1)
+                    and _column_width(m.group("pre")) <= 3
+                    and _column_width(m.group("lead")) <= 3
+                    and not (m.group("delim")[0] == "`"
+                             and "`" in m.group("info"))):
+                open_fence = m.group("delim")
                 open_depth = quote_depth(line)
                 open_list_col = _list_content_col(lines, i)
                 out.add(i)
             continue
         out.add(i)
-        if (m and m.group(1)[0] == open_fence[0]
-                and len(m.group(1)) >= len(open_fence) and not m.group(2).strip()):
+        if (m and m.group("delim")[0] == open_fence[0]
+                and len(m.group("delim")) >= len(open_fence)
+                and not m.group("info").strip()):
             open_fence = None
     return out
 
@@ -2501,7 +2525,11 @@ def front_matter_lines(lines: list[str]) -> set[int]:
     as a thematic break -- so this returns nothing rather than masking the
     whole document, which would hide every finding below it.
     """
-    if not lines or lines[0].strip() != "---":
+    # COLUMN ZERO. An indented `---` is a thematic break, not a front-matter
+    # opener, but trimming the line accepted it -- so every line to the next
+    # indented `---` was excluded as metadata and a rendered link between them
+    # passed the audit unchecked.
+    if not lines or lines[0].rstrip() != "---":
         return set()
     for i in range(1, len(lines)):
         if lines[i].strip() in ("---", "..."):
@@ -3789,6 +3817,12 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
                        + wrapped_code.get(n - 1, []))
         for m in HTML_HREF_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in href_hidden):
+                continue
+            # `\<a href="missing.md">` escapes the `<`, so CommonMark renders
+            # the tag as TEXT and there is no clickable link -- the Markdown
+            # pass has applied this check for rounds and the href pass did
+            # not, so the same escape produced a gating finding here.
+            if is_escaped(line, m.start()):
                 continue
             href = m.group("dq") or m.group("sq") or m.group("bare") or ""
             # The same unit-consuming split every other destination uses, so

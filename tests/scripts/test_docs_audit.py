@@ -6151,3 +6151,75 @@ def test_inline_content_ends_at_a_container_boundary():
     assert m._paragraph_blocks(["> a ` b", "c ` d"], set()) == [(0, 0), (1, 1)]
     # A CONTINUATION of an item carries no marker and stays in its block.
     assert m._paragraph_blocks(["- one", "  two"], set()) == [(0, 1)]
+
+
+def test_a_reference_definition_needs_no_space_after_its_colon(monkeypatch, tmp_path):
+    """CommonMark registers `[g]:missing.md` and resolves `[x][g]` against it,
+    but `\\s+` skipped the definition -- and because reference USES are
+    deliberately not scanned, its broken destination produced no finding."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    check = lambda text: [f["check"] for f in
+                          m.check_dead_links("d.md", text, {"d.md"})]
+    assert check("[g]:missing.md\n") == ["dead-link"]
+    assert check("[g]: missing.md\n") == ["dead-link"]
+    # A colon with NOTHING after it is still the two-line head form, not a
+    # definition in its own right.
+    assert check("[g]:\n\nmissing.md\n") == []
+
+
+def test_an_escaped_html_anchor_is_literal_text(monkeypatch, tmp_path):
+    """`\\<a href="missing.md">` escapes the `<`, so CommonMark renders the tag
+    as text and there is no clickable link. The Markdown pass has applied this
+    check for rounds; the href pass did not, so the same escape produced a
+    gating finding there."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    check = lambda text: [f["check"] for f in
+                          m.check_dead_links("d.md", text, {"d.md"})]
+    assert check('\\<a href="missing.md">x</a>\n') == []
+    assert check('<a href="missing.md">x</a>\n') == ["dead-link"]
+
+
+def test_a_fence_openers_indentation_is_measured_in_columns():
+    """CommonMark expands a tab to four columns, so `\\t```` is an indented
+    code line rather than a fence opener. Counting the tab as one of three
+    allowed characters opened a false fence that held across live paragraphs
+    and suppressed their findings."""
+    # The tab line opens nothing; the column-zero fence on line 2 opens one
+    # that runs to the end of the document, which is line 2 alone.
+    assert m.fenced_lines(["\t```", "x", "```"]) == {2}
+    # Three SPACES are still a legal opener, and four are indented code.
+    assert m.fenced_lines(["   ```", "x", "```"]) == {0, 1, 2}
+    assert m.fenced_lines(["    ```", "x", "```"]) == {2}
+
+
+def test_an_angle_bracket_destination_may_not_span_lines():
+    """`<...>` may hold a space, which is why an author reaches for it, but
+    CommonMark forbids a line ending there -- so `[x](<missing\\n.md>)` is
+    literal text. The multiline pass matched it and reported a destination
+    over something no reader can click."""
+    assert m.check_dead_links("d.md", "[x](<missing\n.md>)\n", {"d.md"}) == []
+    # On ONE line the space is still allowed, which is the form this exists for.
+    out = m.check_dead_links("d.md", "[x](<my missing.md>)\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+
+
+def test_front_matter_delimiters_sit_at_column_zero():
+    """An indented `---` is a thematic break, not a front-matter opener, but
+    trimming the line accepted it -- so every line to the next indented `---`
+    was excluded as metadata and a rendered link between them passed."""
+    assert m.front_matter_lines(["  ---", "[x](missing.md)", "  ---"]) == set()
+    out = m.check_dead_links("d.md", "  ---\n[x](missing.md)\n  ---\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+    # A real opener at column zero still delimits metadata.
+    assert m.front_matter_lines(["---", "a: 1", "---"]) == {0, 1, 2}
+
+
+def test_a_heading_tag_may_quote_a_greater_than_sign():
+    """`[^<>]*` stopped at the `>` inside `data-x="a>b"` and left `b">` to be
+    slugged as visible text, so the heading recorded `bhello` -- the valid
+    fragment rejected and one the page does not expose accepted."""
+    assert m.heading_slug('<span data-x="a>b">Hello</span>') == "hello"
+    assert m.heading_slug("Hello <em>world</em>") == "hello-world"
+    # An AUTOLINK is text, not a tag, and must survive -- the control from the
+    # round that shaped this strip.
+    assert m.heading_slug("<https://example.com>") != ""
