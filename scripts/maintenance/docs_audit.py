@@ -84,6 +84,7 @@ import argparse
 import bisect
 import datetime
 import fnmatch
+import functools
 import html
 import json
 import os
@@ -92,6 +93,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import unicodedata
 import urllib.parse
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -170,9 +172,32 @@ BLOCKING_CUE_RE = re.compile(
 # text that says the exact opposite. One adverb and one article, in that order
 # (`not yet an open issue`), and the whole thing stays anchored to the end of
 # the prefix so a negator elsewhere in the sentence cannot reach the cue.
+# CONTRACTIONS too. `isn't blocking release` says exactly what `is not
+# blocking release` says, and the negator list held only the spelled-out form
+# -- so the contracted sentence read as live work and a closed issue produced
+# a P1 whose own source line states the opposite. The apostrophe may be typed
+# or curly; a document written in either renders the same word. Codex filed it
+# on the Node twin (solyra#69); the same gap was live here.
 CUE_NEGATOR_RE = re.compile(
-    r"\b(?:not|non|never|no longer|without|un)[\s-]*(?:(?:yet|still|quite)[\s-]*)?"
+    r"\b(?:not|non|never|no longer|without|un|\w+n['\u2019]t)[\s-]*"
+    r"(?:(?:yet|still|quite)[\s-]*)?"
     r"(?:(?:an?|the)[\s-]*)?$", re.I)
+# `not only X but also Y` AFFIRMS X, and Codex filed a carve-out for it on the
+# Node twin (solyra#69), whose window admits any two `\w+` between negator and
+# cue. THIS pattern admits a fixed vocabulary instead -- one of
+# `yet|still|quite`, then an article -- so `not only ` never reaches a cue and
+# the carve-out would be code no test could remove. Probed rather than ported:
+# the mutation came back GREEN, which is what said the defect is not here.
+
+
+def _is_negated(prefix: str) -> bool:
+    """Does the text immediately before a cue invert it?
+
+    One predicate, so `has_blocking_cue` and `is_settled` cannot disagree
+    about what a negation is -- they already shared `CUE_NEGATOR_RE`, and a
+    rule that lives in two call sites grows two versions.
+    """
+    return bool(CUE_NEGATOR_RE.search(prefix))
 
 
 def has_blocking_cue(line: str) -> bool:
@@ -181,7 +206,7 @@ def has_blocking_cue(line: str) -> bool:
     True when at least ONE cue occurrence is not negated: a line may say one
     issue still blocks and another no longer does.
     """
-    return any(not CUE_NEGATOR_RE.search(line[:mm.start()])
+    return any(not _is_negated(line[:mm.start()])
                for mm in BLOCKING_CUE_RE.finditer(line))
 # Prose that says a citation is finished. Checked against the citation's own
 # clause, never the whole line: `docs/product/12-PR-ISSUE-TRACEABILITY.md:48`
@@ -204,7 +229,7 @@ def is_settled(clause: str) -> bool:
     True only when at least one settled cue is not negated: `not resolved` and
     `never merged` say the opposite of the word they contain.
     """
-    return any(not CUE_NEGATOR_RE.search(clause[:mm.start()])
+    return any(not _is_negated(clause[:mm.start()])
                for mm in SETTLED_CUE_RE.finditer(clause))
 # What bounds a clause: sentence punctuation, a semicolon, or a table-cell
 # edge. Not a comma -- the example above puts the closed and open halves in
@@ -326,6 +351,9 @@ _MD_DEST_ATOM_RE = re.compile(r"&\#?[0-9A-Za-z]{1,32};|\\.|[^()#\s]")
 # quote left the whole candidate unmatched, so the missing destination passed
 # the audit -- the hiding direction. Each of the three title forms consumes
 # escapes as units, exactly as the destination scan does.
+# The fragment of a bare destination. Named rather than compiled inside the
+# scan loop, so `_inline_link_end` asks the same pattern `md_links` does.
+_MD_FRAG_RE = re.compile(r"[^)\s]+")
 _MD_LINK_TAIL_RE = re.compile(
     r"""(?:\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"""
     r"""|\((?:\\.|[^)\\])*\)))?\s*\)""")
@@ -400,7 +428,7 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
             groups["target"] = text[at:stop]
             at = stop
             if at < hi and text[at] == "#":
-                frag = re.compile(r"[^)\s]+").match(text, at + 1, hi)
+                frag = _MD_FRAG_RE.match(text, at + 1, hi)
                 if frag is not None:
                     groups["frag"] = frag.group(0)
                     at = frag.end()
@@ -517,7 +545,20 @@ LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
 CODE_EXTS = {".py", ".ts", ".tsx", ".js", ".mjs", ".sql", ".sh", ".yml", ".yaml", ".json", ".md"}
 
 
+# A COMBINING MARK is part of the letter before it, not punctuation. An NFD
+# heading -- `Cafe` + U+0301 -- renders as `Café` and GitHub's identifier
+# keeps the mark, but `\w` does not match category M, so the slug came out
+# `cafe`: the working encoded fragment rejected AND a `#cafe` the page does
+# not expose accepted, wrong in both directions. Python's `re` has no
+# `\p{M}`, so the marks are tested by category; the cache keeps that off the
+# per-character path for the ASCII text that is almost all of it. Codex filed
+# it on the Node twin (solyra#69), where `\p{M}` says the same thing.
 _SLUG_STRIP_RE = re.compile(r"[^\w\s-]")
+
+
+@functools.lru_cache(maxsize=4096)
+def _is_combining(ch: str) -> bool:
+    return unicodedata.category(ch).startswith("M")
 # `## Install ##` renders as `Install`, and GitHub's anchor is `install`.
 # Passing `Install ##` to heading_slug recorded `install-`, so a valid link to
 # `#install` was reported dead. Raised on the Node twin (solyra#69).
@@ -579,6 +620,56 @@ def _balanced_close(text: str, at: int) -> int:
     return -1
 
 
+def _inline_link_end(text: str, at: int) -> int:
+    """Index just past the `)` of a VALID inline-link suffix at `at`, or -1.
+
+    `_balanced_close` alone answers a narrower question: it finds a matching
+    parenthesis, not a link. `## [x](foo bar)` and `## [x](foo "unclosed)`
+    both have one, and CommonMark renders each source literally -- so the
+    heading stripper removed a suffix that is VISIBLE text, recorded `x`, and
+    rejected a link to the real anchor while accepting a `#x` the page does
+    not expose. The destination and title rules live in the `md_links`
+    patterns; this shares them rather than restating them, so the two cannot
+    come to disagree about what a link is. Codex filed it on the Node twin
+    (solyra#69); the same hole was live here.
+    """
+    if at >= len(text) or text[at] != "(":
+        return -1
+    j = at + 1
+    while j < len(text) and text[j].isspace():
+        j += 1
+    angle = _MD_LINK_ANGLE_RE.match(text, j)
+    if angle:
+        j = angle.end()
+    else:
+        j = _bare_destination(text, j, len(text))
+        if j < len(text) and text[j] == "#":
+            frag = _MD_FRAG_RE.match(text, j + 1)
+            if frag:
+                j = frag.end()
+    tail = _MD_LINK_TAIL_RE.match(text, j)
+    return tail.end() if tail else -1
+
+
+def _label_close(text: str, at: int) -> int:
+    """Index of the `]` closing the `[` at `at`, honouring escapes, or -1.
+
+    `str.find("]")` stops at an ESCAPED bracket, so `## [Guide][my\\]ref]`
+    with a matching `[my\\]ref]: README.md` definition failed to resolve and
+    slugged as `guidemyref`, while the page exposes `guide`. The label walk
+    above this one already skipped escapes; this second scan did not.
+    """
+    j = at + 1
+    while j < len(text):
+        if text[j] == "\\":
+            j += 2
+            continue
+        if text[j] == "]":
+            return j
+        j += 1
+    return -1
+
+
 def _strip_heading_links(s: str, ref_labels: frozenset[str]) -> str:
     """A heading's visible text, with link syntax removed but labels kept.
 
@@ -625,13 +716,13 @@ def _strip_heading_links(s: str, ref_labels: frozenset[str]) -> str:
             continue
         label, k = s[i + 1:end], end + 1
         if k < n and s[k] == "(":
-            close = _balanced_close(s, k)
+            close = _inline_link_end(s, k)
             if close != -1:
                 out.append(label)
                 i = close
                 continue
         if k < n and s[k] == "[":
-            shut = s.find("]", k)
+            shut = _label_close(s, k)
             if shut != -1:
                 # A COLLAPSED reference (`[guide][]`) names itself.
                 # Internal whitespace COLLAPSED, as CommonMark collapses it
@@ -806,7 +897,9 @@ def heading_slug(heading: str,
     # tab recorded an unusable slug -- so a valid `#hello-world` link was a
     # gating dead anchor while the tab-bearing spelling nothing exposes was
     # accepted. Parity with the Node twin (solyra#69).
-    return re.sub(r"\s", "-", _SLUG_STRIP_RE.sub("", s))
+    return re.sub(r"\s", "-",
+                  _SLUG_STRIP_RE.sub(
+                      lambda m: m.group(0) if _is_combining(m.group(0)) else "", s))
 
 
 def _drop_spans(line: str, spans: list[tuple[int, int]]) -> str:
@@ -1000,7 +1093,8 @@ def html_anchors(lines: list[str]) -> set[str]:
 
     `id` exposes a fragment destination on any element. `name` does so only
     on an anchor: `<meta name="viewport">` is not a destination, and
-    recording it let a link to `#viewport` pass against nothing.
+    recording it let a link to `#viewport` pass against nothing. An ESCAPED
+    opener is not an element at all.
 
     A NARROWER mask than the heading scan's: a type-6 or type-7 block such as
     `<div id="x">` IS the anchor, so masking every HTML line would discard the
@@ -1026,10 +1120,28 @@ def html_anchors(lines: list[str]) -> set[str]:
         for i, line in enumerate(lines))
     out: set[str] = set()
     for tag in _TAG_OPEN_RE.finditer(joined):
+        # `\<div id="fake">` is TEXT. CommonMark renders the escaped `<`
+        # literally and creates no element, so there is nothing for `#fake` to
+        # reach -- but the scan parsed it like any other tag and registered the
+        # id, which made a link to a destination the document does not offer
+        # PASS. Documents that demonstrate tag syntax escape it exactly this
+        # way, so the invented anchors land in the docs most likely to be
+        # audited for them.
+        if is_escaped(joined, tag.start()):
+            continue
         name = _TAG_NAME_RE.match(tag.group(0))
         anchor = bool(name) and name.group(1).lower() == "a"
+        # The FIRST occurrence of a repeated attribute is the one that exists.
+        # HTML parsing drops the later duplicates, so `<div id="real"
+        # id="fake">` offers only `real` -- and recording both let a link to
+        # `#fake` pass the dead-anchor check against a destination the page
+        # does not have. Codex filed it on the Node twin (solyra#69).
+        seen: set[str] = set()
         for attr in _TAG_ATTR_RE.finditer(tag.group(0)):
             key = attr.group(1).lower()
+            if key in seen:
+                continue
+            seen.add(key)
             if key != "id" and not (key == "name" and anchor):
                 continue
             value = attr.group(2)
@@ -1060,7 +1172,16 @@ def decode_fragment(frag: str) -> str:
     # And character references: `#caf&eacute;` is how a link to `## Café` may
     # be written and it resolves, while comparing the encoded spelling against
     # the decoded slug reported it dead.
-    return decode_char_refs(urllib.parse.unquote(frag))
+    # And MARKDOWN ESCAPES, which the destination path has consumed for rounds
+    # and this had not: `[x](#foo\:bar)` reaches `id="foo:bar"`, and comparing
+    # the source spelling reported a working link as a gating dead anchor.
+    # Same order the destination uses, and the order RENDERING uses: escapes
+    # and references are resolved when the link is parsed, percent-decoding is
+    # the browser's and comes last. The reference pass used to run after
+    # `unquote`, which is the browser's step happening before the parser's.
+    # Codex filed the missing escape pass on the Node twin (solyra#69); the
+    # same gap was live here, and the order is now identical in both.
+    return urllib.parse.unquote(decode_char_refs(unescape_markdown(frag)))
 
 
 def split_outside_refs(text: str, delim: str) -> tuple[str, str | None]:
@@ -1365,8 +1486,30 @@ def load_registry(text: str) -> list[dict]:
     """
     rows: list[dict] = []
     in_registry = False
-    for raw in text.split("\n"):
+    all_lines = text.split("\n")
+    # A row SHOWN rather than declared is not a rule. The registry documents
+    # its own format, and every way of showing a sample row -- a fenced block,
+    # an indented sample, a raw-text `<pre>`, a comment -- was executed as live
+    # configuration: a fabricated missing-path finding, or worse, a
+    # classification silently applied to a real path. A heading-shaped line
+    # inside the same example could also switch the section off and drop every
+    # real row below it. The Node twin (solyra#69) grew these four one at a
+    # time; this collector had none of them.
+    example = (fenced_lines(all_lines) | commented_lines(all_lines)
+               | indented_code_lines(all_lines)
+               | raw_html_block_lines(all_lines, raw_text_only=True))
+    for i, raw in enumerate(all_lines):
+        if i in example:
+            continue
         line = raw.strip()
+        # A SETEXT heading ends the section too. Neither `Examples` nor its
+        # `--------` underline starts with `#`, so section mode stayed on and
+        # an illustrative table below it was executed as live classification.
+        # The heading is the line ABOVE the underline, so the section ends
+        # there.
+        if is_setext_underline(all_lines, i, example):
+            in_registry = False
+            continue
         # ATX SYNTAX, not a leading "#". A hash run needs whitespace or an
         # end of line after it to render as a heading, so `#123 remains open`
         # is ordinary prose -- and it switched section mode off, silently
@@ -1711,7 +1854,9 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             # the unmatched-region finding was suppressed and the code sample
             # was classified as renderer-owned. The inventory scanner already
             # excludes both; so does this one now.
-            code = fenced_lines(lines) | indented_code_lines(lines)
+            # Raw-TEXT blocks too, for the reason inventory_blocks gives.
+            code = (fenced_lines(lines) | indented_code_lines(lines)
+                    | raw_html_block_lines(lines, raw_text_only=True))
             # WRAPPED spans as well as single-line ones. A `mark:NAME` document
             # showing `<!-- BEGIN NAME -->` and `<!-- END NAME -->` inside a
             # span that opens above them and closes below had both read as real
@@ -1721,6 +1866,14 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             # that a round ago; this parallel scanner did not.
             _mark_wrapped = code_span_lines(lines)
 
+            # And an ESCAPED opener is not a delimiter. `\\<!-- BEGIN NAME -->`
+            # renders as TEXT, which is how a Class A document shows its own
+            # convention OUTSIDE a code span -- and reading the pair as real
+            # classified every hand-written line between them as generated,
+            # which under `exhaustive` suppressed the finding saying
+            # regeneration would discard that prose. The comment and link
+            # scanners have applied this rule for rounds; these two copies did
+            # not. Codex filed it on the Node twin (solyra#69).
             def _marker_lines(pat: re.Pattern[str]) -> list[int]:
                 out = []
                 for n, l in enumerate(lines, 1):
@@ -1728,6 +1881,7 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
                         continue
                     spans = code_spans(l) + _mark_wrapped.get(n - 1, [])
                     if any(not any(lo <= mm.start() < hi for lo, hi in spans)
+                           and not is_escaped(l, mm.start())
                            for mm in pat.finditer(l)):
                         out.append(n)
                 return out
@@ -1847,7 +2001,14 @@ def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list
     # renderer-owned block had gone missing had its own sample suppress the
     # unmatched-region finding and get classified as generated content. The
     # `mark:` and link scanners already exclude both constructs.
-    fenced = fenced_lines(lines) | indented_code_lines(lines)
+    # A RAW-TEXT block is the third way to SHOW a delimiter without declaring
+    # one. A Class A document that had lost its real region but demonstrated
+    # the pair inside `<pre>` had the example registered as the region: the
+    # declared region counted as matched, the missing-region P1 was
+    # suppressed, and the sample's own lines routed to the renderer as
+    # generated. Fenced and indented were covered; this was not.
+    fenced = (fenced_lines(lines) | indented_code_lines(lines)
+              | raw_html_block_lines(lines, raw_text_only=True))
     pairs: dict[str, tuple[int, int]] = {}
     unbalanced: list[str] = []
     open_at: dict[str, int] = {}
@@ -1870,6 +2031,9 @@ def inventory_blocks(lines: list[str]) -> tuple[dict[str, tuple[int, int]], list
         spans = code_spans(line) + _inv_wrapped.get(n - 1, [])
         for m in INVENTORY_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in spans):
+                continue
+            # An escaped opener renders as text; see the `mark:` scanner.
+            if is_escaped(line, m.start()):
                 continue
             name = m.group("name")
             if m.group("edge") == "start":
@@ -2512,7 +2676,18 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
                 continue
             # A comment OPENING on this line hides anything after it, including
             # a `<pre>` on a later line of the same comment.
-            c = line.find("<!--")
+            # An opener shown as `` `<!--` `` or escaped as `\\<!--` opens
+            # nothing: the first is inline code, the second displays the
+            # delimiter literally. Read as real, either one hid a later
+            # `<pre>` from this scan, so the raw-text block was never
+            # recognised and a `[x](missing.md)` DISPLAYED inside it became a
+            # gating dead-link finding for a link no reader can click.
+            # `comment_spans` and `_comment_hidden` have both carried this
+            # rule for rounds; this third copy did not. Line-local
+            # `code_spans` only -- `code_span_lines` reaches `fenced_lines`,
+            # which reaches this function, and `_comment_hidden` exists
+            # precisely to break that cycle.
+            c = _visible_comment_open(line)
             if c != -1 and "-->" not in line[c:]:
                 in_comment = True
                 # Text BEFORE the opener is still live, so an opener there
@@ -2572,6 +2747,23 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
         if re.search(rf"</{open_tag}\s*>", line, re.I):
             open_tag = None
     return out
+
+
+def _visible_comment_open(line: str) -> int:
+    """Offset of the first `<!--` a reader sees as a comment opener, or -1.
+
+    Line-local `code_spans` only, and no wrapped-span map: `code_span_lines`
+    reaches `fenced_lines`, which reaches `raw_html_block_lines`, which calls
+    this. An opener inside a span that OPENS on another line is therefore
+    still read here; that is the cycle's price, and the single-line form is
+    the one documents actually write.
+    """
+    spans = code_spans(line)
+    at = line.find("<!--")
+    while at != -1 and (any(lo <= at < hi for lo, hi in spans)
+                        or is_escaped(line, at)):
+        at = line.find("<!--", at + 1)
+    return at
 
 
 def _comment_hidden(lines: list[str]) -> set[int]:
@@ -2919,7 +3111,14 @@ def marker_shaped_lines(lines: list[str]) -> list[int]:
     # is an example, and counting it emitted a gating finding and made
     # stamp() return `skipped-malformed-marker` -- so a document showing what
     # a bad marker looks like could not be given a real one.
-    fenced = fenced_lines(lines) | commented_lines(lines) | _span_hidden(lines)
+    # And a RAW HTML BLOCK, which `find_markers` excludes and this did not:
+    # `<div>` around `**Last reviewed:** 2026-9-1` shows the shape without
+    # writing a marker, so the valid-marker path correctly found none while
+    # this path counted it -- a gating finding, and `stamp()` returning
+    # `skipped-malformed-marker`, which meant the document demonstrating a bad
+    # marker could never be given a good one. Codex filed it on this side.
+    fenced = (fenced_lines(lines) | commented_lines(lines) | _span_hidden(lines)
+              | raw_html_block_lines(lines))
     out = []
     for i in marker_window(lines):
         if i in fenced or is_code_indented(lines[i]):
@@ -3307,6 +3506,11 @@ def write_stamps(writes: list[tuple[str, str]]) -> None:
     writability preflight did not stop it. Codex filed this as a P1 on the Node
     twin (solyra#69); the same hazard was live here.
 
+    The refusal asks `symlinked_component`, so a symlinked ANCESTOR is refused
+    as well: checking only the final name let a `docs/` replaced by a link
+    report an ordinary file underneath it, and the temporary file and its
+    rename then travelled through that link like any other write.
+
     Everything is checked before anything is written. A deleted or read-only
     document is the common case, and finding it on file 60 of 93 leaves the
     tree half stamped with no record of where it stopped. This narrows that
@@ -3315,7 +3519,10 @@ def write_stamps(writes: list[tuple[str, str]]) -> None:
     file writable. So the loop reports what it HAD written rather than
     pretending the operation was atomic.
     """
-    links = sorted(doc for doc, _ in writes if (REPO / doc).is_symlink())
+    links = sorted(f"{doc} (through {link})" if link != doc else doc
+                   for doc, link in ((doc, symlinked_component(doc))
+                                     for doc, _ in writes)
+                   if link is not None)
     if links:
         raise AuditError(
             f"--stamp refuses {', '.join(links)}: a tracked symlink, so the write "
@@ -4099,7 +4306,8 @@ def unescape_markdown(text: str) -> str:
     return _MD_ESCAPE_RE.sub(r"\1", text)
 
 
-def code_span_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
+def code_span_lines(lines: list[str],
+                    fenced: set[int] | None = None) -> dict[int, list[tuple[int, int]]]:
     """Code-span ranges per line index, for spans that CROSS line breaks.
 
     `code_spans` is per physical line and so cannot see a span whose opening
@@ -4119,9 +4327,19 @@ def code_span_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
     # simply restarted at each one.
     # The same block model the link scan uses, so the two cannot disagree
     # about where inline content ends. Half-open (first, last + 1) here, which
-    # is what the slice arithmetic below expects. No fenced set: this runs
-    # underneath fenced_lines, and asking for one would be a cycle.
-    blocks = [(lo, hi + 1) for lo, hi in _paragraph_blocks(lines, set())]
+    # is what the slice arithmetic below expects.
+    #
+    # A FENCED BLOCK interrupts a paragraph exactly as a blank line does, so
+    # an unmatched delimiter above a fence paired with one below it and masked
+    # everything between -- including a live `[x](missing.md)`, which the
+    # gating dead-link check then never saw. The set is a PARAMETER rather
+    # than computed here: this function also runs UNDERNEATH `fenced_lines`
+    # (through `comment_spans`), and computing one there would be a cycle. So
+    # callers that already hold a fence set pass it, and the ones below the
+    # fence scan pass nothing and keep today's behaviour -- which is the
+    # honest shape of the constraint rather than a claim the cycle does not
+    # exist.
+    blocks = [(lo, hi + 1) for lo, hi in _paragraph_blocks(lines, fenced or set())]
 
     starts: list[int] = []
     at = 0
@@ -4362,12 +4580,19 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     # than as body text: `title: "[guide](missing.md)"` is not a link a reader
     # can click, so the destination produced a gating finding over nothing.
     # Heading discovery already excludes these lines; the link scan did not.
-    fenced = (fenced_lines(lines) | indented_code_lines(lines)
-              | raw_html_block_lines(lines) | front_matter_lines(lines))
+    _fence_only = fenced_lines(lines) | indented_code_lines(lines)
+    fenced = (_fence_only | raw_html_block_lines(lines)
+              | front_matter_lines(lines))
     # Retired Markdown kept in a comment is not rendered, so it is not a
     # citation -- but only the commented SPAN is invisible, not the line.
     commented = comment_spans(lines)
-    wrapped_code = code_span_lines(lines)
+    # The CODE-BLOCK boundaries, not the whole `fenced` set. A fenced or
+    # indented code block interrupts a paragraph, so an inline span cannot
+    # pair across one -- an unmatched backtick above a fence paired with one
+    # below it and masked a live `[x](missing.md)` in between out of this very
+    # check. The wider set is not the right boundary here: a rendered HTML
+    # block does not end a paragraph the way a code block does.
+    wrapped_code = code_span_lines(lines, _fence_only)
 
     # Reference-style Markdown: `[guide][g]` with `[g]: docs/guide.md` further
     # down. Neither shape is an inline link, so a broken reference link -- the
@@ -4615,6 +4840,44 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
                 tgt, frag = mm.group("target"), mm.group("frag")
             n = bisect.bisect_right(starts, mm.start())
             check_target(tgt, frag, n)
+
+    # And the same for RENDERED-HTML destinations. An anchor whose attributes
+    # begin on another physical line -- `<a\n href="missing.md">` -- still
+    # renders a clickable link, and the per-line pass above could never see the
+    # opening tag and its `href` together, so a missing destination produced no
+    # finding at all. `HTML_HREF_RE` is already multiline-capable; what it
+    # never had was a subject spanning more than one line.
+    #
+    # A SEPARATE joined document from the Markdown one. That pass masks a
+    # rendered HTML block whole, because Markdown syntax is not parsed inside
+    # one -- while an `href` inside that same block is exactly what this
+    # scans. Same paragraph windows, because an HTML tag may not span a blank
+    # line either. Ported from the Node twin (solyra#69).
+    html_block = raw_html_block_lines(lines)
+    href_doc: list[str] = []
+    for i, line in enumerate(lines):
+        if (i in fenced and i not in html_block) or i in href_skip:
+            href_doc.append(" " * len(line))
+            continue
+        href_doc.append(mask_spans(line, code_spans(line) + commented.get(i, [])
+                                   + wrapped_code.get(i, [])))
+    href_joined = "\n".join(href_doc)
+    for lo_i, hi_i in _paragraph_blocks(lines, fenced):
+        lo = starts[lo_i]
+        hi = starts[hi_i] + len(lines[hi_i])
+        for mm in HTML_HREF_RE.finditer(href_joined, lo, hi):
+            # The single-line ones belong to the pass above; reporting them
+            # here too would double the finding and the summary count.
+            if "\n" not in mm.group(0):
+                continue
+            if is_escaped(href_joined, mm.start()):
+                continue
+            href = mm.group("dq") or mm.group("sq") or mm.group("bare") or ""
+            htgt, hfrag = split_outside_refs(href, "#")
+            if not htgt and not hfrag:
+                continue
+            n = bisect.bisect_right(starts, mm.start())
+            check_target(htgt, hfrag, n)
     return out
 
 
@@ -5268,6 +5531,32 @@ def last_delivering_conclusion(rows: list) -> tuple[str, str] | None:
     return None
 
 
+def symlinked_component(doc: str) -> str | None:
+    """The first component of `doc` that is a symlink, or None.
+
+    EVERY component, not just the last one. `is_symlink()` on the full path
+    answers for the final name after the kernel has already resolved each
+    parent, so a checkout replacing a tracked DIRECTORY -- `docs/` -> some
+    writable path outside the repository -- reported the document as an
+    ordinary file and both the read and the write went straight through it.
+    Codex filed that as a P1 on the Node twin (solyra#69) after the
+    final-component check had been in place for rounds; the hole is that the
+    check answered a narrower question than the one being asked.
+
+    Walking components is deliberate over comparing `realpath(parent)` against
+    `realpath(REPO)`: the repository root itself is legitimately reached
+    through a symlink on some platforms (`/tmp` on macOS, a worktree under a
+    linked path), and a root comparison rejects those checkouts wholesale.
+    What is being refused is a link INSIDE the tree.
+    """
+    walked = pathlib.PurePosixPath(doc).parts
+    for i in range(1, len(walked) + 1):
+        partial = pathlib.PurePosixPath(*walked[:i])
+        if (REPO / partial).is_symlink():
+            return str(partial)
+    return None
+
+
 def refuse_symlink(doc: str) -> None:
     """Refuse to READ a tracked symlink, before anything opens it.
 
@@ -5278,11 +5567,13 @@ def refuse_symlink(doc: str) -> None:
     the per-document loop is never reached at all. The Class A freshness reads
     happen BEFORE that loop, so they carry the preflight themselves.
     """
-    if (REPO / doc).is_symlink():
+    link = symlinked_component(doc)
+    if link is not None:
+        through = "" if link == doc else f" (through {link})"
         raise AuditError(
-            f"{doc} is a tracked symlink, so reading it would audit its target "
-            "rather than a document in this repository; the result would not "
-            "reproduce in another clone")
+            f"{doc} is a tracked symlink{through}, so reading it would audit its "
+            "target rather than a document in this repository; the result would "
+            "not reproduce in another clone")
 
 
 def visible_generated_stamps(body_lines: list[str]) -> list[str]:

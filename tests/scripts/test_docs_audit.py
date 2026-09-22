@@ -228,6 +228,234 @@ def test_an_orphan_end_marker_is_a_finding():
     assert orphans == ["inventory:a ends at line 2 with no start"]
 
 
+def test_a_heading_suffix_is_stripped_only_when_it_is_a_link():
+    """`_balanced_close` answers a narrower question than the one being asked:
+    it finds a matching parenthesis, not a link. `## [x](foo bar)` and
+    `## [x](foo "unclosed)` both have one, and CommonMark renders each source
+    literally -- so the stripper removed a suffix that is VISIBLE text,
+    recorded `x`, and rejected a link to the real anchor while accepting a
+    `#x` the page does not expose. Codex filed it on the Node twin
+    (solyra#69); the same hole was live here."""
+    # A destination may not carry whitespace unbracketed, and an unclosed
+    # title is not a title -- neither source is a link.
+    assert m.heading_slug('[x](foo bar)') == "xfoo-bar"
+    assert m.heading_slug('[x](foo "unclosed)') == "xfoo-unclosed"
+    # The real shapes are still stripped, so this narrows the rule to what
+    # CommonMark accepts rather than switching it off.
+    assert m.heading_slug("[x](foo.md)") == "x"
+    assert m.heading_slug('[x](foo.md "t")') == "x"
+    assert m.heading_slug("Real [x](guide.md)") == "real-x"
+
+
+def test_a_reference_label_may_carry_an_escaped_bracket():
+    """`str.find("]")` stops at an ESCAPED bracket, so `## [Guide][my\\]ref]`
+    with a matching `[my\\]ref]: README.md` definition failed to resolve and
+    slugged as `guidemyref` while the page exposes `guide`. The label walk
+    beside this one already skipped escapes; this second scan did not."""
+    labels = frozenset({r"my\]ref"})
+    assert m.heading_slug(r"[Guide][my\]ref]", labels) == "guide"
+    # An UNDEFINED label is still left as literal text, which is the rule
+    # that keeps bracketed prose from being read as a reference.
+    assert m.heading_slug(r"[Guide][my\]ref]", frozenset()) == "guidemyref"
+
+
+def test_a_combining_mark_stays_in_the_slug():
+    """An NFD heading -- `Cafe` + U+0301 -- renders as `Café` and GitHub's
+    identifier keeps the mark. `\\w` does not match category M, so the slug came
+    out `cafe`: the working encoded fragment rejected AND a `#cafe` the page
+    does not expose accepted, wrong in both directions at once. Codex filed it
+    on the Node twin (solyra#69); the same allowlist was here."""
+    # NFD in, NFD out: the mark is KEPT, not folded into a precomposed
+    # letter. GitHub does not normalise either, so a `#café` written NFC
+    # against an NFD heading genuinely does not navigate -- preserving the
+    # spelling is what makes the audit agree with the page.
+    assert m.heading_slug("Cafe\u0301") == "cafe\u0301"
+    # The precomposed spelling was already right and still is.
+    assert m.heading_slug("Caf\u00e9") == "caf\u00e9"
+    # Ordinary punctuation is still stripped, so this widens the allowlist by
+    # exactly one category rather than loosening it.
+    assert m.heading_slug("Dogs & Cats") == "dogs--cats"
+
+
+def test_a_fragment_is_decoded_the_way_the_link_renders():
+    """A Markdown escape and a character reference are both resolved when the
+    link is PARSED; percent-decoding is the browser's and comes last. The
+    escape pass was missing entirely, so `[x](#foo\\:bar)` -- which reaches
+    `id="foo:bar"` -- was reported as a gating dead anchor; and the reference
+    pass ran AFTER `unquote`, which is the browser's step happening before the
+    parser's. Codex filed the missing escape pass on the Node twin
+    (solyra#69); the order is now identical in both."""
+    assert m.decode_fragment(r"foo\:bar") == "foo:bar"
+    assert m.decode_fragment("a&amp;b") == "a&b"
+    assert m.decode_fragment("caf%C3%A9") == "caf\u00e9"
+    # A fragment that needs none of the three is unchanged, which is what
+    # makes this safe to apply to every fragment rather than guessing.
+    assert m.decode_fragment("plain-slug") == "plain-slug"
+    assert m.decode_fragment("100%-done") == "100%-done"
+
+
+def test_a_registry_row_shown_as_an_example_is_not_a_rule():
+    """The registry documents its own format, and every way of SHOWING a
+    sample row was executed as live configuration: a fenced block, an indented
+    sample, a raw-text `<pre>`, and an `Examples` section introduced by a
+    Setext heading. That produces a fabricated missing-path finding, or worse,
+    a classification silently applied to a real path -- visible explanatory
+    prose becoming executable rules. The Node twin (solyra#69) grew these
+    exclusions one at a time; this collector had none of them."""
+    reg = ("## Registry\n\n| Class | Path |\n|---|---|\n| D | real.md |\n"
+           "\n```\n| D | fenced.md |\n```\n"
+           "\n    | D | indented.md |\n"
+           "\n<pre>\n| D | raw.md |\n</pre>\n"
+           "\n<!-- | D | commented.md | -->\n"
+           "\nExamples\n--------\n\n| D | setext.md |\n")
+    assert [r["glob"] for r in m.load_registry(reg)] == ["real.md"]
+    # A RENDERED block is not an example: `<div>` shows a table as a table,
+    # so a row there is a declaration like any other. Both directions, so
+    # this is not "ignore anything near a tag".
+    rendered = ("## Registry\n\n| Class | Path |\n|---|---|\n| D | real.md |\n"
+                "\n<div>\n\n| D | live.md |\n\n</div>\n")
+    assert [r["glob"] for r in m.load_registry(rendered)] == ["real.md", "live.md"]
+
+
+def test_a_marker_shaped_example_in_a_raw_html_block_is_not_malformed(audit_repo):
+    """`<div>` around `**Last reviewed:** 2026-9-1` SHOWS the shape without
+    writing a marker. `find_markers` excludes raw HTML blocks and
+    `marker_shaped_lines` did not, so the valid-marker path correctly found
+    none while this path counted it: a gating finding, and `stamp()` returning
+    `skipped-malformed-marker` -- which meant the document demonstrating a bad
+    marker could never be given a good one."""
+    lines = ["# T", "", "<div>", "**Last reviewed:** 2026-9-1", "</div>", "", "Body."]
+    assert m.marker_shaped_lines(lines) == []
+    # Outside the block the same line IS a malformed marker, so the exclusion
+    # is about the container rather than about the text.
+    assert m.marker_shaped_lines(["# T", "", "**Last reviewed:** 2026-9-1"]) == [2]
+
+
+def test_a_generated_region_shown_in_a_raw_text_block_is_not_the_region():
+    """A Class A document that has LOST its real region but demonstrates the
+    pair inside `<pre>` had the EXAMPLE registered as the region: the declared
+    region read as matched, the missing-region P1 was suppressed, and the
+    sample's own lines routed to the renderer as generated. Fenced and
+    indented examples were excluded; raw-text blocks were not."""
+    raw = ("# T\n\n<pre>\n<!-- inventory:x:start -->\nsample\n"
+           "<!-- inventory:x:end -->\n</pre>\n")
+    owned, unmatched, _, _, _ = m.owned_lines(raw, ["inventory:x"])
+    assert owned == set()
+    assert unmatched == ["inventory:x"]
+    # The `mark:` scanner beside it carried the same omission.
+    mark = "# T\n\n<pre>\n<!-- BEGIN gen -->\nsample\n<!-- END gen -->\n</pre>\n"
+    assert m.owned_lines(mark, ["mark:gen"])[0] == set()
+    # And a real pair is still a region.
+    real = "# T\n\n<!-- inventory:x:start -->\nr\n<!-- inventory:x:end -->\n"
+    assert m.owned_lines(real, ["inventory:x"])[0] == {3, 4, 5}
+
+
+def test_a_repeated_anchor_attribute_keeps_only_the_first():
+    """HTML parsing drops a repeated attribute after its first occurrence, so
+    `<div id="real" id="fake">` offers `real` and nothing else. Recording both
+    let a link to `#fake` pass the dead-anchor check against a destination the
+    page does not have. Codex filed it on the Node twin (solyra#69)."""
+    assert m.html_anchors(['<div id="real" id="fake">']) == {"real"}
+    assert m.html_anchors(['<a name="real" name="fake">']) == {"real"}
+    # Two DIFFERENT tags each keep their own, so the rule is per tag.
+    assert m.html_anchors(['<div id="a"><div id="b">']) == {"a", "b"}
+
+
+def test_a_contraction_negates_a_blocking_cue():
+    """`isn't blocking release` says exactly what `is not blocking release`
+    says. The negator list held only the spelled-out form, so the contracted
+    sentence read as live work and a closed issue produced a P1 whose own
+    source line states the opposite. And `not only X but also Y` AFFIRMS X --
+    the generic `not` branch read it as a negation and dropped a citation the
+    prose calls blocking, which is the direction that HIDES a finding."""
+    assert not m.has_blocking_cue("isn't blocking release")
+    assert not m.has_blocking_cue("wasn't blocking")
+    assert not m.has_blocking_cue("aren't open issues")
+    # A curly apostrophe is the same word.
+    assert not m.has_blocking_cue("wasn\u2019t blocking")
+    # `not only X but also Y` AFFIRMS X. Codex filed a carve-out for this on
+    # the Node twin, whose window admits any two words between negator and
+    # cue; THIS pattern admits a fixed vocabulary, so `not only ` never
+    # reaches a cue and no carve-out is needed. Asserted rather than assumed,
+    # because that is the claim -- and a widening of the window here would
+    # turn this line red rather than silently reintroducing the defect.
+    assert m.has_blocking_cue("is not only blocking release but also deploys")
+    assert not m.has_blocking_cue("is not blocking release")
+    assert m.has_blocking_cue("is blocking release")
+    # The settled-cue reader shares the predicate, so it cannot disagree.
+    assert not m.is_settled("it isn't closed")
+    assert m.is_settled("not only closed but archived")
+
+
+def test_an_inline_code_span_does_not_pair_across_a_fenced_block(tmp_path, monkeypatch):
+    """A fenced code block interrupts a paragraph exactly as a blank line
+    does, so an inline span cannot pair across one. `code_span_lines` windowed
+    its scan by paragraph but with NO fence set, so an unmatched backtick above
+    a fence paired with one below it and masked everything between -- including
+    a live `[x](missing.md)`, which the gating dead-link check then never saw:
+    a broken link reported clean. Codex filed it on the Node twin (solyra#69);
+    the same hole was live here."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    check = lambda text: [f["check"] for f in
+                          m.check_dead_links("d.md", text, {"d.md"})]
+    doc = "a ` tick\n```\nfenced\n```\n[x](missing.md) ` tail\n"
+    assert check(doc) == ["dead-link"]
+    # A TILDE fence and an INDENTED block are code blocks too, and the
+    # unmatched delimiter may sit inside one rather than beside it -- the
+    # shape Codex named.
+    tilde = "~~~\n` sample\n~~~\n[x](missing.md) `\n"
+    assert check(tilde) == ["dead-link"]
+    indented = "    ` sample\n\n[x](missing.md) `\n"
+    assert check(indented) == ["dead-link"]
+    # The boundary is real, not "fences disable masking": a span opened and
+    # closed on the SAME side of the fence still masks its contents.
+    same_side = "a ` tick [x](missing.md) tail `\n```\nfenced\n```\n"
+    assert check(same_side) == []
+
+
+def test_a_comment_opener_shown_as_an_example_hides_nothing(tmp_path, monkeypatch):
+    """`` `<!--` `` is inline code and `\\<!--` is an escaped delimiter; neither
+    opens a comment. Read as real, either one made the raw-HTML block scan
+    treat the rest of the document as commented out -- so the `<pre>` below
+    was never recognised, and the link it DISPLAYS became a gating dead-link
+    finding for something no reader can click. `comment_spans` and
+    `_comment_hidden` have both carried this rule for rounds; this third copy
+    did not. Codex filed it on the Node twin (solyra#69)."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    check = lambda text: [f["check"] for f in
+                          m.check_dead_links("d.md", text, {"d.md"})]
+    assert check("The opener is `<!--`.\n\n<pre>\n[x](missing.md)\n</pre>\n") == []
+    assert check("The opener is \\<!-- here.\n\n<pre>\n[x](missing.md)\n</pre>\n") == []
+    # A REAL unclosed opener still hides what follows, so the rule has both
+    # directions and this is not simply "never believe an opener".
+    assert check("Before <!-- opened\n\n<pre>\n[x](missing.md)\n</pre>\n") == []
+    # And the link is live when nothing hides it at all.
+    assert check("prose\n\n[x](missing.md)\n") == ["dead-link"]
+
+
+def test_an_escaped_region_delimiter_is_text_not_a_boundary():
+    """`\\<!-- BEGIN gen -->` renders literally. It is how a Class A document
+    shows its own convention OUTSIDE a code span, and reading the pair as real
+    classified every hand-written line between them as generated -- which
+    under `exhaustive` suppressed the finding saying regeneration would
+    discard that prose. The comment and link scanners have applied the escape
+    rule for rounds; these two scanners each carried a copy without it. Codex
+    filed it on the Node twin (solyra#69); the same hole was live here."""
+    escaped = "# T\n\n\\<!-- BEGIN gen -->\nhand written\n\\<!-- END gen -->\n"
+    owned, unmatched, _, _, _ = m.owned_lines(escaped, ["mark:gen"])
+    assert owned == set()
+    assert unmatched == ["mark:gen"]
+    # And the real pair is still a region, so the rule has both directions.
+    real = "# T\n\n<!-- BEGIN gen -->\ngenerated\n<!-- END gen -->\n"
+    assert m.owned_lines(real, ["mark:gen"])[0] == {3, 4, 5}
+    # The inventory scanner beside it carried the same copy.
+    inv = ("# T\n\n\\<!-- inventory:x:start -->\nhand written\n"
+           "\\<!-- inventory:x:end -->\n")
+    owned, _, _, orphans, _ = m.owned_lines(inv, ["inventory:*"])
+    assert owned == set()
+    assert orphans == []
+
+
 def test_class_a_doc_with_no_declared_regions_is_a_finding_not_a_free_pass():
     """An empty region cell must not read as "the whole file is generated".
 
@@ -4865,6 +5093,28 @@ def test_a_tracked_symlink_is_refused_on_read_not_only_when_stamping(audit_repo)
                 "--issues-snapshot", str(audit_repo / "issues.json")])
 
 
+def test_a_symlinked_ancestor_directory_is_refused_too(audit_repo, tmp_path):
+    """The final-component check reports an ordinary file here: the kernel has
+    already resolved every parent before it looks at the last name. So a
+    checkout that replaces a tracked DIRECTORY with a link to somewhere
+    writable had both the read guard and --stamp travel straight through it --
+    the temp file created and renamed on the far side, outside the repository,
+    with the document-level guard passing the whole way. Codex filed this as a
+    P1 on the Node twin (solyra#69); the same hole was live here."""
+    outside = tmp_path.parent / "outside_docs"
+    outside.mkdir()
+    (outside / "d.md").write_text("# Outside\n\nuntouched\n")
+    (audit_repo / "docs" / "sub").symlink_to(outside, target_is_directory=True)
+    # The hole itself, asserted rather than described.
+    assert not (audit_repo / "docs" / "sub" / "d.md").is_symlink()
+    assert m.symlinked_component("docs/sub/d.md") == "docs/sub"
+    with pytest.raises(m.AuditError, match=r"through docs/sub"):
+        m.write_stamps([("docs/sub/d.md", "# X\n")])
+    with pytest.raises(m.AuditError, match=r"through docs/sub"):
+        m.refuse_symlink("docs/sub/d.md")
+    assert (outside / "d.md").read_text() == "# Outside\n\nuntouched\n"
+
+
 def test_an_ordinary_document_is_still_read(audit_repo, capsys):
     """The half that keeps the guard from being 'never read anything'."""
     (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
@@ -5812,6 +6062,19 @@ def test_a_rendered_html_href_is_a_destination_to_check(tmp_path, monkeypatch):
     assert check('<div>\n<!-- <a href="missing.md">g</a> -->\n</div>\n', {"d.md"}) == []
     # And Markdown syntax in the same rendered block is still NOT parsed.
     assert check("<div>\n[x](missing.md)\n</div>\n", {"d.md"}) == []
+    # An anchor whose attributes begin on the NEXT physical line renders one
+    # clickable link, and a per-line scan can never see the tag and its href
+    # together -- so this broken destination produced no finding at all.
+    assert check('<a\n href="missing.md">g</a>\n', {"d.md"}) == ["dead-link"]
+    assert check('<a\n href="ok.md">g</a>\n', {"d.md", "ok.md"}) == []
+    # Reported ONCE. The single-line pass owns the single-line shape, so a
+    # second report here would double the finding and the summary count.
+    assert check('<a href="missing.md">g</a>\n', {"d.md"}) == ["dead-link"]
+    # An escaped opener is TEXT, in this pass as in the single-line one.
+    assert check('\\<a\n href="missing.md">g</a>\n', {"d.md"}) == []
+    # A blank line ends the tag as it ends a paragraph, so these are two
+    # fragments of prose rather than one anchor.
+    assert check('<a\n\n href="missing.md">g</a>\n', {"d.md"}) == []
 
 
 def test_an_escaped_link_in_a_heading_keeps_its_destination():
@@ -6518,6 +6781,13 @@ def test_an_explicit_html_anchor_is_a_destination_the_page_offers():
     assert m.html_anchors(["<pre>", '<a id="fake"></a>', "</pre>"]) == set()
     assert m.html_anchors(['text <!-- <a id="fake"></a> -->']) == set()
     assert m.html_anchors(['see `<a id="fake">`']) == set()
+    # And an ESCAPED opener is not an element. `\\<div id="fake">` renders the
+    # `<` literally, so there is no element and `#fake` reaches nothing -- but
+    # the tokeniser parsed it like any other tag and registered the id, which
+    # is how a link to a destination the document does not offer PASSED. A doc
+    # demonstrating tag syntax escapes it exactly this way.
+    assert m.html_anchors(['\\<div id="fake">']) == set()
+    assert m.html_anchors(['\\\\<div id="real">']) == {"real"}
 
 
 def test_a_heading_label_reads_the_two_line_definition_form():
