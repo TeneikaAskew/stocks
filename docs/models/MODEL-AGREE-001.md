@@ -3,7 +3,7 @@
 **Code:** `lib/strategies/agreement.py` (106 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RESTRUCTURE
-**Doc health:** CURRENT · **Last verified:** 2026-09-16
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > **Scope of this document.** It records what the code does, read from the source and
 > its tests. Where the code does not record *why* a value was chosen, this document says
@@ -15,8 +15,37 @@ When [MODEL-MOM-001](MODEL-MOM-001.md) and [MODEL-MR-001](MODEL-MR-001.md) both 
 the same bar **and target the same direction**, that is a "stacked" high-conviction
 signal. This module detects that case and produces a composite score.
 
-The source records that same-direction agreement is **~21% of overlapping fires** — the
-other ~79% are the opposing-direction case the momentum docstring describes.
+### How often this actually happens: 2.2%, not 21%
+
+**Measured, and the correction was already in the repo before this document quoted the stale
+number.** `gcp/schema.sql:1133-1138` names the source I cited:
+
+> Empirical rate (Track D audit 2026-05-08, § 6 / G.P2.9): 17 stacked alerts of 782 fires =
+> 2.2% (per-ticker 1.4-3.2%; QQQ highest). The pre-Phase-0.7.x estimate of **~21%** in
+> `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md` **is stale** — momentum's gate tightened over
+> subsequent phases, lowering fires without a corresponding schema-doc update.
+
+**And the remainder is not disagreement.** An earlier revision of this document said the other
+~79% were "the opposing-direction case". `docs/audit/2026-05-08/track-D.md:308-315` measured
+what those rows are:
+
+| `jsonb_typeof(strategy_agreement)` | count |
+|---|---:|
+| `string` (real stacked payload) | 17 |
+| `null` (JSONB null, not SQL NULL) | 765 |
+
+> On 765 of 782 alerts, only mean-reversion fired on the bar; momentum returned `None`
+> (eligible neither call nor put).
+
+So **98% of fires are solo mean-reversion**, not two strategies pointing opposite ways. The
+agreement bonus therefore affects live sizing on roughly 1 fire in 45, and the opposing-direction
+overlap the momentum docstring describes is rarer still.
+
+**This is the same fact as [MODEL-MOM-001](MODEL-MOM-001.md)'s live-gating section, from the
+data side.** That document records that momentum alone cannot fire because
+`enable_standalone_momentum` is `False`; this measurement shows momentum is not even *eligible*
+on 98% of the bars where mean reversion fires. The disabled flag costs little because there is
+little to discard.
 
 ## Inputs
 

@@ -1211,7 +1211,16 @@ MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds
                  # test_every_live_scheduler_is_classified now requires, and why
                  # this tuple is no longer the completeness mechanism.
                  "phase6-playbook", "earnings-long-watchlist",
-                 "evaluate-ew-strikes", "weekend-review")
+                 "evaluate-ew-strikes", "weekend-review",
+                 # Added 2026-09-22. These two WERE in this tuple's blind spot in
+                 # the opposite way: they import lib.strat, which the old proxy
+                 # rule would have caught -- and the registry excluded them by
+                 # hand anyway, on the false claim that they emit no decision.
+                 # `fetch-market-data` writes the thresholded `strat_setup`;
+                 # `backfill-daily-indicators` writes MODEL-STRAT-001's candle
+                 # labels. Both are served. Neither substring collides with
+                 # another declared job (checked).
+                 "fetch-market-data", "backfill-daily-indicators")
 
 def _is_model_bearing(job: str) -> bool:
     return any(k in job for k in MODEL_BEARING)
@@ -1376,6 +1385,115 @@ def test_status_summary_matches_the_tables_it_summarises():
     for status in sorted(set(actual) - published):
         bad.append(f"{status}: {len(actual[status])} model(s) carry it, absent from the summary")
     assert not bad, "Status summary disagrees with the tables: " + "; ".join(bad)
+
+
+def _audit_module():
+    """`scripts/audit_scheduler_coverage.py`, loaded as a module.
+
+    Reused rather than re-implemented: that script already resolves
+    scheduler -> job -> entrypoint, including the `common_flags` array form and
+    backslash continuations that two earlier hand-rolled parsers got wrong. A
+    fourth parser of the same file is how the counts diverge.
+    """
+    import importlib.util
+    path = REPO / "scripts" / "audit_scheduler_coverage.py"
+    assert path.exists(), f"{path} is missing -- the scheduler gates depend on it"
+    spec = importlib.util.spec_from_file_location("_audit_scheduler_coverage", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _model_cited_modules() -> set[str]:
+    """Dotted module/package names appearing in any `MODEL-*` row's Code cell."""
+    text = REGISTRY.read_text()
+    out: set[str] = set()
+    for table, col in (("## Deterministic and heuristic systems", 5),
+                       ("## Learned models", 5),
+                       ("## LLM nodes", 4)):
+        if table not in text:
+            continue
+        for line in text.split(table, 1)[1].split("\n##", 1)[0].split("\n"):
+            if not line.startswith("| MODEL-"):
+                continue
+            cell = line.split("|")[col]
+            for path in re.findall(r"`([A-Za-z0-9_./-]+\.py)`", cell):
+                out.add(path[:-3].replace("/", "."))
+            for pkg in re.findall(r"`(lib/[a-z_/]+)`", cell):
+                out.add(pkg.rstrip("/").replace("/", "."))
+    return out
+
+
+def test_excluded_jobs_importing_model_code_justify_it():
+    """The old proxy, demoted from a rule to a tripwire.
+
+    "Does the job import `lib/` code cited in a MODEL-* row" failed as an
+    INCLUSION test -- it misses every job that hard-codes its own thresholds,
+    which is why the registry's rule was replaced on 2026-09-18. It is well
+    suited to the opposite job: a scheduler that imports model code and is
+    nevertheless excluded is exactly the row that deserves a second look.
+
+    Measured 2026-09-22, which is why this exists: `fetch-market-data-daily`
+    and `backfill-indicators-daily` were excluded on the claim that they emit
+    "model inputs ... No decision is emitted", while the first writes the
+    thresholded `strat_setup` and the second writes MODEL-STRAT-001's candle
+    labels, both served by `/api/dashboard`. The tripwire would have flagged
+    both. The deeper failure is that the rule was replaced and the examples
+    justifying the old one were never re-derived against the new one (DOC-43).
+
+    So an exclusion that trips it must carry an explicit marker rather than
+    bare prose -- a written argument, not an assumption.
+    """
+    declared = _declared_schedulers()
+    cited = _model_cited_modules()
+    assert len(cited) >= 15, (
+        f"only {len(cited)} modules parsed from MODEL-* Code cells -- the column "
+        "index has drifted and this tripwire would never fire."
+    )
+
+    text = REGISTRY.read_text()
+    body = text.split(_EXCLUDED_HEADER, 1)[1].split("\n\n", 1)[0]
+    reasons: dict[str, str] = {}
+    for row in body.split("\n"):
+        if not row.startswith("| `"):
+            continue
+        cells = row.split("|")
+        if len(cells) < 4:
+            continue
+        for name in re.findall(r"`([\w-]+)`", cells[1]):
+            reasons[name] = cells[3]
+
+    audit = _audit_module()
+    deploy = audit._uncommented((REPO / "gcp" / "deploy.sh").read_text())
+    jobs = audit.resolve_jobs(deploy)
+    jobs.update({k: v for k, v in audit.resolve_services(deploy).items() if k not in jobs})
+
+    tripped, unjustified = 0, []
+    for name, reason in sorted(reasons.items()):
+        if name not in declared:
+            continue
+        j = jobs.get(declared[name][1])
+        if not j or not j.get("entrypoint"):
+            continue
+        entry = audit.entry_path(j["entrypoint"], j["kind"])
+        if entry is None or not entry.exists():
+            continue
+        src = entry.read_text()
+        imports = set(re.findall(r"(?:from|import)\s+(lib\.[\w.]+)", src))
+        hit = {i for i in imports
+               if any(i == c or i.startswith(c + ".") or c.startswith(i + ".") for c in cited)}
+        if not hit:
+            continue
+        tripped += 1
+        if "Inputs only —" not in reason:
+            unjustified.append(f"{name} imports {sorted(hit)}")
+
+    assert not unjustified, (
+        "excluded schedulers import code a MODEL-* row cites, without an explicit "
+        f"justification: {unjustified}. Begin the reason with '**Inputs only —**' and "
+        "say what makes it inputs rather than a decision -- ideally something a reader "
+        "can re-run. The two jobs this test was written for failed exactly here."
+    )
 
 
 def test_exclusion_table_job_cells_match_deploy_sh():

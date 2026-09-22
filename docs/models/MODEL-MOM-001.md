@@ -4,7 +4,7 @@
 `lib/strategies/config.py` ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-17
+**Doc health:** CURRENT · **Last verified:** 2026-09-22
 
 > **Read from the scoring functions, not the module docstring.** The first version of this
 > document was assembled from `momentum.py`'s module docstring and was wrong in three ways
@@ -54,6 +54,14 @@ So a bar where momentum scores 5 of 7 with 2 core conditions and mean reversion 
 fire produces no alert at all. Momentum reaches live output only when mean reversion has
 already fired on the same bar and the two agree, which is
 [MODEL-AGREE-001](MODEL-AGREE-001.md)'s path, not this one.
+
+**Measured, and it is starker than the flag suggests.** The Track D audit
+(`docs/audit/2026-05-08/track-D.md:308-315`) found that on **765 of 782** live fires, only
+mean reversion fired and momentum returned `None` — eligible for neither call nor put. So
+momentum is not merely discarded when it fires alone; on 98% of fires it does not clear its
+own gate at all. `enable_standalone_momentum = False` costs little because there is little to
+discard. See [MODEL-AGREE-001](MODEL-AGREE-001.md) for the same measurement from the
+agreement side.
 
 That distinction matters for reading everything below: the conditions, thresholds and
 rationale here govern **whether momentum would be eligible**, and the calibration
