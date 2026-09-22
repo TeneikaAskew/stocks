@@ -2723,7 +2723,14 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     in place -- a document that states two different review claims and passes.
     """
     out = []
-    fenced = fenced_lines(lines)
+    # RAW HTML blocks too. Markdown inside `<pre>` or `<div>` is not parsed --
+    # `**Last reviewed:** 2026-09-01` there renders as literal characters, not
+    # as the document's provenance -- yet a marker-shaped line in one was
+    # accepted, so `--stamp --verify` could rewrite it and report the document
+    # covered while it still had no rendered marker. The fenced equivalent has
+    # been excluded since this function was written; this is the same rule one
+    # block type over.
+    fenced = fenced_lines(lines) | raw_html_block_lines(lines)
     # A marker inside `<!-- ... -->` is invisible to every reader. Accepting it
     # passed the missing-marker check, and --stamp then rewrote the line still
     # inside the comment: the command reported success over a document with no
@@ -3536,6 +3543,69 @@ def enclosing_parenthetical(line: str, start: int, end: int) -> tuple[int, int] 
     return None
 
 
+# One complete OPENING tag, attributes and all. `re.S` because an opening tag
+# may span physical lines -- `<div\n data-note="...">` is one tag, and a
+# per-line scan sees no opener on the second line at all.
+_TAG_OPEN_RE = re.compile(
+    r"<[a-zA-Z][a-zA-Z0-9-]*"
+    r"""(?:\s+[a-zA-Z_:][-\w:.]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`=<>]+))?)*"""
+    r"\s*/?>", re.S)
+_TAG_ATTR_RE = re.compile(
+    r"([a-zA-Z_:][-\w:.]*)\s*=\s*"
+    r"""(?:"([^"]*)"|'([^']*)'|([^\s"'`=<>]+))""", re.S)
+_TAG_NAME_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9-]*)")
+
+
+def tag_attribute_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
+    """Per line, the offsets of HTML attribute VALUES -- implementation
+    metadata, not rendered text.
+
+    `<div data-issue="https://.../issues/1">Outstanding</div>` shows a reader
+    the word `Outstanding` and nothing else: the URL is neither visible nor
+    clickable, and scanning it produced a gating stale-blocker finding from
+    something no reader can act on. The same applies to a registered claim
+    hidden in `<div data-note="3 routes">`.
+
+    An `href` on an ANCHOR is exempt, because `<a href>` pointing at an issue
+    IS a citation readers follow -- which is the whole reason the rendered-HTML
+    passes exist. On any other element it is inert: `<div href="...">` renders
+    no link, so exempting it there admitted the same hidden metadata the rest
+    of this helper exists to hide. Ported from the Node twin (solyra#69) with
+    that narrowing applied to both.
+
+    Scanned over the JOINED document and split back per line, so a tag whose
+    attributes begin on a later physical line is read as the one tag it is.
+    """
+    starts: list[int] = []
+    at = 0
+    for line in lines:
+        starts.append(at)
+        at += len(line) + 1
+    joined = "\n".join(lines)
+    out: dict[int, list[tuple[int, int]]] = {}
+    for tag in _TAG_OPEN_RE.finditer(joined):
+        name = _TAG_NAME_RE.match(tag.group(0))
+        anchor = bool(name) and name.group(1).lower() == "a"
+        for attr in _TAG_ATTR_RE.finditer(tag.group(0)):
+            if anchor and attr.group(1).lower() == "href":
+                continue
+            for g in (2, 3, 4):
+                if attr.group(g) is None:
+                    continue
+                lo = tag.start() + attr.start(g)
+                hi = tag.start() + attr.end(g)
+                # Back to per-line offsets, because every caller masks a line.
+                i = bisect.bisect_right(starts, lo) - 1
+                while i < len(lines) and starts[i] < hi:
+                    a = max(lo, starts[i]) - starts[i]
+                    b = min(hi, starts[i] + len(lines[i])) - starts[i]
+                    if b > a:
+                        out.setdefault(i, []).append((a, b))
+                    i += 1
+                break
+    return out
+
+
 def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[dict]:
     out = []
     lines = text.split("\n")
@@ -3564,6 +3634,9 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     # cannot see either delimiter of a span opened on one line and closed on
     # the next, so a blocker-shaped URL inside one was audited as live prose.
     wrapped = code_span_lines(lines)
+    # Attribute VALUES are implementation metadata: `<div data-issue="...">`
+    # shows a reader nothing clickable, so a citation there is not a blocker.
+    attr_spans = tag_attribute_spans(lines)
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
@@ -3574,7 +3647,7 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # same example were already excluded; this is the third, and it covers
         # the shorthand pass and the URL pass alike because both read `hidden`.
         hidden = (commented.get(n - 1, []) + code_spans(line)
-                  + wrapped.get(n - 1, []))
+                  + wrapped.get(n - 1, []) + attr_spans.get(n - 1, []))
         # The cue precheck reads the line with those spans BLANKED, and that
         # ordering is the fix. Masking only the citation is not enough: a
         # hidden span can supply the CUE for a different, visible citation --
@@ -4067,7 +4140,15 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # empty path skipped the fragment check entirely, so a dead anchor
         # spelled that way passed; it is the same same-document case as `#h`.
         bare = tgt[1:-1] if tgt.startswith("<") and tgt.endswith(">") else tgt
-        bare = bare.split("?")[0]
+        # Decoded BEFORE the query is removed. `&#63;` IS a `?`, so
+        # `[x](guide.md&#63;plain=1)` renders a URL whose PATH is `guide.md`,
+        # and splitting the raw destination left the nonexistent
+        # `guide.md?plain=1` once decoded -- a gating dead link against a
+        # tracked file. Percent decoding stays AFTER, because `%3F` is not a
+        # delimiter either: a file really named with a percent-escaped `?`
+        # would otherwise lose its name. The Node twin has split in this order
+        # since it was raised there.
+        bare = decode_char_refs(unescape_markdown(bare)).split("?")[0]
         if not bare:
             norm = doc
         else:
@@ -4088,7 +4169,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             # Character references too. `[t](caf&eacute;.md)` RENDERS as a
             # link to `café.md`, and normalising only percent escapes and
             # backslashes reported a tracked file dead.
-            decoded = decode_char_refs(unescape_markdown(urllib.parse.unquote(bare)))
+            decoded = urllib.parse.unquote(bare)
             if decoded.startswith("/"):
                 # Site-absolute. GitHub resolves it from the HOST root, not the
                 # repository root, so stripping the slash and looking it up in
@@ -5073,6 +5154,37 @@ def refuse_symlink(doc: str) -> None:
             "reproduce in another clone")
 
 
+def visible_generated_stamps(body_lines: list[str]) -> list[str]:
+    """The `Generated <date>` stamps a READER can see, in order.
+
+    A stamp is production evidence, so every syntax that displays its text
+    literally has to be excluded or a document that lost its real stamp reads
+    as current while showing readers no Generated line at all. Five hiding
+    mechanisms, each of which was a finding in its turn: a fence, an indented
+    block, a RAW-TEXT HTML block (a rendered `<div>` shows its text, so a
+    stamp inside one IS a stamp), an HTML comment, and inline code -- and now
+    an HTML ATTRIBUTE value, which renders as nothing at all.
+
+    Named rather than inline so the rule can be exercised on its own: it lives
+    inside a function that reaches the GitHub API, and the mask that was added
+    last could be removed without a single test noticing.
+    """
+    skip = (fenced_lines(body_lines) | indented_code_lines(body_lines)
+            | raw_html_block_lines(body_lines, raw_text_only=True))
+    # Per MATCH against the comment SPANS, not per line: a comment can occupy
+    # part of a visible line, so a whole-line rule let a hidden date stand in
+    # for a missing stamp.
+    hidden = comment_spans(body_lines)
+    # Wrapped code spans included, since a span may cross a line break.
+    wrapped = code_span_lines(body_lines)
+    attrs = tag_attribute_spans(body_lines)
+    return [mm.group(1) for i, line in enumerate(body_lines) if i not in skip
+            for mm in GENERATED_RE.finditer(line)
+            if not any(lo <= mm.start() < hi
+                       for lo, hi in (hidden.get(i, []) + code_spans(line)
+                                      + wrapped.get(i, []) + attrs.get(i, [])))]
+
+
 def check_owning_job(today: str) -> list[dict]:
     """Did the job that owns the Class A docs actually deliver?
 
@@ -5165,32 +5277,7 @@ def check_owning_job(today: str) -> list[dict]:
         # check reported a document current although readers see no production
         # date in it at all -- the same defect as the fenced case, one syntax
         # over. The Node twin masks both wherever it masks either.
-        # And a RAW-TEXT HTML block, a fourth syntax that displays its
-        # contents literally: `<pre>` carrying `Generated 2026-09-20` was
-        # accepted as production evidence, so a document that lost its real
-        # stamp was reported current though readers see no Generated line.
-        # Raw-text only -- a rendered `<div>` shows its text, so a stamp
-        # inside one is a stamp.
-        skip = (fenced_lines(body_lines) | indented_code_lines(body_lines)
-                | raw_html_block_lines(body_lines, raw_text_only=True))
-        # Per MATCH against the comment SPANS, not per line. A comment can
-        # occupy part of a visible line -- `text <!-- Generated 2026-09-20 -->`
-        # -- so a whole-line rule let a hidden date stand in for a missing
-        # stamp and the delivery audit reported a document fresh that shows
-        # its readers no Generated line at all.
-        hidden = comment_spans(body_lines)
-        # INLINE CODE as well as fenced and indented. A document that lost its
-        # real stamp but still shows `` `Generated 2026-09-20` `` as an example
-        # had the example accepted as production evidence, so the freshness
-        # check reported it current though readers see no Generated line at
-        # all -- the same defect as the fenced case, a third syntax over.
-        # Wrapped spans included, since a code span may cross a line break.
-        wrapped = code_span_lines(body_lines)
-        stamps = [mm.group(1) for i, line in enumerate(body_lines) if i not in skip
-                  for mm in GENERATED_RE.finditer(line)
-                  if not any(lo <= mm.start() < hi
-                             for lo, hi in (hidden.get(i, []) + code_spans(line)
-                                            + wrapped.get(i, [])))]
+        stamps = visible_generated_stamps(body_lines)
         if not stamps:
             # Silently skipping this is the same clean-run-on-no-evidence the
             # best-effort artifact check already refuses. For 05-a, 05-c and

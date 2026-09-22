@@ -6600,3 +6600,76 @@ def test_a_stamp_write_is_atomic_and_refuses_a_symlinked_temp_path(
         m.write_stamp("a.md", "third\n")
     assert (tmp_path / "a.md").read_text() == "first\n"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.md", "canary.txt"]
+
+
+def test_an_html_attribute_value_is_metadata_not_a_citation():
+    """`<div data-issue="https://.../issues/1">Outstanding</div>` shows a
+    reader the word `Outstanding` and nothing else: the URL is neither visible
+    nor clickable, and scanning it produced a gating stale-blocker finding
+    from something no reader can act on."""
+    states = {"TeneikaAskew/stocks": {1: {"state": "closed", "reason": "completed",
+                                          "kind": "issue"}}}
+    url = "https://github.com/TeneikaAskew/stocks/issues/1"
+
+    def findings(body):
+        return m.check_closed_issues("d.md", f"# T\n\n{body}\n", states)
+
+    assert findings(f'<div data-issue="{url}">Outstanding</div>') == []
+    # `href` is exempt only on an ANCHOR: `<a href>` is a citation readers
+    # follow, and on any other element it renders no link at all.
+    assert findings(f'<a href="{url}">Outstanding</a>') != []
+    assert findings(f'<div href="{url}">Outstanding</div>') == []
+    # Ordinary prose is still scanned, which is what the check is for.
+    assert findings(f"Outstanding: {url}") != []
+    # An opening tag may span physical lines, so the scan reads the joined
+    # document: a per-line one finds no opener on the second line at all.
+    assert m.tag_attribute_spans(["<div", '  data-note="Still open">']) == \
+        {1: [(13, 23)]}
+
+
+def test_a_generated_stamp_inside_markup_is_not_a_stamp():
+    """A document that lost its real stamp but still carries `<div
+    title="Generated 2026-09-20">` had that date suppress BOTH the
+    missing-stamp and the stale-stamp finding, while a reader sees no
+    Generated line at all."""
+    assert m.visible_generated_stamps(
+        ['<div title="Generated 2026-09-20">x</div>']) == []
+    # A stamp a reader CAN see is still evidence, including inside a rendered
+    # `<div>`, whose text is visible even though Markdown is not parsed there.
+    assert m.visible_generated_stamps(["Generated 2026-09-20"]) == ["2026-09-20"]
+    assert m.visible_generated_stamps(
+        ["<div>", "Generated 2026-09-20", "</div>"]) == ["2026-09-20"]
+    # The four hiding mechanisms this rule already knew are unchanged.
+    assert m.visible_generated_stamps(["```", "Generated 2026-09-20", "```"]) == []
+    assert m.visible_generated_stamps(["x <!-- Generated 2026-09-20 -->"]) == []
+    assert m.visible_generated_stamps(["see `Generated 2026-09-20`"]) == []
+    assert m.visible_generated_stamps(
+        ["<pre>", "Generated 2026-09-20", "</pre>"]) == []
+
+
+def test_a_marker_inside_raw_html_is_not_the_documents_provenance():
+    """Markdown inside `<pre>` or `<div>` is not parsed, so a marker-shaped
+    line there renders as literal characters. Accepting it let `--stamp
+    --verify` rewrite it and report the document covered while it still had no
+    rendered marker."""
+    marker = "**Last reviewed:** 2026-09-01 · **Owner:** X"
+    for tag in ("pre", "div"):
+        assert m.find_markers(["# Real", "", f"<{tag}>", marker,
+                               f"</{tag}>", "", "body"]) == []
+    # The fenced equivalent was already excluded, and a real marker is found.
+    assert m.find_markers(["# Real", "", "```", marker, "```"]) == []
+    assert len(m.find_markers(["# Real", "", marker])) == 1
+
+
+def test_a_query_is_removed_from_the_rendered_destination():
+    """`&#63;` IS a `?`, so `[x](guide.md&#63;plain=1)` renders a URL whose
+    PATH is `guide.md`. Splitting the raw destination left the nonexistent
+    `guide.md?plain=1` once decoded -- a gating dead link against a tracked
+    file."""
+    tracked = {"d.md", "guide.md"}
+    for dest in ("guide.md&#63;plain=1", "guide.md?plain=1"):
+        assert m.check_dead_links("d.md", f"# T\n\n[x]({dest})\n", tracked) == []
+    # A percent-escaped `?` is NOT a delimiter: a file really named that way
+    # keeps its name.
+    assert [f["check"] for f in m.check_dead_links(
+        "d.md", "# T\n\n[x](guide.md%3Fplain=1)\n", tracked)] == ["dead-link"]
