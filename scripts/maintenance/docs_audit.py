@@ -282,45 +282,124 @@ _COORDINATOR_RE = re.compile(r"[\s,;/&]*(?:and|or)?[\s,;/&]*")
 # is standard CommonMark; requiring `)` straight after the destination meant
 # the pattern did not match at all, so a missing target reported clean rather
 # than dead. Raised on the Node twin (solyra#69).
-MD_LINK_RE = re.compile(
-    # One level of BALANCED parentheses in the destination: `guide(v2).md` is a
-    # valid local link, and stopping at the first `)` validated `guide(v2` and
-    # called a tracked file dead.
-    # `<...>` FIRST, as a distinct destination form. It is how CommonMark
-    # writes a destination containing a space -- `[g](<docs/removed guide.md>)`
-    # -- and the bare form rejects whitespace, so the link did not match at all
-    # and a missing target reported clean. Stripping the brackets afterwards
-    # could not help: the pattern never reached it.
-    # One level of BALANCED brackets in the LABEL. `[^\]]*` stopped at the
-    # first `]`, so a link whose text contains brackets never matched at all
-    # and its target was never checked -- docs/gamma_levels.md writes
-    # ``[`lib/agents/prompts.py:ANALYST_PROMPTS["gamma"]`](../lib/agents/prompts.py)``
-    # and deleting that target reported clean.
-    # A CHARACTER REFERENCE is matched as a unit before the fragment split, so
-    # the `#` inside `&#38;` is not read as the separator: `[x](foo&#38;bar.md)`
-    # renders as a link to `foo&bar.md` and was split into the path `foo&` and
-    # the fragment `38;bar.md`, reporting a tracked file dead. decode_char_refs
-    # runs downstream and cannot undo a split that already happened. Ported
-    # from the Node twin (solyra#69).
-    # An ESCAPED bracket is label TEXT: `[a \] b](x.md)` renders a link and the
-    # structural class read the `]` as the label's end, so the link never
-    # matched and a deleted target passed the audit.
-    r"\[(?:\\.|[^\\\[\]]|\[(?:\\.|[^\\\[\]])*\])*\]\(\s*"
-    # NO line endings. `<...>` may hold a space, which is why an author uses
-    # it, but CommonMark forbids a newline there -- so `[x](<missing\n.md>)`
-    # is literal text. The multiline pass matched it anyway and emitted a
-    # gating dead-link finding over something no reader can click.
-    r"(?:<(?P<btarget>(?:&\#?[0-9A-Za-z]{1,32};|[^<>#\r\n])*)(?:#(?P<bfrag>[^>\s]+))?>"
-    # An ESCAPED hash is part of the PATH, not the fragment separator:
-    # `[x](a\#b.md)` resolves to the tracked `a#b.md` and splitting first gave
-    # the target `a\`. Consumed as a unit, like a character reference.
-    # TWO levels of balanced parentheses, not one: `docs/a(b(c)).md` is a valid
-    # destination and the single-level alternative could not match it at all,
-    # so a deleted target with that spelling produced no finding.
-    r"|(?P<target>(?:&\#?[0-9A-Za-z]{1,32};|\\.|[^()#\s]"
-    r"|\((?:[^()\s]|\([^()\s]*\))*\))*)"
-    r"(?:#(?P<frag>[^)\s]+))?)"
+# A Markdown inline link, scanned rather than matched by one pattern. The
+# destination may nest parentheses to ANY depth -- `docs/a(b(c(d))).md` is a
+# valid destination CommonMark resolves -- and a fixed-depth alternative could
+# not match such a link at all, so a deleted target spelled that way produced
+# no finding. Python's `re` has no recursion, so the balance is walked with
+# the same `_balanced_close` the heading-link stripper uses; one scanner, so
+# the depth limit cannot come back in one caller and not the other.
+#
+# One level of BALANCED brackets in the LABEL. `[^\]]*` stopped at the first
+# `]`, so a link whose text contains brackets never matched at all and its
+# target was never checked -- docs/gamma_levels.md writes
+# ``[`lib/agents/prompts.py:ANALYST_PROMPTS["gamma"]`](../lib/agents/prompts.py)``
+# and deleting that target reported clean.
+# An ESCAPED bracket is label TEXT: `[a \] b](x.md)` renders a link and the
+# structural class read the `]` as the label's end.
+_MD_LINK_OPEN_RE = re.compile(
+    r"\[(?:\\.|[^\\\[\]]|\[(?:\\.|[^\\\[\]])*\])*\]\(\s*")
+# `<...>` is a distinct destination form: it is how CommonMark writes a
+# destination containing a space -- `[g](<docs/removed guide.md>)` -- and the
+# bare form rejects whitespace, so such a link did not match at all and a
+# missing target reported clean.
+# NO line endings. `<...>` may hold a space, which is why an author uses it,
+# but CommonMark forbids a newline there -- so `[x](<missing\n.md>)` is
+# literal text, and the multiline pass matched it anyway and emitted a gating
+# dead-link finding over something no reader can click.
+_MD_LINK_ANGLE_RE = re.compile(
+    r"<(?P<btarget>(?:&\#?[0-9A-Za-z]{1,32};|[^<>#\r\n])*)"
+    r"(?:#(?P<bfrag>[^>\s]+))?>")
+# One atom of a BARE destination. A CHARACTER REFERENCE is matched as a unit
+# before the fragment split, so the `#` inside `&#38;` is not read as the
+# separator: `[x](foo&#38;bar.md)` renders as a link to `foo&bar.md` and was
+# split into the path `foo&` and the fragment `38;bar.md`, reporting a tracked
+# file dead. An ESCAPED hash is part of the PATH for the same reason:
+# `[x](a\#b.md)` resolves to the tracked `a#b.md`.
+_MD_DEST_ATOM_RE = re.compile(r"&\#?[0-9A-Za-z]{1,32};|\\.|[^()#\s]")
+_MD_LINK_TAIL_RE = re.compile(
     r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)""")
+
+
+class _LinkMatch:
+    """The pieces `check_target` reads, with `re.Match`'s accessors."""
+
+    __slots__ = ("_text", "_start", "_end", "_groups")
+
+    def __init__(self, text: str, start: int, end: int, groups: dict):
+        self._text, self._start, self._end, self._groups = text, start, end, groups
+
+    def start(self) -> int:
+        return self._start
+
+    def end(self) -> int:
+        return self._end
+
+    def group(self, key: int | str = 0) -> str | None:
+        if key == 0:
+            return self._text[self._start:self._end]
+        return self._groups.get(key)
+
+
+def _bare_destination(text: str, i: int, end: int) -> int:
+    """End of the balanced bare destination starting at `i`.
+
+    A parenthesised run is consumed whole, however deeply it nests. CommonMark
+    forbids ASCII whitespace anywhere in an unbracketed destination, inside
+    the parentheses included, so a run carrying any is not part of it.
+    """
+    j = i
+    while j < end:
+        m = _MD_DEST_ATOM_RE.match(text, j, end)
+        if m:
+            j = m.end()
+            continue
+        if text[j] == "(":
+            k = _balanced_close(text, j)
+            if k == -1 or k > end or any(c.isspace() for c in text[j:k]):
+                return j
+            j = k
+            continue
+        break
+    return j
+
+
+def md_links(text: str, lo: int = 0, hi: int | None = None):
+    """Every inline link in `text[lo:hi]`, left to right.
+
+    A failed completion restarts one character past the opening `[` rather
+    than past the whole candidate, which is what a single pattern's
+    backtracking did.
+    """
+    hi = len(text) if hi is None else hi
+    pos = lo
+    while pos < hi:
+        opening = _MD_LINK_OPEN_RE.search(text, pos, hi)
+        if opening is None:
+            return
+        groups: dict[str, str | None] = {
+            "btarget": None, "bfrag": None, "target": None, "frag": None}
+        at = opening.end()
+        angle = _MD_LINK_ANGLE_RE.match(text, at, hi)
+        if angle is not None:
+            groups["btarget"] = angle.group("btarget")
+            groups["bfrag"] = angle.group("bfrag")
+            at = angle.end()
+        else:
+            stop = _bare_destination(text, at, hi)
+            groups["target"] = text[at:stop]
+            at = stop
+            if at < hi and text[at] == "#":
+                frag = re.compile(r"[^)\s]+").match(text, at + 1, hi)
+                if frag is not None:
+                    groups["frag"] = frag.group(0)
+                    at = frag.end()
+        tail = _MD_LINK_TAIL_RE.match(text, at, hi)
+        if tail is None:
+            pos = opening.start() + 1
+            continue
+        yield _LinkMatch(text, opening.start(), tail.end(), groups)
+        pos = tail.end()
 # Reference-style Markdown, both halves. The definition's label may not open
 # with `^`: that is a footnote, which defines a note rather than a destination.
 # The destination may be angle-bracketed, which is how one containing a space
@@ -709,11 +788,27 @@ def heading_anchors(text: str) -> set[str]:
     for i, ln in enumerate(lines):
         if i in fenced:
             continue
-        mm = REF_DEF_RE.match(_LIST_MARKER_RE.sub(
-            "", _BLOCKQUOTE_PREFIX_RE.sub("", ln, count=1), count=1))
+        stripped = _LIST_MARKER_RE.sub(
+            "", _BLOCKQUOTE_PREFIX_RE.sub("", ln, count=1), count=1)
+        mm = REF_DEF_RE.match(stripped)
+        # The destination may sit on the FOLLOWING line. `[g]:` over
+        # `  guide.md` defines `g`, so `## See [guide][g]` renders anchored
+        # `see-guide` -- and reading only the single-line form recorded
+        # `see-guideg` and reported a working fragment link dead. The
+        # dead-link pass has read both forms since it was raised; this
+        # collector read one, which is the same two-halves shape as the
+        # block-start rule it sits beside.
+        last = i
+        if mm is None:
+            head = REF_DEF_HEAD_RE.match(stripped)
+            j = i + 1
+            if (head and j < len(lines) and j not in fenced
+                    and REF_DEF_CONT_RE.match(
+                        _BLOCKQUOTE_PREFIX_RE.sub("", lines[j], count=1))):
+                mm, last = head, j
         if not mm or not (i in _def_starts or (i - 1) in _def_seen):
             continue
-        _def_seen.add(i)
+        _def_seen.add(last)
         _labels.add(_ref_key(mm.group("label")))
     ref_labels = frozenset(_labels)
     # A comment INSIDE a rendered heading is not part of its text. `## <!-- note
@@ -779,6 +874,88 @@ def heading_anchors(text: str) -> set[str]:
             slug = f"{base}-{n}"
         seen[base] = n + 1
         out.add(slug)
+    # EXPLICIT HTML anchors. `<a name="legacy"></a>` and any `id="..."` are
+    # rendered destinations a browser honours, so `[x](#legacy)` is valid with
+    # no heading of that name -- and indexing only heading slugs made the
+    # dead-anchor check reject it and fail --check. Ported from the Node twin
+    # (solyra#69).
+    out |= html_anchors(lines)
+    return out
+
+
+# The UNQUOTED attribute form too: `<div id=section>` is valid HTML and the
+# browser exposes `section`. The tag and attribute NAMES fold case; the
+# VALUE's case is preserved, because a browser matches an explicit id exactly.
+_HTML_ID_RE = re.compile(
+    r"""<[a-zA-Z][^>]*?\s(?:id|name)\s*=\s*"""
+    r"""("(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'`=<>]+))""", re.I)
+
+
+def html_anchors(lines: list[str]) -> set[str]:
+    """Ids a RENDERED document exposes through `id=` or `name=` attributes.
+
+    A NARROWER mask than the heading scan's: a type-6 or type-7 block such as
+    `<div id="x">` IS the anchor, so masking every HTML line would discard the
+    very thing being read. Only the raw-text kinds -- `<pre>`, `<script>`,
+    `<style>`, `<textarea>` -- display their contents instead of rendering
+    them, and only those hide an id.
+    """
+    literal = (raw_html_block_lines(lines, raw_text_only=True)
+               | fenced_lines(lines) | indented_code_lines(lines)
+               | front_matter_lines(lines))
+    wrapped = code_span_lines(lines)
+    comments = comment_spans(lines)
+
+    def _id(m: re.Match[str]) -> str:
+        # Character references DECODED, as the heading slug already decodes
+        # them: `<div id="a&amp;b">` exposes `a&b`, and recording the raw
+        # value reported a valid `[x](#a%26b)` dead while accepting the
+        # literal `a&amp;b` nothing exposes.
+        value = m.group("dq")
+        if value is None:
+            value = m.group("sq")
+        if value is None:
+            value = m.group("bare")
+        return decode_char_refs(value or "")
+
+    def _visible(i: int, line: str) -> str:
+        # Comment SPANS as well as code spans. `text <!-- <a id="fake"></a> -->`
+        # shares a line with prose, so a whole-line exclusion never reached it
+        # and `fake` was registered as a destination the document does not
+        # offer -- letting a link to it pass.
+        return mask_spans(line, code_spans(line) + wrapped.get(i, [])
+                          + comments.get(i, []))
+
+    out: set[str] = set()
+    for i, raw in enumerate(lines):
+        if i in literal:
+            continue
+        for m in _HTML_ID_RE.finditer(_visible(i, raw)):
+            ident = _id(m)
+            if ident:
+                out.add(ident)
+    # And an element whose `id` sits on a LATER physical line: `<div\n
+    # id="section">` still exposes `section`, and a per-line scan can never
+    # see the tag and its attribute together. A tag may not span a blank line,
+    # so the joined scan is windowed per paragraph block exactly as the link
+    # and href scans are, and only matches that CONTAIN a newline are read --
+    # the single-line ones belong to the loop above.
+    starts: list[int] = []
+    at = 0
+    for line in lines:
+        starts.append(at)
+        at += len(line) + 1
+    joined = "\n".join(
+        mask_spans(line, [(0, len(line))]) if i in literal else _visible(i, line)
+        for i, line in enumerate(lines))
+    for lo, hi in _paragraph_blocks(lines, fenced_lines(lines)):
+        for m in _HTML_ID_RE.finditer(joined, starts[lo],
+                                      starts[hi] + len(lines[hi])):
+            if "\n" not in m.group(0):
+                continue
+            ident = _id(m)
+            if ident:
+                out.add(ident)
     return out
 
 
@@ -801,7 +978,7 @@ def split_outside_refs(text: str, delim: str) -> tuple[str, str | None]:
     """Split at the first `delim` that is neither escaped nor inside a reference.
 
     A backslash escape and a character reference are each consumed as a UNIT,
-    exactly as MD_LINK_RE's destination class consumes them: `a\\#b.md` targets
+    exactly as the inline-link destination scan consumes them: `a\\#b.md` targets
     the tracked `a#b.md`, and `a&\\#35;b.md` keeps its reference. A raw
     `partition("#")` split both at the `#` inside the escape and reported the
     path `a\\` dead. The search runs over a copy with each unit blanked to the
@@ -2691,7 +2868,13 @@ def h1_index(lines: list[str]) -> int | None:
     # Front matter too: a `# note` comment inside it is metadata, not a
     # heading, and taking it as the H1 made --stamp write inside the `---`
     # delimiters.
-    fenced = fenced_lines(lines) | commented_lines(lines) | front_matter_lines(lines)
+    # Raw HTML blocks too. `<pre>` displays `# Example` literally, so GitHub
+    # renders no heading there -- taking one as the document H1 put the
+    # provenance marker INSIDE the block, where nothing renders it, and a
+    # later audit could then accept that misplaced marker. `heading_anchors`
+    # and `marker_window` have excluded these for rounds; this did not.
+    fenced = (fenced_lines(lines) | commented_lines(lines)
+              | front_matter_lines(lines) | raw_html_block_lines(lines))
     # SPANS too, not only whole lines. A comment that closes partway through a
     # heading-shaped line -- `<!--` then `# Fake --> visible` -- leaves the
     # line with a visible suffix, so commented_lines does not exclude it while
@@ -3847,7 +4030,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     wrapped_code = code_span_lines(lines)
 
     # Reference-style Markdown: `[guide][g]` with `[g]: docs/guide.md` further
-    # down. Neither shape matches MD_LINK_RE, so a broken reference link -- the
+    # down. Neither shape is an inline link, so a broken reference link -- the
     # form CommonMark calls standard and readers see as an ordinary link --
     # produced a clean audit. The DEFINITION's destination is validated exactly
     # as an inline link's is. A footnote (`[^1]: ...`) is excluded: it defines
@@ -3933,7 +4116,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             ref_defs.setdefault(_ref_key(label),
                                 (target.strip("<>"), dest_line))
     for label, (target, n) in ref_defs.items():
-        # Not `partition("#")`: a reference definition bypasses MD_LINK_RE, so
+        # Not `partition("#")`: a reference definition bypasses `md_links`, so
         # it was the one destination still split before escapes and character
         # references were consumed. `[g]: a\\#b.md` targets the tracked
         # `a#b.md` and was reported dead as `a\\`.
@@ -3952,7 +4135,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # one line and closed on the next was scanned as a live link.
         spans = (code_spans(line) + commented.get(n - 1, [])
                  + wrapped_code.get(n - 1, []))
-        for m in MD_LINK_RE.finditer(line):
+        for m in md_links(line):
             if any(lo <= m.start() < hi for lo, hi in spans):
                 continue
             if is_escaped(line, m.start()):
@@ -4047,7 +4230,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     # and lets whitespace follow the opening parenthesis, so `[long\nlabel](x)`
     # and `[x](\nmissing.md)` both render as clickable links -- and a per-line
     # scan can never see either, so their broken destinations passed clean.
-    # MD_LINK_RE already admits both shapes; what it never had was a subject
+    # `md_links` already admits both shapes; what it never had was a subject
     # spanning more than one physical line.
     #
     # The document is masked LINE BY LINE first, at the same lengths, so every
@@ -4081,7 +4264,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     for lo_i, hi_i in _paragraph_blocks(lines, fenced):
         lo = starts[lo_i]
         hi = starts[hi_i] + len(lines[hi_i])
-        for mm in MD_LINK_RE.finditer(joined, lo, hi):
+        for mm in md_links(joined, lo, hi):
             if "\n" not in mm.group(0):
                 continue
             if is_escaped(joined, mm.start()):

@@ -5406,19 +5406,26 @@ def test_an_escaped_bracket_is_label_text_not_the_label_end():
     """`[a \\] b](x.md)` renders a link; the structural class read the escaped
     `]` as the label's end, so the link never matched and a deleted target
     passed the audit."""
-    mm = m.MD_LINK_RE.search(r"[a \] b](x.md)")
+    mm = next(m.md_links(r"[a \] b](x.md)"), None)
     assert mm is not None and mm.group("target") == "x.md"
 
 
-def test_an_escaped_hash_stays_in_the_path_and_parentheses_nest_twice():
+def test_an_escaped_hash_stays_in_the_path_and_parentheses_nest_freely():
     """Splitting on the hash before consuming the escape gave the target `a\\`.
-    And `docs/a(b(c)).md` is a valid destination the single-level balanced
-    alternative could not match at all, so a deleted target spelled that way
-    produced no finding."""
-    mm = m.MD_LINK_RE.search(r"[x](a\#b.md)")
+    And a destination nests parentheses to any depth -- `docs/a(b(c(d))).md`
+    is one CommonMark resolves, and a fixed-depth alternative could not match
+    such a link at all, so a deleted target spelled that way produced no
+    finding."""
+    mm = next(m.md_links(r"[x](a\#b.md)"))
     assert mm.group("target") == r"a\#b.md" and mm.group("frag") is None
-    assert m.MD_LINK_RE.search("[x](docs/a(b(c)).md)").group("target") == \
-        "docs/a(b(c)).md"
+    for dest in ("docs/a(b).md", "docs/a(b(c)).md", "docs/a(b(c(d))).md"):
+        assert next(m.md_links(f"[x]({dest})")).group("target") == dest
+        assert [f["detail"] for f in m.check_dead_links(
+            "d.md", f"# T\n\n[x]({dest})\n", {"d.md"})] == \
+            [f"relative link -> {dest}"]
+    # An UNBALANCED destination still ends at the first unmatched `)`, which
+    # is where the rendered link ends.
+    assert next(m.md_links("[x](a.md)b)")).group(0) == "[x](a.md)"
 
 
 def test_inline_html_is_markup_and_an_autolink_is_not():
@@ -6457,3 +6464,47 @@ def test_a_case_variant_owner_is_read_rather_than_duplicated():
     assert out.count("wner:**") == 1
     # The canonical spelling still reads.
     assert m.owner_of(["**Owner:** Bob"], 0) == "Bob"
+
+
+def test_the_document_h1_is_not_one_displayed_inside_raw_html():
+    """`<pre>` displays `# Example` literally, so GitHub renders no heading
+    there -- taking one as the H1 put the provenance marker INSIDE the block,
+    where nothing renders it, and a later audit could accept that misplaced
+    marker. heading_anchors and marker_window excluded these; this did not."""
+    assert m.h1_index(["<pre>", "# Example", "</pre>", "", "# Real"]) == 4
+    # The exclusions it already had are unchanged, and an ordinary H1 still
+    # wins from line zero.
+    assert m.h1_index(["```", "# Example", "```", "", "# Real"]) == 4
+    assert m.h1_index(["# Real", "", "body"]) == 0
+
+
+def test_an_explicit_html_anchor_is_a_destination_the_page_offers():
+    """`<a name="legacy"></a>` and any `id="..."` are rendered destinations a
+    browser honours, so `[x](#legacy)` is valid with no heading of that name.
+    Indexing only heading slugs made the dead-anchor check reject it."""
+    assert m.heading_anchors('<a name="custom"></a>\n\n# T\n') == {"custom", "t"}
+    # The unquoted attribute form is valid HTML and the browser exposes it.
+    assert m.html_anchors(["<div id=section>"]) == {"section"}
+    # And an attribute on a LATER physical line, which no per-line scan sees.
+    assert m.html_anchors(["<div", '  id="section">']) == {"section"}
+    # Character references are decoded, as a heading slug already decodes them.
+    assert m.html_anchors(['<div id="a&amp;b">']) == {"a&b"}
+    # An anchor a reader cannot see is not a destination: raw-text blocks,
+    # comment spans and code spans each hide one.
+    assert m.html_anchors(["<pre>", '<a id="fake"></a>', "</pre>"]) == set()
+    assert m.html_anchors(['text <!-- <a id="fake"></a> -->']) == set()
+    assert m.html_anchors(['see `<a id="fake">`']) == set()
+
+
+def test_a_heading_label_reads_the_two_line_definition_form():
+    """`[g]:` over `  guide.md` defines `g`, so `## See [guide][g]` renders
+    anchored `see-guide`. Reading only the single-line form recorded
+    `see-guideg` and reported a working fragment link dead -- the dead-link
+    pass has read both forms since it was raised."""
+    assert m.heading_anchors("[g]:\n  guide.md\n\n## See [guide][g]\n") == \
+        {"see-guide"}
+    # The single-line form is unchanged, and an UNDEFINED label still keeps
+    # both halves in the slug, which is how CommonMark renders it.
+    assert m.heading_anchors("[g]: guide.md\n\n## See [guide][g]\n") == \
+        {"see-guide"}
+    assert m.heading_anchors("## See [guide][g]\n") == {"see-guideg"}
