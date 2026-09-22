@@ -29,7 +29,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 
 | Capability | Entry points | Trigger | Data | Target gap |
 |---|---|---|---|---|
-| Platform API | `platform/api/main.py` + 18 routers | HTTPS | Cloud SQL via `lib/data_loader`, GCS | consistent contracts, ownership, telemetry |
+| Platform API | `platform/api/main.py` + 18 routers | HTTPS | Cloud SQL via `lib/data_loader.py`, GCS | consistent contracts, ownership, telemetry |
 | Ingestion / analysis jobs | 76 Cloud Run jobs live (67 declared in `gcp/**`) | Cloud Scheduler (65 live) / manual | vendors → SQL/artifacts | idempotency, freshness, provenance, and 8 undeclared jobs — see [05](05-INFRASTRUCTURE.md) |
 | Discord interactions | `gcp/discord_interactions/main.py` | Discord HTTPS | interaction validation | secrets via env not Secret Manager ([#830](https://github.com/TeneikaAskew/stocks/issues/830)) |
 
@@ -190,7 +190,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/magnitude/{ticker}/{tf}/latest` | Return the latest stored magnitude prediction for ticker and timeframe. | Gated in `firebase`; **unenforced in `iap`/`open`** | inline SQL on `magnitude_per_bar_predictions` ⚠ **not in `schema.sql`** | — |
 | GET | `/api/magnitude/{ticker}/{tf}/at/{ts}` | Return the point-in-time magnitude prediction at a requested timestamp. | Gated in `firebase`; **unenforced in `iap`/`open`** | inline SQL on `magnitude_per_bar_predictions` ⚠ **not in `schema.sql`** | — |
 
-Both responses carry the four bucket probabilities and `pred_bucket`. Since 2026-09-14 `pred_bucket` is the **served decision rule**, not argmax: the highest bucket whose probability is at least `DECISION_LIFT_MIN` (2.0) × its training-class prior, else TIGHT (`mag_pred_train.decide_bucket`; priors and bar recorded in each artifact's `CONTRACT.json`). Field names and the OpenAPI schema are unchanged; the meaning is. Consumers that need a decision should read `pred_bucket`; consumers that need a magnitude read the probabilities. Rationale and measurements: `docs/EXPERIMENT_REGISTRY.md` E-26.
+Both responses carry the four bucket probabilities and `pred_bucket`. Since 2026-09-14 `pred_bucket` is the **served decision rule**, not argmax: the highest bucket whose probability is at least `DECISION_LIFT_MIN` (2.0) × its training-class prior, else TIGHT (`mag_pred_train.decide_bucket`; priors and bar recorded in each artifact's `CONTRACT.json`). Field names and the OpenAPI schema are unchanged; the meaning is. Consumers that need a decision should read `pred_bucket`; consumers that need a magnitude read the probabilities. Rationale and measurements: `docs/EXPERIMENT_REGISTRY.md` E-35.
 
 ### `platform/api/routers/options.py` — 5 endpoints
 
@@ -282,4 +282,4 @@ not just a cleanup question.
 | Test coverage | [#503](https://github.com/TeneikaAskew/stocks/pull/503) 12 hermetic API test classes · [#505](https://github.com/TeneikaAskew/stocks/pull/505) real-SQL integration tests on ephemeral Postgres · [#509](https://github.com/TeneikaAskew/stocks/pull/509) |
 | Remediation | [#518](https://github.com/TeneikaAskew/stocks/pull/518) INT-column coercion (22P02 bug class) · [#483](https://github.com/TeneikaAskew/stocks/pull/483) `pool_pre_ping` for Cloud SQL TLS drops · [#507](https://github.com/TeneikaAskew/stocks/pull/507) CPU throttling |
 | Code | `platform/api/main.py`, `platform/api/routers/*.py`, `platform/api/auth.py`, `lib/data_loader.py` |
-| Tests | `tests/test_api_*.py`, `platform/tests/api-smoke.spec.ts` |
+| Tests | `tests/api/test_*.py`, `platform/tests/api-smoke.spec.ts` |

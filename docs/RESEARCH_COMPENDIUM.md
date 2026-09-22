@@ -180,7 +180,7 @@ differences (CLAUDE.md "one source of truth").
 
 ### 5.2 A2 — Magnitude engine ⚠️ (predictable, but priced)
 
-- **2026-09-14 update (E-26):** the engine's two promotion criteria (beat the class prior on log-loss; argmax share within 10 pp of the true modal share) were measured mutually unsatisfiable for any class weighting, because a calibrated model on a 64%-TIGHT label set argmax-picks TIGHT on ~97% of bars by construction. The serving artifacts were constants. Every place a bucket is named now uses one decision rule (P(bucket) ≥ 2× its prior); the honest tail signal at that point is an EXPLOSIVE call on ~13% of bars at 8–9% precision (base 2.6%). The naive calendar lookup, re-run under that rule on 2026-09-16, now clears all four gates on the promoted 5m cells (it could never argmax EXPLOSIVE before), so gates 1–4 no longer separate the models from a calendar table; gate 7, re-run on the decision-rule population the same day (~100× more called bars per fold), fails again on every cell: 0/24 IV-covered folds, mean realised/implied 0.67–0.73 against 0.83–0.92 in May. The priced verdict stands; results doc §12. `docs/MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14 and §12.
+- **2026-09-14 update (E-35):** the engine's two promotion criteria (beat the class prior on log-loss; argmax share within 10 pp of the true modal share) were measured mutually unsatisfiable for any class weighting, because a calibrated model on a 64%-TIGHT label set argmax-picks TIGHT on ~97% of bars by construction. The serving artifacts were constants. Every place a bucket is named now uses one decision rule (P(bucket) ≥ 2× its prior); the honest tail signal at that point is an EXPLOSIVE call on ~13% of bars at 8–9% precision (base 2.6%). The naive calendar lookup, re-run under that rule on 2026-09-16, now clears all four gates on the promoted 5m cells (it could never argmax EXPLOSIVE before), so gates 1–4 no longer separate the models from a calendar table; gate 7, re-run on the decision-rule population the same day (~100× more called bars per fold), fails again on every cell: 0/24 IV-covered folds, mean realised/implied 0.67–0.73 against 0.83–0.92 in May. The priced verdict stands; results doc §12. `docs/MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14 and §12.
 
 - **Predicts:** `magnitude_bucket` of |next_close−next_open|/ATR20 — TIGHT (<0.5),
   NORMAL (0.5–1.0), EXPANDED (1.0–1.5), **EXPLOSIVE (≥1.5)**.
@@ -785,7 +785,8 @@ re-run corrected.
     money-printer. Pursue only with execution-quality focus (stop-limit entry,
     SPY-first, 15m).
 
-Detail: `docs/MODEL_RETHINK_PLANS.md` §RESULTS, `docs/MODEL_CATALOG.md`.
+Detail: [`docs/MODEL_RETHINK_PLANS.md`](MODEL_RETHINK_PLANS.md) §RESULTS,
+[`docs/MODEL_REGISTRY.md`](MODEL_REGISTRY.md) Part B (formerly `MODEL_CATALOG.md`).
 
 ---
 
@@ -811,14 +812,18 @@ Detail: `docs/MODEL_RETHINK_PLANS.md` §RESULTS, `docs/MODEL_CATALOG.md`.
 
 ## 8. Where everything lives
 
-- **This index:** `docs/MODELS_END_TO_END.md` (you are here).
+- **This index:** `docs/RESEARCH_COMPENDIUM.md` Part B (you are here — formerly
+  `docs/MODELS_END_TO_END.md`, merged 2026-06-10).
 - Strat engine: `docs/STRAT_ENGINE_AND_COMBO_PIPELINE.md`,
   `docs/STRAT_ENGINE_ARCHITECTURE.md`, `docs/STRAT_ENGINE_ERD.md`,
   `docs/STRAT_ENGINE_OPERATIONS.md`, `docs/STRAT_METHODOLOGY.md`.
 - Magnitude engine: `docs/MAGNITUDE_ENGINE_RESULTS.md`,
   `docs/MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF.md`.
 - Direction R&D: `docs/DIRECTION_FEATURES_R&D.md`.
-- Rethink models + verdicts: `docs/MODEL_CATALOG.md`, `docs/MODEL_RETHINK_PLANS.md`.
+- Rethink models + verdicts: [`docs/MODEL_REGISTRY.md`](MODEL_REGISTRY.md) Part B
+  (formerly `MODEL_CATALOG.md`), [`docs/MODEL_RETHINK_PLANS.md`](MODEL_RETHINK_PLANS.md).
+- Experiment ledger: [`docs/EXPERIMENT_REGISTRY.md`](EXPERIMENT_REGISTRY.md) (`E-01…E-35`).
+- Governance / lifecycle: [`docs/product/07-MODEL-REGISTRY.md`](product/07-MODEL-REGISTRY.md).
 - Code: `gcp/research/strat_engine/` (strat + the 3 rethink models),
   `gcp/research/magnitude_engine/` (magnitude), `scripts/implied_vs_realized_check.py`
   (gate 7), `scripts/magnitude_movement_sim.py` (movement sim).
@@ -833,7 +838,8 @@ Prompted by "what would make the magnitude model effective?" A scratch-harness
 program (single chronological 70/30 split, IWM/SPY/QQQ 5m, tempered α=0.75 —
 **weaker than the 8-fold purged/embargoed + EV + gate-7 standard**) tested target
 reframing, feature additions, and direction. Full record:
-`EXPERIMENT_REGISTRY.md` §2026-07-06 (E-25…E-31 + P0.1); model entry
+`EXPERIMENT_REGISTRY.md` §2026-07-06 (E-26…E-31, E-33 + P0.1 — the session's
+feature-family ablation was renumbered 2026-09-15 from E-25 to E-33); model entry
 `MODEL_REGISTRY.md` §C-mf (PROPOSED/OPEN); addenda in
 `MAGNITUDE_ENGINE_RESULTS.md` and `DIRECTION_RESEARCH_RESULTS.md`.
 

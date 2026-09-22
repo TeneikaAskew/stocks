@@ -46,7 +46,7 @@ vs Strat-structure overlay).
   rule P(bucket) ≥ 2× its training prior, recorded in each artifact's
   `CONTRACT.json`, and gate 4 is scored on that population. Every gate count
   quoted in this doc was computed under the old rule. `EXPERIMENT_REGISTRY.md`
-  E-26; `MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14.
+  E-35; `MAGNITUDE_ENGINE_RESULTS.md` §2026-09-14.
 
 ---
 
