@@ -6281,3 +6281,43 @@ def test_a_heading_reference_definition_must_open_a_block():
         ["guide", "t"]
     assert sorted(m.heading_anchors("# T\n\n[g]:README.md\n\n## [Guide][g]\n")) == \
         ["guide", "t"]
+
+
+def test_every_reference_label_goes_through_one_key():
+    """The dead-link definition map was the THIRD place keying a label its own
+    way, so `[my ref]` and `[my   ref]` were stored as two definitions and the
+    second -- which CommonMark never resolves, the first wins -- was validated
+    and reported dead. Found by sweeping for the pattern rather than waiting
+    for it to be reported a third time."""
+    out = m.check_dead_links("d.md", "[my ref]: ok.md\n\n[my   ref]: missing.md\n",
+                             {"d.md", "ok.md"})
+    assert out == []
+    # Genuinely distinct labels are still both checked.
+    out = m.check_dead_links("d.md", "[a]: ok.md\n\n[b]: missing.md\n",
+                             {"d.md", "ok.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+
+
+def test_a_front_matter_closing_delimiter_sits_at_column_zero():
+    """An indented `---` is not a delimiter, but `strip()` accepted one -- so
+    everything through that line was masked as metadata and a rendered link,
+    heading or marker inside the span was silently excluded. The OPENER has
+    required column zero since it was raised; the closer did not."""
+    assert m.front_matter_lines(["---", "a: 1", "  ---", "[x](missing.md)"]) == set()
+    out = m.check_dead_links(
+        "d.md", "---\na: 1\n  ---\n[x](missing.md)\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+    # A real closer at column zero, in both spellings, still delimits.
+    assert m.front_matter_lines(["---", "a: 1", "---"]) == {0, 1, 2}
+    assert m.front_matter_lines(["---", "a: 1", "..."]) == {0, 1, 2}
+
+
+def test_a_setext_heading_is_its_whole_paragraph():
+    """`Hello` over `world` over `---` renders ONE heading anchored
+    `hello-world`. Slugging the final line alone recorded `world`, so the real
+    fragment was reported dead and one the page does not expose accepted."""
+    assert sorted(m.heading_anchors("Hello\nworld\n---\n")) == ["hello-world"]
+    # The single-line forms this grew out of are unchanged.
+    assert sorted(m.heading_anchors("Title\n===\n")) == ["title"]
+    assert sorted(m.heading_anchors("- Title\n  ===\n")) == ["title"]
+    assert sorted(m.heading_anchors("# T\n\n## Sub\n")) == ["sub", "t"]

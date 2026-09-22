@@ -691,7 +691,10 @@ def heading_anchors(text: str) -> set[str]:
     # actually exposes `guideg`. The dead-link scan has applied this rule
     # since the round it was raised; this collector did not, which is the
     # same two-halves-disagreeing shape as the label keying before it.
-    _def_starts = {lo for lo, _ in _paragraph_blocks(lines, fenced)}
+    _blocks = _paragraph_blocks(lines, fenced)
+    # Which line each paragraph block STARTS on, for the Setext branch below.
+    _setext_starts = {i: lo for lo, hi in _blocks for i in range(lo, hi + 1)}
+    _def_starts = {lo for lo, _ in _blocks}
     _def_seen: set[int] = set()
     _labels: set[str] = set()
     for i, ln in enumerate(lines):
@@ -745,9 +748,21 @@ def heading_anchors(text: str) -> set[str]:
         # precisely because is_setext_underline already refuses the case the
         # ATX-only comment above was guarding: `- Example` over a column-zero
         # `---` ends the list and renders a thematic break.
-        base = heading_slug(
-            _LIST_MARKER_RE.sub("", line.strip(), count=1) if setext
-            else m.group(1), ref_labels)
+        # A Setext heading is the WHOLE paragraph above its underline, not
+        # just the last line: `Hello` over `world` over `---` renders one
+        # heading anchored `hello-world`. Slugging the final line alone
+        # recorded `world`, so the real fragment was reported dead and one the
+        # page does not expose was accepted. The lines are joined with a
+        # space, which is how the soft break renders.
+        if setext:
+            lo = _setext_starts.get(i, i)
+            text = " ".join(
+                _BLOCKQUOTE_PREFIX_RE.sub("", ln, count=1).strip()
+                for ln in lines[lo:i + 1])
+            head_text = _LIST_MARKER_RE.sub("", text.strip(), count=1)
+        else:
+            head_text = m.group(1)
+        base = heading_slug(head_text, ref_labels)
         n = seen.get(base, 0)
         slug = base if n == 0 else f"{base}-{n}"
         while slug in out:
@@ -2594,7 +2609,11 @@ def front_matter_lines(lines: list[str]) -> set[int]:
     if not lines or lines[0].rstrip() != "---":
         return set()
     for i in range(1, len(lines)):
-        if lines[i].strip() in ("---", "..."):
+        # COLUMN ZERO, as the opener already requires. An indented `---` is
+        # not a delimiter, but `strip()` accepted one -- so everything through
+        # that line was masked as metadata and a rendered link, heading or
+        # marker inside the span was silently excluded.
+        if lines[i].rstrip() in ("---", "..."):
             return set(range(0, i + 1))
     return set()
 
@@ -3787,7 +3806,13 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # the last meant `[g]: missing.md` followed by `[g]: good.md` rendered
         # as a broken link while the audit validated only `good.md`.
         if label is not None:
-            ref_defs.setdefault(label.strip().lower(),
+            # Through _ref_key, like every other label site. This map was the
+            # third place keying a label its own way, so `[my ref]` and
+            # `[my   ref]` were stored as two definitions and the second --
+            # which CommonMark never resolves, the first wins -- was validated
+            # and reported dead. Found by sweeping for the pattern rather than
+            # by waiting for it to be reported a third time.
+            ref_defs.setdefault(_ref_key(label),
                                 (target.strip("<>"), dest_line))
     for label, (target, n) in ref_defs.items():
         # Not `partition("#")`: a reference definition bypasses MD_LINK_RE, so
