@@ -6272,8 +6272,9 @@ def test_an_h1_introduced_by_a_list_marker_is_the_h1():
 def test_a_heading_reference_definition_must_open_a_block():
     """`paragraph` then `[g]: x.md` renders literally -- CommonMark registers
     no reference there -- so collecting it let `## [Guide][g]` resolve to
-    `guide` when the page actually exposes `guideg`. The dead-link scan has
-    applied this rule since it was raised; this collector did not."""
+    `guide` when the page actually exposes `guideg`. The dead-link scan's own
+    collector is the other half of the rule and got the same test a round
+    later."""
     interrupted = "paragraph\n[g]: README.md\n\n## [Guide][g]\n"
     assert sorted(m.heading_anchors(interrupted)) == ["guideg"]
     # A definition that DOES open a block still defines, colon space or not.
@@ -6321,3 +6322,138 @@ def test_a_setext_heading_is_its_whole_paragraph():
     assert sorted(m.heading_anchors("Title\n===\n")) == ["title"]
     assert sorted(m.heading_anchors("- Title\n  ===\n")) == ["title"]
     assert sorted(m.heading_anchors("# T\n\n## Sub\n")) == ["sub", "t"]
+
+
+def test_a_dead_link_definition_must_open_a_block_too():
+    """CommonMark does not let a definition interrupt a paragraph, so
+    `paragraph` over `[g]: missing.md` renders as prose and registers no
+    reference. This loop validated it anyway and emitted a gating dead-link
+    finding for text that produces no link. `heading_anchors` had the rule;
+    its other half did not."""
+    assert m.check_dead_links(
+        "d.md", "# T\n\nparagraph\n[g]: missing.md\n", {"d.md"}) == []
+    # A definition that DOES open a block is still checked, in every container.
+    for text in ("# T\n\n[g]: missing.md\n",
+                 "# T\n\n> [g]: missing.md\n",
+                 "# T\n\n- [g]: missing.md\n"):
+        assert [f["check"] for f in m.check_dead_links("d.md", text, {"d.md"})] \
+            == ["dead-link"], text
+    # Consecutive definitions are one run: the second opens off the first.
+    out = m.check_dead_links("d.md", "# T\n\n[a]: m1.md\n[b]: m2.md\n", {"d.md"})
+    assert [f["line"] for f in out] == [3, 4]
+    # And the two-line form opens the line after its DESTINATION, not its label.
+    out = m.check_dead_links("d.md", "# T\n\n[a]:\n  m1.md\n[b]: m2.md\n", {"d.md"})
+    assert [f["line"] for f in out] == [4, 5]
+
+
+def test_a_raw_html_block_opens_through_a_list_marker():
+    """`- <pre>` opens a raw-text block whose contents display literally, so
+    the `[x](missing.md)` inside it is an EXAMPLE. Stripping only blockquotes
+    left the opener unrecognised and produced a gating dead-link finding for a
+    link no reader can click."""
+    assert m.raw_html_block_lines(
+        ["- <pre>", "  [x](missing.md)", "  </pre>"]) == {0, 1, 2}
+    assert m.check_dead_links(
+        "d.md", "# T\n\n- <pre>\n  [x](missing.md)\n  </pre>\n", {"d.md"}) == []
+    # The containers it already handled are unchanged.
+    assert m.raw_html_block_lines(["<pre>", "x", "</pre>"]) == {0, 1, 2}
+    assert m.raw_html_block_lines(["> <pre>", "> x", "> </pre>"]) == {0, 1, 2}
+
+
+def test_a_fence_opens_directly_after_a_list_marker():
+    """CommonMark strips the list container before parsing the fence, so
+    `- ```' opens one. Matching the physical line missed the opener and then
+    read the indented CLOSING delimiter as a new one -- the example's headings
+    were indexed as real anchors and --stamp could aim at one."""
+    assert m.fenced_lines(["- ```", "  # Example", "  ```", ""]) == {0, 1, 2}
+    assert m.heading_anchors("# Real\n\n- ```\n  # Example\n  ```\n") == {"real"}
+    # The item ends the fence, closing delimiter or not.
+    assert m.fenced_lines(["- ```", "  x", "next"]) == {0, 1}
+    # A fence on a LATER line of an item sits at the item's content column.
+    assert m.fenced_lines(["- item", "", "  ```", "  x", "  ```", ""]) == {2, 3, 4}
+    # Four columns with no container is still an indented code line, not a
+    # fence -- opening on one masks every finding below it.
+    assert m.fenced_lines(["    ```", "x", "```"]) == {2}
+    assert m.fenced_lines(["\t```", "x", "```"]) == {2}
+
+
+def test_an_escaped_comment_opener_opens_no_comment():
+    """`\\<!--` displays the delimiter literally and leaves the rest of the
+    line live Markdown. Reading it as a real comment masked content through
+    `-->` or to EOF, suppressing the dead-link, blocker, heading and marker
+    findings in between."""
+    assert m.comment_spans([r"\<!-- [x](missing.md)"]) == {}
+    assert m._comment_hidden([r"\<!--", "a"]) == set()
+    assert [f["check"] for f in m.check_dead_links(
+        "d.md", "# T\n\n\\<!-- [x](missing.md)\n", {"d.md"})] == ["dead-link"]
+    # A real opener still opens, and PARITY still decides: `\\\\<!--` is a
+    # literal backslash followed by a live comment.
+    assert m.comment_spans(["<!-- [x](missing.md)"]) == {0: [(0, 20)]}
+    assert m.comment_spans([r"\\<!-- x"]) == {0: [(2, 8)]}
+    # Through `fenced_lines`, which reads the standalone copy of this scan
+    # in `_comment_hidden`: a false comment there swallows every later fence
+    # delimiter, so the example below it is audited as live content.
+    assert m.fenced_lines([r"\<!--", "```", "x", "```"]) == {1, 2, 3}
+    assert m.fenced_lines(["<!--", "```", "x", "```"]) == set()
+
+
+def test_an_escaped_angle_bracket_is_reference_destination_content():
+    """`[g]: <a\\>b.md>` resolves to `a>b.md`. `[^>]*` stopped at the escaped
+    `>`, captured `<a\\>` and reported a tracked file dead."""
+    assert m.REF_DEF_RE.match(r"[g]: <a\>b.md>").group("target") == r"<a\>b.md>"
+    assert m.REF_DEF_CONT_RE.match(r"  <a\>b.md>").group("target") == r"<a\>b.md>"
+    assert m.check_dead_links(
+        "d.md", "# T\n\n[g]: <a\\>b.md>\n", {"d.md", "a>b.md"}) == []
+    # The forms it already accepted are unchanged.
+    assert m.REF_DEF_RE.match("[g]: <a b.md>").group("target") == "<a b.md>"
+    assert m.REF_DEF_RE.match("[g]: plain.md").group("target") == "plain.md"
+
+
+def test_a_uri_scheme_is_read_off_the_rendered_destination():
+    """`[x](https&#58;//example.com)` renders as an ordinary HTTPS link. The
+    scheme test ran on the encoded spelling, so the audit resolved it as a
+    repository-relative path and emitted a gating dead-link finding for a file
+    no one meant to exist locally."""
+    assert m.check_dead_links(
+        "d.md", "# T\n\n[x](https&#58;//example.com)\n", {"d.md"}) == []
+    assert m.check_dead_links(
+        "d.md", "# T\n\n[x](https\\://example.com)\n", {"d.md"}) == []
+    # A genuinely relative destination is still resolved and still checked.
+    assert [f["check"] for f in m.check_dead_links(
+        "d.md", "# T\n\n[x](missing.md)\n", {"d.md"})] == ["dead-link"]
+
+
+def test_a_setext_underline_ends_the_inline_parsing_block():
+    """An unmatched backtick in a multiline Setext heading paired with one in
+    the paragraph BELOW the underline, and code_span_lines masked a live
+    `[x](missing.md)` between them out of the audit."""
+    lines = ["Head `a", "====", "[x](missing.md) `b"]
+    assert m._paragraph_blocks(lines, frozenset()) == [(0, 1), (2, 2)]
+    # A thematic break needs a blank line above it to BE one: `a` over `---`
+    # is a Setext H2, so the heading and its underline are ONE block.
+    assert m._paragraph_blocks(["a", "", "---", "b"], frozenset()) == \
+        [(0, 0), (2, 2), (3, 3)]
+    assert m._paragraph_blocks(["a", "---", "b"], frozenset()) == [(0, 1), (2, 2)]
+    assert m.code_span_lines(lines) == {}
+    assert [f["check"] for f in m.check_dead_links(
+        "d.md", "Head `a\n====\n[x](missing.md) `b\n", {"d.md"})] == ["dead-link"]
+    # The heading itself is still its whole paragraph.
+    assert m.heading_anchors("Head\nTwo\n===\n\npara\n") == {"head-two"}
+    assert m.heading_anchors("Head Two\n---\n") == {"head-two"}
+
+
+def test_a_case_variant_owner_is_read_rather_than_duplicated():
+    """`**owner:** Alice` is a field every reader recognises. Reading it
+    case-sensitively returned None, the variant was kept as free text, and
+    --stamp wrote a canonical `**Owner:** TBD` beside it -- one line asserting
+    two different owners, reported as updated."""
+    line = "**Last reviewed:** 2026-01-01 · **owner:** Alice"
+    assert m.owner_of(["# T", "", line], 2) == "Alice"
+    assert m.extra_segments(line) == []
+    out, _ = m.stamp("# T\n\n" + line + "\n\nBody.\n",
+                     "2026-09-22", "scanned", "abc1234")
+    assert "**Owner:** Alice" in out
+    assert "**Owner:** TBD" not in out
+    assert out.count("wner:**") == 1
+    # The canonical spelling still reads.
+    assert m.owner_of(["**Owner:** Bob"], 0) == "Bob"

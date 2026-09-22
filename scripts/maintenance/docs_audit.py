@@ -333,8 +333,14 @@ MD_LINK_RE = re.compile(
 # definition -- and because reference USES are deliberately not scanned, its
 # broken destination produced no finding at all. The head form below still
 # matches when nothing follows the colon, because `\S+` needs a character.
+# A BACKSLASH ESCAPE inside the angle-bracketed form is destination
+# content, not the delimiter: CommonMark resolves `[g]: <a\\>b.md>` to
+# `a>b.md`. `[^>]*` stopped at the escaped `>`, captured `<a\\>` and
+# reported a tracked file dead -- the false direction. An unescaped `<`
+# is not destination content either, so it ends the alternative too.
 REF_DEF_RE = re.compile(
-    r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*(?P<target><[^>]*>|\S+)")
+    r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*"
+    r"(?P<target><(?:\\.|[^<>\\\n])*>|\S+)")
 # The same definition with its destination on the FOLLOWING line, which
 # CommonMark resolves and a per-line pattern cannot see. Split in two so the
 # continuation is read through the same exclusions as any other line.
@@ -362,7 +368,8 @@ HTML_HREF_RE = re.compile(
     r"""(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'`=<>]+))""",
     re.I | re.S)
 REF_DEF_HEAD_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*$")
-REF_DEF_CONT_RE = re.compile(r"^[ \t]*(?P<target><[^>]*>|\S+)")
+REF_DEF_CONT_RE = re.compile(
+    r"^[ \t]*(?P<target><(?:\\.|[^<>\\\n])*>|\S+)")
 # A USE (`[text][label]`) is deliberately NOT checked. Measured over the 322
 # markdown documents in this tree: 1 reference definition, 204 bracket pairs.
 # Almost every pair is an issue-title tag -- `[P0][Replay]`, `[audit] R2 --` --
@@ -688,9 +695,11 @@ def heading_anchors(text: str) -> set[str]:
     # And only where a definition may BEGIN. `paragraph` then `[g]: x.md`
     # renders literally -- CommonMark registers no reference there -- so
     # collecting it let `## [Guide][g]` resolve to `guide` when the page
-    # actually exposes `guideg`. The dead-link scan has applied this rule
-    # since the round it was raised; this collector did not, which is the
-    # same two-halves-disagreeing shape as the label keying before it.
+    # actually exposes `guideg`. The dead-link scan's own definition collector
+    # is the other half of this rule and validated such a line as a live
+    # destination -- a gating finding over text that produces no link -- until
+    # it was given the same test; the two now share `_paragraph_blocks` so
+    # they cannot disagree about where a definition may begin.
     _blocks = _paragraph_blocks(lines, fenced)
     # Which line each paragraph block STARTS on, for the Setext branch below.
     _setext_starts = {i: lo for lo, hi in _blocks for i in range(lo, hi + 1)}
@@ -1853,8 +1862,16 @@ def is_future_date(date: str, today: str) -> bool:
 # on it held a false fence across live paragraphs and suppressed their
 # findings. The lead is captured instead and measured in columns by the
 # caller, which is the same rule indentedCodeLines and _list_content_col use.
+# A LIST MARKER is a container prefix too, and CommonMark strips it before
+# parsing the fence: `- ```md` opens one as the first content of the item.
+# Matching the physical line missed that opener and then read the indented
+# CLOSING delimiter as a new one, so the example's headings were indexed as
+# real anchors and --stamp could insert the review marker inside the code
+# block. The Node twin has admitted the marker for rounds; this did not.
 _FENCE_RE = re.compile(
-    r"^(?P<pre>[ \t]*)(?:> ?)*(?P<lead>[ \t]*)(?P<delim>`{3,}|~{3,})(?P<info>.*)$")
+    r"^(?P<pre>[ \t]*)(?P<quote>(?:> ?)*)"
+    r"(?P<item>(?:[-*+]|\d+[.)])\s+)?"
+    r"(?P<lead>[ \t]*)(?P<delim>`{3,}|~{3,})(?P<info>.*)$")
 _QUOTE_PREFIX_RE = re.compile(r"^ {0,3}((?:> ?)*)")
 # At least ONE marker, for STRIPPING the container. The counting pattern above
 # matches the empty prefix by design, so using it to strip also ate up to three
@@ -1914,7 +1931,14 @@ def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
                     break
                 spans = code_spans(line) + wrapped_code.get(i, [])
                 a = line.find("<!--", pos)
-                while a >= 0 and any(lo <= a < hi for lo, hi in spans):
+                # An ESCAPED opener opens nothing: `\\<!--` displays the
+                # delimiter literally and the rest of the line stays live
+                # Markdown. Reading it as a comment masked content through
+                # `-->` or to EOF and suppressed the dead-link, blocker,
+                # heading and marker findings in between. `_comment_hidden`,
+                # the standalone copy of this scan, carries the same rule.
+                while a >= 0 and (any(lo <= a < hi for lo, hi in spans)
+                                  or is_escaped(line, a)):
                     a = line.find("<!--", a + 1)
                 if a < 0:
                     break
@@ -2129,6 +2153,15 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
                 in_comment = False
             continue
         if open_tag is None:
+            # A LIST MARKER is a container prefix too, and CommonMark removes
+            # it before parsing the block: `- <pre>` opens a raw-text block
+            # whose contents display literally, so a `[x](missing.md)` inside
+            # it is an EXAMPLE and produced a gating dead-link finding for a
+            # link no reader can click. Only while nothing is open -- inside a
+            # block the line is displayed text and its leading `-` is content.
+            # Every branch below returns, so the stripped text reaches no
+            # closer test. The fence scanner learned the same rule this round.
+            line = _LIST_MARKER_RE.sub("", line, count=1)
             # Whatever opens on THIS line opens at this line's depth. Recorded
             # before the opener tests rather than at each of the four places a
             # block can start, so none of them can be missed; it is only read
@@ -2233,7 +2266,13 @@ def _comment_hidden(lines: list[str]) -> set[int]:
         # contradictory one. comment_spans learned this a round ago; this
         # standalone helper, which exists to break the recursion between the
         # two, did not. `code_spans` is line-local and depends on nothing here.
-        while at != -1 and any(lo <= at < hi for lo, hi in spans):
+        # An ESCAPED opener opens nothing either: `\\<!--` displays the
+        # delimiter literally and leaves the rest of the line live Markdown.
+        # Reading it as a real comment masked everything through `-->` or to
+        # EOF, suppressing the dead-link, blocker, heading and marker findings
+        # in between -- the direction that hides defects.
+        while at != -1 and (any(lo <= at < hi for lo, hi in spans)
+                            or is_escaped(line, at)):
             at = line.find("<!--", at + 1)
         if at != -1 and "-->" not in line[at:]:
             # The comment opens here and does not close on this line, so this
@@ -2349,13 +2388,34 @@ def _fenced_scan(lines: list[str], html: frozenset[int] | set[int]) -> set[int]:
             # a fence that outlived the block and swallowed every later link,
             # blocker, heading and marker as "code".
             if (m and i not in html
-                    and _column_width(m.group("pre")) <= 3
-                    and _column_width(m.group("lead")) <= 3
                     and not (m.group("delim")[0] == "`"
                              and "`" in m.group("info"))):
+                # Indentation measured RELATIVE to the container, which is what
+                # CommonMark's "up to three spaces" means. A blockquote prefix
+                # or a list marker on THIS line is itself the container, so its
+                # own lead is the baseline; otherwise the baseline is the
+                # content column of the enclosing item, where a fence on a
+                # later line of that item legally sits. A flat cap rejected
+                # those and then misread the closing delimiter as an opener.
+                base = (_column_width(m.group("pre"))
+                        if m.group("quote") or m.group("item")
+                        else _list_content_col(lines, i))
+                if _column_width(m.group("pre")) - base > 3:
+                    continue
+                # Inside a blockquote the container is the QUOTE, so what
+                # counts is the indentation AFTER the marker: `>     ```" is an
+                # indented code line carrying literal backticks.
+                if m.group("quote") and _column_width(m.group("lead")) > 3:
+                    continue
                 open_fence = m.group("delim")
                 open_depth = quote_depth(line)
-                open_list_col = _list_content_col(lines, i)
+                # A fence opening ON the marker line sits at that item's
+                # content column; `_list_content_col` scans BACKWARD for an
+                # enclosing item and so reports 0 here, which would disable
+                # the item-end rule for exactly the fences this round added.
+                open_list_col = (
+                    _column_width(m.group("pre")) + _column_width(m.group("item"))
+                    if m.group("item") else _list_content_col(lines, i))
                 out.add(i)
             continue
         out.add(i)
@@ -2747,7 +2807,12 @@ def extra_segments(line: str) -> list[str]:
     out = []
     for seg in line.split(DOT):
         seg = seg.strip()
-        if not seg or any(seg.startswith(f"**{f}") for f in OWNED_FIELDS):
+        # Case-insensitively, for the same reason `owner_of` is: a variant
+        # this script's own parser declines is still a field the rewrite
+        # OWNS, and keeping it as extra prose duplicated it beside the
+        # canonical spelling.
+        if not seg or any(seg.lower().startswith(f"**{f}".lower())
+                          for f in OWNED_FIELDS):
             continue
         out.append(seg)
     return out
@@ -2756,7 +2821,13 @@ def extra_segments(line: str) -> list[str]:
 def owner_of(lines: list[str], marker_idx: int | None) -> str | None:
     if marker_idx is None:
         return None
-    m = re.search(r"\*\*Owner:\*\*\s*([^·]+)", lines[marker_idx])
+    # Case-INSENSITIVELY, matching `_MARKER_FIELD_RE`, which carries `re.I`
+    # deliberately. `**owner:** Alice` is a field every reader recognises;
+    # reading it case-sensitively returned None, `extra_segments` then kept the
+    # variant as free text, and `--stamp` wrote a canonical `**Owner:** TBD`
+    # beside it -- one line asserting two different owners, reported as
+    # updated.
+    m = re.search(r"\*\*Owner:\*\*\s*([^·]+)", lines[marker_idx], re.I)
     return m.group(1).strip() if m else None
 
 
@@ -3457,6 +3528,18 @@ def _paragraph_blocks(lines: list[str], fenced: set[int]) -> list[tuple[int, int
             continue
         # Read through the container prefix, as every other block test here is.
         bare = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
+        # A SETEXT UNDERLINE closes the heading it belongs to, and a heading is
+        # a block of its own exactly as an ATX one is. Without this an
+        # unmatched delimiter in the heading text paired with one in the
+        # paragraph BELOW the underline, and code_span_lines masked a live
+        # `[x](missing.md)` between them out of the audit. Tested BEFORE the
+        # thematic break, which is what `---` under a paragraph would
+        # otherwise be read as; `is_setext_underline` is the same predicate
+        # heading_anchors uses, so the two cannot disagree about where a
+        # heading ends.
+        if start is not None and is_setext_underline(lines, i, fenced):
+            flush(i)
+            continue
         if _ATX_HEADING_RE.match(bare) or _THEMATIC_BREAK_RE.match(bare):
             flush(i - 1)
             blocks.append((i, i))
@@ -3633,7 +3716,19 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # A narrow `http|https|mailto` allowlist sent `tel:`, `ftp:`, `HTTPS:`
         # and `//example.com/x` down the repository-path branch and produced a
         # P2 for a file never meant to exist locally.
-        if _URI_SCHEME_RE.match(tgt) or tgt.startswith("//"):
+        # Against the RENDERED spelling as well as the written one. A
+        # destination may encode the scheme separator as a character
+        # reference or hide it behind a backslash escape --
+        # `[x](https&#58;//example.com)` renders as an ordinary HTTPS link --
+        # and testing only the raw text sent it down the repository-path
+        # branch, where it became a gating dead-link finding for a file no
+        # one ever meant to exist locally. Percent escapes are deliberately
+        # NOT decoded here: `https%3A//x` stays percent-encoded in the href,
+        # so a browser resolves it relative to this document, which is the
+        # repository-path branch after all.
+        rendered = decode_char_refs(unescape_markdown(tgt))
+        if (_URI_SCHEME_RE.match(tgt) or tgt.startswith("//")
+                or _URI_SCHEME_RE.match(rendered) or rendered.startswith("//")):
             return
         # `[x](#heading)` -- same document, so the anchor is still
         # checkable even though there is no path to resolve.
@@ -3754,6 +3849,17 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
     # A use is excluded too -- see REF_USE_RE for the measurement that says
     # bracketed prose in this corpus cannot be told apart from one.
     ref_defs: dict[str, tuple[str, int]] = {}
+    # And only where a definition may BEGIN. CommonMark does not let a
+    # definition interrupt a paragraph, so `paragraph` over `[g]: missing.md`
+    # renders both lines as prose and registers no reference at all -- yet
+    # this loop validated the second line and emitted a gating dead-link
+    # finding for text that produces no link. `heading_anchors` has applied
+    # the rule since the round it was raised; this half of the same rule did
+    # not, which is the two-implementations shape again. Consecutive
+    # definitions still count: a block of them is one run, so each accepted
+    # definition opens the line after it.
+    _def_starts = {lo for lo, _ in _paragraph_blocks(lines, fenced)}
+    _def_seen: set[int] = set()
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced or (n - 1) in commented and any(
                 a == 0 for a, _ in commented[n - 1]):
@@ -3779,6 +3885,8 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # -- and because reference USES are deliberately not scanned, its
         # broken destination produced no finding at all.
         line = _LIST_MARKER_RE.sub("", line, count=1)
+        if not ((n - 1) in _def_starts or (n - 2) in _def_seen):
+            continue
         rm = REF_DEF_RE.match(line)
         # The destination may sit on the FOLLOWING line: `[guide]:` then
         # `  missing.md` is a definition CommonMark resolves, and `[x][guide]`
@@ -3812,6 +3920,10 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             # which CommonMark never resolves, the first wins -- was validated
             # and reported dead. Found by sweeping for the pattern rather than
             # by waiting for it to be reported a third time.
+            # The LAST line this definition occupied, so the two-line form
+            # opens the line after its destination rather than the line after
+            # its label.
+            _def_seen.add(dest_line - 1)
             ref_defs.setdefault(_ref_key(label),
                                 (target.strip("<>"), dest_line))
     for label, (target, n) in ref_defs.items():
