@@ -1421,6 +1421,15 @@ def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
         if a < b:
             out.setdefault(i, []).append((a, b))
 
+    # Code spans that CROSS a line break, as well as the per-line ones. A
+    # valid span opened on one line, carrying a literal `<!--` on the next and
+    # closing on a third, had that opener read as LIVE: everything below was
+    # then masked to the closing `-->` or to EOF, and the dead links, blocker
+    # citations, headings and markers in between were silently suppressed.
+    # The content checks already used code_span_lines; this scanner did not.
+    # It depends on nothing in this chain, so it is not the recursion
+    # raw-block masking has to avoid.
+    wrapped_code = code_span_lines(lines)
     open_at: tuple[int, int] | None = None
     for i, line in enumerate(lines):
         pos = 0
@@ -1428,7 +1437,7 @@ def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
             if open_at is None:
                 if i in code:
                     break
-                spans = code_spans(line)
+                spans = code_spans(line) + wrapped_code.get(i, [])
                 a = line.find("<!--", pos)
                 while a >= 0 and any(lo <= a < hi for lo, hi in spans):
                     a = line.find("<!--", a + 1)
@@ -1639,7 +1648,14 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     return out
 
 
-_MARKER_SHAPE_RE = re.compile(r"^\*\*Last reviewed:\*\*", re.I)
+# Both spellings. A malformed LEGACY claim -- `**Last Updated:** 2026-9-1` --
+# parses as neither form and was not marker-shaped either, so --stamp inserted
+# a valid marker ABOVE it and the document visibly carried two contradictory
+# provenance lines. The current-format case was already refused; the labels
+# here are exactly the ones LEGACY_MARKER_RE accepts, so the two cannot drift.
+_MARKER_SHAPE_RE = re.compile(
+    r"^\*\*(?:Last reviewed|Last updated|Last refreshed|Last verified|Verified)"
+    r":?\*\*", re.I)
 
 
 def is_code_indented(line: str) -> bool:
@@ -1717,7 +1733,22 @@ def is_setext_underline(lines: list[str], i: int,
     if not _SETEXT_UNDERLINE_RE.fullmatch(lines[i] or ""):
         return False
     above = lines[i - 1] or ""
-    return bool(above.strip()) and not above.lstrip().startswith("#")
+    if not (bool(above.strip()) and not above.lstrip().startswith("#")):
+        return False
+    # The underline must sit in the SAME container block. `> Example` followed
+    # by an unquoted `---` ends the blockquote and renders a thematic break;
+    # reading it as a heading closed marker_window above a real marker below
+    # the break, so the audit reported it missing and --stamp could insert a
+    # contradictory second one.
+    if quote_depth(above) != quote_depth(lines[i]):
+        return False
+    # A list item is a container too: `- Example` then `---` at column 0 ends
+    # the list. An underline indented to the item's CONTENT column is still an
+    # underline, which is why this is an indentation test rather than a ban.
+    item = re.match(r"^(\s*)((?:[-*+]|\d+[.)])\s+)", above)
+    if item and len(re.match(r"^\s*", lines[i]).group(0)) < len(item.group(0)):
+        return False
+    return True
 
 
 def h1_index(lines: list[str]) -> int | None:
@@ -1913,6 +1944,23 @@ def stamp(text: str, date: str, depth: str, sha: str,
                  if found is None or i != found[0]]
     if malformed:
         return text, "skipped-malformed-marker"
+    # And a marker that PARSES but leaves an owned field in its tail. MARKER_RE
+    # is not end-anchored, so `**Depth:** VERIFIED` declines the optional group
+    # and pushes itself AND the valid `Against` / `Last scanned` after it into
+    # `rest` -- where extra_segments drops every owned-looking segment. The
+    # scan-only rewrite then rebuilt the line without them and permanently
+    # deleted the reviewed-against SHA, disabling the drift checks, while the
+    # audit reported the malformed marker as a P2. Refusing keeps the evidence
+    # on disk; the P2 is what asks a human to fix it.
+    # `Owner:` is EXCLUDED: MARKER_RE has no group for it, so a well-formed
+    # marker always carries it in the tail and testing the whole owned set
+    # refused every document with an owner -- which is all of them.
+    if found and not found[1].get("legacy"):
+        tail = found[1].get("rest") or ""
+        if any(seg.strip().startswith(f"**{f}")
+               for seg in tail.split(DOT)
+               for f in OWNED_FIELDS if f != "Owner:"):
+            return text, "skipped-malformed-marker"
     owner = owner_of(lines, found[0] if found else None) or "TBD"
     prev = found[1] if found else None
 
@@ -2073,6 +2121,18 @@ _CONTRAST_RE = re.compile(
     r"except|apart from|other than)\b", re.I)
 
 
+def clause_bounds(line: str, start: int, end: int) -> tuple[int, int]:
+    """Offsets of the clause a citation sits in.
+
+    The same split citation_clause makes, exposed as bounds so a caller can ask
+    whether two citations are the SAME one rather than merely on one line.
+    """
+    masked = _URL_RE.sub(lambda m: "\x00" * len(m.group(0)), line)
+    lo = max((mm.end() for mm in _CLAUSE_SPLIT_RE.finditer(masked, 0, start)), default=0)
+    nxt = _CLAUSE_SPLIT_RE.search(masked, end)
+    return lo, (nxt.start() if nxt else len(line))
+
+
 def citation_clause(line: str, start: int, end: int) -> str:
     """The clause a citation sits in, for judging what the prose says about IT.
 
@@ -2210,9 +2270,21 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # the URL pass below skips the hidden citation too -- so a closed
         # issue produced no finding from either spelling. `hidden` is already
         # computed above; the dedup simply was not reading it.
-        url_nums = {int(mm.group("num")) for mm in ISSUE_URL_RE.finditer(line)
+        # Scoped to the same CLAUSE, not to the number anywhere on the line.
+        # A shorthand and a URL in one clause are two spellings of one
+        # citation -- `#123 is still open https://.../issues/123` -- and must
+        # be reported once; that is what the dedup is for. A line-wide number
+        # set went much further: on `#123 is still open; <.../issues/123> is
+        # resolved` the two clauses say OPPOSITE things, and it suppressed the
+        # live shorthand because the number appeared somewhere on the line.
+        # The URL pass then correctly skipped its own settled clause, so the
+        # contradiction produced no finding at all -- the hiding direction.
+        # Same split citation_clause makes, so "one citation" means the same
+        # thing to the dedup and to the cue analysis.
+        url_here = [(mm.start(), int(mm.group("num")))
+                    for mm in ISSUE_URL_RE.finditer(line)
                     if mm.group("repo").lower() == THIS_REPO
-                    and not any(lo <= mm.start() < hi for lo, hi in hidden)}
+                    and not any(lo <= mm.start() < hi for lo, hi in hidden)]
         skipped_end: int | None = None
         for m in SHORTHAND_ISSUE_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in hidden + url_spans):
@@ -2250,7 +2322,8 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                 skipped_end = m.end()
                 continue
             num = int(m.group("num"))
-            if num in url_nums:
+            c_lo, c_hi = clause_bounds(line, m.start(), m.end())
+            if any(n == num and c_lo <= at < c_hi for at, n in url_here):
                 continue
             st = states.get(THIS_REPO, {}).get(num)
             if st is None or st["state"] != "closed":
@@ -2294,8 +2367,15 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # ... outstanding |` is accurate prose about a merged PR. Issues
             # keep the fallback: it is what reports stocks#838 under
             # `| Open issues | ... |`, where the cue IS the row label.
+            # `visible`, not `line`, for the same reason cites_live_work above
+            # reads the mask: a HIDDEN cue is not evidence. With a visible cue
+            # elsewhere on the line, `#1 is still open; <PR url> <!-- is still
+            # open -->` passed the line-level fallback and this guard then
+            # accepted the commented phrase as the PR's own local evidence --
+            # a fabricated P1 against a PR no visible prose calls live. The
+            # mask preserves offsets, so the same spans index both strings.
             if is_pr and not BLOCKING_CUE_RE.search(
-                    citation_clause(line, m.start(), m.end())):
+                    citation_clause(visible, m.start(), m.end())):
                 continue
             repo, num = m.group("repo").lower(), int(m.group("num"))
             label = f"{repo}#{num}" + (" (PR)" if is_pr else "")
@@ -2326,6 +2406,22 @@ def is_tracked_dir(tracked: set[str], norm: str) -> bool:
 
 
 _CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
+
+
+def is_escaped(text: str, i: int) -> bool:
+    """Is the character at `i` escaped by the backslashes before it?
+
+    PARITY, not presence. `\\[x](y.md)` is a literal backslash followed by a
+    real link -- the first backslash escapes the second -- so a one-character
+    look-back called it escaped and skipped a genuinely broken rendered link.
+    The Node twin has counted these since solyra#69.
+    """
+    n = 0
+    k = i - 1
+    while k >= 0 and text[k] == "\\":
+        n += 1
+        k -= 1
+    return n % 2 == 1
 
 
 def mask_spans(line: str, spans: list[tuple[int, int]]) -> str:
@@ -2581,7 +2677,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         for m in MD_LINK_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in spans):
                 continue
-            if m.start() and line[m.start() - 1] == "\\":
+            if is_escaped(line, m.start()):
                 continue
             # Either destination form. The angle-bracketed branch is separate
             # in the pattern because it admits a space; both name the same

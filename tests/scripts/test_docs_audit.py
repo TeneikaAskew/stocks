@@ -4980,3 +4980,124 @@ def test_verify_refuses_a_since_baseline_that_predates_code_drift(audit_repo):
                 "--issues-snapshot", str(audit_repo / "issues.json"),
                 "--since", base, "--stamp", "--verify", "docs/d.md"])
     assert "Last reviewed" not in (audit_repo / "docs" / "d.md").read_text()
+
+
+# ── round 35 (Codex on 3b70d46c) ────────────────────────────────────────────
+
+def test_a_comment_opener_inside_a_wrapped_code_span_opens_nothing():
+    """The scanner masked only same-line code spans, so a literal `<!--` on the
+    middle line of a VALID wrapped span read as a real opener: everything below
+    was masked to the closing `-->` or to EOF, and the dead links, blocker
+    citations, headings and markers in between were silently suppressed. The
+    hiding direction. The content checks already used code_span_lines; this
+    scanner did not."""
+    lines = ["# T", "", "`opening", "x <!--", "closing`", "", "[x](missing.md)", ""]
+    assert dict(m.comment_spans(lines)) == {}
+    # A real inline comment is still a comment.
+    assert dict(m.comment_spans(["# T", "", "text <!-- hidden -->", ""])) == {2: [(5, 20)]}
+
+
+def test_an_even_run_of_backslashes_does_not_escape_a_link():
+    """CommonMark counts them: in `\\\\[guide](missing.md)` the first backslash
+    escapes the second and the link RENDERS, so a one-character look-back
+    skipped a genuinely broken link. Parity, not presence."""
+    assert len(m.check_dead_links("d.md", "# T\n\n\\\\[guide](missing.md)\n", set())) == 1
+    # An odd run still escapes: the bracket is literal text and there is no link.
+    assert m.check_dead_links("d.md", "# T\n\n\\[guide](missing.md)\n", set()) == []
+    assert [m.is_escaped("\\[x", 1), m.is_escaped("\\\\[x", 2),
+            m.is_escaped("a[x", 1)] == [True, False, False]
+
+
+def test_a_setext_underline_must_share_its_headings_container():
+    """`> Example` followed by an unquoted `---` ends the blockquote and renders
+    a THEMATIC BREAK. Reading it as a heading closed marker_window above a real
+    marker below the break, so the audit reported the marker missing and
+    --stamp could insert a contradictory second one."""
+    assert m.is_setext_underline(["> Example", "---"], 1) is False
+    assert m.is_setext_underline(["- Example", "---"], 1) is False
+    # An ordinary Setext heading is untouched, and an underline indented to a
+    # list item's CONTENT column is still an underline -- this is an
+    # indentation rule, not a ban on underlines near lists.
+    assert m.is_setext_underline(["Title", "---"], 1) is True
+    assert m.is_setext_underline(["- Example", "  ---"], 1) is True
+    # The consequence, through the window rather than beside it: the marker
+    # below the break is inside it.
+    lines = ["# T", "", "> Example", "---", "",
+             "**Last reviewed:** 2026-01-01 · **Owner:** TBD", ""]
+    assert 5 in m.marker_window(lines)
+
+
+def test_a_malformed_legacy_claim_is_marker_shaped():
+    """`**Last Updated:** 2026-9-1` parses as neither form and was not
+    marker-shaped either, so --stamp inserted a valid marker ABOVE it and the
+    document visibly carried two contradictory provenance lines. The
+    current-format spelling was already refused."""
+    assert m._MARKER_SHAPE_RE.match("**Last Updated:** 2026-9-1")
+    text, action = m.stamp("# T\n\n**Last Updated:** 2026-9-1\n\nbody\n",
+                           "2026-09-22", "scanned", "abc1234", reviewed=False)
+    assert action == "skipped-malformed-marker"
+    assert text == "# T\n\n**Last Updated:** 2026-9-1\n\nbody\n"
+    # A WELL-FORMED legacy line still stamps -- the fix is not "never rewrite
+    # a legacy marker".
+    assert m.stamp("# T\n\n**Last updated:** 2026-01-01\n\nbody\n",
+                   "2026-09-22", "scanned", "abc1234", reviewed=False)[1] != \
+        "skipped-malformed-marker"
+
+
+def test_a_marker_whose_tail_holds_owned_fields_is_not_rewritten():
+    """MARKER_RE is not end-anchored, so `**Depth:** VERIFIED` declines the
+    optional group and pushes itself AND the valid Against / Last scanned after
+    it into `rest`, where extra_segments drops every owned-looking segment. The
+    scan-only rewrite then rebuilt the line without them and permanently
+    deleted the reviewed-against SHA, disabling the drift checks -- while the
+    audit reported the malformed marker as a P2."""
+    mk = ("**Last reviewed:** 2026-01-01 · **Depth:** VERIFIED "
+          "· **Against:** `abc1234` · **Last scanned:** 2026-01-01")
+    text, action = m.stamp(f"# T\n\n{mk}\n\nbody\n", "2026-09-22", "scanned",
+                           "def5678", reviewed=False)
+    assert action == "skipped-malformed-marker"
+    assert "abc1234" in text          # the SHA is still on disk
+    # A well-formed marker still stamps.
+    ok = ("**Last reviewed:** 2026-01-01 · **Depth:** scanned "
+          "· **Against:** `abc1234` · **Last scanned:** 2026-01-01 · **Owner:** TBD")
+    assert m.stamp(f"# T\n\n{ok}\n\nbody\n", "2026-09-22", "scanned", "def5678",
+                   reviewed=False)[1] != "skipped-malformed-marker"
+
+
+def _states():
+    return {"stocks": {123: {"state": "closed", "reason": "completed"},
+                       861: {"state": "closed", "reason": "completed"},
+                       1: {"state": "open"}},
+            "solyra": {}}
+
+
+def test_a_url_in_another_clause_does_not_suppress_a_live_shorthand():
+    """A repo-wide number set went far beyond deduplicating the linked form: on
+    `#123 is still open; <url 123> is resolved` it suppressed the live
+    shorthand because the number appeared in a SEPARATE clause, the URL pass
+    then correctly skipped its own settled clause, and the contradiction
+    produced no finding at all."""
+    url = "https://github.com/TeneikaAskew/stocks/issues/123"
+    out = m.check_closed_issues("d.md", f"#123 is still open; {url} is resolved\n",
+                                _states())
+    assert [f["ref"] for f in out] == ["stocks#123"]
+    # The linked form is still ONE finding, not two: that is what the dedup is
+    # for, and it must keep working.
+    linked = "https://github.com/TeneikaAskew/stocks/issues/861"
+    assert len(m.check_closed_issues("d.md", f"[#861]({linked}) is still open\n",
+                                     _states())) == 1
+
+
+def test_a_hidden_cue_is_not_a_prs_own_evidence():
+    """With a visible cue elsewhere on the line, the line-level fallback let
+    `cites_live_work` through and this PR-only guard then read the RAW clause,
+    accepting a commented phrase as the PR's local evidence -- a fabricated P1
+    against a PR no visible prose calls live."""
+    pr = "https://github.com/TeneikaAskew/stocks/pull/937"
+    st = _states()
+    st["stocks"][937] = {"state": "closed", "reason": "completed"}
+    assert m.check_closed_issues(
+        "d.md", f"#1 is still open; {pr} <!-- is still open -->\n", st) == []
+    # A VISIBLE cue in the PR's own clause still reports it.
+    assert len(m.check_closed_issues(
+        "d.md", f"#1 is still open; {pr} is still open\n", st)) == 1
