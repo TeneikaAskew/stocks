@@ -1820,7 +1820,8 @@ _HTML_RAW_DELIMITED = (
 )
 
 
-def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> set[int]:
+def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
+                         fenced: frozenset[int] | set[int] | None = None) -> set[int]:
     """Indices inside a raw HTML block, whose Markdown renders literally.
 
     A `# Heading` inside `<pre>` or `<div>` is TEXT, not a heading, and
@@ -1835,7 +1836,11 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> se
     (solyra#69).
     """
     out: set[int] = set()
-    fenced = fenced_lines(lines)
+    # `fenced_lines` passes its PROVISIONAL set, computed without HTML, and
+    # relies on this scan to correct it -- so taking it as a parameter is what
+    # keeps the two from recursing.
+    if fenced is None:
+        fenced = fenced_lines(lines)
     # An INDENTED example of an opener is an example, not a block.
     indented = indented_code_lines(lines)
     # Where a paragraph could START. A type-7 block may not INTERRUPT one, but
@@ -1851,7 +1856,12 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False) -> se
     # blank-line-closed kinds.
     closer: str | None = None
     for i, raw in enumerate(lines):
-        if i in fenced:
+        # Only while NOTHING is open. Inside a block, Markdown is not parsed,
+        # so a line the fence scan called fenced is displayed text and the
+        # block walks straight through it -- that is how the provisional set's
+        # false fence gets corrected. An opener sitting inside a REAL fence is
+        # still skipped, because there no block is open.
+        if open_tag is None and not in_comment and i in fenced:
             continue
         # The CONTAINER prefix is stripped, as the fence and indented-code
         # scanners already do: `> <pre>` opens a raw-text block whose Markdown
@@ -2010,6 +2020,23 @@ def _list_content_col(lines: list[str], i: int) -> int:
 def fenced_lines(lines: list[str]) -> set[int]:
     """Indices inside a fenced code block, which are examples, not content.
 
+    Two passes, because a fence and an HTML block can each hide the other. A
+    literal ``` inside `<div>...</div>` is displayed text, not a fence -- but
+    the scan that would know it is inside an HTML block needs a fence set to
+    run. So: scan once ignoring HTML, use that provisional set to find the
+    blocks, then scan again refusing to OPEN a fence inside one. The HTML scan
+    ignores the provisional set while a block is open, which is what lets it
+    walk through the very lines the false fence claimed. A fence that really
+    is a fence is unaffected: an HTML opener inside one is still skipped,
+    because there no block is open to walk through.
+    """
+    provisional = _fenced_scan(lines, frozenset())
+    return _fenced_scan(lines, raw_html_block_lines(lines, fenced=provisional))
+
+
+def _fenced_scan(lines: list[str], html: frozenset[int] | set[int]) -> set[int]:
+    """One fence pass, refusing to open a fence on a line inside `html`.
+
     The OPENING delimiter is remembered. Toggling on any fence-looking line
     meant a `~~~` inside a ``` example closed the block there, so the rest of
     the example read as prose and the prose after the real closing fence read
@@ -2055,7 +2082,12 @@ def fenced_lines(lines: list[str]) -> set[int]:
             open_fence = None
         if open_fence is None:
             # An opening ``` fence may not carry a backtick in its info string.
-            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            # And a delimiter inside a raw HTML block is displayed text:
+            # CommonMark does not parse Markdown there, so opening on it left
+            # a fence that outlived the block and swallowed every later link,
+            # blocker, heading and marker as "code".
+            if (m and i not in html
+                    and not (m.group(1)[0] == "`" and "`" in m.group(2))):
                 open_fence = m.group(1)
                 open_depth = quote_depth(line)
                 open_list_col = _list_content_col(lines, i)

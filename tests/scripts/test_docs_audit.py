@@ -5926,3 +5926,30 @@ def test_a_malformed_marker_inside_a_wrapped_code_span_is_an_example():
     # An unwrapped one is still the malformed marker this check exists for.
     live = ["# T", "", "**Last reviewed:** 2026-1-1", "", "## Next"]
     assert m.marker_shaped_lines(live) == [2]
+
+
+def test_a_fence_delimiter_inside_a_raw_html_block_opens_nothing():
+    """CommonMark does not parse Markdown inside an HTML block, so a literal
+    ``` between `<div>` and `</div>` is displayed text. Opening on it left a
+    fence that outlived the block's terminating blank line and swallowed every
+    later link, blocker, heading and marker as "code"."""
+    doc = ["<div>", "```", "</div>", "", "[x](missing.md)"]
+    assert m.fenced_lines(doc) == set()
+    assert m.raw_html_block_lines(doc) == {0, 1, 2}
+    out = m.check_dead_links("d.md", "\n".join(doc) + "\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+
+
+def test_an_html_opener_inside_a_real_fence_still_opens_nothing():
+    """The other direction, and the reason the fence scan runs twice rather
+    than once against an HTML set computed without fences: a `<div>` inside a
+    fenced EXAMPLE must not open a block, because a block there would suppress
+    the next real fence and route its contents back to live prose."""
+    doc = ["```text", "<div>", "```", "prose", "```py", "code", "```", "",
+           "[x](missing.md)"]
+    assert m.fenced_lines(doc) == {0, 1, 2, 4, 5, 6}
+    out = m.check_dead_links("d.md", "\n".join(doc) + "\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+    # And the ordinary cases the two passes must leave exactly as they were.
+    assert m.fenced_lines(["```", "x", "```", "y"]) == {0, 1, 2}
+    assert m.fenced_lines(["~~~", "```", "~~~", "y"]) == {0, 1, 2}
