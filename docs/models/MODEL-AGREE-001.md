@@ -62,7 +62,7 @@ The two strategies' per-bar outputs. **Pure helper: no database access, no I/O.*
 | Symbol | Signature | Role |
 |---|---|---|
 | `detect_agreement` | `(momentum, mean_reversion) -> Optional[dict]` | Returns the agreement payload, or `None` when they do not agree |
-| `composite_score` | `(signals) -> float` | The ranking score |
+| `composite_score` | `(signals) -> float` | A blended value, **persisted and displayed, never used to order anything** — see below. The cell read *"the ranking score"* until 2026-09-22, two lines above the paragraph refuting it. DOC-67 |
 
 The live signal monitor calls `detect_agreement` once per bar after running both
 strategies and persists the payload to `signal_alerts.strategy_agreement`.
@@ -97,9 +97,19 @@ order alerts, and it does size them.
 **UNKNOWN — not recorded in code or tests.** `AGREEMENT_BONUS = 1.0` carries no
 derivation, and the composite score's weighting is not tied to a measured outcome.
 This is what [#905](https://github.com/TeneikaAskew/stocks/issues/905) asks for: freeze
-the score and validate its expectancy prospectively. Until that lands, the score is a
-ranking heuristic, not a calibrated probability — which is why the registry records this
-model as `RESTRUCTURE`.
+the score and validate its expectancy prospectively.
+
+**Keep the two apart, because only one of them is consumed.** `AGREEMENT_BONUS` is added to
+`total_score`, so it moves position size and the strength label a person trades off.
+`composite_score` is persisted and rendered and read by nothing that orders, filters or
+gates — so its weighting being underived costs nothing today and would cost a great deal the
+moment something started sorting on it. That asymmetry, not the arithmetic, is why the registry
+records this model as `RESTRUCTURE`.
+
+> This paragraph called the composite score *"a ranking heuristic, not a calibrated
+> probability"* until 2026-09-22, thirty lines below the sentence establishing that it ranks
+> nothing, and beside an entry-point cell calling it *"the ranking score"*. Both are corrected;
+> the defect was describing an unvalidated value by the use it does not have. DOC-67.
 
 ## Tests
 

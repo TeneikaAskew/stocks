@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import sys
+import ast
 import re
 import urllib.parse
 from pathlib import Path
@@ -2784,4 +2785,132 @@ def test_severity_table_totals_the_rows_it_summarises():
     assert not mismatched, (
         f"severity table rows disagree with the issue rows {{severity: (table, actual)}}: "
         f"{mismatched}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Coverage claims. DOC-65.
+#
+# MODEL-WEEK-001's Tests section has been wrong three times, each narrower
+# than the last, and each written in a commit that had just changed the
+# coverage it describes:
+#
+#   DOC-44  "No test file targets this module."
+#   DOC-58  "nothing exercises ... the score-bucket grouping" -- in the commit
+#           that added the suite exercising it
+#   DOC-65  "overall win rate and total P&L are executed but never asserted"
+#           and "`by_ticker` has no test at all" -- both false
+#
+# In the round-17 reply I argued a gate here would repeat DOC-54's vacuous
+# prototype. That was wrong. DOC-54 needed subject attribution across four
+# model ids in one prose block; this needs none: the subject is the module,
+# the claim names backticked identifiers, and the suite is cited by path in
+# the same section. The third instance is what made the difference visible.
+# ---------------------------------------------------------------------------
+
+#: phrases that make a sentence a claim about ABSENT coverage.
+_ABSENCE = re.compile(
+    r"untested|no test|never asserted|nothing (?:exercises|checks|tests)|has no test",
+    re.I,
+)
+
+
+def _keys_the_suite_checks(path: Path) -> set[str]:
+    """Identifiers a test file demonstrably exercises under an assertion.
+
+    Two sources, and the union is load-bearing -- measured 2026-09-22 against
+    `tests/gcp/test_weekend_review_score_labels.py`:
+
+    * **string subscripts inside a test function that contains an assert.**
+      Restricting to subscripts lexically inside the `assert` itself misses
+      `by_ticker`, because the test loops `for row in review["by_ticker"]:`
+      and asserts on `row[...]`. That narrower version would have been GREEN
+      on the very finding this gate exists for.
+    * **identifier-shaped strings in module-level list assignments**, which is
+      where `@pytest.mark.parametrize` cases live. Without it `call_win_rate`
+      and `put_win_rate` read as unchecked; they are checked, by parameter.
+
+    Over-collection is bounded and benign: it also yields embed-structure keys
+    (`fields`, `name`, `value`, `embeds`, `color`). No documentation "untested"
+    list names those, and a false positive here reports the exact key and file.
+    """
+    tree = ast.parse(path.read_text())
+    out: set[str] = set()
+
+    def subscript_strings(node: ast.AST) -> set[str]:
+        return {
+            s.slice.value
+            for s in ast.walk(node)
+            if isinstance(s, ast.Subscript)
+            and isinstance(s.slice, ast.Constant)
+            and isinstance(s.slice.value, str)
+        }
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+            if any(isinstance(x, ast.Assert) for x in ast.walk(node)):
+                out |= subscript_strings(node)
+        elif isinstance(node, ast.Assign) and isinstance(node.value, (ast.List, ast.Tuple)):
+            out |= {
+                e.value
+                for e in ast.walk(node.value)
+                if isinstance(e, ast.Constant)
+                and isinstance(e.value, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", e.value)
+            }
+    return out
+
+
+def test_untested_claims_name_nothing_the_suite_asserts():
+    """A model doc may not call an identifier untested if its suite checks it.
+
+    Scoped to the `## Tests` section, to sentences asserting an ABSENCE, and
+    to the test files that section itself cites. Each narrowing is what keeps
+    it from becoming the DOC-54 prototype: outside those bounds there is no
+    subject to attribute a claim to.
+
+    Blockquoted correction notes are exempt, the same way
+    `test_retracted_claims_stay_retracted` exempts them -- a document that
+    quotes its own withdrawn claim in order to withdraw it is doing the right
+    thing, and a gate that punishes that makes corrections unauditable.
+    """
+    bad, checked = [], 0
+    for doc in sorted((REPO / "docs" / "models").glob("MODEL-*.md")):
+        body = doc.read_text()
+        if "\n## Tests" not in body:
+            continue
+        section = body.split("\n## Tests", 1)[1].split("\n## ", 1)[0]
+
+        suites = [
+            p for p in re.findall(r"`(tests/[\w/]+\.py)`", section)
+            if (REPO / p).is_file()
+        ]
+        if not suites:
+            continue
+        known: set[str] = set()
+        for s in suites:
+            known |= _keys_the_suite_checks(REPO / s)
+        if not known:
+            continue
+        checked += 1
+
+        for line in section.split("\n"):
+            if line.lstrip().startswith(">") or not _ABSENCE.search(line):
+                continue
+            for token in re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", line):
+                if token in known:
+                    bad.append(
+                        f"{doc.name}: calls `{token}` untested, but {suites} "
+                        f"exercises it under an assertion"
+                    )
+
+    assert checked >= 1, (
+        "no model doc has a ## Tests section citing a readable test file -- "
+        "this gate is measuring nothing"
+    )
+    assert not bad, (
+        f"coverage claims contradicted by the suite they cite: {sorted(set(bad))}. "
+        "A 'still untested' list is a claim about code and has to be checked "
+        "against it, not narrowed by eye -- three successive narrowings of the "
+        "same sentence were each still wrong."
     )

@@ -19,11 +19,11 @@ the published strength label to each group of trades:
 
 | Output | Grouping | Where |
 |---|---|---|
-| Win rate, total P&L, average return | all trades in the trailing 7 days | `:117-127` |
-| Win rate | by `direction` (CALL / PUT) | `:129-135` |
-| Label, score span, trades, win rate, max score | by **strength label** — `weak` / `medium` / `strong` / `perfect` — computed from the unrounded score | `:137-188` |
-| Trades, win rate, total return | by ticker | `:190-201` |
-| Count and average return | by `exit_reason` | `:203-209` |
+| Win rate, total P&L, average return | all trades in the trailing 7 days | `:124-134` |
+| Win rate | by `direction` (CALL / PUT) | `:136-142` |
+| Label, score span, trades, win rate, max score | by **strength label** — `weak` / `medium` / `strong` / `perfect` — computed from the unrounded score | `:144-195` |
+| Trades, win rate, total return | by ticker | `:197-208` |
+| Count and average return | by `exit_reason` | `:210-216` |
 
 **The strength grouping key is the label, not the score.** Until 2026-09-22 it was the raw
 float, and each row was rendered with `int(score)`, so two rungs of the same label appeared as
@@ -140,8 +140,8 @@ Seven published zeros from **five code sites**, one of which the DOC-56 fix had 
 propagates `NaN` where `.sum()` and `(s > 0).mean()` do not — the file already knew how to say
 "unknown" on two of its eight numbers.
 
-**Fixed.** All five now carry `NaN` end to end (`_win_rate` `:34`, `_total_return` `:50`) and
-the embed renders unknown as an em-dash (`_pct` `:81`) — §3.7's one allowed exception is
+**Fixed.** All five now carry `NaN` end to end (`_win_rate` `:41`, `_total_return` `:57`) and
+the embed renders unknown as an em-dash (`_pct` `:88`) — §3.7's one allowed exception is
 display-layer rendering of a null. The same frame now renders:
 
 ```
@@ -161,7 +161,7 @@ the same grey the no-trades embed uses.
 
 The missing-column case still **raises**, because a `trades` frame with rows and no
 `return_pct` is a defect in the writer, not a degraded week. It now raises a `ValueError`
-naming the column and the columns present (`_known_returns` `:61`), where before it surfaced as
+naming the column and the columns present (`_known_returns` `:68`), where before it surfaced as
 `IndexingError: Unalignable boolean Series provided as indexer` out of pandas. Loud was never
 the complaint; unintelligible was.
 
@@ -177,7 +177,7 @@ the complaint; unintelligible was.
 now intelligible, but nothing compares any of these numbers to an expectation, the 7-day window
 and the choice of win rate over expectancy carry no derivation, and **two of the five
 groupings never reach the reader**: `format_discord_message` emits exactly three fields —
-`Overall`, the per-direction pair, and `By Signal Strength` (`gcp/weekend_review.py:214-292`) — so `by_ticker` and
+`Overall`, the per-direction pair, and `By Signal Strength` (`gcp/weekend_review.py:221-299`) — so `by_ticker` and
 `by_exit_reason` are computed on every run and appear only in the job's stdout.
 
 ## Where the data comes from
@@ -201,12 +201,12 @@ this job.
 
 | Symbol | Role |
 |---|---|
-| `weekend_review.main` (`:294`) | The scheduled entry point |
-| `generate_weekly_review` (`:99`) | Every statistic above |
-| `format_discord_message` (`:214`) | The embed — three fields, not five |
-| `_known_returns` (`:61`) | The single `return_pct` view; raises on a missing column |
-| `_win_rate` (`:34`) · `_total_return` (`:50`) | Unknown-preserving aggregates |
-| `_pct` (`:81`) | The only place a `NaN` becomes a character |
+| `weekend_review.main` (`:301`) | The scheduled entry point |
+| `generate_weekly_review` (`:106`) | Every statistic above |
+| `format_discord_message` (`:221`) | The embed — three fields, not five |
+| `_known_returns` (`:68`) | The single `return_pct` view; raises on a missing column |
+| `_win_rate` (`:41`) · `_total_return` (`:57`) | Unknown-preserving aggregates |
+| `_pct` (`:88`) | The only place a `NaN` becomes a character |
 
 > These pointers were `:163` / `:25` / `:103` until 2026-09-22. The DOC-56 fix inserted 38 lines
 > above them and none was updated, so two of the three named a line that no longer held the
@@ -237,10 +237,27 @@ covering the two behaviour changes this document records:
 Every one of those is mutation-tested: eight mutations of `gcp/weekend_review.py`, each
 restoring one pre-fix behaviour, and each turns the suite red.
 
-**What is still untested, and it is what RESTRUCTURE rests on.** Overall win rate, total P&L
-and average return are *executed* by the fixtures above but never asserted on a normal week;
-`by_ticker` and `by_exit_reason` have no test at all, which is the less surprising for their
-never reaching the embed; and nothing checks the 7-day window boundary.
+**What is still untested, and it is what RESTRUCTURE rests on.** Three things, checked against
+the assertions rather than described: **`avg_return`** is never asserted anywhere;
+**`by_exit_reason`** has no test at all, which is the less surprising for its never reaching the
+embed; and nothing checks the **7-day window boundary**.
+
+> This sentence has now been wrong three times, each one narrower than the last, and each
+> written in a commit that had just changed the coverage it describes. It said *"no test file
+> targets this module"* (DOC-44), then *"nothing exercises … the score-bucket grouping"* in the
+> commit adding the suite that does (DOC-58), then — after being "narrowed" — that overall win
+> rate and total P&L *"are executed but never asserted"* and that `by_ticker` *"has no test at
+> all"*. Both false: `test_partial_returns_compute_what_is_known_and_dash_what_is_not` asserts
+> `review["win_rate"]` and `review["total_pnl"]`, `test_a_real_zero_is_still_a_zero` asserts both
+> again, and `test_all_null_week_publishes_no_per_ticker_zero` asserts **both** per-ticker
+> figures. DOC-65.
+>
+> It is now gated. `test_untested_claims_name_nothing_the_suite_asserts` extracts the keys the
+> cited suite asserts on and fails if this sentence names one. In the round-17 reply I argued a
+> gate here would repeat DOC-54's vacuous-prototype mistake; **that was wrong, and the third
+> instance is what shows it.** DOC-54 needed subject attribution across four model ids in one
+> block; this needs none — the subject is the module, the claim names backticked identifiers,
+> and the suite is cited by name in the same section.
 
 > Until 2026-09-22 this section read "No test file targets this module." — unqualified, and
 > false. The test lives in a file whose name does not contain the module's, so a filename search
@@ -257,7 +274,7 @@ never reaching the embed; and nothing checks the 7-day window boundary.
 
 [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) — the stale-module-docstring class.
 It stays open for the other modules it covers; **this module's instance (DOC-36) is fixed**, at
-`gcp/weekend_review.py:1-14`. The §3.7 fabricated zeros (DOC-62) and the coverage claim
+`gcp/weekend_review.py:1-21`. The §3.7 fabricated zeros (DOC-62) and the coverage claim
 (DOC-58) were fixed in this PR rather than filed, so neither has an issue.
 
 What is *not* closed is the `RESTRUCTURE` recommendation itself: nothing compares any figure to

@@ -12,8 +12,16 @@
 > declared in `gcp/deploy.sh` across a backslash line continuation, and
 > `scripts/audit_scheduler_coverage.py` matched line by line — so it never enumerated them, then
 > printed "61 schedulers declared, 61 resolved" and exited 0. An entry a parser never sees
-> cannot fail to resolve. The real count is 63; they were found by a *second* parser
-> disagreeing, not by the assertion that was supposed to catch exactly this.
+> cannot fail to resolve. They were found by a *second* parser disagreeing, not by the assertion
+> that was supposed to catch exactly this.
+>
+> *This paragraph said "the real count is 63" until 2026-09-22. It is **66**: round 15 (DOC-48)
+> found three more declared with raw `gcloud scheduler jobs create http`, invisible to every
+> `_schedule*`-only parser. The correction was applied to the registry and not swept here — the
+> same shape as the defect it describes, one document over. Note that **66 is the count declared
+> in `deploy.sh`; 65 is the count live in GCP** (read 2026-09-22), and other documents state 65
+> correctly about the live fleet. The two are different measures and neither is a stale form of
+> the other. DOC-66.*
 
 ## What it decides
 

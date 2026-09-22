@@ -2,9 +2,16 @@
 """
 Weekend review -- Cloud Run Job triggered Saturday morning.
 
-Loads the week's logged trades and sends a Discord summary of their realized
-performance: win rate, total P&L and average return overall, then broken down
-by direction, by signal-strength rung, by ticker and by exit reason.
+Loads the week's logged trades and computes their realized performance five
+ways: overall, by direction, by signal-strength rung, by ticker and by exit
+reason.
+
+**The Discord embed carries three of those five.** `format_discord_message`
+emits `Overall`, the per-direction pair and `By Signal Strength` and nothing
+else, so `by_ticker` and `by_exit_reason` are computed on every run and reach
+only this job's stdout. An earlier version of this docstring said the summary
+was "broken down ... by ticker and by exit reason" -- written on 2026-09-22 in
+the same commit that established, in MODEL-WEEK-001, that it is not. DOC-64.
 
 Every number is a realized statistic over `trades`. Nothing here is compared
 to a backtest, an expectation or a prior -- until 2026-09-22 this docstring
