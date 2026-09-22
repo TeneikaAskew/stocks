@@ -604,6 +604,55 @@ def decode_char_refs(text: str) -> str:
 
 
 
+def decode_with_map(text: str) -> tuple[str, list[int] | None]:
+    """The text with character references decoded, plus a map to the source.
+
+    A destination is decoded before the reader's browser ever sees it, so
+    `https://github&#46;com/TeneikaAskew/stocks/issues/1` is a link to the
+    real issue -- but `ISSUE_URL_RE` scanned the SOURCE, where `github&#46;com`
+    is not `github.com`, and a stale blocker cited that way passed the audit
+    clean. Decoding alone is not enough: every offset the caller then uses --
+    the hidden-span test, the clause the citation sits in -- indexes the
+    source line, so the decoded index has to come back.
+
+    `imap[i]` is the source index of decoded character `i`; a reference
+    collapses to its OPENING index, so a citation spelled with one reports
+    the position a reader would point at. `imap[len(decoded)]` is the end
+    sentinel, which is what makes a match's exclusive end mappable. Text with
+    no `&` in it cannot carry a reference and returns a None map, meaning
+    "identity" -- which is every line of both corpora today, so the common
+    path is byte-identical to the scan this replaced.
+
+    Indexed in CODE POINTS, unlike the Node twin, where `out` is indexed in
+    UTF-16 units and an astral character needs two entries (solyra#69).
+    """
+    if "&" not in text:
+        return text, None
+    out: list[str] = []
+    imap: list[int] = []
+    last = 0
+    for m in _CHAR_REF_RE.finditer(text):
+        for k in range(last, m.start()):
+            out.append(text[k])
+            imap.append(k)
+        for ch in decode_char_refs(m.group(0)):
+            out.append(ch)
+            imap.append(m.start())
+        last = m.end()
+    if not imap:
+        return text, None
+    for k in range(last, len(text)):
+        out.append(text[k])
+        imap.append(k)
+    imap.append(len(text))
+    return "".join(out), imap
+
+
+def _src_at(imap: list[int] | None, k: int) -> int:
+    """A decoded index read back as a source index."""
+    return k if imap is None else imap[k]
+
+
 def _ref_key(label: str) -> str:
     """A reference label reduced to what CommonMark compares.
 
@@ -4125,10 +4174,21 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # contradiction produced no finding at all -- the hiding direction.
         # Same split citation_clause makes, so "one citation" means the same
         # thing to the dedup and to the cue analysis.
-        url_here = [(mm.start(), int(mm.group("num")))
-                    for mm in ISSUE_URL_RE.finditer(line)
+        # The DECODED line, because a destination is decoded before a reader
+        # follows it: `https://github&#46;com/.../issues/1` is a link to the
+        # real issue, and scanning the source spelling missed it entirely --
+        # a stale blocker cited that way passed clean. Both ISSUE_URL_RE
+        # passes read the same decoded copy, so the dedup below cannot see a
+        # different set of citations than the pass it dedups against. Every
+        # offset is mapped back, because `hidden`, `visible` and
+        # `clause_bounds` all index the source line. Codex filed it on the
+        # Node twin (solyra#69).
+        scan, scan_map = decode_with_map(line)
+        url_here = [(_src_at(scan_map, mm.start()), int(mm.group("num")))
+                    for mm in ISSUE_URL_RE.finditer(scan)
                     if mm.group("repo").lower() == THIS_REPO
-                    and not any(lo <= mm.start() < hi for lo, hi in hidden)]
+                    and not any(lo <= _src_at(scan_map, mm.start()) < hi
+                                for lo, hi in hidden)]
         skipped_end: int | None = None
         for m in SHORTHAND_ISSUE_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in hidden + url_spans):
@@ -4180,8 +4240,10 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                                   "as live work",
                         "severity": "P1" if reason != "not_planned" else "P2",
                         "ref": f"{THIS_REPO}#{num}", "reason": reason})
-        for m in ISSUE_URL_RE.finditer(line):
-            if any(lo <= m.start() < hi for lo, hi in hidden):
+        for m in ISSUE_URL_RE.finditer(scan):
+            m_start = _src_at(scan_map, m.start())
+            m_end = _src_at(scan_map, m.end())
+            if any(lo <= m_start < hi for lo, hi in hidden):
                 continue
             # The line carries a live-work cue; does THIS citation's clause say
             # the opposite? Both cue families are read against the clause now
@@ -4194,7 +4256,7 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # passed the precheck, and was then suppressed by a phrase no
             # reader can see. The mask preserves offsets, so the same spans
             # index both strings.
-            if not cites_live_work(visible, m.start(), m.end()):
+            if not cites_live_work(visible, m_start, m_end):
                 continue
             # A pull request cited as a blocker is live work too. `/pull/`
             # used to be skipped outright, so a document calling PR #937 the
@@ -4219,7 +4281,7 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # a fabricated P1 against a PR no visible prose calls live. The
             # mask preserves offsets, so the same spans index both strings.
             if is_pr and not BLOCKING_CUE_RE.search(
-                    citation_clause(visible, m.start(), m.end())):
+                    citation_clause(visible, m_start, m_end)):
                 continue
             repo, num = m.group("repo").lower(), int(m.group("num"))
             label = f"{repo}#{num}" + (" (PR)" if is_pr else "")

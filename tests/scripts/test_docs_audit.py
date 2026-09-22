@@ -6576,6 +6576,74 @@ def test_the_github_host_boundary_belongs_to_the_url_scheme():
     assert ref("Blocked by github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
 
 
+def test_an_issue_url_spelled_with_a_character_reference_is_still_a_citation():
+    """A destination is decoded before a reader follows it, so
+    `github&#46;com/.../issues/1` IS a link to the real issue. The scan read
+    the SOURCE spelling, where that is not `github.com`, and a stale blocker
+    written this way passed the audit clean -- the silent direction. Codex
+    filed it on the Node twin (solyra#69)."""
+    states = {"stocks": {1: {"state": "closed", "reason": "completed",
+                             "kind": "ISSUE"}}}
+    ref = lambda line: [f["ref"] for f in m.check_closed_issues("d.md", line, states)]
+    assert ref("Still open: https://github&#46;com/TeneikaAskew/stocks/issues/1") \
+        == ["stocks#1"]
+    assert ref("Blocked by [issue 1]"
+               "(https://github&#46;com/TeneikaAskew/stocks/issues/1)") == ["stocks#1"]
+    # Hex, and the numeric form of the slash, resolve the same way.
+    assert ref("Still open: https://github&#x2E;com/TeneikaAskew/stocks"
+               "&#47;issues/1") == ["stocks#1"]
+
+
+def test_an_invalid_numeric_reference_renders_as_the_replacement_character():
+    """CommonMark renders NUL, a surrogate and a code point past Unicode as
+    U+FFFD rather than leaving the source spelling as text, so `## A&#0;B`
+    anchors as `ab`. `html.unescape` already substitutes the replacement
+    character, which is why this side was right while the Node twin recorded
+    `a0b` and rejected the fragment a reader's link carries (solyra#69). The
+    assertion is here so swapping the decoder cannot lose that quietly."""
+    assert m.decode_char_refs("A&#0;B") == "A\ufffdB"
+    assert m.decode_char_refs("A&#x0;B") == "A\ufffdB"
+    assert m.decode_char_refs("A&#xD800;B") == "A\ufffdB"
+    assert m.decode_char_refs("A&#1114112;B") == "A\ufffdB"
+    assert m.heading_slug("A&#0;B") == "ab"
+    # A VALID reference is still the character it names.
+    assert m.decode_char_refs("A&#x1F600;B") == "A\U0001F600B"
+    assert m.decode_char_refs("A&#38;B") == "A&B"
+    # An unrecognised NAME is literal text, which is what a renderer does
+    # with one -- decoding a guess would invent an anchor.
+    assert m.decode_char_refs("A&nosuchname;B") == "A&nosuchname;B"
+
+
+def test_a_decoded_citation_is_read_back_at_its_source_offset():
+    """The decoded index is SHORTER than the source one by the width every
+    reference before it collapsed, and both remaining gates index the source:
+    the hidden-span test and the clause the citation sits in. Four references
+    earlier on the line shift the citation 16 columns -- far enough to leave
+    the comment and to cross a sentence boundary -- so dropping the map turns
+    both of these into gating findings against text no reader can see, and
+    against a clause that says the opposite."""
+    states = {"stocks": {1: {"state": "closed", "reason": "completed",
+                             "kind": "ISSUE"}}}
+    pad = "https://example&#46;com&#47;a&#47;b&#47;c"
+    url = "https://github.com/TeneikaAskew/stocks/issues/1"
+    assert m.check_closed_issues("d.md", f"Still open {pad} <!-- {url} -->\n",
+                                 states) == []
+    assert m.check_closed_issues(
+        "d.md", f"Still open {pad} now. {url} is no longer blocking.\n",
+        states) == []
+    # A reference collapses to its OPENING index, and the sentinel is the
+    # source length so an exclusive end is mappable.
+    assert m.decode_with_map("ab&#46;cd&amp;e") == ("ab.cd&e",
+                                                   [0, 1, 2, 7, 8, 9, 14, 15])
+    # Nothing to decode is the identity, signalled by a None map rather than
+    # a copied list -- which is every line of this corpus today.
+    assert m.decode_with_map("plain") == ("plain", None)
+    assert m.decode_with_map("AT&T Corp") == ("AT&T Corp", None)
+    # An astral character is ONE index in Python, unlike the Node twin where
+    # it occupies two UTF-16 units and needs two map entries.
+    assert m.decode_with_map("a&#x1F600;b") == ("a\U0001F600b", [0, 1, 10, 11])
+
+
 def test_two_leading_dots_are_traversal_only_as_a_parent_component():
     """`..missing.md` is a legal repository filename that normalises to
     itself, and treating it as traversal meant a deleted or misspelled
