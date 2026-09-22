@@ -570,9 +570,23 @@ REF_DEF_CONT_RE = re.compile(
 # filenames and the equivalent percent-encoded Markdown link IS checked. The
 # extension stays ASCII: a suffix is, and widening it would let ordinary prose
 # end a "path".
+# A git path may contain a SPACE, in EVERY segment and not only the filename.
+# `docs/user guides/old.md` and a spaced root file `old guide.md` matched
+# neither scanner, so a deleted citation written that way was reported clean --
+# the hiding direction, and the same gap the filename fix closed one segment
+# over. A space is admitted only BETWEEN name characters, never at either end,
+# and the repository-layout guard downstream still requires the first segment
+# to be a directory this tree actually has, which is what keeps ordinary
+# backticked prose from reading as a path. Parity with the Node twin
+# (solyra#69); Codex filed it here.
+_PW = r"\w"
+_PWS = rf"(?:{_PW}|[.-])(?:(?:{_PW}|[.-])| (?=(?:{_PW}|[.-])))*"
+# The root form must still START with a name character, so a backticked
+# `.eslintrc`-shaped string does not become a root-file citation.
+_PWS_ROOT = rf"{_PW}(?:(?:{_PW}|[.-])| (?=(?:{_PW}|[.-])))*"
+_LINE_SUFFIX = r"(?::\d+(?:-\d+)?)?"
 BACKTICK_PATH_RE = re.compile(
-    r"`(?P<path>[\w./-]+/[\w.-](?:[\w. -]*[\w.-])?"
-    r"\.[A-Za-z0-9]{1,10}(?::\d+(?:-\d+)?)?)`")
+    rf"`(?P<path>(?:{_PWS}/)+{_PWS}\.[A-Za-z0-9]{{1,10}}{_LINE_SUFFIX})`")
 
 # The other shape a citation takes: a bare root-level filename. Requiring a
 # slash meant `requirements-gcp.txt` and `alert_config.json` -- both cited
@@ -581,8 +595,7 @@ BACKTICK_PATH_RE = re.compile(
 # check_dead_links), because `v1.2` and `api.md` in prose are otherwise
 # indistinguishable from a path.
 BACKTICK_ROOT_FILE_RE = re.compile(
-    r"`(?P<path>[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{1,10}"
-    r"(?::\d+(?:-\d+)?)?)`")
+    rf"`(?P<path>{_PWS_ROOT}\.[A-Za-z0-9]{{1,10}}{_LINE_SUFFIX})`")
 
 # The `:line` or `:start-end` suffix above, which is a citation's coordinate
 # inside the file and not part of its path.
@@ -2583,7 +2596,17 @@ def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
     A `<!--` inside an inline code span is not an opener either, which is what
     makes the 05-a line above parse right.
     """
-    code = fenced_lines(lines) | indented_code_lines(lines)
+    # RAW-TEXT blocks too, and only those among the HTML kinds. A `<!--`
+    # inside `<script>` or `<pre>` is DISPLAYED, not parsed -- and reading one
+    # as an opener masked the closing tag and every line after it, so a live
+    # broken link, stale blocker, heading or marker below the script was
+    # silently skipped while CommonMark ends the block at `</script>`. A type-6
+    # or type-7 block is different: Markdown is not parsed there but an HTML
+    # comment inside one still hides its contents, so masking those would send
+    # retired markup to the href pass as visible content. The Node twin has
+    # carried this distinction for rounds. Codex filed it here.
+    code = (fenced_lines(lines) | indented_code_lines(lines)
+            | raw_html_block_lines(lines, raw_text_only=True))
     out: dict[int, list[tuple[int, int]]] = {}
 
     def add(i: int, a: int, b: int) -> None:
@@ -5811,6 +5834,21 @@ def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE,
                         for pr in deliveries)
                 and all(superseded(pr, deliveries) for pr in pending)):
             break
+    else:
+        # Reaching the cap is NOT the same as reading a short final page, and
+        # falling out of the loop treated them alike: every older page was
+        # dropped in silence. An omitted merged delivery leaves superseded
+        # failures looking actionable; an omitted unsuperseded refresh attempt
+        # makes the Class A delivery audit report CLEAN. The second is the
+        # direction that matters, and it is the one this whole check exists to
+        # prevent. Loud, not short -- the same rule ISSUE_PAGE_GUARD already
+        # follows one function over (CLAUDE.md §3.7). Codex filed it three
+        # times.
+        raise AuditError(
+            f"{THIS_REPO}: still reading pull requests after {PR_PAGE_LIMIT} "
+            f"pages of {page_size} without a short page or a bounded early "
+            "stop; the history is truncated, and a refresh attempt on an "
+            "unread page would make the Class A delivery audit report clean")
     return owned
 
 

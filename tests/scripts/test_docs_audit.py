@@ -4555,8 +4555,9 @@ def test_a_parenthetical_is_a_clause_boundary_for_a_shorthand():
 def test_a_backticked_path_may_carry_spaces_in_its_basename():
     """`docs/Morning Checklist Updated.md` is tracked in this tree and cited in
     docs/BRIEFING_DECK.md; the no-space pattern never matched it, so deleting
-    the target reported clean. The directory part still refuses spaces, or
-    `run docs/a.md and docs/b.md` parses as one path and is reported dead."""
+    the target reported clean. A space is valid in EVERY segment, not only the
+    basename -- `docs/user guides/old.md` was the half this originally left
+    out, which Codex filed and the Node twin had already closed."""
     m.TOP_LEVEL_DIRS.update({"docs"})
     text = "# T\n\nSee `docs/Morning Checklist Updated.md` for the routine.\n"
     out = m.check_dead_links("docs/d.md", text, {"docs/d.md"})
@@ -4565,7 +4566,23 @@ def test_a_backticked_path_may_carry_spaces_in_its_basename():
     assert m.check_dead_links(
         "docs/d.md", "# T\n\nSee `docs/Morning Checklist Updated.md`.\n",
         {"docs/d.md", "docs/Morning Checklist Updated.md"}) == []
-    assert m.BACKTICK_PATH_RE.search("`run docs/a.md and docs/b.md`") is None
+    # A spaced DIRECTORY segment too, in both directions.
+    assert [f["detail"] for f in m.check_dead_links(
+        "docs/d.md", "# T\n\nSee `docs/user guides/gone.md`.\n", {"docs/d.md"})] \
+        == ["backticked path -> docs/user guides/gone.md"]
+    assert m.check_dead_links(
+        "docs/d.md", "# T\n\nSee `docs/user guides/there.md`.\n",
+        {"docs/d.md", "docs/user guides/there.md"}) == []
+    # Ordinary backticked PROSE is still not reported, which is what this
+    # originally asserted against the PATTERN -- `run docs/a.md and docs/b.md`
+    # does now parse as one path, and the repository-layout guard declines it
+    # because `run docs` is not a directory this tree has. Asserted end to
+    # end, because the pattern was only ever a proxy for this.
+    assert m.check_dead_links(
+        "docs/d.md", "# T\n\nSee `run docs/a.md and docs/b.md`.\n",
+        {"docs/d.md", "docs/a.md"}) == []
+    assert m.check_dead_links(
+        "docs/d.md", "# T\n\nSee `run make test/foo.py`.\n", {"docs/d.md"}) == []
 
 
 def test_a_link_label_may_contain_brackets():
@@ -5032,10 +5049,41 @@ def test_a_backticked_path_may_hold_a_non_ascii_character():
     hit = m.BACKTICK_PATH_RE.search("see `docs/café.md` for detail")
     assert hit and hit.group("path") == "docs/café.md"
     assert m.BACKTICK_PATH_RE.search("`docs/a.md`").group("path") == "docs/a.md"
-    # Prose is still not a path: the directory part admits no spaces, so
-    # `run docs/a.md and docs/b.md` does not parse as one.
-    prose = m.BACKTICK_PATH_RE.search("`run docs/a.md and docs/b.md`")
-    assert prose is None or prose.group("path") != "run docs/a.md and docs/b.md"
+    # A spaced segment is a path too, now that a space is admitted in every
+    # one of them rather than only in the basename.
+    spaced = m.BACKTICK_PATH_RE.search("`docs/user guides/x.md`")
+    assert spaced and spaced.group("path") == "docs/user guides/x.md"
+    # Prose no longer fails at the PATTERN -- see the end-to-end assertions in
+    # test_a_backticked_path_may_carry_spaces_in_its_basename for the guard
+    # that actually keeps it out of the report.
+    root = m.BACKTICK_ROOT_FILE_RE.search("`café.md`")
+    assert root and root.group("path") == "café.md"
+
+
+def test_a_truncated_pull_request_history_is_refused(monkeypatch):
+    """Reaching PR_PAGE_LIMIT is NOT the same as reading a short final page,
+    and falling out of the loop treated them alike: every older page was
+    dropped in silence. An omitted merged delivery leaves superseded failures
+    looking actionable; an omitted unsuperseded refresh attempt makes the
+    Class A delivery audit report CLEAN -- the direction this whole check
+    exists to prevent. Codex filed it three times."""
+    # Every page FULL -- `_filler(lo, hi)` is a half-open range, so the count
+    # has to be page_size exactly or the loop takes the short-page exit -- and
+    # no bounded early stop, so the walk runs out of pages.
+    full = "\n".join(_filler(1000, 1000 + 100))
+    assert full.count("\n") + 1 == 100
+    fake = _pr_pages([full] * (m.PR_PAGE_LIMIT + 2))
+    monkeypatch.setattr(m, "run", fake)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    with pytest.raises(m.AuditError, match="history is truncated"):
+        m.check_owning_job("2026-10-06")
+    assert fake.calls["n"] == m.PR_PAGE_LIMIT, fake.calls
+
+    # A SHORT final page is the ordinary end of the walk and still returns.
+    short = _pr_pages([full, "\n".join(_filler(1200, 1209))])
+    monkeypatch.setattr(m, "run", short)
+    m.check_owning_job("2026-10-06")
+    assert short.calls["n"] == 2, short.calls
 
 
 def test_the_pr_walk_continues_past_an_older_generation_delivery(monkeypatch):
@@ -6583,6 +6631,24 @@ def test_the_github_host_boundary_belongs_to_the_url_scheme():
     # The real URL, and the bare-host spelling this repo's docs use.
     assert ref("Blocked by https://github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
     assert ref("Blocked by github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
+
+
+def test_a_comment_opener_inside_a_raw_text_block_opens_nothing():
+    """A `<!--` inside `<script>` or `<pre>` is DISPLAYED, not parsed. Reading
+    one as an opener masked the closing tag and every line after it, so a live
+    broken link, stale blocker, heading or marker below the script was
+    silently skipped -- while CommonMark ends the block at `</script>`. Codex
+    filed it; the Node twin has carried the distinction for rounds."""
+    check = lambda t: [f["check"] for f in m.check_dead_links("d.md", t, {"d.md"})]
+    assert check('<script>\nvar s = "<!--";\n</script>\n\n[x](missing.md)\n') \
+        == ["dead-link"]
+    assert check("<pre>\n<!--\n</pre>\n\n[x](missing.md)\n") == ["dead-link"]
+    # RAW-TEXT blocks ONLY among the HTML kinds. Markdown is not parsed in a
+    # type-6 block either, but a comment inside one still hides its contents
+    # -- masking those would send retired markup to the href pass as visible
+    # content and report a dead link over it.
+    assert check('<div>\n<!-- <a href="missing.md">old</a> -->\n</div>\n') == []
+    assert check("<!-- [x](missing.md) -->\n") == []
 
 
 def test_a_type_7_opener_may_carry_a_quoted_angle_bracket():
