@@ -425,7 +425,8 @@ intraday directional sign** — consistent with this doc's standing verdict and
 with the literature (the directional signal lives in order-flow/limit-order-book
 data, unavailable from the current bar+daily-options vendor). Direction is, on
 this evidence, not predictable from available data; reopen only on tick/book
-acquisition. Full ablation: EXPERIMENT_REGISTRY.md E-25.
+acquisition. Full ablation: EXPERIMENT_REGISTRY.md E-34 (renumbered 2026-09-15 from E-25,
+which now denotes STRAT-NEXTBAR).
 
 
 ---
