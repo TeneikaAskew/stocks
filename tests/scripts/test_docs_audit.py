@@ -5903,9 +5903,22 @@ def test_a_quoted_setext_underline_is_still_an_underline():
     # The property the index exists for: inserting AFTER it leaves an H1.
     at = m.marker_anchor(quoted)
     assert m.h1_index(quoted[:at + 1] + ["", "**marker**"] + quoted[at + 1:]) == 0
-    # An underline at a DIFFERENT quote depth belongs to neither heading, so
-    # stripping the prefix unconditionally would invent a two-line heading.
-    assert m.marker_anchor(["> Title", "===", "", "body"]) == 0
+    # An underline at a DIFFERENT quote depth belongs to neither heading. This
+    # once expected 0 -- `> Title` treated as a one-line H1 -- which followed
+    # `h1_index` returning 0 for it. That was the defect: the quote ENDS at
+    # the unquoted `===`, so the document renders no H1 at all and there is
+    # nothing to anchor a marker to. `--stamp` answers `skipped-no-h1`, which
+    # is the honest refusal.
+    assert m.h1_index(["> Title", "===", "", "body"]) is None
+    assert m.marker_anchor(["> Title", "===", "", "body"]) is None
+    # A list container behaves the same way: a column-zero `===` ends the list.
+    assert m.h1_index(["- Title", "===", "", "body"]) is None
+    # Indented to the item's content column it is still an underline.
+    assert m.h1_index(["- Title", "  ===", "", "body"]) == 0
+    # An ATX H1 followed by a line of `===` does not own it: the underline
+    # needs a PARAGRAPH above, and a heading is not one. Anchoring past it
+    # would put the marker below a stray paragraph rather than after the H1.
+    assert m.marker_anchor(["# Title", "===", "", "body"]) == 0
 
 
 def test_a_line_region_reads_through_a_wrapped_code_span():

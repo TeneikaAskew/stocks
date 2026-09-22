@@ -3010,10 +3010,19 @@ def h1_index(lines: list[str]) -> int | None:
         # `> ====` renders as an H1, and testing the raw quoted lines returned
         # None -- so the audit reported no H1 and --stamp answered
         # `skipped-no-h1`, the finding it raises and then refuses to act on.
+        # Through `is_setext_underline`, not a third inline copy of the test.
+        # That predicate carries the CONTAINER rules this one lacked: `> Title`
+        # over an unquoted `===` is a quote that ENDS and a thematic-break-
+        # shaped line, not a heading, and `- Title` over a column-zero `===`
+        # is a list that ends. Both returned line 0 here, so the audit found
+        # an H1 the document does not render and `--stamp` wrote provenance
+        # after it. Level ONE only, which is the question this function asks;
+        # the predicate accepts either underline.
         under = _BLOCKQUOTE_PREFIX_RE.sub("", lines[i + 1] or "", count=1) \
             if i + 1 < len(lines) else ""
         if (bare.strip() and not bare.lstrip().startswith("#")
-                and i + 1 < len(lines) and (i + 1) not in fenced
+                and i + 1 < len(lines)
+                and is_setext_underline(lines, i + 1, fenced)
                 and re.fullmatch(r" {0,3}=+\s*", under)):
             return i
     return None
@@ -3037,11 +3046,14 @@ def marker_anchor(lines: list[str]) -> int | None:
     # --stamp inserted the marker between the title and its underline,
     # destroying the H1 while reporting the stamp inserted. The underline must
     # sit at the same quote depth as the title, or it belongs to neither.
+    # Through `is_setext_underline`, which is where the container rules live:
+    # this carried its own quote-depth test and none of the list ones, and a
+    # local copy of a rule is how the two halves drift. Level ONE only, as in
+    # `h1_index`; the predicate accepts either underline.
     under = (_BLOCKQUOTE_PREFIX_RE.sub("", lines[h1 + 1] or "", count=1)
              if h1 + 1 < len(lines) else "")
-    same_depth = (h1 + 1 < len(lines)
-                  and quote_depth(lines[h1 + 1] or "") == quote_depth(lines[h1] or ""))
-    if same_depth and re.fullmatch(r" {0,3}=+\s*", under):
+    if (h1 + 1 < len(lines) and is_setext_underline(lines, h1 + 1)
+            and re.fullmatch(r" {0,3}=+\s*", under)):
         return h1 + 1
     return h1
 
