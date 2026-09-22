@@ -1,5 +1,9 @@
 # Plan Consolidation and Preservation Audit
 
+> **Frontend paths:** `platform/src/**` references below predate the #957 split and now
+> live at [`TeneikaAskew/solyra`](https://github.com/TeneikaAskew/solyra) `src/**`. See
+> [11-CODE-TRACEABILITY](11-CODE-TRACEABILITY.md) for the canonical note.
+
 **Verified:** 2026-08-31 · **Owner:** TBD · **Merged canonical baseline:** [#931](https://github.com/TeneikaAskew/stocks/pull/931) · **Open follow-up:** [#945](https://github.com/TeneikaAskew/stocks/pull/945)
 
 ## Direct answer

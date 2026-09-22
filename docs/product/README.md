@@ -17,6 +17,8 @@ The maintained index from product intent through implementation, evidence, risk 
 | [05 Infrastructure references](05-INFRASTRUCTURE.md#reference-documents) | Where are the long-form architecture, ERD, API, cost and pipeline documents? (`docs/product/infrastructure/`) |
 | [06 Data Architecture](06-DATA-ARCHITECTURE.md) | What are the 64 relations and how does data flow? |
 | [07 Model Registry](07-MODEL-REGISTRY.md) | Which rules and models exist, and are they trustworthy? |
+| [07 Experiment traceability](07-MODEL-REGISTRY.md#experiment-traceability) | Which experiments (`E-01…E-34`) produced each model's verdict, and where is the long-form evidence? |
+| [07 Documentation coverage](07-MODEL-REGISTRY.md#documentation-coverage-and-freshness) | Which model documentation is missing, stale or contradicted by the code, and what is being done about it? |
 | [08 Ai Agent Architecture](08-AI-AGENT-ARCHITECTURE.md) | What are the 14 LLM nodes actually wired today? |
 | [09 Security Auth](09-SECURITY-AUTH.md) | How are identity, access, tenancy and perimeter separated? |
 | [10 Operations Reliability](10-OPERATIONS-RELIABILITY.md) | How is production trust measured and recovered? |
@@ -26,6 +28,25 @@ The maintained index from product intent through implementation, evidence, risk 
 | [14 Work Breakdown](14-WORK-BREAKDOWN.md) | How does the work decompose into evidence? |
 | [15 Open Decisions](15-OPEN-DECISIONS.md) | Which product choices remain unresolved? |
 | [16 Consolidation Audit](16-CONSOLIDATION-AUDIT.md) | What was preserved from Claude and PR #924, and how was every section validated? |
+
+## Research and experiment evidence
+
+The model verdicts in [07](07-MODEL-REGISTRY.md) rest on a research corpus that lives
+outside `docs/product/`. It is joined to this plan by the
+[experiment traceability table](07-MODEL-REGISTRY.md#experiment-traceability).
+
+| Doc | Question answered |
+|---|---|
+| [EXPERIMENT_REGISTRY.md](../EXPERIMENT_REGISTRY.md) | **The experiment log** — what was tried, `E-01…E-34`, and what each returned |
+| [RESEARCH_COMPENDIUM.md](../RESEARCH_COMPENDIUM.md) | Why each approach and feature set was picked; the correlation analyses |
+| [MODEL_REGISTRY.md](../MODEL_REGISTRY.md) | Research-side model inventory: target, features, data, status |
+| [INVESTMENT_MODELS_SUMMARY.md](../INVESTMENT_MODELS_SUMMARY.md) | Models #1–#5, `lib/`, the Strat classifier, the backtest engine |
+| [MAGNITUDE_ENGINE_RESULTS.md](../MAGNITUDE_ENGINE_RESULTS.md) · [DIRECTION_RESEARCH_RESULTS.md](../DIRECTION_RESEARCH_RESULTS.md) · [DIRECTION_FEATURES_R&D.md](../DIRECTION_FEATURES_R%26D.md) | Per-program verdicts — all FAIL or null; retained deliberately as evidence |
+| [EXEC_BACKTEST_RESULTS.md](../EXEC_BACKTEST_RESULTS.md) · [OPTIONS_EXEC_BACKTEST_RESULTS.md](../OPTIONS_EXEC_BACKTEST_RESULTS.md) · [BSVP_VALIDATION_RESULTS.md](../BSVP_VALIDATION_RESULTS.md) | Execution backtests and BSVP validation |
+| [MODEL_RETHINK_PLANS.md](../MODEL_RETHINK_PLANS.md) | The pivot from options-buying to trading the underlying |
+
+Full list, including the dated `docs/research/` program folders and the machine-written
+run records: [07 § Research documentation corpus](07-MODEL-REGISTRY.md#research-documentation-corpus).
 
 ## Where the app lives
 
@@ -72,9 +93,17 @@ documentation. Where deployment config and source defaults disagree, **both** ar
 (worked example: `AUTH_MODE` in [09](09-SECURITY-AUTH.md)).
 
 **Capability status:** Production · Production but needs remediation · Shadow · Experimental ·
-Research · Incomplete · Planned · Deprecated · Dormant · Broken · Retire candidate.  
-**Model status:** Production · Shadow · Experimental · Research · Failed · Retest Required ·
-Invalidated · Archived · Retired.
+Research · Incomplete · Planned · Deprecated · Dormant · Broken · Retire candidate.
+**Model status:** Production · Production but needs remediation · Shadow · Experimental ·
+Research · Failed · Retest Required · Invalidated · Broken · Archived · Retired.
+*(`Production but needs remediation` and `Broken` were in use on model rows while declared
+only on the capability ladder; the consistency test silently allowed them. Declared here
+2026-09-18 so the published vocabulary matches the rows and the gate can be strict.)*
+**Doc health** — whether a model's documentation still agrees with its code, which none of the
+ladders above express: `CURRENT` (a doc states the model's behaviour and nothing in the code
+contradicts it) · `UNVERIFIED` (documented, but the claim has not been checked against the
+code, or the check is not possible offline) · `CONTRADICTED` (the code or a live signal
+disagrees with what the doc says) · `NONE` (no doc describes this model).
 
 **Monitoring fields.** Every capability record in [02](02-FEATURE-CATALOG.md) carries Owner,
 Status, Priority, Target Phase, Target Release, Last Reviewed, Evidence Status, Blocking Issues
@@ -109,7 +138,7 @@ for that row — the previous revision emitted one identical document-level link
 | [FEAT-IND-001](02-FEATURE-CATALOG.md#feat-ind-001) | Indicators | RVOL, ORB, ATR, RSI, VWAP | `/live`, `/charts` | via `lib/` | `market_data_*` | MODEL-IND-001 | `lib/indicators.py` | `tests/test_indicators*.py` | [#894](https://github.com/TeneikaAskew/stocks/issues/894) [#892](https://github.com/TeneikaAskew/stocks/issues/892) [#870](https://github.com/TeneikaAskew/stocks/issues/870) | UNKNOWN | Production but needs remediation | P1 |
 | [FEAT-INSIGHT-001](02-FEATURE-CATALOG.md#feat-insight-001) | AI insights | LLM per-ticker reports + chat | `/insights` | `/api/insights` (13) | `insight_reports`, `insight_runs`, `model_routing` | 14 LLM nodes — see [08](08-AI-AGENT-ARCHITECTURE.md) | `lib/agents/` | `insights.spec.ts` | [#827](https://github.com/TeneikaAskew/stocks/issues/827) [#867](https://github.com/TeneikaAskew/stocks/issues/867) [#916](https://github.com/TeneikaAskew/stocks/issues/916) | [#450](https://github.com/TeneikaAskew/stocks/pull/450) [#362](https://github.com/TeneikaAskew/stocks/pull/362) [#451](https://github.com/TeneikaAskew/stocks/pull/451) | Experimental | P2 |
 | [FEAT-CATALYST-001](02-FEATURE-CATALOG.md#feat-catalyst-001) | Earnings / catalysts | Events, reactions, news, filings | `/catalysts` | `/api/catalysts`, `/api/earnings` | `earnings_*`, `economic_events`, `news_sentiment`, `sec_filings` | MODEL-EARN-001 | `platform/api/routers/catalysts.py` | `catalysts.spec.ts` | — | [#220](https://github.com/TeneikaAskew/stocks/pull/220) [#514](https://github.com/TeneikaAskew/stocks/pull/514) [#532](https://github.com/TeneikaAskew/stocks/pull/532) | Production but needs remediation | P1 |
-| [FEAT-REPORT-001](02-FEATURE-CATALOG.md#feat-report-001) | Reports / analytics | Backtest + walk-forward results | `/reports` | `/api/analytics`, `/api/backtest` | `backtest_*`, `walk_forward_results` | MODEL-CALIB-001, MODEL-STYLE-001 | `platform/src/routes/ReportsPage.tsx` | `reports.spec.ts` | — | UNKNOWN | Production but needs remediation | P1 |
+| [FEAT-REPORT-001](02-FEATURE-CATALOG.md#feat-report-001) | Reports / analytics | Backtest + walk-forward results | `/reports` | `/api/analytics`, `/api/backtest` | `backtest_*`, `walk_forward_results` | MODEL-CALIB-001, MODEL-SWEEP-001, MODEL-STYLE-001 | `platform/src/routes/ReportsPage.tsx` | `reports.spec.ts` | — | UNKNOWN | Production but needs remediation | P1 |
 | [FEAT-REPLAY-001](02-FEATURE-CATALOG.md#feat-replay-001) | Replay / backtest engine | Point-in-time replay + evaluation | `/reports` | `/api/backtest/replay-trades` | `backtest_*`, `signal_alerts` | — | `lib/backtest.py` | `replay-trainer.spec.ts` | [#824](https://github.com/TeneikaAskew/stocks/issues/824) [#823](https://github.com/TeneikaAskew/stocks/issues/823) [#822](https://github.com/TeneikaAskew/stocks/issues/822) | [#210](https://github.com/TeneikaAskew/stocks/pull/210) [#319](https://github.com/TeneikaAskew/stocks/pull/319) [#519](https://github.com/TeneikaAskew/stocks/pull/519) [#694](https://github.com/TeneikaAskew/stocks/pull/694) | **Invalidated** | P0 |
 | [FEAT-MODEL-001](02-FEATURE-CATALOG.md#feat-model-001) | Models / research | Predictive + calibration systems | `/admin` | `/api/magnitude`, `/api/admin/strat-engine` | `ticker_calibration`, `user_style_results` | see [07](07-MODEL-REGISTRY.md) | `gcp/research/` | `tests/test_walk_forward*.py` | [#817](https://github.com/TeneikaAskew/stocks/issues/817) [#813](https://github.com/TeneikaAskew/stocks/issues/813) [#910](https://github.com/TeneikaAskew/stocks/issues/910) | [#355](https://github.com/TeneikaAskew/stocks/pull/355) [#591](https://github.com/TeneikaAskew/stocks/pull/591) [#735](https://github.com/TeneikaAskew/stocks/pull/735) [#811](https://github.com/TeneikaAskew/stocks/pull/811) | **Invalidated / Failed** (mixed) | P0 |
 | [FEAT-JOURNAL-001](02-FEATURE-CATALOG.md#feat-journal-001) | Journal / portfolio | Per-user trade record + import | `/journal` | `/api/journal` (9) | `trades`, `journal_entries` | MODEL-STYLE-001 | `platform/src/routes/JournalPage.tsx` | `journal.spec.ts` | [#722](https://github.com/TeneikaAskew/stocks/issues/722) [#717](https://github.com/TeneikaAskew/stocks/issues/717) [#716](https://github.com/TeneikaAskew/stocks/issues/716) | [#626](https://github.com/TeneikaAskew/stocks/pull/626) [#718](https://github.com/TeneikaAskew/stocks/pull/718) [#720](https://github.com/TeneikaAskew/stocks/pull/720) [#764](https://github.com/TeneikaAskew/stocks/pull/764) | Production but needs remediation | P1 |
@@ -119,7 +148,7 @@ for that row — the previous revision emitted one identical document-level link
 | [FEAT-SETTINGS-001](02-FEATURE-CATALOG.md#feat-settings-001) | Settings | Device-local appearance/layout | `/settings` | **none — `localStorage`** | **none** | — | `platform/src/routes/SettingsPage.tsx` | **none** | — | UNKNOWN | Incomplete | P3 |
 | [FEAT-DATA-001](02-FEATURE-CATALOG.md#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | — | `gcp/fetchers/` | `tests/test_data_loader*.py` | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) | [#205](https://github.com/TeneikaAskew/stocks/pull/205) [#518](https://github.com/TeneikaAskew/stocks/pull/518) [#760](https://github.com/TeneikaAskew/stocks/pull/760) | Production but needs remediation | P0 |
 | [FEAT-DEPLOY-001](02-FEATURE-CATALOG.md#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 65 schedulers, Cloud Run | — | — | — | — | `gcp/deploy.sh` | static checks only | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#833](https://github.com/TeneikaAskew/stocks/issues/833) | [#507](https://github.com/TeneikaAskew/stocks/pull/507) | Production but needs remediation | P1 |
-| [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | — | `gcp/freshness_watchdog.py` | deleted in #957 — see [#971](https://github.com/TeneikaAskew/stocks/issues/971) | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) [#944](https://github.com/TeneikaAskew/stocks/issues/944) | [#189](https://github.com/TeneikaAskew/stocks/pull/189) [#235](https://github.com/TeneikaAskew/stocks/pull/235) [#494](https://github.com/TeneikaAskew/stocks/pull/494) [#771](https://github.com/TeneikaAskew/stocks/pull/771) | Incomplete | P1 |
+| [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | — | `scripts/audit_data_freshness.py` | deleted in #957 — see [#971](https://github.com/TeneikaAskew/stocks/issues/971) | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) [#944](https://github.com/TeneikaAskew/stocks/issues/944) | [#189](https://github.com/TeneikaAskew/stocks/pull/189) [#235](https://github.com/TeneikaAskew/stocks/pull/235) [#494](https://github.com/TeneikaAskew/stocks/pull/494) [#771](https://github.com/TeneikaAskew/stocks/pull/771) | Incomplete | P1 |
 | [FEAT-CICD-001](02-FEATURE-CATALOG.md#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | — | `.github/workflows/` | 230 python tests | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) | [#364](https://github.com/TeneikaAskew/stocks/pull/364) [#378](https://github.com/TeneikaAskew/stocks/pull/378) | Production but needs remediation | P1 |
 | [FEAT-UI-001](02-FEATURE-CATALOG.md#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | — | [solyra `src/App.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/App.tsx) | [solyra `tests/navigation.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/navigation.spec.ts) | [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) | [#546](https://github.com/TeneikaAskew/stocks/pull/546) [#611](https://github.com/TeneikaAskew/stocks/pull/611) [#703](https://github.com/TeneikaAskew/stocks/pull/703) [#715](https://github.com/TeneikaAskew/stocks/pull/715) | Production but needs remediation | P2 |
 | [FEAT-DEBT-001](02-FEATURE-CATALOG.md#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | — | `scripts/` | — | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#841](https://github.com/TeneikaAskew/stocks/issues/841) [#921](https://github.com/TeneikaAskew/stocks/issues/921) | UNKNOWN | Retire candidate | P3 |
