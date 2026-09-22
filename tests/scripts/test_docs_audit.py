@@ -5304,3 +5304,30 @@ def test_a_markdown_link_that_crosses_a_line_break_is_still_a_link():
     assert run("[long\nlabel](docs/a.md)\n") == []
     assert run("```\n[long\nlabel](missing.md)\n```\n") == []
     assert run("`[long\nlabel](missing.md)`\n") == []
+
+
+def test_stamping_refuses_an_ambiguous_classification(audit_repo):
+    """check_registry_paths already reported two equally specific rows
+    disagreeing, and a finding was all it did: classify still took the first by
+    TABLE ORDER, so with a `D` row above a conflicting `A` row --stamp treated
+    a machine-owned document as hand-written and rewrote a marker in generated
+    content -- the one write this module exists to prevent."""
+    reg = ("# Documentation registry\n\n## Registry\n\n"
+           "| Class | Path glob | Declared code paths | Generated regions |\n"
+           "|---|---|---|---|\n"
+           "| D | docs/DOC_REGISTRY.md | | |\n"
+           "| D | docs/tie.md | scripts | |\n"
+           "| A | docs/tie.md | | all |\n")
+    (audit_repo / "docs" / "DOC_REGISTRY.md").write_text(reg)
+    (audit_repo / "docs" / "tie.md").write_text("# Tie\n\nProse.\n")
+    _commit(audit_repo, "tie")
+    with pytest.raises(m.AuditError, match="disagree about what it is"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json"),
+                "--stamp", "--verify", "docs/tie.md"])
+    assert "Last reviewed" not in (audit_repo / "docs" / "tie.md").read_text()
+    # The predicate itself, both ways: rows that AGREE are not ambiguous, so an
+    # ordinary duplicate row does not stop a stamp.
+    rows = m.load_registry(reg)
+    assert m.classification_is_ambiguous("docs/tie.md", rows) is True
+    assert m.classification_is_ambiguous("docs/DOC_REGISTRY.md", rows) is False

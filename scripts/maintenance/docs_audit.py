@@ -891,6 +891,38 @@ def document_set(tracked: set[str], registry: list[dict]) -> list[str]:
     return sorted(p for p in tracked if p.endswith(".md") or p in named)
 
 
+def registry_rules(doc: str, registry: list[dict]) -> list[dict]:
+    """Every top-ranked row for `doc`, so a caller can see a tie.
+
+    `classify` collapses these to one; the tie itself is what decides whether a
+    WRITE is safe, which is a different question from what class to report.
+    """
+    matches = [r for r in registry if fnmatch.fnmatch(doc, r["glob"])]
+    if not matches:
+        return []
+    top = max(len(r["glob"]) for r in matches)
+    return [r for r in matches if len(r["glob"]) == top]
+
+
+def classification_is_ambiguous(doc: str, registry: list[dict]) -> bool:
+    """Do the top-ranked rows disagree about what this document IS?
+
+    check_registry_paths already reports the disagreement as a P1, and a
+    finding was all it did: `classify` still took the first row by TABLE ORDER,
+    so with a `D` row above a conflicting `A` row `--stamp` treated a
+    machine-owned document as hand-written and inserted or rewrote a marker in
+    generated content -- the one write this module exists to prevent. A
+    disagreement the audit cannot resolve must disable the writes that depend
+    on it, not merely be mentioned.
+
+    The comparison is the same tuple check_registry_paths compares, so the
+    finding and the refusal cannot disagree about what a tie means.
+    """
+    tied = registry_rules(doc, registry)
+    return len({(r["cls"], tuple(r.get("code_paths") or ()),
+                 tuple(r.get("regions") or ())) for r in tied}) > 1
+
+
 def classify(doc: str, registry: list[dict]) -> tuple[str | None, list[str], list[str]]:
     """Most specific match wins, so a file rule beats the directory rule."""
     best: tuple[int, dict] | None = None
@@ -4117,6 +4149,16 @@ def main(argv: list[str] | None = None) -> int:
                                  "detail": f"not stamped: a generated region starts at line "
                                            f"{min(owned)}, too close to the H1 on line {h1 + 1}"})
                 continue
+            # An AMBIGUOUS classification disables the write. Two equally
+            # specific rows disagreeing about what this document is means the
+            # audit does not know whether it is hand-written or machine-owned,
+            # and taking the first by table order let --stamp rewrite generated
+            # content when the `D` row happened to sit above the `A` row. The
+            # P1 from check_registry_paths says the registry needs fixing; this
+            # says the write waits until it is.
+            if classification_is_ambiguous(doc, registry):
+                stamp_refusals[doc] = "ambiguous-classification"
+                continue
             reviewed = doc in verify
             # A review records "these claims were true against THIS revision".
             # For a document the revision does not contain, that sentence has
@@ -4192,6 +4234,10 @@ def main(argv: list[str] | None = None) -> int:
             why = {"baseline-predates-doc":
                        f"the document does not exist at {head}, so the review would "
                        "name a baseline predating it; commit it first",
+                   "ambiguous-classification":
+                       f"two equally specific {REGISTRY} rows disagree about what it is, "
+                       "so the audit cannot tell hand-written content from generated; "
+                       "fix the registry rows first",
                    "uncommitted-code":
                        "a declared code path has uncommitted changes, so the review "
                        f"would name {head} as its baseline and the next audit would "
