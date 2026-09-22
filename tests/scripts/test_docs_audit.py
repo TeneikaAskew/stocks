@@ -6702,3 +6702,33 @@ def test_a_backslash_escape_survives_every_link_delimiter():
     assert m.REF_DEF_RE.match("[^1]: note") is None
     assert next(m.md_links('[x](g.md "t")')).group("target") == "g.md"
     assert next(m.md_links("[x](<my guide.md>)")).group("btarget") == "my guide.md"
+
+
+def test_a_verified_stamp_is_refused_over_a_claim_the_audit_disproved(
+        audit_repo, capsys):
+    """`--verify` writes `Depth: verified` and today's date, which says "I read
+    this and its claims hold". A dead link is a claim this audit has
+    mechanically DISPROVEN, so writing that sentence over it is the tool lying
+    about itself -- and without --check the command exited 0 having done it.
+    Raised on the Node twin."""
+    doc = audit_repo / "docs" / "d.md"
+    doc.write_text("# D\n\n[x](missing.md)\n")
+    before = doc.read_text()
+    with pytest.raises(m.AuditError, match="disproved a claim"):
+        _audit(audit_repo, "--stamp", "--verify", "docs/d.md")
+    # Nothing was written: the whole batch is refused, not half of it.
+    assert doc.read_text() == before
+
+
+def test_a_verified_stamp_still_lands_when_the_document_holds_up(
+        audit_repo, capsys):
+    """The refusal has to be narrow. A document whose only findings are the
+    MISSING provenance the stamp itself supplies must still be stampable, or
+    --verify becomes impossible on exactly the documents that need it."""
+    doc = audit_repo / "docs" / "d.md"
+    doc.write_text("# D\n\nbody\n")
+    _audit(audit_repo, "--stamp", "--verify", "docs/d.md")
+    report = json.loads(capsys.readouterr().out)
+    assert [s["doc"] for s in report["stamped"] if s["doc"] == "docs/d.md"] == \
+        ["docs/d.md"]
+    assert "**Depth:** verified" in doc.read_text()

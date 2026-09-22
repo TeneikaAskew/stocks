@@ -3085,6 +3085,10 @@ def render_marker(date: str, depth: str | None, sha: str | None,
     return f" {DOT} ".join(parts)
 
 
+# The checks a stamp does NOT answer; see the --verify refusal in main.
+_DISPROVEN_BY_AUDIT = frozenset(
+    {"dead-link", "dead-anchor", "closed-issue", "class-a"})
+
 OWNED_FIELDS = ("Last reviewed:", "Depth:", "Against:", "Last scanned:", "Owner:")
 
 
@@ -5755,6 +5759,24 @@ def main(argv: list[str] | None = None) -> int:
                 stamp_refusals[doc] = "ambiguous-classification"
                 continue
             reviewed = doc in verify
+            # A review of prose this audit just DISPROVED is false provenance.
+            # `--verify` writes `Depth: verified` and today's date, which says
+            # "I read this document and its claims hold" -- so writing it over
+            # a dead link, a closed issue cited as live work or a missing
+            # Class A stamp is the tool lying about itself, and
+            # `--stamp --verify docs/x.md` without `--check` exited 0 having
+            # done exactly that. Raised on the Node twin (solyra#69), where
+            # `count-claim` joins this set; there is no claims check here.
+            #
+            # `marker` and `changed-since` are deliberately absent: a missing,
+            # stale or drifted marker is precisely what the stamp resolves, so
+            # refusing on those would make --verify impossible on the
+            # documents that most need it. The findings for this document have
+            # all been added by now, so they can be asked about directly.
+            if reviewed and any(f["doc"] == doc and f["check"] in _DISPROVEN_BY_AUDIT
+                                for f in findings):
+                stamp_refusals[doc] = "disproven-claim"
+                continue
             # A review records "these claims were true against THIS revision".
             # For a document the revision does not contain, that sentence has
             # no meaning -- and the marker it would write is unfalsifiable,
@@ -5826,7 +5848,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.stamp:
         missing = sorted(verify - stamp_targets)
         if missing:
-            why = {"baseline-predates-doc":
+            why = {"disproven-claim":
+                       "the audit disproved a claim it makes, so a verified stamp "
+                       "would record a review of prose that does not hold; fix the "
+                       "findings for it first",
+                   "baseline-predates-doc":
                        f"the document does not exist at {head}, so the review would "
                        "name a baseline predating it; commit it first",
                    "ambiguous-classification":
