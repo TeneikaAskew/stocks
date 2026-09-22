@@ -84,6 +84,7 @@ Repo-level invariant, so it lives in tests/meta/ (two levels below root).
 from __future__ import annotations
 
 import datetime as _dt
+import sys
 import re
 import urllib.parse
 from pathlib import Path
@@ -376,6 +377,48 @@ def test_product_docs_have_no_dead_relative_links():
                 if not (md.parent / target).exists():
                     broken.append(f"{root.name}/{md.name} -> {target}")
     assert broken == [], f"dead relative links: {broken}"
+
+
+def test_scheduler_enumeration_matches_the_canonical_parser():
+    """All three scheduler parsers must agree, because they are now one.
+
+    This PR ran four parsers of `gcp/deploy.sh` at various points, and they
+    disagreed every time somebody checked:
+
+        doc_inventory.deploy_schedulers   66   both declaration forms
+        audit_scheduler_coverage          63   `_schedule*` helpers only
+        this file's _declared_schedulers  63   `_schedule*` helpers only
+
+    The two that agreed were agreeing about the same blind spot, which reads
+    exactly like corroboration. Three schedulers were in neither registry
+    table while both gates reported complete coverage -- and two of them run
+    model-producing jobs (DOC-48).
+
+    Both now delegate to `doc_inventory`. This gate is what stops a fourth
+    from being written: reintroduce a hand-rolled parse anywhere and the sets
+    stop matching here.
+    """
+    sys.path.insert(0, str(REPO / "scripts" / "maintenance"))
+    sys.path.insert(0, str(REPO / "scripts"))
+    from audit_scheduler_coverage import resolve_schedulers
+    from doc_inventory import deploy_schedulers
+
+    canonical = {d["name"] for d in deploy_schedulers(REPO)}
+    mine = set(_declared_schedulers())
+    audit = set(resolve_schedulers(DEPLOY.read_text()))
+
+    assert mine == canonical, (
+        f"this file's enumeration disagrees with doc_inventory. "
+        f"missing here: {sorted(canonical - mine)}; extra here: {sorted(mine - canonical)}"
+    )
+    assert audit == canonical, (
+        f"audit_scheduler_coverage disagrees with doc_inventory. "
+        f"missing there: {sorted(canonical - audit)}; extra there: {sorted(audit - canonical)}"
+    )
+    assert len(canonical) >= 66, (
+        f"only {len(canonical)} schedulers parsed — deploy.sh declared 66 on "
+        "2026-09-22, so a sharp drop means a declaration form stopped matching"
+    )
 
 
 # ------------------------------------------------- 2b. test-coverage claims --
@@ -683,40 +726,49 @@ def test_model_ids_are_globally_unique_across_the_inventory():
 
 
 def _declared_schedulers() -> dict[str, tuple[str, str]]:
-    """name -> (cron, target job), parsed from gcp/deploy.sh.
+    """name -> (cron, target job or service), from the CANONICAL parser.
 
-    COMMENTED-OUT declarations are excluded. `deploy.sh:4488` carries a
-    disabled `p7b-classifier-daily` whose surrounding comment says to
-    uncomment it only once a profitable cell is found; a parser that reads it
-    would let an inactive scheduler be added to the registry table and still
-    pass. `tests/gcp/test_deploy_reachability.py:89` independently asserts
-    that commented schedule lines are ignored, so this matches that contract.
+    This used to hand-roll the parse and was the SECOND of what became four
+    parsers of `gcp/deploy.sh` in this PR. It recognised only `_schedule*`
+    helpers, so three schedulers declared with a raw
+    `gcloud scheduler jobs create http` were invisible to it --
+    `reconcile-failure-notifier-hourly`, `strat-enrich-daily` and
+    `backfill-indicators-weekly`. Two of those invoke model-producing jobs, and
+    all three were in NEITHER registry table while
+    `test_every_live_scheduler_is_classified` reported full coverage: a
+    completeness check over an incomplete enumeration is a check over nothing.
+    DOC-48.
+
+    `scripts/maintenance/doc_inventory.py` already handled both declaration
+    forms and reported 66 where this said 63. It is now the single source, as
+    `scripts/audit_scheduler_coverage.py` also is, so a disagreement between
+    the audit and this gate is no longer possible by construction.
+
+    Commented-out declarations stay excluded -- `deploy.sh` carries a disabled
+    `p7b-classifier-daily` -- which the canonical parser already handles by
+    anchoring its match at line start.
     """
+    sys.path.insert(0, str(REPO / "scripts" / "maintenance"))
+    from doc_inventory import deploy_schedulers
+
+    sys.path.insert(0, str(REPO / "scripts"))
+    from audit_scheduler_coverage import _service_url_vars, _shell_vars
+
+    text = DEPLOY.read_text()
+    urls = _service_url_vars(text, _shell_vars(text))
+
     out: dict[str, tuple[str, str]] = {}
-    pending = ""
-    for raw in DEPLOY.read_text().split("\n"):
-        line = raw.strip()
-        if line.startswith("#"):
-            pending = ""
-            continue
-        joined = (pending + " " + line).strip() if pending else line
-        pending = joined if joined.endswith("\\") else ""
-        m = re.search(
-            # EVERY scheduler helper, not just two. deploy.sh declares entries
-            # through _schedule, _schedule_args, _schedule_with_args,
-            # _schedule_brief, _schedule_insight, _schedule_verified,
-            # _schedule_with_args_verified and _schedule_min_instances; all share
-            # the same "name" "cron" "job" prefix. Parsing only the first two made
-            # refresh-earnings-views-daily invisible to the completeness gate.
-            r'_schedule[a-z_]*\s+"([^"]+)"\s+\\?\s*"([^"]+)"\s+\\?\s*"([^"]+)"',
-            joined.replace("\\", " "),
+    for d in deploy_schedulers(REPO):
+        target = d["target_job"] or d["target_service"]
+        if not target and d["target_uri"]:
+            var = re.match(r"\$\{?(\w+)\}?", d["target_uri"])
+            target = urls.get(var.group(1), "") if var else ""
+        assert target, (
+            f"scheduler {d['name']!r} has no resolvable target "
+            f"(uri={d['target_uri']!r}) -- teach the resolver, do not drop it"
         )
-        if m:
-            out[m.group(1)] = (m.group(2), m.group(3))
-            pending = ""
+        out[d["name"]] = (d["cron"], target)
     return out
-
-
 def _run_section() -> str:
     return REGISTRY.read_text().split("### Which of these actually run", 1)[1].split("\n###", 1)[0]
 
@@ -1640,6 +1692,32 @@ MODEL_BEARING = ("magnitude", "strat-engine", "direction", "calibrate-thresholds
                  # another declared job (checked).
                  "fetch-market-data", "backfill-daily-indicators")
 
+def _scheduler_entrypoint_overrides() -> dict[str, str]:
+    """scheduler -> the module its containerOverrides args actually run.
+
+    A scheduler may target a job and then override which module that job runs.
+    `strat-enrich-daily` targets `strat-engine` -- a model-bearing job -- but
+    runs `gcp.research.strat_engine.strat_enrich_levels`, which writes ORB and
+    historical-level feature columns and classifies nothing. Judging it by the
+    job's name says "model-bearing"; judging it by the code it runs says
+    "inputs only", and the code is what is true.
+
+    So the job-name proxy below does not apply to an overridden scheduler, and
+    `test_every_live_scheduler_is_classified` covers it instead -- by requiring
+    it in one of the two tables with a written reason, which is the standard
+    this PR replaced the proxy with in the first place.
+    """
+    sys.path.insert(0, str(REPO / "scripts" / "maintenance"))
+    from doc_inventory import deploy_schedulers
+
+    out = {}
+    for d in deploy_schedulers(REPO):
+        m = re.search(r"-m\s+([\w.]+)", d.get("args") or "")
+        if m:
+            out[d["name"]] = m.group(1)
+    return out
+
+
 def _is_model_bearing(job: str) -> bool:
     return any(k in job for k in MODEL_BEARING)
 
@@ -1659,6 +1737,7 @@ def test_every_scheduled_model_bearing_job_is_listed():
         f"{name} -> {job}"
         for name, (_, job) in _declared_schedulers().items()
         if _is_model_bearing(job) and name not in listed
+        and name not in _scheduler_entrypoint_overrides()
     )
     assert not missing, (
         f"model-bearing scheduler entries absent from the table: {missing}. "

@@ -42,10 +42,16 @@ agreement bonus therefore affects live sizing on roughly 1 fire in 45, and the o
 overlap the momentum docstring describes is rarer still.
 
 **This is the same fact as [MODEL-MOM-001](MODEL-MOM-001.md)'s live-gating section, from the
-data side.** That document records that momentum alone cannot fire because
-`enable_standalone_momentum` is `False`; this measurement shows momentum is not even *eligible*
-on 98% of the bars where mean reversion fires. The disabled flag costs little because there is
-little to discard.
+data side** — and it carries the same limit. That document records that momentum alone cannot
+fire because `enable_standalone_momentum` is `False`. This measurement shows momentum returned
+`None` on 98% of the bars **where mean reversion fired**, which is not the same as 98% of bars.
+
+> **It does not license the conclusion an earlier revision drew here** — that the disabled flag
+> "costs little because there is little to discard". `signal_alerts` contains only alerts that
+> were emitted, and with the flag off a momentum-eligible bar on which mean reversion misses
+> emits nothing, so the discarded population is exactly the one missing from these 782 rows.
+> The counters at `gcp/signal_monitor.py:1098` and `:1102-1103` would answer it; they have not
+> been read. DOC-51.
 
 ## Inputs
 

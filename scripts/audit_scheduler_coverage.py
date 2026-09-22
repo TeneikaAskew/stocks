@@ -153,34 +153,86 @@ def resolve_services(text: str) -> dict[str, dict]:
     """Cloud Run SERVICES. `discord-warm-*` targets one to keep it warm, so a
     scheduler can legitimately point at something that is not a job at all --
     which the first version reported as an unresolved parse failure."""
+    # Expand `VAR="literal"` first: the failure-notifier is deployed as
+    # `gcloud run deploy "${NOTIFIER_SERVICE}"`, so a literal-only regex misses
+    # it and its hourly reconciler then reports as an unresolved parse failure.
+    for var, val in _shell_vars(text).items():
+        text = text.replace("${" + var + "}", val).replace("$" + var, val)
     return {m.group(1): {"entrypoint": None, "kind": "service", "args": None}
-            for m in re.finditer(r"gcloud run deploy ([\w-]+)", text)}
+            for m in re.finditer(r'gcloud run deploy "?([\w-]+)"?', text)}
+
+
+def _shell_vars(text: str) -> dict[str, str]:
+    """`VAR="literal"` assignments, for expanding `${VAR}` in declarations."""
+    return dict(re.findall(r'^(\w+)="([^"$`]*)"\s*$', text, re.M))
+
+
+def _service_url_vars(text: str, shell: dict[str, str]) -> dict[str, str]:
+    """`url_var` -> service name, for `x="$(gcloud run services describe "$Y")"`.
+
+    `reconcile-failure-notifier-hourly` targets `${service_url}/reconcile`, and
+    `service_url` is assigned from a describe of `${NOTIFIER_SERVICE}`. Reading
+    that assignment is how the scheduler resolves to `failure-notifier` without
+    a hardcoded special case.
+    """
+    out = {}
+    for var, svc in re.findall(
+        r'(\w+)="?\$\(\s*gcloud run services describe\s+"?\$\{?(\w+)\}?"?', text
+    ):
+        out[var] = shell.get(svc, svc)
+    return out
 
 
 def resolve_schedulers(text: str) -> dict[str, tuple[str, str]]:
-    """scheduler -> (cron, job).
+    """scheduler -> (cron, job-or-service), delegated to the canonical parser.
 
-    Backslash continuations are JOINED FIRST, and that is not a detail. The
-    first version matched line by line, so a call split as
+    This function used to hand-roll the parse, and it was wrong twice the same
+    way. First it matched line by line, so a backslash-continued `_schedule`
+    call matched NOTHING and the script printed "61 declared, 61 resolved" and
+    exited 0 -- an entry the parser never saw cannot fail to resolve. Joining
+    continuations fixed that and the docstring then asserted "the real count is
+    63".
 
-        _schedule "signal-quality-alarm-daily" \\
-            "0 2 * * 2-6" "signal-quality-alarm"
+    It was not 63. It recognised only `_schedule*` helpers, so three schedulers
+    declared with a raw `gcloud scheduler jobs create http` were invisible:
+    `reconcile-failure-notifier-hourly`, `strat-enrich-daily` and
+    `backfill-indicators-weekly` -- the last two invoking model-producing jobs.
+    All three were absent from BOTH registry tables while this script and
+    `test_every_live_scheduler_is_classified` reported full coverage, because
+    a check over an incomplete enumeration is a check over nothing. DOC-48.
 
-    matched nothing and the scheduler was never enumerated at all. The script
-    then printed "61 schedulers declared, 61 resolved" and exited 0 -- because
-    an entry the parser never saw cannot fail to resolve. The real count is 63.
-
-    An assertion that every item resolves says nothing about items the
-    enumeration missed, which is the same shape as the proxy this whole script
-    exists to replace. It was caught by a SECOND parser (the registry gate's
-    `_declared_schedulers`) disagreeing by two, not by anything here.
+    `scripts/maintenance/doc_inventory.py` already parsed both forms correctly
+    and reported 66. That is now the single source: a FOURTH hand-rolled parser
+    of `gcp/deploy.sh` is exactly how the first three came to disagree, and this
+    file's own DOC-37 note says so.
     """
-    joined = re.sub(r"\\\n\s*", " ", text)
-    out = {}
-    for line in joined.split("\n"):
-        m = re.search(r'_schedule[a-z_]*\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"', line)
-        if m:
-            out[m.group(1)] = (m.group(2), m.group(3))
+    shell = _shell_vars(text)
+    urls = _service_url_vars(text, shell)
+
+    sys.path.insert(0, str(REPO / "scripts" / "maintenance"))
+    from doc_inventory import deploy_schedulers  # noqa: E402
+
+    out: dict[str, tuple[str, str]] = {}
+    for d in deploy_schedulers(REPO):
+        target = d["target_job"] or d["target_service"]
+        if not target and d["target_uri"]:
+            var = re.match(r"\$\{?(\w+)\}?", d["target_uri"])
+            target = urls.get(var.group(1), "") if var else ""
+        if not target:
+            # Never guess. An unresolvable target means a declaration form this
+            # script has not been taught, which is the bug it is recovering from.
+            raise SystemExit(
+                f"cannot resolve a target for scheduler {d['name']!r} "
+                f"(uri={d['target_uri']!r}). Teach the resolver rather than "
+                "letting it drop the entry."
+            )
+        # A scheduler may override the job's entrypoint via containerOverrides.
+        # `strat-enrich-daily` targets the `strat-engine` job but runs
+        # `-m gcp.research.strat_engine.strat_enrich_levels`; classifying it on
+        # the job's DEFAULT module would judge the wrong code -- the exact error
+        # this PR keeps finding in prose, reproduced in a parser.
+        mod = re.search(r"-m\s+([\w.]+)", d.get("args") or "")
+        out[d["name"]] = (d["cron"], target, mod.group(1) if mod else None)
     return out
 
 
@@ -319,7 +371,7 @@ def main(argv: list[str]) -> int:
     listed, excluded = registry_tables()
 
     unresolved, unclassified, rows = [], [], []
-    for s, (cron, job) in sorted(scheds.items()):
+    for s, (cron, job, override) in sorted(scheds.items()):
         j = jobs.get(job)
         if j and j["kind"] == "service":
             rows.append({"scheduler": s, "cron": cron, "job": job, "entrypoint": f"(service {job})",
@@ -330,16 +382,18 @@ def main(argv: list[str]) -> int:
             if s not in listed and s not in excluded:
                 unclassified.append((s, f"(service {job})", "warms a Cloud Run service"))
             continue
-        p = entry_path(j["entrypoint"], j["kind"]) if j and j["entrypoint"] else None
+        entry = override or (j["entrypoint"] if j else None)
+        kind = "module" if override else (j["kind"] if j else None)
+        p = entry_path(entry, kind) if entry else None
         if p is None:
-            unresolved.append(f"{s} -> {job} -> {(j or {}).get('entrypoint')}")
+            unresolved.append(f"{s} -> {job} -> {entry}")
             continue
         ev = evidence(p, served)
         where = "listed" if s in listed else "excluded" if s in excluded else None
         if where is None:
-            unclassified.append((s, j["entrypoint"], hints(ev)))
+            unclassified.append((s, entry, hints(ev)))
         rows.append({"scheduler": s, "cron": cron, "job": job,
-                     "entrypoint": j["entrypoint"], "args": j["args"],
+                     "entrypoint": entry, "args": (j or {}).get("args"),
                      "classified": where, "evidence": hints(ev), **ev})
 
     # The reverse direction, added 2026-09-21. Everything above asks "is every
@@ -362,6 +416,18 @@ def main(argv: list[str]) -> int:
     for w in wrong:
         print(f"WRONG JOB CELL: {w}", file=sys.stderr)
 
+    # A scheduler in BOTH tables. The classification lookup above is a
+    # precedence chain -- `"listed" if s in listed else "excluded" if ...` --
+    # so a duplicated entry silently reports as `listed` and this script exits
+    # 0 while its own stated contract ("exactly one of those two tables") is
+    # broken. The pytest suite has an overlap assertion, but this script is what
+    # the registry tells reviewers to run, so a clean result here has to mean
+    # clean. DOC-50.
+    overlap = sorted(listed & excluded)
+    for s in overlap:
+        print(f"IN BOTH TABLES: {s!r} is listed as model-bearing AND deliberately "
+              "excluded; exactly one is correct", file=sys.stderr)
+
     stale = sorted((listed | excluded) - set(scheds))
     for s in stale:
         where = "the scheduler table" if s in listed else "the deliberate-exclusion table"
@@ -374,14 +440,14 @@ def main(argv: list[str]) -> int:
         print(f"{len(scheds)} schedulers declared in deploy.sh, {len(rows)} resolved")
         print(f"{len(listed)} listed as model-bearing, {len(excluded)} deliberately excluded, "
               f"{len(unclassified)} UNCLASSIFIED, {len(stale)} STALE, "
-              f"{len(wrong)} WRONG JOB CELL\n")
+              f"{len(overlap)} IN BOTH, {len(wrong)} WRONG JOB CELL\n")
         for s, e, h in unclassified:
             print(f"  UNCLASSIFIED  {s:36} {e:44} {h}")
 
     for u in unresolved:
         print(f"UNRESOLVED (parser failure, not an exclusion): {u}", file=sys.stderr)
 
-    return 1 if (unresolved or unclassified or stale or wrong) else 0
+    return 1 if (unresolved or unclassified or stale or overlap or wrong) else 0
 
 
 if __name__ == "__main__":

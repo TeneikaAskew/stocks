@@ -55,13 +55,31 @@ fire produces no alert at all. Momentum reaches live output only when mean rever
 already fired on the same bar and the two agree, which is
 [MODEL-AGREE-001](MODEL-AGREE-001.md)'s path, not this one.
 
-**Measured, and it is starker than the flag suggests.** The Track D audit
-(`docs/audit/2026-05-08/track-D.md:308-315`) found that on **765 of 782** live fires, only
-mean reversion fired and momentum returned `None` — eligible for neither call nor put. So
-momentum is not merely discarded when it fires alone; on 98% of fires it does not clear its
-own gate at all. `enable_standalone_momentum = False` costs little because there is little to
-discard. See [MODEL-AGREE-001](MODEL-AGREE-001.md) for the same measurement from the
-agreement side.
+**Measured, with a limit that changes what it means.** The Track D audit
+(`docs/audit/2026-05-08/track-D.md:308-315`) found that on **765 of 782** rows in
+`signal_alerts`, only mean reversion fired and momentum returned `None`. That measures the
+overlap rate **among alerts that were emitted**. It cannot measure what the flag discards,
+because the discarded case is precisely the one the sample excludes by construction.
+
+With `enable_standalone_momentum = False`, a bar where momentum **is** eligible and mean
+reversion is not produces **no alert at all** — `gcp/signal_monitor.py:1139` gates the
+stand-alone return on the flag, and the fall-through comment at `:1181-1183` says so:
+*"momentum fired but flag is off → no fire, but the counter already recorded the
+eligibility"*. Those bars never reach `signal_alerts`.
+
+> **An earlier revision of this document concluded the flag "costs little because there is
+> little to discard".** That does not follow from this sample, and it is the shape CLAUDE.md
+> §3.11 names: a statistic over one population quoted as though it characterised another. The
+> 765 establish a low *overlap* rate, not a low *eligibility* rate. DOC-51.
+
+**What would answer it, and it has not been run.** `signal_monitor` already records
+`momentum_evaluated_count` — every bar reaching evaluation (`:1098`) — and
+`momentum_fired_count`, bumped whenever momentum returns a signal (`:1102-1103`), and logs
+both at `:2493`. Their ratio is the eligibility rate over *bars* rather than over emitted
+alerts, which is the quantity the retired claim was really about. **Not checked.**
+
+See [MODEL-AGREE-001](MODEL-AGREE-001.md) for the same measurement, and the same limit, from
+the agreement side.
 
 That distinction matters for reading everything below: the conditions, thresholds and
 rationale here govern **whether momentum would be eligible**, and the calibration
