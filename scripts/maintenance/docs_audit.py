@@ -315,6 +315,15 @@ REF_DEF_RE = re.compile(
 # The same definition with its destination on the FOLLOWING line, which
 # CommonMark resolves and a per-line pattern cannot see. Split in two so the
 # continuation is read through the same exclusions as any other line.
+# A RENDERED HTML link. `<a href="...">` is a link a reader clicks, so a broken
+# one is the same defect as a broken `[x](y)` -- and only Markdown syntax was
+# scanned, so the audit reported clean over it. The unquoted attribute form is
+# admitted too: `<a href=guide.md>` is valid HTML and renders a real link. An
+# unquoted value ends at whitespace or any of `"\'=<>` and a backtick, which is
+# what HTML says delimits it. Ported from the Node twin (solyra#69).
+HTML_HREF_RE = re.compile(
+    r"""<a\s[^>]*?href\s*=\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'"""
+    r"""|(?P<bare>[^\s"'`=<>]+))""", re.I | re.S)
 REF_DEF_HEAD_RE = re.compile(r"^ {0,3}\[(?P<label>[^\]^][^\]]*)\]:[ \t]*$")
 REF_DEF_CONT_RE = re.compile(r"^[ \t]*(?P<target><[^>]*>|\S+)")
 # A USE (`[text][label]`) is deliberately NOT checked. Measured over the 322
@@ -415,7 +424,15 @@ def heading_slug(heading: str) -> str:
     s = "".join(p if p.startswith("`") else decode_char_refs(p)
                 for p in re.split(r"(`[^`]*`)", heading))
     s = re.sub(r"`([^`]*)`", r"\1", s)
-    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    # Only where the opening bracket is NOT escaped. `## Literal \\[x](guide.md)`
+    # renders the brackets and the destination as TEXT -- CommonMark makes no
+    # link -- so GitHub's anchor includes `xguidemd`, while stripping the
+    # destination unconditionally recorded `literal-x`: a working fragment
+    # reported dead AND an anchor the page does not expose accepted.
+    _linked = s
+    s = re.sub(r"\[([^\]]*)\]\([^)]*\)",
+               lambda m: m.group(0) if is_escaped(_linked, m.start()) else m.group(1),
+               _linked)
     # Inline HTML is MARKUP and does not belong to the visible text:
     # `## Hello <em>world</em>` renders as "Hello world" and GitHub's id is
     # `hello-world`, but keeping the tag names recorded `hello-emworldem` --
@@ -521,6 +538,23 @@ def decode_fragment(frag: str) -> str:
     # be written and it resolves, while comparing the encoded spelling against
     # the decoded slug reported it dead.
     return decode_char_refs(urllib.parse.unquote(frag))
+
+
+def split_outside_refs(text: str, delim: str) -> tuple[str, str | None]:
+    """Split at the first `delim` that is neither escaped nor inside a reference.
+
+    A backslash escape and a character reference are each consumed as a UNIT,
+    exactly as MD_LINK_RE's destination class consumes them: `a\\#b.md` targets
+    the tracked `a#b.md`, and `a&\\#35;b.md` keeps its reference. A raw
+    `partition("#")` split both at the `#` inside the escape and reported the
+    path `a\\` dead. The search runs over a copy with each unit blanked to the
+    same length, so the index still applies to the ORIGINAL and the caller
+    decodes exactly what it decoded before.
+    """
+    probe = re.sub(r"\\.|&\#?[0-9A-Za-z]{1,32};",
+                   lambda m: "_" * len(m.group(0)), text)
+    at = probe.find(delim)
+    return (text, None) if at == -1 else (text[:at], text[at + 1:])
 
 
 def strip_dot_segments(path: str) -> str:
@@ -1111,13 +1145,21 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             # was classified as renderer-owned. The inventory scanner already
             # excludes both; so does this one now.
             code = fenced_lines(lines) | indented_code_lines(lines)
+            # WRAPPED spans as well as single-line ones. A `mark:NAME` document
+            # showing `<!-- BEGIN NAME -->` and `<!-- END NAME -->` inside a
+            # span that opens above them and closes below had both read as real
+            # delimiters, so a document that had LOST its region produced no
+            # unmatched-region P1 and the example's lines were classified as
+            # renderer-owned. The `inventory:` scanner beside this one learned
+            # that a round ago; this parallel scanner did not.
+            _mark_wrapped = code_span_lines(lines)
 
             def _marker_lines(pat: re.Pattern[str]) -> list[int]:
                 out = []
                 for n, l in enumerate(lines, 1):
                     if n - 1 in code:
                         continue
-                    spans = code_spans(l)
+                    spans = code_spans(l) + _mark_wrapped.get(n - 1, [])
                     if any(not any(lo <= mm.start() < hi for lo, hi in spans)
                            for mm in pat.finditer(l)):
                         out.append(n)
@@ -1399,8 +1441,12 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     # the skip set, `is_setext_underline` read it as one, closed the window
     # above a real marker below it, and --stamp inserted a second
     # contradictory marker.
+    # And a raw HTML block, which renders literally: a `<div>` sample carrying
+    # `## Fake` above an existing marker closed the window at the sample, so
+    # the real marker below the block was reported missing and --stamp inserted
+    # a duplicate above it. h1_index and heading_anchors already exclude these.
     fenced = (fenced_lines(lines) | commented_lines(lines)
-              | indented_code_lines(lines))
+              | indented_code_lines(lines) | raw_html_block_lines(lines))
     # To the next HEADING, with no additional line cap. A document opening
     # with more than `limit` lines of HTML metadata before its marker had the
     # real marker excluded from the window, so the audit reported it missing
@@ -3341,7 +3387,11 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             ref_defs.setdefault(label.strip().lower(),
                                 (target.strip("<>"), dest_line))
     for label, (target, n) in ref_defs.items():
-        tgt, _, frag = target.partition("#")
+        # Not `partition("#")`: a reference definition bypasses MD_LINK_RE, so
+        # it was the one destination still split before escapes and character
+        # references were consumed. `[g]: a\\#b.md` targets the tracked
+        # `a#b.md` and was reported dead as `a\\`.
+        tgt, frag = split_outside_refs(target, "#")
         check_target(tgt, frag or None, n, label)
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
@@ -3370,11 +3420,20 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
                 tgt, frag = m.group("target"), m.group("frag")
             check_target(tgt, frag, n)
         hidden = commented.get(n - 1, [])
+        # A citation nested inside a WIDER code span is sample text, not a
+        # citation: ``example `scripts/missing.py` here`` renders the inner
+        # backticks and the path literally, and reporting it failed --check
+        # over a document's own illustration. STRICT enclosure, because an
+        # ordinary single-backtick citation IS its own span -- testing mere
+        # overlap would skip every backticked path in the corpus.
+        def _nested(m: re.Match[str]) -> bool:
+            return any(lo < m.start() and hi > m.end()
+                       for lo, hi in code_spans(line) + wrapped_code.get(n - 1, []))
         # A bare root filename resolves against the tree's ROOT only. Anything
         # it does not hold is prose, not rot -- which is what makes the second
         # pattern safe to run at all.
         for m in BACKTICK_ROOT_FILE_RE.finditer(line):
-            if any(lo <= m.start() < hi for lo, hi in hidden):
+            if any(lo <= m.start() < hi for lo, hi in hidden) or _nested(m):
                 continue
             cited = m.group("path")
             name = LINE_SUFFIX_RE.sub("", cited)
@@ -3383,7 +3442,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             out.append({"check": "dead-link", "doc": doc, "line": n,
                         "detail": f"backticked path -> {cited}", "severity": "P2"})
         for m in BACKTICK_PATH_RE.finditer(line):
-            if any(lo <= m.start() < hi for lo, hi in hidden):
+            if any(lo <= m.start() < hi for lo, hi in hidden) or _nested(m):
                 continue
             cited = m.group("path")
             # Root-relative, parent-relative and line-qualified spellings all
@@ -3406,6 +3465,31 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             if root in TOP_LEVEL_DIRS:
                 out.append({"check": "dead-link", "doc": doc, "line": n,
                             "detail": f"backticked path -> {cited}", "severity": "P2"})
+
+    # The RENDERED-HTML destinations, which no Markdown pattern sees. A
+    # raw-TEXT block is excluded because a tag inside `<pre>` is DISPLAYED
+    # rather than rendered; a type-6 or type-7 block is not, which is why this
+    # loop has a skip set of its own rather than reusing `fenced` -- that one
+    # now masks every HTML block, because Markdown syntax is not parsed there
+    # while an `<a href>` in the same block still resolves.
+    href_skip = (fenced_lines(lines) | indented_code_lines(lines)
+                 | raw_html_block_lines(lines, raw_text_only=True))
+    for n, line in enumerate(lines, 1):
+        if n - 1 in href_skip:
+            continue
+        href_hidden = (code_spans(line) + commented.get(n - 1, [])
+                       + wrapped_code.get(n - 1, []))
+        for m in HTML_HREF_RE.finditer(line):
+            if any(lo <= m.start() < hi for lo, hi in href_hidden):
+                continue
+            href = m.group("dq") or m.group("sq") or m.group("bare") or ""
+            # The same unit-consuming split every other destination uses, so
+            # `<a href="foo&#38;bar.md">` resolves to the tracked `foo&bar.md`
+            # rather than being cut at the `#` inside the reference.
+            htgt, hfrag = split_outside_refs(href, "#")
+            if not htgt and not hfrag:
+                continue
+            check_target(htgt, hfrag, n)
 
     # Links that CROSS a line break. CommonMark lets a label run over a newline
     # and lets whitespace follow the opening parenthesis, so `[long\nlabel](x)`

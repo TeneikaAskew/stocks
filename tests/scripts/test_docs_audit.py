@@ -5732,3 +5732,86 @@ def test_a_reference_definition_may_put_its_destination_on_the_next_line():
     assert m.check_dead_links("d.md", "[g]:\n\nmissing.md\n", {"d.md"}) == []
     # And the continuation is read through the same exclusions as any line.
     assert m.check_dead_links("d.md", "`a\n[g]:\n  missing.md\nb`\n", {"d.md"}) == []
+
+
+def test_a_heading_inside_a_raw_html_block_does_not_end_the_marker_window():
+    """A `<div>` sample carrying `## Fake` above an existing marker closed the
+    window at the sample, so the real marker below the block was reported
+    missing and --stamp would insert a duplicate above it. h1_index and
+    heading_anchors already excluded these."""
+    doc = ["# T", "<div>", "## Fake", "</div>", "",
+           "**Last reviewed:** 2026-09-20 · **Depth:** scanned · **Owner:** TBD",
+           "", "## Next"]
+    assert [i for i, _ in m.find_markers(doc)] == [5], m.find_markers(doc)
+    assert m.find_marker(doc)[0] == 5
+
+
+def test_mark_region_delimiters_inside_a_wrapped_span_are_examples():
+    """A `mark:NAME` document showing `<!-- BEGIN NAME -->` and `<!-- END NAME
+    -->` inside a span that opens above them and closes below had both read as
+    real delimiters, so a document that had LOST its region produced no
+    unmatched-region P1 and the example was classified as renderer-owned. The
+    `inventory:` scanner beside it learned that a round earlier."""
+    wrapped = "# A\n\n`sample:\n<!-- BEGIN X -->\nhand written\n<!-- END X -->\n`\n"
+    owned, unmatched, _, _, _ = m.owned_lines(wrapped, ["mark:X"])
+    assert owned == set() and unmatched == ["mark:X"], (owned, unmatched)
+    real = "# A\n\n<!-- BEGIN X -->\ngenerated\n<!-- END X -->\n"
+    owned2, unmatched2, _, _, _ = m.owned_lines(real, ["mark:X"])
+    assert owned2 and not unmatched2, (owned2, unmatched2)
+
+
+def test_a_reference_destination_is_decoded_before_its_fragment_is_split():
+    """A reference definition bypasses MD_LINK_RE, so it was the one
+    destination still split before escapes and character references were
+    consumed: `[g]: a\\#b.md` targets the tracked `a#b.md` and was reported dead
+    as `a\\`."""
+    assert m.check_dead_links("d.md", "[g]: a\\#b.md\n", {"d.md", "a#b.md"}) == []
+    assert m.check_dead_links("d.md", "[g]: a&#35;b.md\n", {"d.md", "a#b.md"}) == []
+    # A real fragment still separates.
+    out = m.check_dead_links("d.md", "[g]: gone.md#x\n", {"d.md"})
+    assert [f["detail"] for f in out] == ["reference link [g] -> gone.md"], out
+    assert m.split_outside_refs("a.md#frag", "#") == ("a.md", "frag")
+    assert m.split_outside_refs("a\\#b.md", "#") == ("a\\#b.md", None)
+
+
+def test_a_backticked_path_nested_in_a_wider_span_is_a_sample(monkeypatch):
+    """``example `scripts/missing.py` here`` renders the inner backticks and
+    the path literally, so reporting it failed --check over a document's own
+    illustration. STRICT enclosure, because an ordinary single-backtick
+    citation IS its own span -- testing mere overlap would skip every
+    backticked path in the corpus."""
+    monkeypatch.setattr(m, "TOP_LEVEL_DIRS", {"scripts"})
+    nested = "see ``example `scripts/missing.py` here``\n"
+    assert m.check_dead_links("d.md", nested, {"d.md"}) == []
+    out = m.check_dead_links("d.md", "see `scripts/missing.py`\n", {"d.md"})
+    assert [f["detail"] for f in out] == ["backticked path -> scripts/missing.py"], out
+
+
+def test_a_rendered_html_href_is_a_destination_to_check(tmp_path, monkeypatch):
+    """`<a href="...">` is a link a reader clicks, so a broken one is the same
+    defect as a broken `[x](y)` -- and only Markdown syntax was scanned, so the
+    audit reported clean over it. Ported from the Node twin."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    check = lambda text, tracked: [f["check"] for f in
+                                   m.check_dead_links("d.md", text, tracked)]
+    assert check('<a href="missing.md">g</a>\n', {"d.md"}) == ["dead-link"]
+    assert check('<a href="ok.md">g</a>\n', {"d.md", "ok.md"}) == []
+    # The unquoted attribute form is valid HTML and renders a real link.
+    assert check("<a href=missing.md>g</a>\n", {"d.md"}) == ["dead-link"]
+    # A RENDERED block still resolves its hrefs; a raw-TEXT block displays the
+    # tag rather than rendering it, and a commented-out one renders nothing.
+    assert check('<div>\n<a href="missing.md">g</a>\n</div>\n', {"d.md"}) == ["dead-link"]
+    assert check('<pre>\n<a href="missing.md">g</a>\n</pre>\n', {"d.md"}) == []
+    assert check('<div>\n<!-- <a href="missing.md">g</a> -->\n</div>\n', {"d.md"}) == []
+    # And Markdown syntax in the same rendered block is still NOT parsed.
+    assert check("<div>\n[x](missing.md)\n</div>\n", {"d.md"}) == []
+
+
+def test_an_escaped_link_in_a_heading_keeps_its_destination():
+    """`## Literal \\[x](guide.md)` renders the brackets and the destination as
+    TEXT -- CommonMark makes no link -- so GitHub's anchor includes `xguidemd`,
+    while stripping the destination unconditionally recorded `literal-x`: a
+    working fragment reported dead AND an anchor the page does not expose
+    accepted."""
+    assert m.heading_slug("Literal \\[x](guide.md)") == "literal-xguidemd"
+    assert m.heading_slug("Real [x](guide.md)") == "real-x"
