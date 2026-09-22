@@ -5101,3 +5101,54 @@ def test_a_hidden_cue_is_not_a_prs_own_evidence():
     # A VISIBLE cue in the PR's own clause still reports it.
     assert len(m.check_closed_issues(
         "d.md", f"#1 is still open; {pr} is still open\n", st)) == 1
+
+
+# ── round 36 parity (solyra#69 `2cd73fa`) ──────────────────────────────────
+
+def test_a_hash_prefixed_line_that_is_not_a_heading_keeps_the_registry_open():
+    """`#123 remains open` renders as ordinary prose -- a hash run needs
+    whitespace after it -- and it switched section mode off, so every
+    declaration below it was silently dropped. A row that vanishes takes its
+    class, its code paths and its region ownership with it, and nothing reports
+    the skip. Codex found this on the Node twin."""
+    head = ("## Registry\n\n| Class | Path glob | Declared code paths |\n"
+            "|---|---|---|\n| D | docs/a.md | src |\n\n")
+    tail = "\n| D | docs/b.md | src |\n"
+    assert [r["glob"] for r in m.load_registry(head + "#123 remains open\n" + tail)] \
+        == ["docs/a.md", "docs/b.md"]
+    # A REAL heading still ends it, which is what the gate is for.
+    assert [r["glob"] for r in m.load_registry(head + "## Examples\n" + tail)] \
+        == ["docs/a.md"]
+
+
+def test_indentation_mixing_spaces_and_a_tab_is_measured_in_columns():
+    """A tab counted as four only in column zero, so ` \\t[x](missing.md)`
+    measured 1 -- CommonMark advances the tab to column 4 and renders the line
+    as code, so the link and blocker scans inspected an example as live
+    prose."""
+    assert [m.indent_columns(" \tx"), m.indent_columns("\tx"),
+            m.indent_columns("   x")] == [4, 4, 3]
+    assert m.is_code_indented(" \tx") is True
+    assert sorted(m.indented_code_lines(["# T", "", " \t[x](missing.md)", ""])) == [2]
+    # Three spaces is still a paragraph.
+    assert m.is_code_indented("   x") is False
+
+
+def test_a_quoted_h1_is_the_document_h1():
+    """`> # Quoted title` RENDERS as an H1 and heading_anchors already read it
+    that way, but h1_index tested the raw line -- so the document was reported
+    as having no H1 while --stamp answered `skipped-no-h1`, leaving the command
+    unable to repair its own finding."""
+    assert m.h1_index(["> # Quoted title", "", "body"]) == 0
+    # Unquoted and fenced documents are unaffected: a change to H1 selection is
+    # dangerous in both directions.
+    assert m.h1_index(["# Real", "", "body"]) == 0
+    assert m.h1_index(["```", "> # Fake", "```", "", "# Real"]) == 4
+    # And an indented H1 is a CODE BLOCK, not a heading. The counting quote
+    # pattern matches the empty prefix by design, so stripping with it also ate
+    # up to three leading spaces and turned `    # Indented` into the H1 -- my
+    # own regression, caught by an existing test.
+    assert m.h1_index(["    # Indented", "", "# Real"]) == 2
+    # A quoted HEADING offers its anchor too: matching the raw line recorded
+    # none, so a valid link to it was emitted as a gating dead-anchor finding.
+    assert m.heading_anchors("# T\n\n> ## Quoted section\n") == {"t", "quoted-section"}

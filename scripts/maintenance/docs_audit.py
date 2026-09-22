@@ -423,6 +423,12 @@ def heading_anchors(text: str) -> set[str]:
         # Setext (`Title` over `===` or `---`) renders as a heading and
         # GitHub exposes its anchor, but an ATX-only scan recorded none -- so a
         # valid link to one was emitted as a gating dead-anchor finding.
+        # The blockquote container is stripped: `> ## Quoted` RENDERS as a
+        # heading and GitHub exposes its anchor, but matching the raw line
+        # recorded none -- so a valid link to it was emitted as a gating
+        # dead-anchor finding, the direction that makes an audit untrustworthy
+        # rather than incomplete. The Node twin has read these since solyra#69.
+        line = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
         setext = (i + 1 < len(lines)
                   and is_setext_underline(lines, i + 1, fenced))
         m = _HEADING_RE.match(line)
@@ -712,7 +718,13 @@ def load_registry(text: str) -> list[dict]:
     in_registry = False
     for raw in text.split("\n"):
         line = raw.strip()
-        if line.startswith("#"):
+        # ATX SYNTAX, not a leading "#". A hash run needs whitespace or an
+        # end of line after it to render as a heading, so `#123 remains open`
+        # is ordinary prose -- and it switched section mode off, silently
+        # dropping every declaration below it. A row that vanishes takes its
+        # class, its code paths and its region ownership with it, and nothing
+        # reports the skip. Ported from the Node twin (solyra#69).
+        if re.match(r"#{1,6}(?:\s|$)", line):
             in_registry = line.startswith(REGISTRY_HEADING)
             continue
         if not in_registry or not line.startswith("|"):
@@ -1385,6 +1397,10 @@ def is_future_date(date: str, today: str) -> bool:
 # blocker citations in the sample were audited as live prose.
 _FENCE_RE = re.compile(r"^ {0,3}(?:> ?)*\s{0,3}(`{3,}|~{3,})(.*)$")
 _QUOTE_PREFIX_RE = re.compile(r"^ {0,3}((?:> ?)*)")
+# At least ONE marker, for STRIPPING the container. The counting pattern above
+# matches the empty prefix by design, so using it to strip also ate up to three
+# leading spaces -- which turned `    # Indented`, a code block, into an H1.
+_BLOCKQUOTE_PREFIX_RE = re.compile(r"^(?: {0,3}> ?)+")
 
 
 def quote_depth(line: str) -> int:
@@ -1505,7 +1521,9 @@ def indented_code_lines(lines: list[str]) -> set[int]:
         if not line.strip():
             blank_seen = True
             continue
-        indent = 4 if line.startswith("\t") else len(line) - len(line.lstrip(" "))
+        # COLUMNS, with tab stops, so the floor logic and is_code_indented
+        # cannot disagree about what four columns means.
+        indent = indent_columns(line)
         if in_code and indent >= floor:
             out.add(i)
             continue
@@ -1658,6 +1676,29 @@ _MARKER_SHAPE_RE = re.compile(
     r":?\*\*", re.I)
 
 
+# CommonMark advances a tab to the next multiple of four.
+_TAB_STOP = 4
+
+
+def indent_columns(line: str) -> int:
+    """Leading indentation in COLUMNS, expanding tabs to the next stop.
+
+    A tab counted as four only in column zero and as nothing elsewhere, so
+    ` \t[x](missing.md)` measured 1 -- CommonMark advances the tab to column 4
+    and renders the line as code, so the link and blocker scans inspected an
+    example as live prose. Ported from the Node twin (solyra#69).
+    """
+    col = 0
+    for ch in line or "":
+        if ch == " ":
+            col += 1
+        elif ch == "\t":
+            col += _TAB_STOP - (col % _TAB_STOP)
+        else:
+            break
+    return col
+
+
 def is_code_indented(line: str) -> bool:
     """Is this line indented ENOUGH to be a code example rather than a paragraph?
 
@@ -1669,7 +1710,7 @@ def is_code_indented(line: str) -> bool:
     original, and the document carried two contradictory review claims. The
     Node twin has had this rule since solyra#69; this is the parity fix.
     """
-    return bool(line) and (line[0] == "\t" or line[:4] == "    ")
+    return bool(line) and indent_columns(line) >= 4
 
 
 def marker_shaped_lines(lines: list[str]) -> list[int]:
@@ -1772,7 +1813,14 @@ def h1_index(lines: list[str]) -> int | None:
     for i, line in enumerate(lines):
         if i in fenced:
             continue
-        if H1_RE.match(mask_spans(line, hidden_spans.get(i, []))):
+        # The blockquote container is stripped first: `> # Quoted title`
+        # RENDERS as an H1 and heading_anchors already reads it that way, but
+        # this tested the raw line -- so such a document was reported as having
+        # no H1 while --stamp answered `skipped-no-h1`, leaving the command
+        # unable to repair its own finding. The mask is applied first so the
+        # offsets it preserves still line up. Ported from the Node twin.
+        bare = _BLOCKQUOTE_PREFIX_RE.sub("", mask_spans(line, hidden_spans.get(i, [])), count=1)
+        if H1_RE.match(bare):
             return i
         # Setext level one (`Title` over `===`). Without it the audit reported
         # a missing marker on such a document while --stamp answered
