@@ -77,6 +77,11 @@ Usage
     python -m scripts.maintenance.docs_audit --stamp --verify docs/product/07-MODEL-REGISTRY.md
     python -m scripts.maintenance.docs_audit --write-issues-snapshot issues.json
     python -m scripts.maintenance.docs_audit --issues-snapshot issues.json --json
+
+A snapshot carries the time it was captured and EXPIRES: reading one more than
+``ISSUE_SNAPSHOT_MAX_AGE_DAYS`` old is exit 2, not a clean run. Issue state
+moves, and a report dated today off a week-old capture is a fabricated clean
+bill of health -- the outcome this tool exists to stop.
 """
 from __future__ import annotations
 
@@ -3809,7 +3814,80 @@ def stamp(text: str, date: str, depth: str, sha: str,
 ISSUE_STATES = frozenset({"open", "closed"})
 
 
-def load_issues_snapshot(file: str) -> dict[str, dict[int, dict]]:
+ISSUE_SNAPSHOT_MAX_AGE_DAYS = 1
+
+
+def _check_snapshot_age(file: str, raw: object, *,
+                        now: datetime.datetime | None = None) -> None:
+    """Refuse a snapshot that cannot be dated, or that has expired.
+
+    Every other guard below asks whether a ROW is usable. None asked whether
+    the file still describes reality, and the format recorded nothing to
+    answer with -- so a snapshot of any age loaded as current. An issue open
+    when it was written and closed since produced no stale-blocker finding at
+    all, under a report dated today: a fabricated clean bill of health, which
+    is the one outcome this tool exists to prevent (CLAUDE.md §3.7). Codex
+    filed it on the Node twin (solyra#69).
+
+    Refused rather than flagged, because a finding is a claim about the
+    documents and "I cannot tell" is not one of those.
+    """
+    captured = raw.get("capturedAt") if isinstance(raw, dict) else None
+    # `is_calendar_date` on the day, not just a parse of the whole string: a
+    # stamp naming a day that does not exist is the shape a hand-edited one
+    # takes, and some parsers roll it over rather than refusing it.
+    if (not isinstance(captured, str) or "T" not in captured
+            or not is_calendar_date(captured[:10])):
+        raise AuditError(
+            f'--issues-snapshot {file} has no usable "capturedAt" ({captured!r}); '
+            "without a capture time an arbitrarily old snapshot reads as current "
+            "and a blocker that has since closed goes unreported")
+    # Against the WALL CLOCK, not against --date. "Is this issue state still
+    # current" is a question about now; a report dated in the past does not
+    # make month-old issue data accurate, and keying the window to --date
+    # would let one flag switch the guard off.
+    on = (now or datetime.datetime.now(datetime.timezone.utc)).date()
+    age = (on - datetime.date.fromisoformat(captured[:10])).days
+    if age < 0:
+        raise AuditError(
+            f"--issues-snapshot {file} is stamped {captured[:10]}, which is after "
+            f"today ({on.isoformat()}); a capture that has not happened yet "
+            "describes nothing, and a hand-edited stamp is how an expired "
+            "snapshot would be made to pass")
+    if age > ISSUE_SNAPSHOT_MAX_AGE_DAYS:
+        raise AuditError(
+            f"--issues-snapshot {file} was captured {captured[:10]}, {age} days ago "
+            f"(limit {ISSUE_SNAPSHOT_MAX_AGE_DAYS}); an issue that closed in between "
+            "would be reported as live work, or a blocker that has closed would not "
+            "be reported at all -- rewrite it with --write-issues-snapshot")
+
+
+def write_issues_snapshot(file: str, states: dict[str, dict[int, dict]], *,
+                          now: datetime.datetime | None = None) -> None:
+    """Write a snapshot, stamped with the time it was captured.
+
+    Reading an unusable snapshot is exit 2; failing to WRITE one was exit 1,
+    because OSError walks straight past the AuditError handler. Same class of
+    failure -- the run did not happen -- so the same status.
+
+    The stamp sits BESIDE the repository maps rather than inside one: every
+    consumer of a states map expects its values to be issue maps, and
+    load_issues_snapshot returns only the maps for the same reason.
+    """
+    stamped = (now or datetime.datetime.now(datetime.timezone.utc)).isoformat()
+    try:
+        pathlib.Path(file).write_text(
+            json.dumps({"capturedAt": stamped,
+                        **{r: {str(k): v for k, v in d.items()}
+                           for r, d in states.items()}}, indent=1),
+            encoding="utf-8")
+    except OSError as exc:
+        raise AuditError(
+            f"--write-issues-snapshot {file} could not be written: {exc}") from exc
+
+
+def load_issues_snapshot(file: str, *,
+                         now: datetime.datetime | None = None) -> dict[str, dict[int, dict]]:
     """Read a snapshot written by --write-issues-snapshot, or say why not.
 
     A missing, malformed or structurally wrong file raised FileNotFoundError,
@@ -3826,6 +3904,7 @@ def load_issues_snapshot(file: str) -> dict[str, dict[int, dict]]:
         raw = json.loads(pathlib.Path(file).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise AuditError(f"--issues-snapshot {file} could not be read: {exc}") from exc
+    _check_snapshot_age(file, raw, now=now)
     states: dict[str, dict[int, dict]] = {}
     for repo in (THIS_REPO, SIBLING_REPO):
         entry = raw.get(repo) if isinstance(raw, dict) else None
@@ -6122,18 +6201,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         states = {THIS_REPO: fetch_issue_states(THIS_REPO), SIBLING_REPO: fetch_issue_states(SIBLING_REPO)}
     if args.write_issues_snapshot:
-        # Reading an unusable snapshot is exit 2; failing to write one was
-        # exit 1, because OSError walks straight past the AuditError handler.
-        # Same class of failure -- the run did not happen -- so same status.
-        try:
-            pathlib.Path(args.write_issues_snapshot).write_text(
-                json.dumps({r: {str(k): v for k, v in d.items()} for r, d in states.items()},
-                           indent=1),
-                encoding="utf-8")
-        except OSError as exc:
-            raise AuditError(
-                f"--write-issues-snapshot {args.write_issues_snapshot} could not "
-                f"be written: {exc}") from exc
+        write_issues_snapshot(args.write_issues_snapshot, states)
 
     findings: list[dict] = check_registry_paths(tracked, registry)
     region_maps: dict[str, dict] = {}

@@ -6,6 +6,7 @@ red, then reverted.
 """
 from __future__ import annotations
 
+import datetime
 import inspect
 import json
 import os
@@ -15,6 +16,12 @@ import subprocess
 import pytest
 
 from scripts.maintenance import docs_audit as m
+
+# Every snapshot fixture carries a capture time, because load_issues_snapshot
+# refuses one it cannot date: a snapshot of any age used to read as current,
+# so an issue that closed after it was written produced no stale-blocker
+# finding under a report dated today (solyra#69).
+NOW = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 # ── registry parsing ────────────────────────────────────────────────────────
@@ -1489,7 +1496,7 @@ def audit_repo(tmp_path, monkeypatch):
     (tmp_path / "scripts" / "tool.py").write_text("x = 1\n")
     (tmp_path / "docs" / "DOC_REGISTRY.md").write_text(E2E_REGISTRY)
     (tmp_path / "issues.json").write_text(
-        json.dumps({"stocks": {"1": {"state": "open"}}, "solyra": {"9": {"state": "open"}}}))
+        json.dumps({"capturedAt": NOW, "stocks": {"1": {"state": "open"}}, "solyra": {"9": {"state": "open"}}}))
     monkeypatch.setattr(m, "REPO", tmp_path)
     monkeypatch.setattr(m, "TOP_LEVEL_DIRS", set())
     monkeypatch.chdir(tmp_path)
@@ -1537,18 +1544,18 @@ def test_a_structurally_wrong_issues_snapshot_is_exit_two(tmp_path):
     """A JSON file with no `stocks` entry makes every stocks citation read as
     unresolvable -- 24 fabricated findings, not an empty result."""
     half = tmp_path / "half.json"
-    half.write_text(json.dumps({"solyra": {"1": {"state": "open"}}}))
+    half.write_text(json.dumps({"capturedAt": NOW, "solyra": {"1": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match='no "stocks" entry'):
         m.load_issues_snapshot(str(half))
     nonnumeric = tmp_path / "keys.json"
-    nonnumeric.write_text(json.dumps({"stocks": {"abc": {}}, "solyra": {"9": {"state": "open"}}}))
+    nonnumeric.write_text(json.dumps({"capturedAt": NOW, "stocks": {"abc": {}}, "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="issue number"):
         m.load_issues_snapshot(str(nonnumeric))
 
 
 def test_a_good_issues_snapshot_still_loads(tmp_path):
     good = tmp_path / "good.json"
-    good.write_text(json.dumps({"stocks": {"7": {"state": "closed"}}, "solyra": {"9": {"state": "open"}}}))
+    good.write_text(json.dumps({"capturedAt": NOW, "stocks": {"7": {"state": "closed"}}, "solyra": {"9": {"state": "open"}}}))
     assert m.load_issues_snapshot(str(good)) == {"stocks": {7: {"state": "closed"}},
                                                  "solyra": {9: {"state": "open"}}}
 
@@ -1561,22 +1568,22 @@ def test_a_snapshot_issue_record_must_carry_a_state(tmp_path):
     unresolvable branch, so a malformed snapshot FABRICATES a finding against
     a document that cites a perfectly live issue (CLAUDE.md §3.7)."""
     missing_state = tmp_path / "a.json"
-    missing_state.write_text(json.dumps({"stocks": {"1": {}}, "solyra": {"9": {"state": "open"}}}))
+    missing_state.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": {}}, "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(missing_state))
 
     null_row = tmp_path / "b.json"
-    null_row.write_text(json.dumps({"stocks": {"1": None}, "solyra": {"9": {"state": "open"}}}))
+    null_row.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": None}, "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(null_row))
 
     non_string = tmp_path / "c.json"
-    non_string.write_text(json.dumps({"stocks": {"1": {"state": 7}}, "solyra": {"9": {"state": "open"}}}))
+    non_string.write_text(json.dumps({"capturedAt": NOW, "stocks": {"1": {"state": 7}}, "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="stocks#1"):
         m.load_issues_snapshot(str(non_string))
 
     listed = tmp_path / "d.json"
-    listed.write_text(json.dumps({"stocks": [], "solyra": {"9": {"state": "open"}}}))
+    listed.write_text(json.dumps({"capturedAt": NOW, "stocks": [], "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match='no "stocks" entry'):
         m.load_issues_snapshot(str(listed))
 
@@ -1592,7 +1599,8 @@ def test_a_snapshot_state_must_be_one_the_checks_understand(tmp_path):
     """
     bogus = tmp_path / "bogus.json"
     bogus.write_text(json.dumps(
-        {"stocks": {"8": {"state": "bogus", "reason": "", "kind": "ISSUE"}},
+        {"capturedAt": NOW,
+         "stocks": {"8": {"state": "bogus", "reason": "", "kind": "ISSUE"}},
          "solyra": {"9": {"state": "open"}}}))
     with pytest.raises(m.AuditError, match="stocks#8"):
         m.load_issues_snapshot(str(bogus))
@@ -1600,7 +1608,8 @@ def test_a_snapshot_state_must_be_one_the_checks_understand(tmp_path):
     for state in ("open", "closed"):
         good = tmp_path / f"{state}.json"
         good.write_text(json.dumps(
-            {"stocks": {"8": {"state": state, "reason": "", "kind": "ISSUE"}},
+            {"capturedAt": NOW,
+             "stocks": {"8": {"state": state, "reason": "", "kind": "ISSUE"}},
              "solyra": {"9": {"state": "open"}}}))
         assert m.load_issues_snapshot(str(good))["stocks"][8]["state"] == state
 
@@ -2821,14 +2830,14 @@ def test_a_snapshot_that_names_both_repos_but_records_nothing_is_bad_input(tmp_p
     for. With an empty map every citation becomes a fabricated "could not be
     resolved" P2 and --check exits 1 for findings that do not exist."""
     f = tmp_path / "snap.json"
-    f.write_text(json.dumps({"solyra": {}, "stocks": {}}))
+    f.write_text(json.dumps({"capturedAt": NOW, "solyra": {}, "stocks": {}}))
     with pytest.raises(m.AuditError, match=r'empty "stocks" map'):
         m.load_issues_snapshot(str(f))
 
 
 def test_a_snapshot_with_one_record_per_repo_still_loads(tmp_path):
     f = tmp_path / "snap.json"
-    f.write_text(json.dumps({"solyra": {"1": {"state": "open"}},
+    f.write_text(json.dumps({"capturedAt": NOW, "solyra": {"1": {"state": "open"}},
                              "stocks": {"2": {"state": "closed"}}}))
     assert m.load_issues_snapshot(str(f))["stocks"][2]["state"] == "closed"
 
@@ -6642,6 +6651,81 @@ def test_a_decoded_citation_is_read_back_at_its_source_offset():
     # An astral character is ONE index in Python, unlike the Node twin where
     # it occupies two UTF-16 units and needs two map entries.
     assert m.decode_with_map("a&#x1F600;b") == ("a\U0001F600b", [0, 1, 10, 11])
+
+
+def test_an_issues_snapshot_the_audit_cannot_date_is_refused(tmp_path):
+    """Every other guard asks whether a ROW is usable. None asked whether the
+    file still describes reality, and the format recorded nothing to answer
+    with -- so a snapshot of any age loaded as current. An issue open when it
+    was written and closed since produced no stale-blocker finding at all,
+    under a report dated today: a fabricated clean bill of health, which is
+    the one outcome this tool exists to prevent (CLAUDE.md §3.7). Codex filed
+    it on the Node twin (solyra#69)."""
+    rows = {"stocks": {"1": {"state": "open"}}, "solyra": {"9": {"state": "open"}}}
+
+    def write(name, **extra):
+        f = tmp_path / name
+        f.write_text(json.dumps({**extra, **rows}))
+        return str(f)
+
+    for name, extra in (("nometa.json", {}),
+                        ("badmeta.json", {"capturedAt": "yesterday"}),
+                        ("dateonly.json", {"capturedAt": "2026-09-22"}),
+                        ("nonsense.json", {"capturedAt": "2026-02-30T00:00:00Z"}),
+                        ("num.json", {"capturedAt": 1758585600000})):
+        with pytest.raises(m.AuditError, match='no usable "capturedAt"'):
+            m.load_issues_snapshot(write(name, **extra))
+
+
+def test_an_issues_snapshot_expires(tmp_path):
+    """A stamp alone proves nothing; the window is what makes it load-bearing.
+    Measured against the WALL CLOCK, not against --date: a report dated in the
+    past does not make month-old issue data accurate, and keying the window to
+    --date would let one flag switch the guard off."""
+    rows = {"stocks": {"1": {"state": "open"}}, "solyra": {"9": {"state": "open"}}}
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    def write(name, offset):
+        f = tmp_path / name
+        f.write_text(json.dumps(
+            {"capturedAt": (now + datetime.timedelta(days=offset)).isoformat(), **rows}))
+        return str(f)
+
+    with pytest.raises(m.AuditError, match=r"days ago \(limit 1\)"):
+        m.load_issues_snapshot(write("old.json", -(m.ISSUE_SNAPSHOT_MAX_AGE_DAYS + 1)))
+    # A capture that has not happened yet describes nothing, and a hand-edited
+    # stamp is how an expired snapshot would be made to pass.
+    with pytest.raises(m.AuditError, match="after today"):
+        m.load_issues_snapshot(write("ahead.json", 1))
+    # The boundary itself still loads: written before midnight and read after
+    # it is the ordinary case, not a stale one.
+    edge = write("edge.json", -m.ISSUE_SNAPSHOT_MAX_AGE_DAYS)
+    assert m.load_issues_snapshot(edge)["stocks"][1]["state"] == "open"
+    assert m.load_issues_snapshot(write("fresh.json", 0))["stocks"][1]["state"] == "open"
+    # And the clock is injectable, which is how the window is shown to be
+    # about NOW rather than about the report date.
+    old = write("old2.json", -5)
+    assert m.load_issues_snapshot(
+        old, now=now - datetime.timedelta(days=5))["stocks"][1]["state"] == "open"
+
+
+def test_a_written_snapshot_carries_its_capture_time(tmp_path):
+    """The writer stamps what the loader requires, so the round trip works
+    without anyone hand-editing a file. The stamp sits BESIDE the repository
+    maps: inside one it would put a string where every consumer expects issue
+    rows, and load_issues_snapshot returns only the maps for the same
+    reason."""
+    f = tmp_path / "out.json"
+    m.write_issues_snapshot(str(f), {"stocks": {1: {"state": "open"}},
+                                     "solyra": {9: {"state": "open"}}})
+    raw = json.loads(f.read_text())
+    assert m.is_calendar_date(raw["capturedAt"][:10])
+    assert sorted(raw) == ["capturedAt", "solyra", "stocks"]
+    assert sorted(m.load_issues_snapshot(str(f))) == ["solyra", "stocks"]
+    # A write failure is exit 2, like a read failure -- both mean the run did
+    # not happen, not that the documentation has findings.
+    with pytest.raises(m.AuditError, match="could not be written"):
+        m.write_issues_snapshot(str(tmp_path / "nodir" / "out.json"), {"stocks": {}})
 
 
 def test_two_leading_dots_are_traversal_only_as_a_parent_component():
