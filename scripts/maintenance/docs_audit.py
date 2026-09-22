@@ -310,8 +310,16 @@ REF_DEF_RE = re.compile(
 # match, and a directory part that admitted them would let `run docs/a.md and
 # docs/b.md` parse as one path and be reported dead -- a fabricated finding.
 # With the restriction, that span fails at the leading `run `, where it should.
+# `\w` rather than `A-Za-z0-9_`, because Python's `re` is Unicode by default
+# and a tracked path may hold a non-ASCII character. The ASCII-only class never
+# recognised a citation of a path like `docs/cafe.md` spelled with an accent,
+# so deleting or renaming that file produced no dead-link finding at all --
+# while the git inventory is deliberately decoded to preserve exactly such
+# filenames and the equivalent percent-encoded Markdown link IS checked. The
+# extension stays ASCII: a suffix is, and widening it would let ordinary prose
+# end a "path".
 BACKTICK_PATH_RE = re.compile(
-    r"`(?P<path>[A-Za-z0-9_./-]+/[A-Za-z0-9_.-](?:[A-Za-z0-9_. -]*[A-Za-z0-9_.-])?"
+    r"`(?P<path>[\w./-]+/[\w.-](?:[\w. -]*[\w.-])?"
     r"\.[A-Za-z0-9]{1,10}(?::\d+(?:-\d+)?)?)`")
 
 # The other shape a citation takes: a bare root-level filename. Requiring a
@@ -1155,7 +1163,13 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     # as one ended the search early, so an existing marker below the fence was
     # reported missing and --stamp inserted a second one above it, leaving
     # contradictory provenance in the document.
-    fenced = fenced_lines(lines) | commented_lines(lines)
+    # Indented code as well. An indented line followed by `---` is a code
+    # block and a thematic break, not a Setext heading -- but omitted from
+    # the skip set, `is_setext_underline` read it as one, closed the window
+    # above a real marker below it, and --stamp inserted a second
+    # contradictory marker.
+    fenced = (fenced_lines(lines) | commented_lines(lines)
+              | indented_code_lines(lines))
     # To the next HEADING, with no additional line cap. A document opening
     # with more than `limit` lines of HTML metadata before its marker had the
     # real marker excluded from the window, so the audit reported it missing
@@ -1385,6 +1399,7 @@ def indented_code_lines(lines: list[str]) -> set[int]:
     here first.
     """
     out: set[int] = set()
+    list_indent = 0
     blank_seen = True
     floor = 4
     in_code = False
@@ -1404,7 +1419,19 @@ def indented_code_lines(lines: list[str]) -> set[int]:
             # A table row is not a container, so it leaves the floor alone; a
             # list marker sets it to its own content column plus four.
             bullet = re.match(r"^(\s*(?:[-*+]|\d+[.)])\s+)", line)
-            floor = len(bullet.group(1)) + 4 if bullet else 4
+            if bullet:
+                list_indent = len(bullet.group(1))
+                floor = list_indent + 4
+            elif indent >= list_indent > 0:
+                # A CONTINUATION of the item, which carries no new bullet.
+                # Resetting the floor to four here meant the next four-space
+                # line after a blank read as a code block, although a `- `
+                # item needs six to open one -- so rendered continuation
+                # content was skipped by the dead-link and blocker checks.
+                pass
+            else:
+                list_indent = 0
+                floor = 4
         blank_seen = False
     return out
 
@@ -2026,7 +2053,14 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # which carries BOTH spellings -- is reported once rather than twice.
         # The span guard alone cannot see this: it hides the digits inside the
         # URL, not the `#861` in the link label sitting outside it.
-        url_nums = {int(mm.group("num")) for mm in ISSUE_URL_RE.finditer(line)}
+        # Only URLs naming THIS repository, because that is the only repository
+        # a bare `#123` can mean. A repository-blind set let a solyra URL
+        # sharing the number suppress the stocks shorthand -- so on
+        # `stocks #123 is still open; .../solyra/issues/123 is still open`,
+        # with stocks#123 closed and solyra#123 open, NEITHER citation
+        # reported and a stale blocker passed the audit.
+        url_nums = {int(mm.group("num")) for mm in ISSUE_URL_RE.finditer(line)
+                    if mm.group("repo").lower() == THIS_REPO}
         skipped_end: int | None = None
         for m in SHORTHAND_ISSUE_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in hidden + url_spans):
@@ -2692,7 +2726,8 @@ PR_PAGE_LIMIT = 40
 
 
 def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE,
-                    delivery_re: re.Pattern | None = None) -> list[dict]:
+                    delivery_re: re.Pattern | None = None,
+                    newest_gen: str | None = None) -> list[dict]:
     """Every refresh PR the delivery check can act on, newest first.
 
     One `per_page=100` page covers the 100 newest PRs of ANY kind, not the 100
@@ -2710,11 +2745,14 @@ def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE,
     the walk never reached -- and the attempts it superseded are then reported
     as live failures.
 
-    It now stops once every unmerged candidate collected so far is already
-    superseded by a merge it has seen. That is sound rather than merely
-    cheaper: a later page can only add OLDER-created PRs, which the same
-    `delivered` supersedes too. It is still bounded by PR_PAGE_LIMIT
-    (CLAUDE.md §3.8).
+    It stops once a MERGED delivery for `newest_gen` -- the current month, the
+    newest generation any refresh can name -- is on hand and every unmerged
+    candidate collected so far is superseded by a merge it has seen. The
+    generation is what makes the stop sound: without it, a later page can hold
+    a NEWER-generation attempt that no delivery seen so far supersedes, because
+    pages are ordered by creation time and `superseded` is not. With no
+    `newest_gen` the walk does not stop early at all. It is bounded by
+    PR_PAGE_LIMIT either way (CLAUDE.md §3.8).
     """
     delivery_re = delivery_re or title_re
     owned: list[dict] = []
@@ -2733,14 +2771,28 @@ def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE,
                               "created": parts[3], "title": parts[4]})
         if len(rows) < page_size:
             break
-        # The SAME rule the reporting uses. Comparing a creation time against
-        # a merge time here bypassed the generation comparison entirely, so the
-        # walk could stop on an older-generation delivery while a newer,
-        # unmerged refresh sat on a later page and was never read.
+        # Stopping early needs a bound on what a LATER page could hold, and
+        # the old condition did not have one. It stopped as soon as every
+        # unmerged candidate on hand was superseded, reasoning that a later
+        # page only adds older-CREATED PRs which the same delivery supersedes
+        # too. That reasoning is about time; `superseded` is about GENERATION.
+        # A next-generation attempt created BEFORE a later-created
+        # older-generation delivery sits on a later page, and nothing seen so
+        # far supersedes it -- so the walk stopped and a genuinely open
+        # refresh PR was left off the report.
+        #
+        # `newest_gen` is the bound. No refresh can name a generation after
+        # the current month, so once a MERGED delivery for that generation is
+        # on hand, every refresh anywhere -- read or unread -- is for it or
+        # older, and `superseded` settles all of them. In the healthy case
+        # (this month's refresh merged) that is still one request.
         deliveries = [pr for pr in owned
                       if pr["merged"] and delivery_re.search(pr["title"])]
         pending = [pr for pr in owned if not pr["merged"]]
-        if deliveries and all(superseded(pr, deliveries) for pr in pending):
+        if (newest_gen
+                and any(_refresh_generation(pr["title"]) == newest_gen
+                        for pr in deliveries)
+                and all(superseded(pr, deliveries) for pr in pending)):
             break
     return owned
 
@@ -3006,7 +3058,8 @@ def check_owning_job(today: str) -> list[dict]:
     try:
         recent = fetch_owning_runs()
         owned_prs = fetch_owned_prs(OWNING_JOB["pr_title_re"],
-                                    delivery_re=OWNING_JOB["delivery_title_re"])
+                                    delivery_re=OWNING_JOB["delivery_title_re"],
+                                    newest_gen=today[:7])
     except AuditError:
         # Do NOT convert this into a finding. A finding means "the docs are
         # stale"; this means "the audit never learned whether they are", and
@@ -3291,6 +3344,14 @@ def main(argv: list[str] | None = None) -> int:
     deleted |= renamed_from
     if staged or deleted:
         tracked = (tracked | staged) - deleted
+        # And the directories those additions establish. TOP_LEVEL_DIRS was
+        # derived from the base commit only, so a citation of a missing path
+        # under a directory this change set CREATES was read as cross-repository
+        # prose and skipped -- the pre-commit audit passed although the staged
+        # tree is what says the directory belongs to this repository. Not
+        # narrowed by `deleted`: a directory the base ref held stays a
+        # directory this repository has had, which is what the set is for.
+        TOP_LEVEL_DIRS.update(p.split("/", 1)[0] for p in staged if "/" in p)
         docs = document_set(tracked, registry)
     untracked = git_paths(["git", "ls-files", "--others", "--exclude-standard",
                            "--", "*.md"])
@@ -3528,6 +3589,20 @@ def main(argv: list[str] | None = None) -> int:
             if reviewed and not path_in_commit(head, doc):
                 stamp_refusals[doc] = "baseline-predates-doc"
                 continue
+            # And the content at that revision has to BE what was reviewed.
+            # The path existing at `head` is not enough: with staged or
+            # unstaged prose edits the guard above passes, `head` is recorded
+            # as the reviewed baseline, and the moment those edits and the
+            # marker are committed, check_doc_changed_since diffs the document
+            # at `head` against the newly committed prose and reports
+            # `changed-since` -- invalidating the very review that wrote it.
+            # Marker lines are excluded on both sides, exactly as that check
+            # excludes them, so a restamp is not mistaken for an edit.
+            if reviewed and _without_marker(
+                    run(["git", "show", f"{head}:{doc}"], ok_exit_codes=(128,))
+            ) != _without_marker(text):
+                stamp_refusals[doc] = "uncommitted-content"
+                continue
             new, action = stamp(text, today, "verified" if reviewed else "scanned",
                                 head, reviewed=reviewed)
             # Consumed only if the review was actually recorded. `stamp` can
@@ -3553,6 +3628,10 @@ def main(argv: list[str] | None = None) -> int:
             why = {"baseline-predates-doc":
                        f"the document does not exist at {head}, so the review would "
                        "name a baseline predating it; commit it first",
+                   "uncommitted-content":
+                       f"its prose differs from {head}, so the review would name a "
+                       "baseline that does not hold what was reviewed and the next "
+                       "audit would report changed-since; commit the edits first",
                    "skipped-no-h1": "no H1 to place a marker after",
                    "skipped-legacy-content": "a legacy marker carrying prose that "
                                              "rewriting would delete"}

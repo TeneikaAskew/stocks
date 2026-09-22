@@ -4550,3 +4550,161 @@ def test_an_indented_generated_date_is_not_production_provenance():
     with pytest.MonkeyPatch.context() as mp:
         # A REAL stamp is still read, so the fix is not "never find one".
         assert drive("# T\n\nGenerated 2026-09-16\n\nprose\n", mp) == []
+
+
+_M29 = ("**Last reviewed:** 2026-01-01 · **Depth:** scanned · "
+        "**Against:** `abc123def456` · **Last scanned:** 2026-02-02 · **Owner:** me")
+
+
+def test_an_indented_code_line_is_not_a_setext_heading_in_the_marker_window():
+    """An indented line followed by `---` is a code block and a thematic break.
+    Omitted from the skip set, is_setext_underline read it as a heading, closed
+    the window above a real marker below it, and --stamp inserted a second
+    contradictory marker."""
+    lines = ["# T", "", "    sample code", "---", "", _M29, "", "Body."]
+    assert 5 in list(m.marker_window(lines))
+    assert m.find_marker(lines) is not None
+    # A REAL Setext heading still closes it, so the fix is not "never close".
+    assert 5 not in list(m.marker_window(["# T", "", "Sub", "---", "", _M29, "", "B."]))
+
+
+def test_a_cross_repo_url_does_not_suppress_a_shorthand_of_this_repo():
+    """The dedup set was repository-blind, so a solyra URL sharing the number
+    suppressed the stocks shorthand -- with stocks#123 closed and solyra#123
+    open, NEITHER citation reported and a stale blocker passed the audit."""
+    states = {"stocks": {123: {"state": "closed", "reason": "completed", "kind": "ISSUE"}},
+              "solyra": {123: {"state": "open", "reason": "", "kind": "ISSUE"}}}
+    line = ("stocks #123 is still open; "
+            "https://github.com/TeneikaAskew/solyra/issues/123 is still open")
+    out = m.check_closed_issues("d.md", line, states)
+    assert any(f.get("ref") == "stocks#123" for f in out), out
+    # A URL naming the SAME repository still dedups to one finding, which is
+    # what the set exists for.
+    same = "#123 is still open https://github.com/TeneikaAskew/stocks/issues/123"
+    assert len(m.check_closed_issues("d.md", same, states)) == 1
+
+
+def test_a_list_continuation_keeps_the_items_code_floor():
+    """Resetting the floor to four on a continuation meant the next four-space
+    line after a blank read as a code block, although a `- ` item needs six to
+    open one -- so rendered continuation content was skipped by the dead-link
+    and blocker checks."""
+    # The floor governs the line AFTER the continuation, so that is what this
+    # asserts -- a test on the continuation line itself passes either way,
+    # because the add happens in the branch the floor already failed.
+    doc = ["# T", "", "- item text", "", "    continuation", "",
+           "    [x](missing.md) still in the item", ""]
+    assert 6 not in m.indented_code_lines(doc), sorted(m.indented_code_lines(doc))
+    # Six spaces inside the item IS code, and a plain four-space block outside
+    # a list still is -- the fix is not "nothing is ever indented code".
+    assert 6 in m.indented_code_lines(
+        ["# T", "", "- item", "", "      cont", "", "      code", ""])
+    assert 2 in m.indented_code_lines(["# T", "", "    code"])
+    # And the list ENDS at an unindented line, so a four-space block after it
+    # is code again.
+    ended = ["# T", "", "- item", "", "back to prose", "", "    code", ""]
+    assert 6 in m.indented_code_lines(ended), sorted(m.indented_code_lines(ended))
+
+
+def test_a_backticked_path_may_hold_a_non_ascii_character():
+    """The ASCII-only class never recognised a citation of a path spelled with
+    an accent, so deleting or renaming that file produced no dead-link finding
+    -- while the git inventory is deliberately decoded to preserve exactly such
+    filenames."""
+    hit = m.BACKTICK_PATH_RE.search("see `docs/café.md` for detail")
+    assert hit and hit.group("path") == "docs/café.md"
+    assert m.BACKTICK_PATH_RE.search("`docs/a.md`").group("path") == "docs/a.md"
+    # Prose is still not a path: the directory part admits no spaces, so
+    # `run docs/a.md and docs/b.md` does not parse as one.
+    prose = m.BACKTICK_PATH_RE.search("`run docs/a.md and docs/b.md`")
+    assert prose is None or prose.group("path") != "run docs/a.md and docs/b.md"
+
+
+def test_the_pr_walk_continues_past_an_older_generation_delivery(monkeypatch):
+    """The old stop reasoned that a later page holds only older-CREATED PRs,
+    which the same delivery supersedes too. That is about time; `superseded` is
+    about GENERATION. A 2026-10 attempt created BEFORE a later-created 2026-09
+    delivery sits on a later page and nothing seen so far supersedes it."""
+    pages = [
+        "\n".join([
+            "1200\tclosed\t2026-10-05T00:00:00Z\t2026-09-20T00:00:00Z\t"
+            "Monthly architecture doc refresh: 2026-09",
+        ] + _filler(1000, 1099)),
+        "\n".join([
+            "900\topen\t\t2026-09-01T00:00:00Z\t"
+            "Monthly architecture doc refresh: 2026-10",
+        ]),
+    ]
+    fake = _pr_pages(pages)
+    monkeypatch.setattr(m, "run", fake)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    out = m.check_owning_job("2026-10-06")
+    assert fake.calls["n"] > 1, "the walk stopped before the newer-generation attempt"
+    assert any("#900" in f["detail"] for f in out), out
+
+
+def test_the_pr_walk_still_stops_once_the_current_generation_delivered(monkeypatch):
+    """The bound has to keep the cost optimisation it replaced: with this
+    month's refresh merged, nothing newer can exist and one request is enough
+    (CLAUDE.md §3.8)."""
+    pages = ["\n".join([
+        "1060\topen\t\t2026-09-01T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
+        "953\tclosed\t2026-09-10T22:27:07Z\t2026-08-28T06:24:17Z\t"
+        "Monthly architecture doc refresh: 2026-09",
+    ] + _filler(900, 998))]
+    fake = _pr_pages(pages)
+    monkeypatch.setattr(m, "run", fake)
+    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
+    m.check_owning_job("2026-09-17")
+    assert fake.calls["n"] == 1
+
+
+def test_a_staged_directory_is_a_directory_of_this_repository(audit_repo, capsys):
+    """TOP_LEVEL_DIRS came from the base commit only, so a citation of a
+    missing path under a directory the change set CREATES was read as
+    cross-repository prose and skipped -- the pre-commit audit passed although
+    the staged tree is what says the directory belongs here."""
+    # Through main(), because the widening is in main() -- a test that
+    # performs the widening itself asserts nothing about the code.
+    (audit_repo / "docs" / "d.md").write_text(
+        "# D\n\nSee `platform/api/gone.py` for the handler.\n")
+    _commit(audit_repo, "doc")
+    # A STAGED addition establishing a new top-level directory.
+    (audit_repo / "platform").mkdir()
+    (audit_repo / "platform" / "api.py").write_text("x = 1\n")
+    _git(audit_repo, "add", "platform/api.py")
+    m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json")])
+    report = json.loads(capsys.readouterr().out)
+    dead = [f for f in report["findings"]
+            if f["check"] == "dead-link" and "platform/api/gone.py" in f["detail"]]
+    assert len(dead) == 1, report["findings"]
+
+
+def test_verify_refuses_a_document_whose_prose_is_uncommitted(audit_repo, capsys):
+    """The path existing at `head` is not enough. With staged or unstaged prose
+    edits the old guard passed, `head` was recorded as the reviewed baseline,
+    and the moment those edits and the marker were committed
+    check_doc_changed_since diffed the document at `head` against the newly
+    committed prose and reported changed-since -- invalidating the very review
+    that wrote it."""
+    doc = audit_repo / "docs" / "d.md"
+    doc.write_text("# D\n\nOriginal prose.\n")
+    _commit(audit_repo, "add d")
+    # Edit the prose WITHOUT committing, then ask for a verified stamp.
+    doc.write_text("# D\n\nRewritten prose the review is actually about.\n")
+    with pytest.raises(m.AuditError, match="prose differs from"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json"),
+                "--stamp", "--verify", "docs/d.md"])
+    # Nothing was written: the refusal has to precede the write, or the
+    # document carries a marker naming a baseline it does not match.
+    assert "Last reviewed" not in doc.read_text()
+
+    # Committed, the same request succeeds -- the fix is not "never verify".
+    _commit(audit_repo, "edit d")
+    m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+            "--issues-snapshot", str(audit_repo / "issues.json"),
+            "--stamp", "--verify", "docs/d.md"])
+    capsys.readouterr()
+    assert "**Depth:** verified" in doc.read_text()
