@@ -81,6 +81,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import bisect
 import datetime
 import fnmatch
 import html
@@ -274,8 +275,16 @@ MD_LINK_RE = re.compile(
     # and its target was never checked -- docs/gamma_levels.md writes
     # ``[`lib/agents/prompts.py:ANALYST_PROMPTS["gamma"]`](../lib/agents/prompts.py)``
     # and deleting that target reported clean.
-    r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*(?:<(?P<btarget>[^<>#]*)(?:#(?P<bfrag>[^>\s]+))?>"
-    r"|(?P<target>(?:[^()#\s]|\([^()\s]*\))*)(?:#(?P<frag>[^)\s]+))?)"
+    # A CHARACTER REFERENCE is matched as a unit before the fragment split, so
+    # the `#` inside `&#38;` is not read as the separator: `[x](foo&#38;bar.md)`
+    # renders as a link to `foo&bar.md` and was split into the path `foo&` and
+    # the fragment `38;bar.md`, reporting a tracked file dead. decode_char_refs
+    # runs downstream and cannot undo a split that already happened. Ported
+    # from the Node twin (solyra#69).
+    r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(\s*"
+    r"(?:<(?P<btarget>(?:&\#?[0-9A-Za-z]{1,32};|[^<>#])*)(?:#(?P<bfrag>[^>\s]+))?>"
+    r"|(?P<target>(?:&\#?[0-9A-Za-z]{1,32};|[^()#\s]|\([^()\s]*\))*)"
+    r"(?:#(?P<frag>[^)\s]+))?)"
     r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)""")
 # Reference-style Markdown, both halves. The definition's label may not open
 # with `^`: that is a footnote, which defines a note rather than a destination.
@@ -1878,9 +1887,15 @@ def h1_index(lines: list[str]) -> int | None:
         # Setext level one (`Title` over `===`). Without it the audit reported
         # a missing marker on such a document while --stamp answered
         # `skipped-no-h1`, so the command could not repair its own finding.
-        if (line.strip() and not line.lstrip().startswith("#")
+        # The SETEXT branch reads the stripped copy too. `> Quoted title` over
+        # `> ====` renders as an H1, and testing the raw quoted lines returned
+        # None -- so the audit reported no H1 and --stamp answered
+        # `skipped-no-h1`, the finding it raises and then refuses to act on.
+        under = _BLOCKQUOTE_PREFIX_RE.sub("", lines[i + 1] or "", count=1) \
+            if i + 1 < len(lines) else ""
+        if (bare.strip() and not bare.lstrip().startswith("#")
                 and i + 1 < len(lines) and (i + 1) not in fenced
-                and re.fullmatch(r" {0,3}=+\s*", lines[i + 1] or "")):
+                and re.fullmatch(r" {0,3}=+\s*", under)):
             return i
     return None
 
@@ -2855,6 +2870,44 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             if root in TOP_LEVEL_DIRS:
                 out.append({"check": "dead-link", "doc": doc, "line": n,
                             "detail": f"backticked path -> {cited}", "severity": "P2"})
+
+    # Links that CROSS a line break. CommonMark lets a label run over a newline
+    # and lets whitespace follow the opening parenthesis, so `[long\nlabel](x)`
+    # and `[x](\nmissing.md)` both render as clickable links -- and a per-line
+    # scan can never see either, so their broken destinations passed clean.
+    # MD_LINK_RE already admits both shapes; what it never had was a subject
+    # spanning more than one physical line.
+    #
+    # The document is masked LINE BY LINE first, at the same lengths, so every
+    # exclusion the per-line pass makes still applies and the offsets still map
+    # back to a line. Only matches that actually CONTAIN a newline are reported
+    # here; the single-line ones belong to the pass above and reporting them
+    # twice would double the finding and the summary count. Ported from the
+    # Node twin (solyra#69).
+    visible_doc: list[str] = []
+    starts: list[int] = []
+    at = 0
+    for i, line in enumerate(lines):
+        starts.append(at)
+        at += len(line) + 1
+        if i in fenced:
+            visible_doc.append(" " * len(line))
+            continue
+        spans = (code_spans(line) + commented.get(i, [])
+                 + wrapped_code.get(i, []))
+        visible_doc.append(mask_spans(line, spans))
+    joined = "\n".join(visible_doc)
+    for mm in MD_LINK_RE.finditer(joined):
+        if "\n" not in mm.group(0):
+            continue
+        if is_escaped(joined, mm.start()):
+            continue
+        tgt = mm.group("btarget")
+        frag = mm.group("bfrag")
+        if tgt is None:
+            tgt, frag = mm.group("target"), mm.group("frag")
+        n = bisect.bisect_right(starts, mm.start())
+        check_target(tgt, frag, n)
     return out
 
 

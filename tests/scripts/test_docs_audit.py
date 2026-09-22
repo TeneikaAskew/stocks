@@ -5263,3 +5263,44 @@ def test_an_inline_comment_example_opens_no_comment_for_the_fence_scan():
     assert sorted(m.fenced_lines(doc)) == [4, 5, 6]
     # A REAL unclosed comment still hides what follows it.
     assert sorted(m._comment_hidden(["# T", "<!-- open", "still hidden"])) == [1, 2]
+
+
+# ── round 38 parity (solyra#69 `a00b8b3`) ──────────────────────────────────
+
+def test_a_character_reference_in_a_destination_is_not_split_as_a_fragment():
+    """The `#` inside `&#38;` was read as the fragment separator BEFORE
+    decode_char_refs ran, so `[x](foo&#38;bar.md)` -- a link to tracked
+    `foo&bar.md` -- was split into the path `foo&` and the fragment `38;bar.md`
+    and reported dead. A downstream decoder cannot undo a split that already
+    happened, so the reference is matched as a unit in the pattern."""
+    assert m.check_dead_links("d.md", "[x](foo&#38;bar.md)\n", {"foo&bar.md"}) == []
+    # A destination that really is missing is still reported, and a REAL
+    # fragment is still a fragment.
+    assert len(m.check_dead_links("d.md", "[x](gone&#38;bar.md)\n", {"foo&bar.md"})) == 1
+
+
+def test_a_quoted_setext_h1_is_the_document_h1():
+    """The ATX test read the stripped copy and the Setext branch still tested
+    the raw quoted lines, so `> Quoted title` over `> ====` returned None: the
+    audit reported no H1 and --stamp answered `skipped-no-h1`."""
+    assert m.h1_index(["> Quoted title", "> ====", "", "body"]) == 0
+    assert m.h1_index(["Title", "====", "", "body"]) == 0
+    # An indented H1 is a code block: the strip must not eat indentation.
+    assert m.h1_index(["    # Indented", "", "# Real"]) == 2
+
+
+def test_a_markdown_link_that_crosses_a_line_break_is_still_a_link():
+    """CommonMark lets a label run over a newline and lets whitespace follow
+    the opening parenthesis, so both shapes render as clickable links -- and a
+    per-line scan can never see either. MD_LINK_RE already admitted both; what
+    it never had was a subject spanning more than one physical line."""
+    def run(t):
+        return [f["check"] for f in m.check_dead_links("d.md", t, {"docs/a.md"})]
+    assert run("[long\nlabel](missing.md)\n") == ["dead-link"]
+    assert run("[x](\nmissing.md)\n") == ["dead-link"]
+    # A single-line link is reported ONCE, not by both passes.
+    assert run("[x](missing.md)\n") == ["dead-link"]
+    # A resolving one stays quiet, and the exclusions still apply.
+    assert run("[long\nlabel](docs/a.md)\n") == []
+    assert run("```\n[long\nlabel](missing.md)\n```\n") == []
+    assert run("`[long\nlabel](missing.md)`\n") == []
