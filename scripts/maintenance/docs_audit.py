@@ -1226,11 +1226,21 @@ def owned_lines(text: str, specs: list[str], prompt_exists=None
             # as generated. Blanked rather than removed, since `pat` may be
             # anchored and a shorter line would move what it anchors to.
             spans = comment_spans(lines)
+            # Spans that OPEN on an earlier line too. `code_spans` is
+            # line-local, so a sample surviving only inside a wrapped span --
+            # a `https://img.shields.io/x` between a backtick above it and one
+            # below -- still matched the raw line. The region's claim of
+            # coverage then outlived the real generated content: no unmatched
+            # -region P1, and the example's line routed to the renderer as
+            # though generated. The `mark:` and `inventory:` scanners above
+            # already read `code_span_lines`; this one did not.
+            wrapped = code_span_lines(lines)
             for n, line in enumerate(lines, 1):
                 if n - 1 in example:
                     continue
                 visible_line = mask_spans(
-                    line, spans.get(n - 1, []) + code_spans(line))
+                    line, spans.get(n - 1, []) + code_spans(line)
+                    + wrapped.get(n - 1, []))
                 if pat.search(visible_line):
                     owned.add(n)
                     hit = True
@@ -2198,7 +2208,13 @@ def marker_shaped_lines(lines: list[str]) -> list[int]:
     claims -- which the duplicate-marker check cannot see, because only one of
     the two parses.
     """
-    fenced = fenced_lines(lines) | commented_lines(lines)
+    # And a line a code SPAN covers entirely, which find_markers has excluded
+    # since it learned about wrapped spans but this did not: a malformed
+    # marker DEMONSTRATED inside a span that opens above it and closes below
+    # is an example, and counting it emitted a gating finding and made
+    # stamp() return `skipped-malformed-marker` -- so a document showing what
+    # a bad marker looks like could not be given a real one.
+    fenced = fenced_lines(lines) | commented_lines(lines) | _span_hidden(lines)
     out = []
     for i in marker_window(lines):
         if i in fenced or is_code_indented(lines[i]):
@@ -2357,7 +2373,17 @@ def marker_anchor(lines: list[str]) -> int | None:
     h1 = h1_index(lines)
     if h1 is None:
         return None
-    if h1 + 1 < len(lines) and re.fullmatch(r" {0,3}=+\s*", lines[h1 + 1] or ""):
+    # Read THROUGH the container, as h1_index already does. A quoted Setext
+    # H1 is `> Title` over `> ===`, and testing the raw line saw the `>`,
+    # matched no underline and returned the TITLE as the insertion point -- so
+    # --stamp inserted the marker between the title and its underline,
+    # destroying the H1 while reporting the stamp inserted. The underline must
+    # sit at the same quote depth as the title, or it belongs to neither.
+    under = (_BLOCKQUOTE_PREFIX_RE.sub("", lines[h1 + 1] or "", count=1)
+             if h1 + 1 < len(lines) else "")
+    same_depth = (h1 + 1 < len(lines)
+                  and quote_depth(lines[h1 + 1] or "") == quote_depth(lines[h1] or ""))
+    if same_depth and re.fullmatch(r" {0,3}=+\s*", under):
         return h1 + 1
     return h1
 

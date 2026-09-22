@@ -5883,3 +5883,46 @@ def test_inline_content_ends_at_a_heading_not_only_at_a_blank_line():
     # And the link scan reads the same boundary: the brackets do not pair.
     assert m.check_dead_links("d.md", "text [label\n# H\nmore](missing.md)\n",
                               {"d.md"}) == []
+
+
+def test_a_quoted_setext_underline_is_still_an_underline():
+    """`> Title` over `> ===` is a Setext H1 and `h1_index` recognises it, but
+    the anchor tested the RAW next line, saw the `>`, matched no underline and
+    returned the title. `--stamp` then inserted the marker BETWEEN the title
+    and its underline, destroying the H1 while reporting the stamp inserted."""
+    quoted = ["> Title", "> ===", "", "> body"]
+    assert m.marker_anchor(quoted) == 1
+    assert m.marker_anchor(["Title", "===", "", "body"]) == 1
+    # The property the index exists for: inserting AFTER it leaves an H1.
+    at = m.marker_anchor(quoted)
+    assert m.h1_index(quoted[:at + 1] + ["", "**marker**"] + quoted[at + 1:]) == 0
+    # An underline at a DIFFERENT quote depth belongs to neither heading, so
+    # stripping the prefix unconditionally would invent a two-line heading.
+    assert m.marker_anchor(["> Title", "===", "", "body"]) == 0
+
+
+def test_a_line_region_reads_through_a_wrapped_code_span():
+    """A `line:` pattern surviving only inside a span that opens above it and
+    closes below still matched the raw line, so the region's claim of coverage
+    outlived the real generated content: no unmatched-region finding, and the
+    example's line routed to the renderer as though generated."""
+    spec = ["line:img\\.shields\\.io"]
+    owned, unmatched, _, _, _ = m.owned_lines(
+        "# T\n\n`a\nhttps://img.shields.io/x\nb`\n", spec)
+    assert owned == set() and unmatched == spec
+    # Real generated content still matches and still counts as covered.
+    owned, unmatched, _, _, _ = m.owned_lines(
+        "# T\n\nhttps://img.shields.io/x\n", spec)
+    assert owned == {3} and unmatched == []
+
+
+def test_a_malformed_marker_inside_a_wrapped_code_span_is_an_example():
+    """`find_markers` has excluded span-covered lines since it learned about
+    wrapped spans; this shape check did not. A document DEMONSTRATING a
+    malformed marker therefore emitted a gating finding and `stamp()` returned
+    `skipped-malformed-marker`, so it could never be given a real one."""
+    doc = ["# T", "`a", "**Last reviewed:** 2026-1-1", "b`", "", "## Next"]
+    assert m.marker_shaped_lines(doc) == []
+    # An unwrapped one is still the malformed marker this check exists for.
+    live = ["# T", "", "**Last reviewed:** 2026-1-1", "", "## Next"]
+    assert m.marker_shaped_lines(live) == [2]
