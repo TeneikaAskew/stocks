@@ -5331,3 +5331,232 @@ def test_stamping_refuses_an_ambiguous_classification(audit_repo):
     rows = m.load_registry(reg)
     assert m.classification_is_ambiguous("docs/tie.md", rows) is True
     assert m.classification_is_ambiguous("docs/DOC_REGISTRY.md", rows) is False
+
+
+def test_an_escaped_backtick_does_not_consume_the_real_span_opener():
+    """Filtering escaped openers AFTER the scan cannot recover the opener the
+    rejected match already ate: the escaped tick paired with the real opener,
+    the pair was discarded, and the genuine span went unmasked -- so the
+    example link inside it was reported dead. Restarting one character past a
+    rejected opener is what lets the real one pair."""
+    line = r"\` literal ` [x](y.md) `"
+    assert m.code_spans(line) == [(11, 24)]
+    assert line[11:24] == "` [x](y.md) `"
+
+
+def test_the_standalone_comment_scan_also_reads_wrapped_code_spans():
+    """`comment_spans` learned this a round ago and `_comment_hidden`, the
+    standalone scan that exists to break the recursion between the two, did
+    not. It masked single-line spans only. A literal `<!--` on the
+    middle line of a span that opens above it and closes below read as a real
+    unclosed comment, so fenced_lines ignored every later delimiter."""
+    assert m._comment_hidden(["`a", "<!--", "b`", "live"]) == set()
+    # And a genuinely unclosed comment still hides what follows it.
+    assert m._comment_hidden(["a", "<!--", "b"]) == {1, 2}
+
+
+def test_inventory_delimiters_inside_a_wrapped_code_span_are_examples():
+    """A span holding sample start/end markers across a line break had both
+    read as real delimiters, so a Class A document that had LOST its real
+    region looked healthy instead of producing the intended P1."""
+    lines = ["`x", "<!-- inventory:a:start -->", "<!-- inventory:a:end -->", "y`"]
+    assert m.inventory_blocks(lines) == ({}, [])
+    # Unwrapped, the same two lines are a real region.
+    real = ["<!-- inventory:a:start -->", "<!-- inventory:a:end -->"]
+    pairs, unbalanced = m.inventory_blocks(real)
+    assert pairs == {"a": (1, 2)} and unbalanced == []
+
+
+def test_a_link_to_a_tracked_symlink_is_refused_before_its_headings_are_read(
+        tmp_path, monkeypatch):
+    """The preflight guards the document being SCANNED, not the ones it cites.
+    Collecting a linked document's headings opened it directly, so a link to a
+    tracked symlink audited the target's machine-local bytes -- and one
+    pointing at a non-terminating special file hangs here."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "real.md").write_text("# Real\n")
+    (tmp_path / "link.md").symlink_to("real.md")
+    with pytest.raises(m.AuditError, match="tracked symlink"):
+        m.check_dead_links("d.md", "see [x](link.md#real)\n", {"d.md", "link.md"})
+    # A regular file is read as before.
+    assert m.check_dead_links("d.md", "see [x](real.md#real)\n",
+                              {"d.md", "real.md"}) == []
+
+
+def test_a_quoted_setext_heading_is_read_and_a_quoted_break_is_not():
+    """Both halves of one change. Matching the raw underline always failed on
+    the `>`, so a quoted Setext heading exposed no anchor; comparing the
+    depths on the STRIPPED copies then read 0 for every line, which accepted
+    `> Example` over an unquoted `---` across a container boundary."""
+    assert m.is_setext_underline(["> Title", "> ==="], 1, set()) is True
+    assert m.is_setext_underline(["> Example", "---"], 1, set()) is False
+    assert m.heading_anchors("> Title\n> ===\n") == {"title"}
+
+
+def test_a_code_span_does_not_pair_across_a_paragraph_boundary():
+    """Inline content cannot cross a blank line, so an unmatched backtick in
+    one paragraph paired with another far below it -- masking every live link
+    in between and silently dropping their findings."""
+    assert m.code_span_lines(["a ` b", "", "c ` d"]) == {}
+    # Within one paragraph it still wraps.
+    assert m.code_span_lines(["a ` b", "c ` d"]) != {}
+
+
+def test_an_escaped_bracket_is_label_text_not_the_label_end():
+    """`[a \\] b](x.md)` renders a link; the structural class read the escaped
+    `]` as the label's end, so the link never matched and a deleted target
+    passed the audit."""
+    mm = m.MD_LINK_RE.search(r"[a \] b](x.md)")
+    assert mm is not None and mm.group("target") == "x.md"
+
+
+def test_an_escaped_hash_stays_in_the_path_and_parentheses_nest_twice():
+    """Splitting on the hash before consuming the escape gave the target `a\\`.
+    And `docs/a(b(c)).md` is a valid destination the single-level balanced
+    alternative could not match at all, so a deleted target spelled that way
+    produced no finding."""
+    mm = m.MD_LINK_RE.search(r"[x](a\#b.md)")
+    assert mm.group("target") == r"a\#b.md" and mm.group("frag") is None
+    assert m.MD_LINK_RE.search("[x](docs/a(b(c)).md)").group("target") == \
+        "docs/a(b(c)).md"
+
+
+def test_inline_html_is_markup_and_an_autolink_is_not():
+    """`## Hello <em>world</em>` renders as "Hello world" and GitHub's id is
+    `hello-world`; keeping the tag names recorded `hello-emworldem`, so a
+    valid link to `#hello-world` reported dead AND the invented fragment was
+    accepted. An autolink is text, not a tag."""
+    assert m.heading_slug("Hello <em>world</em>") == "hello-world"
+    assert m.heading_slug('A <span class="x">tag</span>') == "a-tag"
+    assert m.heading_slug("<https://example.com>") == "httpsexamplecom"
+
+
+def test_the_marker_gap_is_measured_from_after_a_two_line_heading():
+    """A Setext H1 is two lines. Starting the blank-run skip at the TITLE
+    stopped immediately on the non-blank underline, so a document with no
+    blank after `===` compared unstamped against stamped and the review read
+    as stale the moment it was recorded."""
+    assert m._without_marker("Title\n===\nbody\n") == \
+        m._without_marker("Title\n===\n\nbody\n")
+
+
+def test_an_issue_url_must_sit_at_a_host_boundary():
+    """Unanchored, any site whose PATH embeds the string matched, so a link to
+    example.com produced a stale-blocker finding against stocks#1. The bare
+    host spelling is still accepted -- documents here write it."""
+    embedded = ("Blocking issues: https://example.com/archive/"
+                "github.com/TeneikaAskew/stocks/issues/861")
+    assert m.check_closed_issues("d.md", embedded, STATES) == []
+    bare = "Blocking issues: github.com/TeneikaAskew/stocks/issues/861"
+    assert [f["ref"] for f in m.check_closed_issues("d.md", bare, STATES)] == \
+        ["stocks#861"]
+
+
+def test_a_section_sharing_the_registry_heading_prefix_is_not_the_registry():
+    """`## Registry examples` shares the prefix, so a `startswith` test
+    re-entered registry mode and parsed the illustrative table as live
+    classification rules -- explanatory prose becoming configuration."""
+    head = ("| Class | Path glob | Declared code paths | Generated regions |\n"
+            "|---|---|---|---|\n")
+    text = ("# D\n\n## Registry\n\n" + head + "| D | docs/a.md | | |\n"
+            "\n## Registry examples\n\n" + head + "| A | docs/fake.md | | all |\n")
+    assert [r["glob"] for r in m.load_registry(text)] == ["docs/a.md"]
+    # The closing-hash spelling of the real heading still enters.
+    closed = ("# D\n\n## Registry ##\n\n" + head + "| D | docs/a.md | | |\n")
+    assert [r["glob"] for r in m.load_registry(closed)] == ["docs/a.md"]
+
+
+def test_a_marker_hidden_in_a_partly_commented_line_is_not_provenance():
+    """A comment closed PART WAY through a line leaves visible text after the
+    `-->`, so the line is not wholly commented -- and stripping it put the
+    hidden marker prefix first, where MARKER_RE matched it and the `-->`
+    landed harmlessly in `rest`."""
+    hidden = ["# T", "<!-- retired",
+              "**Last reviewed:** 2026-09-20 (depth: full) --> tail"]
+    assert m.find_markers(hidden) == []
+    visible = ["# T", "**Last reviewed:** 2026-09-20 (depth: full)"]
+    assert len(m.find_markers(visible)) == 1
+
+
+def test_a_heading_inside_a_raw_html_block_offers_no_anchor():
+    """`<pre>` and `<div>` make the Markdown inside render literally, so
+    `# Heading` there is text. Recording its slug invented an anchor the
+    document does not offer, and a link to that fragment PASSED."""
+    assert m.raw_html_block_lines(["<pre>", "# Fake", "</pre>"]) == {0, 1, 2}
+    assert m.heading_anchors("<pre>\n# Fake\n</pre>\n\n# Real\n") == {"real"}
+    assert m.heading_anchors("<div>\n# Fake\n</div>\n\n# Real\n") == {"real"}
+    # Type 7 -- an unknown tag alone on a line -- opens a block too, and both
+    # type 6 and type 7 end at the next BLANK line rather than at a close tag.
+    assert m.raw_html_block_lines(["<x-widget>", "# Fake", "", "# Real"]) == {0, 1}
+
+
+def test_a_reference_definition_inside_a_wrapped_code_span_defines_nothing():
+    """`[g]: missing.md` displayed inside a span that opens above it and closes
+    below was validated as a live destination. The single-line form cannot
+    match anyway -- the opening backtick sits where the pattern needs a
+    bracket -- so the wrapped case is the whole of the gap."""
+    assert m.check_dead_links("d.md", "`a\n[g]: missing.md\nb`\n", {"d.md"}) == []
+    out = m.check_dead_links("d.md", "[g]: missing.md\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+
+
+def test_a_reference_definition_inside_a_blockquote_still_defines():
+    """`> [g]: docs/g.md` renders as a working reference. The anchored pattern
+    saw `>` where it needs a bracket, so every quoted definition went
+    unchecked -- and a quoted use resolving to a dead path is exactly as
+    broken as an unquoted one."""
+    out = m.check_dead_links("d.md", "> [g]: missing.md\n", {"d.md"})
+    assert [f["detail"] for f in out] == ["reference link [g] -> missing.md"]
+    assert m.check_dead_links("d.md", "> [g]: ok.md\n", {"d.md", "ok.md"}) == []
+
+
+def test_a_link_does_not_pair_across_a_paragraph_boundary():
+    """A `[` in one paragraph and a `](missing.md)` in the next render as
+    literal brackets. Scanning the whole document as one string paired them
+    and reported a destination no reader can click."""
+    assert m.check_dead_links("d.md", "text [label\n\nmore](missing.md)\n",
+                              {"d.md"}) == []
+    out = m.check_dead_links("d.md", "text [label\nmore](missing.md)\n", {"d.md"})
+    assert [f["check"] for f in out] == ["dead-link"]
+
+
+def test_a_query_only_destination_still_has_its_fragment_checked(
+        tmp_path, monkeypatch):
+    """Stripping the query empties the path, and returning there skipped the
+    anchor check entirely -- so `[x](?plain=1#missing)`, which navigates
+    within THIS document exactly as `#missing` does, passed."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    (tmp_path / "d.md").write_text("# Real\n\nsee [x](?plain=1#missing)\n")
+    out = m.check_dead_links("d.md", (tmp_path / "d.md").read_text(), {"d.md"})
+    assert [f["check"] for f in out] == ["dead-anchor"]
+    (tmp_path / "e.md").write_text("# Real\n\nsee [x](?plain=1#real)\n")
+    assert m.check_dead_links("e.md", (tmp_path / "e.md").read_text(),
+                              {"e.md"}) == []
+
+
+def test_a_fence_opened_in_a_list_item_ends_with_the_item():
+    """CommonMark ends the block where the item ends, closing fence or not.
+    Holding it open classified the rest of the document as code and suppressed
+    every dead link, blocker, heading and marker below it."""
+    unclosed = ["- item", "  ```", "  code", "", "after [x](missing.md)"]
+    assert 4 not in m.fenced_lines(unclosed)
+    # A blank line does NOT end the item, so indented content after one is
+    # still inside the block.
+    held = ["- item", "  ```", "  code", "", "  more", "  ```", "after"]
+    assert m.fenced_lines(held) == {1, 2, 3, 4, 5}
+    # And a legally indented TOP-LEVEL fence, whose content may sit at column
+    # zero, is untouched: `_list_content_col` returns 0 and disables the rule.
+    assert m.fenced_lines([" ```", "code", " ```", "after"]) == {0, 1, 2}
+
+
+def test_an_internal_parent_segment_resolves_from_the_repository_root():
+    """`docs/../scripts/tool.py` IS `scripts/tool.py`. It was routed through
+    the document-relative branch and joined to the citing document's
+    directory, so a valid citation of a tracked file was reported dead."""
+    assert m.strip_dot_segments("docs/../scripts/tool.py") == "scripts/tool.py"
+    assert m.repo_relative("docs/../scripts/tool.py", "docs/d.md") == \
+        "scripts/tool.py"
+    # A LEADING `../` is still document-relative, and one that climbs out of
+    # the repository is still declined.
+    assert m.repo_relative("../scripts/tool.py", "docs/d.md") == "scripts/tool.py"
+    assert m.repo_relative("../../elsewhere/tool.py", "docs/d.md") is None
