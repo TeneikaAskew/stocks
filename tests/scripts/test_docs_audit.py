@@ -228,6 +228,54 @@ def test_an_orphan_end_marker_is_a_finding():
     assert orphans == ["inventory:a ends at line 2 with no start"]
 
 
+def test_tag_shaped_text_that_is_not_a_tag_stays_in_the_slug():
+    """`## A <span ???>B` renders the tag-shaped text LITERALLY and anchors
+    `a-span-b`, but a pattern that accepted "anything that is not an angle
+    bracket" after the name matched it and recorded `a-b` -- a valid fragment
+    link rejected and a nonexistent one accepted. The attribute grammar
+    CommonMark specifies is a name plus an optional unquoted, single-quoted or
+    double-quoted value. Codex filed it on the Node twin (solyra#69)."""
+    assert m.heading_slug("A <span ???>B") == "a-span-b"
+    # The real forms are still markup, so this narrows the pattern to the
+    # spec rather than switching it off.
+    assert m.heading_slug("Hello <em>world</em>") == "hello-world"
+    assert m.heading_slug('A <span class="x">B') == "a-b"
+    assert m.heading_slug("A <span data-x=1>B") == "a-b"
+    assert m.heading_slug("A <br/> B") == "a--b"
+    # And an AUTOLINK is still not a tag: it renders as the URL.
+    assert m.heading_slug("A <https://example.com> B") == "a-httpsexamplecom-b"
+
+
+def test_a_tag_in_a_link_destination_or_title_offers_no_anchor():
+    """A link's destination and title are metadata: tag-shaped text in either
+    renders inside a URL or a `title` attribute, never as an element. The scan
+    read it as one and registered `fake`, so a later `[y](#fake)` passed
+    against a destination that exists nowhere."""
+    assert m.html_anchors(['[x](README.md "<div id=fake>")']) == set()
+    assert m.html_anchors(["[x](<div id=fake>)"]) == set()
+    # A real tag OUTSIDE a link, and one in the visible LABEL, are both still
+    # elements -- the mask covers the metadata and nothing else.
+    assert m.html_anchors(["<div id=real>"]) == {"real"}
+    assert m.html_anchors(["[<div id=inlabel>](README.md)"]) == {"inlabel"}
+
+
+def test_a_link_title_is_not_prose_the_blocker_scan_reads(tmp_path, monkeypatch):
+    """A title renders as the anchor's `title` attribute -- a tooltip, never a
+    followable citation -- so it says nothing about live work. The scan read
+    the cue and the URL as ordinary prose and emitted a gating finding once
+    that issue closed. The DESTINATION stays visible, because an issue URL
+    written there is a link a reader can follow: the same split
+    `tag_attribute_spans` makes for `href`, one syntax over."""
+    states = {"solyra": {"1": {"state": "closed", "reason": "completed",
+                               "kind": "ISSUE"}}}
+    url = "https://github.com/TeneikaAskew/solyra/issues/1"
+    checks = lambda doc: [f["check"] for f in
+                          m.check_closed_issues("d.md", doc, states)]
+    assert checks(f'[x](README.md "Still open {url}")\n') == []
+    assert checks(f"Blocked by [issue 1]({url})\n") == ["closed-issue"]
+    assert checks(f"Still open {url}\n") == ["closed-issue"]
+
+
 def test_a_heading_suffix_is_stripped_only_when_it_is_a_link():
     """`_balanced_close` answers a narrower question than the one being asked:
     it finds a matching parenthesis, not a link. `## [x](foo bar)` and

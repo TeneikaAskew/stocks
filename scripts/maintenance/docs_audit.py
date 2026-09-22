@@ -362,10 +362,17 @@ _MD_LINK_TAIL_RE = re.compile(
 class _LinkMatch:
     """The pieces `check_target` reads, with `re.Match`'s accessors."""
 
-    __slots__ = ("_text", "_start", "_end", "_groups")
+    __slots__ = ("_text", "_start", "_end", "_groups", "dest_start", "dest_end")
 
-    def __init__(self, text: str, start: int, end: int, groups: dict):
+    def __init__(self, text: str, start: int, end: int, groups: dict,
+                 dest_start: int = -1, dest_end: int = -1):
         self._text, self._start, self._end, self._groups = text, start, end, groups
+        # Where the DESTINATION began and stopped, so a caller can tell a
+        # link's followable part from its metadata without rescanning.
+        # `link_meta_spans` is the one that needs them; carrying them here is
+        # what keeps that scan from becoming a second, drifting copy of this
+        # one.
+        self.dest_start, self.dest_end = dest_start, dest_end
 
     def start(self) -> int:
         return self._start
@@ -418,6 +425,7 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
         groups: dict[str, str | None] = {
             "btarget": None, "bfrag": None, "target": None, "frag": None}
         at = opening.end()
+        dest_start = at
         angle = _MD_LINK_ANGLE_RE.match(text, at, hi)
         if angle is not None:
             groups["btarget"] = angle.group("btarget")
@@ -432,11 +440,13 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
                 if frag is not None:
                     groups["frag"] = frag.group(0)
                     at = frag.end()
+        dest_end = at
         tail = _MD_LINK_TAIL_RE.match(text, at, hi)
         if tail is None:
             pos = opening.start() + 1
             continue
-        yield _LinkMatch(text, opening.start(), tail.end(), groups)
+        yield _LinkMatch(text, opening.start(), tail.end(), groups,
+                         dest_start, dest_end)
         pos = tail.end()
 # Reference-style Markdown, both halves. The definition's label may not open
 # with `^`: that is a footnote, which defines a note rather than a destination.
@@ -748,9 +758,19 @@ _CODE_SPAN_RUN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
 # One complete HTML tag: a name, optional attributes whose quoted values may
 # contain `>`, and the close. Walked rather than excluded, because `[^<>]*`
 # stopped inside `data-x="a>b"` and left `b">` to be slugged as visible text.
+# The attribute grammar CommonMark actually specifies, not "anything that is
+# not an angle bracket". `## A <span ???>B` renders the tag-shaped text
+# LITERALLY and anchors `a-span-b`, but the permissive form matched it and
+# recorded `a-b` -- a valid fragment link rejected and a nonexistent one
+# accepted, the usual pair. An attribute is a name, optionally followed by a
+# value that is unquoted, single-quoted or double-quoted. Codex filed it on
+# the Node twin (solyra#69); the same pattern was here.
 _HTML_TAG_RE = re.compile(
-    r"</?[A-Za-z][A-Za-z0-9-]*"
-    r"""(?:\s(?:"[^"]*"|'[^']*'|[^<>"'])*)?/?>""")
+    r"""<[A-Za-z][A-Za-z0-9-]*"""
+    r"""(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*"""
+    r"""(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*"""
+    r"""\s*/?>"""
+    r"""|</[A-Za-z][A-Za-z0-9-]*\s*>""")
 
 
 def _strip_heading_tags(s: str) -> str:
@@ -1113,10 +1133,14 @@ def html_anchors(lines: list[str]) -> set[str]:
     # Comment SPANS as well as code spans. `text <!-- <a id="fake"></a> -->`
     # shares a line with prose, so a whole-line exclusion never reached it and
     # `fake` was registered as a destination the document does not offer.
+    # A link's DESTINATION and TITLE are metadata: tag-shaped text in either
+    # renders inside a URL or a `title` attribute, never as an element, and
+    # reading it as one invented an anchor a link could then resolve against.
+    link_meta = link_meta_spans(lines, title_only=False)
     joined = "\n".join(
         mask_spans(line, [(0, len(line))]) if i in literal
         else mask_spans(line, code_spans(line) + wrapped.get(i, [])
-                        + comments.get(i, []))
+                        + comments.get(i, []) + link_meta.get(i, []))
         for i, line in enumerate(lines))
     out: set[str] = set()
     for tag in _TAG_OPEN_RE.finditer(joined):
@@ -1157,6 +1181,35 @@ def html_anchors(lines: list[str]) -> set[str]:
             ident = decode_char_refs(value or "")
             if ident:
                 out.add(ident)
+    return out
+
+
+def link_meta_spans(lines: list[str], *, title_only: bool = True
+                    ) -> dict[int, list[tuple[int, int]]]:
+    """Offset ranges covering an inline link's metadata, per line index.
+
+    A TITLE renders as the anchor's `title` attribute -- a tooltip, not body
+    text, and never a followable citation. With `title_only` off the
+    DESTINATION goes too, which is what the anchor scan wants: tag-shaped
+    text in either renders inside a URL or a `title` attribute rather than as
+    an element, so `[x](README.md "<div id=fake>")` was registering an anchor
+    that exists nowhere and a link to `#fake` passed against it.
+
+    The destination is deliberately KEPT visible for the blocker scan: an
+    issue URL written there is a link a reader can follow, so it is a
+    citation. That is the same split `tag_attribute_spans` makes for `href`,
+    one syntax over. Codex filed both halves on the Node twin (solyra#69).
+    """
+    out: dict[int, list[tuple[int, int]]] = {}
+    for i, line in enumerate(lines):
+        spans = []
+        for m in md_links(line):
+            lo = m.dest_end if title_only else m.dest_start
+            hi = m.end() - 1
+            if hi > lo:
+                spans.append((lo, hi))
+        if spans:
+            out[i] = spans
     return out
 
 
@@ -3966,6 +4019,7 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     # Attribute VALUES are implementation metadata: `<div data-issue="...">`
     # shows a reader nothing clickable, so a citation there is not a blocker.
     attr_spans = tag_attribute_spans(lines)
+    title_spans = link_meta_spans(lines)
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
@@ -3975,8 +4029,12 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # once that sample issue closed. The fenced and indented forms of the
         # same example were already excluded; this is the third, and it covers
         # the shorthand pass and the URL pass alike because both read `hidden`.
+        # And a Markdown link TITLE, which renders as a tooltip rather than
+        # as body text -- see link_meta_spans. The DESTINATION stays visible,
+        # because an issue URL written there is one a reader can follow.
         hidden = (commented.get(n - 1, []) + code_spans(line)
-                  + wrapped.get(n - 1, []) + attr_spans.get(n - 1, []))
+                  + wrapped.get(n - 1, []) + attr_spans.get(n - 1, [])
+                  + title_spans.get(n - 1, []))
         # The cue precheck reads the line with those spans BLANKED, and that
         # ordering is the fix. Masking only the citation is not enough: a
         # hidden span can supply the CUE for a different, visible citation --
