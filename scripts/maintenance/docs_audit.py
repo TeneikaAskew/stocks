@@ -157,9 +157,18 @@ _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
 # blocker produced a P1 against it once it closed -- a finding whose own
 # source line says the opposite. `\b` alone stops `nonblocking`; the negator
 # scan in has_blocking_cue stops the spaced and hyphenated forms.
+#
+# `\s+` between the words, not a literal space, and `blocked on`, `blocker`
+# and `blockers` beside `blocked by`. Both came from the Node twin
+# (solyra#69), where Codex filed them; the same probe showed both gaps live
+# here. `Blocked on <url>` is the same statement as `blocked by`, and a
+# single space stopped matching the moment markup was reduced in place --
+# `still **open**` arrives as `still   open`, because the reduction blanks
+# delimiters rather than removing them so offsets survive. A closed issue the
+# prose plainly calls live then produced no finding at all.
 BLOCKING_CUE_RE = re.compile(
-    r"\b(?:blocking|blocked by|open issues?|still open|outstanding|in progress"
-    r"|not started|pending)\b",
+    r"\b(?:blocking|blocked\s+(?:by|on)|blocker|blockers|open\s+issues?"
+    r"|still\s+open|outstanding|in\s+progress|not\s+started|pending)\b",
     re.I,
 )
 # Text immediately before a cue that inverts it. `not started` is itself a cue,
@@ -195,6 +204,41 @@ CUE_NEGATOR_RE = re.compile(
 # the mutation came back GREEN, which is what said the defect is not here.
 
 
+_CLOSING_TAG_RE = re.compile(r"</[a-zA-Z][a-zA-Z0-9-]*\s*>")
+_INLINE_LINK_RE = re.compile(r"\[([^\[\]]*)\]\([^()\s]*(?:\s+[^()]*)?\)")
+_REF_USE_RE = re.compile(r"\[([^\[\]]*)\]\[[^\[\]]*\]")
+
+
+def strip_inline_markup(line: str) -> str:
+    """The line with emphasis, inline LINK and HTML markup blanked.
+
+    A cue is what a READER sees. `is still **open**`, `Still [open](x.md):`
+    and `Still <strong>open</strong>:` all render as prose plainly calling
+    the citation live, and the classifier saw the delimiters between the
+    words and found no cue at all -- so a closed issue vanished from the
+    audit entirely, the direction that hides findings. Codex filed the link
+    and HTML halves on the Node twin (solyra#69); the emphasis half was
+    missing here too, which the same probe showed.
+
+    Blanked to SPACES, never removed: every offset the caller holds is an
+    offset into this line. A link's DESTINATION is blanked even though the
+    citation scan keeps it visible -- those two read different strings, and a
+    URL written as a destination is still found in the unmarked copy.
+    """
+    def blank(m: re.Match) -> str:
+        return " " * len(m.group(0))
+
+    def keep_label(m: re.Match) -> str:
+        label = m.group(1)
+        return " " + label + " " * (len(m.group(0)) - len(label) - 1)
+
+    out = re.sub(r"\*+", blank, line)
+    out = re.sub(r"(?<!\w)_+|_+(?!\w)", blank, out)
+    out = _INLINE_LINK_RE.sub(keep_label, out)
+    out = _REF_USE_RE.sub(keep_label, out)
+    return _CLOSING_TAG_RE.sub(blank, _TAG_OPEN_RE.sub(blank, out))
+
+
 def _is_negated(prefix: str) -> bool:
     """Does the text immediately before a cue invert it?
 
@@ -223,9 +267,16 @@ def has_blocking_cue(line: str) -> bool:
 # citation and a closed issue cited as live work produced no finding -- a
 # suppression, which is the worse direction. Raised on the Node twin's
 # blocking-cue equivalent first (solyra#69).
+# `closure` and `resolution` are the NOUN forms of two cues already here, and
+# the blocking vocabulary carries `blocker`/`blockers` beside `blocking` for
+# exactly this reason. Without them, `... is tracked as outstanding work, not
+# as part of the closure` -- a sentence whose own words say the citation is
+# closed -- was read as live work once the cue analysis moved to the rendered
+# paragraph and could see the `outstanding` six lines up. Measured on
+# docs/product/12-PR-ISSUE-TRACEABILITY.md.
 SETTLED_CUE_RE = re.compile(
-    r"\b(?:closed|resolved|superseded|merged|moved to|relocated|duplicate of"
-    r"|completed)\b", re.I)
+    r"\b(?:closed|closure|resolved|resolution|superseded|merged|moved to"
+    r"|relocated|duplicate of|completed)\b", re.I)
 
 
 def is_settled(clause: str) -> bool:
@@ -4266,22 +4317,32 @@ def citation_clause(line: str, start: int, end: int) -> str:
     return span
 
 
-def cites_live_work(line: str, start: int, end: int) -> bool:
+def cites_live_work(line: str, start: int, end: int,
+                    fallback: str | None = None) -> bool:
     """Is THIS citation cited as live work?
 
     A line-level answer put every URL on the line under one verdict, so
     `#1 is no longer blocking; #2 is still open` gave #1 a P1 from #2's cue.
-    The clause decides when it carries a cue at all; otherwise the line does,
-    because a table row puts the cue and the citations in different cells --
-    `| Open issues | #838 · #839 |` is a real finding whose citations sit in a
-    clause with no cue of its own. Raised on the Node twin (solyra#69).
+    The clause decides when it carries a cue at all; otherwise the fallback
+    does, because a table row puts the cue and the citations in different
+    cells -- `| Open issues | #838 · #839 |` is a real finding whose citations
+    sit in a clause with no cue of its own. Raised on the Node twin
+    (solyra#69).
+
+    `line` is the RENDERED PARAGRAPH and `fallback` the physical line, and the
+    two must not be the same string. The clause analysis wants the paragraph,
+    so a sentence split by a soft break is read whole. The fallback must stay
+    LINE-scoped: it is the table-ROW rule, and a whole table is one paragraph
+    block, so passing the paragraph let a `Blocking issues` column HEADER
+    reach every citation in every row of the table -- measured at 43 fabricated
+    P1s on this tree, in rows whose own cells say nothing of the kind.
     """
     clause = citation_clause(line, start, end)
     if SETTLED_CUE_RE.search(clause) and is_settled(clause):
         return False
     if BLOCKING_CUE_RE.search(clause):
         return has_blocking_cue(clause)
-    return has_blocking_cue(line)
+    return has_blocking_cue(line if fallback is None else fallback)
 
 
 def enclosing_parenthetical(line: str, start: int, end: int) -> tuple[int, int] | None:
@@ -4405,6 +4466,44 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
     # shows a reader nothing clickable, so a citation there is not a blocker.
     attr_spans = tag_attribute_spans(lines)
     title_spans = link_meta_spans(lines)
+    # Per line, ONCE: the spans a reader cannot see, the line with them
+    # blanked, and the cue text -- markup reduced, same length, so every
+    # offset still indexes all three. Computed here rather than in the loop
+    # because the PARAGRAPH join below needs every line's cue text before the
+    # first line is classified.
+    hidden_of = [commented.get(i, []) + code_spans(ln) + wrapped.get(i, [])
+                 + attr_spans.get(i, []) + title_spans.get(i, [])
+                 for i, ln in enumerate(lines)]
+    visible_of = [mask_spans(ln, hidden_of[i]) for i, ln in enumerate(lines)]
+    cue_of = [strip_inline_markup(v) for v in visible_of]
+    # The RENDERED PARAGRAPH, not the physical line. A soft break renders as a
+    # space, so `Blocked by` over `https://.../issues/123` is one sentence --
+    # and a per-line scan found the cue on neither line, so a stale blocker
+    # produced no finding at all. Codex filed that half.
+    #
+    # The SETTLED direction wraps just as often and is worse when it is
+    # missed. Measured on this tree's docs/product/07-MODEL-REGISTRY.md:
+    # `... as blockers when both had been` / `closed on 2026-09-14` reads as
+    # live work on the first line alone, which is a FALSE gating P1 saying the
+    # opposite of the sentence. That one appeared the moment the cue
+    # vocabulary was widened to match the Node twin, which is how it was
+    # found -- the findings diff, not a test.
+    #
+    # `_paragraph_blocks` is the same window the code-span scan uses, so the
+    # two cannot disagree about where inline content ends. Offsets map back: a
+    # citation found on line `i` at column `c` is read at `para_start[i] + c`
+    # in the joined text, and the finding is still reported against line `i`.
+    para_text: dict[int, str] = {}
+    para_start: dict[int, int] = {}
+    for lo, hi in _paragraph_blocks(lines, fenced):
+        joined = ""
+        for i in range(lo, hi + 1):
+            if i > lo:
+                joined += " "
+            para_start[i] = len(joined)
+            joined += cue_of[i]
+        for i in range(lo, hi + 1):
+            para_text[i] = joined
     for n, line in enumerate(lines, 1):
         if n - 1 in fenced:
             continue
@@ -4417,9 +4516,7 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # And a Markdown link TITLE, which renders as a tooltip rather than
         # as body text -- see link_meta_spans. The DESTINATION stays visible,
         # because an issue URL written there is one a reader can follow.
-        hidden = (commented.get(n - 1, []) + code_spans(line)
-                  + wrapped.get(n - 1, []) + attr_spans.get(n - 1, [])
-                  + title_spans.get(n - 1, []))
+        hidden = hidden_of[n - 1]
         # The cue precheck reads the line with those spans BLANKED, and that
         # ordering is the fix. Masking only the citation is not enough: a
         # hidden span can supply the CUE for a different, visible citation --
@@ -4429,8 +4526,20 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
         # as a live blocker and could fail --check.
         # Spaces, not deletion: every span offset computed below is an offset
         # into this line, so the masked copy has to be the same length.
-        visible = mask_spans(line, hidden)
-        if not has_blocking_cue(visible):
+        visible = visible_of[n - 1]
+        # The cue is what a READER sees, so markup is reduced before any cue
+        # is read: emphasis, a link's brackets and destination, and an HTML
+        # tag. Same length, so every offset below still indexes this copy the
+        # way it indexes `visible`; the citation passes keep reading the
+        # unmarked line, which is what keeps a URL written as a destination
+        # findable.
+        visible_cue = cue_of[n - 1]
+        # The joined paragraph, and this line's offset into it. A line outside
+        # any paragraph block falls back to itself, which is what this scan
+        # did everywhere before.
+        para_cue = para_text.get(n - 1, visible_cue)
+        para_at = para_start.get(n - 1, 0)
+        if not has_blocking_cue(para_cue):
             continue
         # URL spans, so a shorthand scan does not re-read the `/issues/940`
         # inside one it has already reported.
@@ -4494,9 +4603,11 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # renders as live work, passed the precheck, and was then
             # suppressed by a phrase no reader can see. Offsets are
             # preserved by the mask, so the same spans index both.
-            paren = enclosing_parenthetical(visible, m.start(), m.end())
-            clause = (visible[paren[0]:paren[1]] if paren
-                      else citation_clause(visible, m.start(), m.end()))
+            paren = enclosing_parenthetical(
+                para_cue, para_at + m.start(), para_at + m.end())
+            clause = (para_cue[paren[0]:paren[1]] if paren
+                      else citation_clause(
+                          para_cue, para_at + m.start(), para_at + m.end()))
             # The same two cue families cites_live_work reads, against the
             # clause chosen above -- and with NO line-level fallback, which is
             # the stricter half of the rule.
@@ -4514,8 +4625,10 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                 skipped_end = m.end()
                 continue
             num = int(m.group("num"))
-            c_lo, c_hi = clause_bounds(line, m.start(), m.end())
-            if any(n == num and c_lo <= at < c_hi for at, n in url_here):
+            c_lo, c_hi = clause_bounds(
+                para_cue, para_at + m.start(), para_at + m.end())
+            if any(n == num and c_lo <= para_at + at < c_hi
+                   for at, n in url_here):
                 continue
             st = states.get(THIS_REPO, {}).get(num)
             if st is None or st["state"] != "closed":
@@ -4548,13 +4661,16 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             if any(lo <= q_start < hi for lo, hi in hidden + url_spans):
                 continue
             repo, num = m.group("repo").lower(), int(m.group("num"))
-            c_lo, c_hi = clause_bounds(line, q_start, q_end)
-            if any(u_repo == repo and u_num == num and c_lo <= u_at < c_hi
+            c_lo, c_hi = clause_bounds(
+                para_cue, para_at + q_start, para_at + q_end)
+            if any(u_repo == repo and u_num == num
+                   and c_lo <= para_at + u_at < c_hi
                    for u_at, u_repo, u_num in qual_here):
                 continue
             # `visible`, not `line`, for the reason the URL pass below reads
             # the mask: a HIDDEN cue is not evidence.
-            if not cites_live_work(visible, q_start, q_end):
+            if not cites_live_work(para_cue, para_at + q_start, para_at + q_end,
+                                   visible_cue):
                 continue
             st = states.get(repo, {}).get(num)
             label = f"{repo}#{num}"
@@ -4595,11 +4711,14 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                 continue
             repo, num = hit.group("repo").lower(), int(hit.group("num"))
             # One citation, however many spellings of it share the clause.
-            c_lo, c_hi = clause_bounds(line, r_start, r_end)
-            if any(u_repo == repo and u_num == num and c_lo <= u_at2 < c_hi
+            c_lo, c_hi = clause_bounds(
+                para_cue, para_at + r_start, para_at + r_end)
+            if any(u_repo == repo and u_num == num
+                   and c_lo <= para_at + u_at2 < c_hi
                    for u_at2, u_repo, u_num in qual_here):
                 continue
-            if not cites_live_work(visible, r_start, r_end):
+            if not cites_live_work(para_cue, para_at + r_start, para_at + r_end,
+                                   visible_cue):
                 continue
             is_pr = hit.group("kind").lower() == "pull"
             # A `/pull/N` citation backed by an ISSUE record names no pull
@@ -4642,7 +4761,8 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # passed the precheck, and was then suppressed by a phrase no
             # reader can see. The mask preserves offsets, so the same spans
             # index both strings.
-            if not cites_live_work(visible, m_start, m_end):
+            if not cites_live_work(para_cue, para_at + m_start, para_at + m_end,
+                                   visible_cue):
                 continue
             # A pull request cited as a blocker is live work too. `/pull/`
             # used to be skipped outright, so a document calling PR #937 the
@@ -4870,8 +4990,21 @@ def _paragraph_blocks(lines: list[str], fenced: set[int]) -> list[tuple[int, int
         # joining them paired the brackets into a link no reader can click.
         # The same grouping feeds code_span_lines, where delimiters in
         # separate containers were masking live content between them.
+        # DEEPER only. A line at a SHALLOWER quote depth than the open
+        # paragraph is a LAZY CONTINUATION, not a container transition:
+        # CommonMark lets a paragraph inside a blockquote continue on a line
+        # that omits the `>`, so `> sample \`` over `[x](missing.md) \`` is
+        # one paragraph holding one multi-line code span. Splitting them put
+        # the two delimiters in separate windows, `code_span_lines` found no
+        # span, and the audit emitted a gating dead-link finding for literal
+        # code. Every line that could START a block rather than continue one
+        # has already been handled above -- blank, fenced, heading, setext
+        # underline, thematic break -- and a list marker is tested beside
+        # this, so what reaches here at a lower depth can only be a
+        # continuation. Codex filed it on the Node twin (solyra#69); the same
+        # probe showed it live here.
         depth = quote_depth(line)
-        if start is not None and (depth != open_depth
+        if start is not None and (depth > open_depth
                                   or _LIST_MARKER_RE.match(bare)):
             flush(i - 1)
         if start is None:

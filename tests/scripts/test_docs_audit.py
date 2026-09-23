@@ -7204,6 +7204,91 @@ def test_a_raw_html_block_ends_with_its_blockquote():
     assert m.raw_html_block_lines(["<pre>", "a", "", "b", "</pre>"]) == {0, 1, 2, 3, 4}
 
 
+def test_a_blocker_verdict_is_read_from_the_rendered_paragraph():
+    """A soft break renders as a space, so a paragraph is one sentence however
+    it is wrapped. The scan read PHYSICAL lines, which loses a verdict in both
+    directions: `Blocked by` over the URL found no cue at all, and
+    `... as blockers when both had been` over `closed on ...` found the
+    blocking half without the settled half -- a FALSE gating P1 saying the
+    opposite of the sentence. Codex filed the first; the second is the same
+    defect and the same fix, and it appeared in the findings diff the moment
+    the cue vocabulary was widened."""
+    states = {"stocks": {n: {"state": "closed", "reason": "completed",
+                             "kind": "ISSUE"} for n in (1, 8, 825, 900)}}
+    url = lambda n: f"https://github.com/TeneikaAskew/stocks/issues/{n}"
+    ref = lambda text: [f["ref"] for f in
+                        m.check_closed_issues("d.md", text, states)]
+    assert ref(f"This work is blocked\nby {url(8)}\n") == ["stocks#8"]
+    # The settled direction, verbatim from docs/product/07-MODEL-REGISTRY.md,
+    # which is where the regression showed up.
+    wrapped = (
+        "**Issue-state caveat.** Blocking-issue links are a snapshot, and a stale one\n"
+        f"is worse than none: on 2026-09-15 this registry still cited [#825]({url(825)})\n"
+        f"and [#900]({url(900)}) as blockers when both had been\n"
+        "closed on 2026-09-14, so MODEL-BRIEF-001 appeared blocked.\n")
+    assert ref(wrapped) == []
+    # A paragraph BOUNDARY still ends it, which is what keeps a cue from
+    # reaching across unrelated prose.
+    assert ref(f"This work is blocked\n\nby {url(8)}\n") == []
+    assert ref(f"This work is blocked\n# H\nby {url(8)}\n") == []
+    assert ref(f"This work is blocked\n```\nby {url(8)}\n```\n") == []
+    # Two lines with no cue between them are still two lines with no cue, and
+    # the single-line spellings are unchanged.
+    assert ref(f"Some prose here\nabout {url(8)}\n") == []
+    assert ref(f"Still open: {url(1)}\n") == ["stocks#1"]
+    assert ref(f"No longer open: {url(1)}\n") == []
+    # The negation is read across the break too, because the joined text is
+    # what the classifier sees.
+    assert ref(f"This work is not blocked\nby {url(8)}\n") == []
+    # A SETTLED clause wins over a blocking word sharing it, and the NOUN
+    # forms count -- `closure` and `resolution` beside `closed` and
+    # `resolved`, the same way the blocking side carries `blocker` beside
+    # `blocking`. Without them `... is tracked as outstanding work, not as
+    # part of the closure` read as live work once the paragraph scan could
+    # see the `outstanding` six lines above the citation.
+    assert ref(f"Outstanding work, not part of the closure: {url(1)}\n") == []
+    assert ref(f"Blocked by {url(1)}, now resolved\n") == []
+    # A NEGATED settled cue settles nothing: the same negator predicate the
+    # blocking side uses.
+    assert ref(f"Still open, not resolved: {url(1)}\n") == ["stocks#1"]
+
+
+def test_a_blocker_cue_is_read_through_inline_markup():
+    """A cue is what a READER sees. `is still **open**`, `Still [open](x.md):`
+    and `Still <strong>open</strong>:` all render as prose plainly calling the
+    citation live, and the classifier saw the delimiters between the words and
+    found no cue at all -- so a closed issue vanished from the audit entirely,
+    the direction that hides findings. Codex filed the link and HTML halves on
+    the Node twin (solyra#69); probing showed the EMPHASIS half missing here
+    too, along with `blocked on` and the noun forms."""
+    states = {"stocks": {1: {"state": "closed", "reason": "completed",
+                             "kind": "ISSUE"}}}
+    url = "https://github.com/TeneikaAskew/stocks/issues/1"
+    ref = lambda line: [f["ref"] for f in
+                        m.check_closed_issues("d.md", f"{line}\n", states)]
+    assert ref(f"Still **open**: {url}") == ["stocks#1"]
+    assert ref(f"Still [open](README.md): {url}") == ["stocks#1"]
+    assert ref(f"Still <strong>open</strong>: {url}") == ["stocks#1"]
+    assert ref(f"Still [open][i]: {url}") == ["stocks#1"]
+    # The vocabulary the Node twin carries and this one did not.
+    assert ref(f"Blocked on {url}") == ["stocks#1"]
+    assert ref(f"A blocker remains: {url}") == ["stocks#1"]
+    # The plain spelling and the NEGATED one both still behave: this widens
+    # what counts as the cue TEXT, not what counts as a cue.
+    assert ref(f"Still open: {url}") == ["stocks#1"]
+    assert ref(f"No longer [open](README.md): {url}") == []
+    assert ref(f"nonblocking by design: {url}") == []
+    # A URL written as a link DESTINATION is still found: the citation passes
+    # read the unmarked line, so blanking the destination for the cue test
+    # costs nothing.
+    assert ref(f"Blocked by [issue]({url})") == ["stocks#1"]
+    # The reduction preserves LENGTH, because every offset the caller holds is
+    # an offset into this string.
+    for line in (f"Still **open**: {url}", f"Still [open](README.md): {url}",
+                 f"Still <strong>open</strong>: {url}"):
+        assert len(m.strip_inline_markup(line)) == len(line)
+
+
 def test_inline_content_ends_at_a_container_boundary():
     """A new list item opens its own paragraph, and so does a change of
     blockquote depth. Grouping them into one block paired delimiters across
@@ -7215,8 +7300,20 @@ def test_inline_content_ends_at_a_container_boundary():
     # The masking direction: a backtick before the item no longer swallows it.
     out = m.check_dead_links("d.md", "a ` b\n- [x](missing.md) `\n", {"d.md"})
     assert [f["check"] for f in out] == ["dead-link"]
-    # A quote-depth change splits too.
-    assert m._paragraph_blocks(["> a ` b", "c ` d"], set()) == [(0, 0), (1, 1)]
+    # A DEEPER quote is a real transition: a blockquote may interrupt a
+    # paragraph, so these are two blocks and the delimiters must not pair.
+    assert m._paragraph_blocks(["a ` b", "> c ` d"], set()) == [(0, 0), (1, 1)]
+    assert [f["check"] for f in m.check_dead_links(
+        "d.md", "a `\n> [x](missing.md) `\n", {"d.md"})] == ["dead-link"]
+    # A SHALLOWER one is not. This assertion read `[(0, 0), (1, 1)]` until
+    # Codex filed it on the Node twin (solyra#69): CommonMark's laziness rule
+    # lets a paragraph inside a blockquote continue on a line that omits the
+    # `>`, so these two lines are ONE paragraph and the backticks are one
+    # span. The old grouping put them in separate windows, `code_span_lines`
+    # found no span, and literal code produced a gating dead-link finding.
+    assert m._paragraph_blocks(["> a ` b", "c ` d"], set()) == [(0, 1)]
+    assert m.check_dead_links(
+        "d.md", "> sample `\n[x](missing.md) `\n", {"d.md"}) == []
     # A CONTINUATION of an item carries no marker and stays in its block.
     assert m._paragraph_blocks(["- one", "  two"], set()) == [(0, 1)]
 
