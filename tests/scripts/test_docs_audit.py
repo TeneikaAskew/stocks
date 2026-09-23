@@ -6633,6 +6633,49 @@ def test_the_github_host_boundary_belongs_to_the_url_scheme():
     assert ref("Blocked by github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
 
 
+def test_a_link_label_nests_to_any_depth():
+    """The opening pattern handled ONE level of nested brackets, which covered
+    ``[`ANALYST_PROMPTS["gamma"]`](...)`` and nothing deeper -- so
+    `[a [b [c]]](missing.md)`, a link CommonMark renders, did not match at all
+    and its deleted target passed the audit clean. A depth limit is the kind
+    of number that is wrong again the moment someone writes one more bracket,
+    so the label is walked rather than matched. Codex filed it."""
+    check = lambda t: [f["check"] for f in m.check_dead_links("d.md", t, {"d.md"})]
+    assert check("[a [b [c]]](missing.md)\n") == ["dead-link"]
+    assert check("[a [b]](missing.md)\n") == ["dead-link"]
+    assert check('[`P["g"]`](missing.md)\n') == ["dead-link"]
+    assert check("[x](missing.md)\n") == ["dead-link"]
+    assert check("[a \\] b](missing.md)\n") == ["dead-link"]
+    # An UNBALANCED `[` is not an opening, and the walk resumes one character
+    # past it -- so the inner `[b](missing.md)`, which is the link CommonMark
+    # renders here, is still found.
+    assert check("[a [b](missing.md)\n") == ["dead-link"]
+    # A label with no `(` after it is not a link at all, or every bracketed
+    # phrase in the corpus becomes a citation.
+    assert check("[a b] (missing.md)\n") == []
+    # And the walk does not stop after the first link.
+    assert check("[x](missing.md) and [y](gone.md)\n") == ["dead-link", "dead-link"]
+
+
+def test_a_destination_escape_is_ascii_punctuation_only():
+    """`\\.` consumed a backslash-space, so `[x](missing\\ file.md)` matched as
+    one destination -- but CommonMark escapes only ASCII punctuation, the bare
+    destination ends at that space, and the whole spelling renders as literal
+    text. The audit emitted a gating dead-link finding for prose no reader can
+    click. Codex filed it."""
+    tracked = {"d.md", "a#b.md"}
+    check = lambda t: [f["check"] for f in m.check_dead_links("d.md", t, tracked)]
+    assert check("[x](missing\\ file.md)\n") == []
+    # The escapes that ARE punctuation still work, and are what the atom was
+    # widened for in the first place: an escaped `#` stays in the path rather
+    # than splitting off a fragment.
+    assert check("[x](a\\#b.md)\n") == []
+    assert check("[x](missing\\(1\\).md)\n") == ["dead-link"]
+    # A space inside `<...>` is still a space, which is why an author reaches
+    # for that form.
+    assert check("[x](<missing file.md>)\n") == ["dead-link"]
+
+
 def test_a_comment_opener_inside_a_raw_text_block_opens_nothing():
     """A `<!--` inside `<script>` or `<pre>` is DISPLAYED, not parsed. Reading
     one as an opener masked the closing tag and every line after it, so a live

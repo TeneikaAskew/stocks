@@ -344,8 +344,54 @@ _COORDINATOR_RE = re.compile(r"[\s,;/&]*(?:and|or)?[\s,;/&]*")
 # and deleting that target reported clean.
 # An ESCAPED bracket is label TEXT: `[a \] b](x.md)` renders a link and the
 # structural class read the `]` as the label's end.
-_MD_LINK_OPEN_RE = re.compile(
-    r"\[(?:\\.|[^\\\[\]]|\[(?:\\.|[^\\\[\]])*\])*\]\(\s*")
+# A SCAN, not a fixed nesting depth. The pattern here handled one level of
+# nested brackets, which covered ``[`ANALYST_PROMPTS["gamma"]`](...)`` and
+# nothing deeper -- so `[a [b [c]]](missing.md)`, a link CommonMark renders,
+# did not match AT ALL and its deleted target passed the audit clean. The
+# hiding direction, and a depth limit is the kind of number that is wrong
+# again the moment someone writes one more bracket. Codex filed it.
+_MD_LINK_PAREN_RE = re.compile(r"\(\s*")
+
+
+def _md_link_open(text: str, pos: int, hi: int) -> tuple[int, int] | None:
+    """The next `[label](` in `text[pos:hi]`, as (start, end of the `(`).
+
+    The label is walked with a depth counter rather than matched, so nesting
+    has no limit to get wrong; a backslash escapes the character after it,
+    there as everywhere. An unbalanced or unfollowed `[` is not an opening,
+    and the walk resumes one character past it -- the same restart `md_links`
+    already makes when a candidate fails to complete.
+    """
+    i = pos
+    while i < hi:
+        start = text.find("[", i, hi)
+        if start < 0 or start >= hi:
+            return None
+        depth = 0
+        k = start
+        close = -1
+        while k < hi:
+            ch = text[k]
+            if ch == "\\":
+                k += 2
+                continue
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    close = k
+                    break
+            k += 1
+        if close < 0:
+            i = start + 1
+            continue
+        paren = _MD_LINK_PAREN_RE.match(text, close + 1, hi)
+        if paren is None:
+            i = start + 1
+            continue
+        return start, paren.end()
+    return None
 # `<...>` is a distinct destination form: it is how CommonMark writes a
 # destination containing a space -- `[g](<docs/removed guide.md>)` -- and the
 # bare form rejects whitespace, so such a link did not match at all and a
@@ -367,7 +413,15 @@ _MD_LINK_ANGLE_RE = re.compile(
 # split into the path `foo&` and the fragment `38;bar.md`, reporting a tracked
 # file dead. An ESCAPED hash is part of the PATH for the same reason:
 # `[x](a\#b.md)` resolves to the tracked `a#b.md`.
-_MD_DEST_ATOM_RE = re.compile(r"&\#?[0-9A-Za-z]{1,32};|\\.|[^()#\s]")
+# The escape is restricted to ASCII PUNCTUATION, which is the only thing
+# CommonMark lets a backslash escape. `\\.` consumed a backslash-space, so
+# `[x](missing\\ file.md)` matched as one destination -- but CommonMark does
+# not escape the space there, the bare destination ends at it, and the whole
+# spelling renders as literal text. The audit emitted a gating dead-link
+# finding for prose no reader can click. Codex filed it.
+_ASCII_PUNCT = r"!-/:-@\[-`{-~"
+_MD_DEST_ATOM_RE = re.compile(
+    rf"&\#?[0-9A-Za-z]{{1,32}};|\\[{_ASCII_PUNCT}]|[^()#\s]")
 # A TITLE may contain its own delimiter when the delimiter is escaped:
 # `[x](missing.md "a \" quote")` is a valid link. Stopping at the escaped
 # quote left the whole candidate unmatched, so the missing destination passed
@@ -441,12 +495,13 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
     hi = len(text) if hi is None else hi
     pos = lo
     while pos < hi:
-        opening = _MD_LINK_OPEN_RE.search(text, pos, hi)
+        opening = _md_link_open(text, pos, hi)
         if opening is None:
             return
+        open_start, open_end = opening
         groups: dict[str, str | None] = {
             "btarget": None, "bfrag": None, "target": None, "frag": None}
-        at = opening.end()
+        at = open_end
         dest_start = at
         angle = _MD_LINK_ANGLE_RE.match(text, at, hi)
         if angle is not None:
@@ -465,9 +520,9 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
         dest_end = at
         tail = _MD_LINK_TAIL_RE.match(text, at, hi)
         if tail is None:
-            pos = opening.start() + 1
+            pos = open_start + 1
             continue
-        yield _LinkMatch(text, opening.start(), tail.end(), groups,
+        yield _LinkMatch(text, open_start, tail.end(), groups,
                          dest_start, dest_end)
         pos = tail.end()
 # Reference-style Markdown, both halves. The definition's label may not open
