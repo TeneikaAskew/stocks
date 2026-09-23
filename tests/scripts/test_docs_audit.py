@@ -7204,6 +7204,53 @@ def test_a_raw_html_block_ends_with_its_blockquote():
     assert m.raw_html_block_lines(["<pre>", "a", "", "b", "</pre>"]) == {0, 1, 2, 3, 4}
 
 
+def test_a_heading_inside_a_list_item_is_still_a_block_boundary():
+    """CommonMark removes the list marker before parsing the block inside the
+    item, so `- # Heading` opens an ATX heading. The prefix hid it from the
+    boundary test, an unmatched backtick in that heading paired with one in
+    the paragraph below, and `code_span_lines` masked a live `[x](missing.md)`
+    between them out of the audit -- the hiding direction. Codex filed it."""
+    det = lambda text: [f["detail"] for f in
+                        m.check_dead_links("d.md", text, {"d.md"})]
+    assert m._paragraph_blocks(["- # H `", "  [x](missing.md) `"], set()) == \
+        [(0, 0), (1, 1)]
+    assert det("- # Heading `\n  [x](missing.md) `\n") == [
+        "relative link -> missing.md"]
+    # A thematic break inside an item is a block of its own for the same
+    # reason, and the unprefixed spellings are unchanged.
+    assert det("- ---\n  [x](missing.md)\n") == ["relative link -> missing.md"]
+    assert det("# Heading `\n[x](missing.md) `\n") == [
+        "relative link -> missing.md"]
+    # The marker is stripped for the BLOCK tests only. The container
+    # transition still sees it, so two items are still two paragraphs and
+    # `[open` / `label](missing.md)` is not one link.
+    assert det("- [open\n- label](missing.md)\n") == []
+    assert m._paragraph_blocks(["- one", "  two"], set()) == [(0, 1)]
+
+
+def test_indented_code_opens_after_a_block_that_is_not_a_paragraph():
+    """CommonMark forbids indented code interrupting a PARAGRAPH, and nothing
+    else. `# Example` followed straight by a four-space sample IS a code block,
+    but requiring a blank line after every block type left the sample unmasked
+    and the dead-link check emitted a gating finding over a rendered example.
+    Codex filed it; the Node twin (solyra#69) has had the rule since it was
+    raised there, which is how the gap here was found."""
+    det = lambda text: [f["detail"] for f in
+                        m.check_dead_links("d.md", text, {"d.md"})]
+    assert det("# Example\n    [x](missing.md)\n") == []
+    assert det("Title\n=====\n    [x](missing.md)\n") == []
+    # A PARAGRAPH is the case the blank-line rule exists for, and it still
+    # holds: four spaces under prose is a lazy continuation, not code.
+    assert det("para\n    [x](missing.md)\n") == ["relative link -> missing.md"]
+    # The spellings that already worked.
+    assert det("para\n\n    [x](missing.md)\n") == []
+    assert det("    [x](missing.md)\n") == []
+    # And the heading state does not persist past the line after it: two
+    # lines below a heading, the paragraph rule is back.
+    assert det("# Example\n\npara\n    [x](missing.md)\n") == [
+        "relative link -> missing.md"]
+
+
 def test_a_blocker_verdict_is_read_from_the_rendered_paragraph():
     """A soft break renders as a space, so a paragraph is one sentence however
     it is wrapped. The scan read PHYSICAL lines, which loses a verdict in both

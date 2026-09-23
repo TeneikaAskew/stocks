@@ -2854,6 +2854,13 @@ def indented_code_lines(lines: list[str]) -> set[int]:
     out: set[int] = set()
     list_indent = 0
     blank_seen = True
+    # Only a PARAGRAPH cannot be interrupted by indented code. After a
+    # completed block no blank line is needed, so `# Example` followed
+    # directly by a four-space sample IS code -- and requiring the blank left
+    # the sample unmasked, so the link and blocker checks emitted gating
+    # findings from a rendered example. Codex filed it; the Node twin
+    # (solyra#69) has carried this since it was raised there.
+    last_was_heading = False
     floor = 4
     in_code = False
     for i, raw in enumerate(lines):
@@ -2876,7 +2883,7 @@ def indented_code_lines(lines: list[str]) -> set[int]:
             out.add(i)
             continue
         in_code = False
-        if indent >= floor and blank_seen:
+        if indent >= floor and (blank_seen or last_was_heading):
             in_code = True
             out.add(i)
         else:
@@ -2903,6 +2910,11 @@ def indented_code_lines(lines: list[str]) -> set[int]:
                 list_indent = 0
                 floor = 4
         blank_seen = False
+        # A HEADING is a block of its own, ATX or Setext, so the next line
+        # starts a new block whether or not a blank separates them. The same
+        # pair of patterns the Node twin tests.
+        last_was_heading = bool(re.match(r"^ {0,3}#{1,6}\s", line)
+                                or re.match(r"^ {0,3}(?:=+|-+)\s*$", line))
     return out
 
 
@@ -4980,7 +4992,17 @@ def _paragraph_blocks(lines: list[str], fenced: set[int]) -> list[tuple[int, int
                 and is_setext_underline(lines, i, fenced)):
             flush(i)
             continue
-        if _ATX_HEADING_RE.match(bare) or _THEMATIC_BREAK_RE.match(bare):
+        # A LIST MARKER is a container prefix too, and CommonMark removes it
+        # before parsing the block inside the item: `- # Heading` opens an ATX
+        # heading as the item's first block. The prefix hid it, so an
+        # unmatched backtick in that heading paired with one in the paragraph
+        # below and `code_span_lines` masked a live `[x](missing.md)` between
+        # them out of the audit -- the hiding direction. The marker is
+        # stripped for the BLOCK tests only: the container-transition test
+        # below has to keep seeing it, since a new item is a new paragraph.
+        # Codex filed it.
+        inner = _LIST_MARKER_RE.sub("", bare, count=1)
+        if _ATX_HEADING_RE.match(inner) or _THEMATIC_BREAK_RE.match(inner):
             flush(i - 1)
             blocks.append((i, i))
             continue
