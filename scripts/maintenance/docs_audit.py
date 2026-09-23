@@ -1320,7 +1320,14 @@ def html_anchors(lines: list[str]) -> set[str]:
     One scan over the joined document, so an element whose `id` sits on a
     LATER physical line is read as the one tag it is.
     """
-    literal = (raw_html_block_lines(lines, raw_text_only=True)
+    # The raw-text OPENERS are held back from the whole-line mask: the opening
+    # tag is rendered, so `<pre id="sample">code</pre>` offers `sample` while
+    # only `code` is literal -- and masking the whole line reported a working
+    # link to `#sample` as a gating dead anchor. Codex filed it. The content
+    # after the tag is still masked below, so a `<pre><a id="fake"></a></pre>`
+    # written on one line still invents nothing.
+    raw_open: dict[int, int] = {}
+    literal = (raw_html_block_lines(lines, raw_text_only=True, openers=raw_open)
                | fenced_lines(lines) | indented_code_lines(lines)
                | front_matter_lines(lines))
     wrapped = code_span_lines(lines)
@@ -1332,8 +1339,17 @@ def html_anchors(lines: list[str]) -> set[str]:
     # renders inside a URL or a `title` attribute, never as an element, and
     # reading it as one invented an anchor a link could then resolve against.
     link_meta = link_meta_spans(lines, title_only=False)
+    def _literal_span(i: int, line: str) -> list[tuple[int, int]]:
+        start = raw_open.get(i)
+        if start is None:
+            return [(0, len(line))]
+        tag = _TAG_OPEN_RE.match(line, start)
+        # An unparseable opener offers no id anyway, so the whole tag is
+        # masked with its contents; text BEFORE it is live prose either way.
+        return [(start if tag is None else tag.end(), len(line))]
+
     joined = "\n".join(
-        mask_spans(line, [(0, len(line))]) if i in literal
+        mask_spans(line, _literal_span(i, line)) if i in literal
         else mask_spans(line, code_spans(line) + wrapped.get(i, [])
                         + comments.get(i, []) + link_meta.get(i, []))
         for i, line in enumerate(lines))
@@ -2888,7 +2904,8 @@ _HTML_RAW_DELIMITED = (
 
 
 def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
-                         fenced: frozenset[int] | set[int] | None = None) -> set[int]:
+                         fenced: frozenset[int] | set[int] | None = None,
+                         openers: dict[int, int] | None = None) -> set[int]:
     """Indices inside a raw HTML block, whose Markdown renders literally.
 
     A `# Heading` inside `<pre>` or `<div>` is TEXT, not a heading, and
@@ -2901,6 +2918,15 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
     comment scan learns about raw blocks. An HTML comment is itself a raw-text
     block, so tracking it here costs nothing. Ported from the Node twin
     (solyra#69).
+
+    `openers`, when given, receives `line index -> column the opening tag
+    STARTS at` for each raw-TEXT block (`<pre>`, `<script>`, ...). The tag
+    itself is RENDERED -- `<pre id="sample">` offers the id `sample` -- while
+    everything after it on that line is displayed literally, and a caller
+    masking whole lines therefore threw the id away with the content. The
+    START rather than the end, because where the tag ENDS is a question the
+    tag scanner already answers and this scan should not answer a second way.
+    Only this scan knows where a block opens, so that much is recorded here.
     """
     out: set[int] = set()
     # `fenced_lines` passes its PROVISIONAL set, computed without HTML, and
@@ -3024,6 +3050,11 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
                 continue
             open_tag = m.group(1).lower()
             out.add(i)
+            if openers is not None:
+                # In RAW coordinates. `line` has had its blockquote and list
+                # prefixes stripped, and both are prefixes, so the difference
+                # in length is the offset the caller needs.
+                openers[i] = (len(raw) - len(line)) + m.start()
             # A one-line block: `<pre>...</pre>` closes on the line it opened.
             if re.search(rf"</{open_tag}\s*>", line[m.end():], re.I):
                 open_tag = None
@@ -4704,6 +4735,30 @@ def mask_spans(line: str, spans: list[tuple[int, int]]) -> str:
     return "".join(out)
 
 
+def _html_tag_spans(text: str) -> list[tuple[int, int]]:
+    """Offsets of the COMPLETE HTML tags in `text`, escaped openers excluded.
+
+    A backtick inside a tag is part of that tag, not a code-span delimiter:
+    CommonMark gives code spans, raw HTML and autolinks equal precedence and
+    lets whichever BEGINS FIRST win. `_TAG_OPEN_RE` carries `re.S`, so this
+    answers for a joined document as well as for one line.
+    """
+    if "<" not in text:
+        return []
+    return [(mm.start(), mm.end()) for mm in _TAG_OPEN_RE.finditer(text)
+            if not is_escaped(text, mm.start())]
+
+
+def _tag_covering(tags: list[tuple[int, int]], start: int, pos: int) -> int | None:
+    """End of the tag that owns a delimiter run at `start`, or None.
+
+    Only a tag that begins at or after `pos` counts, because a tag opening
+    inside an already-running span is literal text -- which is the same
+    "begins first wins" rule read from the other side.
+    """
+    return next((hi for lo, hi in tags if pos <= lo <= start < hi), None)
+
+
 def code_spans(line: str) -> list[tuple[int, int]]:
     """Offset ranges of inline code spans, CommonMark's backtick-run rule.
 
@@ -4722,6 +4777,13 @@ def code_spans(line: str) -> list[tuple[int, int]]:
     # opener, the pair was then discarded, and the genuine span went unmasked
     # -- so the example link inside it was reported dead. Restarting the search
     # one character past a rejected opener is what lets the real one pair.
+    #
+    # A backtick inside a COMPLETE HTML tag is part of that tag, not a
+    # delimiter. In `<span title="`"> [x](missing.md) ` tail` the tag begins
+    # at column 0 and owns its quoted backtick -- while pairing it with the
+    # trailing one masked a live link out of the audit and the missing target
+    # passed clean. Codex filed it.
+    tags = _html_tag_spans(line)
     out: list[tuple[int, int]] = []
     pos = 0
     while pos < len(line):
@@ -4730,6 +4792,10 @@ def code_spans(line: str) -> list[tuple[int, int]]:
             break
         if is_escaped(line, mm.start()):
             pos = mm.start() + 1
+            continue
+        covering = _tag_covering(tags, mm.start(), pos)
+        if covering is not None:
+            pos = covering
             continue
         out.append((mm.start(), mm.end()))
         pos = mm.end()
@@ -4873,6 +4939,11 @@ def code_span_lines(lines: list[str],
         starts.append(at)
         at += len(line) + 1
     text = "\n".join(lines)
+    # The SAME tag rule `code_spans` applies, over the joined document rather
+    # than one line. Two scanners for one rule is how they drift, and they had
+    # already drifted here: fixing only the per-line one left the attribute
+    # backtick pairing across lines and the live link masked anyway.
+    tags = _html_tag_spans(text)
     out: dict[int, list[tuple[int, int]]] = {}
     for b_lo, b_hi in blocks:
         # The scan WINDOW is the block, so a delimiter can only pair with one
@@ -4892,6 +4963,10 @@ def code_span_lines(lines: list[str],
             # rejected match must not consume the real opener.
             if is_escaped(text, m.start()):
                 pos = m.start() + 1
+                continue
+            covering = _tag_covering(tags, m.start(), pos)
+            if covering is not None:
+                pos = covering
                 continue
             lo, hi = m.start(), m.end()
             for i in range(b_lo, b_hi):

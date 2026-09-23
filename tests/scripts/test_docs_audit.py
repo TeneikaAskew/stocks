@@ -7539,6 +7539,61 @@ def test_the_document_h1_is_not_one_displayed_inside_raw_html():
     assert m.h1_index(["# Real", "", "body"]) == 0
 
 
+def test_a_backtick_inside_an_html_tag_is_not_a_delimiter():
+    """CommonMark gives code spans, raw HTML and autolinks equal precedence and
+    lets whichever BEGINS FIRST win, so in `<span title="`">` the tag owns its
+    quoted backtick. Pairing it with a later one masked a live
+    `[x](missing.md)` out of the audit and the missing target passed clean --
+    the hiding direction. Codex filed it."""
+    line = 'see <span title="`"> [x](missing.md) ` tail`'
+    det = lambda t: [f["detail"] for f in m.check_dead_links("d.md", t, {"d.md"})]
+    assert m.code_spans(line) == [(37, 44)]
+    assert det(f"{line}\n") == ["relative link -> missing.md"]
+    # The WRAPPED scanner is a second implementation of this rule and had
+    # drifted from the first: fixing only the per-line one left the attribute
+    # backtick pairing ACROSS lines and the link masked anyway. Both now ask
+    # one helper, and the assertion is on the multi-line spelling that only
+    # that scanner sees.
+    wrapped = ['see <span title="`">', "[x](missing.md) ` tail`"]
+    assert m.code_span_lines(wrapped) == {1: [(16, 23)]}
+    assert det("\n".join(wrapped) + "\n") == ["relative link -> missing.md"]
+    # A tag that opens INSIDE a running span is literal text, which is the
+    # same rule read from the other side -- so the span still wins here.
+    assert m.code_spans('`<span title="`"> [x](missing.md)`') == [(0, 15)]
+    # And an ordinary span, an ESCAPED tag, and a multi-backtick run are all
+    # unchanged: this narrows the delimiter scan by exactly one construct.
+    assert m.code_spans("a `code` b") == [(2, 8)]
+    assert m.code_spans("``a ` b``") == [(0, 9)]
+    assert det('see \\<span title="`"> [x](missing.md) ` tail`\n') == []
+
+
+def test_a_raw_text_block_still_offers_the_id_on_its_own_opening_tag():
+    """`<pre id="sample">code</pre>` DISPLAYS `code` and RENDERS the `<pre>`,
+    so `#sample` is a destination the page offers. The raw-text exclusion
+    masked the whole line, tag included, and the working link was reported as
+    a gating dead anchor -- the false direction. Codex filed it."""
+    anchors = lambda t: sorted(m.heading_anchors(t))
+    assert anchors('# T\n\n<pre id="sample">code</pre>\n') == ["sample", "t"]
+    # Every raw-text kind, and the multi-line spelling where the content is
+    # not even on the tag's line.
+    assert anchors('# T\n\n<pre id="sample">\ncode\n</pre>\n') == ["sample", "t"]
+    assert anchors('# T\n\n<script id="s">var a = 1;</script>\n') == ["s", "t"]
+    # Through a container, because the opener column is recorded against the
+    # RAW line while the scan reads the stripped one.
+    assert anchors('# T\n\n> <pre id="q">x</pre>\n') == ["q", "t"]
+    assert anchors('# T\n\n- <pre id="l">x</pre>\n') == ["l", "t"]
+    # The CONTENTS are still literal, which is the rule this exclusion exists
+    # for -- including on the opener's own line, where only the text after the
+    # tag is masked. An invented anchor is the worse half: a link to one
+    # PASSES.
+    assert anchors('# T\n\n<pre>\n<a id="fake"></a>\n</pre>\n') == ["t"]
+    assert anchors('# T\n\n<pre><a id="fake"></a></pre>\n') == ["t"]
+    assert anchors('# T\n\n<pre id="real"><a id="fake"></a></pre>\n') == ["real", "t"]
+    # A NON-raw-text block was never masked here and still is not: `<div>`
+    # renders, so its id is a destination.
+    assert anchors('# T\n\n<div id="d">\n\ntext\n') == ["d", "t"]
+
+
 def test_an_explicit_html_anchor_is_a_destination_the_page_offers():
     """`<a name="legacy"></a>` and any `id="..."` are rendered destinations a
     browser honours, so `[x](#legacy)` is valid with no heading of that name.
