@@ -429,13 +429,40 @@ _MD_DEST_ATOM_RE = re.compile(
 # escapes as units, exactly as the destination scan does.
 # The fragment of a bare destination. Named rather than compiled inside the
 # scan loop, so `_inline_link_end` asks the same pattern `md_links` does.
-# `*`, not `+`. An EMPTY fragment is legal: `[x](missing.md#)` renders a link
-# the browser follows to the top of `missing.md`, and requiring one character
-# after the `#` meant the whole candidate did not match -- so the missing
-# target passed the audit clean. The anchor check downstream is guarded on the
-# fragment being non-empty, so an empty one asks about the PATH only, which is
-# what it means. Codex filed it.
-_MD_FRAG_RE = re.compile(r"[^)\s]*")
+# The same atom as the destination, minus the `#` exclusion: a fragment may
+# carry one (`#a#b` is the fragment `a#b`), and it may carry BALANCED
+# parentheses, which `[^)\s]` could not. `[x](#foo(bar))` names the id
+# `foo(bar)` and the scan stopped at the first `)`, recorded `foo(bar`, and
+# consumed that parenthesis as the link's closer -- so a working link to an
+# explicit `id="foo(bar)"` was a gating dead anchor. Codex filed it.
+_MD_FRAG_ATOM_RE = re.compile(
+    rf"&\#?[0-9A-Za-z]{{1,32}};|\\[{_ASCII_PUNCT}]|[^()\s]")
+
+
+def _bare_fragment(text: str, i: int, end: int) -> int:
+    """End of the balanced bare fragment starting at `i`.
+
+    The same walk `_bare_destination` makes, over the atom above: a
+    parenthesised run is consumed whole however deeply it nests, and a run
+    carrying whitespace is not part of the fragment because CommonMark forbids
+    whitespace anywhere in an unbracketed destination.
+    """
+    j = i
+    while j < end:
+        m = _MD_FRAG_ATOM_RE.match(text, j, end)
+        if m:
+            j = m.end()
+            continue
+        if text[j] == "(":
+            k = _balanced_close(text, j)
+            if k == -1 or k > end or any(c.isspace() for c in text[j:k]):
+                return j
+            j = k
+            continue
+        break
+    return j
+
+
 _MD_LINK_TAIL_RE = re.compile(
     r"""(?:\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"""
     r"""|\((?:\\.|[^)\\])*\)))?\s*\)""")
@@ -519,10 +546,9 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
             groups["target"] = text[at:stop]
             at = stop
             if at < hi and text[at] == "#":
-                frag = _MD_FRAG_RE.match(text, at + 1, hi)
-                if frag is not None:
-                    groups["frag"] = frag.group(0)
-                    at = frag.end()
+                stop_frag = _bare_fragment(text, at + 1, hi)
+                groups["frag"] = text[at + 1:stop_frag]
+                at = stop_frag
         dest_end = at
         tail = _MD_LINK_TAIL_RE.match(text, at, hi)
         if tail is None:
@@ -818,9 +844,11 @@ def _inline_link_end(text: str, at: int) -> int:
     else:
         j = _bare_destination(text, j, len(text))
         if j < len(text) and text[j] == "#":
-            frag = _MD_FRAG_RE.match(text, j + 1)
-            if frag:
-                j = frag.end()
+            # The same balanced walk `md_links` makes. This was the second
+            # implementation of one rule, so it stopped at a `)` inside a
+            # fragment while the other did not -- and the two disagreed about
+            # where a link ENDS, which is worse than either being wrong alone.
+            j = _bare_fragment(text, j + 1, len(text))
     tail = _MD_LINK_TAIL_RE.match(text, j)
     return tail.end() if tail else -1
 

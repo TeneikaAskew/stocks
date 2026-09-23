@@ -6661,6 +6661,43 @@ def test_an_empty_fragment_is_still_a_link():
     assert det("[x](#)\n") == []
 
 
+def test_a_bare_fragment_may_carry_balanced_parentheses(tmp_path, monkeypatch):
+    """`[x](#foo(bar))` names the id `foo(bar)`, which `<div id="foo(bar)">`
+    offers. Scanning the fragment as `[^)\\s]*` stopped at the first `)`,
+    recorded `foo(bar`, and spent that parenthesis as the link's closer -- so
+    a working link was a gating dead anchor. CommonMark allows balanced
+    parentheses anywhere in an unbracketed destination, and the fragment is
+    part of one, so it is walked exactly as the path already is. Codex filed
+    it."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    body = ('# D\n\n<div id="foo(bar)"></div>\n\n'
+            "see [x](#foo(bar)) and [y](#nope(z))\n")
+    (tmp_path / "d.md").write_text(body)
+    out = m.check_dead_links("d.md", body, {"d.md"})
+    # The working link is quiet; the missing one is reported with the WHOLE
+    # fragment, not the prefix a stop-at-`)` scan would have recorded.
+    assert [f["detail"] for f in out] == [
+        "link -> #nope(z): the target has no such heading"]
+    # Nesting is not a depth of one: the walk is balanced, not counted.
+    (tmp_path / "d.md").write_text('# D\n\n<div id="a(b(c))"></div>\n')
+    assert m.check_dead_links(
+        "d.md", 'see [x](#a(b(c)))\n', {"d.md"}) == []
+    # An UNBALANCED parenthesis is not part of the fragment -- it closes the
+    # link, which is what makes `[x](#a)` work at all.
+    (tmp_path / "d.md").write_text('# D\n\n<div id="a"></div>\n')
+    assert m.check_dead_links("d.md", "see [x](#a)\n", {"d.md"}) == []
+    # And whitespace inside the parentheses is still a destination boundary,
+    # so a title after the fragment stays a title.
+    assert m.check_dead_links("d.md", 'see [x](#a "t")\n', {"d.md"}) == []
+    # The SECOND implementation of this rule lives in the link-end scan the
+    # heading slugger uses, and it disagreed with the first about where a
+    # link ends: the title leaked into the heading text, so `#a-t` was
+    # offered by the audit and `#a` -- the id GitHub actually emits -- read
+    # as dead.
+    assert m.heading_slug('[a](#x(y) "t")') == "a"
+    assert m.heading_slug("See [g](#foo(bar)) now") == "see-g-now"
+
+
 def test_a_link_label_nests_to_any_depth():
     """The opening pattern handled ONE level of nested brackets, which covered
     ``[`ANALYST_PROMPTS["gamma"]`](...)`` and nothing deeper -- so
