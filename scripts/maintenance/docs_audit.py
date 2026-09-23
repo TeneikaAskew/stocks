@@ -522,11 +522,19 @@ _MD_LINK_TAIL_RE = re.compile(
 class _LinkMatch:
     """The pieces `check_target` reads, with `re.Match`'s accessors."""
 
-    __slots__ = ("_text", "_start", "_end", "_groups", "dest_start", "dest_end")
+    __slots__ = ("_text", "_start", "_end", "_groups", "dest_start", "dest_end",
+                 "label_end")
 
     def __init__(self, text: str, start: int, end: int, groups: dict,
-                 dest_start: int = -1, dest_end: int = -1):
+                 dest_start: int = -1, dest_end: int = -1, label_end: int = -1):
         self._text, self._start, self._end, self._groups = text, start, end, groups
+        # Where the LABEL stopped -- the `]` before `(`. The label is rendered
+        # TEXT, so a backticked path inside one is the link's own subject and
+        # the inline pass has already reported its destination; the backtick
+        # passes read this to avoid reporting the same broken citation twice.
+        # Carried here rather than recovered by a second scan, because the
+        # label walk is the only thing that knows where it ended.
+        self.label_end = label_end
         # Where the DESTINATION began and stopped, so a caller can tell a
         # link's followable part from its metadata without rescanning.
         # `link_meta_spans` is the one that needs them; carrying them here is
@@ -605,8 +613,10 @@ def md_links(text: str, lo: int = 0, hi: int | None = None):
         if tail is None:
             pos = open_start + 1
             continue
+        # `open_end` is just past `](`, so the label's closing bracket is two
+        # characters back.
         yield _LinkMatch(text, open_start, tail.end(), groups,
-                         dest_start, dest_end)
+                         dest_start, dest_end, open_end - 2)
         pos = tail.end()
 # Reference-style Markdown, both halves. The definition's label may not open
 # with `^`: that is a footnote, which defines a note rather than a destination.
@@ -5577,6 +5587,19 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
                 tgt, frag = m.group("target"), m.group("frag")
             check_target(tgt, frag, n)
         hidden = commented.get(n - 1, [])
+        # Spans a backticked citation occupies purely as a Markdown link's
+        # LABEL. ``[`platform/src/missing.ts`](../platform/src/missing.ts)``
+        # is ONE broken link: the inline pass above has already reported its
+        # destination, and reporting the label too doubles the finding and the
+        # summary count, presenting one repair as two. The label spans come
+        # from `md_links` rather than a second pattern, so the two passes
+        # cannot disagree about where a label ends. The Node twin (solyra#69)
+        # has carried this exclusion; Codex filed the gap here.
+        label_spans = [(lm.start() + 1, lm.label_end) for lm in md_links(line)
+                       if lm.label_end > lm.start() + 1]
+
+        def _in_label(idx: int) -> bool:
+            return any(lo <= idx < hi for lo, hi in label_spans)
         # A citation nested inside a WIDER code span is sample text, not a
         # citation: ``example `scripts/missing.py` here`` renders the inner
         # backticks and the path literally, and reporting it failed --check
@@ -5590,7 +5613,8 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # it does not hold is prose, not rot -- which is what makes the second
         # pattern safe to run at all.
         for m in BACKTICK_ROOT_FILE_RE.finditer(line):
-            if any(lo <= m.start() < hi for lo, hi in hidden) or _nested(m):
+            if (any(lo <= m.start() < hi for lo, hi in hidden) or _nested(m)
+                    or _in_label(m.start())):
                 continue
             cited = m.group("path")
             name = LINE_SUFFIX_RE.sub("", cited)
@@ -5599,7 +5623,8 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
             out.append({"check": "dead-link", "doc": doc, "line": n,
                         "detail": f"backticked path -> {cited}", "severity": "P2"})
         for m in BACKTICK_PATH_RE.finditer(line):
-            if any(lo <= m.start() < hi for lo, hi in hidden) or _nested(m):
+            if (any(lo <= m.start() < hi for lo, hi in hidden) or _nested(m)
+                    or _in_label(m.start())):
                 continue
             cited = m.group("path")
             # Root-relative, parent-relative and line-qualified spellings all

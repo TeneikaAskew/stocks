@@ -121,9 +121,14 @@ Living docs carry one line, as the first paragraph after the H1:
 state **in that run**, with the evidence recorded in the PR. `scanned` means only
 the mechanical checks ran. `scanned` is the honest default; CLAUDE.md §3.11 says
 a doc is a claim and not evidence, and a review date bumped without a re-read is
-exactly the failure that rule exists to prevent. `Against:` pins the `origin/main`
-commit reviewed against, so the next run diffs from a commit rather than guessing
-from a date.
+exactly the failure that rule exists to prevent. `Against:` pins the commit the review
+was read against, so the next run diffs from a commit rather than guessing from a
+date. That commit is whatever `resolve_base_ref()` selected for the run, and it
+prefers `HEAD` -- so on a feature branch the marker names that branch's commit,
+not the trunk. `--since` can name an older one explicitly, and `--stamp --verify`
+then refuses if the document or a declared code path has moved between the two,
+because the audit reads the WORKING TREE and a marker must not name a revision
+whose bytes were never inspected.
 
 ## Registry
 
@@ -226,7 +231,7 @@ renames are ignored, so a file-move wave does not flag every document.
 | D | docs/MODEL_SUMMARY.md | |  |
 | D | docs/MODEL_RETHINK_PLANS.md | lib/strategies |  |
 | D | docs/STRAT_ENGINE_AND_COMBO_PIPELINE.md | gcp/research/strat_engine |  |
-| D | docs/BRIEFING_DECK.md | |  |
+| D | docs/BRIEFING_DECK.md | lib, gcp, platform, scripts |  |
 | D | docs/FEATURE_ADOPTION_ROADMAP.md | |  |
 | D | docs/HARDCODED_VALUES_REMEDIATION.md | lib |  |
 | D | .github/workflows/README.md | .github/workflows |  |

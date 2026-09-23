@@ -7204,6 +7204,30 @@ def test_a_raw_html_block_ends_with_its_blockquote():
     assert m.raw_html_block_lines(["<pre>", "a", "", "b", "</pre>"]) == {0, 1, 2, 3, 4}
 
 
+def test_a_backticked_path_used_as_a_link_label_is_reported_once(monkeypatch):
+    """``[`platform/src/missing.ts`](../platform/src/missing.ts)`` is ONE
+    broken link. The inline pass reports its destination and the backtick pass
+    reported the label as a second missing path, so one repair was presented
+    as two and both the finding count and the summary were inflated. It occurs
+    repeatedly in the checked-in docs. Codex filed it; the Node twin
+    (solyra#69) already excluded the label."""
+    monkeypatch.setattr(m, "TOP_LEVEL_DIRS", m.TOP_LEVEL_DIRS | {"platform"})
+    det = lambda text: [f["detail"] for f in
+                        m.check_dead_links("docs/d.md", text, {"docs/d.md"})]
+    assert det("see [`platform/src/missing.ts`](../platform/src/missing.ts)\n") == [
+        "relative link -> ../platform/src/missing.ts"]
+    # OUTSIDE a label the backtick pass still reports: the exclusion is the
+    # label, not the syntax, and this is the citation shape the pass exists
+    # for.
+    assert det("see `platform/src/missing.ts` here\n") == [
+        "backticked path -> platform/src/missing.ts"]
+    # The label spans come from `md_links`, so a candidate that is NOT a link
+    # -- an unbracketed destination with a space, which CommonMark renders as
+    # text -- leaves its backticked path reportable.
+    assert det("see [`platform/src/missing.ts`](a b)\n") == [
+        "backticked path -> platform/src/missing.ts"]
+
+
 def test_a_heading_inside_a_list_item_is_still_a_block_boundary():
     """CommonMark removes the list marker before parsing the block inside the
     item, so `- # Heading` opens an ATX heading. The prefix hid it from the
