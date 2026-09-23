@@ -7204,6 +7204,89 @@ def test_a_raw_html_block_ends_with_its_blockquote():
     assert m.raw_html_block_lines(["<pre>", "a", "", "b", "</pre>"]) == {0, 1, 2, 3, 4}
 
 
+def test_a_multi_backtick_span_holding_only_a_path_is_a_citation(monkeypatch):
+    """``scripts/missing.py`` renders nothing but the path, so it is a
+    citation. `BACKTICK_PATH_RE` matches from the second opening tick to the
+    first closing one, which is STRICTLY inside the span, so the enclosure
+    test classified it as sample text and deleting the target produced no
+    finding at all. Codex filed it."""
+    monkeypatch.setattr(m, "TOP_LEVEL_DIRS", m.TOP_LEVEL_DIRS | {"scripts"})
+    det = lambda text: [f["detail"] for f in
+                        m.check_dead_links("d.md", text, {"d.md"})]
+    want = ["backticked path -> scripts/missing.py"]
+    assert det("``scripts/missing.py``\n") == want
+    assert det("```scripts/missing.py```\n") == want
+    assert det("`scripts/missing.py`\n") == want
+    # A WIDER span -- one rendering prose AROUND an inner citation -- is the
+    # demonstration the exclusion exists for, and is still excluded. Losing
+    # this would fail --check over a document's own illustration.
+    assert det("``example `scripts/missing.py` here``\n") == []
+    # A PADDED span is a citation no pass reports, and that is unchanged
+    # here rather than fixed: `BACKTICK_PATH_RE` requires the path flush
+    # against the ticks, so `` `` scripts/missing.py `` `` yields no candidate
+    # at all. Recorded because the behaviour is easy to mistake for the
+    # nesting rule above, and it is not -- the one-tick spelling does the same
+    # thing, so this change neither opens nor closes that gap.
+    assert det("`` scripts/missing.py ``\n") == []
+    assert det("` scripts/missing.py `\n") == []
+
+
+def test_stamping_refuses_a_file_with_mixed_line_endings(tmp_path):
+    """`existing_newline` reads the FIRST line, and `write_stamp` applies that
+    one style to the whole rewritten text -- so a document beginning CRLF and
+    continuing LF would come back entirely CRLF, a whole-file diff for a
+    one-line stamp. That is the exact outcome the helper exists to prevent,
+    in the one shape it cannot see. Codex filed it."""
+    def write(name, raw):
+        path = tmp_path / name
+        path.write_bytes(raw)
+        return path
+
+    assert m.has_mixed_newlines(write("mixed.md", b"# A\r\nb\nc\n")) is True
+    assert m.has_mixed_newlines(write("mixed2.md", b"# A\nb\r\n")) is True
+    # A file consistent in ANY of the three styles is not mixed -- including
+    # CRLF, whose bytes contain both CR and LF and which a naive count reads
+    # as two endings.
+    assert m.has_mixed_newlines(write("lf.md", b"# A\nb\nc\n")) is False
+    assert m.has_mixed_newlines(write("crlf.md", b"# A\r\nb\r\nc\r\n")) is False
+    assert m.has_mixed_newlines(write("cr.md", b"# A\rb\rc\r")) is False
+    # A file that cannot be read is not a mixed-ending one: the caller is
+    # about to read it and reports that failure properly.
+    assert m.has_mixed_newlines(tmp_path / "absent.md") is False
+
+
+def test_a_mixed_ending_document_is_refused_by_a_whole_run(audit_repo, capsys):
+    """Through main(), not beside it: `has_mixed_newlines` answering correctly
+    is worth nothing if the stamp loop never asks it.
+
+    The guard runs FIRST, before the content comparison, because that one
+    fires on the same file for a misleading reason -- `read_text` normalises
+    endings, so a CRLF document never compares equal to its own committed
+    blob and the run reported "its prose differs" about a file nobody had
+    edited. The assertion is on the MESSAGE for that reason."""
+    doc = audit_repo / "docs" / "d.md"
+    doc.write_bytes(b"# D\r\n\r\nbody\n")
+    before = doc.read_bytes()
+    with pytest.raises(m.AuditError, match="more than one line ending"):
+        _audit(audit_repo, "--stamp", "--verify", "docs/d.md")
+    capsys.readouterr()
+    assert doc.read_bytes() == before
+    # A SCAN-ONLY run skips the file and carries on rather than aborting,
+    # which is the half that makes this per-document. main() directly, since
+    # the tree is already committed and `_audit` would try to commit again.
+    assert m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                   "--issues-snapshot", str(audit_repo / "issues.json"),
+                   "--stamp"]) == 0
+    capsys.readouterr()
+    assert doc.read_bytes() == before
+    # A file with ONE ending is still stamped, which is what says the refusal
+    # is scoped to the defect rather than to stamping.
+    doc.write_bytes(b"# D\n\nbody\n")
+    _audit(audit_repo, "--stamp", "--verify", "docs/d.md")
+    capsys.readouterr()
+    assert b"Last reviewed" in doc.read_bytes()
+
+
 def test_a_backticked_path_used_as_a_link_label_is_reported_once(monkeypatch):
     """``[`platform/src/missing.ts`](../platform/src/missing.ts)`` is ONE
     broken link. The inline pass reports its destination and the backtick pass

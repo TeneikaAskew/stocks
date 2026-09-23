@@ -3814,6 +3814,33 @@ def owner_of(lines: list[str], marker_idx: int | None) -> str | None:
 _NEWLINE_SCAN_CAP = 1 << 20
 
 
+def has_mixed_newlines(path: pathlib.Path, *, limit: int = 4 * 1024 * 1024) -> bool:
+    """Does the file on disk use MORE THAN ONE line ending?
+
+    `existing_newline` reads only the first line, and `write_stamp` applies
+    that one style to every line of the rewritten text -- so a document
+    beginning CRLF and continuing LF came back entirely CRLF. A one-line
+    provenance stamp then carries a whole-file diff, which is the exact
+    outcome `existing_newline` exists to prevent, in the one shape it cannot
+    see. Codex filed it.
+
+    Bounded: a file larger than `limit` is read up to that point only. Two
+    endings in the first four megabytes are enough to answer yes, and a
+    document that size is not one this tool should pull into memory twice.
+    """
+    try:
+        raw = path.open("rb").read(limit)
+    except OSError:
+        # The caller is about to read the same file and will report the
+        # failure properly; an unreadable file is not a mixed-ending one.
+        return False
+    # CRLF counted first and its CRs removed, so a CRLF file does not read as
+    # holding both CR and LF.
+    crlf = raw.count(b"\r\n")
+    return sum(bool(x) for x in (crlf, raw.count(b"\n") - crlf,
+                                 raw.count(b"\r") - crlf)) > 1
+
+
 def existing_newline(path: pathlib.Path) -> str:
     """The line ending the file on disk already uses.
 
@@ -5606,8 +5633,27 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # over a document's own illustration. STRICT enclosure, because an
         # ordinary single-backtick citation IS its own span -- testing mere
         # overlap would skip every backticked path in the corpus.
+        def _span_body(lo: int, hi: int) -> str:
+            """What a code span at these offsets RENDERS, delimiters removed.
+
+            The run length is read off the span itself rather than assumed to
+            be one, because that is the whole question here.
+            """
+            run = len(line[lo:hi]) - len(line[lo:hi].lstrip("`"))
+            return line[lo + run:hi - run] if run else line[lo:hi]
+
         def _nested(m: re.Match[str]) -> bool:
+            # STRICT enclosure alone is not the test. A valid MULTI-backtick
+            # span renders nothing but the path -- ``scripts/missing.py`` is a
+            # citation, not a demonstration -- but `BACKTICK_PATH_RE` matches
+            # from the second opening tick to the first closing one, which is
+            # strictly inside it, so the path was classified as sample text
+            # and deleting the target produced no finding at all. A span whose
+            # COMPLETE rendered body is the cited path is the citation; only a
+            # WIDER span, one that renders prose around an inner citation, is
+            # the demonstration this exclusion exists for. Codex filed it.
             return any(lo < m.start() and hi > m.end()
+                       and _span_body(lo, hi).strip() != m.group(0).strip("`").strip()
                        for lo, hi in code_spans(line) + wrapped_code.get(n - 1, []))
         # A bare root filename resolves against the tree's ROOT only. Anything
         # it does not hold is prose, not rot -- which is what makes the second
@@ -7102,6 +7148,25 @@ def main(argv: list[str] | None = None) -> int:
             # refusing on those would make --verify impossible on the
             # documents that most need it. The findings for this document have
             # all been added by now, so they can be asked about directly.
+            # FIRST among the guards, and it applies to a scan-only stamp
+            # too. A file using MORE THAN ONE ending cannot be rewritten
+            # without choosing one for lines that did not ask: `write_stamp`
+            # applies `existing_newline`, which reads the first line only, so
+            # every other line would be converted to match it -- a whole-file
+            # diff for a one-line stamp. Refused rather than guessed, and
+            # recorded per DOCUMENT: a scan-only run skips that file and
+            # carries on, while a `--verify` naming it aborts, which is what
+            # every other refusal here already does.
+            #
+            # Before the content guard below, not after, because that one
+            # fires on the same file for a MISLEADING reason: `read_text`
+            # normalises endings, so a CRLF document never compares equal to
+            # its own committed blob and the run reported "its prose differs"
+            # about a file nobody had edited. Codex filed the rewrite; the
+            # ordering is what makes the message true.
+            if has_mixed_newlines(REPO / doc):
+                stamp_refusals[doc] = "mixed-line-endings"
+                continue
             if reviewed and any(f["doc"] == doc and f["check"] in _DISPROVEN_BY_AUDIT
                                 for f in findings):
                 stamp_refusals[doc] = "disproven-claim"
@@ -7200,6 +7265,11 @@ def main(argv: list[str] | None = None) -> int:
                        f"its prose differs from {head}, so the review would name a "
                        "baseline that does not hold what was reviewed and the next "
                        "audit would report changed-since; commit the edits first",
+                   "mixed-line-endings":
+                       "the file uses more than one line ending, so writing a "
+                       "one-line stamp would convert every other line to match "
+                       "its first and carry a whole-file diff; normalise the "
+                       "endings first",
                    "skipped-no-h1": "no H1 to place a marker after",
                    "skipped-legacy-content": "a legacy marker carrying prose that "
                                              "rewriting would delete",
