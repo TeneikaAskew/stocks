@@ -4028,9 +4028,19 @@ def test_a_setext_section_heading_ends_the_marker_window():
     too. Reading only `#` let a date inside the following section stand in for
     the document's provenance -- the same defect the `# PART A` case in
     marker_window's own docstring describes, one syntax over."""
-    lines = ["# T", "body", "Details", "-------", "**Last reviewed:** 2026-01-01"]
+    lines = ["# T", "", "Details", "-------", "**Last reviewed:** 2026-01-01"]
     assert list(m.marker_window(lines)) == [1]
     assert m.find_markers(lines) == []
+    # And the heading is the WHOLE paragraph the underline promotes, not its
+    # last line. `body` / `Details` / `-------` is one H2 reading
+    # "body\nDetails" (CommonMark example 93), so `body` belongs to the next
+    # section and not to the document window. This assertion read `[1]` until
+    # Codex filed it: a marker written on that first line was accepted as the
+    # whole document's provenance, and `--stamp` would rewrite section heading
+    # text rather than insert a document marker.
+    multi = ["# T", "body", "Details", "-------", "**Last reviewed:** 2026-01-01"]
+    assert list(m.marker_window(multi)) == []
+    assert m.find_markers(multi) == []
 
 
 def test_an_underline_is_not_a_section_heading_without_text_above_it():
@@ -8222,3 +8232,94 @@ def test_a_drift_reread_that_fails_is_not_a_clean_result(tmp_path, monkeypatch):
     monkeypatch.setattr(m.pathlib.Path, "read_text", boom)
     with pytest.raises(m.AuditError, match="could not be read to measure drift"):
         m.check_doc_changed_since("docs/d.md", "abc1234", "origin/main")
+
+
+def test_a_contrast_split_is_visible_to_the_deduplication_too():
+    """`clause_bounds` and `citation_clause` were two implementations of one
+    rule, and they disagreed exactly where it matters. The contrast split ran
+    only in the slice, so `#1 is still open but <url to #1> is resolved` gave
+    the cue analysis two clauses while the dedup -- which asks whether a
+    shorthand and a URL are the SAME citation -- still saw one. It suppressed
+    the live shorthand as a duplicate of the settled URL, the URL was then
+    skipped as settled, and a closed issue described as open produced no
+    finding at all. Codex filed it."""
+    states = {m.THIS_REPO: {1: {"state": "closed", "reason": "completed",
+                                "kind": "ISSUE"},
+                            8: {"state": "closed", "reason": "completed",
+                                "kind": "ISSUE"},
+                            9: {"state": "closed", "reason": "completed",
+                                "kind": "ISSUE"}}}
+    u = lambda n: f"https://github.com/TeneikaAskew/{m.THIS_REPO}/issues/{n}"
+    refs = lambda t: [f["ref"] for f in m.check_closed_issues("d.md", t, states)]
+    assert refs(f"#1 is still open but {u(1)} is resolved\n") == [f"{m.THIS_REPO}#1"]
+    # The spellings that already worked, unchanged: a semicolon is a clause
+    # boundary the sentence split has always seen, and the shorthand alone
+    # never had a URL to be deduplicated against.
+    assert refs(f"#1 is still open; {u(1)} is resolved\n") == [f"{m.THIS_REPO}#1"]
+    assert refs("#1 is still open\n") == [f"{m.THIS_REPO}#1"]
+    # One citation, reported ONCE. The dedup still has to fire when the two
+    # spellings sit in one half: the split is a narrower clause, not no clause.
+    assert refs(f"#1 is still open, {u(1)} is still open\n") == [f"{m.THIS_REPO}#1"]
+    # The two functions now answer the same question.
+    line = f"{u(8)} is resolved but {u(9)} is still open"
+    at = line.index(u(9))
+    lo, hi = m.clause_bounds(line, at, at + len(u(9)))
+    assert line[lo:hi] == m.citation_clause(line, at, at + len(u(9)))
+    assert "resolved" not in line[lo:hi]
+
+
+def test_a_marker_keeps_the_container_its_heading_sits_in():
+    """An H1 inside a blockquote or a list item ends at the first line without
+    the prefix, so inserting a bare marker and bare blanks after one moved the
+    document's existing introduction OUT of the quote or the item -- `--stamp`
+    changing structure rather than only adding provenance. Codex filed it."""
+    stamp = lambda t: m.stamp(t, "2026-09-23", "full", "abc1234", reviewed=False)
+    out, action = stamp("- # Title\n  Intro\n")
+    assert action == "inserted"
+    assert out.splitlines() == ["- # Title", "",
+                                "  **Last reviewed:** unknown · "
+                                "**Last scanned:** 2026-09-23 · **Owner:** TBD",
+                                "", "  Intro"]
+    # A blockquote's blank line is `>`, not "": a truly empty line would end
+    # the quote, which is the same corruption one character smaller.
+    out, action = stamp("> # Title\n> Intro\n")
+    assert action == "inserted"
+    assert out.splitlines() == ["> # Title", ">",
+                                "> **Last reviewed:** unknown · "
+                                "**Last scanned:** 2026-09-23 · **Owner:** TBD",
+                                ">", "> Intro"]
+    # A quoted SETEXT H1 too: `marker_anchor` returns the underline, and the
+    # container is read off whichever line it returns.
+    assert stamp("> Title\n> =====\n> Intro\n")[0].splitlines()[2] == ">"
+    # Unprefixed documents are untouched by this.
+    assert stamp("# Title\nIntro\n")[0].splitlines() == [
+        "# Title", "",
+        "**Last reviewed:** unknown · **Last scanned:** 2026-09-23 · **Owner:** TBD",
+        "", "Intro"]
+
+
+def test_a_stamped_container_document_is_stable_on_a_second_run():
+    """Three separate reads have to agree for this to hold: `find_markers` has
+    to SEE the marker it just wrote, the rewrite has to keep the prefix, and
+    the field readers have to be given the line without it. Missing the last
+    one, `extra_segments` kept `> ` as unowned prose and every run appended
+    another `> **Last reviewed:** unknown` segment to the line."""
+    stamp = lambda t: m.stamp(t, "2026-09-23", "full", "abc1234", reviewed=False)
+    for doc in ["- # Title\n  Intro\n", "> # Title\n> Intro\n",
+                "> Title\n> =====\n> Intro\n", "# Title\nIntro\n"]:
+        once, first = stamp(doc)
+        twice, second = stamp(once)
+        assert first == "inserted", doc
+        assert (second, twice) == ("unchanged", once), doc
+    # And an existing marker is refreshed IN its container rather than being
+    # dragged to column zero, which would end the quote or the item there.
+    quoted = ("> # T\n>\n> **Last reviewed:** 2026-01-01 · "
+              "**Last scanned:** 2026-01-01 · **Owner:** x\n>\n> Intro\n")
+    out, action = m.stamp(quoted, "2026-09-23", "full", "abc1234", reviewed=False)
+    assert action == "updated"
+    assert out.splitlines()[2] == ("> **Last reviewed:** 2026-01-01 · "
+                                   "**Last scanned:** 2026-09-23 · **Owner:** x")
+    listed = ("- # T\n\n  **Last reviewed:** 2026-01-01 · "
+              "**Last scanned:** 2026-01-01 · **Owner:** x\n\n  Intro\n")
+    assert m.stamp(listed, "2026-09-23", "full", "abc1234",
+                   reviewed=False)[0].splitlines()[2].startswith("  **Last")

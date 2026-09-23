@@ -2537,6 +2537,19 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
     # real marker excluded from the window, so the audit reported it missing
     # and --stamp inserted a second one. The section boundary is the thing
     # being asked about; the line count was a proxy for it.
+    # Where each Setext heading STARTS, not where its underline is. A Setext
+    # heading's text is the whole paragraph the underline promotes, and that
+    # paragraph may be several lines: `**Last reviewed:** ...` / `More title`
+    # / `---` is ONE H2 whose first line is the marker-shaped one. Stopping at
+    # `underline - 1` left that line inside the document window, so a line
+    # belonging to the next section's HEADING stood in for the whole
+    # document's provenance -- and `--stamp` then rewrote heading text instead
+    # of inserting a real marker. `_paragraph_blocks` already closes a block
+    # ON the underline, so the block's first line is the answer and the two
+    # cannot disagree about where a heading begins. Codex filed it
+    # (stocks#1121).
+    setext_starts = {lo for lo, hi in _paragraph_blocks(lines, fenced)
+                     if hi > lo and is_setext_underline(lines, hi, fenced)}
     stop = len(lines)
     for j in range(h1 + 1, len(lines)):
         if j in fenced:
@@ -2569,8 +2582,8 @@ def marker_window(lines: list[str], limit: int = 40) -> range:
         # the underline. Reading only `#` let a `Last reviewed` line inside
         # that section stand in for the whole document's provenance, which is
         # the `# PART A` defect above in the other heading syntax.
-        if is_setext_underline(lines, j, fenced):
-            stop = j - 1
+        if j in setext_starts:
+            stop = j
             break
     return range(h1 + 1, min(stop, len(lines)))
 
@@ -3429,14 +3442,24 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
         # finding, and `--stamp` then REPLACED the example with an unindented
         # live marker: a write straight through this module's one hard rule.
         # Fenced blocks are excluded for the same reason.
-        if (i in fenced or i in commented or i in spanned or i in front
-                or is_code_indented(lines[i])):
+        if i in fenced or i in commented or i in spanned or i in front:
             continue
         raw = lines[i]
-        col = len(raw) - len(raw.lstrip())
+        # Read THROUGH the blockquote container, as every other block test in
+        # this module does. `> **Last reviewed:** ...` renders as the
+        # document's provenance and was recognised as nothing, so the
+        # missing-marker finding fired over a document that visibly shows one
+        # and `--stamp` inserted a SECOND, contradictory marker above the
+        # quote -- measured on a quoted document before the fix. The indent
+        # test runs on the stripped copy for the same reason: `> ` is a
+        # container, not four columns of code indentation.
+        bare = _BLOCKQUOTE_PREFIX_RE.sub("", raw, count=1)
+        if is_code_indented(bare):
+            continue
+        col = len(raw) - len(bare.lstrip())
         if any(a <= col < b for a, b in comment_at.get(i, [])):
             continue
-        line = raw.strip()
+        line = bare.strip()
         m = MARKER_RE.match(line)
         if m:
             out.append((i, {"date": m.group("date"), "depth": m.group("depth"),
@@ -3741,6 +3764,54 @@ def marker_anchor(lines: list[str]) -> int | None:
     return h1
 
 
+def _container_prefix(line: str) -> tuple[str, str]:
+    """What an inserted line needs to stay inside the H1's container.
+
+    An H1 may sit inside a blockquote or a list item -- `> # Title`,
+    `- # Title` -- and CommonMark ends that container at the first line
+    lacking the prefix. Inserting a bare marker and bare blank lines after one
+    moved the document's existing introduction OUT of the quote or the item:
+    `--stamp` changed structure rather than only adding provenance, which is
+    this module's one hard rule. Codex filed it (stocks#1121).
+
+    TWO prefixes, because they are not the same string. A list item's
+    continuation is indented to the marker's width and a blank line inside one
+    is genuinely blank -- indenting it would add nothing but trailing
+    whitespace. A blockquote's continuation is `> `, and a blank line inside
+    one must still carry `>` or the quote ends there.
+
+    Derived from whichever line the caller passes, so the Setext case works
+    without a second rule: `marker_anchor` returns the `===` underline, and
+    `> ===` carries the same container as the title above it.
+    """
+    quoted = _BLOCKQUOTE_PREFIX_RE.match(line)
+    head = quoted.group(0) if quoted else ""
+    rest = line[len(head):]
+    item = _LIST_MARKER_RE.match(rest)
+    # The marker is replaced by SPACES of its own width, which is the column
+    # CommonMark parses the item's content at -- not stripped, which would put
+    # the marker back at column zero and open a second list item.
+    body = (" " * len(item.group(1)) if item
+            else rest[:len(rest) - len(rest.lstrip())])
+    lead = head + body
+    return lead, lead.rstrip()
+
+
+def _marker_body(lines: list[str], idx: int) -> str:
+    """A marker line with its container removed, which is what the field
+    readers are written against.
+
+    `find_markers` reads through the container, so a quoted marker is found --
+    and every consumer that re-reads the raw line then saw `> ` as content.
+    `extra_segments` kept it as unowned prose and `--stamp` appended it to the
+    rewritten marker, so each run grew the line by one more `> **Last
+    reviewed:** unknown` segment. Reproduced by stamping a quoted document
+    twice.
+    """
+    lead, _ = _container_prefix(lines[idx])
+    return lines[idx][len(lead):]
+
+
 def render_marker(date: str, depth: str | None, sha: str | None,
                   scanned: str, owner: str | None, extras: list[str] | None = None) -> str:
     """Two facts, kept apart on purpose.
@@ -4043,7 +4114,7 @@ def stamp(text: str, date: str, depth: str, sha: str,
         # first and delete the rest, resolving a contradiction the document
         # states by discarding half of it. `check_marker_fields` reports it;
         # this declines to paper over it.
-        if repeated_owned_fields(lines[found[0]]):
+        if repeated_owned_fields(_marker_body(lines, found[0])):
             return text, "skipped-malformed-marker"
     owner = owner_of(lines, found[0] if found else None) or "TBD"
     prev = found[1] if found else None
@@ -4063,7 +4134,8 @@ def stamp(text: str, date: str, depth: str, sha: str,
     else:
         r_date, r_depth, r_sha = "unknown", None, None
 
-    extras = extra_segments(lines[found[0]]) if found and not prev.get("legacy") else []
+    extras = (extra_segments(_marker_body(lines, found[0]))
+              if found and not prev.get("legacy") else [])
     marker = render_marker(r_date, r_depth, r_sha, date, owner, extras)
     if found:
         # TWO valid markers in the opening section. `find_marker` picks the
@@ -4076,22 +4148,37 @@ def stamp(text: str, date: str, depth: str, sha: str,
         if len(find_markers(lines)) > 1:
             return text, "skipped-duplicate-marker"
         idx, _ = found
-        if lines[idx].strip() == marker:
+        # The marker's OWN container, preserved. Rewriting `> **Last
+        # reviewed:** ...` at column zero ends the blockquote there, and
+        # rewriting an item's indented marker unindented ends the list item --
+        # so a refresh that reports only "updated" would silently restructure
+        # the document. The comparison reads the same stripped copy, or a
+        # container line never equals the rendered marker and every run
+        # reports `updated` over an unchanged document.
+        lead, _ = _container_prefix(lines[idx])
+        if _marker_body(lines, idx).strip() == marker:
             return text, "unchanged"
-        lines[idx] = marker
+        lines[idx] = lead + marker
         return "\n".join(lines), "updated"
     h1 = marker_anchor(lines)
     if h1 is None:
         return text, "skipped-no-h1"
-    # Target shape:  "# Title" / "" / marker / "" / body.
+    # Target shape:  "# Title" / "" / marker / "" / body -- each line carrying
+    # whatever container the H1 sits in, so an H1 inside a quote or a list item
+    # keeps the body that follows it inside the same container.
+    lead, blank = _container_prefix(lines[h1])
     # Reuse the blank line the H1 already has rather than adding a second one.
-    if h1 + 1 < len(lines) and lines[h1 + 1].strip() == "":
-        lines[h1 + 2:h1 + 2] = [marker, ""]
+    # Read through the container here too: a quoted document's blank line is
+    # `>`, which is not "" and made the reuse branch miss every time.
+    nxt = (_BLOCKQUOTE_PREFIX_RE.sub("", lines[h1 + 1], count=1)
+           if h1 + 1 < len(lines) else None)
+    if nxt is not None and not nxt.strip():
+        lines[h1 + 2:h1 + 2] = [lead + marker, blank]
     else:
         # Both blanks, not just the leading one. An H1 followed straight by
         # body text got `# Title` / "" / marker / body, and Markdown renders
         # the marker and the opening sentence as a single paragraph.
-        lines[h1 + 1:h1 + 1] = ["", marker, ""]
+        lines[h1 + 1:h1 + 1] = [blank, lead + marker, blank]
     return "\n".join(lines), "inserted"
 
 
@@ -4305,17 +4392,15 @@ _CONTRAST_RE = re.compile(
 def clause_bounds(line: str, start: int, end: int) -> tuple[int, int]:
     """Offsets of the clause a citation sits in.
 
-    The same split citation_clause makes, exposed as bounds so a caller can ask
-    whether two citations are the SAME one rather than merely on one line.
-    """
-    masked = _URL_RE.sub(lambda m: "\x00" * len(m.group(0)), line)
-    lo = max((mm.end() for mm in _CLAUSE_SPLIT_RE.finditer(masked, 0, start)), default=0)
-    nxt = _CLAUSE_SPLIT_RE.search(masked, end)
-    return lo, (nxt.start() if nxt else len(line))
-
-
-def citation_clause(line: str, start: int, end: int) -> str:
-    """The clause a citation sits in, for judging what the prose says about IT.
+    The bounds are where the split LIVES, and `citation_clause` is the slice.
+    They were two implementations of one rule and they disagreed on the case
+    that needs them most: the contrast split below ran only in the slice, so
+    `#1 is still open but <url to #1> is resolved` gave the cue analysis two
+    clauses while the deduplication -- which asks whether a shorthand and a URL
+    are the SAME citation -- still saw one. It suppressed the live shorthand as
+    a duplicate of the settled URL, the URL was then skipped as settled, and a
+    closed issue described as open produced no finding at all. Codex filed it
+    (stocks#1121).
 
     A cue evaluated once per line is applied to every citation on it, which
     turns mixed-status prose into false findings. The clause is bounded by
@@ -4362,8 +4447,14 @@ def citation_clause(line: str, start: int, end: int) -> str:
                         | commas)
         for a, b in zip(bounds, bounds[1:]):
             if a <= rel < b:
-                return span[a:b]
-    return span
+                return lo + a, lo + b
+    return lo, hi
+
+
+def citation_clause(line: str, start: int, end: int) -> str:
+    """The clause a citation sits in, as text. `clause_bounds` decides where."""
+    lo, hi = clause_bounds(line, start, end)
+    return line[lo:hi]
 
 
 def cites_live_work(line: str, start: int, end: int,
@@ -7055,7 +7146,7 @@ def main(argv: list[str] | None = None) -> int:
             # the future check used to live here and read `info["date"]` only,
             # which left `Last scanned` in the future entirely unchecked.
             findings += check_marker_dates(doc, info, today)
-            findings += check_marker_fields(doc, info, lines[found[0]])
+            findings += check_marker_fields(doc, info, _marker_body(lines, found[0]))
             # A second marker in the window is a document making two review
             # claims at once. Reading the first and ignoring the rest let
             # `--stamp` rewrite the top one, report `updated` or `unchanged`,
