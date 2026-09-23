@@ -434,14 +434,17 @@ Existing indicators in `tradingview-pine-scripts/`:
 
 ## Documentation Files
 
-- [trade_analysis_overview.md](docs/trade_analysis_overview.md) — Complete system overview + glossary
-- [trade_SIGNAL_GENERATION_METHODOLOGY.md](docs/trade_SIGNAL_GENERATION_METHODOLOGY.md) — Signal logic analysis vs. actual trades
-- [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](docs/TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) — Pipeline build process
+- [trade_analysis_overview.md](docs/archive/trade_analysis_overview.md) — Complete system overview + glossary
+- [trade_SIGNAL_GENERATION_METHODOLOGY.md](docs/archive/trade_SIGNAL_GENERATION_METHODOLOGY.md) — Signal logic analysis vs. actual trades
+- [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](docs/archive/TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) — Pipeline build process
 - [INVESTMENT_MODELS_SUMMARY.md](docs/INVESTMENT_MODELS_SUMMARY.md) — All 5 investment models with Phase analysis
 - [BACKTEST_RESULTS.md](BACKTEST_RESULTS.md) — 10-year backtest results across all tickers
-- [MODEL_SUMMARY.md](docs/MODEL_SUMMARY.md) — Model architecture summary
-- [HISTORICAL_LEVELS_FEATURE.md](docs/HISTORICAL_LEVELS_FEATURE.md) — Historical levels documentation
-- [ORB_AND_ORDER_BLOCKS_FEATURE.md](docs/ORB_AND_ORDER_BLOCKS_FEATURE.md) — ORB/Order Block documentation
+- [EXPERIMENT_REGISTRY.md](docs/EXPERIMENT_REGISTRY.md) — The experiment log: every experiment `E-01…E-34`, with verdicts
+- [MODEL_REGISTRY.md](docs/MODEL_REGISTRY.md) — Research model inventory (families A/B/C + `CAT-A0…CAT-A8`)
+- [RESEARCH_COMPENDIUM.md](docs/RESEARCH_COMPENDIUM.md) — Master research narrative + end-to-end experiment log
+- [product/07-MODEL-REGISTRY.md](docs/product/07-MODEL-REGISTRY.md) — Governance view: `MODEL-*` status, promotion criteria, experiment traceability
+- [HISTORICAL_LEVELS_FEATURE.md](docs/archive/HISTORICAL_LEVELS_FEATURE.md) — Historical levels documentation
+- [ORB_AND_ORDER_BLOCKS_FEATURE.md](docs/archive/ORB_AND_ORDER_BLOCKS_FEATURE.md) — ORB/Order Block documentation
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) — This file
 
 ## Tips

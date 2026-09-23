@@ -819,6 +819,38 @@ on the strength of the aggregate above. It was accurate, and describing the
 half of the data the measurement missed. When code and measurement disagree,
 that is a signal to widen the measurement, not to overrule the code.
 
+#### 3.11.1 A document is a claim too. Execute before you assert.
+
+**Added 2026-09-21 after a review round in which three of five findings were wrong
+statements in documents written one commit earlier.** §3.11 governs claims made in
+conversation. Every failure in that round was a guess **published to a document**, where it
+outlives the conversation and is read as settled.
+
+The rule: **a claim about what code does at runtime is not written until it has been run.**
+Not traced, not reasoned about from the source — executed, with the output kept. A hermetic
+snippet, a `--dry-run`, or a production replay path (§3.6) all count. A careful read does
+not.
+
+The three misses, and what one command would have given:
+
+| Published claim | Where it came from | What executing gave |
+|---|---|---|
+| "a missing `return_pct` publishes 0.0%" | an `else 0` on the next line | `IndexingError: Unalignable boolean Series` — that line never runs. The real fabrication is `win_rate` and `total_pnl` both `0.0` on an **all-NULL** week |
+| "it self-heals on the next scheduled run" | `AND ew_strike_verdict IS NULL` | the same query binds `earnings_date BETWEEN :s AND :e`, and the job defaults to yesterday alone — a missed day is never revisited |
+| "the alarm compares clean rates" | the first `detect_*` in the file | a second alarm 100 lines down, its own threshold, its own non-zero exit |
+
+Two of the three were not reasoning errors. They were **stopping at the first matching
+line**. So the rule has a second half: **read the whole file before describing any part of
+it.** `grep` finds a line; it does not tell you it is the only one.
+
+Executing also finds what neither reading nor the review asked for. Running the
+score-quality alarm across healthy / flat / inverted inputs showed `abs(rho) < 0.10` scores
+an **inverted** signal (ρ = −0.89, reliably predicting the opposite) identically to a
+healthy one. No amount of reading the constant would have produced that table.
+
+Where a claim genuinely cannot be executed here — it needs live Cloud SQL, a vendor key, a
+GPU — write "not checked" in those words. §3.11 already declares that a complete answer.
+
 ---
 
 ### 4. Testing Strategy Pattern

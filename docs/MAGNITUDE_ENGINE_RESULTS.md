@@ -2,6 +2,19 @@
 
 > ## PROJECT VERDICT: FAIL (closed 2026-05-29 by gate 7)
 >
+> **Status since the verdict — added 2026-09-15. The verdict below is unchanged; this
+> records that the system it describes is not idle.** The gate-7 FAIL stands as a research
+> result and nothing here re-opens it. But: the engine has source commits on 2026-09-11
+> ([#1074](https://github.com/TeneikaAskew/stocks/pull/1074)) and 2026-09-14
+> ([#1099](https://github.com/TeneikaAskew/stocks/pull/1099),
+> [#1101](https://github.com/TeneikaAskew/stocks/pull/1101)); it is declared on two daily
+> Cloud Scheduler crons (`magnitude-inference-daily`, `audit-magnitude-drift-daily`); and
+> [#1025](https://github.com/TeneikaAskew/stocks/issues/1025) reports the serving model
+> `magnitude-engine-c49qf` **100% argmax-collapsed (modal share 1.00 against a 0.70 ceiling)
+> and writing nothing since 2026-09-03**. Reading this document alone would suggest the
+> magnitude engine is closed and inert. It is neither. Tracked as DOC-06 in
+> [docs/product/07-MODEL-REGISTRY.md](product/07-MODEL-REGISTRY.md#documentation-coverage-and-freshness).
+>
 > **Headline**: magnitude is statistically learnable at 5m but **not
 > tradeably-extractable** as a non-directional play. The within-cell
 > precision boost the model provides is the priced finer-calendar and
@@ -706,7 +719,8 @@ is calibration.**
 turns the log-loss beat positive. If it does, the pure-prediction SIZE verdict
 should be revisited with a calibrated, possibly un-class-weighted model before
 any further feature work. Result to be appended here on completion. Full
-ablation: EXPERIMENT_REGISTRY.md E-25.
+ablation: EXPERIMENT_REGISTRY.md E-34 (renumbered 2026-09-15 from E-25, which now
+denotes STRAT-NEXTBAR).
 
 
 ### Isotonic recal RESULT (2026-07-10, `magnitude-recal-j5lfv`) — calibration alone fails at 5m, but 15m+isotonic WORKS
