@@ -6633,6 +6633,34 @@ def test_the_github_host_boundary_belongs_to_the_url_scheme():
     assert ref("Blocked by github.com/TeneikaAskew/stocks/issues/1") == ["stocks#1"]
 
 
+def test_an_empty_fragment_is_still_a_link():
+    """`[x](missing.md#)` renders a link the browser follows to the top of
+    `missing.md`. Requiring one character after the `#` meant the whole
+    candidate did not match, so the missing target passed clean -- the hiding
+    direction, out of a quantifier. Codex filed it."""
+    tracked = {"d.md", "there.md", "there file.md"}
+    det = lambda t: [f["detail"] for f in m.check_dead_links("d.md", t, tracked)]
+    assert det("[x](missing.md#)\n") == ["relative link -> missing.md"]
+    # The ANGLE form needs its own assertion, and on the DETAIL rather than
+    # the check: with `+` there it still reported a dead link, but for the
+    # path `<missing.md` -- the angle branch failed, the bare branch took
+    # over, and the finding named a path with a bracket in it. A test on the
+    # check alone passes under that mutation and proves nothing.
+    assert det("[x](<missing.md#>)\n") == ["relative link -> missing.md"]
+    # A destination with a SPACE is the whole reason the angle form exists,
+    # and with `+` that candidate did not match at all.
+    assert det("[x](<missing file.md#>)\n") == ["relative link -> missing file.md"]
+    assert det("[x](<there file.md#>)\n") == []
+    # A tracked target with an empty fragment is NOT a finding: an empty
+    # fragment asks about the path only, so there is no anchor to miss.
+    assert det("[x](there.md#)\n") == []
+    # The shapes that already worked, and a bare `#`, which is the top of
+    # THIS page and names no target at all.
+    assert det("[x](missing.md#sec)\n") == ["relative link -> missing.md"]
+    assert det("[x](missing.md)\n") == ["relative link -> missing.md"]
+    assert det("[x](#)\n") == []
+
+
 def test_a_link_label_nests_to_any_depth():
     """The opening pattern handled ONE level of nested brackets, which covered
     ``[`ANALYST_PROMPTS["gamma"]`](...)`` and nothing deeper -- so

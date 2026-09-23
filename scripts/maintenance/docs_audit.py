@@ -406,7 +406,7 @@ def _md_link_open(text: str, pos: int, hi: int) -> tuple[int, int] | None:
 # before the fragment split, so `\#` stays in the path as well.
 _MD_LINK_ANGLE_RE = re.compile(
     r"<(?P<btarget>(?:&\#?[0-9A-Za-z]{1,32};|\\[^\r\n]|[^<>#\\\r\n])*)"
-    r"(?:#(?P<bfrag>[^>\s]+))?>")
+    r"(?:#(?P<bfrag>[^>\s]*))?>")
 # One atom of a BARE destination. A CHARACTER REFERENCE is matched as a unit
 # before the fragment split, so the `#` inside `&#38;` is not read as the
 # separator: `[x](foo&#38;bar.md)` renders as a link to `foo&bar.md` and was
@@ -429,7 +429,13 @@ _MD_DEST_ATOM_RE = re.compile(
 # escapes as units, exactly as the destination scan does.
 # The fragment of a bare destination. Named rather than compiled inside the
 # scan loop, so `_inline_link_end` asks the same pattern `md_links` does.
-_MD_FRAG_RE = re.compile(r"[^)\s]+")
+# `*`, not `+`. An EMPTY fragment is legal: `[x](missing.md#)` renders a link
+# the browser follows to the top of `missing.md`, and requiring one character
+# after the `#` meant the whole candidate did not match -- so the missing
+# target passed the audit clean. The anchor check downstream is guarded on the
+# fragment being non-empty, so an empty one asks about the PATH only, which is
+# what it means. Codex filed it.
+_MD_FRAG_RE = re.compile(r"[^)\s]*")
 _MD_LINK_TAIL_RE = re.compile(
     r"""(?:\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"""
     r"""|\((?:\\.|[^)\\])*\)))?\s*\)""")
