@@ -553,27 +553,46 @@ deploy_insight_pipeline() {
     admin_token="$(_secret admin-token 2>/dev/null || true)"
     admin_env="${ENV_STRING}${admin_token:+,ADMIN_TOKEN=${admin_token}}"
 
-    # 4Gi, raised from 2Gi on 2026-09-15 after the first real auto-refresh
-    # fan-out OOM-killed two of three children. Measured: NVDA and AMD both
-    # pinned run.googleapis.com/container/memory/utilizations at bucket 100
-    # (>=100% of 2Gi) for three consecutive minutes and were killed with
-    # signal 9; AVGO finished in the same run. The daily SPY/IWM/QQQ batch
-    # has never OOM'd, which is why this went unseen — auto-refresh ranks the
-    # top-N out of a ~16-ticker pool and reaches much heavier option chains.
+    # 8Gi/2 vCPU, raised from 4Gi/1 vCPU on 2026-09-17 after the 4Gi ceiling
+    # (itself a raise from 2Gi on 2026-09-15, #1116) OOM'd again. Measured
+    # (gcloud logging + the monitoring timeSeries REST API) against the live
+    # job on 2026-09-17: insight-pipeline-6b276 (NVDA, manual_batch) was
+    # SIGKILLed on BOTH attempts (task_attempt 0 at 03:32:54, task_attempt 1
+    # at 03:35:10), each preceded by "Out-of-memory event detected in
+    # container"; the same day, two of three auto_refresh fan-out children
+    # (AVGO in insight-pipeline-qh7pj, AMD in insight-pipeline-hqcr8) OOM'd on
+    # their first attempt and only read as job-level "success" because the
+    # compare-and-swap retry-claim added in #1094/#1116 stood down cleanly
+    # rather than re-running — so both tickers produced no report despite a
+    # green execution. run.googleapis.com/container/memory/utilizations
+    # measured mean=0.9968 (99.68% of the 4Gi limit) in the one-minute bucket
+    # containing the AMD OOM, confirming the container is still saturating
+    # the limit, not something else killing it. AMD OOM'd on 2026-09-15 too
+    # (insight-pipeline-bpqnv) — the same ticker exceeding the limit twice
+    # across two separate raises is why this is a further doubling per
+    # CLAUDE.md Rule 0.5, not a one-off retry.
     #
-    # 4Gi is a doubling per CLAUDE.md Rule 0.5, NOT a measured requirement:
-    # the utilization metric is censored at the limit, so it proves the
-    # containers reached 2048 MiB, never how much they wanted. Verify by
-    # re-running NVDA and reading the now-uncensored peak; raise again if it
-    # lands above ~50%.
+    # 1 vCPU caps memory at 4Gi (Cloud Run limit: memory scales with CPU —
+    # 1 vCPU -> 4Gi max, 2 vCPU -> 8Gi max), so 4Gi was already the ceiling
+    # for --cpu 1. Doubling memory again requires doubling CPU alongside it;
+    # --cpu must therefore be on BOTH the create and update paths for the
+    # same reason --memory has to be (see below) — a CPU bump on create
+    # alone would fail validation on create (cpu/memory mismatch) and read
+    # as shipped while never reaching the live job.
     #
-    # --memory must be on BOTH paths. The job already exists, so `create`
-    # fails and `update` is what actually runs; before this change `update`
-    # passed no --memory at all, and a change to the `create` line alone
-    # would have silently no-op'd against the live job forever.
+    # --memory and --cpu must be on BOTH paths. The job already exists, so
+    # `create` fails and `update` is what actually runs; before the #1116
+    # fix, `update` passed no --memory at all, and a change to the `create`
+    # line alone would have silently no-op'd against the live job forever.
+    #
+    # 8Gi is again a doubling per Rule 0.5, NOT a measured requirement: the
+    # utilization metric is censored at the limit, so this incident only
+    # rules out 4Gi. Verify post-deploy by re-running NVDA and AMD and
+    # reading the now-uncensored peak; raise again (with another CPU step)
+    # if it lands above ~50% of 8Gi.
     gcloud run jobs create insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 4Gi --cpu 1 --max-retries 1 \
+        --memory 8Gi --cpu 2 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.insight_pipeline_job" \
@@ -582,7 +601,7 @@ deploy_insight_pipeline() {
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 4Gi \
+        --memory 8Gi --cpu 2 \
         --command "python,-m,gcp.insight_pipeline_job" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${admin_env}" \
