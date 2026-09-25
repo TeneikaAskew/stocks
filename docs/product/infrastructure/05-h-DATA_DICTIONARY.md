@@ -1120,16 +1120,16 @@ Generated 2026-06-09 (post gamma-rename migration) from live `information_schema
 | 5 | `signal_strength` | smallint | Y |  |
 | 6 | `conditions_met` | character varying | Y |  |
 | 7 | `duration_minutes` | smallint | Y |  |
-| 8 | `return_pct` | double precision | Y |  |
-| 9 | `best_return` | double precision | Y |  |
+| 8 | `return_pct` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
+| 9 | `best_return` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
 | 10 | `best_window_min` | smallint | Y |  |
-| 11 | `return_5min` | double precision | Y |  |
-| 12 | `return_10min` | double precision | Y |  |
-| 13 | `return_15min` | double precision | Y |  |
-| 14 | `return_20min` | double precision | Y |  |
-| 15 | `return_30min` | double precision | Y |  |
-| 16 | `return_45min` | double precision | Y |  |
-| 17 | `return_60min` | double precision | Y |  |
+| 11 | `return_5min` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
+| 12 | `return_10min` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
+| 13 | `return_15min` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
+| 14 | `return_20min` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
+| 15 | `return_30min` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
+| 16 | `return_45min` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
+| 17 | `return_60min` | double precision | Y | Percentage points (0.5 = +0.5%), as `lib/trading_analysis.py` writes it |
 | 18 | `entry_rsi` | double precision | Y |  |
 | 19 | `entry_ema9` | double precision | Y |  |
 | 20 | `entry_ema20` | double precision | Y |  |
@@ -1223,15 +1223,15 @@ Generated 2026-06-09 (post gamma-rename migration) from live `information_schema
 | 10 | `cls_120m` | character varying | Y |  |
 | 11 | `cls_240m` | character varying | Y |  |
 | 12 | `best_tf` | character varying | Y |  |
-| 13 | `return_5m` | double precision | Y |  |
-| 14 | `return_15m` | double precision | Y |  |
-| 15 | `return_30m` | double precision | Y |  |
-| 16 | `return_60m` | double precision | Y |  |
-| 17 | `return_90m` | double precision | Y |  |
-| 18 | `return_120m` | double precision | Y |  |
-| 19 | `return_240m` | double precision | Y |  |
+| 13 | `return_5m` | double precision | Y | Fraction (0.005 = +0.5%); divided by 100 from `historical_signals` on read (#1154) |
+| 14 | `return_15m` | double precision | Y | Fraction (0.005 = +0.5%); divided by 100 from `historical_signals` on read (#1154) |
+| 15 | `return_30m` | double precision | Y | Fraction (0.005 = +0.5%); divided by 100 from `historical_signals` on read (#1154) |
+| 16 | `return_60m` | double precision | Y | Fraction (0.005 = +0.5%); divided by 100 from `historical_signals` on read (#1154) |
+| 17 | `return_90m` | double precision | Y | Fraction (0.005 = +0.5%), computed from `market_data_intraday` |
+| 18 | `return_120m` | double precision | Y | Fraction (0.005 = +0.5%), computed from `market_data_intraday` |
+| 19 | `return_240m` | double precision | Y | Fraction (0.005 = +0.5%), computed from `market_data_intraday` |
 | 20 | `atr_5m_pct` | double precision | Y |  |
-| 21 | `mfe_60m_atrs` | double precision | Y |  |
+| 21 | `mfe_60m_atrs` | double precision | Y | `return_60m / atr_5m_pct`, both fractions, so a ratio |
 | 22 | `status` | character varying | N |  |
 
 

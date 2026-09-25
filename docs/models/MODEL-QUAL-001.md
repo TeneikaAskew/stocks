@@ -6,7 +6,7 @@
 **Jobs:** `signal-quality-report` (`0 1 * * 2-6`), `signal-quality-alarm` (`0 2 * * 2-6`) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RETEST
-**Doc health:** CURRENT · **Last verified:** 2026-09-22
+**Doc health:** CURRENT · **Last verified:** 2026-09-25
 
 > **Registered 2026-09-18, and it was the round-10 sweep's own blind spot.** Both schedulers are
 > declared in `gcp/deploy.sh` across a backslash line continuation, and
@@ -26,19 +26,20 @@
 ## What it decides
 
 **The classifier** turns every historical signal fire into a verdict at seven horizons.
-`classify` (`scripts/signal_quality_report.py:84-106`) is a pure function of one return:
+`classify` (`scripts/signal_quality_report.py:92-115`) is a pure function of one return, a
+fraction (0.005 = 0.5%):
 
 | Verdict | Rule | Threshold |
 |---|---|---|
-| `WRONG_DIRECTION` | `return <= -CLEAN_THRESHOLD` | `0.005` (`:69`) |
+| `WRONG_DIRECTION` | `return <= -CLEAN_THRESHOLD` | `0.005` (`:70`) |
 | `CLEAN_HIT` | `return >= +CLEAN_THRESHOLD` | `0.005` |
-| `NOISE` | `abs(return) < NOISE_THRESHOLD` | `0.003` (`:70`) |
+| `NOISE` | `abs(return) < NOISE_THRESHOLD` | `0.003` (`:71`) |
 | `MIXED` | between the two, either sign | — |
 
 It writes one `signal_metrics` row per `(ticker, entry_time, strategy)` with a classification at
 each of `return_5min … return_60min` plus the extended `EXTENDED_TFS_MIN = (90, 120, 240)`
-(`:78`) reconstructed from `market_data_intraday`, an ATR-normalised MFE, and
-`best_clean_timeframe` (`:110-118`) — *"the shortest timeframe that classified `CLEAN_HIT`"*.
+(`:79`) reconstructed from `market_data_intraday`, an ATR-normalised MFE, and
+`best_clean_timeframe` (`:118-128`) — *"the shortest timeframe that classified `CLEAN_HIT`"*.
 That is the system's verdict on whether a strategy's fires were right, and how fast.
 
 **The alarm** (`gcp/signal_quality_alarm.py`) compares the trailing 7 days' clean rate to the
@@ -70,53 +71,40 @@ with `QUALITY_CORRELATION_THRESHOLD = 0.10` and `QUALITY_CORRELATION_MIN_SAMPLE 
 checks answer different questions: the first asks whether the strategies still hit, the
 second whether the score still ranks.
 
-### Return units — the thresholds are applied 100x too lenient on four of seven horizons
+### Return units: fixed in code, history pending re-run ([#1154](https://github.com/TeneikaAskew/stocks/issues/1154))
 
-`returns_by_tf` carries **two units in one dict**, and the constants are compared against both.
+Until the fix for #1154, `returns_by_tf` carried **two units in one dict**, and the constants
+were compared against both:
 
 ```
 lib/trading_analysis.py:933          (max - last) / last * 100      <- PERCENTAGE POINTS
 scripts/run_historical_signals.py:62-68, :254-256   identity mapping, no conversion
   => historical_signals.return_{5,15,30,60}min store 0.5 for a 0.5% move
 
-scripts/signal_quality_report.py:177 (best - entry) / entry         <- RAW FRACTION
+scripts/signal_quality_report.py:187 (best - entry) / entry         <- RAW FRACTION
   => return_{90,120,240}m store 0.005 for a 0.5% move
-
-scripts/signal_quality_report.py:316 returns_by_tf.update(extended) <- merged, one dict
 ```
 
-The comment above the constants states the assumption that fails:
+The comment above the constants said the source columns were fractions ("matching
+historical_signals return_*min columns"). They are not: the writer multiplies by 100
+(`lib/trading_analysis.py:933`) and the report read the value as stored. So on **5m / 15m / 30m / 60m** the effective cut-point was **0.005%, not 0.5%**, 100x too
+lenient, and `mfe_60m_atrs` was 100x inflated. Measured in production on 2026-09-24 over
+189,686 `final` rows: median |return| 0.063 / 0.112 / 0.168 / 0.251 on 5/15/30/60m (percentage
+points) against 0.0044 / 0.0053 / 0.0082 on 90/120/240m (fractions). `cls_60m` read 90.2%
+`CLEAN_HIT` while `cls_90m`, on the correct scale, read 46.3%. The daily clean-rate alarm reads
+`cls_60m` by default (`gcp/signal_quality_alarm.py:315-318`), so it compared a nearly
+saturated rate.
 
-```python
-# scripts/signal_quality_report.py:64-65
-# Returns are FRACTIONS (0.005 = 0.5%), matching historical_signals
-# return_*min columns.                   <- those columns are NOT fractions
-CLEAN_THRESHOLD: float = 0.005
-NOISE_THRESHOLD: float = 0.003
-```
+**The fix normalises at the read boundary.** `SOURCE_RETURN_SCALE = 100.0` (`:87`) states the
+source unit where the constants live, and `_source_return_fraction` (`:369-372`) divides the four
+`historical_signals` returns as `compute_metrics_for_signal` (`:280`) reads them. Every value
+`classify` sees is now a fraction, the thresholds keep their documented meaning, and the
+90/120/240m returns are untouched.
 
-`classify` is applied to all seven horizons (`:329-335`), so on **5m / 15m / 30m / 60m** the
-effective cut-point is **0.005%, not 0.5%** — 100x too lenient. Nearly every non-zero fire
-scores `CLEAN_HIT` or `WRONG_DIRECTION`, and almost nothing scores `NOISE`. On 90/120/240m the
-thresholds behave as documented. `best_clean_timeframe` (`:110-121`) iterates ascending, so it
-meets the mis-scaled horizons first.
-
-`mfe_60m_atrs` (`:322-323`) divides a percentage-point return by `atr_5m_pct`, a fraction, and
-is therefore **100x inflated**.
-
-**This is not latent.** `signal-quality-alarm-daily` (`gcp/deploy.sh:4835-4836`) passes no
-`--tf`, and the default is `cls_60m` (`gcp/signal_quality_alarm.py:315-318`) — one of the four
-affected horizons. The daily clean-rate regression alarm reads a column computed with a
-100x-wrong threshold.
-
-And the suite agrees with the code: `tests/scripts/test_signal_quality_report.py:281-282`
-feeds `return_60min = 0.0150` and asserts `0.015 / 0.02 = 0.75`, a fraction where production
-supplies percentage points. A test that shares the code's wrong assumption cannot detect it.
-
-Filed as [#1154](https://github.com/TeneikaAskew/stocks/issues/1154). This is the **second**
-independent defect in this model, alongside the dead join below; both were found by measuring
-a system that was registered `Production` on the reasoning that a measurement system has
-nothing to validate.
+**History is not corrected by the code change.** Every `signal_metrics` row written before it
+keeps its 100x-lenient `cls_5m` to `cls_60m`, `best_tf` and `mfe_60m_atrs` until the report is
+re-run in `--mode=historical` over its dates. That re-run, and the alarm's baseline across it,
+are tracked on #1154.
 
 ### The alarm cannot fire on live data at all
 
@@ -134,7 +122,7 @@ The two sides are written by different clocks. `signal_alerts.alert_ts` is `self
 (`gcp/signal_monitor.py:1662`), and a live run has `replay_clock_ts is None`, so that returns
 `datetime.now(tz)` — **wall clock, with seconds and microseconds** (`:1849-1877`).
 `signal_metrics.entry_time` comes from `historical_signals.entry_time`
-(`scripts/signal_quality_report.py:380-382`), which is a **bar timestamp**. A wall-clock
+(`scripts/signal_quality_report.py:393-395`), which is a **bar timestamp**. A wall-clock
 instant equals a minute-aligned bar timestamp only by coincidence.
 
 | Join condition, `run_kind='live'` and `status='final'` | Rows |
@@ -214,8 +202,8 @@ derivation of the number; `0.10` carries neither.
 
 - **Fail-loud on stale data.** In `rolling` mode the report exits non-zero when
   `market_data_intraday` is more than an hour stale during market hours *"rather than silently
-  producing wrong numbers"* (`:30-32`) — CLAUDE.md §3.7 applied at the input.
-- **Idempotent.** `upsert_signal_metrics` (`:425-426`) is an `ON CONFLICT` upsert, so a re-run
+  producing wrong numbers"* (`:31-33`) — CLAUDE.md §3.7 applied at the input.
+- **Idempotent.** `upsert_signal_metrics` (`:438-439`) is an `ON CONFLICT` upsert, so a re-run
   after a partial failure converges.
 - **Two-phase promotion.** `rolling` writes `status='pending'` for not-yet-closed horizons and
   re-evaluates until all seven windows have closed, then promotes to `'final'`. The alarm runs
@@ -229,27 +217,29 @@ derivation of the number; `0.10` carries neither.
 | Symbol | Role |
 |---|---|
 | `signal_quality_report.main` | The classifier; `--mode=historical` / `--mode=rolling`, `--lookback-days` |
-| `classify` (`:84`) | The four-way verdict |
+| `classify` (`:92`) | The four-way verdict |
 | `signal_quality_alarm.detect_regression` (`:104`) | The clean-rate alarm decision |
 | `compute_score_quality_correlation` (`:222`) | The score-discrimination decision; `abs(rho) < 0.10` at `:385-387` |
 
 ## Tests
 
-`tests/scripts/test_signal_quality_report.py` — **50 tests**, importing `CLEAN_THRESHOLD`,
+`tests/scripts/test_signal_quality_report.py` — **51 tests**, importing `CLEAN_THRESHOLD`,
 `NOISE_THRESHOLD`, `classify`, `main` and `parse_args` by name.
 `test_classify_noise_below_noise_threshold` and `test_classify_mixed_between_noise_and_clean`
 exercise the cut-points directly.
 `tests/scripts/test_signal_quality_alarm.py` — **20 tests** over the alarm entry point.
 
-Two gaps remain, and the second is worse than a gap:
+The return unit is now pinned across the two modules that disagreed about it.
+`test_source_returns_reach_classify_as_fractions_end_to_end` runs the real writer,
+`MarketAnalyzer.generate_technical_signals`, through `map_signals_to_table` into
+`compute_metrics_for_signal` on bars with a known 0.2% move, and asserts a 0.002 fraction and
+`NOISE`. Before the fix it failed with `0.0167 == 0.000167`, exactly 100x.
+`test_compute_metrics_for_signal_full_pipeline` feeds percentage points, the unit production
+stores; until #1154 it fed fractions and so agreed with the bug.
 
-1. Nothing asserts the cut-points separate signal from noise **on production data**. The 50
-   tests establish that `classify` implements the constants, not that the constants are right.
-2. **The unit test encodes the same wrong assumption production violates.**
-   `test_signal_quality_report.py:281-282` feeds `return_60min = 0.0150` and asserts
-   `0.015 / 0.02 = 0.75` — a *fraction*, where production supplies *percentage points*. A suite
-   that agrees with the code about the wrong unit cannot detect the wrong unit. See
-   "Return units" below.
+One gap remains: nothing asserts the cut-points separate signal from noise **on production
+data**. The tests establish that `classify` implements the constants, not that the constants
+are right.
 
 > Until 2026-09-22 this section named **no file at all**, calling the pure helpers "the stated
 > unit-test surface" while 70 tests across two files targeted this model. Saying nothing is how
@@ -259,6 +249,9 @@ Two gaps remain, and the second is worse than a gap:
 
 [#1152](https://github.com/TeneikaAskew/stocks/issues/1152) the score-discrimination alarm's
 timestamp join matches zero live rows, so that half of the job has never run in production.
+
+[#1154](https://github.com/TeneikaAskew/stocks/issues/1154) return units: fixed in code; stays open
+until the rows written before the fix are re-classified.
 
 Two further findings recorded here rather than filed: the unread `ticker_calibration`
 thresholds (also on [MODEL-CALIB-001](MODEL-CALIB-001.md)), and `abs(rho)` treating an
