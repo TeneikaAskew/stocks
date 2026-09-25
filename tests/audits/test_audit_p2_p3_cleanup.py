@@ -131,7 +131,8 @@ def test_quality_correlation_high_for_perfect_discrimination():
 
 def test_quality_correlation_zero_when_no_discrimination():
     """When hit rate is constant across quartiles, ρ MUST be 0.0
-    (NOT None) so main()'s |ρ| < threshold check fires the alarm.
+    (NOT None) so main()'s signed ρ < threshold check reports it (the
+    check is report-only since #1152; it posts and logs, never exits 1).
 
     Codex P1 review on PR #328 (#3211975578): pre-fix, scipy's
     spearmanr returned NaN for constant rates, the helper converted
@@ -169,21 +170,24 @@ def test_quality_correlation_embed_signals_insufficient_data():
     """format_quality_correlation_embed handles None ρ as
     insufficient-data (gray, no alarm)."""
     from gcp.signal_quality_alarm import format_quality_correlation_embed
-    payload = format_quality_correlation_embed(None, n_rows=10, tf_col="cls_60m")
+    payload = format_quality_correlation_embed(None, n_rows=10, label="live exits, 14d")
     assert payload["embeds"][0]["color"] == 0x808080, "gray = insufficient"
 
 
-def test_quality_correlation_embed_red_when_below_threshold():
-    """Below |ρ| threshold → red embed (alarm fires)."""
+def test_quality_correlation_embed_amber_when_below_threshold():
+    """Below the threshold → amber, not the regression check's red: the
+    correlation check is report-only (#1152), so it never reads as an alarm."""
     from gcp.signal_quality_alarm import format_quality_correlation_embed
-    payload = format_quality_correlation_embed(0.05, n_rows=200, tf_col="cls_60m")
-    assert payload["embeds"][0]["color"] == 0xff0000, "red = alarm"
+    payload = format_quality_correlation_embed(0.05, n_rows=200, label="live exits, 14d")
+    embed = payload["embeds"][0]
+    assert embed["color"] == 0xF0AD4E, "amber = weak, report-only"
+    assert "Report-only" in embed["description"]
 
 
 def test_quality_correlation_embed_green_when_healthy():
     """Above threshold → green embed."""
     from gcp.signal_quality_alarm import format_quality_correlation_embed
-    payload = format_quality_correlation_embed(0.7, n_rows=200, tf_col="cls_60m")
+    payload = format_quality_correlation_embed(0.7, n_rows=200, label="live exits, 14d")
     assert payload["embeds"][0]["color"] == 0x36a64f, "green = healthy"
 
 

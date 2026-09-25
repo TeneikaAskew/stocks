@@ -50,26 +50,27 @@ insufficient   = trailing.n_total < min_sample or prior.n_total < min_sample
 is_regression  = (not insufficient) and (delta < -threshold_pp)
 ```
 
-(`:114-116`), with `REGRESSION_THRESHOLD_PP = 3.0` (`:51`) and `MIN_SAMPLE_SIZE = 50` (`:57`).
-On a regression it posts a red Discord embed, logs an ERROR payload the failure-notifier turns
-into a GitHub issue, and exits non-zero.
+(`:120-122`), with `REGRESSION_THRESHOLD_PP = 3.0` (`:57`) and `MIN_SAMPLE_SIZE = 50` (`:63`).
+On a regression it posts a red Discord embed, logs an ERROR payload, and exits non-zero. The
+failed execution is what the failure notifier turns into a GitHub issue: its sink matches
+`severity>=ERROR` (`gcp/deploy.sh`, the `gcp-job-failures-sink` filter), and this job's own text
+lines land at DEFAULT severity whatever their Python level (read 2026-09-25).
 
-**There is a second alarm, and it is independent of the first.** An earlier revision of this
-document described only the clean-rate branch, which is half the job. `main()` also joins
-`signal_alerts.total_score` to `signal_metrics` on the same window
-(`fetch_score_quality_rows`, `:184-210`, live rows only), bins scores into quartiles, and
-correlates quartile rank against per-quartile hit rate:
+**There is a second check, and since #1152 it is report-only.** `main()` also ranks live alerts'
+`total_score` quartiles against each alert's **own** realised exit
+(`fetch_score_quality_rows`, `:190-218`: `signal_alerts` only, `run_kind = 'live'`, hit =
+`exit_return_pct > 0`) over a 14-day window (`QUALITY_WINDOW_DAYS`, `:238`):
 
 ```python
-rho = compute_score_quality_correlation(quality_rows)          # :222-278
-quality_alarm = (rho is not None and abs(rho) < QUALITY_CORRELATION_THRESHOLD)   # :385-387
+rho = compute_score_quality_correlation(quality_rows)          # :248-304
+if score_discrimination_weak(rho):                              # :425, signed: rho < 0.10
+    logger.warning("signal_quality_correlation_low: ...")
 ```
 
-with `QUALITY_CORRELATION_THRESHOLD = 0.10` and `QUALITY_CORRELATION_MIN_SAMPLE = 50`
-(`:218-219`). It posts its own Discord embed, logs `signal_quality_correlation_low`, and
-**returns 1** (`:422-423`) — so *a stable clean rate does not mean the job passed*. The two
-checks answer different questions: the first asks whether the strategies still hit, the
-second whether the score still ranks.
+It posts an amber embed and logs a WARNING when rho is below `QUALITY_CORRELATION_THRESHOLD =
+0.10` (`:233`), and it **never fails the job**. The two checks answer different questions: the
+first asks whether the strategies still hit, the second whether the score still ranks. Why the
+second one only reports is the next two sections.
 
 ### Return units: fixed in code, history pending re-run ([#1154](https://github.com/TeneikaAskew/stocks/issues/1154))
 
@@ -106,65 +107,45 @@ keeps its 100x-lenient `cls_5m` to `cls_60m`, `best_tf` and `mfe_60m_atrs` until
 re-run in `--mode=historical` over its dates. That re-run, and the alarm's baseline across it,
 are tracked on #1154.
 
-### The alarm cannot fire on live data at all
+### Score discrimination: fixed pairing, report-only ([#1152](https://github.com/TeneikaAskew/stocks/issues/1152))
 
-**Measured against production on 2026-09-22: the join returns zero rows.**
+**Until #1152 the check could not run.** It joined `signal_alerts` to `signal_metrics` on
+`sm.entry_time = sa.alert_ts`. A live `alert_ts` is wall-clock time with seconds and
+microseconds, and `entry_time` is a bar timestamp, so the join matched **0** live rows (measured
+2026-09-22). `compute_score_quality_correlation` returned `None` at its sample gate on every run,
+and the `return 1` was unreachable.
 
-`fetch_score_quality_rows` joins on exact timestamp equality (`:198-200`):
+**Truncating both sides to the minute, the fix the issue proposed, would have been wrong.** It
+matched 55 of 1,024 live alerts over 120 days (measured 2026-09-24), with no spike at any
+offset, and the rows it matched are a different population. Every live alert is a
+mean-reversion fire. `historical_signals` in that range is momentum only, `signal_metrics` has no
+direction column, and when the two strategies fire in the same minute they point opposite ways
+78.6% of the time (`gcp/schema.sql`, the `historical_signals` primary-key migration). A joined
+row would have scored a live alert by an unrelated replay's outcome.
 
-```sql
-JOIN signal_metrics sm
-  ON sm.ticker = sa.ticker
- AND sm.entry_time = sa.alert_ts
-```
+**The check now pairs each live alert with its own exit.** `exit_return_pct` is present on 1,024
+of 1,024 live alerts. It is written by the exit watcher and the EOD resolver, and
+`gcp/indicator_correlation_job.py` already uses `exit_return_pct > 0` as the win label. Alerts
+still open are left out rather than counted as misses.
 
-The two sides are written by different clocks. `signal_alerts.alert_ts` is `self._now()`
-(`gcp/signal_monitor.py:1662`), and a live run has `replay_clock_ts is None`, so that returns
-`datetime.now(tz)` — **wall clock, with seconds and microseconds** (`:1849-1877`).
-`signal_metrics.entry_time` comes from `historical_signals.entry_time`
-(`scripts/signal_quality_report.py:393-395`), which is a **bar timestamp**. A wall-clock
-instant equals a minute-aligned bar timestamp only by coincidence.
+**`abs(rho)` became a signed comparison.** Under `abs()`, rho = -0.894 (a score that reliably
+predicts the *opposite* outcome) scored the same as a healthy +0.894. `score_discrimination_weak`
+(`:241-245`) is `rho is not None and rho < 0.10`, and the embed says "inverted" when rho < 0.
 
-| Join condition, `run_kind='live'` and `status='final'` | Rows |
-|---|---:|
-| `sm.entry_time = sa.alert_ts` — what the code does | **0** |
-| `date_trunc('minute', …)` on both sides | **230** |
+**Why the check only reports.** The production function was run on the real paired rows:
 
-So `rho` is `None` on every live run, `quality_alarm` is `rho is not None and …` (`:385-387`)
-and therefore always `False`, and the branch that would `return 1` is unreachable. **Score
-discrimination is not monitored in production**, and has not been since the alarm shipped.
+| window | n | rho |
+|---|---:|---|
+| rolling 7 days (17 windows) | 48 to 77 | -0.95 to +1.0; 3 windows under the 50-row floor |
+| rolling 14 days (16 windows) | 101 to 142 | -0.8 to +0.8; the signed rule fires in 5 |
+| 120 days | 1,024 | +0.4, from quartile hit rates of 51% / 45% / 50% / 53%, each ±5 to 7 points |
 
-The second row is what makes this fixable rather than merely broken: truncating both sides to
-the minute yields 230 joinable rows, comfortably above the alarm's own
-`QUALITY_CORRELATION_MIN_SAMPLE = 50`. Tracked as
-[#1152](https://github.com/TeneikaAskew/stocks/issues/1152).
-
-> **An earlier revision of this document presented this alarm as operating**, describing its
-> threshold and its non-zero exit without checking whether its query returns anything. The
-> `abs(rho)` finding below was measured by calling the function directly with synthetic rows,
-> which is why that one is sound and this one was missed: the function works, and nothing
-> reaches it.
-
-### `abs(rho)` means an inverted score reads as healthy
-
-Measured against the production function (80 synthetic rows per case, scores 1-8):
-
-| Score-to-outcome relationship | ρ | Alarms? |
-|---|---|---|
-| Healthy — high scores hit | **+0.894** | no |
-| Flat — every quartile hits alike | **0.000** | **yes** |
-| **Inverted — high scores MISS** | **−0.894** | **no** |
-| Fewer than 50 classified rows | `None` | no |
-
-The inverted row is the finding. The module's own comment (`:212-217`) says the alarm fires
-when *"the score's discriminative power decays … the scoring system is no longer
-predictive"*, but ρ = −0.894 is maximal discriminative power pointed the wrong way — a score
-that reliably predicts the **opposite** of what it claims. `abs()` scores that identically to
-a perfectly healthy system. Only the middle of the range alarms.
-
-The sample gate fails open by the same shape: below 50 classified rows `compute_score_quality_correlation`
-returns `None` (`:233`), `rho is not None` is false, and no alarm fires. That is the
-deliberate choice the clean-rate branch also makes and states; here it is unstated.
+At row level, Spearman(`total_score`, `exit_return_pct`) is **-0.004, p = 0.91**. The score has no
+measurable edge, so a four-point rank correlation of it swings on noise. An exit 1 would open a
+GitHub issue in about one fortnight in three. That is an alarm people learn to ignore, measuring a
+fact already filed as [#905](https://github.com/TeneikaAskew/stocks/issues/905). The WARNING
+and the embed keep it visible. A statistic with a noise model (an effect size with its
+uncertainty) is what should replace the quartile rho, and that belongs to #905.
 
 It is about signals, not infrastructure, which is what separates it from the
 `freshness-watchdog` and `audit-infra-drift` alarms that this registry deliberately excludes.
@@ -187,7 +168,7 @@ its reasoning in the comment above it — *"comparing 4 fires vs 3 fires is not 
 Picked by inspection: even on a slow watchlist, a single week typically produces 100+
 classified rows in 60m"* — which is an inspection, not a derivation, but it is stated as one.
 `detect_regression`'s docstring states its own error preference: *"we'd rather miss a real
-regression than fire a noisy alarm on 5 vs 3 fires."* The comment at `:50` is explicit that
+regression than fire a noisy alarm on 5 vs 3 fires."* The comment at `:56` is explicit that
 the threshold is *"a regression detector, not a per-ticker tuning knob."*
 
 **UNKNOWN — not recorded:** `CLEAN_THRESHOLD = 0.005`, `NOISE_THRESHOLD = 0.003`,
@@ -196,7 +177,9 @@ the threshold is *"a regression detector, not a per-ticker tuning knob."*
 90/120/240-minute horizons. The 0.5% / 0.3% cut-points decide what counts as a hit for every
 strategy in the system and carry no derivation, which is why the recommendation is RETEST.
 `QUALITY_CORRELATION_MIN_SAMPLE` carries a reason (*"below this, ρ is too noisy"*) but no
-derivation of the number; `0.10` carries neither.
+derivation of the number; `0.10` carries neither. `QUALITY_WINDOW_DAYS = 14` is the one quality
+constant with a measurement behind it: seven days of live alerts fell under the 50-row floor in 3
+of 17 weeks, and fourteen never did (#1152).
 
 ## What it does right
 
@@ -218,8 +201,9 @@ derivation of the number; `0.10` carries neither.
 |---|---|
 | `signal_quality_report.main` | The classifier; `--mode=historical` / `--mode=rolling`, `--lookback-days` |
 | `classify` (`:92`) | The four-way verdict |
-| `signal_quality_alarm.detect_regression` (`:104`) | The clean-rate alarm decision |
-| `compute_score_quality_correlation` (`:222`) | The score-discrimination decision; `abs(rho) < 0.10` at `:385-387` |
+| `signal_quality_alarm.detect_regression` (`:110`) | The clean-rate alarm decision |
+| `compute_score_quality_correlation` (`:248`) | The quartile rank correlation the report-only check posts |
+| `score_discrimination_weak` (`:241`) | Signed: `rho is not None and rho < 0.10` |
 
 ## Tests
 
@@ -227,7 +211,11 @@ derivation of the number; `0.10` carries neither.
 `NOISE_THRESHOLD`, `classify`, `main` and `parse_args` by name.
 `test_classify_noise_below_noise_threshold` and `test_classify_mixed_between_noise_and_clean`
 exercise the cut-points directly.
-`tests/scripts/test_signal_quality_alarm.py` — **20 tests** over the alarm entry point.
+`tests/scripts/test_signal_quality_alarm.py` — **24 tests** over the alarm entry point. Four
+pin #1152, each run red against the code before it: the quality rows come from `signal_alerts`
+alone, with each alert's own `exit_return_pct` and no `signal_metrics` join; rho = -0.894 renders
+"inverted", not healthy; a flat rho without `--dry-run` exits 0 with a WARNING and no ERROR (it
+exited 1); and the window is 14 days.
 
 The return unit is now pinned across the two modules that disagreed about it.
 `test_source_returns_reach_classify_as_fractions_end_to_end` runs the real writer,
@@ -247,14 +235,16 @@ are right.
 
 ## Known issues
 
-[#1152](https://github.com/TeneikaAskew/stocks/issues/1152) the score-discrimination alarm's
-timestamp join matches zero live rows, so that half of the job has never run in production.
+[#1152](https://github.com/TeneikaAskew/stocks/issues/1152) score discrimination: fixed in code
+(own-exit pairing, signed, report-only); stays open until the deployed job is verified.
+[#905](https://github.com/TeneikaAskew/stocks/issues/905) owns the finding the fix surfaced: the
+live score has no measurable edge.
 
 [#1154](https://github.com/TeneikaAskew/stocks/issues/1154) return units: fixed in code; stays open
 until the rows written before the fix are re-classified.
 
-Two further findings recorded here rather than filed: the unread `ticker_calibration`
-thresholds (also on [MODEL-CALIB-001](MODEL-CALIB-001.md)), and `abs(rho)` treating an
-inverted score as healthy. Both measured, not inferred.
+One further finding recorded here rather than filed: the unread `ticker_calibration`
+thresholds (also on [MODEL-CALIB-001](MODEL-CALIB-001.md)). Measured, not inferred. The
+`abs(rho)` finding this line used to carry is fixed with #1152.
 Titles and severity are owned by
 [12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).
