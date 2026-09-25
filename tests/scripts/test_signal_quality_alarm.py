@@ -242,3 +242,102 @@ def test_main_dry_run_never_returns_nonzero_even_on_regression():
     with _mock_db(trailing, prior):
         rc = main(["--dry-run"])
     assert rc == 0
+
+
+# ── 6) Score discrimination (#1152): own outcome, signed, report-only ─
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+# Four quartiles hitting at the same rate: rho = 0.0, "no discrimination".
+_FLAT_QUALITY = [{"score": q, "hit": 1 if i < 12 else 0}
+                 for q in (1.0, 2.0, 3.0, 4.0) for i in range(25)]
+# A clean-rate history that never regresses, so only the quality check acts.
+_STABLE = [{"cls_60m": "CLEAN_HIT"}] * 60 + [{"cls_60m": "NOISE"}] * 140
+
+
+class _FakeConn:
+    def __init__(self, rows, seen):
+        self._rows, self._seen = rows, seen
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params):
+        self._seen.append((str(sql), params))
+        rows = self._rows
+
+        class _Result:
+            def fetchall(self):
+                return rows
+        return _Result()
+
+
+class _FakeEngine:
+    def __init__(self, rows):
+        self.rows, self.seen = rows, []
+
+    def connect(self):
+        return _FakeConn(self.rows, self.seen)
+
+
+def test_score_quality_rows_pair_each_live_alert_with_its_own_exit():
+    """#1152: the check joined signal_alerts to signal_metrics on exact
+    timestamps and matched 0 live rows. Truncating both sides to the minute
+    (the issue's proposal) would have paired live mean-reversion alerts with
+    unrelated momentum replay rows, 78.6% of them the opposite direction.
+    Every live alert carries its own realised exit, so the rows come from
+    signal_alerts alone."""
+    from gcp.signal_quality_alarm import fetch_score_quality_rows
+    eng = _FakeEngine([(4.5, 1), (2.0, 0)])
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    rows = fetch_score_quality_rows(eng, start, end)
+    sql = " ".join(eng.seen[0][0].split())
+    assert "signal_metrics" not in sql
+    assert "FROM signal_alerts" in sql
+    assert "exit_return_pct > 0" in sql
+    assert "exit_return_pct IS NOT NULL" in sql
+    assert "run_kind = 'live'" in sql
+    assert eng.seen[0][1] == {"start": start, "end": end}
+    assert rows == [{"score": 4.5, "hit": 1}, {"score": 2.0, "hit": 0}]
+
+
+def test_an_inverted_score_is_flagged_not_healthy():
+    """abs(rho) scored rho = -0.894, a score that reliably predicts the
+    opposite outcome, exactly like a healthy +0.894."""
+    from gcp.signal_quality_alarm import format_quality_correlation_embed
+    embed = format_quality_correlation_embed(-0.894, 200, "live exits, 14d")["embeds"][0]
+    assert embed["color"] != 0x36a64f, "an inverted score must not render healthy"
+    assert "inverted" in embed["title"].lower()
+
+
+def test_weak_discrimination_is_reported_but_never_fails_the_job(caplog):
+    """Report-only (#1152). Paired with their own exits, 16 fortnights of
+    live alerts gave a quartile rho anywhere from -0.8 to +0.8, and over 120
+    days the score has no measurable edge (Spearman -0.004, p = 0.91), so an
+    exit 1 here would page on noise: a failed execution is what the failure
+    notifier turns into an issue. A weak rho is a WARNING and an embed."""
+    import logging
+    with _mock_db(_STABLE, _STABLE, quality_rows=_FLAT_QUALITY):
+        with caplog.at_level(logging.WARNING, logger="gcp.signal_quality_alarm"):
+            rc = main([])
+    assert rc == 0
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("signal_quality_correlation_low" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_score_quality_reads_a_fourteen_day_window():
+    """Seven days of live alerts fell under the 50-row floor in 3 of 17
+    weeks (48 to 77 rows a week); fourteen days never did (101 to 142)."""
+    from gcp.signal_quality_alarm import QUALITY_WINDOW_DAYS
+    with _mock_db(_STABLE, _STABLE), \
+         patch("gcp.signal_quality_alarm.fetch_score_quality_rows",
+               return_value=[]) as fetch:
+        main(["--dry-run"])
+    start, end = fetch.call_args.args[1:3]
+    assert QUALITY_WINDOW_DAYS == 14
+    assert end - start == timedelta(days=QUALITY_WINDOW_DAYS)
