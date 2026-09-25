@@ -1688,15 +1688,38 @@ def test_a_write_that_fails_mid_stamp_says_what_was_already_written(audit_repo, 
                 "--issues-snapshot", str(audit_repo / "issues.json"), "--stamp"])
 
 
-def test_a_snapshot_that_cannot_be_written_is_exit_two(audit_repo):
+def test_a_snapshot_that_cannot_be_written_is_exit_two(audit_repo, monkeypatch):
     """Reading a bad snapshot is exit 2; failing to WRITE one was exit 1, via
-    an OSError escaping the AuditError handler. Same class, same status."""
+    an OSError escaping the AuditError handler. Same class, same status.
+
+    The issue read is stubbed rather than supplied by `--issues-snapshot`,
+    which is how this reached the write path until that combination became a
+    refusal of its own -- see the test below."""
     (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
     _commit(audit_repo, "tree")
+    monkeypatch.setattr(m, "fetch_issue_states",
+                        lambda repo: {1: {"state": "open", "reason": "",
+                                          "kind": "ISSUE"}})
     with pytest.raises(m.AuditError, match="could not be written"):
         m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
-                "--issues-snapshot", str(audit_repo / "issues.json"),
                 "--write-issues-snapshot", str(audit_repo / "nodir" / "out.json")])
+
+
+def test_a_snapshot_may_not_be_rewritten_from_a_snapshot(audit_repo):
+    """`--issues-snapshot X --write-issues-snapshot Y` stamps Y with a fresh
+    `capturedAt` although GitHub was never queried, so repeating it inside the
+    one-day expiry window keeps stale issue data looking freshly captured for
+    ever and a blocker that closed meanwhile never reports. The age guard
+    exists to stop exactly that. Codex filed it."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")
+    with pytest.raises(m.AuditError, match="cannot be combined"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json"),
+                "--write-issues-snapshot", str(audit_repo / "out.json")])
+    # And the refusal happens BEFORE anything is written, so a rejected run
+    # leaves no file claiming a capture it never made.
+    assert not (audit_repo / "out.json").exists()
 
 
 def test_verify_without_stamp_is_refused(audit_repo):
@@ -8553,3 +8576,68 @@ def test_a_coordinator_splits_two_verdicts_but_not_one_list():
     # The spellings that already worked.
     assert refs("#1 is still open; #2 is resolved\n") == [f"{R}#1"]
     assert refs("#1 was still open, now resolved\n") == []
+
+
+def test_verify_is_refused_while_a_declared_code_path_is_missing(audit_repo):
+    """`check_registry_paths` already reports a declared path that does not
+    exist, because the drift check for that document can never fire again --
+    but the `--verify` exclusion set did not carry it, so the command wrote a
+    `verified` marker whose drift tracking is known to be dead. The status and
+    drift guards below it both see no change for a path that is not there, so
+    nothing else catches it either. Codex filed it."""
+    reg = (audit_repo / "docs" / "DOC_REGISTRY.md")
+    reg.write_text(E2E_REGISTRY.replace("| D | docs/*.md | scripts | |",
+                                        "| D | docs/*.md | scripts/gone.py | |"))
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    with pytest.raises(m.AuditError, match="declared-path-missing"):
+        _audit(audit_repo, "--stamp", "--verify", "docs/d.md")
+    # And nothing was written: the refusal names itself rather than leaving a
+    # verified marker whose drift tracking is already dead.
+    assert "**Depth:** verified" not in (audit_repo / "docs" / "d.md").read_text()
+    # The declaration itself is still reported, which is what the refusal
+    # reads: one implementation of "does this code path exist".
+    out = m.check_registry_paths({"docs/d.md", "scripts/tool.py"},
+                                 m.load_registry(reg.read_text()))
+    missing = [f for f in out if f.get("code_path") == "scripts/gone.py"]
+    assert len(missing) == 1, out
+    # With the declaration repaired, the same run verifies.
+    reg.write_text(E2E_REGISTRY)
+    _audit(audit_repo, "--stamp", "--verify", "docs/d.md")
+    assert "**Depth:** verified" in (audit_repo / "docs" / "d.md").read_text()
+
+
+def test_every_url_spelling_the_citation_pattern_accepts_is_masked():
+    """`ISSUE_URL_RE` admits a bare `github.com/...` host deliberately, and
+    `_URL_RE` did not mask it -- so on a line carrying two scheme-less
+    citations under one cue, the periods inside the SECOND host became clause
+    separators and that citation lost the cue it shared. Two patterns reading
+    the same URLs and disagreeing about which ones are URLs. Codex filed it."""
+    R = m.THIS_REPO
+    states = {R: {n: {"state": "closed", "reason": "merged", "kind": "PR"}
+                  for n in (1, 2)}}
+    refs = lambda t: sorted(f["ref"] for f in
+                            m.check_closed_issues("d.md", t, states))
+    bare = lambda n: f"github.com/TeneikaAskew/{R}/pull/{n}"
+    assert refs(f"Still open: {bare(1)} and {bare(2)}\n") == [f"{R}#1", f"{R}#2"]
+    # The scheme'd spelling, which already worked, still does.
+    assert refs(f"Still open: https://{bare(1)} and https://{bare(2)}\n") \
+        == [f"{R}#1", f"{R}#2"]
+
+
+def test_a_protocol_relative_citation_is_still_a_citation():
+    """`[blocker](//github.com/<owner>/stocks/issues/1)` resolves to GitHub, and
+    the `//` sat immediately after `(` so none of the lookbehinds matched --
+    the citation was ignored outright however the issue stood, while the
+    pattern's own comment already called `//` a supported host boundary.
+    Codex filed it."""
+    R = m.THIS_REPO
+    states = {R: {3: {"state": "closed", "reason": "completed", "kind": "ISSUE"}}}
+    refs = lambda t: sorted(f["ref"] for f in
+                            m.check_closed_issues("d.md", t, states))
+    bare = f"github.com/TeneikaAskew/{R}/issues/3"
+    assert refs(f"blocked by [x](//{bare})\n") == [f"{R}#3"]
+    assert refs(f"blocked by //{bare}\n") == [f"{R}#3"]
+    assert refs(f"blocked by https://{bare}\n") == [f"{R}#3"]
+    # The case the comment above the pattern exists to exclude: a `//` that is
+    # NOT the start of the destination still names example.com, not GitHub.
+    assert refs(f"blocked by https://example.com//{bare}\n") == []

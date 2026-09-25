@@ -334,7 +334,19 @@ _CLAUSE_SPLIT_RE = re.compile(r"[.;|]")
 # second citation on the line lost the cue it shared -- the stale claim passed
 # while the identical lowercase spelling was reported. Two patterns reading
 # the same URLs and disagreeing about which ones are URLs.
-_URL_RE = re.compile(r"https?://[^\s|]*[^\s|.,;:!?)\]]", re.I)
+# And every spelling `ISSUE_URL_RE` accepts, not just the scheme'd one. That
+# pattern admits a bare `github.com/...` host deliberately, because documents
+# here write it -- but this one did not mask it, so on
+# `Still open: github.com/.../pull/1 and github.com/.../pull/2` the periods
+# inside the SECOND host became clause separators, the PR own-clause rule lost
+# the shared `Still open`, and the second merged pull request went unreported
+# while the first was found. Two patterns reading the same URLs and
+# disagreeing about which ones are URLs, which is the defect the paragraph
+# above records in its other half. Codex filed it (stocks#1121).
+_URL_RE = re.compile(
+    r"https?://[^\s|]*[^\s|.,;:!?)\]]"
+    r"|(?:(?<=^)|(?<=[\s(\[<]))(?://)?github\.com/[^\s|]*[^\s|.,;:!?)\]]",
+    re.I)
 # Case-insensitive, because GitHub resolves `teneikaaskew/Stocks` to the same
 # repository and a document may cite it that way. The `i` flag ALONE would be
 # worse than the bug: the captured name would index states["Stocks"], miss, and
@@ -354,7 +366,15 @@ ISSUE_URL_RE = re.compile(
     # spelling this repo's docs use is still admitted, by the
     # start/whitespace/bracket alternatives beside it. Parity with the Node
     # twin (solyra#69).
-    r"(?:(?<=^)|(?<=[\s(\[<])|(?<=://))"
+    # A PROTOCOL-RELATIVE destination is a valid link and names the same host:
+    # `[blocker](//github.com/<owner>/stocks/issues/1)` resolves to GitHub,
+    # and the `//` sat immediately after `(` so none of the alternatives
+    # matched -- the citation was ignored outright, closed or not, while the
+    # comment above already called `//` a supported host boundary. Admitted
+    # only where the `//` itself STARTS the destination, so the
+    # `example.com//github.com/...` case the comment describes stays
+    # excluded. Codex filed it (stocks#1121).
+    r"(?:(?<=^)|(?<=[\s(\[<])|(?<=://)|(?<=^//)|(?<=[\s(\[<]//))"
     # And the number ENDS where the number ends. Without a trailing boundary
     # `.../issues/1foo` captured the numeric prefix and was read as a citation
     # of issue 1 -- so a closed issue 1 produced a gating stale-blocker finding
@@ -2080,6 +2100,12 @@ def check_registry_paths(tracked: set[str], registry: list[dict]) -> list[dict]:
         for cp in row["code_paths"]:
             if cp not in tracked and cp not in dirs:
                 out.append({"check": "registry", "doc": glob, "severity": "P2",
+                            # The path itself, so the --verify refusal can ask
+                            # whether a DOCUMENT's declaration is among the
+                            # broken ones. `doc` here is the registry GLOB,
+                            # which for a wildcard row names no document at
+                            # all, so a doc-equality test could never see it.
+                            "code_path": cp,
                             "detail": f"declared code path `{cp}` does not exist, so the "
                                       "drift check for this document can never fire"})
     return out
@@ -7197,6 +7223,19 @@ def main(argv: list[str] | None = None) -> int:
                            "--", "*.md"])
     docs = sorted(set(docs) | set(untracked))
 
+    # Writing a snapshot that was READ rewrites `capturedAt` although GitHub
+    # was never queried, so repeating it inside the one-day expiry window
+    # keeps stale issue data looking freshly captured for ever -- and a
+    # blocker that closed in the meantime never reports. The age guard exists
+    # precisely to stop that, and this combination walked around it. Refused
+    # rather than silently preserving the old stamp, because a file that
+    # claims to be a capture should be one; copying it is the honest way to
+    # move it. Codex filed it (stocks#1121).
+    if args.issues_snapshot and args.write_issues_snapshot:
+        raise AuditError(
+            "--write-issues-snapshot cannot be combined with --issues-snapshot: "
+            "nothing was read from GitHub, so the new file would carry a capture "
+            f"time it did not earn. Copy {args.issues_snapshot} instead.")
     if args.issues_snapshot:
         states = load_issues_snapshot(args.issues_snapshot)
     else:
@@ -7227,6 +7266,11 @@ def main(argv: list[str] | None = None) -> int:
     # name the reason rather than listing the path and leaving the caller to
     # guess which of five causes applies.
     stamp_refusals: dict[str, str] = {}
+    # Declared code paths `check_registry_paths` has already reported as
+    # absent. Collected once, from its findings, so the existence test lives
+    # in one place; see the --verify refusal below.
+    _missing_code_paths = {f["code_path"] for f in findings
+                           if f["check"] == "registry" and "code_path" in f}
     writes: list[tuple[str, str]] = []
     counts = {"A": 0, "B": 0, "C": 0, "D": 0, "X": 0, "unclassified": 0}
 
@@ -7466,6 +7510,16 @@ def main(argv: list[str] | None = None) -> int:
             if reviewed and any(f["doc"] == doc and f["check"] in _DISPROVEN_BY_AUDIT
                                 for f in findings):
                 stamp_refusals[doc] = "disproven-claim"
+                continue
+            # A row naming a code path that does not exist has already been
+            # reported, because the drift check for that document can never
+            # fire again -- so a `verified` marker written against it is
+            # unfalsifiable by construction: the status and drift guards below
+            # both see no change for a path that is not there. The missing
+            # paths are read off the findings rather than tested a second
+            # time here, so "does this path exist" keeps one implementation.
+            if reviewed and set(classify(doc, registry)[1]) & _missing_code_paths:
+                stamp_refusals[doc] = "declared-path-missing"
                 continue
             # A review records "these claims were true against THIS revision".
             # For a document the revision does not contain, that sentence has
