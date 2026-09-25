@@ -2117,11 +2117,7 @@ CREATE TABLE IF NOT EXISTS historical_signals (
     signal_strength   SMALLINT,                     -- 3..5 (count of conditions met)
     conditions_met    VARCHAR(8),                   -- e.g. '4/5'
     duration_minutes  SMALLINT,                     -- bars from entry to MFE peak
-    -- Every return below is PERCENTAGE POINTS (0.5 = +0.5%), as
-    -- lib/trading_analysis.py writes it; mean-reversion rows leave them NULL.
-    -- signal_metrics holds the same horizons as FRACTIONS; the report
-    -- divides on read (#1154).
-    return_pct        DOUBLE PRECISION,             -- 20-min Maximum Favorable Excursion
+    return_pct        DOUBLE PRECISION,             -- 20-min MFE. PERCENTAGE POINTS (0.5 = +0.5%), as is every return below; signal_metrics stores fractions (#1154)
     best_return       DOUBLE PRECISION,
     best_window_min   SMALLINT,
     return_5min       DOUBLE PRECISION,
