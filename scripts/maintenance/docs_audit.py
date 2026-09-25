@@ -166,11 +166,41 @@ _URI_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
 # `still **open**` arrives as `still   open`, because the reduction blanks
 # delimiters rather than removing them so offsets survive. A closed issue the
 # prose plainly calls live then produced no finding at all.
+# A COPULA before `open` is a status claim in its own right, and the
+# vocabulary had only `still open`. `PR #945 is the open follow-up` says #945
+# is open as plainly as `still open` does, and produced no finding at all
+# after #945 merged -- Codex filed exactly that line on
+# docs/product/README.md (stocks#1121), and the PR-shorthand fix beside this
+# one still left it silent because the cue never matched. `still` keeps its
+# own alternative above: `is still open` matches either way.
 BLOCKING_CUE_RE = re.compile(
     r"\b(?:blocking|blocked\s+(?:by|on)|blocker|blockers|open\s+issues?"
-    r"|still\s+open|outstanding|in\s+progress|not\s+started|pending)\b",
+    r"|still\s+open|(?:is|are|remains?|stays?)\s+(?:the\s+|an?\s+)?open"
+    r"|outstanding|in\s+progress|not\s+started|pending)\b",
     re.I,
 )
+# `open issues` is ISSUE vocabulary. A pull request sitting in a clause whose
+# only cue is that phrase is not being called open -- it is usually listed
+# beside it. Measured the moment the PR shorthand above started resolving:
+# `| 12 PR/issue traceability | live open issues, PR API, PR #924 | ... |`
+# names three inputs to a traceability check, and PR #924 merged on
+# 2026-08-31, so reporting it was a fabricated P1 in a cell that claims
+# nothing of the kind. A predicative cue -- `is open`, `still open`,
+# `blocked by` -- still reports.
+_ISSUE_ONLY_CUE_RE = re.compile(r"\bopen\s+issues?\b", re.I)
+
+
+def pr_blocking_cue(clause: str) -> bool:
+    """Does this clause call a PULL REQUEST live work?
+
+    The same cue set every citation is read against, minus the one phrase that
+    can only be about issues. Applied to both PR passes so the shorthand and
+    the URL spelling of one citation cannot disagree.
+    """
+    return any(not _ISSUE_ONLY_CUE_RE.fullmatch(mm.group(0))
+               for mm in BLOCKING_CUE_RE.finditer(clause))
+
+
 # Text immediately before a cue that inverts it. `not started` is itself a cue,
 # so what precedes THAT phrase is what is tested -- its own leading `not` is
 # never read as negating the phrase it belongs to.
@@ -364,10 +394,25 @@ QUALIFIED_ISSUE_RE = re.compile(
 # they are plan and PR numbering that happens to share the spelling. PR words
 # are here too because a shorthand cannot tell an issue from a PR, and the
 # URL pass already holds PRs to a stricter cue rule.
+# The PR words stay here as the fallback. `_PR_SHORTHAND_RE` below is tested
+# FIRST and wins, so an explicit `PR #N` is read as a citation rather than
+# excluded -- but if a spelling ever slips past that pattern, being excluded
+# is the safe answer: read as a BARE shorthand instead, `PR #838` would report
+# the unrelated ISSUE 838 that happens to share the number. Removing them
+# changed no test, which is what said they were still load-bearing.
 SHORTHAND_OTHER_DOMAIN_RE = re.compile(
     r"\b(?:plans?|prs?|pull|pulls|sections?|phases?|steps?|items?|figures?|"
     r"tables?|chapters?|slides?|rules?|rows?|questions?|parts?|versions?|"
     r"revs?|chapters?)\s+(?:and\s+)?$", re.I)
+# `PR #945` is the one prefix that makes a bare `#N` LESS ambiguous, not more:
+# it names the repository (this one) and the kind (a pull request). Grouping
+# the PR words with plan and section numbering threw that away, so a stale
+# pull-request claim was invisible unless the author happened to write a URL.
+# Measured on docs/product/README.md, which calls PR #945 "the open follow-up"
+# while #945 merged on 2026-08-31 and its merge commit f9e5019 is in this
+# branch's ancestry. Codex filed it (stocks#1121).
+_PR_SHORTHAND_RE = re.compile(
+    r"\b(?:prs?|pull\s+requests?|pulls?)\s+(?:and\s+)?$", re.I)
 # What may sit between two `#N`s that name the same thing: `#5 and #10`,
 # `#5, #10`, `#818/#816`.
 _COORDINATOR_RE = re.compile(r"[\s,;/&]*(?:and|or)?[\s,;/&]*")
@@ -2091,11 +2136,22 @@ def classification_is_ambiguous(doc: str, registry: list[dict]) -> bool:
 
 
 def classify(doc: str, registry: list[dict]) -> tuple[str | None, list[str], list[str]]:
-    """Most specific match wins, so a file rule beats the directory rule."""
-    best: tuple[int, dict] | None = None
+    """Most specific match wins, so a file rule beats the directory rule.
+
+    Ranked by `glob_specificity`, which is what "most specific" means
+    everywhere else in this file. This function compared raw `len(glob)`
+    instead, so it disagreed with the two safety checks built on top of it:
+    `docs/[a-z]*.md` is LONGER than `docs/a.md` and therefore won here, while
+    `classification_is_ambiguous` and `check_registry_paths` looked at the
+    exact row and saw no tie to report. A document could be classified under
+    the wrong ownership policy with nothing flagging it -- and the helper's
+    own docstring already described this defect while this call site kept the
+    old comparison. Codex filed it (stocks#1121).
+    """
+    best: tuple[tuple, dict] | None = None
     for row in registry:
         if fnmatch.fnmatch(doc, row["glob"]):
-            score = len(row["glob"])
+            score = glob_specificity(row["glob"])
             if best is None or score > best[0]:
                 best = (score, row)
     if best is None:
@@ -4727,6 +4783,7 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                     and not any(lo <= _src_at(scan_map, mm.start()) < hi
                                 for lo, hi in hidden)]
         skipped_end: int | None = None
+        pr_end: int | None = None
         for m in SHORTHAND_ISSUE_RE.finditer(line):
             if any(lo <= m.start() < hi for lo, hi in hidden + url_spans):
                 continue
@@ -4759,11 +4816,23 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # Testing only the text immediately before each `#` saw `plans`
             # for #5 and `and` for #10, so half a list was skipped and half
             # reported. A coordinating separator inherits the decision.
-            if SHORTHAND_OTHER_DOMAIN_RE.search(line[:m.start()]) or (
+            # An explicit `PR` prefix is a CITATION, not another numbering
+            # domain, so it is tested before the exclusion and inherits across
+            # a coordinator the same way a skip does: `PRs #81 and #82` names
+            # two pull requests.
+            is_pr = bool(_PR_SHORTHAND_RE.search(line[:m.start()])) or (
+                pr_end is not None
+                and _COORDINATOR_RE.fullmatch(line[pr_end:m.start()]))
+            if not is_pr and (SHORTHAND_OTHER_DOMAIN_RE.search(line[:m.start()]) or (
                     skipped_end is not None
-                    and _COORDINATOR_RE.fullmatch(line[skipped_end:m.start()])):
+                    and _COORDINATOR_RE.fullmatch(line[skipped_end:m.start()]))):
                 skipped_end = m.end()
                 continue
+            if is_pr:
+                pr_end = m.end()
+                # The PR cue rule, same as the URL pass one screen down.
+                if not pr_blocking_cue(clause):
+                    continue
             num = int(m.group("num"))
             c_lo, c_hi = clause_bounds(
                 para_cue, para_at + m.start(), para_at + m.end())
@@ -4771,13 +4840,24 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                    for at, n in url_here):
                 continue
             st = states.get(THIS_REPO, {}).get(num)
+            # The kind check the URL pass applies: a number backed by an ISSUE
+            # record names no pull request, so `PR #838` where 838 is an issue
+            # resolves to nothing rather than to the issue that shares its
+            # number.
+            if is_pr and st is not None and st.get("kind") == "ISSUE":
+                st = None
             if st is None or st["state"] != "closed":
                 # An unresolvable SHORTHAND is not reported: unlike a URL, it
                 # may be a section number the cue happens to share a line with.
+                # That holds for the PR spelling too -- `PR #945` is explicit
+                # about kind, not about whether the number exists -- so this
+                # reports a pull request the state map RESOLVES and finds
+                # closed, and stays quiet otherwise.
                 continue
-            reason = st.get("reason") or "completed"
+            label = f"{THIS_REPO}#{num}" + (" (PR)" if is_pr else "")
+            reason = st.get("reason") or ("closed" if is_pr else "completed")
             out.append({"check": "closed-issue", "doc": doc, "line": n,
-                        "detail": f"{THIS_REPO}#{num} is CLOSED ({reason}) but cited "
+                        "detail": f"{label} is CLOSED ({reason}) but cited "
                                   "as live work",
                         "severity": "P1" if reason != "not_planned" else "P2",
                         "ref": f"{THIS_REPO}#{num}", "reason": reason})
@@ -4926,7 +5006,7 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # accepted the commented phrase as the PR's own local evidence --
             # a fabricated P1 against a PR no visible prose calls live. The
             # mask preserves offsets, so the same spans index both strings.
-            if is_pr and not BLOCKING_CUE_RE.search(
+            if is_pr and not pr_blocking_cue(
                     citation_clause(visible, m_start, m_end)):
                 continue
             repo, num = m.group("repo").lower(), int(m.group("num"))

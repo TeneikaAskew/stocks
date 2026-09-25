@@ -8323,3 +8323,120 @@ def test_a_stamped_container_document_is_stable_on_a_second_run():
               "**Last scanned:** 2026-01-01 · **Owner:** x\n\n  Intro\n")
     assert m.stamp(listed, "2026-09-23", "full", "abc1234",
                    reviewed=False)[0].splitlines()[2].startswith("  **Last")
+
+
+def test_classification_ranks_globs_the_way_every_other_check_does():
+    """`classify` compared raw `len(glob)` while `classification_is_ambiguous`
+    and `check_registry_paths` used `glob_specificity`. `docs/[a-z]*.md` is
+    LONGER than `docs/a.md`, so the wildcard won the classification while the
+    safety checks looked at the exact row and saw no tie to report -- a
+    document classified under the wrong ownership policy with nothing flagging
+    it. The helper's own docstring already described the defect. Codex filed
+    it."""
+    reg = [{"glob": "docs/[a-z]*.md", "cls": "BROAD", "code_paths": [], "regions": []},
+           {"glob": "docs/a.md", "cls": "EXACT", "code_paths": [], "regions": []}]
+    assert m.classify("docs/a.md", reg)[0] == "EXACT"
+    assert len("docs/[a-z]*.md") > len("docs/a.md")   # the old comparison's answer
+    # Which is what lets a catch-all sit beside per-file rows: the exact rule
+    # wins for the files it names, and the wildcard still classifies a NEW one
+    # rather than leaving it unclassified.
+    reg2 = [{"glob": "docs/models/*.md", "cls": "WILD", "code_paths": [], "regions": []},
+            {"glob": "docs/models/MODEL-MOM-001.md", "cls": "FILE",
+             "code_paths": ["lib/strategies/momentum.py"], "regions": []}]
+    assert m.classify("docs/models/MODEL-MOM-001.md", reg2)[0] == "FILE"
+    assert m.classify("docs/models/MODEL-NEW-999.md", reg2)[0] == "WILD"
+
+
+def test_every_model_document_is_classified_by_the_registry():
+    """15 tracked `docs/models/MODEL-*.md` matched no rule, so every `--check`
+    run reported 15 `unclassified` findings and exited 1 whatever the state of
+    the documentation. They were in the audit's own output the whole time.
+    Codex filed it."""
+    import pathlib
+    registry = m.load_registry(
+        pathlib.Path("docs/DOC_REGISTRY.md").read_text(encoding="utf-8"))
+    models = sorted(pathlib.Path("docs/models").glob("MODEL-*.md"))
+    assert models, "no model documents found -- the fixture moved"
+    for doc in models:
+        cls, code_paths, _ = m.classify(doc.as_posix(), registry)
+        assert cls == "D", f"{doc} classified {cls!r}"
+        # The per-file rule is what makes drift detection mean anything: each
+        # of these describes a different module, so a shared wildcard would
+        # queue all 15 on any change to any of them.
+        assert code_paths, f"{doc} declares no code paths"
+
+
+def test_an_explicit_pr_prefix_is_a_citation_not_another_numbering():
+    """`PR #N` names the repository and the kind, which makes a bare `#N` LESS
+    ambiguous -- but the PR words sat in the same exclusion as `plan` and
+    `section`, so a stale pull-request claim was invisible unless the author
+    wrote a URL. Codex filed it, citing docs/product/README.md."""
+    states = {m.THIS_REPO: {
+        945: {"state": "closed", "reason": "merged", "kind": "PR"},
+        81: {"state": "closed", "reason": "merged", "kind": "PR"},
+        82: {"state": "closed", "reason": "merged", "kind": "PR"},
+        838: {"state": "closed", "reason": "completed", "kind": "ISSUE"},
+        70: {"state": "open", "reason": "", "kind": "PR"}}}
+    det = lambda t: [f["detail"] for f in m.check_closed_issues("d.md", t, states)]
+    assert det("PR #945 is the open follow-up\n") == [
+        f"{m.THIS_REPO}#945 (PR) is CLOSED (merged) but cited as live work"]
+    # The domain is named once and then coordinated, exactly as the skip is.
+    assert len(det("PRs #81 and #82 are still open\n")) == 2
+    # A number backed by an ISSUE record names no pull request, so the issue
+    # that happens to share the number is not reported under a `PR` prefix.
+    assert det("PR #838 is still open\n") == []
+    # An open PR, and a PR with no blocking cue, stay quiet.
+    assert det("PR #70 is still open\n") == []
+    assert det("Landed in PR #945\n") == []
+    # The other numbering domains are untouched.
+    assert det("plans #5 and #10 are still open\n") == []
+    assert det("Section #945 is still open\n") == []
+
+
+def test_a_copula_before_open_is_a_blocking_cue():
+    """The vocabulary had `still open` and nothing else, so `is the open
+    follow-up` -- which says a citation is open as plainly as `still open`
+    does -- carried no cue at all. Found while fixing the PR-shorthand finding
+    above: parsing `PR #945` was not enough to report the line Codex cited."""
+    for phrase in ["is the open follow-up", "is open", "remains open",
+                   "are open", "stays open", "is an open question"]:
+        assert m.BLOCKING_CUE_RE.search(phrase), phrase
+    # The negated form is still not a live claim, via the same negator scan
+    # `has_blocking_cue` applies to every other cue.
+    assert not m.has_blocking_cue("is not open")
+    # And a settled cue in the same clause still wins, which is why the line
+    # Codex named -- `PR #945 is the open follow-up against that merged
+    # version` -- remains silent: `merged` describes the version, not #945,
+    # and nothing splits the clause between them.
+    assert m.SETTLED_CUE_RE.search("is the open follow-up against that merged version")
+
+
+def test_open_issues_does_not_call_a_pull_request_live():
+    """`open issues` is ISSUE vocabulary, and a PR listed beside it is not
+    being called open. Found by the findings diff the moment the PR shorthand
+    started resolving: docs/product/16-CONSOLIDATION-AUDIT.md:125 reads
+    `| 12 PR/issue traceability | live open issues, PR API, PR #924 | ... |`,
+    three inputs to a traceability check, and PR #924 merged on 2026-08-31 --
+    so the new pass produced a P1 the cell claims nothing about. Not filed by
+    Codex; it was my own regression, caught by reading the delta."""
+    states = {m.THIS_REPO: {924: {"state": "closed", "reason": "merged", "kind": "PR"},
+                            838: {"state": "closed", "reason": "completed",
+                                  "kind": "ISSUE"}}}
+    det = lambda t: [f["detail"] for f in m.check_closed_issues("d.md", t, states)]
+    assert det("| 12 traceability | live open issues, PR API, PR #924 | x |\n") == []
+    # A PREDICATIVE cue still reports, which is the whole point of the pass.
+    assert det("PR #924 is still open\n") == [
+        f"{m.THIS_REPO}#924 (PR) is CLOSED (merged) but cited as live work"]
+    assert det("blocked by PR #924\n") == [
+        f"{m.THIS_REPO}#924 (PR) is CLOSED (merged) but cited as live work"]
+    # And an ISSUE is still reported under `open issues`: the narrowing is
+    # scoped to pull requests, where that phrase cannot be about the citation.
+    # Through the URL spelling, because that is the pass carrying the table-row
+    # fallback -- the bare shorthand deliberately has none, so a cue in a
+    # different cell never reaches it either way.
+    url = f"https://github.com/TeneikaAskew/{m.THIS_REPO}/issues/838"
+    assert det(f"| Open issues | {url} |\n") == [
+        f"{m.THIS_REPO}#838 is CLOSED (completed) but cited as live work"]
+    assert det("| Open issues | #838 |\n") == []
+    assert det("#838 is still open\n") == [
+        f"{m.THIS_REPO}#838 is CLOSED (completed) but cited as live work"]

@@ -181,6 +181,22 @@ renames are ignored, so a file-move wave does not flag every document.
 | D | docs/product/05-INFRASTRUCTURE.md | gcp/deploy.sh |  |
 | D | docs/product/06-DATA-ARCHITECTURE.md | gcp/schema.sql |  |
 | D | docs/product/07-MODEL-REGISTRY.md | lib/strategies, lib/agents, gcp/research |  |
+| D | docs/models/*.md | lib/strategies |  |
+| D | docs/models/MODEL-AGREE-001.md | lib/strategies/agreement.py |  |
+| D | docs/models/MODEL-BRIEF-001.md | lib/strategies/brief_bias.py, lib/movement_statement.py |  |
+| D | docs/models/MODEL-CALIB-001.md | scripts/calibrate_thresholds.py |  |
+| D | docs/models/MODEL-EARN-001.md | lib/earnings_reactions.py |  |
+| D | docs/models/MODEL-EARN-002.md | gcp/earnings_reactions_brief.py |  |
+| D | docs/models/MODEL-EWV-001.md | gcp/fetchers/evaluate_ew_strikes.py |  |
+| D | docs/models/MODEL-FLOW-001.md | lib/features/flow_direction.py, gcp/build_options_daily_greeks.py |  |
+| D | docs/models/MODEL-MOM-001.md | lib/strategies/momentum.py, lib/strategies/config.py |  |
+| D | docs/models/MODEL-MR-001.md | lib/strategies/mean_reversion.py, lib/strategies/config.py, lib/signals.py |  |
+| D | docs/models/MODEL-PLAY-001.md | scripts/analysis/phase6_playbook.py |  |
+| D | docs/models/MODEL-QUAL-001.md | gcp/signal_quality_alarm.py, scripts/signal_quality_report.py |  |
+| D | docs/models/MODEL-STYLE-001.md | lib/style_miner.py, platform/api/routers/backtest.py |  |
+| D | docs/models/MODEL-SWEEP-001.md | lib/walk_forward.py, scripts/run_param_sweep.py, scripts/run_walk_forward.py, scripts/calibrate_iwm_strat.py |  |
+| D | docs/models/MODEL-WATCH-001.md | gcp/earnings_long_watchlist.py |  |
+| D | docs/models/MODEL-WEEK-001.md | gcp/weekend_review.py |  |
 | D | docs/product/08-AI-AGENT-ARCHITECTURE.md | lib/agents |  |
 | D | docs/product/09-SECURITY-AUTH.md | platform/api/auth.py, platform/deploy.sh |  |
 | D | docs/product/10-OPERATIONS-RELIABILITY.md | gcp/deploy.sh |  |
