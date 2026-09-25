@@ -3990,6 +3990,36 @@ def test_the_openers_out_parameter_still_gets_filled():
 _LINE_CITATION_RE = re.compile(r"\bline \d+|[\w./-]+\.(?:py|yml|yaml|sh|sql|md):\d+")
 
 
+def test_no_dated_record_carries_a_review_marker():
+    """Class C is read for cross-references only -- `main()` hits
+    `if cls == "C": continue` before any content check or stamp -- so a
+    `Last scanned` line in one claims a scan the shipped audit does not
+    perform, and makes a frozen record look freshly checked.
+
+    Three `insights/` files carried one, written by a `--stamp` run in this PR
+    while they were still Class D and left behind when they were reclassified.
+    Exactly those 3 of 191 Class C documents had one. Codex filed it
+    (stocks#1121).
+
+    LEGACY lines are deliberately not covered: `archive/.../DATA_DICTIONARY.md`
+    and two others carry their own `**Last Updated:**` prose, which is part of
+    the record. This tool did not write those and must not delete them --
+    rewriting a dated record destroys it."""
+    registry = m.load_registry((m.REPO / m.REGISTRY).read_text(encoding="utf-8"))
+    tracked = set(m.run(["git", "ls-tree", "-r", "HEAD", "--name-only"]).strip().split("\n"))
+    offenders = []
+    for doc in m.document_set(tracked, registry):
+        if m.classify(doc, registry)[0] != "C":
+            continue
+        try:
+            lines = (m.REPO / doc).read_text(encoding="utf-8", errors="replace").split("\n")
+        except OSError:
+            continue
+        offenders += [(doc, i + 1) for i, info in m.find_markers(lines)
+                      if not info.get("legacy")]
+    assert offenders == [], offenders
+
+
 def test_the_registry_cites_evidence_by_name_not_by_line_number():
     """A line number into a file that moves rots on the next edit, and nothing
     checks it.

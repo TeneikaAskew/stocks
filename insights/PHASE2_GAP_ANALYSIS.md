@@ -1,7 +1,5 @@
 # AI Insights Multi-Agent Pipeline — Phase 2 Gap Analysis & Remediation Plan
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
-
 ## Context
 
 The multi-agent AI Insights implementation (17 commits, 41 files, ~7,600 lines) has been built on branch `claude/research-trading-agents-LFNT2`. It replaces the old chat-only Gemini tab with a structured, auto-generated report powered by an 11-node async agent pipeline (4 analysts, bull/bear researchers, judge, trader, 3 risk personas, portfolio manager).
