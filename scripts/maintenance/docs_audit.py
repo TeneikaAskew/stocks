@@ -5157,6 +5157,16 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
                                    visible_cue):
                 continue
             is_pr = hit.group("kind").lower() == "pull"
+            # A reference-style destination gets the PR-specific clause test
+            # too. Only the inline pass had it, so `| Open issues | [PR #1][p] |`
+            # with `[p]` resolving to a merged PR was emitted as a gating
+            # closed-PR finding while the identical row written with the URL
+            # inline was correctly quiet -- the issue-only `open issues` cue is
+            # what `pr_blocking_cue` exists to reject. One rule, and it had two
+            # implementations that disagreed. Codex filed it (stocks#1121).
+            if is_pr and not pr_blocking_cue(
+                    citation_clause(para_cue, para_at + r_start, para_at + r_end)):
+                continue
             # A `/pull/N` citation backed by an ISSUE record names no pull
             # request at all. GitHub's issues API returns issues and PRs from
             # one endpoint, so the lookup found the numbered ISSUE and
@@ -5215,15 +5225,29 @@ def check_closed_issues(doc: str, text: str, states: dict[str, dict]) -> list[di
             # ... outstanding |` is accurate prose about a merged PR. Issues
             # keep the fallback: it is what reports stocks#838 under
             # `| Open issues | ... |`, where the cue IS the row label.
-            # `visible`, not `line`, for the same reason cites_live_work above
-            # reads the mask: a HIDDEN cue is not evidence. With a visible cue
-            # elsewhere on the line, `#1 is still open; <PR url> <!-- is still
-            # open -->` passed the line-level fallback and this guard then
-            # accepted the commented phrase as the PR's own local evidence --
-            # a fabricated P1 against a PR no visible prose calls live. The
-            # mask preserves offsets, so the same spans index both strings.
+            # The RENDERED PARAGRAPH, not the physical line -- the same
+            # string `cites_live_work` just read. Rechecking the line meant
+            # ordinary Markdown soft wrapping hid a closed PR: on
+            #
+            #     This PR is still open:
+            #     https://github.com/<owner>/stocks/pull/1
+            #
+            # the paragraph guard found the cue and this one, reading only the
+            # URL's own line, found none and dropped the finding -- measured,
+            # 0 findings wrapped against 1 unwrapped, for the same prose. Two
+            # guards asking the same question of two different strings, which
+            # is how they disagree. Codex filed it (stocks#1121).
+            #
+            # Masked and markup-reduced, which `para_cue` already is, for the
+            # reason the line version was: a HIDDEN cue is not evidence. With
+            # a visible cue elsewhere, `#1 is still open; <PR url> <!-- is
+            # still open -->` passed the line-level fallback and this guard
+            # then accepted the commented phrase as the PR's own local
+            # evidence -- a fabricated P1 against a PR no visible prose calls
+            # live. Every mask preserves offsets, so the same spans index
+            # every copy.
             if is_pr and not pr_blocking_cue(
-                    citation_clause(visible, m_start, m_end)):
+                    citation_clause(para_cue, para_at + m_start, para_at + m_end)):
                 continue
             repo, num = m.group("repo").lower(), int(m.group("num"))
             label = f"{repo}#{num}" + (" (PR)" if is_pr else "")
@@ -6883,21 +6907,70 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
 # dry one and being walked past; the reverse -- a dry run read as delivering
 # -- is what the old code did unconditionally.
 DRY_RUN_MARKER = "[dry-run]"
+# And its opposite, which is why the marker is written on BOTH branches.
+#
+# A one-sided marker cannot be read: after `run-name:` lands, a dispatch with
+# `dry_run: false` produces the same bare title as every run from before it
+# existed, so "no marker" would mean "delivered" and "predates the marker" at
+# once, for ever. Absence has to mean exactly one thing, so the delivering
+# branch says so out loud and absence means only "this run predates the
+# marker".
+#
+# I called the one-sided version "the safe direction" last round and that was
+# wrong. It is safe for a run being JUDGED -- an unmarked run can only keep a
+# failure on the report -- but not for a run being WALKED PAST: an unmarked
+# dry run newer than a failed scheduled refresh stops the walk, and the
+# failure below it is never examined. Measured on this workflow's 36 runs, 30
+# are `workflow_dispatch` and the newest is a 2026-09-09 success sitting
+# directly above eight failures. Codex filed it (stocks#1121).
+DELIVERING_MARKER = "[delivering]"
 
 
-def _is_dry_run(row: list[str]) -> bool:
-    """Was this workflow run a dry run, which opens no PR and delivers nothing?
+def _run_delivered(row: list[str]) -> bool | None:
+    """Did this run deliver? True, False, or None for "cannot tell".
 
     Read from the run's display title, because the dispatch `inputs` are not
     exposed by any REST endpoint; `refresh-architecture-docs.yml` writes the
-    marker there via `run-name:`, and a test pins the two to each other. A row
-    from an older read that carries no such column, or a run that predates the
-    `run-name:` line, is treated as delivering -- the safe direction, since it
-    can only keep a failure on the report.
+    marker there via `run-name:`, and a test pins the two to each other.
+
+    None is a real answer and callers must not collapse it into either of the
+    others: a run from before the marker existed may have been a dry run or a
+    delivery, and picking one silently resolves the question in whichever
+    direction happens to hide a failure. `check_owning_job` reports the
+    ambiguity instead.
+
+    A row with no title COLUMN is not the same thing as a title carrying no
+    MARKER. The first means the reader never asked -- `fetch_owning_runs`
+    always asks, so it is a stale cache or a hand-built row -- and treating it
+    as delivering keeps any failure it carries on the report. The second is a
+    real run whose provenance the API cannot supply, and that is the
+    ambiguity.
     """
     if len(row) < 4:
+        return True
+    if DRY_RUN_MARKER in row[3]:
         return False
-    return DRY_RUN_MARKER in row[3]
+    if DELIVERING_MARKER in row[3]:
+        return True
+    # Only a DISPATCH can be a dry run: `dry_run` is a `workflow_dispatch`
+    # input, and a `schedule` or `push` run has no inputs at all. So an
+    # unmarked scheduled run is not ambiguous -- it delivered -- and the
+    # ambiguity is confined to the 30 unmarked dispatches in this workflow's
+    # 36-run history rather than smeared over the 4 scheduled and 2 push runs
+    # that are answerable from the event alone.
+    if row[2].strip().lower() != "workflow_dispatch":
+        return True
+    return None
+
+
+def _is_dry_run(row: list[str]) -> bool:
+    """A run known NOT to have delivered. Ambiguous is not dry."""
+    return _run_delivered(row) is False
+
+
+def _is_ambiguous(row: list[str]) -> bool:
+    """A run from before the marker existed, which is evidence of nothing."""
+    return _run_delivered(row) is None
 
 
 RUNS_PAGE_SIZE = 10
@@ -6939,7 +7012,11 @@ def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
         # check_owning_job accepts that empty conclusion too -- so a completed
         # delivering run that FAILED, pushed onto an earlier page by dry runs,
         # was never examined and the delivery audit could report clean.
-        if any(not _is_dry_run(r) and r[0].strip() for r in page_rows):
+        # `_run_delivered(r) is True`, not "not a dry run": an ambiguous run
+        # is not evidence of delivery, so it must not stop the walk. That is
+        # exactly the case Codex named -- an unmarked dispatch newer than a
+        # failed scheduled refresh ended the search at itself.
+        if any(_run_delivered(r) is True and r[0].strip() for r in page_rows):
             return rows
         if len(page_rows) < page_size:
             break
@@ -7039,7 +7116,10 @@ def last_delivering_conclusion(rows: list) -> tuple[str, str] | None:
     direction; the last completed one is what decides.
     """
     for row in rows:
-        if not _is_dry_run(row) and row[0]:
+        # Known-delivering only. An ambiguous run cannot be the verdict: it
+        # may have been a dry run, and reading its success as a delivery is
+        # what let one hide a failed scheduled refresh underneath it.
+        if _run_delivered(row) is True and row[0]:
             return row[0], row[1]
     return None
 
@@ -7149,7 +7229,23 @@ def check_owning_job(today: str) -> list[dict]:
     # as evidence that a failed scheduled refresh had recovered. The failure
     # then vanished from the report until the 40-day stamp threshold fired.
     # Delivery is judged from the latest NON-dry execution.
-    delivering = [r for r in recent if not _is_dry_run(r)]
+    delivering = [r for r in recent if _run_delivered(r) is True]
+    # Runs the audit cannot classify, newer than the one it judged by. Neither
+    # direction is safe for these -- calling them deliveries lets a dry run
+    # hide a failure below it, and skipping them lets the same failure pass
+    # unexamined -- so the ambiguity itself is the finding rather than a guess
+    # dressed as an answer. Resolved by one marked run: dispatch the workflow
+    # once, or wait for the next scheduled refresh.
+    _decided_at = (last_delivering_conclusion(recent) or ("", ""))[1]
+    _unclear = [r for r in recent if _is_ambiguous(r) and r[1] > _decided_at]
+    if _unclear:
+        failed = sum(1 for r in _unclear if r[0] == "failure")
+        findings.append({
+            "check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P2",
+            "detail": f"{len(_unclear)} run(s) since {_decided_at or 'the start of history'} "
+                      f"predate the dry-run marker ({failed} of them failed), so whether "
+                      "they delivered cannot be read from any API; re-run the workflow "
+                      "once so a marked run exists"})
     # The most recent COMPLETED delivering run that succeeded. It is what says
     # a no-op month regenerated identical content, which no document can show
     # about itself because the workflow reverts timestamp-only files.

@@ -279,6 +279,7 @@ point: somebody decides its class rather than inheriting a directory's.
 | D | platform/PLATFORM_PLAN.md | platform/api |  |
 | D | gcp/cloudbuild/README.md | gcp/cloudbuild |  |
 | D | gcp/queries/README.md | gcp/queries |  |
+| C | gcp/research/_archive/*.md | |  |
 | D | gcp/research/*/README.md | gcp/research |  |
 | D | gcp/research/*/*.md | gcp/research |  |
 | D | lib/*/README.md | lib |  |

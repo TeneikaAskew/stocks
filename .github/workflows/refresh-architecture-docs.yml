@@ -7,7 +7,7 @@ name: Monthly architecture doc refresh
 # this line and `DRY_RUN_MARKER` in that script identical; a test pins them to
 # each other.
 run-name: >-
-  Monthly architecture doc refresh${{ inputs.dry_run == 'true' && ' [dry-run]' || '' }}
+  Monthly architecture doc refresh ${{ inputs.dry_run == 'true' && '[dry-run]' || '[delivering]' }}
 
 # Refreshes the infrastructure documents under docs/product/infrastructure/
 # (05-a-ARCHITECTURE, 05-c-DATA_DEPENDENCIES, 05-d-COST_ANALYSIS, plus the

@@ -28,9 +28,15 @@ NOW = datetime.datetime.now(datetime.timezone.utc).isoformat()
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 # The display titles the owning workflow's `run-name:` produces, which is the
 # only record of a dry run any REST endpoint exposes. Built from the module's
-# own marker so a fixture cannot drift from the code it exercises.
-LIVE_TITLE = "Monthly architecture doc refresh"
-DRY_TITLE = f"{LIVE_TITLE} {m.DRY_RUN_MARKER}"
+# own markers so a fixture cannot drift from the code it exercises.
+#
+# BOTH branches are marked, so absence means exactly one thing -- "this run
+# predates the marker" -- rather than meaning that AND "delivered" at once.
+# `AMBIGUOUS_TITLE` is what every run made before `run-name:` landed carries.
+_RUN_NAME = "Monthly architecture doc refresh"
+LIVE_TITLE = f"{_RUN_NAME} {m.DELIVERING_MARKER}"
+DRY_TITLE = f"{_RUN_NAME} {m.DRY_RUN_MARKER}"
+AMBIGUOUS_TITLE = _RUN_NAME
 
 
 # ── registry parsing ────────────────────────────────────────────────────────
@@ -2837,6 +2843,120 @@ def test_a_scan_only_stamp_records_no_baseline_of_its_own():
     assert "**Last reviewed:** 2026-01-01" in later
 
 
+_CLOSED_PR = {"stocks": {1: {"state": "closed", "reason": "completed", "kind": "PR"}},
+              "solyra": {}}
+_PR_URL = "https://github.com/TeneikaAskew/stocks/pull/1"
+
+
+def test_a_pr_cue_is_read_from_the_rendered_paragraph():
+    """Ordinary Markdown soft wrapping hid a closed PR cited as live work.
+
+    `cites_live_work` reads the rendered paragraph and found the cue; the
+    PR-specific guard right after it re-read only the URL's own physical line
+    and found none, so the finding was dropped. Two guards asking the same
+    question of two different strings, which is how they disagree. Measured,
+    for the same prose:
+
+        This PR is still open:\n<url>     ->  0 findings   <- the defect
+        This PR is still open: <url>      ->  1 finding
+
+    Codex filed it (stocks#1121)."""
+    wrapped = m.check_closed_issues(
+        "docs/d.md", f"# D\n\nThis PR is still open:\n{_PR_URL}\n", _CLOSED_PR)
+    inline = m.check_closed_issues(
+        "docs/d.md", f"# D\n\nThis PR is still open: {_PR_URL}\n", _CLOSED_PR)
+    assert len(wrapped) == 1, wrapped
+    assert len(inline) == 1, inline
+    # And the issue-only cue still rejects a PR, wrapped or not: the guard
+    # moved to a wider string, it did not stop being a PR-specific test.
+    assert m.check_closed_issues(
+        "docs/d.md", f"# D\n\n| Open issues |\n| {_PR_URL} |\n", _CLOSED_PR) == []
+
+
+def test_a_reference_link_gets_the_same_pr_cue_rule():
+    """Only the inline pass had `pr_blocking_cue`, so the identical row was a
+    gating P1 written with a reference link and correctly quiet written with
+    the URL inline -- `open issues` is the issue-only cue that predicate
+    exists to reject. One rule with two implementations that disagreed.
+    Codex filed it (stocks#1121)."""
+    ref = f"# D\n\n| Open issues | [PR #1][p] |\n\n[p]: {_PR_URL}\n"
+    assert m.check_closed_issues("docs/d.md", ref, _CLOSED_PR) == []
+    # A reference link under a REAL pull-request cue still reports, so the
+    # guard narrowed the answer rather than silencing the whole pass.
+    live = f"# D\n\nThis PR is [still open][p].\n\n[p]: {_PR_URL}\n"
+    assert len(m.check_closed_issues("docs/d.md", live, _CLOSED_PR)) == 1
+
+
+def test_an_unmarked_dispatch_is_not_evidence_of_delivery():
+    """"Unmarked is delivering" was the wrong call, and it was mine.
+
+    It IS safe for a run being judged -- an unmarked run can only keep a
+    failure on the report -- but not for one being walked PAST: an unmarked
+    dry run newer than a failed scheduled refresh ends the search at itself.
+    Measured against this workflow's real 36-run history, where the newest run
+    is a 2026-09-09 `workflow_dispatch` success sitting directly above eight
+    failures:
+
+        BEFORE  last_delivering_conclusion -> ('success', '2026-09-09T13:46')
+        AFTER                              -> ('failure', '2026-09-09T12:41')
+
+    Codex filed it (stocks#1121)."""
+    rows = [["success", "2026-09-09T13:46:36Z", "workflow_dispatch", AMBIGUOUS_TITLE],
+            ["failure", "2026-09-09T12:41:22Z", "schedule", AMBIGUOUS_TITLE]]
+    assert m._run_delivered(rows[0]) is None
+    assert m.last_delivering_conclusion(rows) == ("failure", "2026-09-09T12:41:22Z")
+    # A MARKED dry run reaches the same verdict, by the determinate route.
+    rows[0][3] = DRY_TITLE
+    assert m.last_delivering_conclusion(rows) == ("failure", "2026-09-09T12:41:22Z")
+    # And a marked delivering success is still a delivery, or the walk could
+    # never stop and the guard would just be a slower way to report nothing.
+    rows[0][3] = LIVE_TITLE
+    assert m.last_delivering_conclusion(rows) == ("success", "2026-09-09T13:46:36Z")
+
+
+def test_only_a_dispatch_can_be_ambiguous():
+    """`dry_run` is a `workflow_dispatch` INPUT, so a scheduled or push run
+    has none and its absence of a marker answers itself.
+
+    That keeps the ambiguity where it belongs: 30 of this workflow's 36 runs
+    are dispatches, and the other 6 (4 `schedule`, 2 `push`) are answerable
+    from the event alone rather than being swept into "cannot tell"."""
+    at = "2026-09-01T06:12:35Z"
+    assert m._run_delivered(["success", at, "schedule", AMBIGUOUS_TITLE]) is True
+    assert m._run_delivered(["success", at, "push", AMBIGUOUS_TITLE]) is True
+    assert m._run_delivered(["success", at, "workflow_dispatch", AMBIGUOUS_TITLE]) is None
+    # A row with no title COLUMN is not a title carrying no MARKER: the first
+    # means the reader never asked, and treating it as delivering keeps any
+    # failure it carries on the report.
+    assert m._run_delivered(["failure", at]) is True
+
+
+def test_the_ambiguity_itself_is_reported(monkeypatch, tmp_path):
+    """Neither direction is safe for an unmarked dispatch -- calling it a
+    delivery lets a dry run hide a failure below it, skipping it lets the same
+    failure pass unexamined -- so the audit reports that it cannot tell
+    instead of picking one and calling it an answer."""
+    monkeypatch.setattr(m, "REPO", tmp_path)
+    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
+    runs = (f"failure\t2026-09-09T12:41:22Z\tworkflow_dispatch\t{AMBIGUOUS_TITLE}\n"
+            f"success\t2026-09-01T06:12:35Z\tschedule\t{LIVE_TITLE}\n")
+    monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
+    out = m.check_owning_job("2026-09-18")
+    unclear = [f for f in out if "predate the dry-run marker" in f["detail"]]
+    assert len(unclear) == 1, out
+    # It names the failure it cannot classify rather than only counting rows.
+    assert "1 of them failed" in unclear[0]["detail"], unclear
+    # And it goes away once every newer run is marked. Built explicitly, not
+    # by substitution: AMBIGUOUS_TITLE is a PREFIX of LIVE_TITLE, so replacing
+    # it marks the scheduled row as a dry run too and the history becomes
+    # all-dry, which is a different refusal entirely.
+    marked = (f"failure\t2026-09-09T12:41:22Z\tworkflow_dispatch\t{DRY_TITLE}\n"
+              f"success\t2026-09-01T06:12:35Z\tschedule\t{LIVE_TITLE}\n")
+    monkeypatch.setattr(m, "run", _pr_pages([""], runs=marked))
+    assert [f for f in m.check_owning_job("2026-09-18")
+            if "predate the dry-run marker" in f["detail"]] == []
+
+
 def test_the_runs_query_asks_for_a_field_the_response_has(monkeypatch):
     """The other half of the same boundary: what the audit REQUESTS.
 
@@ -2869,7 +2989,11 @@ def test_the_workflow_writes_the_marker_the_audit_reads():
     wf = (REPO_ROOT / ".github" / "workflows" / "refresh-architecture-docs.yml").read_text()
     run_name = [ln for ln in wf.splitlines() if "dry_run == 'true'" in ln]
     assert run_name, "run-name: no longer branches on the dry_run input"
-    assert f"' {m.DRY_RUN_MARKER}'" in run_name[0], run_name
+    assert f"'{m.DRY_RUN_MARKER}'" in run_name[0], run_name
+    # BOTH branches, or absence could not be read: after this line lands, a
+    # `dry_run: false` dispatch would carry the same bare title as every run
+    # from before it existed.
+    assert f"'{m.DELIVERING_MARKER}'" in run_name[0], run_name
     # And the workflow still HAS the input the marker reports on.
     assert "dry_run:" in wf
 
@@ -4061,6 +4185,18 @@ def test_the_shipped_registry_calls_a_dated_record_a_dated_record():
     # future document of a different kind, which is the defect itself.
     globs = [r["glob"] for r in registry if r["glob"].startswith("insights/")]
     assert all("*" not in g for g in globs), globs
+    # `gcp/research/_archive/` takes the opposite treatment DELIBERATELY: it
+    # is a quarantine, so everything in it is archived by definition and a
+    # glob is the honest rule. `insights/` held three different kinds of
+    # document, which is what made one glob wrong there. Its README says
+    # "Quarantined 2026-05-26 per user instruction" and was Class D via
+    # `gcp/research/*/README.md`. Codex filed it (stocks#1121).
+    assert m.classify("gcp/research/_archive/README.md", registry)[0] == "C"
+    # The sibling engines stay living, so the new rule narrowed rather than
+    # swallowed the directory above it.
+    for doc in ("gcp/research/strat_engine/README.md",
+                "gcp/research/magnitude_engine/README.md"):
+        assert m.classify(doc, registry)[0] == "D", doc
 
 
 def test_the_shipped_registry_declares_no_rule_that_covers_nothing():
