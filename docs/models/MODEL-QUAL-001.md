@@ -72,7 +72,7 @@ It posts an amber embed and logs a WARNING when rho is below `QUALITY_CORRELATIO
 first asks whether the strategies still hit, the second whether the score still ranks. Why the
 second one only reports is the next two sections.
 
-### Return units: fixed in code, history pending re-run ([#1154](https://github.com/TeneikaAskew/stocks/issues/1154))
+### Return units: fixed and re-classified ([#1154](https://github.com/TeneikaAskew/stocks/issues/1154), closed 2026-09-25)
 
 Until the fix for #1154, `returns_by_tf` carried **two units in one dict**, and the constants
 were compared against both:
@@ -102,10 +102,20 @@ source unit where the constants live, and `_source_return_fraction` (`:369-372`)
 `classify` sees is now a fraction, the thresholds keep their documented meaning, and the
 90/120/240m returns are untouched.
 
-**History is not corrected by the code change.** Every `signal_metrics` row written before it
-keeps its 100x-lenient `cls_5m` to `cls_60m`, `best_tf` and `mfe_60m_atrs` until the report is
-re-run in `--mode=historical` over its dates. That re-run, and the alarm's baseline across it,
-are tracked on #1154.
+**History was re-classified on 2026-09-25** by re-running the deployed report in
+`--mode=historical`, one month per execution, from 2026-04-01 onward. Measured afterwards over all
+242,949 `final` rows, none left un-re-run:
+- Median |return| rises with the horizon on one scale: 0.00065 / 0.00115 / 0.00171 / 0.00254 /
+  0.00459 / 0.00734 from 5m to 240m.
+- `cls_60m` is 32.0% CLEAN_HIT, down from 90.2%, against 43.5% at 90m.
+- `mfe_60m_atrs` has a median of 2.0.
+- Every month's row count equals its `historical_signals` count. The re-run also filled the 50k
+  rows the nightly job had never scored, every Friday among them (#1166).
+
+The clean-rate alarm windows on `evaluated_at`, which the re-run reset. Its prior window is
+therefore empty until 2026-10-02, so it reports insufficient data and exits 0 rather than
+comparing the new scale with the old. The table the timeframe heuristic was fitted on changed,
+and that refit is #1167.
 
 ### Score discrimination: fixed pairing, report-only ([#1152](https://github.com/TeneikaAskew/stocks/issues/1152))
 
@@ -239,9 +249,6 @@ are right.
 (own-exit pairing, signed, report-only); stays open until the deployed job is verified.
 [#905](https://github.com/TeneikaAskew/stocks/issues/905) owns the finding the fix surfaced: the
 live score has no measurable edge.
-
-[#1154](https://github.com/TeneikaAskew/stocks/issues/1154) return units: fixed in code; stays open
-until the rows written before the fix are re-classified.
 
 One further finding recorded here rather than filed: the unread `ticker_calibration`
 thresholds (also on [MODEL-CALIB-001](MODEL-CALIB-001.md)). Measured, not inferred. The

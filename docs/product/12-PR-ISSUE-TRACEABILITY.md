@@ -80,7 +80,8 @@ Three conventions were also made explicit, because each had been applied inconsi
   The one prior exception, #868, was a cross-repo move and is now represented by its solyra
   record.
 
-The current ledger is **128 rows = 126 open in stocks + 2 in solyra**. Counts derived from
+The current ledger is **127 rows**: the 2026-09-22 reconciliation's 128 (126 open in stocks + 2 in
+solyra), less #1154, closed 2026-09-25. It has not been re-reconciled against `list_issues` since. Counts derived from
 GitHub are a snapshot: #1157 closed between two calls made minutes apart while this was being
 written, which is why the gate checks the documents against each other and leaves the refresh
 against GitHub to the maintenance procedure at the end of this file.
@@ -211,14 +212,14 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
+As of 2026-09-25 (P1 −1: #1154 closed). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
 
 | Severity | Count |
 |---|---|
 | CRITICAL | 15 |
 | P0 | 14 |
 | HIGH | 15 |
-| P1 | 32 |
+| P1 | 31 |
 | MEDIUM | 9 |
 | P2 | 15 |
 | LOW | 3 |
@@ -228,7 +229,7 @@ As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from
 | ops | 4 |
 | DECISION | 1 |
 | UNTRIAGED | 2 |
-| **Total** | **128** |
+| **Total** | **127** |
 
 ## Full open-issue map by capability
 
@@ -355,7 +356,7 @@ As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from
 
 **PR lineage:** [#355](https://github.com/TeneikaAskew/stocks/pull/355) *origin* · [#575](https://github.com/TeneikaAskew/stocks/pull/575) *verdict* · [#588](https://github.com/TeneikaAskew/stocks/pull/588) *verdict* · [#591](https://github.com/TeneikaAskew/stocks/pull/591) *origin* · [#593](https://github.com/TeneikaAskew/stocks/pull/593) *evolution* · [#594](https://github.com/TeneikaAskew/stocks/pull/594) *evolution* · [#595](https://github.com/TeneikaAskew/stocks/pull/595) *evolution* · [#597](https://github.com/TeneikaAskew/stocks/pull/597) *structural* · [#615](https://github.com/TeneikaAskew/stocks/pull/615) *evolution* · [#622](https://github.com/TeneikaAskew/stocks/pull/622) *remediation* · [#629](https://github.com/TeneikaAskew/stocks/pull/629) *remediation* · [#637](https://github.com/TeneikaAskew/stocks/pull/637) *structural* · [#638](https://github.com/TeneikaAskew/stocks/pull/638) *remediation* · [#647](https://github.com/TeneikaAskew/stocks/pull/647) *evolution* · [#698](https://github.com/TeneikaAskew/stocks/pull/698) *origin* · [#707](https://github.com/TeneikaAskew/stocks/pull/707) *origin* · [#719](https://github.com/TeneikaAskew/stocks/pull/719) *evolution* · [#735](https://github.com/TeneikaAskew/stocks/pull/735) *evolution* · [#810](https://github.com/TeneikaAskew/stocks/pull/810) *structural* · [#811](https://github.com/TeneikaAskew/stocks/pull/811) *remediation*
 
-### FEAT-SIGNAL-001 — Signals / execution (13 open)
+### FEAT-SIGNAL-001 — Signals / execution (12 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -366,7 +367,6 @@ As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from
 | [#915](https://github.com/TeneikaAskew/stocks/issues/915) | P1 | [P1][Execution] Bound same-minute trigger, target, and stop ordering ambiguity |
 | [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) | P1 | [P1][Signals] Two mean-reversion implementations; only `lib.signals.evaluate_signal` applies the runtime gates |
 | [#1152](https://github.com/TeneikaAskew/stocks/issues/1152) | P1 | [P1][Signals] `signal-quality-alarm`'s score-discrimination join matches 0 live rows, so that half has never run |
-| [#1154](https://github.com/TeneikaAskew/stocks/issues/1154) | P1 | [P1][Signals] `signal-quality` classifier applies fraction thresholds to percentage-point returns on 4 of 7 horizons |
 | [#285](https://github.com/TeneikaAskew/stocks/issues/285) | DEBT | PR-7: decommission lib/trading_analysis.py momentum inline path or route through MomentumStrategy |
 | [#701](https://github.com/TeneikaAskew/stocks/issues/701) | ENH | Align the two strategy voters: Live/Charts trend panel vs lib.signals production alert voter |
 | [#249](https://github.com/TeneikaAskew/stocks/issues/249) | ENH | feat(strategies): walk-forward IR-optimized RSI thresholds (Tier-A v2) |
