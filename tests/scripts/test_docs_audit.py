@@ -2277,7 +2277,20 @@ def test_the_clause_splitter_does_not_cut_inside_a_url():
             "and canonical [#868](https://github.com/TeneikaAskew/stocks/issues/868) "
             "is still open")
     i = line.index("https://github.com/TeneikaAskew/stocks")
-    assert "moved to" in m.citation_clause(line, i, i + 50)
+    clause = m.citation_clause(line, i, i + 50)
+    # The URL rule, asserted directly: the clause carries the whole
+    # destination rather than being cut at a dot inside `github.com`.
+    assert "https://github.com/TeneikaAskew/stocks/issues/868" in clause
+    assert not clause.startswith("com/")
+    # It no longer reaches back past `and`, and that is deliberate: each
+    # citation here has its OWN verdict -- solyra#26 is where the work moved,
+    # #868 is what is still open -- so the coordinator is a clause boundary.
+    # Codex filed the missing boundary; this line is the one existing case it
+    # changes, and the change is in the direction the prose supports. The real
+    # line this was drawn from is unaffected, because there a `;` bounds the
+    # clause before any coordinator is reached -- see the test below, which
+    # reads it off disk.
+    assert clause.lstrip().startswith("and canonical")
 
 
 def test_the_real_traceability_line_reports_nothing(monkeypatch):
@@ -7950,9 +7963,16 @@ def test_a_heading_comment_is_removed_from_the_text_not_blanked():
     all, recording `hello----note---`."""
     assert m.heading_anchors("Hello <!-- note -->\n---\n") == {"hello"}
     assert m.heading_anchors("## Hello <!-- note --> Real\n") == {"hello--real"}
-    # A comment BEFORE the `#` no longer pushes the heading past the
-    # three-column limit, so it is still a heading.
-    assert m.heading_anchors("<!-- x --> ## H\n") == {"h"}
+    # A comment that STARTS the line is not an inline span at all: it opens a
+    # type-2 HTML block, which ends on the line carrying `-->`, so the whole
+    # line is literal and the `##` after the closer never renders as a
+    # heading. This asserted `{"h"}` until Codex filed the closing-line rule
+    # (stocks#1121); the earlier fix it was written for -- removing the
+    # comment rather than blanking it, so the slug is not padded -- is what
+    # the assertions above pin, and they are unchanged.
+    assert m.heading_anchors("<!-- x --> ## H\n") == set()
+    # Mid-paragraph the comment IS an inline span, and the heading stands.
+    assert m.heading_anchors("## H <!-- x --> tail\n") == {"h--tail"}
     assert m.heading_anchors("Hello\nworld\n---\n") == {"hello-world"}
 
 
@@ -8440,3 +8460,96 @@ def test_open_issues_does_not_call_a_pull_request_live():
     assert det("| Open issues | #838 |\n") == []
     assert det("#838 is still open\n") == [
         f"{m.THIS_REPO}#838 is CLOSED (completed) but cited as live work"]
+
+
+def test_a_raw_html_block_ends_with_the_list_item_that_opened_it():
+    """`- <pre>` opens a raw-text block as ITEM CONTENT, and CommonMark ends a
+    nested block with its container. This scan recorded only the opening quote
+    depth, so the block outlived the item and every later line -- a live link,
+    a heading, a marker -- stayed classified as raw HTML, potentially to end of
+    document. `_fenced_scan` has had the item rule since the round that gave it
+    the quote rule; this scan got only half. Codex filed it."""
+    lines = ["- <pre>", "  sample", "", "[x](missing.md)", "# Later"]
+    assert m.raw_html_block_lines(lines) == {0, 1, 2}
+    # Still INSIDE the item, so still raw.
+    assert m.raw_html_block_lines(["- <pre>", "  sample", "  [x](missing.md)"]) == {0, 1, 2}
+    # A top-level block, whose content may legally sit at column zero, must
+    # not end on its own first content line -- which is what
+    # `_list_content_col` returning 0 outside an item protects.
+    assert m.raw_html_block_lines(["<pre>", "sample", "[x](missing.md)"]) == {0, 1, 2}
+    # The quote rule is unchanged.
+    assert m.raw_html_block_lines(["> <pre>", "> sample", "[x](missing.md)"]) == {0, 1}
+
+
+def test_an_h1_under_nested_containers_is_still_an_h1():
+    """CommonMark nests containers freely, and every reader here removed
+    exactly one -- so `- - # Title` and `- > # Title` left the next container
+    in front of the `#`. h1_index found no H1, heading_anchors exposed no
+    anchor, the audit reported a missing marker, and `--stamp --verify`
+    answered `skipped-no-h1`: the command could not repair its own finding.
+    Codex filed it."""
+    for doc in ["- - # Title", "- > # Title", "> - # Title", "- > - # Title",
+                "- # Title", "> # Title", "# Title"]:
+        text = doc + "\nbody\n"
+        assert m.h1_index(text.split("\n")) == 0, doc
+        assert m.heading_anchors(text) == {"title"}, doc
+    # A thematic break is not a container stack: `---` has no space after the
+    # marker, and `- - -` reduces to a bare `-` that no heading test accepts.
+    assert m.h1_index(["- - - ", "body"]) is None
+    assert m.h1_index(["---", "body"]) is None
+    # Stamping carries the whole stack: each LIST marker becomes spaces of its
+    # own width (the item's content column) and a blockquote marker is kept,
+    # because a quote continuation needs the `>` and an item needs the indent.
+    assert m._container_prefix("- - # T") == ("    ", "")
+    assert m._container_prefix("- > # T") == ("  > ", "  >")
+    assert m._container_prefix("> - # T") == (">   ", ">")
+
+
+def test_a_block_start_comment_takes_its_whole_closing_line():
+    """CommonMark's type-2 HTML block runs to the end of the LINE carrying the
+    first `-->`, so Markdown written after the closer is displayed literally.
+    Masking only through `-->` left it live and emitted a gating dead-link for
+    a link no reader can click. Codex filed it."""
+    assert m.comment_spans(["<!-- c --> [x](missing.md)"]) == {0: [(0, 26)]}
+    # Mid-paragraph the comment is an inline SPAN, and what follows renders --
+    # which is what keeps the `05-a-ARCHITECTURE.md:5` case in the function's
+    # own docstring reporting its real dead link.
+    assert m.comment_spans(["text <!-- c --> [x](missing.md)"]) == {0: [(5, 15)]}
+    # A multi-line block takes the whole closer line too.
+    assert m.comment_spans(["<!-- c", "still c --> [x](missing.md)"]) \
+        == {0: [(0, 6)], 1: [(0, 27)]}
+    # Four columns in is indented code, not a block start, so no comment opens.
+    assert m.comment_spans(["    <!-- c --> [x](missing.md)"]) == {}
+    # And a backticked opener is an example, unchanged.
+    assert m.comment_spans(["`<!-- inventory:*:start -->` and [x](missing.md)"]) == {}
+
+
+def test_a_coordinator_splits_two_verdicts_but_not_one_list():
+    """`#1 is still open and #2 is resolved` joins two verdicts with no
+    punctuation, so both citations got the whole span and the unnegated
+    `resolved` settled both -- a closed issue explicitly called open produced
+    no finding. Codex filed it.
+
+    The narrowing matters more than the rule: my first attempt required only a
+    cue on each side, which reintroduced a false P1 an earlier round removed,
+    because `cited [#825] and [#900] as blockers when both had been closed` is
+    ONE predicate over a LIST. What separates them is the text between the
+    first citation and the coordinator -- nothing in a list, a predicate in two
+    verdicts -- which is the question `_COORDINATOR_RE` already answers."""
+    states = {m.THIS_REPO: {n: {"state": "closed", "reason": "completed",
+                                "kind": "ISSUE"} for n in (1, 2, 3, 825, 900)}}
+    refs = lambda t: sorted(f["ref"] for f in
+                            m.check_closed_issues("d.md", t, states))
+    R = m.THIS_REPO
+    assert refs("#1 is still open and #2 is resolved\n") == [f"{R}#1"]
+    assert refs("#1 is resolved and #2 is still open\n") == [f"{R}#2"]
+    # A LIST sharing one predicate keeps both citations under it.
+    assert refs("#1 and #2 are still open\n") == [f"{R}#1", f"{R}#2"]
+    assert refs("#1 and #2 are still open but #3 is resolved\n") == [f"{R}#1", f"{R}#2"]
+    # The regression the narrowing exists to prevent, verbatim in shape.
+    u = lambda n: f"https://github.com/TeneikaAskew/stocks/issues/{n}"
+    assert refs(f"cited [#825]({u(825)}) and [#900]({u(900)}) as blockers "
+                "when both had been closed\n") == []
+    # The spellings that already worked.
+    assert refs("#1 is still open; #2 is resolved\n") == [f"{R}#1"]
+    assert refs("#1 was still open, now resolved\n") == []

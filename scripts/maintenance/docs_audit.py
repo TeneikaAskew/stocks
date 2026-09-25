@@ -1351,7 +1351,7 @@ def heading_anchors(text: str) -> set[str]:
         # thematic break, which is_setext_underline already refuses, and
         # stripping the marker there would invent a heading. Ported from the
         # Node twin (solyra#69).
-        m = _HEADING_RE.match(_LIST_MARKER_RE.sub("", line, count=1))
+        m = _HEADING_RE.match(strip_containers(line)[1])
         if not (m or setext):
             continue
         # The LIST MARKER is stripped for a Setext heading too. `- Title`
@@ -2858,6 +2858,16 @@ def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
     # raw-block masking has to avoid.
     wrapped_code = code_span_lines(lines)
     open_at: tuple[int, int] | None = None
+    # Whether the open comment STARTED a block rather than interrupting a
+    # paragraph. CommonMark's type-2 HTML block runs to the end of the LINE
+    # carrying the first `-->`, so Markdown written after the closer on that
+    # line is displayed literally -- `<!-- c --> [x](missing.md)` at block
+    # start renders no link at all, and masking only through `-->` left it
+    # visible and emitted a gating dead-link for something no reader can
+    # click. A comment opening MID-paragraph is an inline span and keeps the
+    # narrower rule, which is what protects the `05-a-ARCHITECTURE.md:5` case
+    # in the docstring above. Codex filed it (stocks#1121).
+    open_block = False
     for i, line in enumerate(lines):
         pos = 0
         while True:
@@ -2878,12 +2888,25 @@ def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
                 if a < 0:
                     break
                 open_at = (i, a)
+                # Block start: the opener is the first content on the line,
+                # under the four columns that would make it indented code,
+                # measured after any blockquote prefix.
+                _bare = _BLOCKQUOTE_PREFIX_RE.sub("", line, count=1)
+                _off = len(line) - len(_bare)
+                _lead = len(_bare) - len(_bare.lstrip())
+                open_block = a == _off + _lead and _lead <= 3
                 pos = a + 4
             else:
                 frm = open_at[1] if open_at[0] == i else 0
                 b = line.find("-->", pos if open_at[0] == i else 0)
                 if b < 0:
                     add(i, frm, len(line))
+                    break
+                if open_block:
+                    # The whole closing line belongs to the block.
+                    add(i, frm, len(line))
+                    open_at = None
+                    open_block = False
                     break
                 add(i, frm, b + 3)
                 open_at = None
@@ -3099,6 +3122,16 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
     # The closer a type-3/4/5 block waits for. None for the tag-closed and
     # blank-line-closed kinds.
     closer: str | None = None
+    # And the list item's CONTENT column, for the same reason `open_depth`
+    # holds the quote depth: a raw HTML block opened as item content --
+    # `- <pre>` -- ends with that item, closing tag or not. Recording only the
+    # quote depth held the block open past the item, so a following
+    # column-zero `[x](missing.md)` stayed classified as raw HTML and its
+    # link, headings, blockers and markers were silently skipped, potentially
+    # to the end of the document. `_fenced_scan` has had this rule since the
+    # round that taught it the quote rule; this scan got only half of it.
+    # Codex filed it (stocks#1121).
+    open_list_col = 0
     for i, raw in enumerate(lines):
         # Only while NOTHING is open. Inside a block, Markdown is not parsed,
         # so a line the fence scan called fenced is displayed text and the
@@ -3114,6 +3147,16 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
         line = _BLOCKQUOTE_PREFIX_RE.sub("", raw, count=1)
         if open_tag is not None and quote_depth(raw) < open_depth:
             open_tag, closer = None, None
+        # The item ends at the first non-blank line left of its content
+        # column. `_list_content_col` returns 0 when the block is not in an
+        # item, which is what keeps a legally indented top-level block from
+        # ending on its own first content line.
+        if (open_list_col and raw.strip()
+                and indent_columns(line) < open_list_col):
+            if open_tag is not None:
+                open_tag, closer = None, None
+            in_comment = False
+            open_list_col = 0
         if in_comment:
             if "-->" in line:
                 in_comment = False
@@ -3127,7 +3170,15 @@ def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
             # block the line is displayed text and its leading `-` is content.
             # Every branch below returns, so the stripped text reaches no
             # closer test. The fence scanner learned the same rule this round.
+            item = _LIST_MARKER_RE.match(line)
             line = _LIST_MARKER_RE.sub("", line, count=1)
+            # Whatever opens on this line, opens at this item's content
+            # column. Recorded beside `open_depth` and for the same reason:
+            # before the opener tests, so none of the four places a block can
+            # start has to remember to do it. A block opening on a line that
+            # is not a marker inherits the enclosing item's column, if any.
+            open_list_col = (_column_width(item.group(1)) if item
+                             else _list_content_col(lines, i))
             # Whatever opens on THIS line opens at this line's depth. Recorded
             # before the opener tests rather than at each of the four places a
             # block can start, so none of them can be missed; it is only read
@@ -3287,6 +3338,36 @@ def _comment_hidden(lines: list[str]) -> set[int]:
 # `--stamp` place provenance after a heading that does not exist. Codex filed
 # it here.
 _LIST_MARKER_RE = re.compile(r"^(\s*(?:[-*+]|\d{1,9}[.)])\s+)")
+
+
+# ONE step of the container stack: a blockquote marker or a list marker.
+# CommonMark nests them freely -- `- - # Title` and `- > # Title` both render
+# a real H1 -- and every reader here removed exactly one, so the next
+# container stayed in front of the `#`. h1_index then found no H1,
+# heading_anchors exposed no anchor, the audit reported a missing marker, and
+# `--stamp --verify` answered `skipped-no-h1`: the command could not repair
+# the finding it had just made. Codex filed it (stocks#1121).
+# No `^`: this is used with `match(line, pos)`, and `^` anchors to the start
+# of the STRING, not to pos -- with it the walk below consumed exactly one
+# container and silently stopped, which is the defect it was written to fix.
+_CONTAINER_STEP_RE = re.compile(
+    r" {0,3}(?:>[ \t]?|(?:[-*+]|\d{1,9}[.)])[ \t]+)")
+
+
+def strip_containers(line: str) -> tuple[str, str]:
+    """`(prefix, content)` with the WHOLE container stack removed.
+
+    Repeated rather than recursive-by-regex so `- > - # Title` is handled by
+    the same one rule as `- # Title`. A thematic break is not a container:
+    `---` has no space after the marker, so the pattern declines it, and
+    `- - -` reduces to a bare `-` that no heading test accepts.
+    """
+    i = 0
+    while True:
+        m = _CONTAINER_STEP_RE.match(line, i)
+        if not m or m.end() == i:
+            return line[:i], line[i:]
+        i = m.end()
 
 
 def _column_width(text: str) -> int:
@@ -3763,7 +3844,7 @@ def h1_index(lines: list[str]) -> int | None:
         # this tested the unstripped line -- so the audit reported the marker
         # missing while --stamp answered `skipped-no-h1` and could not repair
         # its own finding.
-        if H1_RE.match(_LIST_MARKER_RE.sub("", bare, count=1)):
+        if H1_RE.match(strip_containers(bare)[1]):
             return i
         # Setext level one (`Title` over `===`). Without it the audit reported
         # a missing marker on such a document while --stamp answered
@@ -3843,12 +3924,25 @@ def _container_prefix(line: str) -> tuple[str, str]:
     quoted = _BLOCKQUOTE_PREFIX_RE.match(line)
     head = quoted.group(0) if quoted else ""
     rest = line[len(head):]
-    item = _LIST_MARKER_RE.match(rest)
-    # The marker is replaced by SPACES of its own width, which is the column
-    # CommonMark parses the item's content at -- not stripped, which would put
-    # the marker back at column zero and open a second list item.
-    body = (" " * len(item.group(1)) if item
-            else rest[:len(rest) - len(rest.lstrip())])
+    # The WHOLE remaining stack, not one marker: an H1 under `- - ` or `- > `
+    # needs both carried, or the inserted marker leaves the inner container
+    # and the structure changes anyway. Each LIST marker is replaced by SPACES
+    # of its own width -- the column CommonMark parses that item's content at
+    # -- while a blockquote marker is kept, because a `>` continuation needs
+    # the `>` and a list continuation needs the indent.
+    inner_prefix, rest_after = strip_containers(rest)
+    body = ""
+    pos = 0
+    while pos < len(inner_prefix):
+        step = _CONTAINER_STEP_RE.match(inner_prefix, pos)
+        if not step or step.end() == pos:
+            break
+        piece = inner_prefix[pos:step.end()]
+        body += piece if ">" in piece else " " * len(piece)
+        pos = step.end()
+    if not inner_prefix:
+        body = rest[:len(rest) - len(rest.lstrip())]
+    del rest_after
     lead = head + body
     return lead, lead.rstrip()
 
@@ -4498,9 +4592,40 @@ def clause_bounds(line: str, start: int, end: int) -> tuple[int, int]:
         commas = {mm.start() + 1 for mm in re.finditer(r",", span)
                   if any(c < mm.start() for c in cite_at)
                   and any(c > mm.start() for c in cite_at)}
+        # A COORDINATOR can join two verdicts with no punctuation at all:
+        # `#1 is still open and #2 is resolved` gave both citations the whole
+        # span, the unnegated `resolved` settled them, and a closed issue
+        # explicitly called open produced no finding. The comma and contrast
+        # boundaries I added a round ago do not see it. Codex filed it.
+        #
+        # Two citations either side is NOT sufficient, which is where this
+        # differs from the comma rule. `cited [#825] and [#900] as blockers
+        # when both had been closed` is ONE predicate over a LIST of two, and
+        # splitting it let #825 inherit a `Blocking-issue` from earlier in the
+        # paragraph while the `closed` that settles it fell on the other side
+        # -- the exact false P1 an earlier round removed, and an existing test
+        # caught it.
+        #
+        # What separates a list from two verdicts is the text between the
+        # FIRST citation and the coordinator: nothing at all in a list
+        # (`#5 and #10`), a predicate when each citation has its own verdict
+        # (`#1 is still open and #2 is resolved`). That is the question
+        # `_COORDINATOR_RE` already answers, so it answers it here too rather
+        # than a second rule guessing at the same thing.
+        cite_spans = [(mm.start(), mm.end()) for mm in SHORTHAND_ISSUE_RE.finditer(span)]
+        cite_spans += [(mm.start(), mm.end()) for mm in ISSUE_URL_RE.finditer(span)]
+
+        def _joins_two_verdicts(at: int, after: int) -> bool:
+            before = [e for _, e in cite_spans if e <= at]
+            if not before or not any(st >= after for st, _ in cite_spans):
+                return False
+            return not _COORDINATOR_RE.fullmatch(span[max(before):at])
+
+        coords = {mm.start() for mm in re.finditer(r"\b(?:and|or)\b", span)
+                  if _joins_two_verdicts(mm.start(), mm.end())}
         bounds = sorted({0, len(span)}
                         | {mm.start() for mm in _CONTRAST_RE.finditer(span)}
-                        | commas)
+                        | commas | coords)
         for a, b in zip(bounds, bounds[1:]):
             if a <= rel < b:
                 return lo + a, lo + b
