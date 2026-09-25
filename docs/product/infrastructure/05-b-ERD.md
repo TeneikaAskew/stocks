@@ -178,7 +178,7 @@ erDiagram
         text data_source
         numeric strike
         numeric premium
-        text ew_verdict
+        text ew_strike_verdict
     }
     earnings_history {
         bigserial id PK

@@ -2788,14 +2788,14 @@ deploy_fetch_premarket_refresh() {
         --quiet
 }
 
-# EW strike verdict evaluator — runs at 16:30 ET (30 min after close)
-# to score every Earnings Whispers strike pick from today's session
-# against the day's intraday bars. Populates ew_strike_verdict +
+# EW strike verdict evaluator: runs at 23:00 ET (evaluate-ew-strikes-daily)
+# and scores each Earnings Whispers pick from the last 7 days whose scoring
+# session has closed (the next session for an after-close report, #1151)
+# against that session's intraday bars. Populates ew_strike_verdict +
 # ew_strike_move_pct + ew_minutes_to_hit + ew_minutes_in_zone +
-# ew_day_change_pct on earnings_calendar so tomorrow's brief can render
-# the verdict in the 🔮 Whispers section ("EW LC $30 HIT +18.7%, in 0m,
-# held 390m, day +4.1%"). Idempotent — already-scored rows skip unless
-# --force is passed.
+# ew_day_change_pct on earnings_calendar. Only BRIEF_AS_OF replays of the
+# brief reach its render path (#1168). Idempotent: scored rows skip unless
+# --force is passed, which also clears a row it cannot re-score.
 deploy_evaluate_ew_strikes() {
     echo "Deploying evaluate-ew-strikes job..."
     gcloud run jobs create evaluate-ew-strikes \
@@ -5180,6 +5180,7 @@ case "${1:-help}" in
     pg-dump) _run build_image deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) _PIN_AFTER=0; setup_pg_dump_iam ;;
     fred-rates) _run build_image deploy_fetch_fred_rates ;;
+    evaluate-ew-strikes) _run build_image deploy_evaluate_ew_strikes ;;
     db-query) _run build_image deploy_db_query ;;
     freshness-watchdog) _run build_image deploy_freshness_watchdog ;;
     audit-infra-drift) _run build_image deploy_audit_infra_drift ;;
@@ -5300,6 +5301,8 @@ case "${1:-help}" in
         echo "             objectAdmin on the dump bucket, lifecycle rule sets 30d"
         echo "             retention on the sql-dumps/ prefix."
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
+        echo "  evaluate-ew-strikes"
+        echo "             Deploy evaluate-ew-strikes job alone (EW strike verdicts, 23:00 ET)."
         echo "  gamma-levels"
         echo "             Deploy p2-build-gamma-levels job (research image; run"
         echo "             build-research first). Nightly writer of gamma_levels_eod."

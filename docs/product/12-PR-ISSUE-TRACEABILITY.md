@@ -80,8 +80,8 @@ Three conventions were also made explicit, because each had been applied inconsi
   The one prior exception, #868, was a cross-repo move and is now represented by its solyra
   record.
 
-The current ledger is **127 rows**: the 2026-09-22 reconciliation's 128 (126 open in stocks + 2 in
-solyra), less #1154, closed 2026-09-25. It has not been re-reconciled against `list_issues` since. Counts derived from
+The current ledger is **130 rows**: the 2026-09-22 reconciliation's 128 (126 open in stocks + 2 in
+solyra), less #1154 and #1152, both closed 2026-09-25, plus #1166, #1167, #1168 and #1171, filed the same day. It has not been re-reconciled against `list_issues` since. Counts derived from
 GitHub are a snapshot: #1157 closed between two calls made minutes apart while this was being
 written, which is why the gate checks the documents against each other and leaves the refresh
 against GitHub to the maintenance procedure at the end of this file.
@@ -212,24 +212,24 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-09-25 (P1 −1: #1154 closed). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
+As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LOW +2: #1167/#1168, all four filed while resolving them). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
 
 | Severity | Count |
 |---|---|
 | CRITICAL | 15 |
 | P0 | 14 |
 | HIGH | 15 |
-| P1 | 31 |
-| MEDIUM | 9 |
+| P1 | 30 |
+| MEDIUM | 11 |
 | P2 | 15 |
-| LOW | 3 |
+| LOW | 5 |
 | P3 | 2 |
 | DEBT | 11 |
 | ENH | 5 |
 | ops | 4 |
 | DECISION | 1 |
 | UNTRIAGED | 2 |
-| **Total** | **127** |
+| **Total** | **130** |
 
 ## Full open-issue map by capability
 
@@ -276,7 +276,7 @@ As of 2026-09-25 (P1 −1: #1154 closed). As of 2026-09-18 (P1 +2: #1135/#1136; 
 
 **PR lineage:** [#210](https://github.com/TeneikaAskew/stocks/pull/210) *origin* · [#319](https://github.com/TeneikaAskew/stocks/pull/319) *origin* · [#350](https://github.com/TeneikaAskew/stocks/pull/350) *structural* · [#406](https://github.com/TeneikaAskew/stocks/pull/406) *remediation* · [#418](https://github.com/TeneikaAskew/stocks/pull/418) *evolution* · [#513](https://github.com/TeneikaAskew/stocks/pull/513) *structural* · [#519](https://github.com/TeneikaAskew/stocks/pull/519) *evolution* · [#548](https://github.com/TeneikaAskew/stocks/pull/548) *origin* · [#694](https://github.com/TeneikaAskew/stocks/pull/694) *evolution* · [#706](https://github.com/TeneikaAskew/stocks/pull/706) *origin* · [#710](https://github.com/TeneikaAskew/stocks/pull/710) *origin*
 
-### FEAT-DEPLOY-001 — Infrastructure / deploy (13 open)
+### FEAT-DEPLOY-001 — Infrastructure / deploy (14 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -292,6 +292,7 @@ As of 2026-09-25 (P1 −1: #1154 closed). As of 2026-09-18 (P1 +2: #1135/#1136; 
 | [#854](https://github.com/TeneikaAskew/stocks/issues/854) | MEDIUM | [audit] K9 — update branches inconsistently mirror create sizing flags |
 | [#853](https://github.com/TeneikaAskew/stocks/issues/853) | MEDIUM | [audit] K8 / C6 / C7 — Widespread unjustified non-zero --max-retries (~23 jobs) |
 | [#852](https://github.com/TeneikaAskew/stocks/issues/852) | MEDIUM | [audit] K7 — 19 deploy_* functions reachable only via the bundled fetchers target |
+| [#1171](https://github.com/TeneikaAskew/stocks/issues/1171) | MEDIUM | Every trading-system build rolls out to every job at its next run; deploy.sh:107-110 says jobs keep their deploy-time digest |
 | [#1140](https://github.com/TeneikaAskew/stocks/issues/1140) | ops | [ESCALATED] magnitude-inference: fix in #1122 merged 2026-09-16 but never deployed — job still failing nightly, auto-closed each time |
 
 **PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation*
@@ -356,7 +357,7 @@ As of 2026-09-25 (P1 −1: #1154 closed). As of 2026-09-18 (P1 +2: #1135/#1136; 
 
 **PR lineage:** [#355](https://github.com/TeneikaAskew/stocks/pull/355) *origin* · [#575](https://github.com/TeneikaAskew/stocks/pull/575) *verdict* · [#588](https://github.com/TeneikaAskew/stocks/pull/588) *verdict* · [#591](https://github.com/TeneikaAskew/stocks/pull/591) *origin* · [#593](https://github.com/TeneikaAskew/stocks/pull/593) *evolution* · [#594](https://github.com/TeneikaAskew/stocks/pull/594) *evolution* · [#595](https://github.com/TeneikaAskew/stocks/pull/595) *evolution* · [#597](https://github.com/TeneikaAskew/stocks/pull/597) *structural* · [#615](https://github.com/TeneikaAskew/stocks/pull/615) *evolution* · [#622](https://github.com/TeneikaAskew/stocks/pull/622) *remediation* · [#629](https://github.com/TeneikaAskew/stocks/pull/629) *remediation* · [#637](https://github.com/TeneikaAskew/stocks/pull/637) *structural* · [#638](https://github.com/TeneikaAskew/stocks/pull/638) *remediation* · [#647](https://github.com/TeneikaAskew/stocks/pull/647) *evolution* · [#698](https://github.com/TeneikaAskew/stocks/pull/698) *origin* · [#707](https://github.com/TeneikaAskew/stocks/pull/707) *origin* · [#719](https://github.com/TeneikaAskew/stocks/pull/719) *evolution* · [#735](https://github.com/TeneikaAskew/stocks/pull/735) *evolution* · [#810](https://github.com/TeneikaAskew/stocks/pull/810) *structural* · [#811](https://github.com/TeneikaAskew/stocks/pull/811) *remediation*
 
-### FEAT-SIGNAL-001 — Signals / execution (12 open)
+### FEAT-SIGNAL-001 — Signals / execution (13 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -366,7 +367,8 @@ As of 2026-09-25 (P1 −1: #1154 closed). As of 2026-09-18 (P1 +2: #1135/#1136; 
 | [#905](https://github.com/TeneikaAskew/stocks/issues/905) | P0 | [P0][Signals] Freeze and prospectively validate live alert expectancy and scoring |
 | [#915](https://github.com/TeneikaAskew/stocks/issues/915) | P1 | [P1][Execution] Bound same-minute trigger, target, and stop ordering ambiguity |
 | [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) | P1 | [P1][Signals] Two mean-reversion implementations; only `lib.signals.evaluate_signal` applies the runtime gates |
-| [#1152](https://github.com/TeneikaAskew/stocks/issues/1152) | P1 | [P1][Signals] `signal-quality-alarm`'s score-discrimination join matches 0 live rows, so that half has never run |
+| [#1166](https://github.com/TeneikaAskew/stocks/issues/1166) | MEDIUM | signal-quality-report never scores Friday signals: it reads historical_signals before the nightly writer has run |
+| [#1167](https://github.com/TeneikaAskew/stocks/issues/1167) | LOW | Re-derive EMPIRICAL_LOOKUP after the #1154 re-run: it was fitted on 100x-lenient classifications |
 | [#285](https://github.com/TeneikaAskew/stocks/issues/285) | DEBT | PR-7: decommission lib/trading_analysis.py momentum inline path or route through MomentumStrategy |
 | [#701](https://github.com/TeneikaAskew/stocks/issues/701) | ENH | Align the two strategy voters: Live/Charts trend panel vs lib.signals production alert voter |
 | [#249](https://github.com/TeneikaAskew/stocks/issues/249) | ENH | feat(strategies): walk-forward IR-optimized RSI thresholds (Tier-A v2) |
@@ -483,10 +485,11 @@ As of 2026-09-25 (P1 −1: #1154 closed). As of 2026-09-18 (P1 +2: #1135/#1136; 
 
 **PR lineage:** [#546](https://github.com/TeneikaAskew/stocks/pull/546) *origin* · [#611](https://github.com/TeneikaAskew/stocks/pull/611) *structural* · [#643](https://github.com/TeneikaAskew/stocks/pull/643) *evolution* · [#684](https://github.com/TeneikaAskew/stocks/pull/684) *origin* · [#687](https://github.com/TeneikaAskew/stocks/pull/687) *evolution* · [#690](https://github.com/TeneikaAskew/stocks/pull/690) *evolution* · [#692](https://github.com/TeneikaAskew/stocks/pull/692) *evolution* · [#700](https://github.com/TeneikaAskew/stocks/pull/700) *remediation* · [#703](https://github.com/TeneikaAskew/stocks/pull/703) *evolution* · [#715](https://github.com/TeneikaAskew/stocks/pull/715) *evolution*
 
-### FEAT-PLAYBOOK-001 — Premarket / playbook (0 open)
+### FEAT-PLAYBOOK-001 — Premarket / playbook (1 open)
 
 | Issue | Sev | Title |
 |---|---|---|
+| [#1168](https://github.com/TeneikaAskew/stocks/issues/1168) | LOW | The EW strike verdict never reaches the live premarket brief; it renders only in `BRIEF_AS_OF` replays |
 
 **PR lineage:** [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
 
