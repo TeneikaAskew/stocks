@@ -254,16 +254,19 @@ def test_compute_metrics_for_signal_full_pipeline():
         "Low":   [99.0] * 30,
         "Close": [100.0] * 30,
     })
+    # historical_signals stores PERCENTAGE POINTS (0.06 = 0.06%), the unit
+    # lib/trading_analysis.py writes. #1154: this row once fed fractions,
+    # the unit the code assumed, so the test agreed with the bug.
     src = {
         "ticker":         "SPY",
         "entry_time":     entry,
         "strategy":       "momentum",
         "trade_type":     "CALL",
         "entry_price":    100.0,
-        "return_5min":    0.0006,    # NOISE
-        "return_15min":   0.0040,    # MIXED
-        "return_30min":   0.0070,    # CLEAN_HIT
-        "return_60min":   0.0150,    # CLEAN_HIT
+        "return_5min":    0.06,      # 0.06% -> NOISE
+        "return_15min":   0.40,      # 0.40% -> MIXED
+        "return_30min":   0.70,      # 0.70% -> CLEAN_HIT
+        "return_60min":   1.50,      # 1.50% -> CLEAN_HIT
     }
     m = compute_metrics_for_signal(src, intraday=intraday,
                                     intraday_lookback=lookback, mode="historical")
@@ -277,10 +280,62 @@ def test_compute_metrics_for_signal_full_pipeline():
     assert m.cls_90m == "CLEAN_HIT"
     assert m.cls_240m == "CLEAN_HIT"
     assert m.best_tf == "30m"   # shortest clean
+    assert m.return_60m == pytest.approx(0.015, rel=1e-9)   # stored as a fraction
     assert m.atr_5m_pct == pytest.approx(0.02, rel=1e-3)
     # mfe_60m_atrs = 0.015 / 0.02 = 0.75
     assert m.mfe_60m_atrs == pytest.approx(0.75, rel=1e-3)
     assert m.status == "final"  # historical mode
+
+
+def test_source_returns_reach_classify_as_fractions_end_to_end():
+    """#1154 unit contract, writer to reader, with nothing mocked but the
+    catalyst lookup.
+
+    MarketAnalyzer.generate_technical_signals writes return_*min in
+    PERCENTAGE POINTS (`* 100`); map_signals_to_table carries them into
+    the historical_signals shape unchanged; compute_metrics_for_signal must
+    hand classify() a FRACTION, the unit CLEAN_THRESHOLD and
+    NOISE_THRESHOLD are written in.
+
+    The bars rise 0.2% over the hour after entry: a 0.002 fraction, NOISE
+    under the 0.003 floor. Read raw, the same move arrives as 0.2 and
+    clears the 0.005 CLEAN bar forty times over, which is what production
+    did on every 5/15/30/60m row it wrote.
+    """
+    from lib.trading_analysis import MarketAnalyzer
+    from scripts.run_historical_signals import map_signals_to_table
+
+    n = 120
+    last = 100.0 + np.arange(n) * (100.0 * 0.002 / 60)   # +0.2% per 60 bars
+    bars = pd.DataFrame({
+        "Time": pd.date_range("2026-04-29 13:30", periods=n, freq="1min", tz="UTC"),
+        "Last": last,
+        "Volume": 1_000,
+        # Enough CALL conditions to clear the gate (>= 5, core >= 2):
+        "RSI14_W": 35.0,                 # core: inside (25, 50)
+        "StochRSI_K": 50.0,
+        "VWAP": 90.0, "EMA9": 90.0,      # core: price above both
+        "RVol_Recent_20": 1.5,           # confirming: > 1.2
+        "ATR_Expansion": 1.3,            # confirming: > 1.15
+    })
+    signals = MarketAnalyzer().generate_technical_signals(bars)
+    assert not signals.empty
+    with patch("lib.strategies.catalyst_proximity.get_catalyst_context",
+               return_value={}):
+        rows = map_signals_to_table(signals, "SPY", strategy="momentum")
+
+    row = rows.iloc[0].to_dict()
+    i = int(bars.index[bars["Time"] == row["entry_time"]][0])
+    entry_price = float(bars["Last"].iloc[i])
+    m = compute_metrics_for_signal(row, mode="historical")
+
+    for tf, got in ((5, m.return_5m), (15, m.return_15m),
+                    (30, m.return_30m), (60, m.return_60m)):
+        # The favourable excursion as a FRACTION, measured on the bars.
+        want = (float(bars["Last"].iloc[i + 1:i + 1 + tf].max()) - entry_price) / entry_price
+        assert got == pytest.approx(want, rel=1e-9), f"{tf}m"
+    assert m.return_60m == pytest.approx(0.002, rel=1e-3)
+    assert m.cls_60m == "NOISE"
 
 
 def test_compute_metrics_for_signal_no_intraday_marks_extended_insufficient():
