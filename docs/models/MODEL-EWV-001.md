@@ -5,7 +5,7 @@
 **Job:** `evaluate-ew-strikes` (`0 23 * * 1-5`, after the close) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RESTRUCTURE
-**Doc health:** CURRENT · **Last verified:** 2026-09-22
+**Doc health:** CURRENT · **Last verified:** 2026-09-25
 
 > Registered 2026-09-18 by the round-10 sweep. It was invisible to the sweep's own first pass
 > too: the audit script's write-detector matched `INSERT INTO` and `upsert_dataframe(...)` but
@@ -18,119 +18,99 @@
 
 For each Earnings Whispers strike pick (`earnings_calendar` rows with
 `data_source = 'earnings_whispers'` and a non-null `strike`), a **verdict on how the pick
-played out** over the following regular session, plus the supporting measurements.
+played out** over the session its news reaches, plus the supporting measurements.
 
 | Strategy | Verdict rule | Where |
 |---|---|---|
-| `Long Calls`, `Bull Spreads` | `HIT` if session `high >= strike`, else `MISS` | `:78-86` |
-| `Long Puts`, `Bear Spreads` | `HIT` if session `low <= strike`, else `MISS` | `:87-95` |
-| `Covered Calls` | `KEPT` if session `close <= strike`, else `ASSIGNED` | `:96-104` |
-| Strangles, straddles, anything else | **no verdict** — the row is left NULL and skipped | `:106-108` |
+| `Long Calls`, `Bull Spreads` | `HIT` if session `high >= strike`, else `MISS` | `:117-125` |
+| `Long Puts`, `Bear Spreads` | `HIT` if session `low <= strike`, else `MISS` | `:127-134` |
+| `Covered Calls` | `KEPT` if session `close <= strike`, else `ASSIGNED` | `:136-145` |
+| Strangles, straddles, anything else | **no verdict**, counted as `no_verdict` | `:147-149` |
 
 Alongside the verdict it writes `ew_strike_move_pct` (signed, relative to the strike),
 `ew_minutes_to_hit`, `ew_minutes_in_zone`, `ew_day_change_pct`, and the session high / low /
-close.
+close. Production picks use two strategies, Covered Calls (1,788) and Long Calls (615), both
+supported (measured 2026-09-24).
 
 This is a **measurement, not a prediction**: there is no threshold to derive and no edge to
-validate. That is why it was registered `Production` / `KEEP` while every other system from
-the round-10 sweep is `Experimental` — the question "did the underlying trade through the
-strike" has one right answer.
-
-**It has one right answer about one specific session, and for 53% of picks the job measures a
-different one.** The arithmetic is correct and the input is wrong, which is why the status is
-now `Production but needs remediation` / `RESTRUCTURE` rather than `KEEP`.
+validate. The question "did the underlying trade through the strike" has one right answer,
+**about one specific session**, and until #1151 the job measured the wrong one for more than
+half the picks.
 
 ## Where the verdict goes
 
 `gcp/premarket_brief.py` selects `ec.ew_strike_verdict, ec.ew_strike_move_pct` (`:358`), carries
 it through `_first_non_null('ew_strike_verdict')` (`:509`) into the brief payload (`:544`), and
-renders it at `:2391-2396` and `:2616` — gated, per the comment there, to *"only fire when
-`ew_strike_verdict` is populated (post-eval)"*. So the verdict reaches a person through
-[MODEL-BRIEF-001](MODEL-BRIEF-001.md). Nothing else in the repository reads these columns; no
+renders it at `:2391-2396` and `:2616`. Nothing else in the repository reads these columns; no
 router serves them.
 
-## The session it scores is the wrong one for most picks
+**On the code path, the live brief never shows a verdict** (#1168). The brief loads the rows
+whose `earnings_date` is today (in daily mode; the coming week on Sundays), at 08:30 ET, and this
+job scores at 23:00 ET, so those rows are always unscored when read. The render path is reachable
+only in `BRIEF_AS_OF` replays. This is from reading the code, not from a replay; #1168 names the
+check that would confirm it. Earlier revisions of this document and #1151 said the verdicts were
+"already rendered to a person"; on this reading they were not.
 
-**53% of the scored verdicts in this table describe the session BEFORE the news.**
+## The scoring session ([#1151](https://github.com/TeneikaAskew/stocks/issues/1151))
 
-`evaluate_range` selects rows by `earnings_date` (`:155`), passes that same date to
-`fetch_minute_data` (`:190`), and scores `09:30-15:59` of it. `earnings_time` — the column
-that says whether the company reports before the open, after the close, or intraday — is
-**never read**: it appears nowhere in the file. For an after-close reporter the announcement
-lands *after* the session being measured, so the verdict answers "did the underlying trade
-through the strike" about a session in which the market had not yet heard the news.
+**Until #1151 the job scored every pick against the session of `earnings_date` itself.** It
+selected rows by `earnings_date`, fetched that same date's bars and scored `09:30-15:59` of it;
+`earnings_time` was never read. For an after-close reporter that is the session **before** the
+news. Measured 2026-09-24: **1,263 of 2,383 scored verdicts (53.0%)** were after-close picks
+scored against the pre-announcement session. The arithmetic was right and the input was not.
 
-Measured against production on 2026-09-22:
+**Each pick is now scored against the session its news reaches**, resolved by
+`scoring_session` (`:198-223`) from the NYSE calendar (`nyse_sessions`, `:186-195`):
 
-| `earnings_time` | picks | with a verdict written |
-|---|---:|---:|
-| **`postmarket`** | **1,269** | **1,261** |
-| `premarket` | 1,120 | 1,106 |
-| `intraday` | 5 | 5 |
+| `earnings_time` | Scoring session |
+|---|---|
+| `postmarket` | the first NYSE session **after** `earnings_date` (a Friday report is Monday's; the Wednesday before Thanksgiving is Friday's) |
+| `premarket` | the first session **on or after** `earnings_date` (a pick dated on a holiday is the next session's) |
+| `intraday` | `earnings_date`'s own session. The news lands inside it, and scoring the whole session is the stated choice. No session that day means no verdict |
+| anything else | no session; counted `unknown_timing`, never defaulted |
 
-So **1,261 of 2,372 scored rows (53.2%)** are wrong-session. `premarket` is correct — the news
-is out before 09:30, so the same day's session is the right one — and `intraday` is ambiguous
-by nature. This is the majority of the surface, not a corner, and the verdicts are already
-written and already rendered by the premarket brief.
+`pandas_market_calendars` is a hard dependency with no weekday fallback, since a guessed
+session is exactly the defect. The bar window is the session's calendar open to close, so an
+early close (13:00 ET on 2026-11-27 and 2026-12-24) ends the window there and after-hours bars
+never count. A pick whose session has not closed yet is counted `pending_session` and left for a
+later run: at 23:00 ET on the report day, an after-close pick's session is tomorrow.
 
-Tracked as [#1151](https://github.com/TeneikaAskew/stocks/issues/1151). The fix is code:
-resolve a `postmarket` row to the **next** trading session before fetching bars.
+The window's **timezone** was, and still is, right, and that part is not obvious.
+`fetch_minute_data` returns *"naive ET (Eastern Time) as-is from AV"*
+(`gcp/fetchers/fetch_market_data.py:62`), and the session bounds are converted to naive ET
+before slicing. The job calls AlphaVantage directly rather than reading `market_data_intraday`,
+the table that per CLAUDE.md §3.9 still holds two conflicting conventions; a change that swapped
+the source to that table would silently break the window.
 
-> **An earlier revision of this document called the session handling "right, and non-obviously
-> so", and used that to justify `Production` / `KEEP`.** The reasoning it gave was sound as far
-> as it went and is kept below, because it is still true and still worth knowing. It was simply
-> the wrong thing to have been confident about: I verified the timezone of the window and never
-> asked which day the window was on. Status is now `Production but needs remediation` /
-> `RESTRUCTURE`.
+The evaluator fetches **as-traded** bars (`adjusted=False`), because a strike is quoted in the
+prices of its day. A re-score months later against split-adjusted history would compare
+different units.
 
-### The timezone of the window is right, and that part is not obvious
+## Gaps now heal, and an outage is counted, not skipped
 
-`bars.between_time('09:30', '15:59')` (`:191`) filters on the index's **wall clock**, which is
-only correct if the index is Eastern. It is: `fetch_minute_data` states *"Timestamps are
-returned in naive ET (Eastern Time) as-is from AV"*
-(`gcp/fetchers/fetch_market_data.py:62`), and this job calls AlphaVantage directly rather than
-reading `market_data_intraday` — the table that, per CLAUDE.md §3.9, still holds two
-conflicting conventions. A future change that swapped the source to that table would silently
-break the window.
+Two further defects were fixed with #1151:
 
-## Two real defects: an ambiguous skip, and a gap that never backfills
+- **A missed day was never revisited.** The default run scored one day, `date.today() - 1` on the
+  container's UTC clock, which at 23:00 ET is the ET report day. A day whose bars failed to fetch
+  stayed NULL until someone re-ran it by hand. The default is now a
+  `DEFAULT_LOOKBACK_DAYS = 7` window (`:71`) over **unscored** rows only
+  (`ew_strike_verdict IS NULL`, `:312`), so each night retries the week.
+- **An outage and an unsupported strategy took the same silent `continue`.** Each is now its own
+  counter: `no_bars` (the vendor returned nothing) and `no_verdict` (no rule for the strategy).
+  A run where at least two vendor calls were made and none returned bars exits 1
+  (`run_failed`, `:246-251`), and a missing `ALPHA_VANTAGE_API_KEY` raises (`:303`) instead of
+  returning 0 rows and exiting 0. One empty call does not fail the run: it cannot tell an outage
+  from a symbol the vendor lacks, and on a quiet night it is often the only call (16 of 110
+  sessions from 2026-04-20 to 2026-09-24 had no fresh pick to fetch). It is counted, and retried
+  while the pick is inside the lookback.
 
-`fetch_minute_data` returns an **empty DataFrame** when the API key is missing
-(`fetch_market_data.py:65-67`) — a §3.7 silent fallback in the fetcher. Downstream,
-`_compute_verdict` returns all-`None` for empty bars (`:64-65`), the loop sees
-`v['verdict'] is None` and executes `continue  # unsupported strategy or no bars` (`:196-197`).
+`--force` re-scores rows already scored. A row it cannot recompute is **cleared** to NULL for the
+nightly run to fill, never left holding a verdict from the wrong session. `--earnings-time`
+narrows a run to one timing, and `--dry-run` scores and logs without writing.
 
-The comment names both causes, and that is the problem: the two are not equivalent. A strangle
-has no verdict by design and never will. A missing bar set is a **failure**, and the row is
-simply left NULL.
-
-> **It does not self-heal, and an earlier revision of this document said it did.** That claim
-> came from reading `where_force = '' if force else 'AND ew_strike_verdict IS NULL'` (`:149`)
-> and stopping there. The same query, six lines down, also binds
-> `AND earnings_date BETWEEN :s AND :e` (`:155`, one line above where `{where_force}` is
-> interpolated at `:156`) — and `main()` defaults that range to
-> **yesterday alone**, walked back over weekends (`:230-236`):
->
-> ```python
-> y = date.today() - timedelta(days=1)
-> while y.weekday() >= 5:
->     y -= timedelta(days=1)
-> start = end = y
-> ```
->
-> So the NULL-verdict filter only ever re-offers rows from the one day the run is already
-> looking at. A day whose bars failed to fetch is **never revisited** by any later scheduled
-> run; its verdicts stay NULL indefinitely until somebody runs an explicit historical range:
->
-> ```bash
-> python -m gcp.fetchers.evaluate_ew_strikes --start 2026-09-15 --end 2026-09-15
-> ```
->
-> Nothing counts the outage, nothing logs it as distinct from a straddle, and nothing schedules
-> that backfill — so the repair depends on a person noticing NULL verdicts in the premarket
-> brief. Recorded here rather than fixed: the fix is a code PR.
-
-`--force` re-evaluates rows already scored (`:149`), within whatever range it is given.
+The job makes one vendor call per (ticker, session), paced by `lib/config.py`'s AlphaVantage
+plan limit. It writes one transaction per session date, so a long re-score keeps its progress
+if it stops part way.
 
 ## Rationale
 
@@ -140,7 +120,7 @@ strike, a covered call is kept if it did not. The one judgement that is not forc
 session **high / low** for long structures and the **close** for covered calls; the docstring
 states it (`:16-18`) without arguing it, and it matches how each position is actually resolved.
 
-`minutes_to_hit` is measured from `reg_bars.index.min()` (`:117`, `:124`) — the first bar
+`minutes_to_hit` is measured from `reg_bars.index.min()` (`:158`, `:165`), the first bar
 **present**, not 09:30. On a session with missing early bars the figure is understated by the
 gap.
 
@@ -148,25 +128,36 @@ gap.
 
 | Symbol | Role |
 |---|---|
-| `evaluate_ew_strikes.evaluate_range` (`:134`) | The scheduled entry point; `--start` / `--end` / `--force` |
-| `_compute_verdict` (`:51`) | The verdict and its supporting metrics |
+| `evaluate_ew_strikes.evaluate_range` (`:286`) | The scheduled entry point; `--start` / `--end` / `--lookback-days` / `--force` / `--earnings-time` / `--dry-run` |
+| `scoring_session` (`:198-223`) | Which session a pick is scored against |
+| `_compute_verdict` (`:91`) | The verdict and its supporting metrics |
 
 ## Tests
 
-No test file targets this module. `_compute_verdict` is a pure function of
-`(strategy, strike, bars)` and is the obvious unit-test surface; nothing exercises it.
-`tests/gcp/test_premarket_brief.py:2387-2413` exercises the **consumer** with
-`ew_strike_verdict='HIT'` and `None` fixtures, so the rendering is covered and the derivation
-is not.
+`tests/gcp/test_evaluate_ew_strikes.py`: **33 tests** covering several areas.
+- **Sessions.** The scoring session for every timing, including the Friday, Thanksgiving and
+  Memorial Day cases, and the 13:00 early close.
+- **Verdicts.** The first tests of `_compute_verdict`.
+- **The job's shape.** Four picks over two (ticker, session) pairs make exactly two fetches,
+  bars are fetched as-traded, and there is one transaction per session date.
+- **Failure modes.** A pending session is not fetched, `--force` clears what it cannot re-score,
+  a dry run writes nothing, a missing key raises, an all-empty run fails while one missing
+  ticker or a lone empty call does not, the outage rule counts vendor calls rather than picks,
+  and a NULL timing that pandas returns as NaN is counted rather than crashing.
+
+Run against the code before #1151, 26 of them failed. The case that is #1151 itself read
+`assert ['2026-09-24'] == ['2026-09-25']`: the pre-announcement session was fetched.
+`tests/gcp/test_premarket_brief.py:2387-2413` still covers the **consumer** with
+`ew_strike_verdict='HIT'` and `None` fixtures.
 
 ## Known issues
 
-[#1151](https://github.com/TeneikaAskew/stocks/issues/1151) after-close reporters are scored
-against the pre-announcement session — 1,261 of 2,372 scored rows, measured 2026-09-22.
+[#1151](https://github.com/TeneikaAskew/stocks/issues/1151) after-close reporters were scored
+against the pre-announcement session (1,263 of 2,383 scored rows, measured 2026-09-24). Fixed in
+code; stays open until the stored verdicts are re-scored against the right session.
 
-Two further findings recorded here rather than filed: the ambiguous skip (a vendor outage and
-an unsupported strategy take the same `continue`), and the day-gap that no scheduled run ever
-revisits. The absent unit tests on `_compute_verdict` — a pure function and the obvious test
-surface — are the third.
+[#1168](https://github.com/TeneikaAskew/stocks/issues/1168) the live premarket brief never shows
+a verdict; only `BRIEF_AS_OF` replays do.
+
 Titles and severity are owned by
 [12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).

@@ -1749,14 +1749,14 @@ Generated 2026-06-09 (post gamma-rename migration) from live `information_schema
 | 49 | `last_1d_reactions` | jsonb | Y |  |
 | 50 | `eps_actual` | double precision | Y |  |
 | 51 | `eps_surprise_pct` | double precision | Y |  |
-| 52 | `ew_high_on_day` | double precision | Y |  |
-| 53 | `ew_low_on_day` | double precision | Y |  |
-| 54 | `ew_close_on_day` | double precision | Y |  |
-| 55 | `ew_strike_verdict` | character varying | Y |  |
-| 56 | `ew_strike_move_pct` | double precision | Y |  |
-| 57 | `ew_minutes_to_hit` | integer | Y |  |
-| 58 | `ew_minutes_in_zone` | integer | Y |  |
-| 59 | `ew_day_change_pct` | double precision | Y |  |
+| 52 | `ew_high_on_day` | double precision | Y | High of the pick's scoring session (the next NYSE session for an after-close report, #1151) |
+| 53 | `ew_low_on_day` | double precision | Y | Low of that scoring session |
+| 54 | `ew_close_on_day` | double precision | Y | Close of that scoring session |
+| 55 | `ew_strike_verdict` | character varying | Y | HIT / MISS (long structures) or KEPT / ASSIGNED (covered calls), against the scoring session |
+| 56 | `ew_strike_move_pct` | double precision | Y | Signed % vs strike, from the session high, low or close by strategy |
+| 57 | `ew_minutes_to_hit` | integer | Y | Minutes from the session's first bar to the first strike cross; NULL on MISS |
+| 58 | `ew_minutes_in_zone` | integer | Y | Session minutes on the profitable side of the strike |
+| 59 | `ew_day_change_pct` | double precision | Y | The scoring session's open-to-close % change |
 
 
 ### `earnings_calibration`

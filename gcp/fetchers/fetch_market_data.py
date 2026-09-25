@@ -55,7 +55,7 @@ AV_SYMBOL_MAP = {
 }
 
 
-def fetch_minute_data(ticker: str, fetch_date: str, api_key: str) -> pd.DataFrame:
+def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: bool = True) -> pd.DataFrame:
     """Fetch 1-minute OHLCV bars from AlphaVantage TIME_SERIES_INTRADAY.
 
     Fetches the full current month of data and filters to the requested date.
@@ -74,7 +74,7 @@ def fetch_minute_data(ticker: str, fetch_date: str, api_key: str) -> pd.DataFram
         'interval': '1min',
         'month': month,
         'outputsize': 'full',
-        'adjusted': 'true',
+        'adjusted': 'true' if adjusted else 'false',  # False = as-traded, to compare with a strike (#1151)
         # Required to get current-day bars. Without it AV returns
         # historical-only — `month=2026-04` with default entitlement
         # gave 0 bars for 2026-04-30 even mid-session.
