@@ -117,7 +117,7 @@ therefore empty until 2026-10-02, so it reports insufficient data and exits 0 ra
 comparing the new scale with the old. The table the timeframe heuristic was fitted on changed,
 and that refit is #1167.
 
-### Score discrimination: fixed pairing, report-only ([#1152](https://github.com/TeneikaAskew/stocks/issues/1152))
+### Score discrimination: fixed pairing, report-only (#1152, closed 2026-09-25)
 
 **Until #1152 the check could not run.** It joined `signal_alerts` to `signal_metrics` on
 `sm.entry_time = sa.alert_ts`. A live `alert_ts` is wall-clock time with seconds and
@@ -156,6 +156,12 @@ GitHub issue in about one fortnight in three. That is an alarm people learn to i
 fact already filed as [#905](https://github.com/TeneikaAskew/stocks/issues/905). The WARNING
 and the embed keep it visible. A statistic with a noise model (an effect size with its
 uncertainty) is what should replace the quartile rho, and that belongs to #905.
+
+**Verified on the deployed job, 2026-09-25.** A dry run of `signal-quality-alarm` on the #1170
+image (execution `signal-quality-alarm-84gcq`) logged
+`signal_quality_correlation window_days=14 n=116 rho=+0.200` and exited 0: 116 live alerts
+paired with their own exits, where the old join had matched none. That rho is inside the
+14-day spread above and over the 0.10 line, so the embed was not amber.
 
 It is about signals, not infrastructure, which is what separates it from the
 `freshness-watchdog` and `audit-infra-drift` alarms that this registry deliberately excludes.
@@ -245,10 +251,14 @@ are right.
 
 ## Known issues
 
-[#1152](https://github.com/TeneikaAskew/stocks/issues/1152) score discrimination: fixed in code
-(own-exit pairing, signed, report-only); stays open until the deployed job is verified.
-[#905](https://github.com/TeneikaAskew/stocks/issues/905) owns the finding the fix surfaced: the
+[#905](https://github.com/TeneikaAskew/stocks/issues/905) owns the finding the #1152 fix surfaced: the
 live score has no measurable edge.
+
+[#1166](https://github.com/TeneikaAskew/stocks/issues/1166) the nightly report never scores Friday signals: it reads
+`historical_signals` before the nightly writer has run.
+
+[#1167](https://github.com/TeneikaAskew/stocks/issues/1167) `EMPIRICAL_LOOKUP` was fitted on the 100x-lenient 5 to 60m
+classes and needs re-deriving on the re-classified table.
 
 One further finding recorded here rather than filed: the unread `ticker_calibration`
 thresholds (also on [MODEL-CALIB-001](MODEL-CALIB-001.md)). Measured, not inferred. The

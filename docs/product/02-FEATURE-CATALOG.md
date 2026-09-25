@@ -18,8 +18,8 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-LIVE-001](#feat-live-001) | Intraday monitoring | Live quotes, indicators, STRAT state | `/live` | `/api/live` | `market_data_intraday` | Production but needs remediation | P0 | 3 | 0 | — |
 | [FEAT-CHART-001](#feat-chart-001) | Charting | Instrument / timeframe analysis | `/charts` | `/api/live/history`, `/api/options/*/grid` | `market_data_daily`, `market_data_intraday` | Production but needs remediation | P1 | 5 | 0 | — |
 | [FEAT-OPTION-001](#feat-option-001) | Options / gamma | Flow, Greeks, GEX grid | `/options` | `/api/options`, `/api/grid` | `etf_options_snapshots`, `intraday_gex_15m`, `realtime_gex_15m` | Retest Required | P0 | 3 | 10 | [#826](https://github.com/TeneikaAskew/stocks/issues/826) [#812](https://github.com/TeneikaAskew/stocks/issues/812) [#896](https://github.com/TeneikaAskew/stocks/issues/896) [#878](https://github.com/TeneikaAskew/stocks/issues/878) |
-| [FEAT-SIGNAL-001](#feat-signal-001) | Signals / execution | Signal discovery, alerting, exits | `/signals`, `/live` | `/api/signals` | `signal_alerts`, `historical_signals`, `exit_config_overrides` | Production but needs remediation | P0 | 1 | 12 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) |
-| [FEAT-PLAYBOOK-001](#feat-playbook-001) | Premarket / playbook | Structured daily setups | `/playbook` | `/api/playbook` | `premarket_analysis`, `playbook_cards` | **Broken** | P0 | 3 | 0 | — |
+| [FEAT-SIGNAL-001](#feat-signal-001) | Signals / execution | Signal discovery, alerting, exits | `/signals`, `/live` | `/api/signals` | `signal_alerts`, `historical_signals`, `exit_config_overrides` | Production but needs remediation | P0 | 1 | 13 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) |
+| [FEAT-PLAYBOOK-001](#feat-playbook-001) | Premarket / playbook | Structured daily setups | `/playbook` | `/api/playbook` | `premarket_analysis`, `playbook_cards` | **Broken** | P0 | 3 | 1 | — |
 | [FEAT-STRAT-001](#feat-strat-001) | STRAT / levels | Candle classification, FTFC, structural levels | `/charts`, `/live` | via `lib/` | `strat_levels`, `strat_combo_results` | Production but needs remediation | P0 | 1 | 4 | [#908](https://github.com/TeneikaAskew/stocks/issues/908) [#866](https://github.com/TeneikaAskew/stocks/issues/866) [#907](https://github.com/TeneikaAskew/stocks/issues/907) [#884](https://github.com/TeneikaAskew/stocks/issues/884) |
 | [FEAT-IND-001](#feat-ind-001) | Indicators | RVOL, ORB, ATR, RSI, VWAP | `/live`, `/charts` | via `lib/` | `market_data_*` | Production but needs remediation | P1 | 1 | 4 | [#894](https://github.com/TeneikaAskew/stocks/issues/894) [#892](https://github.com/TeneikaAskew/stocks/issues/892) [#870](https://github.com/TeneikaAskew/stocks/issues/870) [#912](https://github.com/TeneikaAskew/stocks/issues/912) |
 | [FEAT-INSIGHT-001](#feat-insight-001) | AI insights | LLM per-ticker reports + chat | `/insights` | `/api/insights` (13) | `insight_reports`, `insight_runs`, `model_routing` | Experimental | P2 | 4 | 4 | [#827](https://github.com/TeneikaAskew/stocks/issues/827) [#867](https://github.com/TeneikaAskew/stocks/issues/867) [#916](https://github.com/TeneikaAskew/stocks/issues/916) [#442](https://github.com/TeneikaAskew/stocks/issues/442) |
@@ -33,7 +33,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-HELP-001](#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | Production | P3 | 5 | 0 | — |
 | [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Device-local appearance/layout | `/settings` | **none — `localStorage`** | **none** | Incomplete | P3 | 5 | 0 | — |
 | [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 18 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
-| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 65 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 13 | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#859](https://github.com/TeneikaAskew/stocks/issues/859) [#857](https://github.com/TeneikaAskew/stocks/issues/857) |
+| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 65 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 14 | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#859](https://github.com/TeneikaAskew/stocks/issues/859) [#857](https://github.com/TeneikaAskew/stocks/issues/857) |
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 9 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 9 | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) |
 | [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) |
@@ -198,7 +198,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 |
 | Code | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py` |
 | Tests | `signals.spec.ts`, `tests/*/test_signal*.py` |
-| Open issues | 12 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-12-open) |
+| Open issues | 13 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-13-open) |
 | Blocking issues | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
@@ -221,7 +221,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | MODEL-BRIEF-001, MODEL-LEVEL-001 |
 | Code | `platform/src/routes/PlaybookPage.tsx`, `platform/api/routers/playbook.py`, `gcp/premarket_brief.py`, `scripts/analysis/phase6_playbook.py` |
 | Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py` |
-| Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
+| Open issues | 1 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-playbook-001--premarket--playbook-1-open) |
 | Blocking issues | — |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |
 
@@ -543,7 +543,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `gcp/deploy.sh`, `platform/deploy.sh`, `gcp/cloudbuild/` |
 | Tests | static checks only |
-| Open issues | 13 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-deploy-001--infrastructure--deploy-13-open) |
+| Open issues | 14 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-deploy-001--infrastructure--deploy-14-open) |
 | Blocking issues | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#859](https://github.com/TeneikaAskew/stocks/issues/859) [#857](https://github.com/TeneikaAskew/stocks/issues/857) [#856](https://github.com/TeneikaAskew/stocks/issues/856) [#855](https://github.com/TeneikaAskew/stocks/issues/855) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |
 
