@@ -446,6 +446,25 @@ def test_scheduler_count_is_compared(tmp_path):
     assert f"live count is {len(LIVE['schedulers'])}" in out[0].detail
 
 
+def test_a_quoted_negated_count_is_flagged_and_suppressible(tmp_path):
+    """`docs/product/07-MODEL-REGISTRY.md:594` (2026-09-23 CI run) narrates a
+    REJECTED count-drift gate: prose explaining that some other document
+    "says ... never the string '63 schedulers'" -- an example of text that
+    does NOT appear, not a claim about the live fleet. This script's own
+    bare-number pattern (`\\d+\\s+schedulers`) cannot distinguish that from a
+    real claim and flags it, the identical false-positive shape the prose is
+    describing. A `verify-docs-ok` marker on the same line is the documented
+    escape hatch (RETIRED_OK is deliberately not consulted for counts) and
+    must suppress it without another gate being invented."""
+    line = ('Some other doc says *"the real count is 63"* and never the '
+            'string "63 schedulers".')
+    out = _check(tmp_path, line)
+    assert [f.check for f in out] == ["count-drift"]
+
+    suppressed = line + ' <!-- verify-docs-ok: quoted negated example, not a live-fleet claim -->'
+    assert _check(tmp_path, suppressed) == []
+
+
 def test_the_free_tier_quota_is_not_read_as_a_fleet_count(tmp_path):
     """"Cloud Scheduler (N jobs, 3 free)" states one count and one quota."""
     n = len(LIVE["schedulers"])

@@ -8,7 +8,8 @@ regression-alarmed.
 Inputs:
     historical_signals     — source rows (one per fire) with the
                              return_5min..return_60min columns already
-                             populated by the historical_signals job.
+                             populated by the historical_signals job,
+                             in PERCENTAGE POINTS (see SOURCE_RETURN_SCALE).
     market_data_intraday   — used to extend MFE windows past 60 min
                              (90/120/240m) and to compute ATR context.
 
@@ -63,8 +64,8 @@ logger = logging.getLogger(__name__)
 # These are the same numbers the v4 throwaway script used. They live
 # here as named constants instead of inline magic so the test suite can
 # patch them and the weekly QA report can reference the exact value.
-# Returns are FRACTIONS (0.005 = 0.5%), matching historical_signals
-# return_*min columns.
+# Every return classified here is a FRACTION (0.005 = 0.5%). The
+# historical_signals source columns are not; see SOURCE_RETURN_SCALE.
 
 CLEAN_THRESHOLD: float = 0.005   # |return| ≥ 0.5% → CLEAN_HIT or WRONG_DIRECTION
 NOISE_THRESHOLD: float = 0.003   # |return| < 0.3% → NOISE
@@ -77,6 +78,13 @@ NOISE_THRESHOLD: float = 0.003   # |return| < 0.3% → NOISE
 SOURCE_TFS_MIN: tuple[int, ...] = (5, 15, 30, 60)
 EXTENDED_TFS_MIN: tuple[int, ...] = (90, 120, 240)
 ALL_TFS_MIN: tuple[int, ...] = SOURCE_TFS_MIN + EXTENDED_TFS_MIN
+
+# The SOURCE_TFS_MIN columns hold PERCENTAGE POINTS, not fractions: their
+# writer, MarketAnalyzer.generate_technical_signals (lib/trading_analysis.py),
+# multiplies by 100, so a 0.5% move is stored as 0.5. They are divided by
+# this where they are read, so every return classified below is a fraction
+# (#1154). The extended returns are computed here as fractions already.
+SOURCE_RETURN_SCALE: float = 100.0
 
 
 # ── Pure helpers (no I/O) ─────────────────────────────────────────────
@@ -281,7 +289,8 @@ def compute_metrics_for_signal(
     Args:
         source_row: dict with keys ticker, entry_time, strategy,
             entry_price, trade_type (or direction), return_5min,
-            return_15min, return_30min, return_60min.
+            return_15min, return_30min, return_60min. The returns are
+            in percentage points, as historical_signals stores them.
         intraday: bars from entry_time forward — used to compute the
             extended (90/120/240m) returns. Pass None to leave those
             timeframes as INSUFFICIENT_DATA.
@@ -300,10 +309,8 @@ def compute_metrics_for_signal(
     entry_price = float(source_row.get("entry_price") or 0.0)
 
     returns_by_tf: dict[int, Optional[float]] = {
-        5:  _safe_float(source_row.get("return_5min")),
-        15: _safe_float(source_row.get("return_15min")),
-        30: _safe_float(source_row.get("return_30min")),
-        60: _safe_float(source_row.get("return_60min")),
+        tf: _source_return_fraction(source_row.get(f"return_{tf}min"))
+        for tf in SOURCE_TFS_MIN
     }
 
     if intraday is not None:
@@ -357,6 +364,12 @@ def _safe_float(v) -> Optional[float]:
     if np.isnan(f):
         return None
     return f
+
+
+def _source_return_fraction(v) -> Optional[float]:
+    """A historical_signals return_*min value as a fraction; None stays None."""
+    f = _safe_float(v)
+    return None if f is None else f / SOURCE_RETURN_SCALE
 
 
 # ── DB I/O (only the CLI orchestrator calls these) ────────────────────

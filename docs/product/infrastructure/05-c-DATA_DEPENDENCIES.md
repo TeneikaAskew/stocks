@@ -396,7 +396,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [552](../../../scripts/replay_signal_monitor.py#L552)
 
 ### `signal_metrics`
-- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [461](../../../scripts/signal_quality_report.py#L461)
+- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [474](../../../scripts/signal_quality_report.py#L474)
 
 ### `strat_combo_results`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -601,7 +601,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [316](../../../scripts/analyze_timeframe_heuristic.py#L316)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
 - [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [73](../../../scripts/backfill_timeframe_tags.py#L73)
-- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [382](../../../scripts/signal_quality_report.py#L382)
+- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [395](../../../scripts/signal_quality_report.py#L395)
 
 ### `indicator_correlation`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
@@ -702,7 +702,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [117](../../../scripts/backfill_watchlist_data.py#L117)
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [232](../../../scripts/calibrate_thresholds.py#L232)
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [119](../../../scripts/replay_signal_monitor.py#L119), [494](../../../scripts/replay_signal_monitor.py#L494)
-- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [407](../../../scripts/signal_quality_report.py#L407)
+- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [420](../../../scripts/signal_quality_report.py#L420)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [247](../../../scripts/validation/validate_brief_accuracy.py#L247), [311](../../../scripts/validation/validate_brief_accuracy.py#L311), [538](../../../scripts/validation/validate_brief_accuracy.py#L538)
 
 ### `market_data_intraday_iwm`
