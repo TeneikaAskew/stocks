@@ -1736,10 +1736,35 @@ def git_paths(cmd: list[str]) -> list[str]:
 # freshly reviewed documents stale the moment it merges.
 BASE_REF_CANDIDATES = ("HEAD", "origin/main", "main")
 
+# The branch a REVIEW's baseline has to survive into. Separate from
+# BASE_REF_CANDIDATES, which prefers HEAD deliberately so a run audits what is
+# in front of it; a marker has the extra duty of naming a commit that will
+# still exist after the branch lands.
+TRUNK_REF_CANDIDATES = ("origin/main", "main")
+
 
 def _ref_exists(ref: str) -> bool:
     return subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
                           cwd=REPO, capture_output=True).returncode == 0
+
+
+def resolve_trunk_ref(candidates: tuple[str, ...] = TRUNK_REF_CANDIDATES,
+                      exists=_ref_exists) -> str | None:
+    """The trunk, or None when this checkout cannot see one.
+
+    None means "cannot tell", and the caller must not read it as "fine" --
+    `--stamp --verify` refuses on it rather than guessing, because a guess
+    here writes a review record that is wrong.
+    """
+    for ref in candidates:
+        if exists(ref):
+            return ref
+    return None
+
+
+def _is_ancestor(sha: str, ref: str, *, cwd: pathlib.Path | None = None) -> bool:
+    return subprocess.run(["git", "merge-base", "--is-ancestor", sha, ref],
+                          cwd=cwd or REPO, capture_output=True).returncode == 0
 
 
 # Long enough to be unambiguous in a repo this size and comfortably inside
@@ -3598,6 +3623,12 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
     # `--stamp` rewrites the line still inside the comment. The offset of the
     # match is what decides it, so the SPANS are needed, not the line set.
     comment_at = comment_spans(lines)
+    # The heading's own nesting, so a marker can be tested against it. Read
+    # from `marker_anchor` -- the same line `_container_prefix` reads when
+    # `stamp` writes one -- so discovery and insertion cannot disagree about
+    # which container the marker belongs in.
+    _anchor = marker_anchor(lines)
+    h1_depth = _quote_depth(lines[_anchor]) if _anchor is not None else 0
     for i in marker_window(lines):
         # An INDENTED marker-shaped line is an example of a marker, not the
         # document's provenance -- and stripping before matching threw away
@@ -3619,6 +3650,28 @@ def find_markers(lines: list[str]) -> list[tuple[int, dict]]:
         # container, not four columns of code indentation.
         bare = _BLOCKQUOTE_PREFIX_RE.sub("", raw, count=1)
         if is_code_indented(bare):
+            continue
+        # ... but only into the H1's OWN container. Reading through any
+        # blockquote made an operational metadata block claim the document's
+        # provenance: `05-b-ERD.md` carries `> **Last refreshed:** 2026-05-22`
+        # as one item beside `Companion to` / `Source of truth`, and
+        # `05-i-GCP_IMPLEMENTATION_GUIDE.md` carries `> **Last updated:**`
+        # beside `Project` / `Region`. Both quotes sit under an UNQUOTED H1,
+        # so each document reported two review markers on every audit and
+        # `--stamp` refused to touch it -- a permanent P2 over a document
+        # whose real marker, three lines up, is correct. Codex filed it
+        # (stocks#1121).
+        #
+        # Measured on this tree: 10 legacy markers, and exactly the 2 quoted
+        # ones are the 2 false duplicates. The other 8 sit unquoted under an
+        # unquoted H1 and are unaffected.
+        #
+        # The comparison is against the H1 rather than "not quoted", because a
+        # whole document may be written inside a quote -- which is the case
+        # `_BLOCKQUOTE_PREFIX_RE` was added here for, and it still works: there
+        # the H1 carries the same prefix. A marker in a container the heading
+        # is not in belongs to that container, not to the document.
+        if _quote_depth(raw) != h1_depth:
             continue
         col = len(raw) - len(bare.lstrip())
         if any(a <= col < b for a, b in comment_at.get(i, [])):
@@ -3926,6 +3979,17 @@ def marker_anchor(lines: list[str]) -> int | None:
             and re.fullmatch(r" {0,3}=+\s*", under)):
         return h1 + 1
     return h1
+
+
+def _quote_depth(line: str) -> int:
+    """How many blockquote levels this line sits inside.
+
+    `_BLOCKQUOTE_PREFIX_RE` matches the whole run, so its match length would
+    count `> ` and `>> ` differently from `>` and `>>`; the markers are
+    counted instead, which is what CommonMark nests on.
+    """
+    quoted = _BLOCKQUOTE_PREFIX_RE.match(line)
+    return quoted.group(0).count(">") if quoted else 0
 
 
 def _container_prefix(line: str) -> tuple[str, str]:
@@ -6307,14 +6371,43 @@ def _touches(status_line: str, paths: list[str]) -> bool:
     return False
 
 
-def drift_commits(out: str, paths: list[str] | None = None) -> list[str]:
+def _all_documents(status_line: str, documents: frozenset[str]) -> bool:
+    """Does this line name NOTHING but files the registry audits as documents?
+
+    Both sides of a rename are read, as in `_touches`: a document moved within
+    a declared path is still a document at both ends.
+    """
+    cells = [_git_unquote(c.strip()) for c in status_line.split("\t")[1:] if c.strip()]
+    return bool(cells) and all(c in documents for c in cells)
+
+
+def drift_commits(out: str, paths: list[str] | None = None,
+                  documents: frozenset[str] | None = None) -> list[str]:
     """Commits in a `--name-status` listing that actually changed content.
 
     A pure rename (`R100`) is not drift; a moved file with an edit (`R096`) is
     exactly as much drift as the edit alone. `--diff-filter` cannot express
     that distinction -- it files the whole commit under R -- so the score is
     read per file here.
+
+    `documents` are the paths the registry audits as documents, and a commit
+    touching only those is not implementation drift. A README inside the
+    directory it describes is the shape: `.github/workflows/README.md`
+    declares `.github/workflows`, so its own `Last scanned` bump was a content
+    commit under its own declared path and every scheduled scan re-queued it
+    for review. Measured on this tree, 19 documents sit inside a path they
+    declare and 40 more share a declared path with another audited document --
+    `docs/BRIEFING_DECK.md` declares `lib`, `gcp`, `platform` and `scripts`,
+    which between them hold 13 audited READMEs. `check_doc_changed_since`
+    already strips marker-only edits when asking whether the DOCUMENT changed;
+    the two checks partition the question, and a document falling into both
+    made a scan read as code drift. Codex filed it (stocks#1121).
+
+    Read from the REGISTRY, never from the `.md` extension: a row is free to
+    declare a markdown file as its implementation, and an extension rule would
+    silently disable the drift check for it.
     """
+    documents = documents or frozenset()
     commits: list[tuple[str, bool]] = []
     for line in out.split("\n"):
         if _DRIFT_HEADER_RE.match(line):
@@ -6322,6 +6415,8 @@ def drift_commits(out: str, paths: list[str] | None = None) -> list[str]:
             continue
         status = _DRIFT_STATUS_RE.match(line)
         if not status or not commits:
+            continue
+        if _all_documents(line, documents):
             continue
         # The query may have been widened to a containing directory so rename
         # pairs survive (see check_doc_changed_since); the answer is narrowed
@@ -6467,7 +6562,8 @@ def _without_marker(text: str) -> str:
 
 
 def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_ref: str,
-                        *, cwd: pathlib.Path | None = None) -> list[dict]:
+                        *, documents: frozenset[str] | None = None,
+                        cwd: pathlib.Path | None = None) -> list[dict]:
     if not sha or not code_paths:
         return []
     # `git log` exits 0 with empty output when the range holds no commits, so
@@ -6509,7 +6605,7 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
                # with a symlink changed the surface and queued no review.
                "--diff-filter=AMDRT", f"{sha}..{base_ref}", "--"] + scopes,
               cwd=cwd or REPO)
-    commits = drift_commits(out, code_paths)
+    commits = drift_commits(out, code_paths, documents)
     # The directory scope keeps a rename pair intact only while both sides
     # share a parent. A file moved BETWEEN directories, with the registry
     # updated to the new path, leaves the old side outside every scope, so git
@@ -7346,6 +7442,14 @@ def main(argv: list[str] | None = None) -> int:
     untracked = git_paths(["git", "ls-files", "--others", "--exclude-standard",
                            "--", "*.md"])
     docs = sorted(set(docs) | set(untracked))
+    # The paths this run audits AS DOCUMENTS, so the drift check can tell a
+    # document apart from the implementation it describes. 19 documents in
+    # this tree sit inside a code path they themselves declare, and 40 more
+    # share one with another audited document -- see `drift_commits`.
+    _documents = frozenset(docs)
+    # Resolved once: `--stamp --verify` needs it, and it does not move
+    # during a run.
+    trunk = resolve_trunk_ref()
 
     # Writing a snapshot that was READ rewrites `capturedAt` although GitHub
     # was never queried, so repeating it inside the one-day expiry window
@@ -7550,7 +7654,8 @@ def main(argv: list[str] | None = None) -> int:
                 findings.append({"check": "marker", "doc": doc, "severity": "P3",
                                  "detail": "incomplete provenance: " + "; ".join(missing)})
             if measurable:
-                findings += check_changed_since(doc, info["sha"], code_paths, base_ref)
+                findings += check_changed_since(doc, info["sha"], code_paths,
+                                                base_ref, documents=_documents)
                 # And the document itself, which the code-path query cannot
                 # see -- and which is the ONLY drift signal a registry row
                 # with no declared code paths has.
@@ -7689,8 +7794,34 @@ def main(argv: list[str] | None = None) -> int:
             # work. Runs the same diff check_changed_since runs, so the guard
             # and the check it protects cannot disagree about what drift is.
             if reviewed and head != base_ref and check_changed_since(
-                    doc, head, list(code_paths), base_ref):
+                    doc, head, list(code_paths), base_ref, documents=_documents):
                 stamp_refusals[doc] = "code-drift-since-baseline"
+                continue
+            # And the baseline has to SURVIVE the merge. This repository
+            # squash-merges -- measured: 0 merge commits in the last 200 on
+            # `origin/main`, every PR a single parent -- so a feature branch's
+            # HEAD is not an ancestor of main afterwards and may not be in a
+            # fresh clone at all. A marker stamped on a branch is therefore
+            # invalid the moment it lands. Reproduced end to end on a
+            # throwaway repo (base -> branch edit -> stamp verified ->
+            # `git merge --squash`):
+            #
+            #     reviewed-against a7fa4e31... is not an ancestor of HEAD
+            #     1 content commit(s) to lib since a7fa4e31...
+            #
+            # Two gating P2s for a review that was correct, and the second one
+            # reports the squash of the very change the review covered. There
+            # is no commit that is both merge-stable and contains the reviewed
+            # bytes until the squash exists, so this refuses rather than
+            # inventing one: verify after it lands. Codex filed it
+            # (stocks#1121).
+            #
+            # `trunk` is None when the checkout holds no trunk ref, which is
+            # "cannot tell" and not "fine" -- it refuses too, and the message
+            # says to fetch it.
+            if reviewed and (trunk is None or not _is_ancestor(head, trunk)):
+                stamp_refusals[doc] = ("baseline-trunk-unknown" if trunk is None
+                                       else "baseline-not-on-trunk")
                 continue
             new, action = stamp(text, today, "verified" if reviewed else "scanned",
                                 head, reviewed=reviewed)
@@ -7721,6 +7852,15 @@ def main(argv: list[str] | None = None) -> int:
                    "baseline-predates-doc":
                        f"the document does not exist at {head}, so the review would "
                        "name a baseline predating it; commit it first",
+                   "baseline-not-on-trunk":
+                       f"{head} is not an ancestor of {trunk}, and this repository "
+                       "squash-merges, so that commit will not be on the trunk after "
+                       "this branch lands and the marker would be invalid the moment "
+                       "it does; verify after the squash lands",
+                   "baseline-trunk-unknown":
+                       f"none of {', '.join(TRUNK_REF_CANDIDATES)} resolves here, so "
+                       "whether the baseline survives the merge cannot be determined; "
+                       "fetch the trunk and re-run",
                    "ambiguous-classification":
                        f"two equally specific {REGISTRY} rows disagree about what it is, "
                        "so the audit cannot tell hand-written content from generated; "

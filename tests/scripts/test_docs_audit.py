@@ -737,6 +737,72 @@ def test_no_resolvable_ref_raises_rather_than_guessing():
 
 # ── drift ───────────────────────────────────────────────────────────────────
 
+def test_a_document_is_not_its_own_implementation(tmp_path):
+    """`.github/workflows/README.md` declares `.github/workflows` and lives
+    inside it, so its own `Last scanned` bump was a content commit under its
+    own declared path and every scheduled scan re-queued it for review.
+    Measured on this tree: 19 documents sit inside a path they declare, and 40
+    more share a declared path with another audited document --
+    `docs/BRIEFING_DECK.md` declares `lib`, `gcp`, `platform` and `scripts`,
+    which between them hold 13 audited READMEs. Codex filed it
+    (stocks#1121)."""
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    doc = ".github/workflows/README.md"
+    (tmp_path / doc).write_text("# WF\n\n**Last scanned:** 2026-01-01\n\nbody\n")
+    (tmp_path / ".github" / "workflows" / "a.yml").write_text("name: x\n")
+    _git(tmp_path, "init", "-q", "-b", "work")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    base = _commit(tmp_path, "base")
+    (tmp_path / doc).write_text("# WF\n\n**Last scanned:** 2026-02-02\n\nbody\n")
+    _commit(tmp_path, "chore: scan")
+
+    marker_only = lambda docs: m.check_changed_since(
+        doc, base, [".github/workflows"], "HEAD", documents=docs, cwd=tmp_path)
+    # Without the document set it is drift -- which is the defect.
+    assert marker_only(None), "the repro no longer reproduces"
+    assert marker_only(frozenset({doc})) == []
+    # And a REAL change under the same path is still drift, so the exclusion
+    # narrowed the answer rather than disabling the check.
+    (tmp_path / ".github" / "workflows" / "a.yml").write_text("name: x\non: push\n")
+    _commit(tmp_path, "feat: real")
+    assert marker_only(frozenset({doc}))
+
+
+def test_a_marker_outside_the_headings_container_is_not_the_documents():
+    """`05-b-ERD.md` carries `> **Last refreshed:** 2026-05-22` as one item in
+    a quoted metadata block beside `Companion to` and `Source of truth`;
+    `05-i-GCP_IMPLEMENTATION_GUIDE.md` carries `> **Last updated:**` beside
+    `Project` and `Region`. Both quotes sit under an UNQUOTED H1, and reading
+    through any blockquote let each claim the document's provenance -- so both
+    reported two review markers on every audit and `--stamp` refused to touch
+    them, a permanent P2 over a document whose real marker three lines up is
+    correct. Measured: 10 legacy markers in this tree, and exactly the 2
+    quoted ones were the 2 false duplicates. Codex filed it (stocks#1121)."""
+    aside = ["# T", "", "**Last reviewed:** 2026-01-01 · **Last scanned:** 2026-01-01",
+             "", "> **Project:** p", "> **Last updated:** 2026-05-22", "", "body"]
+    assert [i for i, _ in m.find_markers(aside)] == [2]
+    # A document written ENTIRELY inside a quote still finds its own marker --
+    # that is the case reading through the container was added for, and the
+    # H1 carries the same prefix there.
+    quoted = ["> # T", ">", "> **Last reviewed:** 2026-01-01 · "
+              "**Last scanned:** 2026-01-01", ">", "> body"]
+    assert [i for i, _ in m.find_markers(quoted)] == [2]
+    # And the mirror image: an UNQUOTED marker under a QUOTED H1 is an aside
+    # too, so the rule is about agreement, not about quoting.
+    mixed = ["> # T", "", "**Last reviewed:** 2026-01-01 · "
+             "**Last scanned:** 2026-01-01", "", "body"]
+    assert [i for i, _ in m.find_markers(mixed)] == []
+    # The two real documents, read off disk.
+    for d in ("docs/product/infrastructure/05-b-ERD.md",
+              "docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md"):
+        lines = (REPO_ROOT / d).read_text(encoding="utf-8").split("\n")
+        found = m.find_markers(lines)
+        assert len(found) == 1, (d, found)
+        assert found[0][1]["legacy"] is False, (d, found)
+
+
 def test_drift_filter_covers_additions_and_deletions_not_just_edits():
     """A declared path GAINING or LOSING a module is drift.
 
@@ -750,8 +816,9 @@ def test_drift_filter_covers_additions_and_deletions_not_just_edits():
     assert "--diff-filter=M\"" not in src
     # The call carries the declared paths since round 15: the log query is
     # widened to the containing directory so rename PAIRS survive, and
-    # drift_commits narrows the answer back.
-    assert "drift_commits(out, code_paths)" in src
+    # drift_commits narrows the answer back. It also carries the audited
+    # document set, so a document is not read as its own implementation.
+    assert "drift_commits(out, code_paths, documents)" in src
 
 
 # ── what gates and what does not ────────────────────────────────────────────
@@ -1322,6 +1389,14 @@ def repo(tmp_path):
 def _commit(cwd, msg: str) -> str:
     _git(cwd, "add", "-A")
     _git(cwd, "commit", "-q", "-m", msg)
+    # A trunk ref, moved with HEAD. `--stamp --verify` refuses a baseline that
+    # will not survive the merge (this repository squash-merges, so a branch
+    # HEAD is not an ancestor of main afterwards), and refuses equally when it
+    # cannot tell -- these fixtures are branch `work` with no trunk at all, so
+    # without this every verify test would refuse for a reason none of them is
+    # about. Keeping it AT HEAD means the guard is satisfied by default; the
+    # test that exercises the guard advances HEAD past it deliberately.
+    _git(cwd, "branch", "-f", "main", "HEAD")
     return _git(cwd, "rev-parse", "--short", "HEAD")
 
 
@@ -8812,6 +8887,48 @@ def test_a_coordinator_splits_two_verdicts_but_not_one_list():
     # The spellings that already worked.
     assert refs("#1 is still open; #2 is resolved\n") == [f"{R}#1"]
     assert refs("#1 was still open, now resolved\n") == []
+
+
+def test_verify_is_refused_on_a_baseline_the_merge_will_not_keep(audit_repo):
+    """This repository squash-merges -- 0 merge commits in the last 200 on
+    `origin/main`, every PR a single parent -- so a feature branch's HEAD is
+    not an ancestor of main afterwards and may not be in a fresh clone at all.
+    A marker stamped on a branch is invalid the moment it lands. Reproduced
+    end to end (base -> branch edit -> stamp verified -> `git merge --squash`):
+
+        reviewed-against a7fa4e31... is not an ancestor of HEAD
+        1 content commit(s) to lib since a7fa4e31...
+
+    Two gating P2s for a review that was correct, the second one reporting the
+    squash of the very change the review covered. No commit is both
+    merge-stable and holds the reviewed bytes until the squash exists, so this
+    refuses rather than inventing one. Codex filed it (stocks#1121)."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")            # leaves main AT head
+    # Now advance head past the trunk, which is what a feature branch is.
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody, reviewed\n")
+    _git(audit_repo, "add", "-A")
+    _git(audit_repo, "commit", "-q", "-m", "branch work")
+    with pytest.raises(m.AuditError, match="squash-merges"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json"),
+                "--stamp", "--verify", "docs/d.md"])
+    # Nothing was written, so the invalid marker never reached the document.
+    assert "Last reviewed:** 2026-09-18" not in (audit_repo / "docs" / "d.md").read_text()
+
+
+def test_verify_is_refused_when_the_trunk_cannot_be_seen(audit_repo):
+    """"Cannot tell" is not "fine". With no trunk ref in the checkout the
+    audit cannot know whether the baseline survives the merge, and guessing
+    writes a review record that is wrong -- so it refuses and names the
+    remedy."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")
+    _git(audit_repo, "branch", "-D", "main")
+    with pytest.raises(m.AuditError, match="cannot be determined"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--issues-snapshot", str(audit_repo / "issues.json"),
+                "--stamp", "--verify", "docs/d.md"])
 
 
 def test_verify_is_refused_while_a_declared_code_path_is_missing(audit_repo):
