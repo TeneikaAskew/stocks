@@ -23,6 +23,14 @@ from scripts.maintenance import docs_audit as m
 # finding under a report dated today (solyra#69).
 NOW = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+# This file is two levels below the repo root (tests/scripts/).
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+# The display titles the owning workflow's `run-name:` produces, which is the
+# only record of a dry run any REST endpoint exposes. Built from the module's
+# own marker so a fixture cannot drift from the code it exercises.
+LIVE_TITLE = "Monthly architecture doc refresh"
+DRY_TITLE = f"{LIVE_TITLE} {m.DRY_RUN_MARKER}"
+
 
 # ── registry parsing ────────────────────────────────────────────────────────
 
@@ -1705,6 +1713,35 @@ def test_a_snapshot_that_cannot_be_written_is_exit_two(audit_repo, monkeypatch):
                 "--write-issues-snapshot", str(audit_repo / "nodir" / "out.json")])
 
 
+def test_a_rejected_run_writes_no_snapshot(audit_repo, monkeypatch):
+    """A run that exits 2 saying "Nothing was written." must have written
+    nothing, including the snapshot.
+
+    The write sat where the issue states were FETCHED, which is hundreds of
+    lines before the --verify targets are validated -- so a misspelled
+    `--verify` path produced a file plus a refusal that denied producing one,
+    and automation committing whatever the run left behind would commit it.
+    Every other write in this command already waits for that validation.
+    Codex filed it (stocks#1121)."""
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")
+    monkeypatch.setattr(m, "fetch_issue_states",
+                        lambda repo: {1: {"state": "open", "reason": "",
+                                          "kind": "ISSUE"}})
+    out = audit_repo / "out.json"
+    with pytest.raises(m.AuditError, match="Nothing was written"):
+        m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                "--stamp", "--verify", "docs/missing.md",
+                "--write-issues-snapshot", str(out)])
+    assert not out.exists()
+    # And an ACCEPTED run still writes it, so the deferral did not disable the
+    # flag for every caller that asked for a snapshot alongside a review.
+    assert m.main(["--json", "--date", "2026-09-18", "--no-owning-job-check",
+                   "--stamp", "--verify", "docs/d.md",
+                   "--write-issues-snapshot", str(out)]) in (0, 1)
+    assert out.exists()
+
+
 def test_a_snapshot_may_not_be_rewritten_from_a_snapshot(audit_repo):
     """`--issues-snapshot X --write-issues-snapshot Y` stamps Y with a fresh
     `capturedAt` although GitHub was never queried, so repeating it inside the
@@ -2054,8 +2091,9 @@ def test_ten_dry_runs_cannot_push_the_last_delivery_out_of_view(monkeypatch, tmp
     runs, and ten of them hide the failed scheduled refresh behind them."""
     monkeypatch.setattr(m, "REPO", tmp_path)
     monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    page1 = "\n".join(["success\t2026-09-18T06:00:00Z\tworkflow_dispatch\ttrue"] * 10)
-    page2 = "failure\t2026-09-16T06:00:00Z\tschedule\t"
+    page1 = "\n".join(
+        [f"success\t2026-09-18T06:00:00Z\tworkflow_dispatch\t{DRY_TITLE}"] * 10)
+    page2 = f"failure\t2026-09-16T06:00:00Z\tschedule\t{LIVE_TITLE}"
     pages = {1: page1, 2: page2}
 
     def fake(cmd, **kw):
@@ -2647,8 +2685,8 @@ def test_a_dry_run_is_not_evidence_that_the_refresh_delivered(monkeypatch, tmp_p
     fired."""
     monkeypatch.setattr(m, "REPO", tmp_path)
     monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    runs = ("success\t2026-09-17T06:00:00Z\tworkflow_dispatch\ttrue\n"
-            "failure\t2026-09-16T06:00:00Z\tschedule\t\n")
+    runs = (f"success\t2026-09-17T06:00:00Z\tworkflow_dispatch\t{DRY_TITLE}\n"
+            f"failure\t2026-09-16T06:00:00Z\tschedule\t{LIVE_TITLE}\n")
     monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
     out = m.check_owning_job("2026-09-17")
     assert [f for f in out if "failure" in f["detail"]], out
@@ -2658,21 +2696,106 @@ def test_a_real_run_after_a_dry_one_still_clears_it(monkeypatch, tmp_path):
     """The guard must not make a genuine recovery invisible."""
     monkeypatch.setattr(m, "REPO", tmp_path)
     monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    runs = ("success\t2026-09-17T06:00:00Z\tschedule\t\n"
-            "failure\t2026-09-16T06:00:00Z\tschedule\t\n")
+    runs = (f"success\t2026-09-17T06:00:00Z\tschedule\t{LIVE_TITLE}\n"
+            f"failure\t2026-09-16T06:00:00Z\tschedule\t{LIVE_TITLE}\n")
     monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
     assert [f for f in m.check_owning_job("2026-09-17") if "failure" in f["detail"]] == []
 
 
-def test_dry_run_false_is_a_delivering_run():
-    """`inputs` carries STRINGS, so "false" is a real value and must not read
-    as truthy."""
-    assert m._is_dry_run(["success", "t", "workflow_dispatch", "false"]) is False
-    assert m._is_dry_run(["success", "t", "workflow_dispatch", "true"]) is True
-    assert m._is_dry_run(["success", "t", "schedule", ""]) is False
-    # A row from a read that predates the column is treated as delivering,
-    # which can only keep a failure on the report.
+def test_only_a_marked_title_is_a_dry_run():
+    """Read from the run's DISPLAY TITLE, because no REST endpoint exposes a
+    workflow_dispatch run's `inputs`. The previous version read
+    `(.inputs // {}).dry_run` and got "" for every run ever made, so the filter
+    was dead and a dry run counted as a delivery.
+
+    Everything unmarked is delivering, which is the safe direction: a run that
+    predates the `run-name:` line can only keep a failure on the report."""
+    assert m._is_dry_run(["success", "t", "workflow_dispatch", DRY_TITLE]) is True
+    assert m._is_dry_run(["success", "t", "workflow_dispatch", LIVE_TITLE]) is False
+    assert m._is_dry_run(["success", "t", "schedule", LIVE_TITLE]) is False
+    # The value the dead projection produced. It must not read as a dry run,
+    # or the audit would walk past every run in a history read before this.
+    assert m._is_dry_run(["success", "t", "workflow_dispatch", ""]) is False
+    # Nor may the old column's own values keep working by accident -- that is
+    # what would let the two spellings drift apart again unnoticed.
+    assert m._is_dry_run(["success", "t", "workflow_dispatch", "true"]) is False
+    # A row from a read that predates the column is treated as delivering.
     assert m._is_dry_run(["success", "t"]) is False
+
+
+def test_a_scan_only_stamp_records_no_baseline_of_its_own():
+    """The guards above the write are all `reviewed and ...`, which reads like
+    a hole: a scan-only run would record `head` as `Against` without any of
+    them. It does not, and this pins that.
+
+    `stamp` takes `head` as an argument on both paths but consults it only
+    when `reviewed` is true. A new document gets a marker with no `Against` at
+    all, so `check_doc_changed_since` returns early on the empty SHA; a
+    document that already carries a review keeps that review's SHA untouched,
+    because a scan is not a review and must not silently re-baseline one.
+
+    Both are what makes the scan-only path safe to leave unguarded, and
+    neither was asserted anywhere. Codex read the call site and filed the
+    hole (stocks#1121); the behaviour was already right, so this records why
+    rather than changing it."""
+    head = "1" * 40
+    fresh, action = m.stamp("# T\n\nbody\n", "2026-09-25", "scanned", head, reviewed=False)
+    assert action == "inserted"
+    assert "Against" not in fresh, fresh
+    assert head not in fresh, fresh
+    # The same document, verified, DOES record it -- so the absence above is
+    # the scan-only path and not a marker that never carries a baseline.
+    reviewed, _ = m.stamp("# T\n\nbody\n", "2026-09-25", "verified", head, reviewed=True)
+    assert f"**Against:** `{head}`" in reviewed, reviewed
+    # And a later scan at a DIFFERENT head leaves that baseline where it is.
+    # Both dates moved back, so the rewrite is a real one -- replacing only
+    # `Last reviewed` leaves `Last scanned` already at today and `stamp`
+    # answers `unchanged`, which would prove nothing about the SHA.
+    later, act = m.stamp(reviewed.replace("2026-09-25", "2026-01-01"),
+                         "2026-09-25", "scanned", "2" * 40, reviewed=False)
+    assert act == "updated"
+    assert f"**Against:** `{head}`" in later, later
+    assert "2" * 40 not in later, later
+    # It moved only the scan date, which is the one field a scan owns.
+    assert "**Last scanned:** 2026-09-25" in later
+    assert "**Last reviewed:** 2026-01-01" in later
+
+
+def test_the_runs_query_asks_for_a_field_the_response_has(monkeypatch):
+    """The other half of the same boundary: what the audit REQUESTS.
+
+    `(.inputs // {}).dry_run` is valid jq against a response with no `inputs`
+    key -- it yields "" and fails silently, for every run, for ever. Measured
+    against all 36 runs of this workflow, none of them carries `inputs`, and
+    `GET /actions/runs/{id}` does not carry it either. So the projection is
+    asserted directly: a fallback that can never fire is indistinguishable
+    from a working read at every other layer."""
+    seen = []
+
+    def fake(cmd, **kw):
+        seen.append(cmd)
+        return f"success\t2026-09-20T00:00:00Z\tschedule\t{LIVE_TITLE}"
+
+    monkeypatch.setattr(m, "run", fake)
+    m.fetch_owning_runs(page_size=2)
+    jq = seen[0][seen[0].index("--jq") + 1]
+    assert ".display_title" in jq, jq
+    assert "inputs" not in jq, jq
+
+
+def test_the_workflow_writes_the_marker_the_audit_reads():
+    """The two halves of this rule live in different files and nothing but
+    this test holds them together: `refresh-architecture-docs.yml` writes the
+    marker into `run-name:`, `_is_dry_run` looks for it. The dead `inputs`
+    projection it replaced was invisible precisely because no test crossed
+    that boundary -- every fixture fed a synthetic fourth column, which proved
+    the helper reads column four and never that column four exists."""
+    wf = (REPO_ROOT / ".github" / "workflows" / "refresh-architecture-docs.yml").read_text()
+    run_name = [ln for ln in wf.splitlines() if "dry_run == 'true'" in ln]
+    assert run_name, "run-name: no longer branches on the dry_run input"
+    assert f"' {m.DRY_RUN_MARKER}'" in run_name[0], run_name
+    # And the workflow still HAS the input the marker reports on.
+    assert "dry_run:" in wf
 
 
 def test_the_issue_walk_has_no_silent_ceiling(monkeypatch):
@@ -3172,7 +3295,7 @@ def test_a_run_history_that_is_all_dry_runs_is_refused(monkeypatch):
     Returning it silently let consecutive manual dry runs hide a failed
     scheduled run behind them."""
     monkeypatch.setattr(m, "run",
-                        lambda *a, **k: "success\t2026-01-01\tworkflow_dispatch\ttrue\n" * 2)
+                        lambda *a, **k: f"success\t2026-01-01\tworkflow_dispatch\t{DRY_TITLE}\n" * 2)
     with pytest.raises(m.AuditError, match="every one is a dry run"):
         m.fetch_owning_runs(page_size=2)
 
@@ -3697,6 +3820,119 @@ def test_an_untracked_file_still_does_not_satisfy_a_link(audit_repo, capsys):
             "--issues-snapshot", str(audit_repo / "issues.json")])
     report = json.loads(capsys.readouterr().out)
     assert [f for f in report["findings"] if f["check"] == "dead-link"], report["findings"]
+
+
+_PARSE_DOC = """# T
+
+Prose with `a span` and a [link](missing.md).
+
+<!-- a comment
+still commented -->
+
+```
+# not a heading
+```
+
+<div>
+# also not a heading
+</div>
+
+A `span
+wrapped across lines` and stocks#1.
+"""
+
+
+def test_the_shared_parse_gives_the_same_answer_as_rebuilding_it():
+    """Four checks rebuilt the same fence / comment / raw-HTML / code-span
+    maps and re-entered them, because three of the four call each other.
+    Measured on the checked-in 3,420-line 05-h-DATA_DICTIONARY.md:
+    find_markers 1.752s, check_marker_shape 1.666s, check_closed_issues
+    1.459s, check_dead_links 1.223s -- 6.1s for ONE document, and 108s for a
+    full offline run. Codex filed it (stocks#1121).
+
+    The cache is only worth having if it cannot change an answer, so this
+    compares it against the uncached implementations directly rather than
+    trusting that the suite would have noticed."""
+    lines = _PARSE_DOC.split("\n")
+    assert m.fenced_lines(lines) == set(m._fenced_lines_uncached(lines))
+    assert m.comment_spans(lines) == m._comment_spans_uncached(lines)
+    assert m.code_span_lines(lines) == m._code_span_lines_uncached(lines)
+    fenced = m.fenced_lines(lines)
+    assert (m.raw_html_block_lines(lines, fenced=fenced)
+            == set(m._raw_html_block_lines_uncached(lines, fenced=fenced)))
+
+
+def test_the_shared_parse_is_keyed_on_the_lines_not_the_document():
+    """`stamp` rewrites a marker and the checks then run over the NEW list. A
+    path or identity key would serve the pre-edit parse for post-edit text,
+    which is a wrong answer rather than a slow one."""
+    lines = _PARSE_DOC.split("\n")
+    before = m.fenced_lines(lines)
+    edited = ["```"] + lines          # a fence opened above everything
+    assert m.fenced_lines(edited) != before
+    # And the same content in a different list object is a HIT, not a miss --
+    # which is the whole point, since every check builds its own list.
+    hits = m._fenced_lines_cached.cache_info().hits
+    m.fenced_lines(list(lines))
+    assert m._fenced_lines_cached.cache_info().hits == hits + 1
+
+
+def test_the_shared_parse_cannot_be_mutated_by_a_caller():
+    """A cache that hands out the same mutable object to every caller fails
+    silently: one `.add()` changes what every later caller sees, in a tool
+    whose job is not to report things that are not there. The results are
+    read-only so that raises instead."""
+    lines = _PARSE_DOC.split("\n")
+    with pytest.raises(AttributeError):
+        m.fenced_lines(lines).add(0)          # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        m.raw_html_block_lines(lines).add(0)  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        m.comment_spans(lines)[0] = []        # type: ignore[index]
+    with pytest.raises(TypeError):
+        m.code_span_lines(lines)[0] = []      # type: ignore[index]
+
+
+def test_the_openers_out_parameter_still_gets_filled():
+    """`raw_html_block_lines` fills the caller's `openers` dict as it walks,
+    so a cache HIT would return the right set beside an empty map. That one
+    call site bypasses the cache; this is what says the bypass is still
+    there."""
+    # A raw-TEXT block, which is what that call site scans for: `<div>` is an
+    # ordinary HTML block and records no opener.
+    lines = ["<pre>", "# not a heading", "</pre>"]
+    openers: dict[int, int] = {}
+    m.raw_html_block_lines(lines, raw_text_only=True, openers=openers)
+    assert openers, openers
+    # Calling again with a fresh dict fills it again -- i.e. the second call
+    # did not come back from the cache with the walk skipped.
+    again: dict[int, int] = {}
+    m.raw_html_block_lines(lines, raw_text_only=True, openers=again)
+    assert again == openers
+
+
+def test_the_shipped_registry_calls_a_dated_record_a_dated_record():
+    """A glob over a directory assumes every document in it is the same kind.
+
+    `D | insights/*.md` made a plan, a gap analysis and a research write-up
+    living documentation of the system as it is now, and they are none of
+    those: it produced 78 of 393 findings, almost all dead links into a
+    `platform/src/` tree that moved to the solyra repository. This table
+    already calls the same three kinds C under `docs/plans/*`,
+    `docs/analysis/*` and `docs/research/*`, so the directory row contradicted
+    its own conventions three ways. Codex filed it (stocks#1121).
+
+    Pinned by NAME rather than by counting findings, because a count says
+    nothing about which class is right."""
+    registry = m.load_registry((m.REPO / m.REGISTRY).read_text(encoding="utf-8"))
+    for doc in ("insights/IMPLEMENTATION_PLAN.md",
+                "insights/PHASE2_GAP_ANALYSIS.md",
+                "insights/RESEARCH.md"):
+        assert m.classify(doc, registry)[0] == "C", doc
+    # And nothing re-broadens it: a directory glob would silently re-absorb a
+    # future document of a different kind, which is the defect itself.
+    globs = [r["glob"] for r in registry if r["glob"].startswith("insights/")]
+    assert all("*" not in g for g in globs), globs
 
 
 def test_the_shipped_registry_declares_no_rule_that_covers_nothing():
@@ -4998,7 +5234,7 @@ def test_a_history_with_no_finished_run_is_refused(monkeypatch):
         m.fetch_owning_runs(page_size=10)
     # The dry-run case is a subset and keeps its own, more specific message.
     monkeypatch.setattr(m, "run", rows(
-        [["success", "2026-09-20T00:00:00Z", "workflow_dispatch", "true"]] * 2))
+        [["success", "2026-09-20T00:00:00Z", "workflow_dispatch", DRY_TITLE]] * 2))
     with pytest.raises(m.AuditError, match="dry run"):
         m.fetch_owning_runs(page_size=10)
     # One finished delivering run is evidence, so the walk returns.

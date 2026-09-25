@@ -98,6 +98,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import types
 import unicodedata
 import urllib.parse
 
@@ -2835,7 +2836,7 @@ def quote_depth(line: str) -> int:
     return _QUOTE_PREFIX_RE.match(line).group(1).count(">")
 
 
-def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
+def _comment_spans_uncached(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
     """Offset ranges inside an HTML comment, per line index.
 
     SPANS, not whole lines. A line-level rule cost a real finding on
@@ -3094,9 +3095,9 @@ _HTML_RAW_DELIMITED = (
 )
 
 
-def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
-                         fenced: frozenset[int] | set[int] | None = None,
-                         openers: dict[int, int] | None = None) -> set[int]:
+def _raw_html_block_lines_uncached(lines: list[str], *, raw_text_only: bool = False,
+                                   fenced: frozenset[int] | set[int] | None = None,
+                                   openers: dict[int, int] | None = None) -> set[int]:
     """Indices inside a raw HTML block, whose Markdown renders literally.
 
     A `# Heading` inside `<pre>` or `<div>` is TEXT, not a heading, and
@@ -3429,7 +3430,7 @@ def _list_content_col(lines: list[str], i: int) -> int:
     return 0
 
 
-def fenced_lines(lines: list[str]) -> set[int]:
+def _fenced_lines_uncached(lines: list[str]) -> set[int]:
     """Indices inside a fenced code block, which are examples, not content.
 
     Two passes, because a fence and an HTML block can each hide the other. A
@@ -5412,8 +5413,8 @@ def unescape_markdown(text: str) -> str:
     return _MD_ESCAPE_RE.sub(r"\1", text)
 
 
-def code_span_lines(lines: list[str],
-                    fenced: set[int] | None = None) -> dict[int, list[tuple[int, int]]]:
+def _code_span_lines_uncached(lines: list[str],
+                              fenced: set[int] | None = None) -> dict[int, list[tuple[int, int]]]:
     """Code-span ranges per line index, for spans that CROSS line breaks.
 
     `code_spans` is per physical line and so cannot see a span whose opening
@@ -5491,6 +5492,93 @@ def code_span_lines(lines: list[str],
                     (max(lo - a, 0), min(hi - a, len(lines[i]))))
             pos = m.end()
     return out
+
+
+# ── one parse per document, shared by every check ───────────────────────────
+#
+# `fenced_lines`, `raw_html_block_lines`, `comment_spans` and `code_span_lines`
+# are pure functions of the same line list, and each check rebuilt all four
+# from scratch -- then re-entered them, because three of the four call each
+# other. Measured on the checked-in 3,420-line
+# `docs/product/infrastructure/05-h-DATA_DICTIONARY.md`:
+#
+#     find_markers          1.752s      cProfile over the same four calls:
+#     check_marker_shape    1.666s        fenced_lines            49 calls
+#     check_closed_issues   1.459s        raw_html_block_lines    74 calls
+#     check_dead_links      1.223s        comment_spans           13 calls
+#                    total  6.100s        code_span_lines        117 calls
+#
+# One document, four checks. A full offline run over the corpus took 108 s.
+# Codex filed it (stocks#1121).
+#
+# Keyed on the LINES, never on the document path: `stamp` rewrites a marker
+# and the checks then run over the new list, so a path key would serve the
+# pre-edit parse for post-edit text -- a wrong answer, which is worse than a
+# slow one. Hashing the tuple is O(lines) with CPython caching each string's
+# hash, microseconds against the seconds it saves.
+#
+# The cached value is READ-ONLY rather than copied per call. A shared mutable
+# result is how a cache like this goes wrong silently: one caller's `.add()`
+# would change what every later caller sees, in a tool whose whole job is not
+# to report things that are not there. `frozenset` and `MappingProxyType`
+# make that raise instead. Nothing in the tree mutates them -- the types are
+# what keep it that way.
+#
+# Small, because a run holds one document at a time and the recursion needs
+# only a handful of live entries; this bounds the retained line tuples.
+_PARSE_CACHE_SIZE = 16
+
+
+@functools.lru_cache(maxsize=_PARSE_CACHE_SIZE)
+def _comment_spans_cached(lines: tuple[str, ...]):
+    return types.MappingProxyType(_comment_spans_uncached(list(lines)))
+
+
+def comment_spans(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
+    return _comment_spans_cached(tuple(lines))
+
+
+@functools.lru_cache(maxsize=_PARSE_CACHE_SIZE)
+def _raw_html_block_lines_cached(lines: tuple[str, ...], raw_text_only: bool,
+                                 fenced: frozenset[int] | None) -> frozenset[int]:
+    return frozenset(_raw_html_block_lines_uncached(
+        list(lines), raw_text_only=raw_text_only, fenced=fenced))
+
+
+def raw_html_block_lines(lines: list[str], *, raw_text_only: bool = False,
+                         fenced: frozenset[int] | set[int] | None = None,
+                         openers: dict[int, int] | None = None) -> frozenset[int]:
+    # `openers` is an OUT parameter -- the uncached body fills the caller's
+    # dict as it walks. A cache hit would leave it empty, so that one call
+    # site (the raw-text literal scan) bypasses the cache entirely rather
+    # than the cache quietly returning a correct set beside an empty map.
+    if openers is not None:
+        return frozenset(_raw_html_block_lines_uncached(
+            lines, raw_text_only=raw_text_only, fenced=fenced, openers=openers))
+    return _raw_html_block_lines_cached(
+        tuple(lines), raw_text_only,
+        None if fenced is None else frozenset(fenced))
+
+
+@functools.lru_cache(maxsize=_PARSE_CACHE_SIZE)
+def _fenced_lines_cached(lines: tuple[str, ...]) -> frozenset[int]:
+    return frozenset(_fenced_lines_uncached(list(lines)))
+
+
+def fenced_lines(lines: list[str]) -> frozenset[int]:
+    return _fenced_lines_cached(tuple(lines))
+
+
+@functools.lru_cache(maxsize=_PARSE_CACHE_SIZE)
+def _code_span_lines_cached(lines: tuple[str, ...], fenced: frozenset[int] | None):
+    return types.MappingProxyType(
+        _code_span_lines_uncached(list(lines), fenced))
+
+
+def code_span_lines(lines: list[str],
+                    fenced: set[int] | None = None) -> dict[int, list[tuple[int, int]]]:
+    return _code_span_lines_cached(
+        tuple(lines), None if fenced is None else frozenset(fenced))
 
 
 def _refdef_span_hidden(lines: list[str],
@@ -6671,17 +6759,49 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
     return findings
 
 
+# What the owning workflow's `run-name:` appends when it was dispatched with
+# `dry_run: true`, and the ONLY record of that input this audit can read.
+#
+# The previous version read `(.inputs // {}).dry_run` out of the runs list.
+# The List-workflow-runs response has no `inputs` key at all -- measured
+# against all 36 runs of this workflow, every one of them a
+# `workflow_dispatch`:
+#
+#     keys on a run: 'inputs' in run -> False
+#     success 2026-09-09T13:46:36Z workflow_dispatch  inputs=<ABSENT>
+#     failure 2026-09-09T12:41:22Z workflow_dispatch  inputs=<ABSENT>
+#     ...
+#
+# `GET /actions/runs/{id}` does not carry it either, and a dispatch payload
+# has no REST record anywhere, so the whole filter was dead: `_is_dry_run`
+# returned False for every run, the walk in `fetch_owning_runs` stopped on
+# page one at the first dry run, and a failed scheduled refresh behind it was
+# never examined -- `check_owning_job` could call the Class A documents
+# healthy off a run that deliberately opened no PR. Codex filed it
+# (stocks#1121).
+#
+# `display_title` IS on the response already being read, so this costs no
+# extra request. Its weaker guarantee is worth stating: a dispatch from a
+# branch runs THAT branch's YAML, so a run could carry the marker without
+# having set the input. The risk direction is a real run masquerading as a
+# dry one and being walked past; the reverse -- a dry run read as delivering
+# -- is what the old code did unconditionally.
+DRY_RUN_MARKER = "[dry-run]"
+
+
 def _is_dry_run(row: list[str]) -> bool:
     """Was this workflow run a dry run, which opens no PR and delivers nothing?
 
-    The `inputs` map is present only on workflow_dispatch runs and carries
-    strings, so `"false"` is a real value and must not read as truthy. A row
-    from an older read that carries no such column is treated as delivering,
-    which is the safe direction: it can only keep a failure on the report.
+    Read from the run's display title, because the dispatch `inputs` are not
+    exposed by any REST endpoint; `refresh-architecture-docs.yml` writes the
+    marker there via `run-name:`, and a test pins the two to each other. A row
+    from an older read that carries no such column, or a run that predates the
+    `run-name:` line, is treated as delivering -- the safe direction, since it
+    can only keep a failure on the report.
     """
     if len(row) < 4:
         return False
-    return row[3].strip().lower() in {"true", "1", "yes"}
+    return DRY_RUN_MARKER in row[3]
 
 
 RUNS_PAGE_SIZE = 10
@@ -6705,8 +6825,12 @@ def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
             "gh", "api",
             f"repos/{OWNER}/{THIS_REPO}/actions/workflows/{OWNING_JOB['workflow']}"
             f"/runs?per_page={page_size}&page={page}",
+            # `display_title`, not `(.inputs // {}).dry_run`: the response has
+            # no `inputs` key, so that projection was always "" -- see
+            # DRY_RUN_MARKER. @tsv escapes a tab inside a title as the two
+            # characters `\t`, so a run named with one cannot shift a column.
             "--jq", '.workflow_runs[] | [.conclusion, .created_at, '
-                    '(.event // ""), ((.inputs // {}).dry_run // "")] | @tsv',
+                    '(.event // ""), (.display_title // "")] | @tsv',
         ])
         # strip("\n"), not strip(). A queued or in-progress run has a null
         # conclusion, so its TSV row BEGINS with a tab -- and stripping the
@@ -7240,8 +7364,6 @@ def main(argv: list[str] | None = None) -> int:
         states = load_issues_snapshot(args.issues_snapshot)
     else:
         states = {THIS_REPO: fetch_issue_states(THIS_REPO), SIBLING_REPO: fetch_issue_states(SIBLING_REPO)}
-    if args.write_issues_snapshot:
-        write_issues_snapshot(args.write_issues_snapshot, states)
 
     findings: list[dict] = check_registry_paths(tracked, registry)
     region_maps: dict[str, dict] = {}
@@ -7643,6 +7765,17 @@ def main(argv: list[str] | None = None) -> int:
         # So the loop reports what it had already written, rather than
         # pretending the operation was atomic.
         write_stamps(writes)
+
+    # AFTER the --verify validation above, beside the marker writes. Written
+    # at the point the issue states were fetched, a `--verify docs/typo.md`
+    # run exited 2 saying "Nothing was written." having already written the
+    # snapshot -- so a rejected invocation left a side effect, and a caller
+    # that commits or publishes whatever the run produced would publish it.
+    # Every other write in this command is deferred until every requested
+    # review has somewhere to land; this one was not. Codex filed it
+    # (stocks#1121).
+    if args.write_issues_snapshot:
+        write_issues_snapshot(args.write_issues_snapshot, states)
 
     report = {
         "date": today, "base_ref": base_ref, "head": head, "docs": len(docs),

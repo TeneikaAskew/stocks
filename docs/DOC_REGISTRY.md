@@ -136,6 +136,18 @@ whose bytes were never inspected.
 commits after the doc's `Against:` SHA, the doc is queued for re-review. Pure
 renames are ignored, so a file-move wave does not flag every document.
 
+A glob over a DIRECTORY assumes every document in it is the same kind, and the
+three files under `insights/` are why they are enumerated instead. A blanket
+`D | insights/*.md` row made them living documentation, and they are a plan, a
+gap analysis and a research write-up -- the three kinds this table already
+calls C under `docs/plans/*`, `docs/analysis/*` and `docs/research/*`. That one
+row produced 78 of 393 findings, almost all dead links into a `platform/src/`
+tree that moved to the solyra repository and module names a later
+implementation did not use: true of the code today, and not what those
+documents claim. A dated record states what was true on ITS date. Enumerating
+also means a NEW file under `insights/` reads as unclassified, which is the
+point: somebody decides its class rather than inheriting a directory's.
+
 | Class | Path glob | Declared code paths | Generated regions |
 |---|---|---|---|
 | A | README.md | gcp/deploy.sh, gcp/schema.sql | line:img\.shields\.io; line:^Generated \d{4}-\d{2}-\d{2} by the monthly |
@@ -259,7 +271,9 @@ renames are ignored, so a file-move wave does not flag every document.
 | D | gcp/research/*/README.md | gcp/research |  |
 | D | gcp/research/*/*.md | gcp/research |  |
 | D | lib/*/README.md | lib |  |
-| D | insights/*.md | insights |  |
+| C | insights/IMPLEMENTATION_PLAN.md | |  |
+| C | insights/PHASE2_GAP_ANALYSIS.md | |  |
+| C | insights/RESEARCH.md | |  |
 | D | reports/README.md | |  |
 | D | scripts/research/README.md | scripts/research |  |
 | D | tradingview-pine-scripts/*.md | tradingview-pine-scripts |  |
