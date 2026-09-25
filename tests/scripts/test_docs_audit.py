@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import pathlib
+import re
 import subprocess
 
 import pytest
@@ -3984,6 +3985,28 @@ def test_the_openers_out_parameter_still_gets_filled():
     again: dict[int, int] = {}
     m.raw_html_block_lines(lines, raw_text_only=True, openers=again)
     assert again == openers
+
+
+_LINE_CITATION_RE = re.compile(r"\bline \d+|[\w./-]+\.(?:py|yml|yaml|sh|sql|md):\d+")
+
+
+def test_the_registry_cites_evidence_by_name_not_by_line_number():
+    """A line number into a file that moves rots on the next edit, and nothing
+    checks it.
+
+    Three of the five this file originally carried went stale INSIDE the
+    commit that wrote them: a review marker inserted into `README.md` moved
+    its quoted line from 49 to 51, and nine lines of `run-name:` added to the
+    refresh workflow moved `515` to `524` and the range `511-537` to
+    `520-546`. A reader verifying an ownership claim then lands on the wrong
+    place -- in the file whose entire job is saying what is true about the
+    documentation. Codex filed it (stocks#1121)."""
+    text = (REPO_ROOT / m.REGISTRY).read_text(encoding="utf-8")
+    # Fenced examples are illustrations, not claims about this repository.
+    lines = text.split("\n")
+    live = [ln for i, ln in enumerate(lines) if i not in m.fenced_lines(lines)]
+    hits = [ln for ln in live if _LINE_CITATION_RE.search(ln)]
+    assert hits == [], hits
 
 
 def test_the_shipped_registry_calls_a_dated_record_a_dated_record():

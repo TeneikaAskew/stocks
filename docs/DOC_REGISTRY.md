@@ -6,6 +6,15 @@ Which documents this repo maintains, who owns each one, and what code each one
 describes. `scripts/maintenance/docs_audit.py` reads the table below; the prose
 around it is for humans and is ignored by the parser.
 
+Evidence in this file is cited by NAME -- a file plus a step, a function or a
+quoted sentence -- and never by line number. Three of the five line citations
+written here went stale inside the commit that wrote them: a review marker
+inserted into `README.md` moved its quoted line from 49 to 51, and nine lines
+of `run-name:` added to the refresh workflow moved `515` to `524` and the
+range `511-537` to `520-546`. A pointer that rots on the next edit sends a
+reader verifying an ownership claim to the wrong place, and nothing here
+checks it. Codex filed it (stocks#1121).
+
 ## Why classes
 
 A single "is this doc fresh?" rule produces wrong answers, because four kinds of
@@ -49,14 +58,16 @@ by the `Generated regions` column below:
 | `05-c-DATA_DEPENDENCIES.md` | 1,415 | 1,326 | 89 | 0 |
 | `05-d-COST_ANALYSIS.md` | 107 | 0 | 107 | 0 |
 
-The repository already said so and nothing acted on it. `README.md` line 49:
+The repository already said so and nothing acted on it. `README.md`, in the
+table of what the refresh writes:
 "badges and the closing date rendered from the live inventory; **the prose and
 the documentation map are hand-written and no model touches them**".
-`refresh-architecture-docs.yml:515`: "`05-e-API.md` and
-`INVESTMENT_MODELS_SUMMARY.md` are deterministic too: **NO prompt writes
-either**" — they enter the run only as frozen copies so the stray-write scan can
-catch a model touching them. And `scripts/refresh_calibration_table.py:47`
-replaces exactly one marked table inside a file merged by hand on 2026-06-10.
+`refresh-architecture-docs.yml`, in its `Freeze gate inputs` step:
+"`05-e-API.md` and `INVESTMENT_MODELS_SUMMARY.md` are deterministic too: **NO
+prompt writes either**" — they enter the run only as frozen copies so the
+stray-write scan can catch a model touching them. And
+`scripts/refresh_calibration_table.py`, whose `BEGIN_MARK` replaces exactly one
+marked table inside a file merged by hand on 2026-06-10.
 
 So 1,325 lines of hand-written prose had no owner *and* no audit. That is a rot
 trap wearing a safeguard's label, and `05-e`'s 30 lines and
@@ -99,14 +110,14 @@ Never edit inside a generated region and never bump a `Generated <date>` footer:
 that is the job's signature, not a review marker. The stray-write scan that
 refuses edits outside `05-a 05-c 05-d` runs **inside the refresh workflow**,
 against a snapshot frozen before Gemini starts
-(`refresh-architecture-docs.yml:511-537`); it constrains the model during a
-refresh, not a contributor fixing prose no prompt writes.
+(`refresh-architecture-docs.yml`, its `Freeze gate inputs` step); it constrains
+the model during a refresh, not a contributor fixing prose no prompt writes.
 
 Stamping these files is safe, and that was checked rather than assumed. The
 load-bearing case is `README.md`, whose H1 sits above a rendered badge block:
 `doc_inventory.insert_readme_badges` selects its span **by ownership**, a regex
 over the badge URLs it emits, and its own comment says a badge added above or
-below the block survives (`doc_inventory.py:4229-4234`). `docs_audit.py` still
+below the block survives. `docs_audit.py` still
 refuses to stamp when a generated region starts within two lines of the H1.
 
 ## The review marker
