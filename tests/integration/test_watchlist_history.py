@@ -11,6 +11,8 @@ data so the two answers can be compared rather than asserted apart.
 """
 from __future__ import annotations
 
+import pathlib
+import re
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -94,6 +96,28 @@ def _events(engine, ticker: str) -> list[tuple[str, datetime]]:
             {"t": ticker},
         ).fetchall()
     return [(r[0], r[1]) for r in rows]
+
+
+def _shipped_seed_statement() -> str:
+    """The seed INSERT exactly as `gcp/schema.sql` ships it.
+
+    Read from the file rather than copied, so a test asserting what the
+    seed stamps cannot drift away from the statement that actually runs.
+    """
+    schema = (
+        pathlib.Path(__file__).resolve().parents[2] / "gcp" / "schema.sql"
+    ).read_text()
+    # Anchored at column 0: the trigger's own INSERTs are indented, and
+    # splitting on ";" is wrong because the comments above the seed contain
+    # semicolons of their own.
+    found = re.findall(
+        r"^INSERT INTO watchlist_history\b.*?"
+        r"WHERE NOT EXISTS \(SELECT 1 FROM watchlist_history\);",
+        schema,
+        re.S | re.M,
+    )
+    assert len(found) == 1, f"expected one seed statement, found {len(found)}"
+    return found[0]
 
 
 JAN = datetime(2026, 1, 10, tzinfo=timezone.utc)
@@ -515,6 +539,95 @@ def test_a_backdate_after_the_latest_transition_is_still_allowed(wl):
     assert events[3][1] == later, "a legitimate backdate was re-stamped"
 
 
+def test_an_insert_backdated_behind_recorded_history_is_refused(wl):
+    """Codex P2 on `af82694`. The INSERT branch had the same hole.
+
+    `af82694` bounded the backdate exemption on the UPDATE removal path
+    and left the INSERT path taking `added_at` on trust. Reached through
+    a hard delete and a re-insert, which is an ad-hoc backfill shape
+    rather than anything a writer does today:
+
+        add    2026-01-10
+        remove 2026-03-10
+        DELETE FROM watchlists ...        (records nothing: already removed)
+        INSERT ... added_at = 2026-02-01  (backdated BEHIND the removal)
+
+    `watchlists` now says active; history's newest event is still the
+    March removal, so `resolve_membership_at` says absent. The same
+    two-sources-disagree failure the removal guard closed, entered from
+    the other side.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "DELETE FROM watchlists WHERE user_id = :u AND ticker = 'ACME'"
+            ),
+            {"u": OWNER},
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"], (
+        "the hard delete of an already-removed row should record nothing"
+    )
+
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                    "VALUES (:u, 'ACME', :at, 'test')"
+                ),
+                {"u": OWNER, "at": datetime(2026, 2, 1, tzinfo=timezone.utc)},
+            )
+    assert "precedes" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"], (
+        "the refused insert still appended to an append-only log"
+    )
+
+
+def test_an_insert_carrying_an_inverted_pair_is_refused(wl):
+    """One statement, both ends, `removed_at` before `added_at`.
+
+    The INSERT branch writes both events from a single row, so a
+    contradictory pair inverts the log without any prior history to sort
+    behind. I flagged this on the `2d06c20` thread as untouched and
+    asked whether to close it; the answer was yes.
+    """
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlists "
+                    "  (user_id, ticker, added_at, removed_at, source) "
+                    "VALUES (:u, 'ACME', :added, :removed, 'test')"
+                ),
+                {"u": OWNER, "added": MAR, "removed": JAN},
+            )
+    assert "precedes" in str(excinfo.value)
+    assert _events(wl, "ACME") == [], "an inverted pair was recorded anyway"
+
+
+def test_a_first_insert_with_a_historical_added_at_is_still_allowed(wl):
+    """The guard bounds the exemption; it must not abolish it.
+
+    A ticker with no recorded history can be inserted at any date -- that
+    is how a backfill, a fixture and the seed all work, and refusing it
+    would break the ordinary case to close the inverted one.
+    """
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists "
+                "  (user_id, ticker, added_at, removed_at, source) "
+                "VALUES (:u, 'ACME', :added, :removed, 'test')"
+            ),
+            {"u": OWNER, "added": JAN, "removed": MAR},
+        )
+    assert _events(wl, "ACME") == [("add", JAN), ("remove", MAR)], (
+        "a legitimate historical interval was refused or re-stamped"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The append-only guarantee
 # ---------------------------------------------------------------------------
@@ -671,6 +784,99 @@ def test_resolution_is_approximate_before_the_seed_horizon(wl):
 
     after = resolve_membership_at(date(2026, 6, 1), OWNER)
     assert after.resolution == "exact"
+
+
+def test_the_seed_horizon_is_the_wall_clock_not_the_transaction_start(wl):
+    """Codex P2 on `af82694`. The horizon was read off the wrong clock.
+
+    `recorded_at` defaulted to `NOW()`, which IS
+    `transaction_timestamp()` -- fixed when the applier's transaction
+    began, not when the seed ran. The seed sits at the end of an ATOMIC
+    group that first takes `LOCK TABLE watchlists IN SHARE ROW EXCLUSIVE
+    MODE`, so it runs an unbounded wait after that stamp whenever a
+    writer holds the table.
+
+    `_HORIZON_SQL` reads `max(recorded_at) WHERE origin = 'seed'` and
+    `resolve_membership_at` marks every cutoff before it `approximate`.
+    An under-reported horizon therefore marks a genuinely-blind cutoff
+    `exact` -- the one direction that matters, because it is a claim of
+    precision the data cannot support. Over-reporting only over-warns.
+
+    Driven through the statement `gcp/schema.sql` actually ships.
+    """
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, 'OLDCO', :at, 'test')"
+            ),
+            {"u": OWNER, "at": JAN},
+        )
+        # The trigger recorded that add; the seed's own guard is "history
+        # is entirely empty", so clear it and let the shipped statement run.
+        conn.execute(
+            sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY")
+        )
+
+    with wl.begin() as conn:
+        txn_start = conn.execute(
+            sqlalchemy.text("SELECT transaction_timestamp()")
+        ).scalar()
+        # Stand in for the lock wait: any delay between transaction start
+        # and the seed reproduces it.
+        conn.execute(sqlalchemy.text("SELECT pg_sleep(0.25)"))
+        conn.execute(sqlalchemy.text(_shipped_seed_statement()))
+        horizon = conn.execute(
+            sqlalchemy.text(
+                "SELECT max(recorded_at) FROM watchlist_history "
+                " WHERE origin = 'seed'"
+            )
+        ).scalar()
+
+    assert horizon is not None, "the shipped seed statement wrote nothing"
+    assert horizon > txn_start, (
+        "the seed horizon was stamped at transaction start "
+        f"({txn_start}), not when the seed ran; a cutoff in the gap is "
+        "reported as `exact` while the interval it covers is unrecoverable"
+    )
+
+
+def test_a_recorded_event_is_stamped_when_it_was_written(wl):
+    """Same clock, the trigger's side of it.
+
+    `recorded_at` is documented as when the ROW was written, while
+    `effective_at` for a live event is `clock_timestamp()`. Leaving the
+    default at `NOW()` made every live event claim to have been recorded
+    before it happened, which is incoherent on its face and is the same
+    defect the seed horizon suffers.
+    """
+    with wl.begin() as conn:
+        txn_start = conn.execute(
+            sqlalchemy.text("SELECT transaction_timestamp()")
+        ).scalar()
+        conn.execute(sqlalchemy.text("SELECT pg_sleep(0.25)"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, 'ACME', :at, 'test')"
+            ),
+            {"u": OWNER, "at": JAN},
+        )
+        recorded_at, effective_at = conn.execute(
+            sqlalchemy.text(
+                "SELECT recorded_at, effective_at FROM watchlist_history "
+                " WHERE ticker = 'ACME'"
+            )
+        ).fetchone()
+
+    assert recorded_at > txn_start, (
+        f"recorded_at came from transaction start ({txn_start}), not the "
+        "write"
+    )
+    assert recorded_at >= effective_at, (
+        f"the row claims it was recorded ({recorded_at}) before the event "
+        f"it records happened ({effective_at})"
+    )
 
 
 def test_an_empty_watchlist_resolves_to_an_empty_universe(wl):

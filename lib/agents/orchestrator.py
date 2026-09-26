@@ -276,7 +276,6 @@ async def run_insight_pipeline(
     *,
     snapshot: Optional[RouteSnapshot] = None,
     universe: Optional["WatchlistMembership"] = None,
-    report_as_of: Optional[datetime] = None,
     llm_factory: LLMFactory = _default_factory,
     query_embedding: Optional[list[float]] = None,
 ) -> InsightReport:
@@ -644,22 +643,22 @@ async def run_insight_pipeline(
         ticker=ticker.upper(),
         # `as_of` is TWO things: the data cutoff, and the persisted
         # timestamp -- which is half of `insight_reports`' upsert key
-        # `ON CONFLICT (ticker, as_of)`. Collapsing a live run's stamp to
-        # midnight so the cutoff could be frozen made a live row collide
-        # with a date-only `INSIGHT_AS_OF` replay of the same day; that
-        # replay runs with allow_update and rewrites `run_kind`, so the
-        # live-only reader (`platform/api/routers/insights.py:228`,
-        # `WHERE run_kind = 'live' ORDER BY as_of DESC`) then served a
-        # stale report or 404. A midnight stamp also sorts behind an
-        # exact-timestamp fan-out row for the same day and is never
-        # served as latest. `report_as_of` keeps the two apart: the
-        # caller freezes the cutoff and still stamps execution time
-        # (Codex P2 on `2d06c20`).
-        as_of=(
-            report_as_of if report_as_of is not None
-            else (datetime.now(timezone.utc) if as_of is None
-                  else _as_datetime(as_of))
-        ),
+        # `ON CONFLICT (ticker, as_of)`. A LIVE run must therefore stamp
+        # execution time: a midnight stamp collides with a date-only
+        # `INSIGHT_AS_OF` replay of the same day, that replay runs with
+        # allow_update and rewrites `run_kind`, and the live-only reader
+        # (`platform/api/routers/insights.py:228`,
+        # `WHERE run_kind = 'live' ORDER BY as_of DESC`) is left with a stale
+        # report or a 404. A midnight row also sorts behind an
+        # exact-timestamp fan-out row for the same day and is never served as
+        # latest (Codex P2 on `2d06c20`).
+        #
+        # Which is why `as_of=None` MUST reach here for a live run, and why
+        # `gcp/insight_pipeline_job.py` no longer invents a date for one. An
+        # override parameter existed briefly to undo that invented pin;
+        # removing the pin removed the need for it (Codex P2 on `af82694`).
+        as_of=(datetime.now(timezone.utc) if as_of is None
+               else _as_datetime(as_of)),
         direction=direction,
         conviction=conviction,  # deterministic calibration (#349)
         thesis=pm.thesis,

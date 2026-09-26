@@ -2440,11 +2440,27 @@ CREATE TABLE IF NOT EXISTS watchlist_history (
     user_id       VARCHAR(320)  NOT NULL,
     ticker        VARCHAR(10)   NOT NULL,
     action        VARCHAR(10)   NOT NULL CHECK (action IN ('add', 'remove')),
-    -- When membership actually changed (added_at / removed_at / NOW()
-    -- on a re-add), NOT when the row was written. As-of resolution
-    -- reads this one.
+    -- When membership actually changed (added_at / removed_at, or
+    -- clock_timestamp() on a re-add), NOT when the row was written.
+    -- As-of resolution reads this one.
     effective_at  TIMESTAMPTZ   NOT NULL,
-    recorded_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    -- clock_timestamp(), NOT NOW(). NOW() is transaction_timestamp():
+    -- fixed when the writing transaction began, which is the wrong clock
+    -- for a field whose whole job is "when was this written" (Codex P2 on
+    -- `af82694`). Two consequences, one of them load-bearing:
+    --
+    --   * The seed below runs at the END of a group that first takes
+    --     SHARE ROW EXCLUSIVE on `watchlists`, so an unbounded lock wait
+    --     sits between the transaction's stamp and the seed. `_HORIZON_SQL`
+    --     reads max(recorded_at) of the seed rows as the point before
+    --     which `resolve_membership_at` reports `approximate`. A horizon
+    --     stamped before the wait marks a genuinely-blind cutoff `exact`
+    --     -- a claim of precision the data cannot support. The opposite
+    --     error only over-warns, so the later clock is also the safer one.
+    --   * Every trigger-written row claimed it was recorded BEFORE the
+    --     event it records, since `effective_at` for a live event is
+    --     already clock_timestamp().
+    recorded_at   TIMESTAMPTZ   NOT NULL DEFAULT clock_timestamp(),
     -- 'seed' = backfilled from `watchlists` when this table was created,
     -- so it inherits that table's blind spot. 'trigger' = observed live.
     -- The newest 'seed' row's recorded_at is the horizon before which
@@ -2480,6 +2496,52 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_history_asof
 CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
     ON watchlist_history (recorded_at) WHERE origin = 'seed';
 
+-- Every event this trigger records must be at or after the newest event
+-- already recorded for that key. `watchlist_history` is ordered by
+-- `effective_at` and resolved with DISTINCT ON, so an event written out of
+-- order does not merely look odd -- it changes the answer for every date
+-- after it, in a table that forbids its own correction.
+--
+-- Extracted rather than written three times. `af82694` guarded the UPDATE
+-- removal path alone and Codex found the INSERT path open on the next
+-- review (P2 on `af82694`): a key hard-deleted and re-inserted with a
+-- historical `added_at` lands an `add` behind the recorded `remove`, so
+-- `watchlists` reports active while the resolver reports absent. Three
+-- copies of a rule is how the third one ends up missing.
+--
+-- Deliberately conservative, and it DOES over-reject. The precise rule is
+-- "the new interval must not overlap or invert an existing one", which
+-- needs interval arithmetic in a trigger; this one also refuses an
+-- out-of-order but internally harmless backfill (a complete, earlier,
+-- non-overlapping interval inserted after a later one). That case is not
+-- reachable from any writer here, expressing it correctly needs the same
+-- supersession contract the surface-flag thread is still waiting on, and
+-- a refusal is visible and recoverable where an inverted append-only log
+-- is neither.
+CREATE OR REPLACE FUNCTION watchlist_history_assert_monotonic(
+    p_user_id      VARCHAR,
+    p_ticker       VARCHAR,
+    p_action       VARCHAR,
+    p_effective_at TIMESTAMPTZ
+) RETURNS VOID LANGUAGE plpgsql AS $$
+DECLARE
+    latest_effective_at TIMESTAMPTZ;
+BEGIN
+    SELECT MAX(effective_at) INTO latest_effective_at
+      FROM watchlist_history
+     WHERE user_id = p_user_id AND ticker = p_ticker;
+    IF latest_effective_at IS NOT NULL
+       AND p_effective_at < latest_effective_at THEN
+        RAISE EXCEPTION
+            'backdated % at % precedes this ticker''s latest recorded '
+            'transition at %; watchlist_history is append-only and ordered '
+            'by effective_at, so the event would sort behind an earlier one '
+            'and resolve to the wrong membership.',
+            p_action, p_effective_at, latest_effective_at;
+    END IF;
+END;
+$$;
+
 -- Still inside the group opened at CREATE TABLE above. The trigger and
 -- the seed must also share a transaction with each other: an apply
 -- interrupted between them would leave the trigger live with the seed
@@ -2489,9 +2551,10 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
 CREATE OR REPLACE FUNCTION watchlists_record_membership()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
-    -- Newest transition already recorded for this key, used by the
-    -- backdate guard in the UPDATE removal branch below.
-    latest_effective_at TIMESTAMPTZ;
+    -- The effective_at each branch will actually write, resolved once so
+    -- the monotonic guard checks the SAME value that gets recorded.
+    add_effective_at    TIMESTAMPTZ;
+    remove_effective_at TIMESTAMPTZ;
 BEGIN
     -- Any timestamp a writer produced with NOW() IS transaction_timestamp():
     -- fixed when THEIR transaction began, so it can predate an event that
@@ -2511,18 +2574,41 @@ BEGIN
     -- Verified both directions in psql: NOW() -> equal, an explicit
     -- 2026-03-10 -> not equal.
     IF TG_OP = 'INSERT' THEN
+        add_effective_at := CASE WHEN NEW.added_at = transaction_timestamp()
+                                 THEN clock_timestamp() ELSE NEW.added_at END;
+        -- Only a value the writer STATED is checked. One this trigger just
+        -- read off the wall clock cannot precede anything already recorded,
+        -- and checking it would refuse a live re-insert whenever some
+        -- earlier row carried a deliberately future-dated event.
+        --
+        -- An INSERT reaches a key that already HAS history through a hard
+        -- delete: deleting an already-removed row records nothing, so the
+        -- log keeps its `remove` and a re-insert backdated behind it lands
+        -- an `add` that sorts earlier. `watchlists` then reports active
+        -- while the resolver reports absent (Codex P2 on `af82694`).
+        IF NEW.added_at <> transaction_timestamp() THEN
+            PERFORM watchlist_history_assert_monotonic(
+                NEW.user_id, NEW.ticker, 'add', add_effective_at);
+        END IF;
         INSERT INTO watchlist_history
             (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
-        VALUES (NEW.user_id, NEW.ticker, 'add',
-                CASE WHEN NEW.added_at = transaction_timestamp()
-                     THEN clock_timestamp() ELSE NEW.added_at END,
+        VALUES (NEW.user_id, NEW.ticker, 'add', add_effective_at,
                 NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         IF NEW.removed_at IS NOT NULL THEN
+            remove_effective_at :=
+                CASE WHEN NEW.removed_at = transaction_timestamp()
+                     THEN clock_timestamp() ELSE NEW.removed_at END;
+            -- The add above is now this key's newest event, so the same
+            -- guard also closes a single INSERT whose own pair is inverted
+            -- (`removed_at` earlier than `added_at`) -- the case left open
+            -- on the `2d06c20` thread.
+            IF NEW.removed_at <> transaction_timestamp() THEN
+                PERFORM watchlist_history_assert_monotonic(
+                    NEW.user_id, NEW.ticker, 'remove', remove_effective_at);
+            END IF;
             INSERT INTO watchlist_history
                 (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
-            VALUES (NEW.user_id, NEW.ticker, 'remove',
-                    CASE WHEN NEW.removed_at = transaction_timestamp()
-                         THEN clock_timestamp() ELSE NEW.removed_at END,
+            VALUES (NEW.user_id, NEW.ticker, 'remove', remove_effective_at,
                     NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         END IF;
         RETURN NEW;
@@ -2662,26 +2748,16 @@ BEGIN
             -- a separate historical correction needs a third `action` value
             -- and a resolver that understands supersession -- a contract
             -- change to decide, not to infer from an UPDATE.
+            remove_effective_at :=
+                CASE WHEN NEW.removed_at = transaction_timestamp()
+                     THEN clock_timestamp() ELSE NEW.removed_at END;
             IF NEW.removed_at <> transaction_timestamp() THEN
-                SELECT MAX(effective_at) INTO latest_effective_at
-                  FROM watchlist_history
-                 WHERE user_id = NEW.user_id AND ticker = NEW.ticker;
-                IF latest_effective_at IS NOT NULL
-                   AND NEW.removed_at < latest_effective_at THEN
-                    RAISE EXCEPTION
-                        'backdated removal % precedes this ticker''s latest '
-                        'recorded transition at %; watchlist_history is '
-                        'append-only and ordered by effective_at, so the '
-                        'removal would sort behind an earlier add and '
-                        'resolve as still active.',
-                        NEW.removed_at, latest_effective_at;
-                END IF;
+                PERFORM watchlist_history_assert_monotonic(
+                    NEW.user_id, NEW.ticker, 'remove', remove_effective_at);
             END IF;
             INSERT INTO watchlist_history
                 (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
-            VALUES (NEW.user_id, NEW.ticker, 'remove',
-                    CASE WHEN NEW.removed_at = transaction_timestamp()
-                         THEN clock_timestamp() ELSE NEW.removed_at END,
+            VALUES (NEW.user_id, NEW.ticker, 'remove', remove_effective_at,
                     NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         END IF;
         RETURN NEW;

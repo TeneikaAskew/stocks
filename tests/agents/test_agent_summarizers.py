@@ -526,6 +526,66 @@ def test_gamma_levels_extracts_kings_and_regime(patch_query):
     assert out["chain_size"] == 4
 
 
+def test_pinning_a_live_run_to_today_silently_swaps_the_intraday_chain(
+    monkeypatch,
+):
+    """Codex P2 on `af82694`. Supplying `as_of` is what discards the session.
+
+    `build_context_bundle` passes `inclusive_today=False`, so an `as_of`
+    turns the REALTIME phase's filter from "no snapshot bound" into
+    `snapshot_date < :as_of`. Production REALTIME rows carry their own
+    session's `snapshot_date` -- measured against production on
+    2026-09-26, SPY's newest is `2026-09-25 19:55:32+00` with
+    `snapshot_date = 2026-09-25` -- so a live run pinned to today matches
+    none of them.
+
+    The failure is not an error. Phase 2 answers with last night's EOD
+    chain, inside the freshness window, and the summary comes back
+    `available: True` looking exactly like a good one. Dealer positioning
+    from 20:00 yesterday presented as the current book is the
+    indistinguishable-value shape Rule 3.7 is about, and until this was
+    reverted an in-process run and a fan-out child of the SAME batch
+    disagreed about it.
+    """
+    today = date(2026, 5, 13)
+    realtime = _eod_chain_fixture(today)
+    overnight = _eod_chain_fixture(date(2026, 5, 12))
+
+    def cutoff_aware(sql: str, params=None):
+        params = params or {}
+        bounded = "snapshot_date < :as_of" in sql
+        rows = realtime if "market_session = 'REALTIME'" in sql else overnight
+        if not bounded:
+            return rows
+        # Honour the operator the SQL actually carries, against the same
+        # `snapshot_date` the rows hold.
+        cutoff = pd.Timestamp(params["as_of"]).date()
+        keep = rows[pd.to_datetime(rows["snapshot_date"]).dt.date < cutoff]
+        return keep.reset_index(drop=True)
+
+    monkeypatch.setattr(summarizers, "_query", cutoff_aware)
+    monkeypatch.setattr(summarizers, "_query_strict", cutoff_aware)
+
+    live = summarizers.summarize_gamma_levels(
+        "XYZ", as_of=None, inclusive_today=False)
+    assert live["available"] is True, live.get("reason")
+    assert live["data_source"] == "realtime", (
+        "an unpinned live run stopped reading the current session's chain"
+    )
+
+    pinned = summarizers.summarize_gamma_levels(
+        "XYZ", as_of=today, inclusive_today=False)
+    assert pinned["available"] is True, pinned.get("reason")
+    assert pinned["data_source"] == "eod_fallback", (
+        "expected the pinned run to fall through to the overnight chain; "
+        f"got {pinned['data_source']}"
+    )
+    assert pinned["data_source"] != live["data_source"], (
+        "pinning a live run to today changed which chain answered, and "
+        "nothing in the summary says the session's own book was dropped"
+    )
+
+
 def test_gamma_levels_unavailable_when_no_chain(patch_query):
     # No data set up → both phase 1 (REALTIME) and phase 2 (EOD)
     # return empty → unavailable.

@@ -494,7 +494,6 @@ async def _run_one(
     run_kind: str = 'scheduled',
     triggered_by: Optional[str] = None,
     universe=None,
-    report_as_of: Optional[datetime] = None,
 ) -> bool:
     """Execute one pipeline run and persist transitions. Returns True
     on success.
@@ -527,8 +526,7 @@ async def _run_one(
     try:
         snapshot = load_routes_snapshot()
         report = await run_insight_pipeline(
-            ticker, as_of=as_of, snapshot=snapshot, universe=universe,
-            report_as_of=report_as_of)
+            ticker, as_of=as_of, snapshot=snapshot, universe=universe)
         # Always append to history first; current-table write is conditional.
         _insert_report_history(report, run_id, run_kind, triggered_by)
         report_id = _upsert_report(report, allow_update=allow_update)
@@ -850,61 +848,40 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             # it did before any freeze existed.
             return None
 
-    def _run_as_of(current):
-        """The date this ticker's whole report is for, not just its peers.
-
-        `as_of=None` does not mean "today" -- it means EVERY consumer
-        decides for itself what now is. `summarize_backtest_metrics` reads
-        a clock, the strat section applies no cutoff at all, and the
-        orchestrator stamps the report from a third read. Freezing only the
-        universe left the backtest on the frozen date while the stamp came
-        from the clock, so a run crossing UTC midnight produced a report
-        whose sections disagreed about which day it was (Codex P2 on
-        `d01ed78`).
-
-        Passing the frozen date as `as_of` gives the whole ticker run one
-        date. Two consequences, both deliberate and neither hidden:
-
-        * `lib/agents/orchestrator.py:644` stamps the report at midnight of
-          that date instead of the moment it ran. For a report that IS "as
-          of" a date, that is the more honest stamp.
-        * `lib/agents/summarizers.py:446` applies the premarket cutoff
-          (`df.index < midnight-of-as_of`) where `None` applied none at
-          all. On the 08:45 ET scheduled run today's daily bar does not
-          exist yet, so that filter removes nothing; an ad-hoc run AFTER
-          the close would now exclude the session's own bar, which is the
-          documented `inclusive_today=False` contract rather than a
-          departure from it.
-
-        Only for the in-process path. The enqueue above still passes the
-        original `as_of`, so a fan-out child's `as_of_iso` is unchanged and
-        no child is pushed into replay mode. If the freeze failed,
-        `current` is None and this returns None, leaving today's behaviour
-        exactly as it was.
-        """
-        if as_of is not None or current is None:
-            return as_of
-        return current.as_of
-
-    def _live_stamp(current):
-        """Execution time for a run whose cutoff WE pinned, else None.
-
-        The mirror of `_run_as_of`, and it has to stay the mirror: exactly
-        when that returns the frozen date instead of the operator's own
-        `as_of`, this run is LIVE and its persisted timestamp must not
-        become the frozen date. `insight_reports` keys on
-        `(ticker, as_of)`, so a live row stamped at midnight collides with
-        a date-only `INSIGHT_AS_OF` replay of the same day -- and that
-        replay runs with allow_update and rewrites `run_kind`, leaving the
-        live-only reader nothing to serve (Codex P2 on `2d06c20`).
-
-        When the operator DID name a date, this returns None and the
-        replay keeps its date-keyed semantics, which is the point of a
-        replay: it is meant to own that key.
-        """
-        if as_of is not None or current is None:
-            return None
-        return datetime.now(timezone.utc)
+    # There is deliberately no per-ticker `as_of` computed here, and the
+    # reasoning is load-bearing enough to keep after the code went away.
+    #
+    # `d01ed78` was reviewed as leaving the report split across dates: the
+    # backtest pinned to the frozen universe while every other consumer read
+    # its own clock. `2d06c20` answered that by handing the frozen date down
+    # as `as_of`, which is wrong, because `as_of` is not "which day is this
+    # report about" -- it is a REPLAY cutoff. `build_context_bundle` defaults
+    # to `inclusive_today=False`, so supplying it switches both option
+    # summarizers from "no snapshot bound" to `snapshot_date < :as_of`.
+    #
+    # Measured against production 2026-09-26: `etf_options_snapshots` REALTIME
+    # rows carry their own session's `snapshot_date` (latest
+    # `2026-09-25 19:55:32+00`, `snapshot_date = 2026-09-25`). A live intraday
+    # run pinned to today therefore matched none of them and fell back to the
+    # prior day's EOD chain, while a fan-out child -- still receiving
+    # `as_of=None` -- read them. Same pipeline, same minute, different data,
+    # no disclosure (Codex P2 on `af82694`).
+    #
+    # The freeze survives without the pin: with `as_of=None` and the universe
+    # injected, `summarize_backtest_metrics` takes its cutoff from
+    # `universe.as_of` (`lib/agents/summarizers.py:1006`), so peers and bars
+    # agree by construction, and `_universe_for` above keeps that date current
+    # per ticker. What is NOT restored is the whole-report pin: across UTC
+    # midnight mid-ticker the backtest stays on the frozen date while the live
+    # sections move on. That residue is bounded to one ticker's runtime, the
+    # 08:45 ET scheduler never approaches 00:00 UTC, and the date the peers
+    # came from is disclosed on `cross_ticker.universe`. Dropping a session's
+    # options data silently is the worse of the two.
+    #
+    # It also removed the need for the report-timestamp override added in
+    # `af82694`: with the cutoff back to None the orchestrator already stamps
+    # the report at execution time, which is what keeps a live row off a
+    # date-only replay's `(ticker, as_of)` key.
 
     any_failures = False
     if pending is None:
@@ -919,10 +896,9 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             # (Codex P2 on `24ccbd7`).
             batch_universe = _universe_for(batch_universe)
             ok = await _run_one(
-                run_id, ticker, as_of=_run_as_of(batch_universe),
+                run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
                 triggered_by=triggered_by, universe=batch_universe,
-                report_as_of=_live_stamp(batch_universe),
             )
             if not ok:
                 any_failures = True
@@ -931,10 +907,9 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
         for run_id, ticker in pending:
             batch_universe = _universe_for(batch_universe)
             ok = await _run_one(
-                run_id, ticker, as_of=_run_as_of(batch_universe),
+                run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
                 triggered_by=triggered_by, universe=batch_universe,
-                report_as_of=_live_stamp(batch_universe),
             )
             if not ok:
                 any_failures = True

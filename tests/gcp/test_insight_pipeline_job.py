@@ -842,7 +842,6 @@ def _drive_batch(monkeypatch, resolve_returns, as_of_env=None):
 
     got: list = []
     got_as_of: list = []
-    got_stamp: list = []
     calls: list = []
 
     def fake_resolve(cutoff, *a, **kw):
@@ -854,11 +853,9 @@ def _drive_batch(monkeypatch, resolve_returns, as_of_env=None):
     monkeypatch.setattr(job, "_insert_run", lambda ticker, trigger: f"run-{ticker}")
 
     async def fake_run_one(run_id, ticker, as_of=None, allow_update=False,
-                           run_kind="scheduled", triggered_by=None, universe=None,
-                           report_as_of=None):
+                           run_kind="scheduled", triggered_by=None, universe=None):
         got.append(universe)
         got_as_of.append(as_of)
-        got_stamp.append(report_as_of)
         return True
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
@@ -868,7 +865,6 @@ def _drive_batch(monkeypatch, resolve_returns, as_of_env=None):
     monkeypatch.setenv("INSIGHT_FANOUT", "0")
     assert _run(job._run_scheduled()) == 0
     _drive_batch.last_as_of = got_as_of
-    _drive_batch.last_stamp = got_stamp
     return got, calls, _dt.datetime.now(_dt.timezone.utc).date()
 
 
@@ -927,28 +923,56 @@ def test_a_utc_day_rollover_mid_batch_re_resolves_rather_than_losing_the_section
     )
 
 
-def test_the_frozen_date_is_passed_as_as_of_for_the_whole_ticker_run(monkeypatch):
-    """Codex P2 on `d01ed78`.
+def test_a_live_run_is_not_pinned_to_a_date_only_cutoff(monkeypatch):
+    """Codex P2 on `af82694`, reverting the `d01ed78` repair in `2d06c20`.
 
-    Freezing only the universe pinned the backtest section's cutoff and
-    left every other consumer reading its own clock: the strat section
-    applies no cutoff when `as_of is None`, and the orchestrator stamps
-    the report from a third read. A run crossing UTC midnight therefore
-    produced a report whose sections disagreed about which day it was --
-    an inconsistency the freeze introduced, since before it the backtest
-    and the stamp at least read the clock together.
+    `2d06c20` handed the frozen date down as `as_of` so one report would
+    carry one date. `build_context_bundle` defaults to
+    `inclusive_today=False`, so supplying `as_of` AT ALL switches the two
+    option summarizers from "no snapshot bound" to
+    `snapshot_date < :as_of`, which discards the current session entirely.
 
-    `as_of=None` does not mean "today"; it means every consumer decides
-    for itself. Handing the frozen date down is what makes one report
-    carry one date.
+    Measured against production on 2026-09-26: `etf_options_snapshots`
+    REALTIME rows carry their own session's `snapshot_date` (latest
+    `2026-09-25 19:55:32+00`, `snapshot_date = 2026-09-25`). A live
+    intraday run pinned to today therefore matches ZERO of them and falls
+    through to the prior day's EOD chain, while a fan-out child -- which
+    still receives `as_of=None` -- reads them. The same pipeline, the same
+    minute, different data, and nothing in the report says so.
+
+    The freeze is kept; only the mechanism changes. With `as_of=None` and
+    the universe injected, `summarize_backtest_metrics` takes its cutoff
+    from `universe.as_of` (`lib/agents/summarizers.py:1006`), so peers and
+    bars still agree without converting a live run into a replay.
+
+    What this deliberately does NOT restore is the whole-report pin
+    `d01ed78` asked for: across UTC midnight mid-ticker the backtest stays
+    on the frozen date while the live sections move on. That residue is
+    bounded (`_universe_for` re-resolves per ticker, so the window is one
+    ticker's runtime, and the 08:45 ET scheduler never approaches 00:00
+    UTC) and it is disclosed -- `cross_ticker.universe` carries the as_of
+    the peers came from. Silently dropping a session's options data is not.
     """
-    import datetime as _dt
-
-    today = _dt.datetime.now(_dt.timezone.utc).date()
     _drive_batch(monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY"))
-    assert _drive_batch.last_as_of == [today, today], (
-        "the ticker runs were left unpinned, so their sections each read "
-        f"their own clock; got {_drive_batch.last_as_of}"
+    assert _drive_batch.last_as_of == [None, None], (
+        "a live in-process run was pinned to a date-only cutoff; its "
+        "option sections now read `snapshot_date < today` and lose the "
+        f"session, got {_drive_batch.last_as_of}"
+    )
+
+
+def test_the_frozen_universe_still_reaches_every_ticker_unpinned(monkeypatch):
+    """Dropping the `as_of` pin must not drop the freeze with it.
+
+    The universe is what keeps peers and bars on one date; `as_of` was
+    only ever a second, lossier way of saying the same thing.
+    """
+    got, _, today = _drive_batch(
+        monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY")
+    )
+    assert all(u is not None for u in got), "the freeze was lost with the pin"
+    assert {u.as_of for u in got} == {today}, (
+        f"tickers got universes from different dates: {[u.as_of for u in got]}"
     )
 
 
@@ -971,50 +995,16 @@ def test_a_failed_freeze_leaves_as_of_exactly_as_it_was(monkeypatch):
     )
 
 
-def test_a_live_run_is_stamped_at_execution_time_not_at_the_frozen_date(monkeypatch):
-    """Codex P2 on `2d06c20`, and a consequence I called cosmetic.
+def test_an_explicit_as_of_replay_is_still_pinned_to_the_date_it_names(monkeypatch):
+    """The operator's own date is forwarded untouched.
 
-    I justified the midnight stamp as "more honest for a report that IS
-    as-of a date" without checking that `as_of` is half of
-    `insight_reports`' upsert key (`ON CONFLICT (ticker, as_of)`). It is.
-    A live row stamped at midnight therefore collides with a date-only
-    `INSIGHT_AS_OF` replay of the same day, and that replay runs with
-    allow_update and rewrites `run_kind` -- so the live-only reader at
-    `platform/api/routers/insights.py:228` is left serving a stale report
-    or a 404. A midnight row also sorts behind an exact-timestamp fan-out
-    row for the same day and is never served as latest.
-
-    The cutoff stays frozen; only the persisted timestamp goes back to
-    execution time.
+    Dropping the *invented* pin must not drop the *stated* one: a replay
+    is meant to be date-keyed, to own its `(ticker, as_of)` row, and to
+    apply the premarket cutoff -- that is what makes it a replay.
     """
     import datetime as _dt
 
-    today = _dt.datetime.now(_dt.timezone.utc).date()
-    _drive_batch(monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY"))
-
-    assert _drive_batch.last_as_of == [today, today], "the cutoff stopped being frozen"
-    for stamp in _drive_batch.last_stamp:
-        assert isinstance(stamp, _dt.datetime), (
-            f"a live run was not given an execution timestamp: {stamp!r}"
-        )
-        assert (stamp.hour, stamp.minute, stamp.second) != (0, 0, 0), (
-            "the live stamp is midnight, so it collides with a date-only "
-            "replay of the same day on (ticker, as_of)"
-        )
-
-
-def test_an_explicit_as_of_replay_keeps_its_date_keyed_stamp(monkeypatch):
-    """A replay is MEANT to own its date key; do not hand it a live stamp."""
-    import datetime as _dt
-
     named = _dt.date(2026, 5, 8)
-
-    def resolve(cutoff, n):
-        return _membership(cutoff, "SPY")
-
-    _drive_batch(monkeypatch, resolve, as_of_env=named.isoformat())
+    _drive_batch(monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY"),
+                 as_of_env=named.isoformat())
     assert _drive_batch.last_as_of == [named, named]
-    assert _drive_batch.last_stamp == [None, None], (
-        "an as-of replay was given an execution stamp, which would stop it "
-        "owning the (ticker, as_of) row it is supposed to rewrite"
-    )
