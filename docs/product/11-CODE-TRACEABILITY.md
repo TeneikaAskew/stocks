@@ -1,6 +1,6 @@
 # Code Traceability
 
-**Last reviewed:** 2026-08-30
+**Last reviewed:** 2026-08-30 · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 All **26** capability IDs from [02](02-FEATURE-CATALOG.md) appear here — the previous
 revision listed 16 of 22, so Settings, Help, Waitlist, Model, Alert and Ops resolved to no code

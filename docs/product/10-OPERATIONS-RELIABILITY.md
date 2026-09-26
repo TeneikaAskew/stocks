@@ -1,6 +1,6 @@
 # Operations and Reliability Plan
 
-**Last reviewed:** 2026-08-30 · **Owner:** TBD · **Status:** Incomplete
+**Last reviewed:** 2026-08-30 · **Last scanned:** 2026-09-18 · **Owner:** TBD · **Status:** Incomplete
 
 ## What exists today — VERIFIED — CODE
 

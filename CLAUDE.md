@@ -1,5 +1,7 @@
 # Project Instructions for Claude Code
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 ## Project Overview
 This is a stocks/trading application project that includes Google Apps Script components for market data fetching, historical data backfilling, and continuation systems for long-running operations.
 

@@ -1,5 +1,7 @@
 # Prompt: update docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md in place
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 You are an automated documentation agent. Bring the prose of `docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md` up to date **without regenerating the file and without deleting content**.
 
 **Output discipline (read this twice).** The file is `docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md`, given from the repository root: `file_path: "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"`, never a bare `DATA_DEPENDENCIES.md` at the root and never any other directory. Edit that path only with the **`replace`** tool, one prose region at a time, on the exact current text. Never call `write_file` on this document: the rendered blocks are most of its 120 KB and a rewrite of the whole body is exactly the output that kept timing out. Do not create a second copy anywhere. A file written outside the four generated documents fails the run by name and nothing is published — run 15 died exactly that way, having written `docs/DATA_DEPENDENCIES.md`. No stdout output, no preamble, no summary. The workflow gates the file on disk.
