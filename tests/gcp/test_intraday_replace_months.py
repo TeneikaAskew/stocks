@@ -421,3 +421,19 @@ def test_pacing_scales_with_the_task_count(tmp_path, monkeypatch):
     monkeypatch.setattr(fai.time, "time", lambda: 100.0)   # frozen clock
     assert fai.run_replace_months(str(lst), True, None) == 0
     assert waits == [pytest.approx(1.6)]   # 0.4 s x 4 tasks, before the 2nd call
+
+
+
+@pytest.mark.parametrize("held_bars", [1, 2])
+def test_a_sparse_held_session_with_no_refetched_bars_is_refused(held_bars):
+    """Codex P1 on #1185: for a 1-2 bar session the shortfall tolerance let a
+    refetch with zero bars for that day pass, deleting it for good."""
+    with patch.object(fai, "fetch_month",
+                      return_value=(_vendor_month(["2026-09-01"]), fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates",
+                      return_value={date(2026, 9, 1): 1, date(2026, 9, 2): held_bars}), \
+         patch.object(fai, "replace_rows_in_window") as rep:
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_INCOMPLETE
+    assert r["missing"] == [f"2026-09-02 (0/{held_bars})"]
+    rep.assert_not_called()

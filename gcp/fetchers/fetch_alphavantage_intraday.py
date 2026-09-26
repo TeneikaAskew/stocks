@@ -504,9 +504,13 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     # still touches every day, Codex P1 on #1185). REPLACE_SHORT_TOLERANCE
     # absorbs the odd bar AV revises away; anything more leaves the month
     # untouched.
+    # A held session the refetch has NO bars for is always missing: for a
+    # sparse session (1-2 bars) the tolerance alone would let 0 pass, and the
+    # replace would delete it for good (Codex P1 on #1185).
     missing = sorted(
         d for d, n in held.items()
-        if int(fetched.get(d, 0)) < n - max(2, int(n * REPLACE_SHORT_TOLERANCE)))
+        if int(fetched.get(d, 0)) == 0
+        or int(fetched.get(d, 0)) < n - max(2, int(n * REPLACE_SHORT_TOLERANCE)))
     out.update(held_sessions=len(held), missing_sessions=len(missing))
     if not held:
         # Nothing to re-frame: deleting would only remove rows (code review H2).
