@@ -68,12 +68,45 @@ _LOOKS_LIKE_SQL = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE|WHERE)\b", re.IGNO
 
 
 def _files() -> list[Path]:
+    """Python modules and standalone .sql queries (gcp/queries holds production
+    SQL run by jobs and db_query_cr.sh; Codex P2 on #1185)."""
     out = []
     for root in SCAN_ROOTS:
-        for p in (REPO / root).rglob("*.py"):
-            if SKIP_PARTS.isdisjoint(p.relative_to(REPO).parts):
-                out.append(p)
+        for pattern in ("*.py", "*.sql"):
+            for p in (REPO / root).rglob(pattern):
+                if SKIP_PARTS.isdisjoint(p.relative_to(REPO).parts):
+                    out.append(p)
     return sorted(out)
+
+
+def _scan_sql(path: Path) -> list[tuple[str, int, str]]:
+    """sql-utc-date hits in a .sql file, one per statement.
+
+    Comments are stripped before matching (headers here explain the very
+    patterns the rule looks for), and a statement opts out with a
+    ``-- tz-ok: <reason>`` comment anywhere in it. Identity is a hash of the
+    comment-free statement, so re-wording a comment or moving the statement
+    within the file is not a change.
+    """
+    src_lines = path.read_text(encoding="utf-8").split("\n")
+    # Strip comments first, keeping the line structure: a ';' inside a comment
+    # must not split a statement.
+    code_src = "\n".join(ln.split("--", 1)[0] for ln in src_lines)
+    hits = []
+    line = 1
+    for stmt in code_src.split(";"):
+        span = stmt.count("\n")
+        rows = stmt.split("\n")
+        first = line + next((i for i, c in enumerate(rows) if c.strip()), 0)
+        opted_out = any(OPT_OUT in src_lines[i - 1]
+                        for i in range(line, min(line + span, len(src_lines)) + 1))
+        if (_LOOKS_LIKE_SQL.search(stmt) and _SQL_UTC_DATE.search(stmt)
+                and not opted_out):
+            norm = " ".join(stmt.split())
+            hits.append(("sql-utc-date", first,
+                         f"<sql>::sql#{hashlib.sha1(norm.encode()).hexdigest()[:12]}"))
+        line += span
+    return hits
 
 
 def _name(node: ast.AST) -> str:
@@ -191,6 +224,8 @@ def _identity(node: ast.AST, scope: str) -> str:
 
 def _scan(path: Path) -> list[tuple[str, int, str]]:
     """(rule, line, identity) for each hit in *path*."""
+    if path.suffix == ".sql":
+        return _scan_sql(path)
     rel = path.relative_to(REPO).as_posix()
     src = path.read_text(encoding="utf-8")
     try:
@@ -333,6 +368,26 @@ def test_two_sql_strings_that_open_the_same_way_are_distinct(tmp_path, monkeypat
         assert "str#" in str(e)
     else:
         raise AssertionError("a replaced SQL string passed the ratchet")
+
+
+def test_the_guard_scans_standalone_sql_files(tmp_path, monkeypatch):
+    """Codex P2 on #1185: gcp/queries holds production SQL, and a DATE(ts) there
+    bypassed a guard that only read .py files."""
+    q = tmp_path / "gcp" / "queries" / "seeded.sql"
+    q.parent.mkdir(parents=True)
+    q.write_text(
+        "-- Header comments mention DATE(ts) and CURRENT_DATE; not a hit.\n"
+        "SELECT DATE(ts) FROM market_data_intraday WHERE ticker = 'SPY';\n"
+        "SELECT count(*) FROM t WHERE created_at::date = CURRENT_DATE;\n"
+        "-- tz-ok: a UTC log-retention cutoff\n"
+        "DELETE FROM logs WHERE created_at < CURRENT_DATE;\n"
+        "SELECT (ts AT TIME ZONE 'America/New_York')::date FROM market_data_intraday;\n"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
+    assert q in _files()
+    hits = _scan(q)
+    assert [(r, ln) for r, ln, _ in hits] == [("sql-utc-date", 2), ("sql-utc-date", 3)]
+    assert len({i for _, _, i in hits}) == 2
 
 
 def test_the_helper_module_is_the_only_place_eastern_is_built():

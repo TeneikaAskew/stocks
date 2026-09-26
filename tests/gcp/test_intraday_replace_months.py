@@ -481,7 +481,10 @@ def test_replace_locks_then_verifies_before_deleting():
         db.replace_rows_in_window(df, "market_data_intraday",
                                   {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
                                   verify=lambda c: order.append("VERIFY"))
-    assert order[:4] == ["SET", "LOCK", "VERIFY", "DELETE"]
+    # Row locks on this key's window only (SELECT ... FOR UPDATE), never a
+    # table lock that would serialise every migration task and stall writers.
+    assert order[:4] == ["SET", "SELECT", "VERIFY", "DELETE"]
+    assert not any(o == "LOCK" for o in order)
 
 
 def test_a_failed_verify_never_reaches_the_delete():
@@ -692,3 +695,60 @@ def test_run_verify_months_fails_on_an_empty_listed_month(tmp_path, caplog):
                       return_value=pd.DataFrame(columns=["ts", "volume"])):
         assert fai.run_verify_months(str(lst), None) == 1
     assert "VERIFY-FAIL AAA,2026-09 status=empty" in caplog.text
+
+
+# ── Codex P1 on #1185 (7d4d6d0): lock the window's rows, not the table ───────
+
+
+def test_the_lock_is_a_row_lock_on_this_key_and_window():
+    import gcp.database as db
+    engine, conn, tbl = _engine_with(rowcount=1)
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  verify=lambda c: None)
+    sqls = [" ".join(str(c.args[0]).split()) for c in conn.execute.call_args_list]
+    lock = [q for q in sqls if "FOR UPDATE" in q]
+    assert len(lock) == 1
+    assert "ticker = :k_ticker" in lock[0] and "ts >= :w_start AND ts < :w_end" in lock[0]
+    assert not any(q.startswith("LOCK TABLE") for q in sqls)
+
+
+def test_a_row_inserted_after_the_lock_rolls_the_month_back():
+    """A new key committed between the row lock and the DELETE is not a locked
+    row; the DELETE then removes more rows than were locked and verified."""
+    import gcp.database as db
+    engine, conn, tbl = _engine_with(rowcount=0)
+
+    def execute(stmt, *a, **k):
+        q = str(stmt)
+        r = MagicMock()
+        r.scalar_one.return_value = 961          # rows locked and verified
+        r.rowcount = 962 if q.startswith("DELETE") else 0   # one more at DELETE time
+        return r
+    conn.execute.side_effect = execute
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}), \
+         pytest.raises(db.WindowChanged, match="962 rows, 961 were locked"):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  verify=lambda c: None)
+    sqls = [str(c.args[0]) for c in conn.execute.call_args_list]
+    assert not any("INSERT" in q for q in sqls)
+
+
+def test_replace_month_reports_a_window_change_as_changed():
+    def fake_replace(*a, **k):
+        import gcp.database as db
+        raise db.WindowChanged("a writer added rows")
+    with patch.object(fai, "fetch_month",
+                      return_value=(_vendor_month(["2026-09-24"]), fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 1}), \
+         patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_CHANGED

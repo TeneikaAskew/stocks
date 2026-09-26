@@ -30,6 +30,7 @@ from gcp.database import (
     execute_sql,
     is_cloud_sql_configured,
     query_to_dataframe_strict,
+    WindowChanged,
     replace_rows_in_window,
     upsert_dataframe,
 )
@@ -578,7 +579,7 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         out['inserted'] = len(df)
         return out
     def verify(conn) -> None:
-        # Under the write lock: the month must still hold exactly what it held
+        # Under the row locks: the month must still hold exactly what it held
         # before the refetch, in sessions, bar counts and row content. A writer
         # that landed in between would otherwise lose its rows (or its newer
         # values) to the DELETE.
@@ -593,7 +594,7 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
             df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
             'ts', start, end, chunksize=5000,
             max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify)
-    except _HeldChanged as e:
+    except (_HeldChanged, WindowChanged) as e:
         out.update(status=REPLACE_CHANGED, detail=str(e))
         return out
     out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted)

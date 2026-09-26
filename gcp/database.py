@@ -525,6 +525,10 @@ def upsert_dataframe(
     return total
 
 
+class WindowChanged(RuntimeError):
+    """The replace window gained rows between the lock and the DELETE."""
+
+
 def replace_rows_in_window(
     df: pd.DataFrame,
     table: str,
@@ -555,12 +559,19 @@ def replace_rows_in_window(
     insert does not restore.
 
     ``verify``: called as ``verify(conn)`` inside the transaction AFTER the
-    table is locked against writes (SHARE ROW EXCLUSIVE: reads continue,
-    INSERT/UPDATE/DELETE wait, 30 s lock timeout) and BEFORE the DELETE. It
-    re-checks whatever the caller decided from an earlier read and raises if
-    that no longer holds, which rolls everything back. Without it a writer
-    committing between the caller's read and this DELETE loses its rows
-    (Codex P1 on #1185).
+    window's rows are row-locked (``SELECT ... FOR UPDATE``, 30 s lock
+    timeout) and BEFORE the DELETE. It re-checks whatever the caller decided
+    from an earlier read and raises if that no longer holds, which rolls
+    everything back. Without it a writer committing between the caller's read
+    and this DELETE loses its rows (Codex P1 on #1185).
+
+    Only this key's window is locked: updates to those rows wait until
+    commit, then apply on top (newest write wins), and nothing else in the
+    table is blocked. A table lock serialised every parallel migration task
+    against each other and stalled every production writer while a month was
+    swapped (Codex P1 on #1185). A key INSERTED into the window after the lock
+    is not a locked row, so the DELETE must remove exactly the rows locked;
+    any other count raises ``WindowChanged`` and rolls back.
     """
     import sqlalchemy
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -601,6 +612,9 @@ def replace_rows_in_window(
     delete_sql = sqlalchemy.text(
         f"DELETE FROM {tbl.name} WHERE {where} "
         f"AND {ts_col} >= :w_start AND {ts_col} < :w_end")
+    lock_sql = sqlalchemy.text(
+        f"SELECT count(*) FROM (SELECT 1 FROM {tbl.name} WHERE {where} "
+        f"AND {ts_col} >= :w_start AND {ts_col} < :w_end FOR UPDATE) locked")
 
     dropped = [c for c in df.columns if c not in table_cols]
     if dropped:
@@ -612,12 +626,16 @@ def replace_rows_in_window(
     size = _max_safe_chunksize(len(out.columns), chunksize)
 
     with engine.begin() as conn:
+        locked = None
         if verify is not None:
             conn.execute(sqlalchemy.text("SET LOCAL lock_timeout = '30s'"))
-            conn.execute(sqlalchemy.text(
-                f"LOCK TABLE {tbl.name} IN SHARE ROW EXCLUSIVE MODE"))
+            locked = int(conn.execute(lock_sql, params).scalar_one())
             verify(conn)
         deleted = conn.execute(delete_sql, params).rowcount
+        if locked is not None and deleted != locked:
+            raise WindowChanged(
+                f"replace_rows_in_window({table} {key}): DELETE removed {deleted} rows, "
+                f"{locked} were locked and verified; a writer added rows; rolled back")
         if max_delete_ratio is not None and deleted > max_delete_ratio * max(len(records), 1):
             raise ValueError(
                 f"replace_rows_in_window({table} {key}): DELETE removed {deleted} rows "

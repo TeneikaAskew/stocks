@@ -1608,8 +1608,8 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
                 # [D 00:00Z, D+1 02:00Z) holds session D in both stored
                 # conventions (Eastern labels at raw D 04:00-20:00; true UTC
-                # at D 08:00Z .. D+1 01:00Z, the winter 20:00 ET bar). The
-                # caller keeps only rows whose Eastern date is D.
+                # at D 08:00Z .. D+1 01:00Z, the winter 20:00 ET bar). Cut to
+                # Eastern date D below.
                 d0 = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 df = query_to_dataframe(
                     """
@@ -1654,7 +1654,14 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 idx, keep = _intraday_index_to_eastern(df["ts"], df["volume"])
                 df = df[keep]
                 df.index = idx[keep]
-                if len(date) == 6:
+                # Cut to the requested Eastern date/month. The window also holds
+                # the previous session's evening spill (true UTC, raw 00:00-01:00Z),
+                # which converts to D-1; direct callers (replay trades, style
+                # mining) take this frame as is (Codex P2 on #1185).
+                if len(date) == 8:
+                    want = datetime.strptime(date, "%Y%m%d").date()
+                    df = df[df.index.date == want]
+                elif len(date) == 6:
                     df = df[(df.index.year == int(date[:4])) & (df.index.month == int(date[4:6]))]
                 return df.drop(columns=["ts"])
         except Exception as e:

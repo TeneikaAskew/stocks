@@ -211,6 +211,34 @@
    "resolve_one::pd.to_datetime(bars['time'], utc=True)"
   ]
  },
+ "gcp/queries/earnings_reactions_feature_matrix.sql": {
+  "sql-utc-date": [
+   "<sql>::sql#1460dd3bd7cb"
+  ]
+ },
+ "gcp/queries/mark_backfill_provenance_2026-09-14.sql": {
+  "sql-utc-date": [
+   "<sql>::sql#2deff664e634",
+   "<sql>::sql#76aedd919b65",
+   "<sql>::sql#99b9bac5c24c",
+   "<sql>::sql#f71852eb6bdd"
+  ]
+ },
+ "gcp/queries/validate_gamma_proximity.sql": {
+  "sql-utc-date": [
+   "<sql>::sql#a6211e0beb38"
+  ]
+ },
+ "gcp/queries/verify_brief_bias_coverage.sql": {
+  "sql-utc-date": [
+   "<sql>::sql#d76b1c30f720"
+  ]
+ },
+ "gcp/queries/verify_brief_bias_distribution.sql": {
+  "sql-utc-date": [
+   "<sql>::sql#ef4e1de8379d"
+  ]
+ },
  "gcp/refresh_earnings_views.py": {
   "host-today": [
    "refresh_daily::date.today()"
@@ -405,6 +433,11 @@
  "gcp/research/strat_engine/strat_walk_forward_adaptive.py": {
   "host-today": [
    "walk_forward_adaptive::pd.Timestamp.utcnow()"
+  ]
+ },
+ "gcp/schema.sql": {
+  "sql-utc-date": [
+   "<sql>::sql#8c5a6ad188ea"
   ]
  },
  "gcp/signal_monitor.py": {

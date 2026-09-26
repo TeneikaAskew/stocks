@@ -265,3 +265,27 @@ def test_classifier_divides_as_numeric():
     sql = (Path(__file__).resolve().parents[2] / "gcp" / "queries"
            / "classify_intraday_ts_convention.sql").read_text()
     assert sql.count("coalesce(v_et_label, 0)::numeric / v_true_instant") == 2
+
+
+
+# ── Codex P2 on #1185 (7d4d6d0): a single-date load holds only that date ─────
+
+
+def test_a_single_date_load_excludes_the_prior_sessions_spill(monkeypatch):
+    """[D 00:00Z, D+1 02:00Z) also holds D-1's winter 19:00-20:00 ET bars
+    (raw D 00:00-01:00Z). Replay-trades and style mining take this frame
+    directly, so it must hold session D only."""
+    rows = pd.concat([_session("2026-01-14", stored="utc"),
+                      _session("2026-01-15", stored="utc")]).reset_index(drop=True)
+
+    def fake_query(sql, params=None):
+        lo, hi = params["start"], params["end"]
+        return rows[(rows["ts"] >= lo) & (rows["ts"] < hi)].reset_index(drop=True)
+
+    monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
+    monkeypatch.setattr(main_module, "query_to_dataframe", fake_query)
+    df = main_module._load_date_data("spy", "20260115")
+    assert df.index.min() == pd.Timestamp("2026-01-15 04:00")
+    assert df.index.max() == pd.Timestamp("2026-01-15 20:00")
+    assert (df.index.date == pd.Timestamp("2026-01-15").date()).all()
+    assert len(df) == 961
