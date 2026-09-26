@@ -86,6 +86,42 @@ def _name(node: ast.AST) -> str:
     return ""
 
 
+_ALIASABLE = {
+    ("datetime", "datetime"): "datetime.datetime",
+    ("datetime", "date"): "datetime.date",
+    ("pandas", "Timestamp"): "pandas.Timestamp",
+    ("pandas", "Timedelta"): "pandas.Timedelta",
+    ("pandas", "to_datetime"): "pandas.to_datetime",
+    ("datetime", "timedelta"): "datetime.timedelta",
+    ("zoneinfo", "ZoneInfo"): "zoneinfo.ZoneInfo",
+}
+
+
+def _aliases(tree: ast.AST) -> dict[str, str]:
+    """Local name -> canonical dotted name, for ``from X import Y as Z`` and
+    ``import X as Z``, so ``from datetime import datetime as clock`` makes
+    ``clock.now()`` read as ``datetime.datetime.now()`` (Codex P2 on #1185)."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for a in node.names:
+                canon = _ALIASABLE.get((node.module, a.name))
+                if canon and a.asname:
+                    out[a.asname] = canon
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname and a.name in ("datetime", "pandas", "zoneinfo"):
+                    out[a.asname] = a.name
+    return out
+
+
+def _resolve(fn: str, aliases: dict[str, str]) -> str:
+    head, _, rest = fn.partition(".")
+    if head in aliases:
+        return aliases[head] + ("." + rest if rest else "")
+    return fn
+
+
 def _is_none(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is None
 
@@ -143,9 +179,10 @@ def _scan(path: Path) -> list[tuple[str, int, str]]:
     lines = src.splitlines()
     found: list[tuple[str, int]] = []
 
+    aliases = _aliases(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            fn = _name(node.func)
+            fn = _resolve(_name(node.func), aliases)
             short = fn.rsplit(".", 1)[-1]
             kw = {k.arg: k.value for k in node.keywords if k.arg}
             if short == "tz_localize" and (
@@ -306,13 +343,18 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
         "n = datetime.now(tz=None)\n"
         "n = pd.Timestamp.now(None)\n"
         "d = pd.Timestamp.today(tz=None)\n"
+        "from datetime import datetime as clock, date as day\n"
+        "import pandas as p2\n"
+        "n = clock.now()\n"
+        "d = day.today()\n"
+        "n = p2.Timestamp.now()\n"
         "ok4 = datetime.utcnow(\n"
         ")  # tz-ok: opt-out on the closing line of a multi-line call\n"
     )
     monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
     rules = Counter(r for r, _ in _hits(sample))
     assert rules == Counter({"tz-localize-none": 3, "utc-parse": 1, "zone-built-locally": 1,
-                             "fixed-offset": 3, "host-today": 8, "sql-utc-date": 2})
+                             "fixed-offset": 3, "host-today": 11, "sql-utc-date": 2})
 
 
 if __name__ == "__main__":
