@@ -374,29 +374,131 @@ def _source_return_fraction(v) -> Optional[float]:
 
 # ── DB I/O (only the CLI orchestrator calls these) ────────────────────
 
-def fetch_source_rows(engine, start: datetime, end: datetime,
-                      tickers: Optional[list[str]] = None,
-                      strategies: Optional[list[str]] = None) -> pd.DataFrame:
-    """Pull the historical_signals rows that need (re-)evaluation."""
-    from sqlalchemy import text  # local import — not needed for unit tests
+_SOURCE_COLUMNS = """h.ticker, h.entry_time, h.strategy, h.trade_type, h.entry_price,
+               h.return_5min, h.return_15min, h.return_30min, h.return_60min"""
 
-    where = ["entry_time >= :start", "entry_time < :end"]
-    params: dict = {"start": start, "end": end}
+# A historical_signals row with no signal_metrics row. The anti-join probes
+# signal_metrics' primary key, (ticker, entry_time, strategy), once per row in
+# the range and returns only what is missing (#1166).
+_UNSCORED = """NOT EXISTS (SELECT 1 FROM signal_metrics m
+                            WHERE m.ticker = h.ticker
+                              AND m.entry_time = h.entry_time
+                              AND m.strategy = h.strategy)"""
+
+
+def _row_filters(tickers: Optional[list[str]], strategies: Optional[list[str]],
+                 params: dict) -> str:
+    sql = ""
     if tickers:
-        where.append("ticker = ANY(:tickers)")
+        sql += " AND h.ticker = ANY(:tickers)"
         params["tickers"] = [t.upper() for t in tickers]
     if strategies:
-        where.append("strategy = ANY(:strategies)")
+        sql += " AND h.strategy = ANY(:strategies)"
         params["strategies"] = list(strategies)
+    return sql
 
+
+def fetch_source_rows(engine, start: datetime, end: datetime,
+                      tickers: Optional[list[str]] = None,
+                      strategies: Optional[list[str]] = None,
+                      heal_start: Optional[datetime] = None) -> pd.DataFrame:
+    """Pull the historical_signals rows that need (re-)evaluation.
+
+    Every row in [start, end), plus, when `heal_start` is before `start`, the
+    rows in [heal_start, start) that still have no signal_metrics row: a
+    session a previous run read before its writer finished, a failed night,
+    or a late writer (#1166). One query either way.
+    """
+    from sqlalchemy import text  # local import — not needed for unit tests
+
+    params: dict = {"start": start, "end": end}
+    filters = _row_filters(tickers, strategies, params)
+    sql = f"""
+        SELECT {_SOURCE_COLUMNS}
+          FROM historical_signals h
+         WHERE h.entry_time >= :start AND h.entry_time < :end{filters}"""
+    if heal_start is not None and heal_start < start:
+        params["heal_start"] = heal_start
+        sql += f"""
+        UNION ALL
+        SELECT {_SOURCE_COLUMNS}
+          FROM historical_signals h
+         WHERE h.entry_time >= :heal_start AND h.entry_time < :start{filters}
+           AND {_UNSCORED}"""
+    return pd.read_sql(text(sql + "\n         ORDER BY entry_time"), engine, params=params)
+
+
+def find_unscored_rows(engine, start: datetime, end: datetime,
+                       tickers: Optional[list[str]] = None,
+                       strategies: Optional[list[str]] = None) -> pd.DataFrame:
+    """historical_signals rows in [start, end) with no signal_metrics row.
+
+    The coverage check's input (#1166). Returns only the missing rows, so its
+    size tracks the gap, not the table.
+    """
+    from sqlalchemy import text  # local import — not needed for unit tests
+
+    params: dict = {"start": start, "end": end}
+    filters = _row_filters(tickers, strategies, params)
     sql = text(f"""
-        SELECT ticker, entry_time, strategy, trade_type, entry_price,
-               return_5min, return_15min, return_30min, return_60min
-          FROM historical_signals
-         WHERE {' AND '.join(where)}
-         ORDER BY entry_time
+        SELECT h.ticker, h.entry_time, h.strategy
+          FROM historical_signals h
+         WHERE h.entry_time >= :start AND h.entry_time < :end{filters}
+           AND {_UNSCORED}
+         ORDER BY h.entry_time
     """)
     return pd.read_sql(sql, engine, params=params)
+
+
+def _row_keys(df: pd.DataFrame) -> list[tuple]:
+    """(ticker, entry_time, strategy): signal_metrics' primary key."""
+    return list(zip(df["ticker"], pd.to_datetime(df["entry_time"], utc=True),
+                    df["strategy"]))
+
+
+def coverage_gaps(unscored: pd.DataFrame,
+                  selected: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split the rows still unscored after a run into (missed, deferred).
+
+    missed    this run selected the row and did not score it: a ticker with
+              no intraday bars, or a bug. The run fails on these.
+    deferred  this run never saw the row: the writer inserted it after the
+              source query. The next run's heal window selects it.
+
+    Clock-free: "selected" is the source query's own result, so no comparison
+    of the container clock with `inserted_at` is needed.
+    """
+    if unscored.empty:
+        return unscored.iloc[0:0], unscored.iloc[0:0]
+    seen = set(_row_keys(selected)) if not selected.empty else set()
+    hit = pd.Series([k in seen for k in _row_keys(unscored)], index=unscored.index)
+    return unscored[hit], unscored[~hit]
+
+
+def check_coverage(engine, start: datetime, end: datetime, selected: pd.DataFrame,
+                   *, tickers: Optional[list[str]] = None,
+                   strategies: Optional[list[str]] = None) -> int:
+    """Exit status of the coverage check (#1166): 1 when a row this run
+    selected is still not in signal_metrics, else 0."""
+    unscored = find_unscored_rows(engine, start, end, tickers=tickers,
+                                  strategies=strategies)
+    missed, deferred = coverage_gaps(unscored, selected)
+    if not deferred.empty:
+        logger.warning(
+            "coverage: %d rows in [%s, %s) were inserted after this run read "
+            "historical_signals; the next run's heal window selects them",
+            len(deferred), start, end)
+    if not missed.empty:
+        sample = ", ".join(f"{r.ticker} {r.entry_time} {r.strategy}"
+                           for r in missed.head(20).itertuples(index=False))
+        logger.error(
+            "coverage: %d rows this run selected are still not in "
+            "signal_metrics (a ticker with no intraday bars, or a bug): %s",
+            len(missed), sample)
+        return 1
+    logger.info("coverage OK: every row in [%s, %s) this run could see has a "
+                "signal_metrics row", start, end)
+    return 0
 
 
 def fetch_intraday_window(engine, ticker: str, start: datetime,
@@ -494,6 +596,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         "(alternative to --start/--end). Used by the "
                         "nightly scheduler to promote pending → final "
                         "without computing explicit dates.")
+    p.add_argument("--heal-days", type=int, default=None,
+                   help="Historical mode: also score rows from the last N days "
+                        "that have no signal_metrics row yet, then exit 1 if a "
+                        "row this run selected is still unscored. The nightly "
+                        "scheduler passes 7 (#1166).")
     p.add_argument("--lookback-hours", type=int, default=4,
                    help="Rolling mode: how far back to scan for fires (default 4)")
     p.add_argument("--tickers", default="",
@@ -533,6 +640,24 @@ def _resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
     raise ValueError(
         "historical mode requires either --lookback-days N or --start/--end"
     )
+
+
+def _resolve_heal_start(args: argparse.Namespace, start: datetime,
+                        end: datetime) -> Optional[datetime]:
+    """Where the heal window starts, or None when --heal-days is not set.
+
+    The heal range is [end - heal_days, start): rows before the regular window
+    that no run has scored yet (#1166). It never starts inside the window, so
+    a heal shorter than the window adds no rows, and the coverage check covers
+    [heal_start, end) either way.
+    """
+    if args.heal_days is None:
+        return None
+    if args.mode != "historical":
+        raise ValueError("--heal-days applies to --mode=historical only")
+    if args.heal_days < 1:
+        raise ValueError(f"--heal-days must be at least 1, got {args.heal_days}")
+    return min(end - timedelta(days=args.heal_days), start)
 
 
 def _slice_intraday(
@@ -634,9 +759,12 @@ def process_ticker_batch(
 
 def build_quality_report_embed(
     start: datetime, end: datetime, mode: str,
-    processed: int, upserted: int, counts: dict,
+    processed: int, upserted: int, counts: dict, healed: int = 0,
 ) -> dict:
     """Build the Discord summary embed for a quality-report run.
+
+    `healed` is how many of the processed signals came from before the window
+    through the nightly heal (#1166); the line is omitted when it is 0.
 
     Pure function — no I/O, testable in isolation (per this module's
     hermetic-testable contract). `counts` is keyed by the labels from
@@ -667,7 +795,9 @@ def build_quality_report_embed(
             f"Window **{start:%Y-%m-%d} → {end:%Y-%m-%d}** · mode `{mode}`\n"
             f"Processed **{processed}** signals · {upserted} upserted to "
             f"`signal_metrics`\n"
-            f"Clean rate **{clean_rate:.1f}%** ({clean}/{decided} decided)\n\n"
+            + (f"Healed **{healed}** unscored signals from before the window\n"
+               if healed else "")
+            + f"Clean rate **{clean_rate:.1f}%** ({clean}/{decided} decided)\n\n"
             + '\n'.join(lines)
         ),
         'color': (0x2ecc71 if clean_rate >= 50
@@ -685,6 +815,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         start, end = _resolve_window(args)
+        heal_start = _resolve_heal_start(args, start, end)
     except ValueError as e:
         logger.error("invalid CLI args: %s", e)
         return 2
@@ -702,13 +833,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         "fetching source rows: %s → %s tickers=%s strategy=%s",
         start, end, tickers or "ALL", args.strategy,
     )
-    src = fetch_source_rows(engine, start, end, tickers=tickers, strategies=strategies)
-    logger.info("loaded %d source rows across %d tickers",
-                len(src), src["ticker"].nunique() if not src.empty else 0)
+    src = fetch_source_rows(engine, start, end, tickers=tickers,
+                            strategies=strategies, heal_start=heal_start)
+    healed = 0
+    if heal_start is not None and not src.empty:
+        healed = int((pd.to_datetime(src["entry_time"], utc=True)
+                      < pd.Timestamp(start)).sum())
+    logger.info("loaded %d source rows across %d tickers (%d healed from [%s, %s))",
+                len(src), src["ticker"].nunique() if not src.empty else 0,
+                healed, heal_start or start, start)
     if src.empty:
         logger.info("nothing to evaluate")
-        return 0
+    else:
+        _evaluate_and_report(engine, src, start, end, args, healed)
 
+    if heal_start is None or args.dry_run:
+        return 0
+    return check_coverage(engine, heal_start, end, src,
+                          tickers=tickers, strategies=strategies)
+
+
+def _evaluate_and_report(engine, src: pd.DataFrame, start: datetime,
+                         end: datetime, args: argparse.Namespace,
+                         healed: int) -> None:
+    """Score `src` per ticker, upsert, and post the Discord summary."""
     # Per-ticker batched processing — bounded memory, observable
     # progress, ONE intraday query per ticker (not per signal).
     total_processed = 0
@@ -724,8 +872,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             aggregate_counts[k] = aggregate_counts.get(k, 0) + v
 
     logger.info(
-        "DONE processed=%d upserted=%d classifications=%s",
-        total_processed, total_upserted, aggregate_counts,
+        "DONE processed=%d upserted=%d healed=%d classifications=%s",
+        total_processed, total_upserted, healed, aggregate_counts,
     )
 
     # Post a single summary embed to the dedicated signals channel
@@ -735,15 +883,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     if webhook and not args.dry_run:
         embed = build_quality_report_embed(
             start, end, args.mode,
-            total_processed, total_upserted, aggregate_counts,
+            total_processed, total_upserted, aggregate_counts, healed=healed,
         )
         try:
             requests.post(webhook, json={'embeds': [embed]}, timeout=10)
             logger.info("quality report summary posted to Discord")
         except Exception as e:
             logger.warning("quality report Discord post failed: %s", e)
-
-    return 0
 
 
 if __name__ == "__main__":

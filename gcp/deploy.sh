@@ -4833,16 +4833,27 @@ deploy_schedulers() {
     # gcp/audit_infra_drift.py::check_scheduler_state now flags any
     # scheduler left PAUSED so a repeat is visible within a day.
 
-    # Nightly: --mode=historical promotes rolling 'pending' rows to
-    # 'final'. Tue-Sat 01:00 ET so it runs AFTER historical-signals-
-    # watchlist (which Cloud Scheduler doesn't have a strict ordering
-    # for, but in practice the watchlist iterator finishes by 22:00 ET).
-    # --lookback-days=2 covers any signal whose 240m (=4h) window
-    # closed in the last day; 2 days is paranoid headroom against DST
-    # edges and weekend gaps.
+    # Nightly: --mode=historical scores the sessions its writer,
+    # historical-signals-watchlist-daily, added. That writer fires at
+    # 01:00 ET Tue-Sat and took 1.5-2 min on each run 2026-09-19..26.
+    # This used to fire at 01:00 too, on the claim that the writer
+    # "finishes by 22:00 ET", so it read historical_signals before the
+    # session was written (#1166). The 2-day window picked a Mon-Thu
+    # session up the next night; Friday's fell out of Tuesday's window
+    # and was never scored (0 of 20,323 Friday rows over 120 days).
+    # 01:30 puts it after the writer, and --heal-days=7 does not depend
+    # on the clock: it also scores any unscored row from the last week (a
+    # late writer, a failed night), then exits 1 if a row it selected is
+    # still missing. --lookback-days=2 keeps each session's second pass.
+    # The alarm below reads signal_metrics at 02:00, after this run.
+    # _schedule_with_args only creates; a live entry is changed with
+    #   gcloud scheduler jobs update http signal-quality-report-nightly \
+    #     --location us-east1 --schedule "30 1 * * 2-6" \
+    #     --update-headers "Content-Type=application/json" --message-body \
+    #     '{"overrides":{"containerOverrides":[{"args":["--mode=historical","--lookback-days=2","--heal-days=7"]}]}}'
     _schedule_with_args "signal-quality-report-nightly" \
-        "0 1 * * 2-6" "signal-quality-report" \
-        "--mode=historical" "--lookback-days=2"
+        "30 1 * * 2-6" "signal-quality-report" \
+        "--mode=historical" "--lookback-days=2" "--heal-days=7"
 
     # Phase 0.5 spec item #6 — clean-rate regression alarm.
     # Daily 02:00 ET, after the nightly historical run promotes rolling

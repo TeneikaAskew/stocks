@@ -40,7 +40,7 @@ All scheduled jobs run via Cloud Scheduler against Cloud Run Jobs in `us-east1`.
 | Mon–Fri 19:30 | 23:30 | `daily-earnings-refresh-reactions` | `earnings_reactions` |
 | **Mon–Fri 23:00** | **03:00 next-day** | **`fetch-market-data-daily`** | `market_data_daily` (OHLCV + 30+ indicators for SPY/IWM/QQQ/SPX + watchlist + earnings union) |
 | Mon–Fri 23:00 | 03:00 next-day | `evaluate-ew-strikes-daily` | `earnings_calendar.ew_strike_verdict` |
-| Mon–Fri 01:00 | 05:00 | `signal-quality-report-nightly` | Quality alarms |
+| Tue–Sat 01:30 | 05:30 | `signal-quality-report-nightly` | `signal_metrics` (after `historical-signals-watchlist-daily` at 01:00, #1166) |
 | Sun 19:00 | 23:00 | `weekly-earnings-refresh-calendar` | `earnings_calendar` |
 | **Sun 19:15** | **23:15** | **`weekly-earnings-refresh-history`** | `earnings_history` (10y of quarterly EPS for tickers reporting in next N days) |
 | Sun 19:30 | 23:30 | `weekly-earnings-refresh-reactions` | `earnings_reactions` |

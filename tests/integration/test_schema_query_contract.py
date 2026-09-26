@@ -255,3 +255,50 @@ def test_persist_report_real_schema(clean_db, run_sql):
     assert len(df) == 1, "ON CONFLICT failed — duplicate report rows"
     assert df["report_md"].iloc[0] == "# Report v2\n"
     assert list(df["tickers"].iloc[0]) == ["SPY", "IWM"]
+
+
+def test_signal_quality_heal_and_coverage_queries_real_schema(clean_db, seed):
+    """#1166 against the real schema, through the production functions.
+
+    Tuesday's nightly run: its 2-day window starts on Sunday, so Friday's
+    session (written by the Saturday writer after the Saturday report had
+    read) is reachable only through the heal window. The source query must
+    select Friday's unscored row and Monday's window row, skip Thursday's row
+    that already has a signal_metrics row, and stop at the heal boundary.
+    The coverage query must return exactly the rows still unscored.
+    """
+    import pandas as pd
+
+    from scripts.signal_quality_report import fetch_source_rows, find_unscored_rows
+
+    tue = datetime(2026, 9, 29, 5, 30, tzinfo=timezone.utc)
+    start, end, heal_start = tue - timedelta(days=2), tue, tue - timedelta(days=7)
+    at = {
+        "fri_unscored": datetime(2026, 9, 25, 19, 0, tzinfo=timezone.utc),
+        "thu_scored": datetime(2026, 9, 24, 18, 0, tzinfo=timezone.utc),
+        "mon_in_window": datetime(2026, 9, 28, 18, 0, tzinfo=timezone.utc),
+        "before_heal": datetime(2026, 9, 21, 18, 0, tzinfo=timezone.utc),
+    }
+    seed("historical_signals", [
+        {"ticker": "SPY", "entry_time": ts, "trade_type": "call",
+         "strategy": "momentum", "entry_price": 500.0, "return_5min": 0.1,
+         "return_15min": 0.2, "return_30min": 0.3, "return_60min": 0.4}
+        for ts in at.values()])
+    seed("signal_metrics", [{"ticker": "SPY", "entry_time": at["thu_scored"],
+                             "strategy": "momentum"}])
+
+    def times(df):
+        return sorted(pd.to_datetime(df["entry_time"], utc=True))
+
+    def expect(*keys):
+        return sorted(pd.Timestamp(at[k]) for k in keys)
+
+    healed = fetch_source_rows(clean_db, start, end, heal_start=heal_start)
+    assert times(healed) == expect("fri_unscored", "mon_in_window")
+
+    # Without a heal window the query is today's: the window only.
+    assert times(fetch_source_rows(clean_db, start, end)) == expect("mon_in_window")
+
+    unscored = find_unscored_rows(clean_db, heal_start, end)
+    assert times(unscored) == expect("fri_unscored", "mon_in_window")
+    assert {"ticker", "entry_time", "strategy"} <= set(unscored.columns)
