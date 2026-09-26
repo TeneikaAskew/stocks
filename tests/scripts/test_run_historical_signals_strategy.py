@@ -341,3 +341,30 @@ def test_market_analyzer_sees_eastern_clock_and_entry_time_is_an_instant(monkeyp
     assert rhs._process_ticker("SPY", args) == 0
     assert seen["first_open"] == pd.Timestamp("2026-01-15 09:30")
     assert captured["df"]["entry_time"].iloc[0] == pd.Timestamp("2026-01-15 14:30", tz="UTC")
+
+
+
+@pytest.mark.parametrize("stored", ["et_label", "utc"])
+def test_load_intraday_bars_fetches_a_window_in_both_conventions(monkeypatch, stored):
+    """Codex P1 on #1185 (1c80007): signal_quality_report asks for
+    [12:30Z, 15:35Z) around a 14:30Z (09:30 EST) signal. Legacy rows for those
+    instants sit at raw 07:30-10:35Z, outside the instant window; the raw
+    window must open at start's Eastern label and the result is cut back."""
+    import gcp.historical_signals as hs
+    rows = _av_session("2026-01-15", stored)
+    seen = {}
+
+    def fake_read_sql(sql, engine, params=None):
+        seen.update(params)
+        m = (rows["Time"] >= params["start"]) & (rows["Time"] < params["end"])
+        return rows[m].reset_index(drop=True)
+
+    monkeypatch.setattr(hs, "get_engine", lambda: object())
+    monkeypatch.setattr(hs.pd, "read_sql", fake_read_sql)
+    lo = datetime(2026, 1, 15, 12, 30, tzinfo=timezone.utc)
+    hi = datetime(2026, 1, 15, 15, 35, tzinfo=timezone.utc)
+    bars = hs.load_intraday_bars("SPY", lo, hi)
+    assert bars["Time"].min() == pd.Timestamp(lo)
+    assert bars["Time"].max() == pd.Timestamp("2026-01-15 15:34", tz="UTC")
+    assert len(bars) == 185
+    assert seen["start"] == pd.Timestamp("2026-01-15 07:30", tz="UTC")

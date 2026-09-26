@@ -21,7 +21,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from gcp.database import get_engine
-from lib.eastern_time import eastern_index_to_utc, stored_intraday_to_eastern
+from lib.eastern_time import eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive
 
 logger = logging.getLogger(__name__)
 
@@ -291,11 +291,19 @@ def load_intraday_bars(
     ``end`` defaults to NOW(). ``start`` is inclusive, ``end`` exclusive.
     """
     engine = get_engine()
-    params = {'t': ticker.upper(), 'start': start}
+    lo = _as_utc(start)
+    hi = _as_utc(end) if end is not None else None
+    # A bar at instant I is stored at I (true UTC) or at I's Eastern wall
+    # clock, 4-5 h EARLIER (legacy label). So the raw window opens at
+    # ``start`` read as an Eastern label and the converted Time is cut back to
+    # [start, end) below. Binding the instants directly never fetched legacy
+    # rows, leaving signal_quality_report's windows empty (Codex P1 on #1185).
+    params = {'t': ticker.upper(),
+              'start': utc_to_eastern_naive(pd.DatetimeIndex([lo]))[0].tz_localize('UTC')}
     where = 'ticker = :t AND ts >= :start'
-    if end is not None:
+    if hi is not None:
         where += ' AND ts < :end'
-        params['end'] = end
+        params['end'] = hi
 
     sql = text(f"""
         SELECT ts AS "Time",
@@ -314,4 +322,14 @@ def load_intraday_bars(
     idx, keep = stored_intraday_to_eastern(df['Time'], df['Volume'])
     df = df.loc[keep].copy()
     df['Time'] = eastern_index_to_utc(idx[keep])
-    return df.sort_values('Time').reset_index(drop=True)
+    inside = df['Time'] >= lo
+    if hi is not None:
+        inside &= df['Time'] < hi
+    return df.loc[inside].sort_values('Time').reset_index(drop=True)
+
+
+def _as_utc(value) -> pd.Timestamp:
+    """A bound as an aware UTC instant. A naive bound is read as UTC, the
+    session zone of the TIMESTAMPTZ it is compared against."""
+    t = pd.Timestamp(value)
+    return t.tz_localize('UTC') if t.tzinfo is None else t.tz_convert('UTC')
