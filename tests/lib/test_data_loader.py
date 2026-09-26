@@ -645,3 +645,47 @@ class TestLoadIntradayFromSqlClock:
         assert df.loc[pd.Timestamp("2026-09-24 09:30"), "Volume"] == 5000
         assert df["Close"].is_monotonic_increasing
         assert "ts" not in df.columns
+
+
+class TestLoadIntradayFromSqlBounds:
+    """Codex P2 on #1185: the bounds are Eastern dates. Bound straight to
+    TIMESTAMPTZ they read as UTC, so an EST request for D pulled in D-1's
+    19:00-20:00 ET spill (raw D 00:00-01:00Z) and lost D's own."""
+
+    @staticmethod
+    def _true_utc(day: str) -> pd.DataFrame:
+        wall = pd.date_range(f"{day} 04:00", f"{day} 20:00", freq="1min")
+        minute = wall.hour * 60 + wall.minute
+        return pd.DataFrame({
+            "ts": wall.tz_localize("America/New_York").tz_convert("UTC"),
+            "Open": 1.0, "High": 1.0, "Low": 1.0, "Close": 1.0,
+            "Volume": [5000 if 570 <= m < 600 else 100 for m in minute],
+        })
+
+    def test_an_est_day_request_returns_exactly_that_session(self, loader, monkeypatch):
+        import lib.data_loader as dl
+        rows = pd.concat([self._true_utc("2026-01-14"), self._true_utc("2026-01-15"),
+                          self._true_utc("2026-01-16")]).reset_index(drop=True)
+        seen = {}
+
+        def fake_sql(sql, params=None):
+            seen.update(params)
+            m = (rows["ts"] >= params["start"]) & (rows["ts"] <= params["end"])
+            return rows[m].copy()
+
+        monkeypatch.setattr(dl, "_cloud_sql_active", lambda: True)
+        monkeypatch.setattr(dl, "_query_cloud_sql", fake_sql)
+        df = loader.load_intraday("SPY", "2026-01-15", "2026-01-16")
+        assert df.index.min() == pd.Timestamp("2026-01-15 04:00")
+        assert df.index.max() == pd.Timestamp("2026-01-15 20:00")
+        assert len(df) == 961
+        # Raw window: D as a label, through D+1 00:00 ET as an instant.
+        assert seen["start"] == pd.Timestamp("2026-01-15 00:00", tz="UTC")
+        assert seen["end"] == pd.Timestamp("2026-01-16 05:00", tz="UTC")
+
+    def test_an_aware_bound_is_converted_not_relabelled(self):
+        import lib.data_loader as dl
+        assert dl._eastern_bound(pd.Timestamp("2026-07-15 13:30", tz="UTC")) == \
+            pd.Timestamp("2026-07-15 09:30")
+        assert dl._eastern_bound("2026-07-15") == pd.Timestamp("2026-07-15")
+        assert dl._eastern_bound(None) is None

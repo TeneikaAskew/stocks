@@ -539,12 +539,12 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/live/status` | [`platform/api/routers/live.py:174`](../../../platform/api/routers/live.py#L174) | Return current market open/closed status based on Eastern Time. |
 | `GET` | `/api/magnitude/{ticker}/{tf}/at/{ts}` | [`platform/api/routers/magnitude.py:183`](../../../platform/api/routers/magnitude.py#L183) | Return the prediction for exactly this (ticker, tf, ts). |
 | `GET` | `/api/magnitude/{ticker}/{tf}/latest` | [`platform/api/routers/magnitude.py:129`](../../../platform/api/routers/magnitude.py#L129) | Return the most-recent prediction for this (ticker, tf). |
-| `GET` | `/api/market/coverage` | [`platform/api/main.py:1233`](../../../platform/api/main.py#L1233) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
-| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:907`](../../../platform/api/main.py#L907) | Load intraday OHLCV data for a specific ticker and date. |
+| `GET` | `/api/market/coverage` | [`platform/api/main.py:1231`](../../../platform/api/main.py#L1231) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
+| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:905`](../../../platform/api/main.py#L905) | Load intraday OHLCV data for a specific ticker and date. |
 | `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:607`](../../../platform/api/main.py#L607) | List available trading dates for a ticker (Cloud SQL → local fallback). |
-| `GET` | `/api/market/most-active` | [`platform/api/main.py:1512`](../../../platform/api/main.py#L1512) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
-| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1063`](../../../platform/api/main.py#L1063) | Get previous day OHLC reference levels for support/resistance. |
-| `GET` | `/api/market/sectors` | [`platform/api/main.py:1404`](../../../platform/api/main.py#L1404) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
+| `GET` | `/api/market/most-active` | [`platform/api/main.py:1510`](../../../platform/api/main.py#L1510) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
+| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1061`](../../../platform/api/main.py#L1061) | Get previous day OHLC reference levels for support/resistance. |
+| `GET` | `/api/market/sectors` | [`platform/api/main.py:1402`](../../../platform/api/main.py#L1402) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
 | `GET` | `/api/me` | [`platform/api/main.py:282`](../../../platform/api/main.py#L282) | Return the authenticated identity + role flags. |
 | `GET` | `/api/me/preferences` | [`platform/api/routers/preferences.py:132`](../../../platform/api/routers/preferences.py#L132) |  |
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../../../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |

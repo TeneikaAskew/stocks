@@ -746,20 +746,18 @@ def get_available_dates(ticker: str):
                     """
                     -- Session dates in BOTH stored conventions (CLAUDE.md 3.9):
                     -- Eastern labels sit at raw 04:00-20:00 of their own date,
-                    -- true UTC at raw 08:00Z-23:59Z plus the 20:00 ET bar at
-                    -- 00:00Z (EDT) / 01:00Z (EST) of the next date. So a
-                    -- session is a weekday raw date with rows at raw hour 4 or
-                    -- later. Plain DATE(ts) listed the spill: a Saturday after
-                    -- every Friday, a holiday after every holiday eve (Codex P2
-                    -- on #1185). Same rule as the migration's
-                    -- _held_session_dates.
-                    SELECT (ts AT TIME ZONE 'UTC')::date AS trade_date  -- tz-ok: raw label date, either convention
+                    -- true UTC at raw 08:00Z-23:59Z plus its last bars at
+                    -- 00:00Z-01:00Z of the NEXT date. Raw hours 0-3 therefore
+                    -- only ever hold the previous session's spill, so shifting
+                    -- every raw stamp back 4 h puts each row on its session's
+                    -- date. Plain DATE(ts) listed the spill as a Saturday after
+                    -- every Friday (Codex P2 on #1185); dropping raw hours 0-3
+                    -- instead lost a session whose only retained bars were that
+                    -- spill (Codex P2 on #1185, 68ee4ea).
+                    SELECT DISTINCT ((ts AT TIME ZONE 'UTC') - interval '4 hours')::date AS trade_date  -- tz-ok: raw label shifted to its session, either convention
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
-                    GROUP BY 1
-                    HAVING count(*) FILTER (
-                        WHERE extract(hour FROM ts AT TIME ZONE 'UTC') >= 4) > 0
-                       AND extract(isodow FROM (ts AT TIME ZONE 'UTC')::date) < 6
+                      AND extract(isodow FROM ((ts AT TIME ZONE 'UTC') - interval '4 hours')::date) < 6
                     ORDER BY trade_date DESC
                     """,
                     {"ticker": ticker_upper},

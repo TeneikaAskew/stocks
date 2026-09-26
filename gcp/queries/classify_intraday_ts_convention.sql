@@ -25,6 +25,13 @@
 -- intraday bars by ~190 bp on 2024 dates under BOTH readings (consistent
 -- with dividend adjustment), so it cannot arbitrate.
 --
+-- Scope: SPY, QQQ, IWM only. Reading every row of every ticker does not fit a
+-- statement timeout (1/16 of the catch-all partition alone timed out at
+-- 540 s). The all-ticker check after the re-framing migration is
+--   python -m gcp.fetchers.fetch_alphavantage_intraday --verify-months <list>
+-- with the list regenerated from the table by list_intraday_ticker_months.sql,
+-- so a month the migration manifest omitted is checked too (Codex P1 on #1185).
+--
 -- Usage (read-only):
 --   ./scripts/db_query_cr.sh -f gcp/queries/classify_intraday_ts_convention.sql --timeout 300
 WITH per_session AS (
@@ -54,8 +61,10 @@ SELECT ticker, d AS session_date, v_true_instant, v_et_label,
        CASE
          WHEN coalesce(v_true_instant, 0) + coalesce(v_et_label, 0) = 0 THEN 'no-open-bars'
          WHEN coalesce(v_true_instant, 0) = 0 THEN 'ET-as-UTC'
-         WHEN coalesce(v_et_label, 0) / v_true_instant > 1.5 THEN 'ET-as-UTC'
-         WHEN coalesce(v_et_label, 0) / v_true_instant < 0.2 THEN 'true-UTC'
+         -- numeric: volume is BIGINT, and integer division turned a 0.5
+         -- ratio into 0 (true-UTC) and 1.8 into 1 (mixed) (Codex P1 on #1185).
+         WHEN coalesce(v_et_label, 0)::numeric / v_true_instant > 1.5 THEN 'ET-as-UTC'
+         WHEN coalesce(v_et_label, 0)::numeric / v_true_instant < 0.2 THEN 'true-UTC'
          ELSE 'mixed'
        END AS convention
 FROM per_session

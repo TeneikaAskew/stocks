@@ -623,3 +623,61 @@ def test_a_dry_run_takes_no_digest():
         r = fai.replace_month("SPY", 2026, 9, "k", commit=False)
     assert r["status"] == fai.REPLACE_DRY
     dig.assert_not_called()
+
+
+# ── Codex P1 on #1185 (68ee4ea): an all-ticker verification pass ─────────────
+
+
+def _stored_month_rows(conv: str, days=("2026-09-23", "2026-09-24")) -> pd.DataFrame:
+    frames = []
+    for d in days:
+        wall = pd.date_range(f"{d} 04:00", f"{d} 20:00", freq="1min")
+        minute = wall.hour * 60 + wall.minute
+        vol = [5000 if 570 <= m < 600 else 100 for m in minute]
+        c = conv if conv != "mixed" else ("utc" if d == days[0] else "et_label")
+        ts = (wall.tz_localize("UTC") if c == "et_label"
+              else wall.tz_localize("America/New_York").tz_convert("UTC"))
+        frames.append(pd.DataFrame({"ts": ts, "volume": vol}))
+    return pd.concat(frames).reset_index(drop=True)
+
+
+@pytest.mark.parametrize("conv,status", [("utc", "clean"), ("et_label", "legacy"),
+                                         ("mixed", "legacy")])
+def test_verify_month_flags_any_legacy_rows(conv, status):
+    with patch.object(fai, "query_to_dataframe_strict", return_value=_stored_month_rows(conv)):
+        r = fai.verify_month("ZZZ", 2026, 9)
+    assert r["status"] == status
+    assert (r["label_rows"] == 0) == (status == "clean")
+
+
+def test_verify_month_flags_a_collided_session():
+    """Both writers touched one session: legacy premarket labels survive beside
+    the true-UTC rows. The reader drops them, and the month is not clean."""
+    true = _stored_month_rows("utc", days=("2026-09-22",))
+    stale = true.head(0)
+    wall = pd.date_range("2026-09-22 04:00", "2026-09-22 07:59", freq="1min")
+    stale = pd.DataFrame({"ts": wall.tz_localize("UTC"), "volume": 100})
+    with patch.object(fai, "query_to_dataframe_strict",
+                      return_value=pd.concat([true, stale]).reset_index(drop=True)):
+        r = fai.verify_month("SPY", 2026, 9)
+    assert r["status"] == "legacy"
+    assert r["dropped_rows"] == 240
+
+
+def test_run_verify_months_fails_on_any_legacy_month(tmp_path, caplog):
+    lst = tmp_path / "l.csv"
+    lst.write_text("ticker,month\nAAA,2026-09\nBBB,2026-09\n")
+    rows = {"AAA": _stored_month_rows("utc"), "BBB": _stored_month_rows("et_label")}
+    with patch.object(fai, "query_to_dataframe_strict",
+                      side_effect=lambda sql, params, **k: rows[params["t"]]):
+        rc = fai.run_verify_months(str(lst), None)
+    assert rc == 1
+    assert "VERIFY-FAIL BBB,2026-09" in caplog.text
+    assert "VERIFY-FAIL AAA" not in caplog.text
+
+
+def test_run_verify_months_passes_when_all_clean(tmp_path):
+    lst = tmp_path / "l.csv"
+    lst.write_text("AAA,2026-09\n")
+    with patch.object(fai, "query_to_dataframe_strict", return_value=_stored_month_rows("utc")):
+        assert fai.run_verify_months(str(lst), None) == 0

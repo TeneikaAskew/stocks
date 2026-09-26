@@ -21,7 +21,18 @@ from pathlib import Path
 from typing import Optional, Dict
 import warnings
 
-from lib.eastern_time import stored_intraday_to_eastern
+from lib.eastern_time import ET_NAME, eastern_index_to_utc, stored_intraday_to_eastern
+
+
+def _eastern_bound(value) -> Optional[pd.Timestamp]:
+    """A caller's bound as naive Eastern wall clock (None passes through).
+    An aware value is an instant and is converted, never relabelled."""
+    if value is None or value == '':
+        return None
+    t = pd.Timestamp(value)
+    if t.tzinfo is not None:
+        t = t.tz_convert(ET_NAME).tz_localize(None)  # tz-ok: converted to Eastern first
+    return t
 warnings.filterwarnings('ignore')
 
 log = logging.getLogger(__name__)
@@ -305,15 +316,27 @@ class DataLoader:
         start_date: Optional[str],
         end_date: Optional[str],
     ) -> pd.DataFrame:
-        """Query market_data_intraday from Cloud SQL and normalize to local format."""
+        """Query market_data_intraday from Cloud SQL and normalize to local format.
+
+        ``start_date`` / ``end_date`` are Eastern wall-clock bounds (a bare date
+        is its Eastern midnight), inclusive, like the index this returns. A bar
+        at Eastern time t is stored at raw t (legacy label) or at t's UTC
+        instant (true UTC), which is never earlier; so the raw window runs from
+        ``start`` read as a label to ``end`` converted as an instant, and the
+        converted index is cut back to the bounds. Binding the Eastern strings
+        straight to TIMESTAMPTZ read them as UTC: an EST request for D pulled in
+        D-1's 19:00-20:00 ET spill and lost D's own (Codex P2 on #1185).
+        """
         params: dict = {'ticker': ticker.upper(), 'interval': '1min'}
         where = "WHERE ticker = :ticker AND interval = :interval"
-        if start_date:
+        lo = _eastern_bound(start_date)
+        hi = _eastern_bound(end_date)
+        if lo is not None:
             where += " AND ts >= :start"
-            params['start'] = start_date
-        if end_date:
+            params['start'] = lo.tz_localize('UTC')  # the raw label reading, the earlier one
+        if hi is not None:
             where += " AND ts <= :end"
-            params['end'] = end_date
+            params['end'] = eastern_index_to_utc(pd.DatetimeIndex([hi]))[0]
 
         sql = f"""
             SELECT ts, open AS "Open", high AS "High", low AS "Low",
@@ -334,6 +357,10 @@ class DataLoader:
         # zone instead handed true-UTC rows out as naive UTC: a 09:30 ET bar
         # read as 13:30 and 'RTH' became 05:30-12:00 ET (Codex P1 on #1185).
         idx, keep = stored_intraday_to_eastern(df['ts'], df['Volume'])
+        if lo is not None:
+            keep &= (idx >= lo)
+        if hi is not None:
+            keep &= (idx <= hi)
         df = df.loc[keep].drop(columns='ts')
         df.index = idx[keep]
         df = df.sort_index()

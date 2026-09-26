@@ -636,8 +636,10 @@ whether the win still holds.
 > - **Data (pending, gated):** `fetch_alphavantage_intraday --replace-months`
 >   refetches each ticker-month from AV and swaps it in one transaction.
 >   A relabel in SQL cannot restore the bars that were overwritten. The list
->   comes from `gcp/queries/list_intraday_ticker_months.sql`, and
->   `gcp/queries/classify_intraday_ts_convention.sql` verifies the result.
+>   comes from `gcp/queries/list_intraday_ticker_months.sql`. Verify with
+>   `--verify-months` over a list regenerated from the table (every ticker,
+>   read-only, no vendor calls); `gcp/queries/classify_intraday_ts_convention.sql`
+>   is the SPY/QQQ/IWM spot check only.
 > - **Readers (pending, after the data):** until then converting
 >   unconditionally still CORRUPTS the ET-framed rows (4-5 hours early). An
 >   attempt was reverted for exactly this reason (#992). Keep the existing

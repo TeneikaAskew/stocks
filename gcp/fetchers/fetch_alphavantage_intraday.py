@@ -685,6 +685,77 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
         return 1
     return 0
 
+def verify_month(symbol: str, year: int, month: int) -> dict:
+    """Is one ticker-month fully in the true-UTC convention?
+
+    Reads the month's window (the same read replace_month's snapshot does)
+    and runs it through stored_intraday_to_eastern. A migrated month reads
+    every row as a true instant and drops nothing; a row read as an Eastern
+    label, or a duplicate left where both writers met, means the month still
+    holds legacy data. No vendor call.
+
+    Blind spot, by construction: a flat-volume legacy slice confined to one
+    ambiguous stretch (no premarket label rows, no opening spike, under half a
+    regular session) reads as true UTC here too, as it does in the reader
+    (see the reply on #1185). Every month in the migration list either
+    reached ``replaced`` or is on the RETRY list, which is the check for those.
+    """
+    start, end = month_replace_window(year, month)
+    df = query_to_dataframe_strict(
+        "SELECT ts, volume FROM market_data_intraday "
+        "WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e",
+        {'t': symbol, 's': start, 'e': end}, timeout_s=120)
+    out = {'symbol': symbol, 'month': f"{year}-{month:02d}", 'rows': len(df),
+           'label_rows': 0, 'dropped_rows': 0}
+    if df.empty:
+        out['status'] = 'empty'
+        return out
+    inst = pd.DatetimeIndex(pd.to_datetime(df['ts']))
+    if inst.tz is None:
+        inst = inst.tz_localize('UTC')  # pg8000 TIMESTAMPTZ read in a UTC session
+    idx, keep = stored_intraday_to_eastern(inst, df['volume'])
+    out['label_rows'] = int((idx != utc_to_eastern_naive(inst)).sum())
+    out['dropped_rows'] = int((~keep).sum())
+    out['status'] = 'clean' if not (out['label_rows'] or out['dropped_rows']) else 'legacy'
+    return out
+
+
+def run_verify_months(path: str, limit: Optional[int]) -> int:
+    """Verify every listed ticker-month; exit non-zero if any is not clean.
+
+    Generate the list from the TABLE (gcp/queries/list_intraday_ticker_months.sql)
+    at verification time, not from the migration manifest, so a month the
+    manifest omitted is checked too (Codex P1 on #1185). Capacity: one indexed
+    window read per item, measured 607 ms for an SPY month (25,174 rows) and
+    less for the long tail: 39,311 items over 4 tasks is at most ~1.7 h, with
+    no AlphaVantage calls.
+    """
+    items = _read_replace_list(path)
+    task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    items = items[task_idx::task_cnt]
+    if limit is not None:
+        items = items[:limit]
+    log.info("verify-months: task %d/%d, %d ticker-months", task_idx, task_cnt, len(items))
+    counts: dict = {}
+    failed: list[str] = []
+    for n, (sym, y, m) in enumerate(items, 1):
+        r = verify_month(sym, y, m)      # strict: a DB error fails the run loudly
+        counts[r['status']] = counts.get(r['status'], 0) + 1
+        if r['status'] == 'legacy':
+            failed.append(f"{sym},{y}-{m:02d} label_rows={r['label_rows']} "
+                          f"dropped_rows={r['dropped_rows']} rows={r['rows']}")
+        if n % 500 == 0:
+            log.info("  verify %d/%d %s", n, len(items), counts)
+    log.info("verify-months summary: %s over %d", counts, len(items))
+    for line in failed:
+        log.error("VERIFY-FAIL %s", line)
+    if failed:
+        log.error("%d of %d ticker-months still hold legacy rows.", len(failed), len(items))
+        return 1
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -711,11 +782,19 @@ def main():
     parser.add_argument('--commit', action='store_true',
                         help='With --replace-months: actually delete and insert.')
     parser.add_argument('--limit', type=int, default=None,
-                        help='With --replace-months: process at most N items per task.')
+                        help='With --replace-months / --verify-months: process at '
+                             'most N items per task.')
+    parser.add_argument('--verify-months', default=None, metavar='PATH',
+                        help='Read-only: check each TICKER,YYYY-MM holds only true-UTC '
+                             'rows. Exits 1 listing VERIFY-FAIL lines otherwise.')
     args = parser.parse_args()
 
+    if args.replace_months and args.verify_months:
+        parser.error('--replace-months and --verify-months are separate runs')
     if args.replace_months:
         sys.exit(run_replace_months(args.replace_months, args.commit, args.limit))
+    if args.verify_months:
+        sys.exit(run_verify_months(args.verify_months, args.limit))
 
     # Default date range: previous month → today
     today = date.today()

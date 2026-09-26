@@ -160,8 +160,13 @@ def test_date_list_counts_sessions_not_the_winter_spill():
     import inspect
     src = inspect.getsource(main_module.get_available_dates)
     assert "DISTINCT DATE(ts)" not in src
-    assert "extract(hour FROM ts AT TIME ZONE 'UTC') >= 4" in src
     assert "extract(isodow FROM" in src
+    # Codex P2 on #1185 (68ee4ea): each row is dated by its session (raw - 4 h),
+    # so a session whose only bars are the 00:00-01:00Z spill is still listed.
+    # Measured on production IWM: 2,941 dates either way, 0 weekends, 1.60 s
+    # against 2.61 s for the raw-hour >= 4 grouping it replaces.
+    assert "(ts AT TIME ZONE 'UTC') - interval '4 hours')::date AS trade_date" in src
+    assert "extract(hour FROM ts AT TIME ZONE 'UTC') >= 4" not in src
 
 
 # ── Codex round 3 on #1185 ────────────────────────────────────────────────────
@@ -252,3 +257,11 @@ def test_true_utc_premarket_still_converts_in_both_seasons(day):
     df = _flat(_session(day, stored="utc", start="04:00", end="04:59"))
     idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
     assert list(idx[keep]) == list(_expected(day, "04:00", "04:59"))
+
+
+def test_classifier_divides_as_numeric():
+    """Codex P1 on #1185: volume is BIGINT; integer division read a 0.5 ratio
+    as 0 (true-UTC) and 1.8 as 1 (mixed)."""
+    sql = (Path(__file__).resolve().parents[2] / "gcp" / "queries"
+           / "classify_intraday_ts_convention.sql").read_text()
+    assert sql.count("coalesce(v_et_label, 0)::numeric / v_true_instant") == 2
