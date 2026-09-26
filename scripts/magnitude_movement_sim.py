@@ -66,6 +66,7 @@ from gcp.research.magnitude_engine.mag_config import (
     PRODUCTION_READINESS_VERSION,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
+from lib.eastern_time import utc_now
 from scripts._magnitude_analysis_helpers import (
     add_research_arg, apply_research_contract, load_predictions,
     research_prefix)
@@ -113,7 +114,7 @@ def _build_summary(args, n_bars: int, overall_mean: float,
         "overall_mean_payoff_atr": round(overall_mean, 4),
         "overall_median_payoff_atr": round(overall_med, 4),
         "folds": rows,
-        "computed_at": pd.Timestamp.utcnow().isoformat(),
+        "computed_at": utc_now().isoformat(),
     }
 
 

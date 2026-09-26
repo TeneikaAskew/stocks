@@ -874,9 +874,6 @@
   ]
  },
  "scripts/magnitude_movement_sim.py": {
-  "host-today": [
-   "main::pd.Timestamp.utcnow()"
-  ],
   "utc-parse": [
    "_strat_direction::pd.to_datetime(s['ts'], utc=True)",
    "main::pd.to_datetime(df['ts'], utc=True)",
