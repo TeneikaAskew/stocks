@@ -76,8 +76,8 @@ never count. A pick whose session has not closed yet is counted `pending_session
 later run: at 23:00 ET on the report day, an after-close pick's session is tomorrow.
 
 The window's **timezone** was, and still is, right, and that part is not obvious.
-`fetch_minute_data` returns *"naive ET (Eastern Time) as-is from AV"*
-(`gcp/fetchers/fetch_market_data.py:62`), and the session bounds are converted to naive ET
+`fetch_minute_bars` returns bars in *"naive ET (Eastern Time) as-is from AV"*
+(`gcp/fetchers/fetch_market_data.py:83`), and the session bounds are converted to naive ET
 before slicing. The job calls AlphaVantage directly rather than reading `market_data_intraday`,
 the table that per CLAUDE.md §3.9 still holds two conflicting conventions; a change that swapped
 the source to that table would silently break the window.
@@ -119,22 +119,53 @@ Two further defects were fixed with #1151:
 - **A missed day was never revisited.** The default run scored one day, `date.today() - 1` on the
   container's UTC clock, which at 23:00 ET is the ET report day. A day whose bars failed to fetch
   stayed NULL until someone re-ran it by hand. The default is now a
-  `DEFAULT_LOOKBACK_DAYS = 7` window (`:71`) over **unscored** rows only
-  (`ew_strike_verdict IS NULL`, `:312`), so each night retries the week.
+  `DEFAULT_LOOKBACK_DAYS = 7` window (`:75`) over **unscored** rows only
+  (`ew_strike_verdict IS NULL`, `:349`), so each night retries the week.
 - **An outage and an unsupported strategy took the same silent `continue`.** Each is now its own
-  counter: `no_bars` (the vendor returned nothing) and `no_verdict` (no rule for the strategy).
-  A run where at least two vendor calls were made and none returned bars exits 1
-  (`run_failed`, `:246-251`), and a missing `ALPHA_VANTAGE_API_KEY` raises (`:303`) instead of
-  returning 0 rows and exiting 0. One empty call does not fail the run: it cannot tell an outage
-  from a symbol the vendor lacks, and on a quiet night it is often the only call (16 of 110
-  sessions from 2026-04-20 to 2026-09-24 had no fresh pick to fetch). It is counted, and retried
-  while the pick is inside the lookback. The rule still cannot tell a symbol AlphaVantage rejects
-  from an outage, because `fetch_minute_data` returns the same empty frame for both. On
-  2026-09-26 a fill pass whose only five calls were rejected symbols exited 1 (#1181).
+  counter: `no_bars` (the vendor had no bars for the pick) and `no_verdict` (no rule for the
+  strategy). A missing `ALPHA_VANTAGE_API_KEY` raises (`:340`) instead of returning 0 rows and
+  exiting 0.
 
-`--force` re-scores rows already scored. A row it cannot recompute is **cleared** to NULL for the
-nightly run to fill, never left holding a verdict from the wrong session. `--earnings-time`
-narrows a run to one timing, and `--dry-run` scores and logs without writing.
+`--force` re-scores rows already scored. A row the vendor answered for without bars is
+**cleared** to NULL for the nightly run to fill, never left holding a verdict from the wrong
+session. `--earnings-time` narrows a run to one timing, and `--dry-run` scores and logs without
+writing.
+
+## An outage is told from picks without bars (#1181)
+
+Counting empty calls could not tell a vendor outage from picks the vendor has no bars for.
+`fetch_minute_data` returned the same empty frame for a refused symbol, a rate limit, a transport
+error and a day without bars. On 2026-09-26 a fill pass whose five calls were four refused
+symbols and one day without bars exited 1 on both attempts and opened #1180.
+
+- **Each call says why it is empty.** `fetch_market_data.fetch_minute_bars` returns
+  `(bars, reason)`, with the reasons `fetch_alphavantage_intraday` already names.
+  `fetch_minute_data` is that without the reason, so the daily fetcher and the premarket refresh
+  read what they read before. The evaluator counts each empty call:
+  - `unsupported_symbol`: `Error Message`
+  - `rate_limited`: `Note` or `Information`
+  - `transport_error`: a request error, or a reply without a time series
+
+  A refused symbol or a day without bars is an answer about the pick (`no_bars`). The rest are
+  not (`fetch_failed`): the pick is left as it was, and the next run's lookback retries it.
+- **One SPY call decides a run whose every call came back empty** (`run_failures`, `:256-275`).
+  It fetches SPY for the latest session fetched. Bars mean the vendor answers and the empty calls
+  were about the picks, so the run exits 0. None means an outage or a broken request, so it
+  exits 1. A night's only call is decided the same way; before, it could never fail the run
+  (16 of 110 sessions from 2026-04-20 to 2026-09-24 had no fresh pick to fetch). A night where any
+  call returned bars makes no SPY call.
+- **`--force` clears a verdict only on an answer about the pick, and only once the vendor has
+  answered.** A rate limit or a transport error keeps the stored verdict, and the run exits 1,
+  because a partial re-score must not read as a complete one. A refusal or a day without bars
+  clears it. Those clears are held to the end of the run, and are written only if some call or
+  the SPY call returned bars, because AlphaVantage refuses a bad API key with the same
+  `Error Message` as an unknown symbol. The code before this cleared every verdict on any empty
+  call.
+- **Share classes are sent dashed.** Earnings Whispers writes `BF.B` and `MOG.A`; AlphaVantage
+  lists `BF-B` and `MOG-A` (SYMBOL_SEARCH, 2026-09-26). `av_listed_symbol` sends that form, and
+  only this job uses it. The daily fetcher still sends the dotted form, which AlphaVantage
+  refuses, so it stores no bars for any share class
+  ([#1188](https://github.com/TeneikaAskew/stocks/issues/1188)).
 
 The job makes one vendor call per (ticker, session), paced by `lib/config.py`'s AlphaVantage
 plan limit. A call measured 1.1 to 1.4 s on 2026-09-25 and 26, most of it spent downloading a month
@@ -150,7 +181,7 @@ strike, a covered call is kept if it did not. The one judgement that is not forc
 session **high / low** for long structures and the **close** for covered calls; the docstring
 states it (`:16-18`) without arguing it, and it matches how each position is actually resolved.
 
-`minutes_to_hit` is measured from `reg_bars.index.min()` (`:158`, `:165`), the first bar
+`minutes_to_hit` is measured from `reg_bars.index.min()` (`:168`, `:175`), the first bar
 **present**, not 09:30. On a session with missing early bars the figure is understated by the
 gap.
 
@@ -158,24 +189,39 @@ gap.
 
 | Symbol | Role |
 |---|---|
-| `evaluate_ew_strikes.evaluate_range` (`:286`) | The scheduled entry point; `--start` / `--end` / `--lookback-days` / `--force` / `--earnings-time` / `--dry-run` |
-| `scoring_session` (`:198-223`) | Which session a pick is scored against |
-| `_compute_verdict` (`:91`) | The verdict and its supporting metrics |
+| `evaluate_ew_strikes.evaluate_range` (`:310`) | The scheduled entry point; `--start` / `--end` / `--lookback-days` / `--force` / `--earnings-time` / `--dry-run` |
+| `scoring_session` (`:208-233`) | Which session a pick is scored against |
+| `_compute_verdict` (`:101`) | The verdict and its supporting metrics |
+| `run_failures` (`:256-275`) | Why the run exits 1: an empty SPY call after every call came back empty, or a `--force` pick with no answer |
+| `fetch_market_data.fetch_minute_bars` / `av_listed_symbol` | The bars and the vendor's reason; the share-class symbol AlphaVantage lists |
 
 ## Tests
 
-`tests/gcp/test_evaluate_ew_strikes.py`: **33 tests** covering several areas.
+`tests/gcp/test_evaluate_ew_strikes.py`: **62 tests** covering several areas.
 - **Sessions.** The scoring session for every timing, including the Friday, Thanksgiving and
   Memorial Day cases, and the 13:00 early close.
 - **Verdicts.** The first tests of `_compute_verdict`.
 - **The job's shape.** Four picks over two (ticker, session) pairs make exactly two fetches,
   bars are fetched as-traded, and there is one transaction per session date.
-- **Failure modes.** A pending session is not fetched, `--force` clears what it cannot re-score,
-  a dry run writes nothing, a missing key raises, an all-empty run fails while one missing
-  ticker or a lone empty call does not, the outage rule counts vendor calls rather than picks,
-  and a NULL timing that pandas returns as NaN is counted rather than crashing.
+- **Failure modes.** A pending session is not fetched, a dry run writes nothing, a missing key
+  raises, and a NULL timing that pandas returns as NaN is counted rather than crashing.
+- **The vendor's answer (#1181).**
+  - The wp7kf night exits 0, with the SPY call on the latest session fetched.
+  - Each reply is counted by what it says.
+  - Every call empty, plus an empty SPY call, exits 1 for a rate limit, a refusal or a transport
+    error alike.
+  - A rate-limited night whose SPY call has bars exits 0 and writes nothing.
+  - No SPY call is made when any call returned bars.
+  - A lone empty call is decided by the SPY call.
+  - Two picks on one ticker are one call.
+  - A share class is requested dashed.
+  - `--force` keeps a verdict it got no answer for, clears nothing on refusals until the vendor
+    has answered, and writes its held clears in one transaction after the updates.
+  - `fetch_minute_bars` names each AlphaVantage reply, and `fetch_minute_data` keeps its contract.
 
-Run against the code before #1151, 26 of them failed. The case that is #1151 itself read
+Run against the code before #1181, 37 of the 62 failed. The wp7kf night's case read
+`assert 1 == 0`: the old rule failed it. Run against the code before #1151, 26 of the 33 then in
+the file failed. The case that is #1151 itself read
 `assert ['2026-09-24'] == ['2026-09-25']`: the pre-announcement session was fetched.
 `tests/gcp/test_premarket_brief.py:2387-2413` still covers the **consumer** with
 `ew_strike_verdict='HIT'` and `None` fixtures.
@@ -184,9 +230,6 @@ Run against the code before #1151, 26 of them failed. The case that is #1151 its
 
 [#1168](https://github.com/TeneikaAskew/stocks/issues/1168) the live premarket brief never shows
 a verdict; only `BRIEF_AS_OF` replays do.
-
-[#1181](https://github.com/TeneikaAskew/stocks/issues/1181) the outage rule counts symbols AlphaVantage
-rejects as an outage, so a run whose only fetches are unsupported tickers exits 1.
 
 Titles and severity are owned by
 [12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).

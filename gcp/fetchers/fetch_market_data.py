@@ -55,16 +55,40 @@ AV_SYMBOL_MAP = {
 }
 
 
-def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: bool = True) -> pd.DataFrame:
-    """Fetch 1-minute OHLCV bars from AlphaVantage TIME_SERIES_INTRADAY.
+# Why a fetch came back without bars. fetch_alphavantage_intraday names the
+# vendor's answers, so one AlphaVantage reply has one name in every job (#1181).
+from gcp.fetchers.fetch_alphavantage_intraday import (  # noqa: E402
+    FETCH_INFO_MSG, FETCH_INVALID_API, FETCH_NO_TIMESERIES, FETCH_OK,
+    FETCH_RATE_LIMIT, FETCH_REQUEST_ERROR,
+)
+FETCH_NO_BARS_ON_DATE = 'no_bars_on_date'   # the month came back without the day
+FETCH_NO_API_KEY = 'no_api_key'
 
-    Fetches the full current month of data and filters to the requested date.
-    Timestamps are returned in naive ET (Eastern Time) as-is from AV.
+
+def av_listed_symbol(ticker: str) -> str:
+    """The symbol AlphaVantage lists `ticker` under. A share class is dashed
+    there and dotted in the Earnings Whispers rows: BF.B is BF-B and MOG.A is
+    MOG-A (SYMBOL_SEARCH, 2026-09-26). evaluate-ew-strikes sends this. The
+    daily fetcher still sends AV_SYMBOL_MAP's value, which AlphaVantage
+    refuses for a dotted share class (#1181)."""
+    return AV_SYMBOL_MAP.get(ticker, ticker).replace('.', '-')
+
+
+def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
+                      adjusted: bool = True) -> tuple[pd.DataFrame, str]:
+    """1-minute OHLCV bars from AlphaVantage TIME_SERIES_INTRADAY, with why
+    there are none when there are none.
+
+    Fetches the full month and keeps the requested date. Timestamps are
+    returned in naive ET (Eastern Time) as-is from AV. The reason is FETCH_OK
+    with bars, else one of the names above, so a caller can tell a refused
+    symbol from a rate limit from a transport error (#1181). A failure in this
+    code rather than in the vendor's reply is raised, not named.
     """
     av_symbol = AV_SYMBOL_MAP.get(ticker, ticker)
     if not api_key:
         log.warning("    No AV API key — cannot fetch intraday for %s", ticker)
-        return pd.DataFrame()
+        return pd.DataFrame(), FETCH_NO_API_KEY
 
     # AV TIME_SERIES_INTRADAY uses month=YYYY-MM
     month = fetch_date[:7]  # "2026-02-24" → "2026-02"
@@ -90,17 +114,17 @@ def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: b
 
         if 'Error Message' in data:
             log.error("    AV intraday error for %s: %s", ticker, data['Error Message'])
-            return pd.DataFrame()
+            return pd.DataFrame(), FETCH_INVALID_API
         if 'Information' in data or 'Note' in data:
             log.warning("    AV intraday rate limit for %s: %s",
                         ticker, data.get('Information', data.get('Note', '')))
-            return pd.DataFrame()
+            return pd.DataFrame(), FETCH_RATE_LIMIT if 'Note' in data else FETCH_INFO_MSG
 
         ts_key = 'Time Series (1min)'
         ts = data.get(ts_key, {})
         if not ts:
             log.warning("    AV intraday: no time series for %s month %s", ticker, month)
-            return pd.DataFrame()
+            return pd.DataFrame(), FETCH_NO_TIMESERIES
 
         df = pd.DataFrame.from_dict(ts, orient='index')
         df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
@@ -110,22 +134,33 @@ def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: b
         df.index = pd.to_datetime(df.index)
         df.index.name = 'timestamp'
         df = df.sort_index()
-
-        # Filter to the requested date
-        target = pd.to_datetime(fetch_date).date()
-        df = df[df.index.date == target]
-
-        if df.empty:
-            log.warning("    AV intraday: no bars for %s on %s", ticker, fetch_date)
-            return pd.DataFrame()
-
-        df['ticker'] = ticker
-        log.info("    AV intraday: %d bars for %s on %s", len(df), ticker, fetch_date)
-        return df
-
-    except Exception as e:
+    except requests.RequestException as e:
         log.error("    AV intraday fetch failed for %s: %s", ticker, e)
-        return pd.DataFrame()
+        return pd.DataFrame(), FETCH_REQUEST_ERROR
+    except ValueError as e:
+        # A body that is not JSON, or bars that do not parse: the reply's
+        # shape, which FETCH_NO_TIMESERIES names.
+        log.error("    AV intraday reply for %s did not parse: %s", ticker, e)
+        return pd.DataFrame(), FETCH_NO_TIMESERIES
+
+    # Filter to the requested date
+    target = pd.to_datetime(fetch_date).date()
+    df = df[df.index.date == target]
+
+    if df.empty:
+        log.warning("    AV intraday: no bars for %s on %s", ticker, fetch_date)
+        return pd.DataFrame(), FETCH_NO_BARS_ON_DATE
+
+    df['ticker'] = ticker
+    log.info("    AV intraday: %d bars for %s on %s", len(df), ticker, fetch_date)
+    return df, FETCH_OK
+
+
+def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: bool = True) -> pd.DataFrame:
+    """fetch_minute_bars without the reason: the bars, or an empty frame when
+    AlphaVantage returned none, which is what the daily fetcher and the
+    premarket refresh read."""
+    return fetch_minute_bars(ticker, fetch_date, api_key, adjusted=adjusted)[0]
 
 
 def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,

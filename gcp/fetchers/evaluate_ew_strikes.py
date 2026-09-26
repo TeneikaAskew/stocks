@@ -37,6 +37,10 @@ Usage:
         --start 2026-04-20 --end 2026-09-23                     # re-score; clear what cannot be
     python -m gcp.fetchers.evaluate_ew_strikes --dry-run        # score and log, write nothing
 
+Exit 1 when every vendor call came back without bars and so did one SPY call
+on the latest session fetched (an outage or a broken request, not the picks),
+or when --force got no answer for a pick it was re-scoring (#1181).
+
 Required env vars:
     ALPHA_VANTAGE_API_KEY (intraday bars)
     CLOUD_SQL_CONNECTION_NAME / DB_USER / DB_PASS / DB_NAME
@@ -70,13 +74,19 @@ log = logging.getLogger(__name__)
 # re-running a date by hand.
 DEFAULT_LOOKBACK_DAYS = 7
 
-# Outcome counters, in the order they are logged.
+# Outcome counters per pick, in the order they are logged. no_bars: the vendor
+# answered for the pick without bars (none on the day, or a symbol it does not
+# carry). fetch_failed: it said nothing about the pick (a rate limit, a
+# transport error, a reply without a time series), so a later run retries it.
 OUTCOMES = ("scored", "pending_session", "unknown_timing", "no_session",
-            "no_bars", "no_verdict", "cleared")
+            "no_bars", "fetch_failed", "no_verdict", "cleared")
 
-# Vendor calls made, and how many returned no bars in the session. The
-# outage rule counts calls, not rows: picks on one ticker's session share one.
-FETCH_COUNTERS = ("fetches", "empty_fetches")
+# Vendor calls: made, returned no bars in the session, and why. Picks on one
+# ticker's session share a call. The SPY canary is called only when every
+# call came back empty (#1181).
+FETCH_COUNTERS = ("fetches", "empty_fetches", "unsupported_symbol",
+                  "rate_limited", "transport_error", "canary_fetches",
+                  "canary_empty")
 
 _TIMINGS = ("premarket", "postmarket", "intraday")
 
@@ -243,12 +253,26 @@ class _Throttle:
         self._last = time.monotonic()
 
 
-def run_failed(result: dict) -> bool:
-    """True when at least two vendor calls came back and none had bars: an
-    outage or a rate limit, not a quiet night. One empty call cannot tell an
-    outage from a symbol the vendor lacks, and a quiet night's only call is
-    often a straggler from the lookback, so it is counted and retried."""
-    return result["empty_fetches"] >= 2 and result["empty_fetches"] == result["fetches"]
+def run_failures(result: dict, *, force: bool = False) -> list[str]:
+    """Why the run must exit 1, or [] when it may exit 0 (#1181).
+
+    Counting empty calls cannot tell an outage from picks the vendor has no
+    bars for: on 2026-09-26 five picks it refused or had no bars for failed a
+    fill run and opened #1180. So:
+    - every call came back empty, and so did SPY on the latest session
+      fetched: an outage or a broken request, whatever the symbols;
+    - --force got no answer for a pick: that pick keeps its stored verdict,
+      and a partial re-score must not read as a complete one. The nightly run
+      leaves such a pick for its next lookback instead.
+    """
+    out = []
+    if result["canary_empty"]:
+        out.append(f"all {result['fetches']} vendor call(s) came back without bars, "
+                   "and so did SPY: vendor outage or a broken request")
+    if force and result["fetch_failed"]:
+        out.append(f"--force got no answer for {result['fetch_failed']} pick(s); "
+                   "they keep their stored verdict, so re-run their sessions")
+    return out
 
 
 # ── Main loop ───────────────────────────────────────────────────────────────
@@ -291,12 +315,25 @@ def evaluate_range(start: date, end: date, *, force: bool = False,
 
     One vendor call per (ticker, session), paced by the AV plan limit, and
     one transaction per session date, so a long re-score keeps its progress
-    if it stops part way.
+    if it stops part way. When every call came back empty, one SPY call on the
+    latest session fetched tells an outage from picks without bars (#1181).
     """
     import sqlalchemy
     from gcp.database import get_engine, query_to_dataframe
-    from gcp.fetchers.fetch_market_data import fetch_minute_data
+    from gcp.fetchers.fetch_market_data import (
+        FETCH_INFO_MSG, FETCH_INVALID_API, FETCH_NO_BARS_ON_DATE,
+        FETCH_NO_TIMESERIES, FETCH_OK, FETCH_RATE_LIMIT, FETCH_REQUEST_ERROR,
+        av_listed_symbol, fetch_minute_bars)
     from lib.config import AlphaVantageConfig
+
+    # An empty call's reason, as a counter. The vendor answered about the pick
+    # when it refused the symbol or had no bars on the day; the rest say
+    # nothing about the pick.
+    counter_for = {FETCH_INVALID_API: "unsupported_symbol",
+                   FETCH_RATE_LIMIT: "rate_limited", FETCH_INFO_MSG: "rate_limited",
+                   FETCH_REQUEST_ERROR: "transport_error",
+                   FETCH_NO_TIMESERIES: "transport_error"}
+    answers = {FETCH_OK, FETCH_NO_BARS_ON_DATE, FETCH_INVALID_API}
 
     api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     if not api_key:
@@ -353,36 +390,58 @@ def evaluate_range(start: date, end: date, *, force: bool = False,
     throttle = _Throttle(AlphaVantageConfig().delay_between_calls)
     eng = None if dry_run else get_engine()
     upd, clr = sqlalchemy.text(_UPDATE_SQL), sqlalchemy.text(_CLEAR_SQL)
+
+    def session_bars(ticker: str, session: Session) -> tuple[pd.DataFrame, str]:
+        """The session's regular-hours bars for `ticker`, and the vendor's reason."""
+        throttle.wait()
+        bars, reason = fetch_minute_bars(av_listed_symbol(ticker), session.date.isoformat(),
+                                         api_key, adjusted=False)
+        if not bars.empty:
+            bars = bars[(bars.index >= session.open_et) & (bars.index < session.close_et)]
+        return bars, reason
+
+    # --force clears that rest on an empty answer. AlphaVantage refuses a bad
+    # API key with the same `Error Message` as an unknown symbol, so these are
+    # written only once this run has seen the vendor return bars (#1181).
+    held_clears: list[dict] = []
+    last_session: Optional[Session] = None
     for session_date in sorted(groups):
         updates: list[dict] = []
         clears: list[dict] = []
         for ticker, items in groups[session_date].items():
-            session = items[0][1]
-            throttle.wait()
-            bars = fetch_minute_data(ticker, session_date.isoformat(), api_key,
-                                     adjusted=False)
-            if not bars.empty:
-                bars = bars[(bars.index >= session.open_et)
-                            & (bars.index < session.close_et)]
+            session = last_session = items[0][1]
+            bars, reason = session_bars(ticker, session)
+            answered = not bars.empty or reason in answers
             result["fetches"] += 1
-            result["empty_fetches"] += int(bars.empty)
+            if bars.empty:
+                result["empty_fetches"] += 1
+                if reason in counter_for:
+                    result[counter_for[reason]] += 1
             for row, _ in items:
+                if bars.empty and not answered:
+                    result["fetch_failed"] += 1
+                    log.warning("no answer for pick id=%s %s session=%s (%s): %s",
+                                row.id, ticker, session_date, reason,
+                                "keeps its verdict" if had_verdict(row) else "left for a later run")
+                    continue
                 if bars.empty:
                     result["no_bars"] += 1
-                else:
-                    v = _compute_verdict(row.strategy, float(row.strike), bars)
-                    if v['verdict'] is not None:
-                        result["scored"] += 1
-                        updates.append({
-                            'id': int(row.id),
-                            'high': v['high'], 'low': v['low'], 'close': v['close'],
-                            'verdict': v['verdict'], 'move': v['move_pct'],
-                            'ttl': v['minutes_to_hit'],
-                            'iz': v['minutes_in_zone'],
-                            'dchg': v['day_change_pct'],
-                        })
-                        continue
-                    result["no_verdict"] += 1
+                    if had_verdict(row):
+                        held_clears.append({'id': int(row.id)})
+                    continue
+                v = _compute_verdict(row.strategy, float(row.strike), bars)
+                if v['verdict'] is not None:
+                    result["scored"] += 1
+                    updates.append({
+                        'id': int(row.id),
+                        'high': v['high'], 'low': v['low'], 'close': v['close'],
+                        'verdict': v['verdict'], 'move': v['move_pct'],
+                        'ttl': v['minutes_to_hit'],
+                        'iz': v['minutes_in_zone'],
+                        'dchg': v['day_change_pct'],
+                    })
+                    continue
+                result["no_verdict"] += 1
                 if had_verdict(row):
                     clears.append({'id': int(row.id)})
         if eng is not None and (updates or clears):
@@ -395,10 +454,27 @@ def evaluate_range(start: date, end: date, *, force: bool = False,
         log.info("session=%s tickers=%d scored=%d cleared=%d",
                  session_date, len(groups[session_date]), len(updates), len(clears))
 
-    if eng is not None and unsessioned_clears:
+    vendor_answered = result["fetches"] > result["empty_fetches"]
+    if last_session is not None and not vendor_answered:
+        result["canary_fetches"] += 1
+        bars, reason = session_bars("SPY", last_session)
+        vendor_answered = not bars.empty
+        result["canary_empty"] += int(bars.empty)
+        if vendor_answered:
+            log.info("canary SPY %s: %d bars, so the %d empty call(s) were about the picks",
+                     last_session.date, len(bars), result["empty_fetches"])
+        else:
+            log.error("canary SPY %s came back without bars (%s)", last_session.date, reason)
+    if held_clears and not vendor_answered:
+        log.error("not clearing %d verdict(s): no call in this run returned bars, "
+                  "so an empty answer is not evidence about the pick", len(held_clears))
+        held_clears = []
+
+    final_clears = unsessioned_clears + held_clears
+    if eng is not None and final_clears:
         with eng.begin() as conn:
-            conn.execute(clr, unsessioned_clears)
-    result["cleared"] += len(unsessioned_clears)
+            conn.execute(clr, final_clears)
+    result["cleared"] += len(final_clears)
     return result
 
 
@@ -443,11 +519,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     summary = " ".join(f"{k}={v}" for k, v in result.items())
     log.info("DONE %s..%s %s", start, end, summary)
     print(f"{start}..{end} {summary}")
-    if run_failed(result):
-        log.error("all %d vendor calls came back without bars: vendor outage "
-                  "or rate limit, not a quiet night", result["fetches"])
-        return 1
-    return 0
+    failures = run_failures(result, force=args.force)
+    for failure in failures:
+        log.error(failure)
+    return 1 if failures else 0
 
 
 if __name__ == '__main__':
