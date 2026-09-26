@@ -4,8 +4,8 @@
 **Writes:** `earnings_calendar.ew_*` columns ·
 **Job:** `evaluate-ew-strikes` (`0 23 * * 1-5`, after the close) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
-**Status:** Production but needs remediation · **Rec:** RESTRUCTURE
-**Doc health:** CURRENT · **Last verified:** 2026-09-25
+**Status:** Production but needs remediation · **Rec:** KEEP
+**Doc health:** CURRENT · **Last verified:** 2026-09-26
 
 > Registered 2026-09-18 by the round-10 sweep. It was invisible to the sweep's own first pass
 > too: the audit script's write-detector matched `INSERT INTO` and `upsert_dataframe(...)` but
@@ -51,7 +51,7 @@ only in `BRIEF_AS_OF` replays. This is from reading the code, not from a replay;
 check that would confirm it. Earlier revisions of this document and #1151 said the verdicts were
 "already rendered to a person"; on this reading they were not.
 
-## The scoring session ([#1151](https://github.com/TeneikaAskew/stocks/issues/1151))
+## The scoring session (#1151, closed 2026-09-26)
 
 **Until #1151 the job scored every pick against the session of `earnings_date` itself.** It
 selected rows by `earnings_date`, fetched that same date's bars and scored `09:30-15:59` of it;
@@ -86,6 +86,32 @@ The evaluator fetches **as-traded** bars (`adjusted=False`), because a strike is
 prices of its day. A re-score months later against split-adjusted history would compare
 different units.
 
+### Re-scored 2026-09-26
+
+After the fix was deployed, every after-close pick from 2026-04-20 to 2026-09-25 was re-scored
+with `--force` in monthly chunks: 1,267 picks over 1,178 vendor calls, none empty and none
+cleared (executions `evaluate-ew-strikes-j8jpt`, `-f774k`, `-66wbv`, `-9prnj`, `-hdx6q`,
+`-9mhpt`). Measured against a snapshot taken before the deploy:
+
+| after-close picks with both daily closes | before | after |
+|---|---:|---:|
+| stored close nearer the report day's close | 1,226 of 1,249 | 10 of 1,251 |
+| stored close nearer the next session's close | 12 | 1,233 |
+| median error against the next session's close | 5.1% | 0.040% |
+
+- **The ten that still lean to the report day** are stocks whose two closes differ by 0.3% or
+  less, plus AERO. AERO's session traded in only 168 minutes and last traded at 15.33, against an
+  official close of 15.65.
+- **328 of the 1,263 re-scored verdicts flipped (26%):** KEPT to ASSIGNED 183, ASSIGNED to KEPT
+  92, HIT to MISS 37, MISS to HIT 16.
+- **Four picks were scored for the first time**, including the two dated Memorial Day.
+- **Before-open and intraday verdicts were not touched.**
+- **Three spot checks matched exactly:** the stored high, low and close equal a by-hand
+  recomputation from AlphaVantage bars.
+
+Five before-open picks stay unscored, because AlphaVantage rejects the symbol or has no bars for
+the day: TGEN, VSCO, MOG.A, ORLA and BF.B.
+
 ## Gaps now heal, and an outage is counted, not skipped
 
 Two further defects were fixed with #1151:
@@ -102,14 +128,18 @@ Two further defects were fixed with #1151:
   returning 0 rows and exiting 0. One empty call does not fail the run: it cannot tell an outage
   from a symbol the vendor lacks, and on a quiet night it is often the only call (16 of 110
   sessions from 2026-04-20 to 2026-09-24 had no fresh pick to fetch). It is counted, and retried
-  while the pick is inside the lookback.
+  while the pick is inside the lookback. The rule still cannot tell a symbol AlphaVantage rejects
+  from an outage, because `fetch_minute_data` returns the same empty frame for both. On
+  2026-09-26 a fill pass whose only five calls were rejected symbols exited 1 (#1181).
 
 `--force` re-scores rows already scored. A row it cannot recompute is **cleared** to NULL for the
 nightly run to fill, never left holding a verdict from the wrong session. `--earnings-time`
 narrows a run to one timing, and `--dry-run` scores and logs without writing.
 
 The job makes one vendor call per (ticker, session), paced by `lib/config.py`'s AlphaVantage
-plan limit. It writes one transaction per session date, so a long re-score keeps its progress
+plan limit. A call measured 1.1 to 1.4 s on 2026-09-25 and 26, most of it spent downloading a month
+of 1-minute bars. So the job runs at roughly 45 to 55 calls a minute, well under the plan's 150,
+and a nightly run of about 45 calls takes about 90 s. It writes one transaction per session date, so a long re-score keeps its progress
 if it stops part way.
 
 ## Rationale
@@ -152,12 +182,11 @@ Run against the code before #1151, 26 of them failed. The case that is #1151 its
 
 ## Known issues
 
-[#1151](https://github.com/TeneikaAskew/stocks/issues/1151) after-close reporters were scored
-against the pre-announcement session (1,263 of 2,383 scored rows, measured 2026-09-24). Fixed in
-code; stays open until the stored verdicts are re-scored against the right session.
-
 [#1168](https://github.com/TeneikaAskew/stocks/issues/1168) the live premarket brief never shows
 a verdict; only `BRIEF_AS_OF` replays do.
+
+[#1181](https://github.com/TeneikaAskew/stocks/issues/1181) the outage rule counts symbols AlphaVantage
+rejects as an outage, so a run whose only fetches are unsupported tickers exits 1.
 
 Titles and severity are owned by
 [12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).
