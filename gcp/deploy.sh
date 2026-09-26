@@ -1066,7 +1066,7 @@ _build_secret_flag() {
 # demands access it has no use for.
 case "${1:-}" in
     setup|setup-notifier-secrets|setup-pg-dump-iam|migrate|build|build-research|\
-    backfill|registry-cleanup|retire-legacy-images|pin-images|\
+    backfill|registry-cleanup|retire-legacy-images|pin-images|pin-floating|\
     cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|\
     help|"") _NEEDS_DEPLOY_CREDS=0 ;;
     *) _NEEDS_DEPLOY_CREDS=1 ;;
@@ -5204,6 +5204,51 @@ _research_image_ref() {
     echo "${ref}"
 }
 
+pin_floating_jobs() {
+    # pin_floating_jobs -> every job whose spec names an image TAG is updated
+    # to name the digest that tag holds now. A tag is re-resolved at each
+    # execution, so that digest is what the job would run next anyway: no
+    # job's code changes, and later builds stop reaching jobs their target did
+    # not deploy. Jobs deployed before #1171 floated until redeployed (70 of
+    # 76 on 2026-09-26, on :latest, :research and four hand-made tags); this
+    # converts them in one pass. Refuses while a build is in flight, since it
+    # could move a tag mid-pass, and fails if any spec still names a tag after.
+    local ongoing listing job ref pinned converted=0 failures=0 left=0
+    ongoing=$(gcloud builds list --ongoing --format="value(id)") \
+        || { echo "ERROR: cannot list ongoing builds; nothing pinned." >&2; return 1; }
+    [ -z "${ongoing}" ] \
+        || { echo "ERROR: build in flight (${ongoing//$'\n'/ }); it could move a tag mid-pass. Nothing pinned." >&2; return 1; }
+    listing=$(gcloud run jobs list --region "${REGION}" \
+        --format="value(metadata.name,spec.template.spec.template.spec.containers[0].image)") \
+        || { echo "ERROR: cannot list Cloud Run jobs; nothing pinned." >&2; return 1; }
+    while IFS=$'\t' read -r job ref; do
+        [ -n "${job}" ] || continue
+        [[ "${ref}" == *@sha256:* ]] && continue
+        if ! pinned=$(_resolve_image_ref "${ref}"); then
+            failures=$((failures + 1)); continue
+        fi
+        if gcloud run jobs update "${job}" --region "${REGION}" --image "${pinned}" --quiet >/dev/null; then
+            converted=$((converted + 1))
+            echo "  ${job}: ${ref} -> ${pinned#*@}"
+        else
+            echo "  ERROR: could not update ${job}" >&2
+            failures=$((failures + 1))
+        fi
+    done <<< "${listing}"
+    # Done only when no spec names a tag, read back rather than assumed.
+    listing=$(gcloud run jobs list --region "${REGION}" \
+        --format="value(metadata.name,spec.template.spec.template.spec.containers[0].image)") \
+        || { echo "ERROR: cannot list Cloud Run jobs to read the pins back." >&2; return 1; }
+    while IFS=$'\t' read -r job ref; do
+        [ -n "${job}" ] || continue
+        [[ "${ref}" == *@sha256:* ]] && continue
+        echo "  ERROR: ${job} still names ${ref}" >&2
+        left=$((left + 1))
+    done <<< "${listing}"
+    echo "Pinned ${converted} job(s) to a digest; ${left} still name a tag; ${failures} failure(s)."
+    [ "${failures}" -eq 0 ] && [ "${left}" -eq 0 ]
+}
+
 # The digests this invocation built; set by build_image / build_research_image
 # and never inherited from the caller's environment, where a stale value would
 # deploy an image nobody built for this change.
@@ -5232,6 +5277,7 @@ case "${1:-help}" in
     migrate)     _PIN_AFTER=0; shift; migrate "$@" ;;
     build)       _PIN_AFTER=0; build_image ;;
     pin-images)  _PIN_AFTER=0; pin_image_tags "${2:-}" ;;
+    pin-floating) pin_floating_jobs ;;
     cloudbuild-triggers) _PIN_AFTER=0; shift; sync_cloudbuild_triggers "$@" ;;
     registry-cleanup) _PIN_AFTER=0; _run pin_image_tags setup_registry_cleanup ;;
     retire-legacy-images) _PIN_AFTER=0; retire_legacy_images ;;
@@ -5437,6 +5483,10 @@ case "${1:-help}" in
         echo "             out of cleanup). --no-sweep skips releasing stale pins"
         echo "             (needs artifactregistry.tags.delete; used by the Cloud"
         echo "             Build trigger identity, which lacks it)."
+        echo "  pin-floating"
+        echo "             Pin every job whose spec names an image tag to the digest"
+        echo "             that tag holds now: the image it would run next, so no"
+        echo "             code changes. Refuses while a build is in flight (#1171)."
         echo "  registry-cleanup"
         echo "             pin-images, then apply the Artifact Registry cleanup"
         echo "             policy (keep tagged + 10 newest, delete untagged >14d)"

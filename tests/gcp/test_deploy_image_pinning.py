@@ -78,10 +78,19 @@ def test_every_image_argument_is_a_digest_ref_not_a_tag():
     # apply_schema_via_build writes a Cloud Build config whose --image is its
     # own `digest`, which is IMAGE_REF or a :latest lookup resolved to a digest
     # (checked below), so it is a digest ref too.
+    # pin_floating_jobs passes `pinned`, which only _resolve_image_ref sets
+    # (checked below), and that returns a digest ref.
     floating = [(f, a) for f, a in args
                 if not (a.startswith('"${IMAGE_REF:?') or a == '"${research_image}"'
-                        or (f == "apply_schema_via_build" and a == "${digest}"))]
+                        or (f == "apply_schema_via_build" and a == "${digest}")
+                        or (f == "pin_floating_jobs" and a == '"${pinned}"'))]
     assert not floating, f"--image passed something other than a digest ref: {floating[:10]}"
+
+
+def test_pin_floating_passes_only_a_resolved_digest():
+    body = FNS["pin_floating_jobs"]
+    assigned = re.findall(r"\bpinned=(\S+)", body)
+    assert assigned == ['$(_resolve_image_ref'], assigned
 
 
 def test_the_schema_apply_build_prefers_the_digest_this_run_built():
@@ -158,9 +167,28 @@ _GCLOUD = r"""
         tag=$(cat "$OUT/submitted_tag")
         printf '%s\t%s;%s\n' "$status" "${BUILD_DIGEST}" "${BUILD_DIGEST}"
         exit 0 ;;
+      "builds list") [ -z "${ONGOING:-}" ] || echo "${ONGOING}"; exit 0 ;;
       "artifacts docker")
-        echo "${RESOLVE_DIGEST}"; exit 0 ;;
-      "run jobs") exit 0 ;;
+        case "$*" in
+          *:research*) echo "${RESEARCH_RESOLVE:-${RESOLVE_DIGEST}}" ;;
+          *) echo "${RESOLVE_DIGEST}" ;;
+        esac
+        exit 0 ;;
+      "run jobs")
+        # $OUT/jobs is the project's job list, "name<TAB>image" per line;
+        # an update with --image rewrites that job's line.
+        case "$3" in
+          list) [ ! -f "$OUT/jobs" ] || cat "$OUT/jobs" ;;
+          update)
+            [ "${FAIL_UPDATE:-}" != "$4" ] || exit 1
+            img=""; prev=""
+            for a in "$@"; do [ "$prev" = "--image" ] && img=$a; prev=$a; done
+            if [ -n "$img" ] && [ -f "$OUT/jobs" ]; then
+              awk -F'\t' -v j="$4" -v i="$img" 'BEGIN { OFS = "\t" } $1 == j { $2 = i } { print }' \
+                "$OUT/jobs" > "$OUT/jobs.new" && mv "$OUT/jobs.new" "$OUT/jobs"
+            fi ;;
+        esac
+        exit 0 ;;
       "run deploy") exit 0 ;;
     esac
     exit 0
@@ -282,6 +310,68 @@ def test_a_deploy_without_a_build_mutates_nothing(tmp_path):
     assert r.returncode != 0
     assert "IMAGE_REF" in r.stderr, r.stderr
     assert not any(c.startswith("run jobs") for c in _calls(tmp_path)), _calls(tmp_path)
+
+
+# ── pin-floating: the jobs deployed before #1171 ───────────────────────────
+
+_PIN_FNS = ("_pkgdev_path", "_resolve_image_ref", "pin_floating_jobs")
+RESEARCH_RESOLVED = "sha256:" + "4" * 64
+ALREADY_PINNED = "sha256:" + "5" * 64
+
+
+def _jobs(tmp_path, specs: dict[str, str]) -> None:
+    (tmp_path / "jobs").write_text("".join(f"{j}\t{i}\n" for j, i in specs.items()))
+
+
+def _specs(tmp_path) -> dict[str, str]:
+    return dict(line.split("\t") for line in (tmp_path / "jobs").read_text().splitlines())
+
+
+def test_pin_floating_pins_each_job_to_the_digest_its_own_tag_holds(tmp_path):
+    """A floating job runs its tag's current digest at its next execution, so
+    pinning to exactly that changes no job's code. A job already on a digest
+    is not touched."""
+    env = _env(tmp_path)
+    env["RESEARCH_RESOLVE"] = RESEARCH_RESOLVED
+    _jobs(tmp_path, {
+        "tagless": IMAGE,
+        "latest": f"{IMAGE}:latest",
+        "research": f"{IMAGE}:research",
+        "pinned": f"{IMAGE}@{ALREADY_PINNED}",
+    })
+    r = _run(tmp_path, env, _PIN_FNS, "pin_floating_jobs")
+    assert "rc=0" in r.stdout, r.stdout + r.stderr
+    assert _specs(tmp_path) == {
+        "tagless": f"{IMAGE}@{RESOLVED}",
+        "latest": f"{IMAGE}@{RESOLVED}",
+        "research": f"{IMAGE}@{RESEARCH_RESOLVED}",
+        "pinned": f"{IMAGE}@{ALREADY_PINNED}",
+    }
+    updated = sorted(c.split()[3] for c in _calls(tmp_path) if c.startswith("run jobs update"))
+    assert updated == ["latest", "research", "tagless"]
+
+
+def test_pin_floating_refuses_while_a_build_is_in_flight(tmp_path):
+    """A build finishing mid-pass would move :latest between two jobs' pins."""
+    env = _env(tmp_path)
+    env["ONGOING"] = "build-999"
+    _jobs(tmp_path, {"tagless": IMAGE})
+    r = _run(tmp_path, env, _PIN_FNS, "pin_floating_jobs")
+    assert "rc=0" not in r.stdout and "build in flight" in r.stderr, r.stdout + r.stderr
+    assert not any(c.startswith("run jobs update") for c in _calls(tmp_path))
+    assert _specs(tmp_path) == {"tagless": IMAGE}
+
+
+def test_pin_floating_fails_when_a_spec_still_names_a_tag(tmp_path):
+    """The pass is read back, not assumed: an update that did not land fails
+    the target and names the job, and the others are still pinned."""
+    env = _env(tmp_path)
+    env["FAIL_UPDATE"] = "stuck"
+    _jobs(tmp_path, {"stuck": IMAGE, "fine": f"{IMAGE}:latest"})
+    r = _run(tmp_path, env, _PIN_FNS, "pin_floating_jobs")
+    assert "rc=0" not in r.stdout, r.stdout + r.stderr
+    assert f"stuck still names {IMAGE}" in r.stderr, r.stderr
+    assert _specs(tmp_path) == {"stuck": IMAGE, "fine": f"{IMAGE}@{RESOLVED}"}
 
 
 # ── the dispatcher: a misspelt target is a failure ─────────────────────────
