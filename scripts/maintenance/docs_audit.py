@@ -7459,7 +7459,7 @@ def main(argv: list[str] | None = None) -> int:
     # run that could not happen.
     if args.date is not None and not is_calendar_date(args.date):
         raise AuditError(f"--date {args.date} is not a calendar day (YYYY-MM-DD)")
-    today = args.date or datetime.date.today().isoformat()
+    today = args.date or datetime.date.today().isoformat()  # tz-ok: doc review-date stamp, not market data
     # The revision being reviewed: what gets enumerated, diffed against and
     # stamped. One value, so the marker can never name a commit whose contents
     # the run did not read.
