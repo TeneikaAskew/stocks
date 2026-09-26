@@ -492,3 +492,26 @@ def test_a_failed_verify_never_reaches_the_delete():
                                   verify=boom)
     sqls = [str(c.args[0]) for c in conn.execute.call_args_list]
     assert not any(q.startswith("DELETE") for q in sqls)
+
+
+
+@pytest.mark.parametrize("held_n,fetched_n,ok", [
+    (3, 1, False),      # Codex P1 on #1185 (ef85a85): 1 of 3 passed a fixed 2-bar allowance
+    (3, 2, False),
+    (49, 48, False),    # under 50 bars: must be whole
+    (50, 49, True),     # 2% of 50 = 1
+    (961, 942, True),   # 2% of 961 = 19
+    (961, 941, False),
+])
+def test_the_shortfall_tolerance_scales_with_the_session(held_n, fetched_n, ok):
+    bars = pd.DataFrame({
+        "ts": pd.date_range("2026-09-24 04:00", periods=fetched_n, freq="1min"),
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1,
+        "ticker": "SPY", "interval": "1min", "data_source": "alphavantage",
+    })
+    with patch.object(fai, "fetch_month", return_value=(bars, fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): held_n}), \
+         patch.object(fai, "replace_rows_in_window", return_value=(held_n, fetched_n)) as rep:
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert (r["status"] == fai.REPLACE_OK) is ok
+    assert rep.called is ok

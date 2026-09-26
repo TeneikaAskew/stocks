@@ -451,8 +451,9 @@ class _HeldChanged(Exception):
 # stragglers. Deleting more than this multiple of what is re-inserted means
 # something is wrong with the window or the list; the transaction rolls back.
 REPLACE_MAX_DELETE_RATIO = 3.0
-# A refetched session may hold this share fewer bars than already held (at
-# least 2) before the month is refused as incomplete.
+# A refetched session may hold this share fewer bars than already held
+# (rounded down, so a session under 50 bars must be complete) before the
+# month is refused as incomplete.
 REPLACE_SHORT_TOLERANCE = 0.02
 
 
@@ -513,15 +514,15 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     # A held session is missing if the refetch lacks it, or returns fewer
     # bars than the distinct bars already held (a partial vendor month that
     # still touches every day, Codex P1 on #1185). REPLACE_SHORT_TOLERANCE
-    # absorbs the odd bar AV revises away; anything more leaves the month
-    # untouched.
-    # A held session the refetch has NO bars for is always missing: for a
-    # sparse session (1-2 bars) the tolerance alone would let 0 pass, and the
-    # replace would delete it for good (Codex P1 on #1185).
+    # absorbs the odd bar AV revises away on a full session; anything more
+    # leaves the month untouched.
+    # The tolerance is a share of the session, floored, with no absolute
+    # minimum: a sparse session (under 50 bars) must come back whole. A fixed
+    # 2-bar allowance let 0 of 2 or 1 of 3 through, deleting bars for good
+    # (Codex P1 x2 on #1185).
     missing = sorted(
         d for d, n in held.items()
-        if int(fetched.get(d, 0)) == 0
-        or int(fetched.get(d, 0)) < n - max(2, int(n * REPLACE_SHORT_TOLERANCE)))
+        if int(fetched.get(d, 0)) < n - int(n * REPLACE_SHORT_TOLERANCE))
     out.update(held_sessions=len(held), missing_sessions=len(missing))
     if not held:
         # Nothing to re-frame: deleting would only remove rows (code review H2).
