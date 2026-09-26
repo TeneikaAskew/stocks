@@ -1801,6 +1801,17 @@
             ],
             "title": "Distinct Buckets"
           },
+          "insufficient_sessions": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Insufficient Sessions"
+          },
           "lookback_days": {
             "anyOf": [
               {
@@ -1811,6 +1822,17 @@
               }
             ],
             "title": "Lookback Days"
+          },
+          "min_sessions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Sessions"
           },
           "modal_bucket": {
             "anyOf": [
@@ -1844,6 +1866,17 @@
               }
             ],
             "title": "N Bars"
+          },
+          "n_sessions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Sessions"
           },
           "reason": {
             "anyOf": [
@@ -1982,6 +2015,17 @@
             ],
             "title": "Current Price"
           },
+          "decision_rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Rule"
+          },
           "degeneracy": {
             "anyOf": [
               {
@@ -2024,6 +2068,17 @@
               }
             ],
             "title": "Pred Bucket"
+          },
+          "pred_bucket_proba": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pred Bucket Proba"
           },
           "probabilities": {
             "anyOf": [
@@ -4505,6 +4560,10 @@
             "title": "Computed At",
             "type": "string"
           },
+          "decision_rule": {
+            "title": "Decision Rule",
+            "type": "string"
+          },
           "docs_ref": {
             "title": "Docs Ref",
             "type": "string"
@@ -4531,6 +4590,10 @@
           "pred_bucket_label": {
             "title": "Pred Bucket Label",
             "type": "string"
+          },
+          "pred_bucket_proba": {
+            "title": "Pred Bucket Proba",
+            "type": "number"
           },
           "probabilities": {
             "$ref": "#/components/schemas/BucketProbabilities"
@@ -4564,9 +4627,11 @@
           "probabilities",
           "pred_bucket",
           "pred_bucket_label",
+          "pred_bucket_proba",
           "max_proba",
           "model_version",
           "source",
+          "decision_rule",
           "computed_at",
           "usage_guidance",
           "not_for",

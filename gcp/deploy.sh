@@ -553,27 +553,46 @@ deploy_insight_pipeline() {
     admin_token="$(_secret admin-token 2>/dev/null || true)"
     admin_env="${ENV_STRING}${admin_token:+,ADMIN_TOKEN=${admin_token}}"
 
-    # 4Gi, raised from 2Gi on 2026-09-15 after the first real auto-refresh
-    # fan-out OOM-killed two of three children. Measured: NVDA and AMD both
-    # pinned run.googleapis.com/container/memory/utilizations at bucket 100
-    # (>=100% of 2Gi) for three consecutive minutes and were killed with
-    # signal 9; AVGO finished in the same run. The daily SPY/IWM/QQQ batch
-    # has never OOM'd, which is why this went unseen — auto-refresh ranks the
-    # top-N out of a ~16-ticker pool and reaches much heavier option chains.
+    # 8Gi/2 vCPU, raised from 4Gi/1 vCPU on 2026-09-17 after the 4Gi ceiling
+    # (itself a raise from 2Gi on 2026-09-15, #1116) OOM'd again. Measured
+    # (gcloud logging + the monitoring timeSeries REST API) against the live
+    # job on 2026-09-17: insight-pipeline-6b276 (NVDA, manual_batch) was
+    # SIGKILLed on BOTH attempts (task_attempt 0 at 03:32:54, task_attempt 1
+    # at 03:35:10), each preceded by "Out-of-memory event detected in
+    # container"; the same day, two of three auto_refresh fan-out children
+    # (AVGO in insight-pipeline-qh7pj, AMD in insight-pipeline-hqcr8) OOM'd on
+    # their first attempt and only read as job-level "success" because the
+    # compare-and-swap retry-claim added in #1094/#1116 stood down cleanly
+    # rather than re-running — so both tickers produced no report despite a
+    # green execution. run.googleapis.com/container/memory/utilizations
+    # measured mean=0.9968 (99.68% of the 4Gi limit) in the one-minute bucket
+    # containing the AMD OOM, confirming the container is still saturating
+    # the limit, not something else killing it. AMD OOM'd on 2026-09-15 too
+    # (insight-pipeline-bpqnv) — the same ticker exceeding the limit twice
+    # across two separate raises is why this is a further doubling per
+    # CLAUDE.md Rule 0.5, not a one-off retry.
     #
-    # 4Gi is a doubling per CLAUDE.md Rule 0.5, NOT a measured requirement:
-    # the utilization metric is censored at the limit, so it proves the
-    # containers reached 2048 MiB, never how much they wanted. Verify by
-    # re-running NVDA and reading the now-uncensored peak; raise again if it
-    # lands above ~50%.
+    # 1 vCPU caps memory at 4Gi (Cloud Run limit: memory scales with CPU —
+    # 1 vCPU -> 4Gi max, 2 vCPU -> 8Gi max), so 4Gi was already the ceiling
+    # for --cpu 1. Doubling memory again requires doubling CPU alongside it;
+    # --cpu must therefore be on BOTH the create and update paths for the
+    # same reason --memory has to be (see below) — a CPU bump on create
+    # alone would fail validation on create (cpu/memory mismatch) and read
+    # as shipped while never reaching the live job.
     #
-    # --memory must be on BOTH paths. The job already exists, so `create`
-    # fails and `update` is what actually runs; before this change `update`
-    # passed no --memory at all, and a change to the `create` line alone
-    # would have silently no-op'd against the live job forever.
+    # --memory and --cpu must be on BOTH paths. The job already exists, so
+    # `create` fails and `update` is what actually runs; before the #1116
+    # fix, `update` passed no --memory at all, and a change to the `create`
+    # line alone would have silently no-op'd against the live job forever.
+    #
+    # 8Gi is again a doubling per Rule 0.5, NOT a measured requirement: the
+    # utilization metric is censored at the limit, so this incident only
+    # rules out 4Gi. Verify post-deploy by re-running NVDA and AMD and
+    # reading the now-uncensored peak; raise again (with another CPU step)
+    # if it lands above ~50% of 8Gi.
     gcloud run jobs create insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 4Gi --cpu 1 --max-retries 1 \
+        --memory 8Gi --cpu 2 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.insight_pipeline_job" \
@@ -582,7 +601,7 @@ deploy_insight_pipeline() {
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 4Gi \
+        --memory 8Gi --cpu 2 \
         --command "python,-m,gcp.insight_pipeline_job" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${admin_env}" \
@@ -2769,14 +2788,14 @@ deploy_fetch_premarket_refresh() {
         --quiet
 }
 
-# EW strike verdict evaluator — runs at 16:30 ET (30 min after close)
-# to score every Earnings Whispers strike pick from today's session
-# against the day's intraday bars. Populates ew_strike_verdict +
+# EW strike verdict evaluator: runs at 23:00 ET (evaluate-ew-strikes-daily)
+# and scores each Earnings Whispers pick from the last 7 days whose scoring
+# session has closed (the next session for an after-close report, #1151)
+# against that session's intraday bars. Populates ew_strike_verdict +
 # ew_strike_move_pct + ew_minutes_to_hit + ew_minutes_in_zone +
-# ew_day_change_pct on earnings_calendar so tomorrow's brief can render
-# the verdict in the 🔮 Whispers section ("EW LC $30 HIT +18.7%, in 0m,
-# held 390m, day +4.1%"). Idempotent — already-scored rows skip unless
-# --force is passed.
+# ew_day_change_pct on earnings_calendar. Only BRIEF_AS_OF replays of the
+# brief reach its render path (#1168). Idempotent: scored rows skip unless
+# --force is passed, which also clears a row it cannot re-score.
 deploy_evaluate_ew_strikes() {
     echo "Deploying evaluate-ew-strikes job..."
     gcloud run jobs create evaluate-ew-strikes \
@@ -4814,16 +4833,32 @@ deploy_schedulers() {
     # gcp/audit_infra_drift.py::check_scheduler_state now flags any
     # scheduler left PAUSED so a repeat is visible within a day.
 
-    # Nightly: --mode=historical promotes rolling 'pending' rows to
-    # 'final'. Tue-Sat 01:00 ET so it runs AFTER historical-signals-
-    # watchlist (which Cloud Scheduler doesn't have a strict ordering
-    # for, but in practice the watchlist iterator finishes by 22:00 ET).
-    # --lookback-days=2 covers any signal whose 240m (=4h) window
-    # closed in the last day; 2 days is paranoid headroom against DST
-    # edges and weekend gaps.
-    _schedule_with_args "signal-quality-report-nightly" \
-        "0 1 * * 2-6" "signal-quality-report" \
-        "--mode=historical" "--lookback-days=2"
+    # Nightly: --mode=historical scores the sessions its writer,
+    # historical-signals-watchlist-daily, added. That writer fires at
+    # 01:00 ET Tue-Sat and took 1.5-2 min on each run 2026-09-19..26.
+    # This used to fire at 01:00 too, on the claim that the writer
+    # "finishes by 22:00 ET", so it read historical_signals before the
+    # session was written (#1166). The 2-day window picked a Mon-Thu
+    # session up the next night; Friday's fell out of Tuesday's window
+    # and was never scored (0 of 20,323 Friday rows over 120 days).
+    # 01:30 puts it after the writer, and --heal-days=35 does not depend
+    # on the clock: it also scores any unscored row whose entry_time is in
+    # the last 35 days (a late writer, a failed night, and the writer's
+    # 30-day bootstrap of a newly added ticker, BOOTSTRAP_DAYS in
+    # scripts/run_historical_signals.py), then exits 1 if a row it selected
+    # is still missing. Measured 2026-09-26: 5.8 s cold for the source query,
+    # 0.7 s for the coverage check. A heal keyed on inserted_at would also
+    # reach an older manual --backfill-from, but historical_signals has no
+    # index on it and each query seq-scanned all 3.4 GB (14.3 s, twice a
+    # night); a backfill older than 35 days is scored by running the report
+    # over that window, as the #1154 re-run did. --lookback-days=2 keeps
+    # each session's second pass. The alarm below reads signal_metrics at
+    # 02:00, after this run. Verified update-or-create, so `schedulers` and
+    # `all` converge a live entry rather than skip it as "already exists".
+    _schedule_with_args_verified "signal-quality-report-nightly" \
+        "30 1 * * 2-6" "signal-quality-report" \
+        "--mode=historical" "--lookback-days=2" "--heal-days=35" \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
 
     # Phase 0.5 spec item #6 — clean-rate regression alarm.
     # Daily 02:00 ET, after the nightly historical run promotes rolling
@@ -5150,6 +5185,7 @@ case "${1:-help}" in
     direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
     magnitude-recal) deploy_magnitude_recal ;;   # research image (already built)   # research image; build separately (build-research)
     magnitude-inference) _run build_research_image deploy_magnitude_inference ;;
+    magnitude-inference-only) deploy_magnitude_inference ;;   # research image; build separately (build-research)
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend) _run build_image deploy_weekend ;;
     fetchers) _run build_image deploy_fetchers backfill_watchlist ;;
@@ -5160,6 +5196,7 @@ case "${1:-help}" in
     pg-dump) _run build_image deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) _PIN_AFTER=0; setup_pg_dump_iam ;;
     fred-rates) _run build_image deploy_fetch_fred_rates ;;
+    evaluate-ew-strikes) _run build_image deploy_evaluate_ew_strikes ;;
     db-query) _run build_image deploy_db_query ;;
     freshness-watchdog) _run build_image deploy_freshness_watchdog ;;
     audit-infra-drift) _run build_image deploy_audit_infra_drift ;;
@@ -5280,6 +5317,8 @@ case "${1:-help}" in
         echo "             objectAdmin on the dump bucket, lifecycle rule sets 30d"
         echo "             retention on the sql-dumps/ prefix."
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
+        echo "  evaluate-ew-strikes"
+        echo "             Deploy evaluate-ew-strikes job alone (EW strike verdicts, 23:00 ET)."
         echo "  gamma-levels"
         echo "             Deploy p2-build-gamma-levels job (research image; run"
         echo "             build-research first). Nightly writer of gamma_levels_eod."

@@ -513,6 +513,14 @@ class Degeneracy(ApiModel):
     modal_bucket: Optional[int] = None
     modal_share: Optional[float] = None
     n_bars: Optional[int] = None
+    # Distinct ET sessions behind n_bars, and the minimum before a modal
+    # share over the ceiling counts as collapse rather than a calm day
+    # (Codex P2 on #1117). insufficient_sessions is True when the share is
+    # over the ceiling but the sessions are under the minimum: rendered, and
+    # the payload says why.
+    n_sessions: Optional[int] = None
+    min_sessions: Optional[int] = None
+    insufficient_sessions: Optional[bool] = None
     distinct_buckets: Optional[int] = None
     lookback_days: Optional[int] = None
     reason: Optional[str] = None
@@ -531,7 +539,17 @@ class ExpectedMove(ApiModel):
     size_class: Optional[str] = None
     pred_bucket: Optional[int] = None
     probabilities: Optional[ExpectedMoveProbabilities] = None
+    # Probability of the served bucket (size_class). Present on every OK
+    # expected_move since 2026-09-16; null on the UNAVAILABLE envelopes.
+    pred_bucket_proba: Optional[float] = None
+    # Probability of the ARGMAX bucket, which is TIGHT on nearly every bar
+    # of a calibrated model: a drift-monitoring metric, not the confidence
+    # of size_class (Codex P1 on #1117). Kept for the auditor and for
+    # consumers that already read it.
     max_proba: Optional[float] = None
+    # The rule pred_bucket was made under; 'lift' on every OK row since
+    # 2026-09-16, when argmax-era rows stopped being served as decisions.
+    decision_rule: Optional[str] = None
     # magnitude_predictions.model_version is VARCHAR(64) — the producer
     # (lib/movement_statement.py) passes the raw DB value straight through,
     # so string-or-null is the whole wire domain. `ts` arrives as a

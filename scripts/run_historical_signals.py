@@ -155,6 +155,13 @@ def _resolve_tickers(args: argparse.Namespace) -> list[str]:
 # multi-day outage this rule exists for.
 LIVE_WINDOW_DAYS = 5
 
+# How far back a (ticker, strategy) with no rows yet is bootstrapped. The
+# signal-quality report's nightly heal window (--heal-days in gcp/deploy.sh)
+# must reach at least this far, or a new ticker's first month of signals is
+# written and never scored (#1166); tests/scripts/test_signal_quality_report.py
+# pins the two together.
+BOOTSTRAP_DAYS = 30
+
 
 def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime, str]:
     """Determine the [start, end) bar window, and the provenance it implies.
@@ -201,7 +208,7 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime, str]:
         if last is None:
             log.info('no existing rows for %s [%s] — defaulting to last 30 days',
                      ticker, args.strategy)
-            start = end - timedelta(days=30)
+            start = end - timedelta(days=BOOTSTRAP_DAYS)
             run_kind = 'backfill'
         else:
             start = last + timedelta(minutes=1)

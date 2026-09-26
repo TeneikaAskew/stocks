@@ -254,16 +254,19 @@ def test_compute_metrics_for_signal_full_pipeline():
         "Low":   [99.0] * 30,
         "Close": [100.0] * 30,
     })
+    # historical_signals stores PERCENTAGE POINTS (0.06 = 0.06%), the unit
+    # lib/trading_analysis.py writes. #1154: this row once fed fractions,
+    # the unit the code assumed, so the test agreed with the bug.
     src = {
         "ticker":         "SPY",
         "entry_time":     entry,
         "strategy":       "momentum",
         "trade_type":     "CALL",
         "entry_price":    100.0,
-        "return_5min":    0.0006,    # NOISE
-        "return_15min":   0.0040,    # MIXED
-        "return_30min":   0.0070,    # CLEAN_HIT
-        "return_60min":   0.0150,    # CLEAN_HIT
+        "return_5min":    0.06,      # 0.06% -> NOISE
+        "return_15min":   0.40,      # 0.40% -> MIXED
+        "return_30min":   0.70,      # 0.70% -> CLEAN_HIT
+        "return_60min":   1.50,      # 1.50% -> CLEAN_HIT
     }
     m = compute_metrics_for_signal(src, intraday=intraday,
                                     intraday_lookback=lookback, mode="historical")
@@ -277,10 +280,62 @@ def test_compute_metrics_for_signal_full_pipeline():
     assert m.cls_90m == "CLEAN_HIT"
     assert m.cls_240m == "CLEAN_HIT"
     assert m.best_tf == "30m"   # shortest clean
+    assert m.return_60m == pytest.approx(0.015, rel=1e-9)   # stored as a fraction
     assert m.atr_5m_pct == pytest.approx(0.02, rel=1e-3)
     # mfe_60m_atrs = 0.015 / 0.02 = 0.75
     assert m.mfe_60m_atrs == pytest.approx(0.75, rel=1e-3)
     assert m.status == "final"  # historical mode
+
+
+def test_source_returns_reach_classify_as_fractions_end_to_end():
+    """#1154 unit contract, writer to reader, with nothing mocked but the
+    catalyst lookup.
+
+    MarketAnalyzer.generate_technical_signals writes return_*min in
+    PERCENTAGE POINTS (`* 100`); map_signals_to_table carries them into
+    the historical_signals shape unchanged; compute_metrics_for_signal must
+    hand classify() a FRACTION, the unit CLEAN_THRESHOLD and
+    NOISE_THRESHOLD are written in.
+
+    The bars rise 0.2% over the hour after entry: a 0.002 fraction, NOISE
+    under the 0.003 floor. Read raw, the same move arrives as 0.2 and
+    clears the 0.005 CLEAN bar forty times over, which is what production
+    did on every 5/15/30/60m row it wrote.
+    """
+    from lib.trading_analysis import MarketAnalyzer
+    from scripts.run_historical_signals import map_signals_to_table
+
+    n = 120
+    last = 100.0 + np.arange(n) * (100.0 * 0.002 / 60)   # +0.2% per 60 bars
+    bars = pd.DataFrame({
+        "Time": pd.date_range("2026-04-29 13:30", periods=n, freq="1min", tz="UTC"),
+        "Last": last,
+        "Volume": 1_000,
+        # Enough CALL conditions to clear the gate (>= 5, core >= 2):
+        "RSI14_W": 35.0,                 # core: inside (25, 50)
+        "StochRSI_K": 50.0,
+        "VWAP": 90.0, "EMA9": 90.0,      # core: price above both
+        "RVol_Recent_20": 1.5,           # confirming: > 1.2
+        "ATR_Expansion": 1.3,            # confirming: > 1.15
+    })
+    signals = MarketAnalyzer().generate_technical_signals(bars)
+    assert not signals.empty
+    with patch("lib.strategies.catalyst_proximity.get_catalyst_context",
+               return_value={}):
+        rows = map_signals_to_table(signals, "SPY", strategy="momentum")
+
+    row = rows.iloc[0].to_dict()
+    i = int(bars.index[bars["Time"] == row["entry_time"]][0])
+    entry_price = float(bars["Last"].iloc[i])
+    m = compute_metrics_for_signal(row, mode="historical")
+
+    for tf, got in ((5, m.return_5m), (15, m.return_15m),
+                    (30, m.return_30m), (60, m.return_60m)):
+        # The favourable excursion as a FRACTION, measured on the bars.
+        want = (float(bars["Last"].iloc[i + 1:i + 1 + tf].max()) - entry_price) / entry_price
+        assert got == pytest.approx(want, rel=1e-9), f"{tf}m"
+    assert m.return_60m == pytest.approx(0.002, rel=1e-3)
+    assert m.cls_60m == "NOISE"
 
 
 def test_compute_metrics_for_signal_no_intraday_marks_extended_insufficient():
@@ -639,3 +694,271 @@ def test_build_quality_report_embed_zero_decided_no_div_by_zero():
     embed = build_quality_report_embed(
         start, end, 'rolling', 5, 5, {'INSUFFICIENT_DATA': 5})
     assert 'Clean rate **0.0%** (0/0 decided)' in embed['description']
+
+
+# ── #1166: score every session the writer adds, and say when one is left ──
+#
+# The nightly report and its writer (historical-signals-watchlist) both fired
+# at 01:00 ET Tue-Sat, so the report read historical_signals before the
+# writer had inserted the session it was about to add. The 2-day window
+# picked a Mon-Thu session up the next night; Friday's, written by the
+# Saturday run, fell out of Tuesday's window and was never scored. These pin
+# the three halves of the fix: a heal window that selects unscored rows the
+# regular window no longer covers, one source query and one coverage query
+# however many sessions it heals, and a coverage check that fails the run
+# when a row it selected is still unscored.
+
+import scripts.signal_quality_report as sqr  # noqa: E402
+
+# A Tuesday 01:30 ET nightly run (05:30 UTC under EDT), as scheduled.
+_TUE = datetime(2026, 9, 29, 5, 30, tzinfo=timezone.utc)
+
+
+def _nightly_args(*extra: str):
+    return parse_args(["--mode", "historical", "--lookback-days", "2", *extra])
+
+
+def test_parse_args_accepts_heal_days():
+    assert _nightly_args("--heal-days", "7").heal_days == 7
+    assert _nightly_args().heal_days is None
+
+
+def test_resolve_heal_start_reaches_back_before_the_window():
+    start, end = _TUE - timedelta(days=2), _TUE
+    assert sqr._resolve_heal_start(_nightly_args("--heal-days", "7"), start, end) \
+        == _TUE - timedelta(days=7)
+
+
+def test_resolve_heal_start_is_none_without_the_flag():
+    assert sqr._resolve_heal_start(_nightly_args(), _TUE - timedelta(days=2), _TUE) is None
+
+
+def test_resolve_heal_start_never_starts_inside_the_window():
+    # --heal-days shorter than the window adds nothing before it; the coverage
+    # check still covers the whole window.
+    start, end = _TUE - timedelta(days=2), _TUE
+    assert sqr._resolve_heal_start(_nightly_args("--heal-days", "1"), start, end) == start
+
+
+def test_resolve_heal_start_refuses_rolling_mode():
+    args = parse_args(["--mode", "rolling", "--heal-days", "7"])
+    with pytest.raises(ValueError, match="heal-days"):
+        sqr._resolve_heal_start(args, _TUE - timedelta(hours=4), _TUE)
+
+
+def test_resolve_heal_start_refuses_a_non_positive_count():
+    with pytest.raises(ValueError, match="heal-days"):
+        sqr._resolve_heal_start(_nightly_args("--heal-days", "0"),
+                                _TUE - timedelta(days=2), _TUE)
+
+
+def test_tuesdays_run_heals_fridays_session():
+    """The case #1166 is about: Friday 2026-09-25's signals, written by the
+    Saturday 01:00 ET writer after the Saturday report had read. Tuesday's
+    2-day window starts on Sunday, so only the heal window reaches them."""
+    args = _nightly_args("--heal-days", "7")
+    start, end = _TUE - timedelta(days=2), _TUE
+    heal_start = sqr._resolve_heal_start(args, start, end)
+    for friday_bar in (datetime(2026, 9, 25, 13, 30, tzinfo=timezone.utc),
+                       datetime(2026, 9, 25, 19, 59, tzinfo=timezone.utc)):
+        assert not (start <= friday_bar < end)       # the window alone misses it
+        assert heal_start <= friday_bar < start      # the heal range selects it
+
+
+def _keys(*rows):
+    return pd.DataFrame([{"ticker": t, "entry_time": pd.Timestamp(e, tz="UTC"),
+                          "strategy": s} for t, e, s in rows])
+
+
+def test_coverage_gaps_splits_missed_from_deferred():
+    """Missed: a row this run selected and still did not score (a bug, or a
+    ticker with no intraday bars). Deferred: a row the writer inserted after
+    this run read, which the next run's heal window picks up."""
+    selected = _keys(("SPY", "2026-09-25 14:00", "momentum"),
+                     ("QQQ", "2026-09-25 14:00", "momentum"))
+    unscored = _keys(("QQQ", "2026-09-25 14:00", "momentum"),
+                     ("IWM", "2026-09-28 15:00", "momentum"))
+    missed, deferred = sqr.coverage_gaps(unscored, selected)
+    assert list(missed["ticker"]) == ["QQQ"]
+    assert list(deferred["ticker"]) == ["IWM"]
+
+
+def test_coverage_gaps_keys_on_strategy_too():
+    selected = _keys(("SPY", "2026-09-25 14:00", "momentum"))
+    unscored = _keys(("SPY", "2026-09-25 14:00", "mean_reversion"))
+    missed, deferred = sqr.coverage_gaps(unscored, selected)
+    assert missed.empty
+    assert list(deferred["strategy"]) == ["mean_reversion"]
+
+
+def test_coverage_gaps_empty_when_everything_scored():
+    missed, deferred = sqr.coverage_gaps(
+        pd.DataFrame(columns=["ticker", "entry_time", "strategy"]),
+        _keys(("SPY", "2026-09-25 14:00", "momentum")))
+    assert missed.empty and deferred.empty
+
+
+def _run_main(argv, *, src, unscored, intraday):
+    """main() with every I/O boundary mocked; returns (rc, source_calls,
+    coverage_calls)."""
+    source_calls: list[dict] = []
+    coverage_calls: list[dict] = []
+
+    def _source(_engine, start, end, **kw):
+        source_calls.append({"start": start, "end": end, **kw})
+        return src
+
+    def _unscored(_engine, start, end, **kw):
+        coverage_calls.append({"start": start, "end": end, **kw})
+        return unscored
+
+    with patch("gcp.database.get_engine", return_value=object()), \
+         patch("scripts.signal_quality_report.fetch_source_rows", side_effect=_source), \
+         patch("scripts.signal_quality_report.find_unscored_rows", side_effect=_unscored,
+               create=True), \
+         patch("scripts.signal_quality_report.fetch_intraday_window",
+               side_effect=lambda _e, t, s, e: intraday.get(t, pd.DataFrame())), \
+         patch("scripts.signal_quality_report.upsert_signal_metrics",
+               side_effect=lambda _e, rows: len(rows)):
+        rc = main(argv)
+    return rc, source_calls, coverage_calls
+
+
+_NIGHTLY = ["--mode", "historical", "--lookback-days", "2", "--heal-days", "7",
+            "--skip-freshness-check"]
+
+
+def test_main_heal_makes_one_source_query_and_one_coverage_query():
+    """I/O shape: healing a week costs the same two round trips as healing a
+    day. The heal rows arrive in the one source query, not per session."""
+    base = pd.Timestamp("2026-09-25 14:30:00", tz="UTC")
+    src = pd.concat([_three_signals_for_ticker("SPY", base),
+                     _three_signals_for_ticker("QQQ", base + timedelta(days=3))],
+                    ignore_index=True)
+    cache = _make_synthetic_intraday(base - timedelta(minutes=120), bars=6000)
+    rc, source_calls, coverage_calls = _run_main(
+        _NIGHTLY, src=src, unscored=pd.DataFrame(columns=["ticker", "entry_time", "strategy"]),
+        intraday={"SPY": cache, "QQQ": cache})
+    assert rc == 0
+    assert len(source_calls) == 1 and len(coverage_calls) == 1
+    heal_start = source_calls[0]["heal_start"]
+    assert heal_start is not None
+    assert source_calls[0]["end"] - heal_start == timedelta(days=7)
+    # the coverage check covers the heal range and the window together
+    assert coverage_calls[0]["start"] == heal_start
+    assert coverage_calls[0]["end"] == source_calls[0]["end"]
+
+
+def test_main_heal_fails_when_a_selected_row_is_still_unscored():
+    """A row the run selected and could not score (here: no intraday bars
+    for its ticker) is a silent gap unless the run says so. It exits 1, which
+    the failure notifier turns into an issue."""
+    base = pd.Timestamp("2026-09-25 14:30:00", tz="UTC")
+    src = _three_signals_for_ticker("WEIRD", base)
+    rc, _, _ = _run_main(_NIGHTLY, src=src, unscored=src[["ticker", "entry_time", "strategy"]],
+                         intraday={})
+    assert rc == 1
+
+
+def test_main_heal_defers_rows_the_writer_added_during_the_run():
+    """Rows inserted after the source query are not this run's failure: the
+    next run's heal window selects them. Exit 0."""
+    base = pd.Timestamp("2026-09-28 14:30:00", tz="UTC")
+    src = _three_signals_for_ticker("SPY", base)
+    cache = _make_synthetic_intraday(base - timedelta(minutes=120), bars=600)
+    late = _keys(("IWM", "2026-09-28 19:00", "momentum"))
+    rc, _, coverage_calls = _run_main(_NIGHTLY, src=src, unscored=late,
+                                      intraday={"SPY": cache})
+    assert rc == 0
+    assert len(coverage_calls) == 1
+
+
+def test_main_dry_run_skips_the_coverage_check():
+    base = pd.Timestamp("2026-09-28 14:30:00", tz="UTC")
+    src = _three_signals_for_ticker("SPY", base)
+    cache = _make_synthetic_intraday(base - timedelta(minutes=120), bars=600)
+    rc, _, coverage_calls = _run_main(_NIGHTLY + ["--dry-run"], src=src,
+                                      unscored=src[["ticker", "entry_time", "strategy"]],
+                                      intraday={"SPY": cache})
+    assert rc == 0
+    assert coverage_calls == []
+
+
+def test_main_without_heal_days_runs_no_coverage_check():
+    """Backfills and manual windows keep today's behaviour."""
+    base = pd.Timestamp("2026-09-28 14:30:00", tz="UTC")
+    src = _three_signals_for_ticker("SPY", base)
+    cache = _make_synthetic_intraday(base - timedelta(minutes=120), bars=600)
+    rc, source_calls, coverage_calls = _run_main(
+        ["--mode", "historical", "--start", "2026-09-28", "--end", "2026-09-29",
+         "--skip-freshness-check"],
+        src=src, unscored=src[["ticker", "entry_time", "strategy"]], intraday={"SPY": cache})
+    assert rc == 0
+    assert source_calls[0].get("heal_start") is None
+    assert coverage_calls == []
+
+
+def test_main_heal_days_in_rolling_mode_returns_2():
+    with patch("gcp.database.get_engine", return_value=object()):
+        assert main(["--mode", "rolling", "--heal-days", "7"]) == 2
+
+
+def test_build_quality_report_embed_reports_healed_rows():
+    start = datetime(2026, 9, 27, 5, 30, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 29, 5, 30, tzinfo=timezone.utc)
+    embed = build_quality_report_embed(start, end, "historical", 10, 10,
+                                       {"CLEAN_HIT": 5, "NOISE": 5}, healed=4)
+    assert "4" in embed["description"] and "before the window" in embed["description"]
+    plain = build_quality_report_embed(start, end, "historical", 10, 10,
+                                       {"CLEAN_HIT": 5, "NOISE": 5})
+    assert "before the window" not in plain["description"]
+
+
+def _nightly_schedulers():
+    from scripts.maintenance.doc_inventory import deploy_schedulers
+    return {s["name"]: s for s in deploy_schedulers()}
+
+
+def test_nightly_report_is_scheduled_after_its_writer_and_heals():
+    """The schedule half of #1166, read from gcp/deploy.sh with the parser the
+    doc inventory uses. Same days, a later clock time than the writer, and
+    the heal window in its args."""
+    sched = _nightly_schedulers()
+    report = sched["signal-quality-report-nightly"]
+    writer = sched["historical-signals-watchlist-daily"]
+    r_min, r_hour, *_, r_dow = report["cron"].split()
+    w_min, w_hour, *_, w_dow = writer["cron"].split()
+    assert r_dow == w_dow
+    assert (int(r_hour), int(r_min)) > (int(w_hour), int(w_min))
+    assert "--heal-days=" in report["args"]
+    alarm = sched["signal-quality-alarm-daily"]
+    a_min, a_hour, *_ = alarm["cron"].split()
+    assert (int(a_hour), int(a_min)) > (int(r_hour), int(r_min))
+
+
+def test_the_nightly_scheduler_is_updated_not_only_created():
+    """Codex on #1186: `_schedule_with_args` swallows "already exists", so
+    `deploy.sh schedulers` or `all` left the live entry at the old cron and
+    args. The verified helper updates, reads back, and counts a failure."""
+    assert _nightly_schedulers()["signal-quality-report-nightly"]["helper"] \
+        == "_schedule_with_args_verified"
+
+
+def test_the_nightly_heal_reaches_a_new_tickers_bootstrap():
+    """Codex on #1186: the writer bootstraps a (ticker, strategy) with no rows
+    from BOOTSTRAP_DAYS back. A 7-day heal left the rest of that month written
+    and never scored. The window must reach the whole bootstrap, which starts
+    BOOTSTRAP_DAYS - 1 days before the writer's run (its end is exclusive, a
+    day ahead), from a report run half an hour later."""
+    import re
+    from scripts.run_historical_signals import BOOTSTRAP_DAYS
+    args = _nightly_schedulers()["signal-quality-report-nightly"]["args"]
+    heal = int(re.search(r"--heal-days=(\d+)", args).group(1))
+    assert heal >= BOOTSTRAP_DAYS, (heal, BOOTSTRAP_DAYS)
+    # And in the report's own terms: the oldest bootstrap row is selected.
+    run = _TUE
+    oldest_bootstrap = run + timedelta(days=1) - timedelta(days=BOOTSTRAP_DAYS)
+    start, end = run - timedelta(days=2), run
+    heal_start = sqr._resolve_heal_start(
+        _nightly_args("--heal-days", str(heal)), start, end)
+    assert heal_start <= oldest_bootstrap < start

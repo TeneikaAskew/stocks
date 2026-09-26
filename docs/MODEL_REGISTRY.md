@@ -5,6 +5,36 @@
 - **Part A — Model Registry edition** (was `MODEL_REGISTRY.md`)
 - **Part B — Model Catalog edition** (was `MODEL_CATALOG.md`)
 
+### ID collision resolved (2026-09-15)
+
+The two editions both numbered their first family `A1/A2/A3` — **with different
+meanings**, so an unqualified "A2" was ambiguous:
+
+| ID | Part A meant | Part B meant |
+|---|---|---|
+| `A1` | Strat TYPE engine | `MAG-SIZE` (magnitude) |
+| `A2` | Magnitude engine | `STRAT-TYPE` (structure) |
+| `A3` | Strat DIRECTION baseline | `STRAT-DIR` (direction) |
+
+**Part A keeps the bare `A1/A2/A3`**, because that scheme is shared with
+[`EXPERIMENT_REGISTRY.md`](EXPERIMENT_REGISTRY.md) Book II (§A1 Strat TYPE, §A2
+Magnitude, §A3/B0 Direction). **Part B's family is now prefixed `CAT-`**
+(`CAT-A0`…`CAT-A8`) after its origin as the Model Catalog. No entry was dropped,
+merged or reworded; only the ordinal label changed. Part B's `B.` (deferred) and
+`C-mf` (proposed) entries never collided and are unchanged.
+
+### Related documents
+
+| Doc | Holds |
+|---|---|
+| [`EXPERIMENT_REGISTRY.md`](EXPERIMENT_REGISTRY.md) | Per-experiment ledger `E-01…E-35` + thematic Book II |
+| [`RESEARCH_COMPENDIUM.md`](RESEARCH_COMPENDIUM.md) | Master narrative (Part A) + end-to-end experiment log (Part B) |
+| [`INVESTMENT_MODELS_SUMMARY.md`](INVESTMENT_MODELS_SUMMARY.md) | Models #1–#5, `lib/`, Strat classifier, backtest engine |
+| [`MAGNITUDE_ENGINE_RESULTS.md`](MAGNITUDE_ENGINE_RESULTS.md) · [`DIRECTION_RESEARCH_RESULTS.md`](DIRECTION_RESEARCH_RESULTS.md) · [`DIRECTION_FEATURES_R&D.md`](DIRECTION_FEATURES_R&D.md) | Per-program verdict docs (all FAIL / null) |
+| [`EXEC_BACKTEST_RESULTS.md`](EXEC_BACKTEST_RESULTS.md) · [`OPTIONS_EXEC_BACKTEST_RESULTS.md`](OPTIONS_EXEC_BACKTEST_RESULTS.md) · [`BSVP_VALIDATION_RESULTS.md`](BSVP_VALIDATION_RESULTS.md) | Execution backtests + BSVP validation |
+| [`MODEL_RETHINK_PLANS.md`](MODEL_RETHINK_PLANS.md) · [`DIRECTION_LITERATURE_SCAN.md`](DIRECTION_LITERATURE_SCAN.md) | The B1–B3 pivot + Phase 0 literature |
+| [`product/07-MODEL-REGISTRY.md`](product/07-MODEL-REGISTRY.md) | **Governance view** — `MODEL-*` IDs, lifecycle status, promotion criteria, traceability |
+
 ---
 
 # PART A — Model Registry edition
@@ -150,7 +180,7 @@ target / features / training data / status. Naming convention:
 
 ## A. Existing (built + run)
 
-### A0 · `STRAT-RULES` — the DETERMINISTIC Strat classifier ★ (rule-based, no ML)
+### CAT-A0 · `STRAT-RULES` — the DETERMINISTIC Strat classifier ★ (rule-based, no ML)
 - **Family:** RULES (deterministic) · **Algorithm:** pure rules, no training.
 - **What it computes:** single-bar Strat candle `1 / 2U / 2D / 3`; combo detection
   (Failed-2U/2D, RevStrat reversals, 212/312/132/322 continuations); FTFC
@@ -161,7 +191,7 @@ target / features / training data / status. Naming convention:
   `strat_candle`, `strat_combo`, `is_continuation/reversal`, `strat_setup`,
   `trigger_high/low` into `strat_features_<tf>`.
 - **Roles in the ecosystem:**
-  1. **PRIMARY signal in `STRAT-BREAKOUT-META` (A5)** — the trigger-break that
+  1. **PRIMARY signal in `STRAT-BREAKOUT-META` (CAT-A5)** — the trigger-break that
      *fixes the trade direction* is this deterministic rule; only the take/skip
      meta-filter is learned.
   2. **Feature source** for every ML model (the `strat_candle`/combo one-hots in
@@ -169,47 +199,47 @@ target / features / training data / status. Naming convention:
   3. Production "cockpit" Strat methodology + FTFC.
 - **Status:** ✅ production (deterministic, always-on). Spec: `docs/STRAT_METHODOLOGY.md`.
 
-### A1 · `MAG-SIZE` — the size model
+### CAT-A1 · `MAG-SIZE` — the size model
 - **Family:** SIZE · **Algorithm:** LightGBM 4-class multiclass (300 trees, lr 0.05, depth 6, leaves 31, min_child 100, seed 42).
 - **Target:** next-bar move bucketed in ATR-20 units → TIGHT/NORMAL/EXPANDED/EXPLOSIVE (0.5/1.0/1.5).
-- **Features:** ~140 spine (`strat_features_<tf>` ⨝ `strat_features_levels_<tf>`): TA + Strat one-hots (from A0) + gamma + VIX.
+- **Features:** ~140 spine (`strat_features_<tf>` ⨝ `strat_features_levels_<tf>`): TA + Strat one-hots (from CAT-A0) + gamma + VIX.
 - **Training data:** `strat_features_<tf>` (SPY/IWM/QQQ; 5m/15m/30m); `etf_options_snapshots` for gate-7 only.
 - **Label-mode variants:** `body` → FAILED gate-7 (priced in); `excursion` → "passed" but **VRP/measurement artifact**; `call`/`put` → directional gate-7 **FAIL/INSUFFICIENT**.
 - **Status:** Research, **closed**. Size is predictable; **nothing beats option IV.**
 
-### A2 · `STRAT-TYPE` — the structure model
+### CAT-A2 · `STRAT-TYPE` — the structure model
 - **Family:** TYPE · **Algorithm:** LightGBM 4-class (same hyperparams).
 - **Target:** next bar's Strat candle `next_bar_type` ∈ {1,2U,2D,3}.
 - **Features/data:** ~140 spine; `strat_features_<tf>`.
 - **Variants:** `strat_walk_forward`, `_adaptive`, `strat_pred_per_class` (OvR).
 - **Status:** ✅ **Validates** (+0.11–0.16 logloss beat). Production structure signal.
 
-### A3 · `STRAT-DIR` — the direction failure
+### CAT-A3 · `STRAT-DIR` — the direction failure
 - **Family:** DIRECTION · **Algorithm:** LightGBM binary.
 - **Target:** `next_close > next_open`. **Features:** spine (+ news/cross-asset/vol-regime/options families in `_extended`).
 - **Status:** ❌ **FAILED 24/24** (base + 4 feature families). Root cause = wrong target, not a bad model.
 
-### A4 · `STRAT-CORR` — feature-discovery (not predictors)
-`strat_corr_indicators` (MI ranking per `next_bar_type`) + `strat_corr_combos` (OOS combo-lift mining via `lib/combo_mining.py`). Feed A2 feature selection.
+### CAT-A4 · `STRAT-CORR` — feature-discovery (not predictors)
+`strat_corr_indicators` (MI ranking per `next_bar_type`) + `strat_corr_combos` (OOS combo-lift mining via `lib/combo_mining.py`). Feed CAT-A2 feature selection.
 
-### A5 · `STRAT-BREAKOUT-META` — the one real edge ★ (deterministic primary + learned filter)
+### CAT-A5 · `STRAT-BREAKOUT-META` — the one real edge ★ (deterministic primary + learned filter)
 - **Family:** META · **Primary:** `STRAT-RULES` trigger break (deterministic, sets direction). **Meta-model:** LightGBM binary (learned take/skip).
 - **Target (meta-label):** triple-barrier — did price hit +1.0·ATR profit target before −0.5·ATR stop within 12 bars? Barriers resolved on **1-minute** bars.
 - **Features:** spine at decision bar + breakout side (no leak). OFI-proxy & IV-flow families A/B-tested → **both hurt**; edge is self-contained in structural features.
 - **Data:** SPY/IWM/QQQ; 5m+15m; `strat_features_<tf>` + `market_data_intraday` (1-min, labels/fill).
-- **Status:** ⚠️ **gross 24/24; META reproduces PASS on all cells, but NET is fragile/ticker-specific.** 2026-06-09 reconfirm on data extended to 2026-06 (realistic entry, 0.6bp): **only IWM 5m is a clean net-positive (+0.110 R, 8/8)**; SPY 5m (+0.042, 4/8), QQQ 5m (−0.027, 4/8), SPY 15m (+0.022, 4/7) all NET_FAIL — the 2026-06-05 "net across all 3 @5m" did NOT survive 2025–26. The stop-limit/realistic execution model is confirmed correct; net edge marginal — **not yet shippable multi-ticker.** The only VRP-immune path (trades the underlying). Caveats: ~10% same-tf-fallback labels; no decision-latency model. (E-18/E-24)
+- **Status:** ⚠️ **gross 24/24; META reproduces PASS on all cells, but NET is fragile/ticker-specific.** 2026-06-09 reconfirm on data extended to 2026-06 (realistic entry, 0.6bp): **only IWM 5m is a clean net-positive (+0.110 R, 8/8)**; SPY 5m (+0.042, 4/8), QQQ 5m (−0.027, 4/8), SPY 15m (+0.022, 4/7) all NET_FAIL — the 2026-06-05 "net across all 3 @5m" did NOT survive 2025–26. The stop-limit/realistic execution model is confirmed correct; net edge marginal — **not yet shippable multi-ticker.** The only VRP-immune path (trades the underlying). Caveats: ~10% same-tf-fallback labels; no decision-latency model. (E-18/E-32)
 
-### A6 · `DIR-REGIME` — regime-conditional direction
+### CAT-A6 · `DIR-REGIME` — regime-conditional direction
 - **Family:** DIRECTION · **Algorithm:** LightGBM binary per gamma regime.
 - **Target:** sign of N-bar forward return (corrected from body sign); judged on expectancy.
 - **Status:** ❌ **true null** — no consistent expectancy even split by gamma regime.
 
-### A7 · `INTRADAY-MOM` — intraday momentum
+### CAT-A7 · `INTRADAY-MOM` — intraday momentum
 - **Family:** DIRECTION · **Algorithm:** OLS replication + walk-forward LogisticRegression.
 - **Target:** last-30-min return from first-30-min. **Data:** per-day from `strat_features_30m`.
 - **Status:** ❌ **true null** — 1993–2013 anomaly decayed; negative β in 2016–26 even conditional on high-vol.
 
-### A8 · `STRAT-NEXTBAR` — historical tape + next-bar directional forward-walk ✅ (validated OOS)
+### CAT-A8 · `STRAT-NEXTBAR` — historical tape + next-bar directional forward-walk ✅ (validated OOS)
 - **Family:** DIRECTION (next-candle) · **Algorithm:** deterministic transition table + fixed FTFC+CLV+momentum vote rule (no params) + held-out logistic.
 - **Target:** next daily/weekly/monthly Strat candle; directional call = next ∈ {2U,2D}.
 - **Features:** **close-location-value (CLV, the workhorse)** + 1–3-bar momentum + RSI/EMA-dist/streaks + **FTFC** (prior-completed weekly+monthly). Data: `market_data_daily` resampled to 1d/1w/1mo/1q.
@@ -231,8 +261,9 @@ Naive DoW×30-min calendar lookup (MAG gate-6), "follow the gamma regime" (DIR-R
 | `FLOW-OFI` (true) | FLOW | short-horizon direction | **data-blocked** — needs L2/tick (AlphaVantage = OHLCV only; Polygon/Databento/IEX required) |
 | `HONEST-GATE7` (eval) | — | excursion vs time-of-day IV | **data-blocked** — options are EOD-only (1 snap/day 2019→2026) |
 
-Full results + self-audit story: `MODEL_RETHINK_PLANS.md` §RESULTS;
-end-to-end log: `EXPERIMENT_REGISTRY.md`; master narrative: `MODELS_END_TO_END.md`.
+Full results + self-audit story: [`MODEL_RETHINK_PLANS.md`](MODEL_RETHINK_PLANS.md) §RESULTS;
+end-to-end log: [`EXPERIMENT_REGISTRY.md`](EXPERIMENT_REGISTRY.md); master narrative:
+[`RESEARCH_COMPENDIUM.md`](RESEARCH_COMPENDIUM.md) Part B (formerly `MODELS_END_TO_END.md`).
 
 ---
 

@@ -1006,8 +1006,8 @@ Seventeen named plans live in `~/.claude/plans/`. All have been validated agains
 - `platform/src/lib/greeksCalculator.ts` — **DELETED** ✓
 - `platform/src/lib/nodeAnalyzer.ts` — **DELETED** ✓
 - `lib/gamma.py` — **NEW**, ~568 lines, canonical math (GEX, VEX, King/Gate/Spot/Flip taxonomy, max-pain, implied move) ✓
-- `POST /api/options/greeks` endpoint — **LIVE** at [platform/api/routers/options.py:359](platform/api/routers/options.py#L359) ✓
-- `GET /api/options/{ticker}/{date_str}/levels` endpoint — **LIVE** at [platform/api/routers/options.py:415](platform/api/routers/options.py#L415) ✓
+- `POST /api/options/greeks` endpoint — **LIVE** at [platform/api/routers/options.py:359](../platform/api/routers/options.py#L359) ✓
+- `GET /api/options/{ticker}/{date_str}/levels` endpoint — **LIVE** at [platform/api/routers/options.py:415](../platform/api/routers/options.py#L415) ✓
 - `useGammaLevels.ts` hook + `useOptionsGreeks.ts` hook — **LIVE**, OptionsFlowPage rewired ✓
 - `analytics.py` router — **LIVE** (PR #92): `/api/analytics/summary/{ticker}`, `/api/analytics/trade-stats` ✓
 - `config.py` router — **LIVE** (PR #92): `/api/config/indicators`, `/api/config/market-hours` ✓
@@ -1449,7 +1449,9 @@ Per CLAUDE.md and memory:
 | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` | GCP architecture deep-dive, schema, costs |
 | `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` | Phase-by-phase migration tracker |
 | `docs/INVESTMENT_MODELS_SUMMARY.md` | 5-model system, 195 features breakdown |
-| `docs/MODEL_SUMMARY.md` | Concise model overview |
+| `docs/product/07-MODEL-REGISTRY.md` | Model lifecycle status, promotion criteria, experiment traceability |
+| `docs/EXPERIMENT_REGISTRY.md` | The experiment log — `E-01…E-35` with verdicts |
+| `docs/RESEARCH_COMPENDIUM.md` | Master research narrative + end-to-end experiment log |
 | [`docs/DESIGN_SYSTEM.md`](https://github.com/TeneikaAskew/solyra/blob/main/docs/DESIGN_SYSTEM.md) | "The Obsidian Analyst" theme, color tokens, typography — now in the solyra repo |
 | `docs/product/infrastructure/05-e-API.md` | FastAPI router/endpoint catalog (PR #92) |
 | `docs/product/infrastructure/05-g-DATA_PIPELINE.md` | Per-table freshness plan, canonical writers, watchdog (PR #87) |

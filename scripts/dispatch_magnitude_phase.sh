@@ -47,10 +47,16 @@ shift || true
 # CLI flag on the module, so it travels in --args.
 label_mode=""
 thresholds=""
+class_weight_power=""
 for arg in "$@"; do
   case "$arg" in
     --label-mode=*) label_mode="${arg#*=}" ;;
     --thresholds=*) thresholds="${arg#*=}" ;;
+    # Class-weight exponent (mag_pred_train.resolve_class_weight). The
+    # 2026-09-14 alpha sweep was dispatched by hand with raw gcloud because
+    # this script could not carry it; recorded in the run summary as
+    # class_weight_power so the setting is never again unrecoverable.
+    --class-weight-power=*) class_weight_power="${arg#*=}" ;;
     --with-checks)
        # Documented in the header since the Phase-3 post-mortem but never
        # implemented: before this parser existed, extra arguments were simply
@@ -65,6 +71,7 @@ for arg in "$@"; do
        ;;
     *) echo "Unknown option: $arg" >&2
        echo "Valid: --label-mode=body|excursion|call|put  --thresholds=t0,t1,t2" >&2
+       echo "       --class-weight-power=0.0..1.0 (0 = unweighted, 1 = balanced)" >&2
        echo "       --with-checks (accepted, not implemented)" >&2
        exit 64 ;;
   esac
@@ -87,6 +94,11 @@ mag_args="-m,gcp.research.magnitude_engine.mag_walk_forward"
 # promotion — the recalibration silently not performed. An empty value reads
 # as absent in resolve_magnitude_thresholds(), so this clears it.
 env_flag="--update-env-vars=^|^MAG_PLAN=${plan}|MAG_THRESHOLDS=${thresholds}"
+# Only named when set: an empty MAG_CLASS_WEIGHT_POWER reads as "use the
+# default" in class_weight_power(), so passing it empty is harmless, but
+# naming it explicitly here keeps the merge semantics of --update-env-vars
+# (a stale value from an earlier sweep would otherwise persist on the job).
+env_flag="${env_flag}|MAG_CLASS_WEIGHT_POWER=${class_weight_power}"
 if [ -n "$label_mode" ] || [ -n "$thresholds" ]; then
   echo "  label contract: label_mode=${label_mode:-body} thresholds=${thresholds:-default}"
   echo "  (non-default labels write under _research/<slug>/ and cannot be promoted)"

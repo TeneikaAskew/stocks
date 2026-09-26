@@ -70,6 +70,11 @@ def _memory_of(invocation: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _cpu_of(invocation: str) -> str | None:
+    match = re.search(r"--cpu\s+(\S+)", invocation)
+    return match.group(1) if match else None
+
+
 def test_the_update_path_sets_memory_at_all():
     """The branch that actually runs must carry --memory.
 
@@ -116,4 +121,85 @@ def test_memory_is_above_the_limit_that_oomed():
     assert mib > 2048, (
         f"--memory {value} is {mib} MiB; 2048 MiB is the limit that was "
         f"OOM-killed on 2026-09-15, so it cannot be the fix."
+    )
+
+
+def test_memory_is_above_the_4gi_limit_that_oomed_again():
+    """4Gi (the #1116 raise) is now ALSO disproven — 2026-09-17 recurrence.
+
+    NVDA (insight-pipeline-6b276) OOM'd on both retry attempts and AMD
+    (insight-pipeline-hqcr8, the same ticker that OOM'd on 2026-09-15) OOM'd
+    again at the 4Gi ceiling, confirmed via
+    run.googleapis.com/container/memory/utilizations reading mean=0.9968
+    (99.68% of 4Gi) in the bucket containing the OOM. Deliberately not
+    asserting exactly 8Gi for the same reason the 2Gi test doesn't assert
+    4Gi: the metric is censored at the limit, so this incident only rules
+    out 4Gi.
+    """
+    body = _function_body("deploy_insight_pipeline")
+    value = _memory_of(_gcloud_invocation(body, "update", "insight-pipeline"))
+    match = re.fullmatch(r"(\d+)(Mi|Gi)", value or "")
+    assert match, f"unparseable --memory value {value!r}"
+    mib = int(match.group(1)) * (1024 if match.group(2) == "Gi" else 1)
+    assert mib > 4096, (
+        f"--memory {value} is {mib} MiB; 4096 MiB is the limit that was "
+        f"OOM-killed again on 2026-09-17 (NVDA + AMD), so it cannot be the fix."
+    )
+
+
+def test_the_update_path_sets_cpu_at_all():
+    """The branch that actually runs must carry --cpu.
+
+    Mirrors test_the_update_path_sets_memory_at_all: raising --memory past
+    4Gi requires raising --cpu past 1 (Cloud Run caps memory at 4Gi per
+    vCPU), so a --cpu bump left off the `update` path would silently cap
+    the live job's memory at 4Gi regardless of what --memory says, the same
+    way a missing --memory on `update` silently capped it at 2Gi before
+    #1116.
+    """
+    body = _function_body("deploy_insight_pipeline")
+    update = _gcloud_invocation(body, "update", "insight-pipeline")
+    assert _cpu_of(update) is not None, (
+        "`gcloud run jobs update insight-pipeline` passes no --cpu. Cloud Run "
+        "caps memory at 4Gi for 1 vCPU, so without a --cpu raise on this "
+        "branch, --memory above 4Gi will fail validation or be silently "
+        "capped."
+    )
+
+
+def test_create_and_update_agree_on_cpu():
+    """Both paths must request the same CPU, for the same reason as memory."""
+    body = _function_body("deploy_insight_pipeline")
+    create = _cpu_of(_gcloud_invocation(body, "create", "insight-pipeline"))
+    update = _cpu_of(_gcloud_invocation(body, "update", "insight-pipeline"))
+    assert create == update, (
+        f"create requests --cpu {create} but update requests --cpu {update}; "
+        f"a fresh environment and an existing one would not get the same job."
+    )
+
+
+def test_cpu_supports_the_memory_limit_requested():
+    """--cpu must be high enough to legally support --memory.
+
+    Cloud Run's documented ceiling: 1 vCPU -> 4Gi max, 2 vCPU -> 8Gi max,
+    4 vCPU -> 16Gi max, 6 vCPU -> 24Gi max, 8 vCPU -> 32Gi max. A --memory
+    raise that outruns this table would fail deploy validation outright
+    (loud) or, if the ceiling changes, silently cap actual usage — either
+    way the config is wrong, which is exactly the class of drift this
+    module of tests exists to catch textually rather than at deploy time.
+    """
+    cpu_to_max_gi = {1: 4, 2: 8, 4: 16, 6: 24, 8: 32}
+    body = _function_body("deploy_insight_pipeline")
+    update = _gcloud_invocation(body, "update", "insight-pipeline")
+    cpu_raw = _cpu_of(update)
+    mem_raw = _memory_of(update)
+    cpu = int(cpu_raw or 0)
+    assert cpu in cpu_to_max_gi, f"unrecognized --cpu value {cpu_raw!r}"
+    match = re.fullmatch(r"(\d+)(Mi|Gi)", mem_raw or "")
+    assert match, f"unparseable --memory value {mem_raw!r}"
+    mib = int(match.group(1)) * (1024 if match.group(2) == "Gi" else 1)
+    assert mib <= cpu_to_max_gi[cpu] * 1024, (
+        f"--memory {mem_raw} exceeds the {cpu_to_max_gi[cpu]}Gi ceiling for "
+        f"--cpu {cpu}; this combination would fail Cloud Run deploy "
+        f"validation."
     )
