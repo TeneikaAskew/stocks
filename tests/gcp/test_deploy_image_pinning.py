@@ -153,6 +153,7 @@ def test_every_target_that_deploys_the_main_image_builds_it_first():
 # results.images digests of a real build (untagged and tagged, one digest).
 _GCLOUD = r"""
     echo "$*" >> "$OUT/calls"
+    echo "${CLOUDSDK_CORE_PROJECT:-ACTIVE_CONFIG}" >> "$OUT/projects"
     case "$1 $2" in
       "builds submit")
         case "$*" in *--async*) ;; *) echo "stub: builds submit without --async" >&2; exit 9 ;; esac
@@ -411,6 +412,31 @@ def test_a_misspelt_target_exits_2(tmp_path):
     assert proc.returncode == 2, (proc.returncode, proc.stderr[-400:])
     assert "unknown target" in proc.stderr and "Usage:" in proc.stderr
     assert not any(c.startswith(("run jobs", "builds submit")) for c in calls), calls
+
+
+def test_every_gcloud_call_runs_in_project_id_not_the_active_config(tmp_path):
+    """Codex on #1189: deploy.sh took PROJECT_ID from the environment, but
+    only 4 of its 240 gcloud calls passed --project, so a PROJECT_ID naming
+    one project with the active gcloud config on another mixed the two, and
+    pin-floating could rewrite the other project's jobs. PROJECT_ID is now
+    exported as CLOUDSDK_CORE_PROJECT, which every call and helper uses."""
+    _jobs(tmp_path, {"tagless": IMAGE})
+    proc, calls = _run_target(tmp_path, "pin-floating")
+    projects = (tmp_path / "projects").read_text().split()
+    assert calls and len(projects) == len(calls), (proc.stderr[-400:], calls)
+    assert set(projects) == {"proj"}, set(projects)
+
+
+def test_no_project_stops_before_any_gcloud_call_but_the_lookup(tmp_path):
+    """With neither PROJECT_ID nor an active project, the script used to go
+    on with an empty project in every image path and flag."""
+    env = _env(tmp_path)
+    env.pop("PROJECT_ID", None)
+    proc = subprocess.run(["bash", str(REPO / "gcp/deploy.sh"), "pin-floating"], cwd=REPO,
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode != 0
+    assert "PROJECT_ID" in proc.stderr, proc.stderr[-400:]
+    assert _calls(tmp_path) == ["config get-value project"], _calls(tmp_path)
 
 
 def test_help_still_exits_0(tmp_path):

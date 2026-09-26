@@ -21,8 +21,8 @@
 #   ./gcp/deploy.sh all        # build + deploy everything + schedulers
 
 set -euo pipefail
-
-PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
+# Every gcloud call runs in PROJECT_ID, never the active config's project (#1189).
+PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"; export CLOUDSDK_CORE_PROJECT="${PROJECT_ID:?set PROJECT_ID or run: gcloud config set project <id>}"
 REGION="${REGION:-us-east1}"
 IMAGE="us-east1-docker.pkg.dev/${PROJECT_ID}/trading/trading-system"
 SA_EMAIL="trading-runner@${PROJECT_ID}.iam.gserviceaccount.com"
