@@ -210,3 +210,24 @@ def test_a_month_load_excludes_the_prior_months_spill(client, monkeypatch):
     assert df.index.min() == pd.Timestamp("2026-09-01 04:00")
     assert (df.index.month == 9).all()
     assert seen["start"] == pd.Timestamp("2026-09-01 02:00", tz="UTC")
+
+
+@pytest.mark.parametrize("stored", ["et_label", "utc"])
+def test_flat_volume_rth_plus_sparse_after_hours_keeps_its_convention(stored):
+    """Codex P2 on #1185 (538ffc2): one after-hours bar defeated the envelope
+    fallback and a flat legacy day shifted 4-5 h. Regular-session coverage
+    tells the readings apart; a true-UTC day of the same shape still converts."""
+    rth = _flat(_session("2026-09-24", stored=stored, start="09:30", end="16:00"))
+    post = _flat(_session("2026-09-24", stored=stored, start="17:00", end="17:05"))
+    df = pd.concat([rth, post]).sort_values("ts")
+    idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
+    want = list(_expected("2026-09-24", "09:30", "16:00")) + list(_expected("2026-09-24", "17:00", "17:05"))
+    assert sorted(idx[keep]) == want
+
+
+@pytest.mark.parametrize("stored", ["et_label", "utc"])
+def test_flat_volume_premarket_plus_rth_keeps_its_convention(stored):
+    """The mirror shape: premarket from 08:00 ET plus RTH, flat volume."""
+    df = _flat(_session("2026-09-24", stored=stored, start="08:00", end="16:00"))
+    idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
+    assert list(idx[keep]) == list(_expected("2026-09-24", "08:00", "16:00"))

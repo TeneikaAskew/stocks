@@ -207,10 +207,11 @@ def stored_intraday_to_eastern(ts, volume):
          at the converted 09:30 means labels, and the reverse means true UTC
          (the test that matched live prices in
          gcp/queries/classify_intraday_ts_convention.sql);
-      3. the regular-session envelope: a legacy regular-session-only day sits
-         at raw 09:30-16:00 and nowhere else, which true UTC never does (its
-         RTH reaches past raw 16:00, its premarket starts at 08:00Z); a
-         flat-volume legacy day (Codex #1185);
+      3. regular-session coverage: each reading predicts the 390 minutes of
+         09:30-16:00 ET at different raw times; labels win if their reading
+         finds at least half of them and half again as many as the true-UTC
+         reading (a flat-volume legacy day, with or without after-hours bars,
+         Codex #1185);
       4. otherwise convert: every writer's convention from now on.
 
     A row is dropped only when another row lands on the same Eastern minute:
@@ -261,13 +262,16 @@ def stored_intraday_to_eastern(ts, volume):
             elif true_spike > 2 and true_spike > 1.5 * max(label_spike, 1.0):
                 verdict_label = False
             else:
-                # A legacy regular-session-only day is raw 09:30-16:00 and
-                # nothing else; true UTC would reach past raw 16:00 (RTH) or
-                # start before 09:30 (premarket from 08:00Z).
-                early = bool(((rm >= 570) & (rm < 810)).any())    # raw 09:30-13:29
-                before = bool((rm < 570).any())                   # raw < 09:30
-                late = bool(((rm > 960) & (rm <= 1260)).any())    # raw 16:01-21:00
-                verdict_label = early and not before and not late
+                # Regular-session coverage: each reading predicts the 390
+                # minutes of 09:30-16:00 ET at different raw times. The reading
+                # that finds the fuller regular session is the one the date was
+                # written in. A premarket-only day fills neither, and stays on
+                # the default (Codex #1185: RTH plus sparse post-market reads
+                # as labels, which a clock envelope alone could not tell).
+                cm = conv_min[rows]
+                label_rth = int(((rm >= 570) & (rm < 960)).sum()) / 390
+                true_rth = int(((conv_date[rows] == d) & (cm >= 570) & (cm < 960)).sum()) / 390
+                verdict_label = label_rth >= 0.5 and label_rth >= 1.5 * true_rth
         row_label = lo | (~to & verdict_label)
         as_label[rows] = row_label
         follows_verdict[rows] = (row_label == verdict_label)
