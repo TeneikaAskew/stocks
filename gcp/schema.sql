@@ -2846,7 +2846,9 @@ CREATE TRIGGER trg_watchlists_membership
 CREATE OR REPLACE FUNCTION watchlist_history_is_append_only()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    RAISE EXCEPTION 'watchlist_history is append-only; % is not permitted', TG_OP;
+    -- TG_TABLE_NAME rather than a literal: this guards the horizon table too.
+    RAISE EXCEPTION '% is append-only; % is not permitted',
+        TG_TABLE_NAME, TG_OP;
 END;
 $$;
 
@@ -2945,6 +2947,52 @@ CREATE TRIGGER trg_watchlists_truncate
 -- write nothing and stay satisfiable forever: a later apply, after the
 -- trigger had recorded real adds, would seed on top of them and
 -- duplicate every active ticker's add event.
+-- When observation began, recorded independently of whether the seed found
+-- anything to record.
+--
+-- The horizon was derived from the newest seed ROW, which is only the same
+-- thing when the seed wrote rows. Against a database whose `watchlists` was
+-- already empty -- its rows hard-deleted before any of this existed -- the
+-- seed writes nothing, `max(recorded_at)` is NULL, and every pre-install
+-- cutoff is reported `exact`. Reproduced (Codex P2 on `fab26ec`):
+--
+--   watchlists 0 | watchlist_history 0 | horizon NULL
+--   resolve_membership_at(2026-04-01) -> tickers=()  resolution='exact'
+--
+-- An empty universe asserted as precise, about a period nobody was watching.
+-- Pre-install membership is unrecoverable whether or not the seed found rows,
+-- so the horizon belongs to the INSTALL, not to the seed's output.
+--
+-- This is also why a fresh database reports pre-install dates as
+-- `approximate` rather than `exact`: nothing here can distinguish "never had
+-- members" from "had members, deleted before we were recording", and
+-- over-warning is the side of that error to be on.
+--
+-- ON CONFLICT DO NOTHING so a re-apply keeps the ORIGINAL install time. A
+-- horizon that moved forward on every apply would silently re-mark settled
+-- history as approximate.
+CREATE TABLE IF NOT EXISTS watchlist_history_origin (
+    singleton    BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    installed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+INSERT INTO watchlist_history_origin (singleton) VALUES (TRUE)
+    ON CONFLICT (singleton) DO NOTHING;
+
+-- One immutable fact. Losing it re-opens the hole above, so it is protected
+-- like the log: no UPDATE, no DELETE, no TRUNCATE. There is no test opt-in
+-- because no test needs to reset it -- the install time is a property of the
+-- database, not of a test's fixture state.
+DROP TRIGGER IF EXISTS trg_watchlist_history_origin_immutable ON watchlist_history_origin;
+CREATE TRIGGER trg_watchlist_history_origin_immutable
+    BEFORE UPDATE OR DELETE ON watchlist_history_origin
+    FOR EACH ROW EXECUTE FUNCTION watchlist_history_is_append_only();
+
+DROP TRIGGER IF EXISTS trg_watchlist_history_origin_no_truncate ON watchlist_history_origin;
+CREATE TRIGGER trg_watchlist_history_origin_no_truncate
+    BEFORE TRUNCATE ON watchlist_history_origin
+    FOR EACH STATEMENT EXECUTE FUNCTION watchlist_history_is_append_only();
+
 -- The seed is a plain INSERT and the append-only trigger covers only
 -- UPDATE and DELETE, so it does not pass through
 -- `watchlist_history_assert_recordable` the way every live write does. A

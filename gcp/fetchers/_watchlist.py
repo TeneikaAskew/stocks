@@ -132,10 +132,26 @@ _MEMBERSHIP_AT_SQL = """
        AND effective_at <  %s
 """
 
+# The point before which resolution is reported `approximate`.
+#
+# GREATEST of two things, because either alone is wrong. The newest seed row
+# carries `watchlists`' blind spot forward -- intervals a re-add erased were
+# never representable there. The install time carries the OTHER blind spot:
+# nothing was observing before it, so rows deleted earlier left no trace in
+# either table. Reading only the seed rows reported every pre-install cutoff
+# `exact` whenever the seed found nothing to write (Codex P2 on `fab26ec`).
+#
+# GREATEST ignores NULLs in Postgres -- verified, not assumed:
+#   GREATEST(NULL::timestamptz, '2026-01-01') -> 2026-01-01
+# so a database with no seed rows still gets its install horizon, and the
+# result is NULL only if both are, which cannot happen once the migration has
+# run.
 _HORIZON_SQL = """
-    SELECT max(recorded_at) AS horizon
-      FROM watchlist_history
-     WHERE origin = 'seed'
+    SELECT GREATEST(
+               (SELECT max(recorded_at) FROM watchlist_history
+                 WHERE origin = 'seed'),
+               (SELECT installed_at FROM watchlist_history_origin)
+           ) AS horizon
 """
 
 

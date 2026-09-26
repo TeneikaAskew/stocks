@@ -887,11 +887,42 @@ def test_an_unchanged_key_in_the_set_list_is_not_an_identity_change(wl):
 # ---------------------------------------------------------------------------
 
 
-def test_resolution_is_exact_when_nothing_was_seeded(wl):
+def test_an_empty_seed_still_marks_pre_install_cutoffs_approximate(wl):
+    """Codex P2 on `fab26ec`, and this test used to assert the defect.
+
+    It was `test_resolution_is_exact_when_nothing_was_seeded`, and that is
+    exactly the anomaly: the horizon was read off the newest seed ROW, so a
+    database whose `watchlists` was already empty at install -- rows hard
+    deleted before any of this existed -- got no seed rows, a NULL horizon,
+    and `exact` for every historical cutoff. Reproduced before the fix:
+
+        watchlists 0 | watchlist_history 0 | horizon NULL
+        resolve_membership_at(2026-04-01) -> tickers=()  resolution='exact'
+
+    Pre-install membership is unrecoverable whether or not the seed found
+    anything, so the horizon belongs to the install. Nothing here can tell
+    "never had members" from "had members, deleted before we watched", and
+    over-warning is the side of that error to be on.
+    """
     _add(wl, "ACME", JAN)
     resolved = resolve_membership_at(date(2026, 4, 1), OWNER)
+    assert resolved.horizon is not None, (
+        "no horizon at all: a database with an empty seed claims to know "
+        "about dates before it existed"
+    )
+    assert resolved.resolution == "approximate"
+
+
+def test_a_cutoff_after_the_install_horizon_is_exact(wl):
+    """The horizon must bound the claim, not abolish it.
+
+    After install, every transition is trigger-recorded, so resolution is
+    exact -- otherwise the label would carry no information at all.
+    """
+    _add(wl, "ACME", JAN)
+    resolved = resolve_membership_at(date.today() + timedelta(days=1), OWNER)
     assert resolved.resolution == "exact"
-    assert resolved.horizon is None
+    assert resolved.tickers == ("ACME",)
 
 
 def test_resolution_is_approximate_before_the_seed_horizon(wl):
@@ -911,7 +942,9 @@ def test_resolution_is_approximate_before_the_seed_horizon(wl):
     assert before.resolution == "approximate"
     assert before.horizon is not None
 
-    after = resolve_membership_at(date(2026, 6, 1), OWNER)
+    # Post-install, not merely post-seed-row: the horizon is now the later
+    # of the two, so a 2026-06-01 cutoff is still before this database existed.
+    after = resolve_membership_at(date.today() + timedelta(days=1), OWNER)
     assert after.resolution == "exact"
 
 
@@ -1180,11 +1213,38 @@ def test_the_truncate_refusal_has_an_explicit_transaction_scoped_opt_in(wl):
     )
 
 
+def test_the_install_horizon_cannot_be_erased(wl):
+    """Losing the row re-opens the hole it closes, so it is immutable."""
+    for stmt in (
+        "UPDATE watchlist_history_origin SET installed_at = now()",
+        "DELETE FROM watchlist_history_origin",
+        "TRUNCATE TABLE watchlist_history_origin",
+    ):
+        with pytest.raises(Exception) as excinfo:
+            with wl.begin() as conn:
+                conn.execute(sqlalchemy.text(stmt))
+        assert "append-only" in str(excinfo.value), stmt
+
+
+def test_the_install_horizon_survives_a_re_apply(wl):
+    """`ON CONFLICT DO NOTHING` -- a horizon that moved forward on every
+    apply would silently re-mark settled history as approximate."""
+    with wl.begin() as conn:
+        first = conn.execute(sqlalchemy.text(
+            "SELECT installed_at FROM watchlist_history_origin")).scalar()
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO watchlist_history_origin (singleton) VALUES (TRUE) "
+            "ON CONFLICT (singleton) DO NOTHING"))
+        again = conn.execute(sqlalchemy.text(
+            "SELECT installed_at FROM watchlist_history_origin")).scalar()
+    assert first == again, "the horizon moved on re-apply"
+
+
 def test_an_empty_watchlist_resolves_to_an_empty_universe(wl):
     """Empty is a legitimate answer and must not raise; only a broken
     database raises. The caller distinguishes them by exception, never by
     an empty tuple."""
-    resolved = resolve_membership_at(date(2026, 4, 1), OWNER)
+    resolved = resolve_membership_at(date.today() + timedelta(days=1), OWNER)
     assert resolved.tickers == ()
     assert resolved.resolution == "exact"
 

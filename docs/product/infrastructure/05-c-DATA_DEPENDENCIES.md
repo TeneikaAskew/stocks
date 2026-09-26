@@ -17,37 +17,37 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
 |---|---|---|
-| `admin_refresh_leases` | table | [`gcp/schema.sql:4816`](../../../gcp/schema.sql#L4816) |
+| `admin_refresh_leases` | table | [`gcp/schema.sql:4864`](../../../gcp/schema.sql#L4864) |
 | `archive_yahoo_earnings_options_snapshots` | table | [`gcp/schema.sql:566`](../../../gcp/schema.sql#L566) |
 | `archive_yahoo_etf_options_snapshots` | table | [`gcp/schema.sql:563`](../../../gcp/schema.sql#L563) |
 | `archive_yahoo_market_data_daily` | table | [`gcp/schema.sql:557`](../../../gcp/schema.sql#L557) |
 | `archive_yahoo_market_data_intraday` | table | [`gcp/schema.sql:560`](../../../gcp/schema.sql#L560) |
-| `backtest_reports` | table | [`gcp/schema.sql:3763`](../../../gcp/schema.sql#L3763) |
-| `backtest_sweeps` | table | [`gcp/schema.sql:3734`](../../../gcp/schema.sql#L3734) |
-| `backtest_trades` | table | [`gcp/schema.sql:3692`](../../../gcp/schema.sql#L3692) |
-| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3789`](../../../gcp/schema.sql#L3789) |
+| `backtest_reports` | table | [`gcp/schema.sql:3811`](../../../gcp/schema.sql#L3811) |
+| `backtest_sweeps` | table | [`gcp/schema.sql:3782`](../../../gcp/schema.sql#L3782) |
+| `backtest_trades` | table | [`gcp/schema.sql:3740`](../../../gcp/schema.sql#L3740) |
+| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3837`](../../../gcp/schema.sql#L3837) |
 | `daily_rates` | table | [`gcp/schema.sql:536`](../../../gcp/schema.sql#L536) |
 | `earnings_calendar` | table | [`gcp/schema.sql:576`](../../../gcp/schema.sql#L576) |
-| `earnings_calibration` | table | [`gcp/schema.sql:3882`](../../../gcp/schema.sql#L3882) |
+| `earnings_calibration` | table | [`gcp/schema.sql:3930`](../../../gcp/schema.sql#L3930) |
 | `earnings_history` | table | [`gcp/schema.sql:737`](../../../gcp/schema.sql#L737) |
 | `earnings_options_snapshots` | table | [`gcp/schema.sql:475`](../../../gcp/schema.sql#L475) |
-| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4110`](../../../gcp/schema.sql#L4110) |
-| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4138`](../../../gcp/schema.sql#L4138) |
+| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4158`](../../../gcp/schema.sql#L4158) |
+| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4186`](../../../gcp/schema.sql#L4186) |
 | `earnings_reactions` | table | [`gcp/schema.sql:783`](../../../gcp/schema.sql#L783) |
-| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4528`](../../../gcp/schema.sql#L4528) |
+| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4576`](../../../gcp/schema.sql#L4576) |
 | `economic_events` | table | [`gcp/schema.sql:1452`](../../../gcp/schema.sql#L1452) |
 | `etf_options_daily_greeks` | table | [`gcp/schema.sql:382`](../../../gcp/schema.sql#L382) |
 | `etf_options_snapshots` | table | [`gcp/schema.sql:175`](../../../gcp/schema.sql#L175) |
-| `exit_config_overrides` | table | [`gcp/schema.sql:3111`](../../../gcp/schema.sql#L3111) |
+| `exit_config_overrides` | table | [`gcp/schema.sql:3159`](../../../gcp/schema.sql#L3159) |
 | `historical_signals` | table | [`gcp/schema.sql:2137`](../../../gcp/schema.sql#L2137) |
-| `indicator_correlation` | table | [`gcp/schema.sql:3951`](../../../gcp/schema.sql#L3951) |
+| `indicator_correlation` | table | [`gcp/schema.sql:3999`](../../../gcp/schema.sql#L3999) |
 | `insider_transactions` | table | [`gcp/schema.sql:989`](../../../gcp/schema.sql#L989) |
 | `insight_reports` | table | [`gcp/schema.sql:1551`](../../../gcp/schema.sql#L1551) |
 | `insight_reports_history` | table | [`gcp/schema.sql:2068`](../../../gcp/schema.sql#L2068) |
 | `insight_runs` | table | [`gcp/schema.sql:1587`](../../../gcp/schema.sql#L1587) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:422`](../../../gcp/schema.sql#L422) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:443`](../../../gcp/schema.sql#L443) |
-| `job_runs` | table | [`gcp/schema.sql:4665`](../../../gcp/schema.sql#L4665) |
+| `job_runs` | table | [`gcp/schema.sql:4713`](../../../gcp/schema.sql#L4713) |
 | `journal_entries` | table | [`gcp/schema.sql:1210`](../../../gcp/schema.sql#L1210) |
 | `market_data_daily` | table | [`gcp/schema.sql:37`](../../../gcp/schema.sql#L37) |
 | `market_data_intraday` | table | [`gcp/schema.sql:140`](../../../gcp/schema.sql#L140) |
@@ -60,33 +60,34 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `news_sentiment` | table | [`gcp/schema.sql:1629`](../../../gcp/schema.sql#L1629) |
 | `options_daily_features` | table | [`gcp/schema.sql:285`](../../../gcp/schema.sql#L285) |
 | `playbook_cards` | table | [`gcp/schema.sql:1378`](../../../gcp/schema.sql#L1378) |
-| `playbook_cards_staging` | table | [`gcp/schema.sql:4639`](../../../gcp/schema.sql#L4639) |
+| `playbook_cards_staging` | table | [`gcp/schema.sql:4687`](../../../gcp/schema.sql#L4687) |
 | `premarket_analysis` | table | [`gcp/schema.sql:1324`](../../../gcp/schema.sql#L1324) |
 | `premarket_analysis_history` | table | [`gcp/schema.sql:1953`](../../../gcp/schema.sql#L1953) |
 | `ranker_runs` | table | [`gcp/schema.sql:1064`](../../../gcp/schema.sql#L1064) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:462`](../../../gcp/schema.sql#L462) |
-| `regime_combo_results` | table | [`gcp/schema.sql:4028`](../../../gcp/schema.sql#L4028) |
-| `schema_apply_history` | table | [`gcp/schema.sql:4830`](../../../gcp/schema.sql#L4830) |
+| `regime_combo_results` | table | [`gcp/schema.sql:4076`](../../../gcp/schema.sql#L4076) |
+| `schema_apply_history` | table | [`gcp/schema.sql:4878`](../../../gcp/schema.sql#L4878) |
 | `sec_filings` | table | [`gcp/schema.sql:956`](../../../gcp/schema.sql#L956) |
 | `signal_alerts` | table | [`gcp/schema.sql:1082`](../../../gcp/schema.sql#L1082) |
-| `signal_metrics` | table | [`gcp/schema.sql:3341`](../../../gcp/schema.sql#L3341) |
-| `strat_combo_results` | table | [`gcp/schema.sql:4060`](../../../gcp/schema.sql#L4060) |
+| `signal_metrics` | table | [`gcp/schema.sql:3389`](../../../gcp/schema.sql#L3389) |
+| `strat_combo_results` | table | [`gcp/schema.sql:4108`](../../../gcp/schema.sql#L4108) |
 | `strat_levels` | table | [`gcp/schema.sql:1669`](../../../gcp/schema.sql#L1669) |
-| `ticker_calibration` | table | [`gcp/schema.sql:3024`](../../../gcp/schema.sql#L3024) |
+| `ticker_calibration` | table | [`gcp/schema.sql:3072`](../../../gcp/schema.sql#L3072) |
 | `ticker_info` | table | [`gcp/schema.sql:2190`](../../../gcp/schema.sql#L2190) |
 | `top_movers_daily` | table | [`gcp/schema.sql:1015`](../../../gcp/schema.sql#L1015) |
 | `top_movers_intraday` | table | [`gcp/schema.sql:1039`](../../../gcp/schema.sql#L1039) |
 | `trades` | table | [`gcp/schema.sql:1167`](../../../gcp/schema.sql#L1167) |
-| `user_preferences` | table | [`gcp/schema.sql:4753`](../../../gcp/schema.sql#L4753) |
-| `user_profile` | table | [`gcp/schema.sql:4784`](../../../gcp/schema.sql#L4784) |
-| `user_roles` | table | [`gcp/schema.sql:4702`](../../../gcp/schema.sql#L4702) |
-| `user_style_results` | table | [`gcp/schema.sql:4621`](../../../gcp/schema.sql#L4621) |
-| `waitlist_signups` | table | [`gcp/schema.sql:4608`](../../../gcp/schema.sql#L4608) |
-| `walk_forward_results` | table | [`gcp/schema.sql:3835`](../../../gcp/schema.sql#L3835) |
+| `user_preferences` | table | [`gcp/schema.sql:4801`](../../../gcp/schema.sql#L4801) |
+| `user_profile` | table | [`gcp/schema.sql:4832`](../../../gcp/schema.sql#L4832) |
+| `user_roles` | table | [`gcp/schema.sql:4750`](../../../gcp/schema.sql#L4750) |
+| `user_style_results` | table | [`gcp/schema.sql:4669`](../../../gcp/schema.sql#L4669) |
+| `waitlist_signups` | table | [`gcp/schema.sql:4656`](../../../gcp/schema.sql#L4656) |
+| `walk_forward_results` | table | [`gcp/schema.sql:3883`](../../../gcp/schema.sql#L3883) |
 | `watchlist_history` | table | [`gcp/schema.sql:2458`](../../../gcp/schema.sql#L2458) |
+| `watchlist_history_origin` | table | [`gcp/schema.sql:2974`](../../../gcp/schema.sql#L2974) |
 | `watchlists` | table | [`gcp/schema.sql:2246`](../../../gcp/schema.sql#L2246) |
-| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4276`](../../../gcp/schema.sql#L4276) |
-| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4467`](../../../gcp/schema.sql#L4467) |
+| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4324`](../../../gcp/schema.sql#L4324) |
+| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4515`](../../../gcp/schema.sql#L4515) |
 | `v_etf_options_node` | view | [`gcp/schema.sql:319`](../../../gcp/schema.sql#L319) |
 <!-- inventory:tables:end -->
 
@@ -191,7 +192,7 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
 
-Declared in `gcp/schema.sql` but absent live: `schema_apply_history`, `watchlist_history`
+Declared in `gcp/schema.sql` but absent live: `schema_apply_history`, `watchlist_history`, `watchlist_history_origin`
 <!-- inventory:dbtables:end -->
 
 ---
@@ -447,10 +448,13 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 ### `watchlist_history`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
+### `watchlist_history_origin`
+- _no writer found in gcp/, lib/, scripts/, platform/api_
+
 ### `watchlists`
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [328](../../../gcp/backfill_ticker.py#L328), [332](../../../gcp/backfill_ticker.py#L332)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [655](../../../gcp/discord_interactions/main.py#L655), [691](../../../gcp/discord_interactions/main.py#L691)
-- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [430](../../../gcp/fetchers/_watchlist.py#L430), [434](../../../gcp/fetchers/_watchlist.py#L434), [435](../../../gcp/fetchers/_watchlist.py#L435), [467](../../../gcp/fetchers/_watchlist.py#L467)
+- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [446](../../../gcp/fetchers/_watchlist.py#L446), [450](../../../gcp/fetchers/_watchlist.py#L450), [451](../../../gcp/fetchers/_watchlist.py#L451), [483](../../../gcp/fetchers/_watchlist.py#L483)
 <!-- inventory:writes:end -->
 
 ---
@@ -863,11 +867,14 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - _no readr found in gcp/, lib/, scripts/, platform/api_
 
 ### `watchlist_history`
-- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [120](../../../gcp/fetchers/_watchlist.py#L120), [128](../../../gcp/fetchers/_watchlist.py#L128), [137](../../../gcp/fetchers/_watchlist.py#L137)
+- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [120](../../../gcp/fetchers/_watchlist.py#L120), [128](../../../gcp/fetchers/_watchlist.py#L128), [151](../../../gcp/fetchers/_watchlist.py#L151)
+
+### `watchlist_history_origin`
+- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [153](../../../gcp/fetchers/_watchlist.py#L153)
 
 ### `watchlists`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [178](../../../gcp/discord_interactions/main.py#L178), [711](../../../gcp/discord_interactions/main.py#L711)
-- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [262](../../../gcp/fetchers/_watchlist.py#L262)
+- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [278](../../../gcp/fetchers/_watchlist.py#L278)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [746](../../../gcp/fetchers/fetch_market_data.py#L746)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [227](../../../scripts/analysis/per_ticker_calibration.py#L227)
 <!-- inventory:reads:end -->
@@ -936,6 +943,7 @@ Notes on the ones that matter operationally:
 | `waitlist_signups` | 1 | 0 | write-only (no reader in code) |
 | `walk_forward_results` | 1 | 0 | write-only (no reader in code) |
 | `watchlist_history` | 0 | 1 | read-only (no writer names it in code) |
+| `watchlist_history_origin` | 0 | 1 | read-only (no writer names it in code) |
 <!-- inventory:orphans:end -->
 
 Reading the statuses: the four `archive_yahoo_*` tables are frozen forensics (0 rows live); `earnings_event_outcomes` / `earnings_ticker_lean` are materialized views refreshed by `gcp/refresh_earnings_views.py` (the `REFRESH MATERIALIZED VIEW` names reach the statement through the `_WEEKLY_VIEWS` tuple, so both are attributed to that job in §6); `ranker_runs`, `admin_refresh_leases`, `user_style_results`, `playbook_cards_staging`, `waitlist_signups` and `indicator_correlation` are write-only audit or staging tables; `strat_combo_results` and `v_etf_options_node` have no code reference and are drop candidates pending an operator decision.
@@ -1148,6 +1156,7 @@ flowchart LR
         T_trades[(trades)]
         T_walk_forward_results[(walk_forward_results)]
         T_watchlist_history[(watchlist_history)]
+        T_watchlist_history_origin[(watchlist_history_origin)]
         T_watchlists[(watchlists)]
     end
 
@@ -1336,6 +1345,7 @@ flowchart LR
     T_news_sentiment --> J_insight_pipeline
     T_sec_filings --> J_insight_pipeline
     T_watchlist_history --> J_insight_pipeline
+    T_watchlist_history_origin --> J_insight_pipeline
     T_watchlists --> J_insight_pipeline
     T_market_data_intraday --> J_intraday_bulk_backfill
     T_economic_events --> J_magnitude_engine
@@ -1404,7 +1414,7 @@ flowchart LR
     classDef job fill:#3B82F6,stroke:#1E40AF,color:#fff
     classDef tbl fill:#10B981,stroke:#065F46,color:#fff
     class J_apply_schema_migrations,J_audit_brief_bias,J_audit_walkforward,J_auto_refresh_top_n,J_backfill_daily_indicators,J_backfill_ticker,J_backtest,J_backtest_pipeline,J_build_options_daily_features,J_build_options_greeks,J_build_realtime_gex,J_calibrate_thresholds,J_compute_earnings_reactions,J_compute_spx_greeks_backfill,J_direction_baseline,J_direction_phase2,J_earnings_long_watchlist,J_earnings_options_backfill,J_earnings_reactions_brief,J_earnings_sweep,J_etf_options_retention,J_evaluate_ew_strikes,J_fetch_alphavantage_intraday,J_fetch_av_options_backfill,J_fetch_av_options_realtime,J_fetch_earnings_calendar,J_fetch_earnings_history,J_fetch_economic_events,J_fetch_fred_rates,J_fetch_insider_transactions,J_fetch_market_data,J_fetch_news_sentiment,J_fetch_news_sentiment_earnings,J_fetch_news_sentiment_topics,J_fetch_premarket_refresh,J_fetch_sec_filings,J_fetch_top_movers,J_freshness_watchdog,J_historical_signals_watchlist,J_indicator_correlation,J_insight_discord_push,J_insight_pipeline,J_intraday_bulk_backfill,J_magnitude_engine,J_magnitude_recal,J_options_exec_backtest,J_p2_build_gamma_levels,J_param_sweep,J_phase6_playbook,J_premarket_brief,J_premarket_playbook_resolver,J_refresh_earnings_views,J_regime_combo,J_signal_monitor,J_signal_monitor_eod_resolver,J_signal_quality_alarm,J_signal_quality_report,J_signal_replay,J_strat_engine,J_validate_brief,J_weekend_review job
-    class T_backtest_reports,T_backtest_sweeps,T_backtest_trades,T_backtest_walk_forward_folds,T_daily_rates,T_earnings_calendar,T_earnings_calibration,T_earnings_event_outcomes,T_earnings_history,T_earnings_options_snapshots,T_earnings_options_strategy_insights,T_earnings_options_strategy_winners,T_earnings_reactions,T_earnings_ticker_lean,T_earnings_upcoming_with_history,T_economic_events,T_etf_options_daily_greeks,T_etf_options_snapshots,T_exit_config_overrides,T_historical_signals,T_indicator_correlation,T_insider_transactions,T_insight_reports,T_insight_reports_history,T_insight_runs,T_job_runs,T_journal_entries,T_market_data_daily,T_market_data_intraday,T_market_data_intraday_iwm,T_market_data_intraday_qqq,T_market_data_intraday_spy,T_model_routing,T_news_sentiment,T_options_daily_features,T_playbook_cards,T_premarket_analysis,T_premarket_analysis_history,T_ranker_runs,T_realtime_gex_15m,T_regime_combo_results,T_schema_apply_history,T_sec_filings,T_signal_alerts,T_signal_metrics,T_strat_levels,T_ticker_calibration,T_top_movers_daily,T_top_movers_intraday,T_trades,T_walk_forward_results,T_watchlist_history,T_watchlists tbl
+    class T_backtest_reports,T_backtest_sweeps,T_backtest_trades,T_backtest_walk_forward_folds,T_daily_rates,T_earnings_calendar,T_earnings_calibration,T_earnings_event_outcomes,T_earnings_history,T_earnings_options_snapshots,T_earnings_options_strategy_insights,T_earnings_options_strategy_winners,T_earnings_reactions,T_earnings_ticker_lean,T_earnings_upcoming_with_history,T_economic_events,T_etf_options_daily_greeks,T_etf_options_snapshots,T_exit_config_overrides,T_historical_signals,T_indicator_correlation,T_insider_transactions,T_insight_reports,T_insight_reports_history,T_insight_runs,T_job_runs,T_journal_entries,T_market_data_daily,T_market_data_intraday,T_market_data_intraday_iwm,T_market_data_intraday_qqq,T_market_data_intraday_spy,T_model_routing,T_news_sentiment,T_options_daily_features,T_playbook_cards,T_premarket_analysis,T_premarket_analysis_history,T_ranker_runs,T_realtime_gex_15m,T_regime_combo_results,T_schema_apply_history,T_sec_filings,T_signal_alerts,T_signal_metrics,T_strat_levels,T_ticker_calibration,T_top_movers_daily,T_top_movers_intraday,T_trades,T_walk_forward_results,T_watchlist_history,T_watchlist_history_origin,T_watchlists tbl
 ```
 <!-- inventory:graph:end -->
 
