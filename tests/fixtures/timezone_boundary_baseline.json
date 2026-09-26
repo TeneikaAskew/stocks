@@ -1,272 +1,566 @@
 {
  "gcp/audit_job_runner.py": {
-  "host-today": 2
+  "host-today": [
+   "end = date.today()",
+   "exec_id = os.environ.get(\"CLOUD_RUN_EXECUTION\", f\"audit-{int(datetime.now().timestamp())}\")"
+  ]
  },
  "gcp/backfill_ticker.py": {
-  "host-today": 1
+  "host-today": [
+   "d = date.today()"
+  ]
  },
  "gcp/backtest_job.py": {
-  "host-today": 1
+  "host-today": [
+   "today = date.today()"
+  ]
  },
  "gcp/build_intraday_flow.py": {
-  "host-today": 2
+  "host-today": [
+   "else (date.today() - timedelta(days=args.days)).isoformat())",
+   "until = date.today().isoformat()"
+  ]
  },
  "gcp/build_intraday_gex.py": {
-  "host-today": 2
+  "host-today": [
+   "else (date.today() - timedelta(days=args.days)).isoformat())",
+   "until = date.today().isoformat()"
+  ]
  },
  "gcp/build_options_daily_greeks.py": {
-  "host-today": 2
+  "host-today": [
+   "else (date.today() - timedelta(days=args.days)).isoformat())",
+   "until = date.today().isoformat()"
+  ]
  },
  "gcp/build_realtime_gex.py": {
-  "host-today": 2
+  "host-today": [
+   "(date.today() - timedelta(days=args.days)).isoformat()))",
+   "until = date.today().isoformat()"
+  ]
  },
  "gcp/discord_interactions/main.py": {
-  "host-today": 1
+  "host-today": [
+   "today = today or date.today()"
+  ]
  },
  "gcp/earnings_long_watchlist.py": {
-  "host-today": 1,
-  "sql-utc-date": 1
+  "host-today": [
+   "today = date.today()"
+  ],
+  "sql-utc-date": [
+   "sql = \"\"\""
+  ]
  },
  "gcp/earnings_reactions_brief.py": {
-  "host-today": 2
+  "host-today": [
+   "if parsed > date.today():",
+   "return date.today()"
+  ]
  },
  "gcp/fetchers/backfill_daily_indicators.py": {
-  "sql-utc-date": 2
+  "sql-utc-date": [
+   "\"\"\"",
+   "sql = f\"\"\""
+  ]
  },
  "gcp/fetchers/build_options_daily_features.py": {
-  "host-today": 2
+  "host-today": [
+   "since = (date.today() - timedelta(days=args.days)).isoformat()",
+   "until = date.today().isoformat()"
+  ]
  },
  "gcp/fetchers/evaluate_ew_strikes.py": {
-  "tz-localize-none": 2
+  "tz-localize-none": [
+   "close_et=row[\"market_close\"].tz_convert(ET_NAME).tz_localize(None),",
+   "open_et=row[\"market_open\"].tz_convert(ET_NAME).tz_localize(None),"
+  ]
  },
  "gcp/fetchers/fetch_alphavantage_intraday.py": {
-  "host-today": 2
+  "host-today": [
+   "today = date.today()",
+   "ts = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')"
+  ]
  },
  "gcp/fetchers/fetch_av_historical_options.py": {
-  "host-today": 5
+  "host-today": [
+   "end = date.fromisoformat(args.end_date) if args.end_date else date.today()",
+   "fetch_dates = [args.date or date.today().strftime('%Y-%m-%d')]",
+   "return date.today()",
+   "return date.today()",
+   "start = date.fromisoformat(args.start_date) if args.start_date else date.today()"
+  ]
  },
  "gcp/fetchers/fetch_earnings_history.py": {
-  "sql-utc-date": 1
+  "sql-utc-date": [
+   "sql = \"\"\""
+  ]
  },
  "gcp/fetchers/fetch_economic_events.py": {
-  "host-today": 1
+  "host-today": [
+   "today = date.today()"
+  ]
  },
  "gcp/fetchers/fetch_fred_rates.py": {
-  "host-today": 1
+  "host-today": [
+   "today = date.today()"
+  ]
  },
  "gcp/fetchers/fetch_insider_transactions.py": {
-  "sql-utc-date": 1
+  "sql-utc-date": [
+   "sql = \"\"\""
+  ]
  },
  "gcp/fetchers/fetch_market_data.py": {
-  "sql-utc-date": 1
+  "sql-utc-date": [
+   "sql = \"\"\""
+  ]
  },
  "gcp/fetchers/fetch_news_sentiment.py": {
-  "sql-utc-date": 1
+  "sql-utc-date": [
+   "sql = \"\"\""
+  ]
  },
  "gcp/fetchers/fetch_premarket_refresh.py": {
-  "host-today": 1
+  "host-today": [
+   "if args.date else date.today())"
+  ]
  },
  "gcp/fetchers/fetch_sec_filings.py": {
-  "host-today": 1,
-  "sql-utc-date": 1
+  "host-today": [
+   "since = date.today() - timedelta(days=args.since_days)"
+  ],
+  "sql-utc-date": [
+   "sql = \"\"\""
+  ]
  },
  "gcp/fetchers/fetch_top_movers.py": {
-  "host-today": 1
+  "host-today": [
+   "snapshot_date = date.today()"
+  ]
  },
  "gcp/indicator_correlation_job.py": {
-  "host-today": 1,
-  "tz-localize-none": 2
+  "host-today": [
+   "if args.as_of else date.today())"
+  ],
+  "tz-localize-none": [
+   "a_ts = pd.to_datetime(tk_alerts[\"alert_ts\"]).dt.tz_localize(None).dt.floor(\"min\")",
+   "bars_ts = pd.to_datetime(bars[\"Time\"]).dt.tz_localize(None).dt.floor(\"min\")"
+  ]
  },
  "gcp/migrate_to_gcp.py": {
-  "host-today": 2
+  "host-today": [
+   "elapsed = (datetime.now() - start).total_seconds()",
+   "start = datetime.now()"
+  ]
  },
  "gcp/premarket_brief.py": {
-  "host-today": 3,
-  "tz-localize-none": 2
+  "host-today": [
+   "analysis_date = brief.get('analysis_date') or date.today()",
+   "if parsed > date.today():",
+   "return date.today()"
+  ],
+  "tz-localize-none": [
+   "idx = df.index.tz_localize(None) if df.index.tz is not None else df.index",
+   "idx = df.index.tz_localize(None) if df.index.tz is not None else df.index"
+  ]
  },
  "gcp/premarket_playbook_resolver.py": {
-  "host-today": 1
+  "host-today": [
+   "'outcome_resolved_at':  datetime.utcnow(),"
+  ]
  },
  "gcp/refresh_earnings_views.py": {
-  "host-today": 1,
-  "sql-utc-date": 1
+  "host-today": [
+   "today = date.today()"
+  ],
+  "sql-utc-date": [
+   "upcoming_sql = \"\"\""
+  ]
  },
  "gcp/regime_combo_job.py": {
-  "host-today": 1
+  "host-today": [
+   "if args.as_of else date.today())"
+  ]
  },
  "gcp/research/magnitude_engine/mag_dataset.py": {
-  "fixed-offset": 1
+  "fixed-offset": [
+   "+ pd.Timedelta(hours=4)"
+  ]
  },
  "gcp/research/p2_build_gamma_levels.py": {
-  "zone-built-locally": 1
+  "zone-built-locally": [
+   "_ET = ZoneInfo(\"America/New_York\")"
+  ]
  },
  "gcp/research/strat_engine/breakout_meta_walk_forward.py": {
-  "tz-localize-none": 1
+  "tz-localize-none": [
+   "\"date\": ts.dt.tz_convert(ET_NAME).dt.normalize().dt.tz_localize(None)"
+  ]
  },
  "gcp/signal_monitor.py": {
-  "host-today": 4,
-  "tz-localize-none": 4
+  "host-today": [
+   "'timestamp': datetime.utcnow().isoformat(),",
+   "now_utc = datetime.now()",
+   "timestamp=pd.Timestamp(latest.get(\"Time\") or datetime.now()),",
+   "today = datetime.now().date()"
+  ],
+  "tz-localize-none": [
+   "idx = df.index.tz_localize(None) if df.index.tz is not None else df.index",
+   "idx = idx.dt.tz_localize(None)",
+   "times = times.dt.tz_convert(_ET).dt.tz_localize(None)",
+   "times = times.dt.tz_localize('UTC').dt.tz_convert(_ET).dt.tz_localize(None)"
+  ]
  },
  "gcp/signal_monitor_eod_resolver.py": {
-  "sql-utc-date": 2,
-  "tz-localize-none": 2
+  "sql-utc-date": [
+   "\"\"\"",
+   "sql = \"\"\""
+  ],
+  "tz-localize-none": [
+   "alert_ts = alert_ts.tz_localize(None)",
+   "df.index = df.index.tz_localize(None)"
+  ]
  },
  "gcp/trade_logger.py": {
-  "host-today": 5
+  "host-today": [
+   "date = datetime.now().date()",
+   "date_str = str(date or datetime.now().date())",
+   "serialized['trade_date'] = str(datetime.now().date())",
+   "week_end_date = datetime.now().date()",
+   "week_end_date = datetime.now().date()"
+  ]
  },
  "gcp/weekend_review.py": {
-  "host-today": 1
+  "host-today": [
+   "'week_ending': datetime.now().strftime('%Y-%m-%d'),"
+  ]
  },
  "lib/agents/ranker/candidates.py": {
-  "sql-utc-date": 5
+  "sql-utc-date": [
+   "\"\"\"",
+   "\"\"\"",
+   "\"\"\"",
+   "\"\"\"",
+   "\"\"\""
+  ]
  },
  "lib/agents/ranker/signals.py": {
-  "sql-utc-date": 5
+  "sql-utc-date": [
+   "\"\"\"",
+   "\"\"\"",
+   "\"\"\"",
+   "\"\"\"",
+   "\"\"\""
+  ]
  },
  "lib/agents/summarizers.py": {
-  "tz-localize-none": 3
+  "tz-localize-none": [
+   "_ts = _ts.tz_convert('UTC').tz_localize(None)",
+   "cutoff = cutoff.tz_convert('UTC').tz_localize(None)",
+   "df.index = df.index.tz_localize(None)"
+  ]
  },
  "lib/data_loader.py": {
-  "host-today": 1,
-  "tz-localize-none": 3
+  "host-today": [
+   "today = date.today()"
+  ],
+  "tz-localize-none": [
+   "df.index = df.index.tz_localize(None)",
+   "df['Time'] = df['Time'].dt.tz_localize(None)",
+   "df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_localize(None)"
+  ]
  },
  "lib/options_intraday.py": {
-  "tz-localize-none": 3
+  "tz-localize-none": [
+   "bar_ts = bar_ts.dt.tz_localize(None)",
+   "bars_ts = bars['Time'].dt.tz_localize(None)",
+   "rt_ts = rt_ts.dt.tz_localize(None)"
+  ]
  },
  "lib/strat.py": {
-  "tz-localize-none": 2
+  "tz-localize-none": [
+   "cutoff = cutoff.tz_convert('UTC').tz_localize(None)",
+   "df.index = df.index.tz_localize(None)"
+  ]
  },
  "lib/strat_levels.py": {
-  "tz-localize-none": 1
+  "tz-localize-none": [
+   "ad_ts = ad_ts.tz_convert('UTC').tz_localize(None)"
+  ]
  },
  "lib/strategies/calibration.py": {
-  "host-today": 1
+  "host-today": [
+   "age_days = (date.today() - row[\"calibration_date\"]).days"
+  ]
  },
  "lib/strategies/exit_config_overrides.py": {
-  "host-today": 1
+  "host-today": [
+   "age_days = (date.today() - row[\"calibration_date\"]).days"
+  ]
  },
  "lib/trading_analysis.py": {
-  "host-today": 1
+  "host-today": [
+   "timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')"
+  ]
  },
  "platform/api/main.py": {
-  "host-today": 1,
-  "sql-utc-date": 3,
-  "tz-localize-none": 4
+  "host-today": [
+   "days_ago = (datetime.now().date() - requested_dt).days"
+  ],
+  "sql-utc-date": [
+   "\"\"\""
+  ],
+  "tz-localize-none": [
+   "df.index = df.index.tz_localize(None)",
+   "df.index = df.index.tz_localize(None)"
+  ]
  },
  "platform/api/routers/catalysts.py": {
-  "host-today": 2,
-  "sql-utc-date": 1
+  "host-today": [
+   "today = datetime.now()",
+   "today = datetime.now()"
+  ],
+  "sql-utc-date": [
+   "\"SELECT ticker, published_ts::date AS date, title, \""
+  ]
  },
  "platform/api/routers/dashboard.py": {
-  "host-today": 2,
-  "tz-localize-none": 1
+  "host-today": [
+   "ref_today = datetime.strptime(date, \"%Y-%m-%d\").date() if date else datetime.now().date()",
+   "today = datetime.now(ET_TZ).date() if ET_TZ else datetime.now().date()"
+  ],
+  "tz-localize-none": [
+   "ts_col = ts_col.dt.tz_localize(None)"
+  ]
  },
  "platform/api/routers/earnings.py": {
-  "sql-utc-date": 1
+  "sql-utc-date": [
+   "\"\"\""
+  ]
  },
  "platform/api/routers/options.py": {
-  "host-today": 1
+  "host-today": [
+   "\"snapshot_timestamp\": datetime.utcnow().isoformat(timespec=\"seconds\") + \"Z\","
+  ]
  },
  "scripts/analysis/bsvp_validation.py": {
-  "host-today": 1
+  "host-today": [
+   "prefix = args.out_prefix or f\"bsvp_validation_{date.today():%Y-%m-%d}\""
+  ]
  },
  "scripts/analysis/intraday_indicator_correlation.py": {
-  "host-today": 1
+  "host-today": [
+   "lines.append(f\"_Generated {datetime.utcnow():%Y-%m-%d %H:%M} UTC_\")"
+  ]
  },
  "scripts/analysis/momentum_eligibility.py": {
-  "host-today": 2,
-  "tz-localize-none": 1
+  "host-today": [
+   "lines.append(f\"**Date generated**: {date.today().isoformat()}  \")",
+   "today = date.today()"
+  ],
+  "tz-localize-none": [
+   "df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_localize(None)"
+  ]
  },
  "scripts/analysis/options_pnl_translation.py": {
-  "tz-localize-none": 2
+  "tz-localize-none": [
+   "df['snapshot_ts'] = df['snapshot_ts'].dt.tz_localize(None)",
+   "target = target.tz_localize(None) if target.tz is not None else target"
+  ]
  },
  "scripts/analysis/per_factor_walkforward.py": {
-  "sql-utc-date": 1
+  "sql-utc-date": [
+   "sql = text(\"\"\""
+  ]
  },
  "scripts/analysis/per_ticker_calibration.py": {
-  "host-today": 3
+  "host-today": [
+   "cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()",
+   "default=date.today())",
+   "lines.append(f\"_Generated: {datetime.utcnow().isoformat(timespec='seconds')}Z_\\n\\n\")"
+  ]
  },
  "scripts/analysis/shared_utils.py": {
-  "host-today": 1
+  "host-today": [
+   "return datetime.now().strftime('%Y-%m-%d %H:%M:%S')"
+  ]
  },
  "scripts/analyze_market_data.py": {
-  "host-today": 1
+  "host-today": [
+   "end = datetime.now()"
+  ]
  },
  "scripts/analyze_market_data_enhanced.py": {
-  "host-today": 1
+  "host-today": [
+   "current_year = datetime.now().year"
+  ]
  },
  "scripts/audit_data_freshness.py": {
-  "sql-utc-date": 2
+  "sql-utc-date": [
+   "\"\"\"SELECT COUNT(*) AS bad FROM market_data_daily",
+   "\"\"\"SELECT COUNT(*) AS bad FROM market_data_daily"
+  ]
  },
  "scripts/backfill_and_replay.py": {
-  "zone-built-locally": 1
+  "zone-built-locally": [
+   "_ET = ZoneInfo('America/New_York')"
+  ]
  },
  "scripts/backfill_watchlist_data.py": {
-  "host-today": 2,
-  "sql-utc-date": 1
+  "host-today": [
+   "today = date.today()",
+   "today = date.today()"
+  ],
+  "sql-utc-date": [
+   "\"SELECT 1 FROM sec_filings WHERE ticker = :t \""
+  ]
  },
  "scripts/backtest_playability.py": {
-  "host-today": 1
+  "host-today": [
+   "today = datetime.now().date()"
+  ]
  },
  "scripts/calibrate_earnings.py": {
-  "sql-utc-date": 1
+  "sql-utc-date": [
+   "\"\"\""
+  ]
  },
  "scripts/calibrate_thresholds.py": {
-  "host-today": 3
+  "host-today": [
+   "\"calibration_date\": as_of or date.today(),",
+   "end = as_of or date.today()",
+   "if d > date.today():"
+  ]
  },
  "scripts/check_event_window_concentration.py": {
-  "fixed-offset": 1
+  "fixed-offset": [
+   "+ pd.Timedelta(hours=4)"
+  ]
  },
  "scripts/fetch_alphavantage_intraday.py": {
-  "host-today": 4
+  "host-today": [
+   "'last_update': datetime.now().isoformat(),",
+   "df['fetch_timestamp'] = datetime.now()",
+   "df['fetch_timestamp'] = datetime.now()",
+   "end_date = datetime.now()"
+  ]
  },
  "scripts/fetch_alphavantage_options.py": {
-  "host-today": 4
+  "host-today": [
+   "'last_update': datetime.now().isoformat(),",
+   "df['fetch_timestamp'] = datetime.now()",
+   "df['fetch_timestamp'] = datetime.now()",
+   "end_date = datetime.now().date()"
+  ]
  },
  "scripts/fetch_catalyst_calendar.py": {
-  "host-today": 2
+  "host-today": [
+   "\"last_updated\": datetime.now().isoformat(),",
+   "today = datetime.now()"
+  ]
  },
  "scripts/fetch_earnings_calendar.py": {
-  "host-today": 15
+  "host-today": [
+   "\"fetched_at\": datetime.now().isoformat(),",
+   "'fetched_at': datetime.now().isoformat(),",
+   "'fetched_at': datetime.now().isoformat(),",
+   "'fetched_at': datetime.now().isoformat(),",
+   "'fetched_at': datetime.now().isoformat(),",
+   "'fetched_at': datetime.now().isoformat(),",
+   "days_ahead = max((end - datetime.now().date()).days, 90)",
+   "or _previous_trading_weekday(datetime.now().date())",
+   "return 'weekly' if datetime.now().weekday() == 6 else 'daily'",
+   "today = datetime.now().date()",
+   "today = datetime.now().date()",
+   "today = datetime.now().date()",
+   "today = datetime.now().date()",
+   "yh_end = datetime.now().date() + timedelta(days=7)",
+   "yh_start = datetime.now().date() - timedelta(days=1)"
+  ]
  },
  "scripts/fetch_market_data.py": {
-  "host-today": 6,
-  "zone-built-locally": 1
+  "host-today": [
+   "\"last_update\": datetime.now().isoformat(),",
+   "\"last_update\": datetime.now().isoformat(),",
+   "historical_df['fetch_timestamp'] = datetime.now()",
+   "new_daily_df['fetch_timestamp'] = datetime.now()",
+   "print(f\"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\")",
+   "today = datetime.now().date()"
+  ],
+  "zone-built-locally": [
+   "eastern = pytz.timezone(\"America/New_York\")"
+  ]
  },
  "scripts/find_swing_trades.py": {
-  "host-today": 1
+  "host-today": [
+   "lines.append(f\"\\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\")"
+  ]
  },
  "scripts/generate_backtest_report.py": {
-  "host-today": 1
+  "host-today": [
+   "now = datetime.now().strftime(\"%Y-%m-%d %H:%M\")"
+  ]
  },
  "scripts/handle_workflow_failure.py": {
-  "host-today": 1
+  "host-today": [
+   "timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')"
+  ]
  },
  "scripts/match_earnings_strategy.py": {
-  "host-today": 4
+  "host-today": [
+   "fetch_date = datetime.now().strftime('%Y-%m-%d')",
+   "output_file = output_dir / f\"matched_{args.strategy}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv\"",
+   "print(f\"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\")",
+   "today = datetime.now().date()"
+  ]
  },
  "scripts/refresh_calibration_table.py": {
-  "host-today": 1
+  "host-today": [
+   "today = date.today()"
+  ]
  },
  "scripts/replay_signal_monitor.py": {
-  "host-today": 1,
-  "tz-localize-none": 2
+  "host-today": [
+   "timestamp=pd.Timestamp(latest.get(\"Time\", datetime.now())),"
+  ],
+  "tz-localize-none": [
+   "- et.dt.tz_localize(None)",
+   "offset = ts_utc.dt.tz_convert('UTC').dt.tz_localize(None) \\"
+  ]
  },
  "scripts/run_backtest.py": {
-  "host-today": 1
+  "host-today": [
+   "timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')"
+  ]
  },
  "scripts/run_param_sweep.py": {
-  "host-today": 1,
-  "sql-utc-date": 1
+  "host-today": [
+   "start = (date.today()"
+  ],
+  "sql-utc-date": [
+   "sql = \"\"\""
+  ]
  },
  "scripts/run_timeframe_sweep.py": {
-  "host-today": 1
+  "host-today": [
+   "timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')"
+  ]
  },
  "scripts/run_walk_forward.py": {
-  "host-today": 1
+  "host-today": [
+   "timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')"
+  ]
  },
  "scripts/validate_market_data.py": {
-  "host-today": 2,
-  "zone-built-locally": 3
+  "host-today": [
+   "'timestamp': datetime.now().isoformat()",
+   "current_year = datetime.now().year"
+  ],
+  "zone-built-locally": [
+   "eastern = pytz.timezone(\"America/New_York\")",
+   "eastern = pytz.timezone(\"America/New_York\")",
+   "eastern = pytz.timezone(\"America/New_York\")"
+  ]
  }
 }

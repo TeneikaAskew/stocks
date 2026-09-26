@@ -22,12 +22,14 @@ drifted; see the module docstring of ``lib/eastern_time.py``):
   sql-utc-date       SQL text using ``CURRENT_DATE``, ``DATE(<x>ts)`` or
                      ``<x>ts::date``: a UTC date in this database
 
-It is a ratchet. Existing hits are counted per (file, rule) in
-``tests/fixtures/timezone_boundary_baseline.json`` and are the remediation
-backlog (docs/plans/SIGNAL_OOS_EXPERIMENT_PLAN.md, the intraday-timezone
-plan). A count above baseline fails: that is a new violation. A count below
-baseline also fails, with the command to lower it, so a fix cannot be undone
-silently. A line that is legitimately UTC (a log stamp, a UTC-by-contract API)
+It is a ratchet. Existing hits are recorded in
+``tests/fixtures/timezone_boundary_baseline.json`` by identity (file, rule and
+the stripped source line, as a multiset), not by count or line number, so a
+fixed hit cannot be traded for a new one elsewhere in the file and an edit
+that only shifts lines is not a change. They are the remediation backlog. A
+hit not in the baseline fails: that is a new violation. A baseline entry that
+no longer occurs also fails, with the command to drop it, so a fix cannot be
+undone silently. A line that is legitimately UTC (a log stamp, a UTC-by-contract API)
 opts out with a trailing ``# tz-ok: <reason>`` comment.
 
 Regenerate the baseline after fixing sites:
@@ -119,41 +121,66 @@ def _hits(path: Path) -> list[tuple[str, int]]:
     return [(rule, ln) for rule, ln in found if not opted_out(ln)]
 
 
-def current_counts() -> dict[str, dict[str, int]]:
-    counts: dict[str, dict[str, int]] = {}
+def current_hits() -> dict[str, dict[str, list[str]]]:
+    """{file: {rule: sorted stripped source lines}}, the identity of each hit."""
+    out: dict[str, dict[str, list[str]]] = {}
     for p in _files():
-        c = Counter(rule for rule, _ in _hits(p))
-        if c:
-            counts[p.relative_to(REPO).as_posix()] = dict(sorted(c.items()))
-    return dict(sorted(counts.items()))
+        hits = _hits(p)
+        if not hits:
+            continue
+        lines = p.read_text(encoding="utf-8").splitlines()
+        by_rule: dict[str, list[str]] = {}
+        for rule, ln in hits:
+            by_rule.setdefault(rule, []).append(lines[ln - 1].strip())
+        out[p.relative_to(REPO).as_posix()] = {r: sorted(v) for r, v in sorted(by_rule.items())}
+    return dict(sorted(out.items()))
 
 
 def test_no_new_timezone_relabels_and_the_backlog_only_shrinks():
     baseline = json.loads(BASELINE.read_text())
-    now = current_counts()
+    now = current_hits()
     new, fixed = [], []
     for f in sorted(set(baseline) | set(now)):
         for rule in sorted(set(baseline.get(f, {})) | set(now.get(f, {}))):
-            b, n = baseline.get(f, {}).get(rule, 0), now.get(f, {}).get(rule, 0)
-            if n > b:
-                lines = [ln for r, ln in _hits(REPO / f) if r == rule]
-                new.append(f"{f}: {rule} {b} -> {n} (lines {lines})")
-            elif n < b:
-                fixed.append(f"{f}: {rule} {b} -> {n}")
+            b = Counter(baseline.get(f, {}).get(rule, []))
+            n = Counter(now.get(f, {}).get(rule, []))
+            new += [f"{f}: {rule}: {src}" for src in (n - b).elements()]
+            fixed += [f"{f}: {rule}: {src}" for src in (b - n).elements()]
     assert not new, (
         "New market-time relabel(s). Convert through lib/eastern_time.py, or add "
         "'# tz-ok: <reason>' if the value is genuinely UTC by contract:\n  "
         + "\n  ".join(new)
     )
     assert not fixed, (
-        "Sites were fixed; lower the baseline so they cannot come back:\n  "
+        "Baselined sites no longer occur; drop them so they cannot come back:\n  "
         + "\n  ".join(fixed)
         + "\nRun: python -m tests.meta.test_timezone_boundaries --write-baseline"
     )
 
 
+def test_a_swapped_violation_is_caught_even_when_the_count_is_unchanged(tmp_path, monkeypatch):
+    """Codex P2 on #1185: with per-file counts, deleting one baselined
+    date.today() and adding a datetime.now() elsewhere left host-today at 1
+    and passed. Identity catches both halves."""
+    mod = sys.modules[__name__]
+    f = tmp_path / "gcp" / "x.py"
+    f.parent.mkdir(parents=True)
+    f.write_text("from datetime import date\nd = date.today()\n")
+    monkeypatch.setattr(mod, "REPO", tmp_path)
+    base = tmp_path / "baseline.json"
+    monkeypatch.setattr(mod, "BASELINE", base)
+    base.write_text(json.dumps(current_hits()))
+    f.write_text("from datetime import datetime\nn = datetime.now()\n")
+    try:
+        test_no_new_timezone_relabels_and_the_backlog_only_shrinks()
+    except AssertionError as e:
+        assert "datetime.now()" in str(e)
+    else:
+        raise AssertionError("a swapped violation passed the ratchet")
+
+
 def test_the_helper_module_is_the_only_place_eastern_is_built():
-    offenders = [f for f, c in current_counts().items() if "zone-built-locally" in c]
+    offenders = [f for f, c in current_hits().items() if "zone-built-locally" in c]
     baseline = json.loads(BASELINE.read_text())
     allowed = {f for f, c in baseline.items() if "zone-built-locally" in c}
     assert set(offenders) <= allowed, sorted(set(offenders) - allowed)
@@ -182,7 +209,7 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
 
 if __name__ == "__main__":
     if "--write-baseline" in sys.argv:
-        BASELINE.write_text(json.dumps(current_counts(), indent=1, sort_keys=True) + "\n")
+        BASELINE.write_text(json.dumps(current_hits(), indent=1, sort_keys=True) + "\n")
         print(f"wrote {BASELINE.relative_to(REPO)}")
     else:
-        print(json.dumps(current_counts(), indent=1))
+        print(json.dumps(current_hits(), indent=1))
