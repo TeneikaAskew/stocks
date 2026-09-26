@@ -529,7 +529,15 @@ def _read_replace_list(path: str) -> list[tuple[str, int, int]]:
 
 
 def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
-    """Drive replace_month over the list; striped across Cloud Run tasks."""
+    """Drive replace_month over the list; striped across Cloud Run tasks.
+
+    Exits non-zero unless EVERY item reached the expected status (replaced,
+    or dry_run without --commit). A rate limit, request error, empty vendor
+    month or incomplete refetch leaves that month untouched, which is safe,
+    but it means the migration is not done, and a green run must never imply
+    it is (the reader cutover depends on it). Each such month is printed as a
+    ``RETRY TICKER,YYYY-MM`` line: collect them into the next list.
+    """
     items = _read_replace_list(path)
     task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
     task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
@@ -540,10 +548,11 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
     if not api_keys:
         log.error("No ALPHA_VANTAGE_API_KEY set. Exiting.")
         return 1
+    expected = REPLACE_OK if commit else REPLACE_DRY
     log.info("replace-months: task %d/%d, %d ticker-months, commit=%s",
              task_idx, task_cnt, len(items), commit)
     counts: dict = {}
-    systemic = []
+    retry: list[str] = []
     last = 0.0
     for n, (sym, y, m) in enumerate(items, 1):
         wait = _av_cfg.delay_between_calls - (time.time() - last)
@@ -554,20 +563,27 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
             r = replace_month(sym, y, m, api_keys[n % len(api_keys)], commit)
         except Exception as e:
             log.error("  ✗ %s %d-%02d SYSTEMIC: %s", sym, y, m, e)
-            systemic.append(f"{sym} {y}-{m:02d}")
+            counts['systemic'] = counts.get('systemic', 0) + 1
+            retry.append(f"{sym},{y}-{m:02d}")
             continue
         counts[r['status']] = counts.get(r['status'], 0) + 1
+        if r['status'] != expected:
+            retry.append(f"{r['symbol']},{r['month']}")
         log.info("  %d/%d %s %s status=%s held_sessions=%s missing_sessions=%d "
                  "deleted=%d inserted=%d%s", n, len(items), r['symbol'], r['month'],
                  r['status'], r['held_sessions'], r['missing_sessions'],
                  r['deleted'], r['inserted'],
                  f" missing={r['missing']}" if r.get('missing') else "")
-    log.info("replace-months summary: %s systemic=%d", counts, len(systemic))
-    if systemic:
-        log.error("Systemic failures: %s", systemic)
+    log.info("replace-months summary: %s (expected %s for all %d)",
+             counts, expected, len(items))
+    if retry:
+        for item in retry:
+            log.error("RETRY %s", item)
+        log.error("%d of %d ticker-months did not reach %s; the migration is NOT "
+                  "complete. Re-run with the RETRY lines above as the list.",
+                  len(retry), len(items), expected)
         return 1
     return 0
-
 
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')

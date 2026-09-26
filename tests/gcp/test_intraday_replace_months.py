@@ -14,6 +14,7 @@ than reasoned about:
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -218,3 +219,51 @@ def test_replace_deletes_then_inserts_in_one_transaction():
     first_sql = str(conn.execute.call_args_list[0].args[0])
     assert first_sql.startswith("DELETE FROM market_data_intraday")
     assert "INSERT" in str(conn.execute.call_args_list[1].args[0])
+
+
+# ── run_replace_months: a green run means every month was replaced ──────────
+
+
+def _run(tmp_path, monkeypatch, statuses, commit=True):
+    lst = tmp_path / "l.csv"
+    lst.write_text("".join(f"T{i},2026-09\n" for i in range(len(statuses))))
+    monkeypatch.setattr(fai, "get_api_keys", lambda: ["k"])
+    monkeypatch.setattr(fai, "_av_cfg", SimpleNamespace(delay_between_calls=0))
+    results = iter(statuses)
+
+    def fake(sym, y, m, key, commit):
+        st = next(results)
+        if isinstance(st, Exception):
+            raise st
+        return {"symbol": sym, "month": f"{y}-{m:02d}", "status": st, "deleted": 0,
+                "inserted": 0, "held_sessions": 1, "missing_sessions": 0}
+    monkeypatch.setattr(fai, "replace_month", fake)
+    return fai.run_replace_months(str(lst), commit, None)
+
+
+def test_commit_run_succeeds_only_when_every_month_is_replaced(tmp_path, monkeypatch):
+    assert _run(tmp_path, monkeypatch, [fai.REPLACE_OK, fai.REPLACE_OK]) == 0
+
+
+@pytest.mark.parametrize("bad", [fai.FETCH_RATE_LIMIT, fai.REPLACE_INCOMPLETE,
+                                 fai.FETCH_NO_TIMESERIES, fai.REPLACE_DRY])
+def test_commit_run_fails_and_lists_retries_when_any_month_is_skipped(tmp_path, monkeypatch, caplog, bad):
+    """Codex P1 on #1185: skipped months were only counted and the job still
+    exited 0, so a run that left the table untouched looked complete."""
+    import logging
+    caplog.set_level(logging.ERROR)
+    assert _run(tmp_path, monkeypatch, [fai.REPLACE_OK, bad]) == 1
+    assert "RETRY T1,2026-09" in caplog.text
+    assert "RETRY T0" not in caplog.text
+
+
+def test_commit_run_fails_on_a_raised_month(tmp_path, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.ERROR)
+    assert _run(tmp_path, monkeypatch, [RuntimeError("db down")]) == 1
+    assert "RETRY T0,2026-09" in caplog.text
+
+
+def test_dry_run_expects_dry_run_status(tmp_path, monkeypatch):
+    assert _run(tmp_path, monkeypatch, [fai.REPLACE_DRY], commit=False) == 0
+    assert _run(tmp_path, monkeypatch, [fai.REPLACE_INCOMPLETE], commit=False) == 1
