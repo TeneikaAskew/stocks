@@ -744,28 +744,22 @@ def get_available_dates(ticker: str):
                 # stale 200. Same reasoning as _coverage_query above.
                 df = _dates_query(
                     """
-                    -- REVERTED 2026-09-06. This was an ET conversion, on the
-                    -- belief that every row is a true UTC instant. That is FALSE:
-                    -- the table holds BOTH conventions and no per-row rule tells
-                    -- them apart.
-                    --
-                    --   2025-06-02  raw UTC 08:00-23:59 = 04:00-20:00 ET  true UTC
-                    --   2026-03-02  raw UTC 09:00-23:58 = 04:00-19:00 ET  true UTC
-                    --   2026-09-04  raw UTC 00:00-23:59 = a full 24 hours, which
-                    --                                     is no session either way
-                    --
-                    -- gcp/fetchers/fetch_market_data.py:445 stores AV wall-clock ET
-                    -- naively BY DESIGN ("ET-as-UTC convention") under the SAME
-                    -- data_source='alphavantage' label the true-UTC rows carry.
-                    -- Converting unconditionally shifts those rows 4-5 hours early.
-                    --
-                    -- DATE(ts) is also wrong (351 phantom dates), but it is the
-                    -- wrong we already had; a new wrong that corrupts premarket
-                    -- bars is worse. Own PR: normalise the writer, migrate the
-                    -- ET-framed rows, THEN convert here.
-                    SELECT DISTINCT DATE(ts) AS trade_date
+                    -- Session dates in BOTH stored conventions (CLAUDE.md 3.9):
+                    -- Eastern labels sit at raw 04:00-20:00 of their own date,
+                    -- true UTC at raw 08:00Z-23:59Z plus the 20:00 ET bar at
+                    -- 00:00Z (EDT) / 01:00Z (EST) of the next date. So a
+                    -- session is a weekday raw date with rows at raw hour 4 or
+                    -- later. Plain DATE(ts) listed the spill: a Saturday after
+                    -- every Friday, a holiday after every holiday eve (Codex P2
+                    -- on #1185). Same rule as the migration's
+                    -- _held_session_dates.
+                    SELECT (ts AT TIME ZONE 'UTC')::date AS trade_date  -- tz-ok: raw label date, either convention
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
+                    GROUP BY 1
+                    HAVING count(*) FILTER (
+                        WHERE extract(hour FROM ts AT TIME ZONE 'UTC') >= 4) > 0
+                       AND extract(isodow FROM (ts AT TIME ZONE 'UTC')::date) < 6
                     ORDER BY trade_date DESC
                     """,
                     {"ticker": ticker_upper},
@@ -1595,7 +1589,7 @@ def market_most_active():
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 
-def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> pd.DatetimeIndex:
+def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> "tuple[pd.DatetimeIndex, object]":
     """Naive-Eastern index for market_data_intraday rows, safe across the
     timestamp-convention migration (CLAUDE.md 3.9).
 
@@ -1605,17 +1599,27 @@ def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> pd.DatetimeI
     converting none shifts the new ones. So each raw date is read by the
     convention its own rows carry.
 
-    AV bars span 04:00-19:59 Eastern, so each convention has raw clock times
-    the other never produces, in both seasons:
-      raw 04:00-07:59   only Eastern labels (true UTC starts at 08:00Z)
-      raw 20:00-00:59   only true UTC (labels stop at 19:59)
+    AV bars span 04:00-20:00 Eastern (there is a bar AT 20:00), so each
+    convention has raw clock times the other never produces, in both seasons:
+      raw 04:00-07:59         only Eastern labels (true UTC starts at 08:00Z)
+      raw 20:01-01:00         only true UTC (the last label is raw 20:00)
     That settles every full session. When a date shows neither (a partial
     day) or both (a date both writers touched), the 09:30 ET open decides: it
     is the day's volume spike, so a spike at raw label 09:30 and none at the
     converted 09:30 means labels (the test that matched live prices in
     gcp/queries/classify_intraday_ts_convention.sql). With no spike either
     way the date is converted: that is every writer's convention from now on.
-    After the migration this reduces to utc_to_eastern_naive.
+
+    A date both writers touched keeps, beside the winning convention's rows,
+    the loser's rows at the times only it can occupy: legacy labels at raw
+    04:00-07:59 after a true-UTC refetch, or true-UTC post-market at raw
+    20:01-01:00 after a legacy overwrite (Codex P1 on #1185). The winner already
+    holds those bars at its own keys, so the stragglers are duplicates that
+    would render as 00:00-03:59 ET or doubled post-market candles; they are
+    dropped. Returns (naive-Eastern index, keep mask).
+
+    After the migration this reduces to utc_to_eastern_naive with nothing
+    dropped.
     """
     inst = pd.DatetimeIndex(pd.to_datetime(ts))
     if inst.tz is None:
@@ -1630,6 +1634,7 @@ def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> pd.DatetimeI
     raw_date = pd.Series(raw.date, index=vol.index)
     conv_date = pd.Series(converted.date, index=vol.index)
     out = pd.Series(converted, index=vol.index)
+    keep = pd.Series(True, index=vol.index)
 
     def spike(window: pd.Series, day: pd.Series) -> float:
         """Mean volume of an opening window over the day's median minute."""
@@ -1639,8 +1644,9 @@ def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> pd.DatetimeI
     for d, rows in raw_date.groupby(raw_date).groups.items():
         rows = pd.Index(rows)
         rm, v = raw_min[rows], vol[rows]
-        label_ev = bool(((rm >= 240) & (rm < 480)).any())
-        true_ev = bool(((rm >= 1200) | (rm < 60)).any())
+        label_only = (rm >= 240) & (rm < 480)
+        true_only = (rm > 1200) | (rm <= 60)
+        label_ev, true_ev = bool(label_only.any()), bool(true_only.any())
         if label_ev != true_ev:
             is_label = label_ev
         else:
@@ -1650,7 +1656,20 @@ def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> pd.DatetimeI
             is_label = label_spike > 2 and label_spike > 1.5 * max(true_spike, 1.0)
         if is_label:
             out[rows] = raw[rows]
-    return pd.DatetimeIndex(out.to_numpy())
+            keep[rows[true_only.to_numpy()]] = False
+        else:
+            keep[rows[label_only.to_numpy()]] = False
+    # A stale true-UTC 20:00 ET bar sits at raw 00:00/01:00Z of the NEXT date,
+    # so it is read in that date's group and can land on the same Eastern
+    # minute as a kept label bar. Where two kept rows share a minute, keep the
+    # one stored on its own date (raw date == Eastern date): a label, or an
+    # in-date true-UTC row, never a neighbour's spill.
+    out_idx = pd.DatetimeIndex(out.to_numpy())
+    dup = pd.Series(out_idx, index=vol.index)[keep].duplicated(keep=False)
+    if dup.any():
+        foreign = pd.Series(raw_date.to_numpy() != out_idx.date, index=vol.index)
+        keep[dup[dup].index[foreign[dup[dup].index].to_numpy()]] = False
+    return out_idx, keep.to_numpy()
 
 
 def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
@@ -1667,10 +1686,10 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
             if len(date) == 8:
                 # Specific date: YYYYMMDD
                 date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
-                # [D 00:00Z, D+1 01:00Z) holds session D in both stored
-                # conventions (Eastern labels sit at raw D 04:00-19:59; true
-                # UTC at D 08:00Z .. D+1 00:59Z in winter). The caller keeps
-                # only rows whose Eastern date is D.
+                # [D 00:00Z, D+1 02:00Z) holds session D in both stored
+                # conventions (Eastern labels at raw D 04:00-20:00; true UTC
+                # at D 08:00Z .. D+1 01:00Z, the winter 20:00 ET bar). The
+                # caller keeps only rows whose Eastern date is D.
                 d0 = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 df = query_to_dataframe(
                     """
@@ -1681,7 +1700,7 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                     ORDER BY ts
                     """,
                     {"ticker": ticker_upper, "start": d0,
-                     "end": d0 + timedelta(days=1, hours=1)},
+                     "end": d0 + timedelta(days=1, hours=2)},
                 )
             elif len(date) == 6:
                 # Month: YYYYMM
@@ -1703,13 +1722,15 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                     {"ticker": ticker_upper,
                      "start": datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc),
                      "end": datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                            + timedelta(hours=1)},
+                            + timedelta(hours=2)},
                 )
             else:
                 df = pd.DataFrame()
 
             if not df.empty:
-                df.index = _intraday_index_to_eastern(df["ts"], df["volume"])
+                idx, keep = _intraday_index_to_eastern(df["ts"], df["volume"])
+                df = df[keep]
+                df.index = idx[keep]
                 return df.drop(columns=["ts"])
         except Exception as e:
             logger.warning("Cloud SQL intraday load failed for %s/%s: %s", ticker_upper, date, e)
