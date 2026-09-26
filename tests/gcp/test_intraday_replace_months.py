@@ -752,3 +752,70 @@ def test_replace_month_reports_a_window_change_as_changed():
          patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_CHANGED
+
+
+# ── Codex P1 on #1185 (3dd141d): derived rows keyed by the moved timestamps ──
+
+
+def test_replace_clears_derived_rows_for_the_window_in_the_same_transaction():
+    import gcp.database as db
+    engine, conn, tbl = _engine_with(rowcount=1)
+    seen = []
+
+    def execute(stmt, *a, **k):
+        q = " ".join(str(stmt).split())
+        seen.append(q)
+        r = MagicMock()
+        r.rowcount = 7 if q.startswith("DELETE FROM intraday_flow_15m") else 1
+        r.scalar.return_value = None if "'realtime_gex_15m'" in str(a) else "exists"
+        r.scalar_one.return_value = 1
+        return r
+    conn.execute.side_effect = execute
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    cleared = {}
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  verify=lambda c: None,
+                                  clear_tables=("intraday_flow_15m", "realtime_gex_15m"),
+                                  cleared=cleared)
+    flow = [q for q in seen if q.startswith("DELETE FROM intraday_flow_15m")]
+    assert flow == ["DELETE FROM intraday_flow_15m WHERE ticker = :k_ticker "
+                    "AND ts >= :w_start AND ts < :w_end"]
+    assert not any(q.startswith("DELETE FROM realtime_gex_15m") for q in seen)  # absent table
+    assert cleared == {"intraday_flow_15m": 7}
+    # After the source DELETE and INSERT, inside the one engine.begin().
+    assert seen.index(flow[0]) > max(i for i, q in enumerate(seen) if q.startswith("INSERT"))
+
+
+def test_replace_month_clears_every_ts_keyed_derived_table():
+    captured = {}
+
+    def fake_replace(df, table, key, ts_col, start, end, **kw):
+        captured.update(kw)
+        kw["cleared"].update({"strat_features_1m": 390})
+        return 961, len(df)
+    with patch.object(fai, "fetch_month", return_value=(_vendor_month(["2026-09-24"]), fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 1}), \
+         patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_OK
+    assert set(captured["clear_tables"]) >= {"intraday_flow_15m", "intraday_gex_15m",
+                                            "realtime_gex_15m", "strat_features_1m",
+                                            "strat_features_60m"}
+    assert r["derived_cleared"] == {"strat_features_1m": 390}
+
+
+def test_a_bad_derived_table_name_is_refused():
+    import gcp.database as db
+    engine, conn, tbl = _engine_with(rowcount=1)
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}), \
+         pytest.raises(ValueError, match="bad derived table"):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  clear_tables=("x; DROP TABLE y",))

@@ -339,9 +339,6 @@
   "host-today": [
    "_compute_daily_vex::_date.today()",
    "_process_ticker::_date.today()"
-  ],
-  "utc-parse": [
-   "_load_1m_bars::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
  "gcp/research/strat_engine/strat_data_pipeline.py": {

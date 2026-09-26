@@ -452,6 +452,19 @@ class _HeldChanged(Exception):
 # stragglers. Deleting more than this multiple of what is re-inserted means
 # something is wrong with the window or the list; the transaction rolls back.
 REPLACE_MAX_DELETE_RATIO = 3.0
+
+# Tables materialised from market_data_intraday and keyed by (ticker, ts). A
+# replace that moves keys leaves their rows at keys no bar has any more (and a
+# legacy raw 04:00-07:59Z key has no true-UTC bar at all), so the replace
+# deletes the window from each in the same transaction and the run lists the
+# rebuilds (Codex P1 on #1185). Each builder recomputes a range:
+#   build-intraday-flow --backfill, build-intraday-gex --backfill,
+#   build-realtime-gex, strat_data_builder --rebuild.
+DERIVED_TS_TABLES = (
+    "intraday_flow_15m", "intraday_gex_15m", "realtime_gex_15m",
+    "strat_features_1m", "strat_features_5m", "strat_features_15m",
+    "strat_features_30m", "strat_features_60m", "strat_features_4h",
+)
 # A refetched session may hold this share fewer bars than already held
 # (rounded down, so a session under 50 bars must be complete) before the
 # month is refused as incomplete.
@@ -589,15 +602,18 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         if _held_digest(symbol, start, end, conn=conn) != digest:
             raise _HeldChanged("held rows changed (same bar counts, new content)")
 
+    cleared: dict = {}
     try:
         deleted, inserted = replace_rows_in_window(
             df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
             'ts', start, end, chunksize=5000,
-            max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify)
+            max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify,
+            clear_tables=DERIVED_TS_TABLES, cleared=cleared)
     except (_HeldChanged, WindowChanged) as e:
         out.update(status=REPLACE_CHANGED, detail=str(e))
         return out
-    out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted)
+    out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted,
+               derived_cleared={k: v for k, v in cleared.items() if v})
     return out
 
 
@@ -651,6 +667,7 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
              task_idx, task_cnt, len(items), commit)
     counts: dict = {}
     retry: list[str] = []
+    rebuild: dict = {}
     last = 0.0
     # The AV key's RPM is shared by every task, so each task paces at
     # delay x task_count (code review H1): N tasks together stay at the cap.
@@ -668,6 +685,8 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
             retry.append(f"{sym},{y}-{m:02d}")
             continue
         counts[r['status']] = counts.get(r['status'], 0) + 1
+        for t, n in (r.get('derived_cleared') or {}).items():
+            rebuild[t] = rebuild.get(t, 0) + n
         if r['status'] != expected:
             retry.append(f"{r['symbol']},{r['month']}")
         log.info("  %d/%d %s %s status=%s held_sessions=%s missing_sessions=%d "
@@ -677,6 +696,11 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
                  f" missing={r['missing']}" if r.get('missing') else "")
     log.info("replace-months summary: %s (expected %s for all %d)",
              counts, expected, len(items))
+    if rebuild:
+        # Derived rows for replaced windows were deleted, not recomputed: the
+        # gaps are explicit until each builder re-runs over the range.
+        for t in sorted(rebuild):
+            log.warning("REBUILD %s rows_cleared=%d", t, rebuild[t])
     if retry:
         for item in retry:
             log.error("RETRY %s", item)

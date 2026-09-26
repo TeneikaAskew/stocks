@@ -16,8 +16,9 @@ Usage:
 import atexit
 import os
 import logging
+import re
 import threading
-from typing import Optional, List
+from typing import List, Optional, Sequence
 
 import pandas as pd
 
@@ -525,6 +526,9 @@ def upsert_dataframe(
     return total
 
 
+_IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
 class WindowChanged(RuntimeError):
     """The replace window gained rows between the lock and the DELETE."""
 
@@ -539,6 +543,9 @@ def replace_rows_in_window(
     chunksize: int = 2000,
     max_delete_ratio: Optional[float] = None,
     verify=None,
+    clear_tables: Sequence[str] = (),
+    clear_key: Sequence[str] = ("ticker",),
+    cleared: Optional[dict] = None,
 ) -> tuple[int, int]:
     """Atomically replace every row of *table* matching *key* with
     ``start <= ts_col < end`` by the rows of *df*. Returns (deleted, inserted).
@@ -572,6 +579,13 @@ def replace_rows_in_window(
     swapped (Codex P1 on #1185). A key INSERTED into the window after the lock
     is not a locked row, so the DELETE must remove exactly the rows locked;
     any other count raises ``WindowChanged`` and rolls back.
+
+    ``clear_tables``: tables derived from *table*, keyed by the ``clear_key``
+    columns of *key* (default ticker) and ``ts_col``. Their rows in the window are deleted in the SAME
+    transaction, because a replace that moves keys leaves derived rows at
+    keys no source row has any more (Codex P1 on #1185). A table that does
+    not exist is skipped. Counts are written to ``cleared`` when given; the
+    caller rebuilds the derived tables afterwards.
     """
     import sqlalchemy
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -582,6 +596,11 @@ def replace_rows_in_window(
             raise ValueError("replace_rows_in_window: start/end must be tz-aware")
     if not key:
         raise ValueError("replace_rows_in_window: key must not be empty")
+    if clear_tables and not set(clear_key) <= set(key):
+        raise ValueError("replace_rows_in_window: clear_key must be a subset of key")
+    for dt in clear_tables:   # interpolated into SQL below
+        if not _IDENT.match(dt):
+            raise ValueError(f"replace_rows_in_window: bad derived table name {dt!r}")
     if not df.empty:
         ts = pd.DatetimeIndex(df[ts_col])
         outside = int(((ts < pd.Timestamp(start)) | (ts >= pd.Timestamp(end))).sum())
@@ -642,8 +661,19 @@ def replace_rows_in_window(
                 f"for {len(records)} re-inserted (> {max_delete_ratio}x); rolled back")
         for i in range(0, len(records), size):
             conn.execute(pg_insert(tbl).values(_na_to_none_records(records[i:i + size])))
-    logger.info("replace_rows_in_window(%s %s [%s, %s)): deleted %d, inserted %d",
-                table, key, start, end, deleted, len(records))
+        for dt in clear_tables:
+            exists = conn.execute(sqlalchemy.text("SELECT to_regclass(:t)"), {"t": dt}).scalar()
+            if exists is None:
+                continue
+            d_where = " AND ".join(f"{k} = :k_{k}" for k in clear_key)
+            n = conn.execute(sqlalchemy.text(
+                f"DELETE FROM {dt} WHERE {d_where} "
+                f"AND {ts_col} >= :w_start AND {ts_col} < :w_end"), params).rowcount
+            if cleared is not None:
+                cleared[dt] = int(n)
+    logger.info("replace_rows_in_window(%s %s [%s, %s)): deleted %d, inserted %d%s",
+                table, key, start, end, deleted, len(records),
+                f", cleared {cleared}" if cleared else "")
     return int(deleted), len(records)
 
 

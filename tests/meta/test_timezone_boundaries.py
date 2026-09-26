@@ -60,7 +60,10 @@ EASTERN_NAMES = {"America/New_York", "US/Eastern", "EST5EDT", "EST", "EDT"}
 OPT_OUT = "tz-ok:"
 
 _SQL_UTC_DATE = re.compile(
-    r"\bCURRENT_DATE\b|\bDATE\s*\(\s*[A-Za-z_][\w.]*\s*\)|\b[\w.]*(?:ts|_at)\s*::\s*date\b",
+    r"\bCURRENT_DATE\b|\bDATE\s*\(\s*[A-Za-z_][\w.]*\s*\)|\b[\w.]*(?:ts|_at)\s*::\s*date\b"
+    # CAST(col AS date), the standard spelling of the same truncation
+    # (Codex P2 on #1185).
+    r"|\bCAST\s*\(\s*[A-Za-z_][\w.]*\s+AS\s+date\s*\)",
     re.IGNORECASE,
 )
 _OFFSET_STR = re.compile(r"^\s*-?\s*[45]\s*(h|hr|hrs|hour|hours|H)\s*$")
@@ -382,12 +385,14 @@ def test_the_guard_scans_standalone_sql_files(tmp_path, monkeypatch):
         "-- tz-ok: a UTC log-retention cutoff\n"
         "DELETE FROM logs WHERE created_at < CURRENT_DATE;\n"
         "SELECT (ts AT TIME ZONE 'America/New_York')::date FROM market_data_intraday;\n"
+        "SELECT 1 FROM market_data_intraday WHERE cast( ts as DATE ) = :d;\n"
     )
     monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
     assert q in _files()
     hits = _scan(q)
-    assert [(r, ln) for r, ln, _ in hits] == [("sql-utc-date", 2), ("sql-utc-date", 3)]
-    assert len({i for _, _, i in hits}) == 2
+    assert [(r, ln) for r, ln, _ in hits] == [("sql-utc-date", 2), ("sql-utc-date", 3),
+                                               ("sql-utc-date", 7)]
+    assert len({i for _, _, i in hits}) == 3
 
 
 def test_the_helper_module_is_the_only_place_eastern_is_built():
@@ -423,6 +428,7 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
         "q2 = 'SELECT 1 FROM t WHERE a.created_at::date = :d'\n"
         "q3 = f'SELECT * FROM t WHERE DATE({column}) = CURRENT_DATE'\n"
         "q4 = f'SELECT * FROM {tbl} WHERE ' f'{col} >= CURRENT_DATE'\n"
+        "q5 = 'SELECT 1 FROM market_data_intraday m WHERE CAST(m.ts AS date) = :day'\n"
         "ok = datetime.utcnow()  # tz-ok: log stamp\n"
         "ok2 = datetime.now(tz=ET)\n"
         "ok3 = pd.Timestamp.now(tz='UTC')\n"
@@ -446,7 +452,7 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
     rules = Counter(r for r, _ in _hits(sample))
     assert rules == Counter({"tz-localize-none": 3, "utc-parse": 1, "zone-built-locally": 4,
-                             "fixed-offset": 3, "host-today": 11, "sql-utc-date": 4})
+                             "fixed-offset": 3, "host-today": 11, "sql-utc-date": 5})
 
 
 if __name__ == "__main__":

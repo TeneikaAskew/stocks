@@ -304,3 +304,26 @@ def test_a_flat_true_utc_premarket_snapshot_is_converted(day):
     df = _flat(_session(day, stored="utc", start="04:00", end="09:29"))
     idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
     assert list(idx[keep]) == list(_expected(day, "04:00", "09:29"))
+
+
+# ── Codex P2 on #1185 (3dd141d): a live partial session after the cutover ────
+
+
+@pytest.mark.parametrize("day", ["2026-10-06", "2026-12-08"])   # EDT, EST
+def test_a_partial_live_session_after_the_cutover_is_true_utc(day):
+    """A flat 04:00-12:00 ET feed mid-session: labels would read it as
+    08:00-16:00 (EDT) / 09:00-17:00 (EST), candles from the future. From
+    TRUE_UTC_FROM every writer stores true UTC, so no inference runs."""
+    from lib.eastern_time import TRUE_UTC_FROM
+    assert pd.Timestamp(day).date() >= TRUE_UTC_FROM
+    df = _flat(_session(day, stored="utc", start="04:00", end="12:00"))
+    idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
+    assert list(idx[keep]) == list(_expected(day, "04:00", "12:00"))
+    assert keep.all()
+
+
+def test_the_cutover_is_not_before_the_first_session_after_the_writer_deploy():
+    """Friday 2026-09-25 was written by the legacy writers; the fix deployed
+    over the weekend of 2026-09-26/27."""
+    from lib.eastern_time import TRUE_UTC_FROM
+    assert TRUE_UTC_FROM >= pd.Timestamp("2026-09-28").date()

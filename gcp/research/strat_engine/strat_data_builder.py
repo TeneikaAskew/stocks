@@ -59,7 +59,9 @@ import pandas as pd
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET_NAME, utc_to_eastern_naive
+from lib.eastern_time import (
+    ET_NAME, eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive,
+)
 
 from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert, bulk_copy_update
 from lib.data_loader import DataLoader
@@ -174,22 +176,38 @@ def _max_cached_date(engine, ticker: str, tf_label: str) -> Optional[_date]:
 
 
 def _load_1m_bars(engine, ticker: str, start_date: str) -> pd.DataFrame:
-    """Pull 1-min RTH bars for one ticker."""
+    """Pull 1-min RTH bars for one ticker, indexed by the true UTC instant.
+
+    Rows are read whole-day and resolved by lib.eastern_time.
+    stored_intraday_to_eastern before the 09:30-15:59 ET filter. Until the
+    re-framing migration finishes a row may be an Eastern label stored as UTC,
+    and filtering in SQL with ``AT TIME ZONE`` kept raw 13:30-15:59 labels as
+    "09:30-11:59 ET" and dropped the real open (Codex P1 on #1185). Loading
+    extended hours too costs ~2.4x the rows; the daily run reads ~45 days.
+    """
     table = INTRADAY_TABLE[ticker]
     sql = text(f"""
         SELECT ts, open, high, low, close, volume
         FROM {table}
         WHERE interval = '1min'
           AND ts >= :start_ts
-          AND (ts AT TIME ZONE 'America/New_York')::time BETWEEN '09:30' AND '15:59'
         ORDER BY ts
     """)
+    # start_date's Eastern midnight read as a label: the earlier of the two
+    # raw placements, so both conventions of the first session are fetched.
     start_ts = pd.Timestamp(start_date, tz="UTC")
     with engine.connect() as conn:
         df = pd.read_sql(sql, conn, params={"start_ts": start_ts})
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df = df.set_index("ts")
-    return df
+    if df.empty:
+        return df.set_index("ts")
+    idx, keep = stored_intraday_to_eastern(df["ts"], df["volume"])
+    df, eastern = df.loc[keep].drop(columns="ts"), idx[keep]
+    t = eastern.hour * 60 + eastern.minute
+    rth = (t >= 570) & (t <= 959) & (eastern.date >= pd.Timestamp(start_date).date())
+    df = df.loc[rth]
+    df.index = eastern_index_to_utc(eastern[rth])
+    df.index.name = "ts"
+    return df.sort_index()
 
 
 def _load_vix_per_date(engine) -> pd.DataFrame:

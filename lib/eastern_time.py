@@ -182,6 +182,15 @@ def utc_to_eastern_naive(values):
 # -- reading market_data_intraday across the convention migration ------------
 
 
+# First raw date written only by the true-UTC writers (#1185 deployed
+# 2026-09-26, before the next session). From here on a row's convention is
+# known, not inferred: the heuristics below would otherwise have to read a
+# live partial session (premarket only, or flat before the day fills), whose
+# shape a legacy one can share (Codex P2 x2 on #1185). Must never be earlier
+# than the first session after the writer deploy.
+TRUE_UTC_FROM = date(2026, 9, 28)
+
+
 def stored_intraday_to_eastern(ts, volume):
     """Naive-Eastern index for market_data_intraday rows, safe across the
     timestamp-convention migration (CLAUDE.md 3.9). Returns (naive-Eastern
@@ -191,7 +200,9 @@ def stored_intraday_to_eastern(ts, volume):
     re-framing migration to count the distinct bars a month holds, so both
     agree on what the table contains.
 
-    Until the re-framing migration finishes, a raw date's rows are either
+    Raw dates from TRUE_UTC_FROM on are true UTC by construction and read as
+    such. Until the re-framing migration finishes, an earlier raw date's rows
+    are either
     Eastern wall time stamped as UTC (the legacy writers) or true UTC (every
     writer from #1185 on). Converting all rows shifts the legacy ones 4-5 h;
     converting none shifts the new ones.
@@ -260,6 +271,11 @@ def stored_intraday_to_eastern(ts, volume):
 
     for d, rows in raw_date.groupby(raw_date).groups.items():
         rows = pd.Index(rows)
+        if d >= TRUE_UTC_FROM:
+            # Written after every legacy writer was retired: true UTC by
+            # construction, whatever its shape. A live session (premarket
+            # only, or partway through the day) needs no inference.
+            continue
         rm, v = raw_min[rows], vol[rows]
         lo, to = label_only[rows], true_only[rows]
         if lo.any() != to.any():

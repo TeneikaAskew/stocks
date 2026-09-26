@@ -6,6 +6,7 @@ tercile distribution with fake zeros. A genuine 0.0 is preserved.
 """
 from __future__ import annotations
 
+import pytest
 import math
 
 import pandas as pd
@@ -136,3 +137,37 @@ def test_featurize_tf_counts_minutes_from_the_eastern_open():
     first = out.loc[pd.Timestamp("2026-01-15 14:30", tz="UTC"), col]
     assert first == 0
     assert out.loc[pd.Timestamp("2026-01-15 15:30", tz="UTC"), col] == 60
+
+
+
+@pytest.mark.parametrize("stored", ["et_label", "utc"])
+def test_load_1m_bars_keeps_the_regular_session_in_either_convention(monkeypatch, stored):
+    """Codex P1 on #1185 (3dd141d): an AT TIME ZONE filter in SQL read legacy
+    raw 13:30-15:59 labels as 09:30-11:59 ET and dropped the real open."""
+    import pandas as pd
+    from gcp.research.strat_engine import strat_data_builder as sdb
+    wall = pd.date_range("2026-07-15 04:00", "2026-07-15 20:00", freq="1min")
+    ts = (wall.tz_localize("UTC") if stored == "et_label"
+          else wall.tz_localize("America/New_York").tz_convert("UTC"))
+    minute = wall.hour * 60 + wall.minute
+    rows = pd.DataFrame({"ts": ts, "open": 1.0, "high": 1.0, "low": 1.0,
+                         "close": minute.astype(float),
+                         "volume": [5000 if 570 <= m < 600 else 100 for m in minute]})
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(sdb.pd, "read_sql",
+                        lambda sql, conn, params=None: rows[rows["ts"] >= params["start_ts"]].copy())
+    out = sdb._load_1m_bars(_Engine(), "SPY", "2026-07-15")
+    assert len(out) == 390
+    assert out.index[0] == pd.Timestamp("2026-07-15 13:30", tz="UTC")   # 09:30 EDT
+    assert out["close"].iloc[0] == 570.0                               # the 09:30 bar

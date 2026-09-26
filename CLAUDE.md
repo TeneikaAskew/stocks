@@ -639,7 +639,13 @@ whether the win still holds.
 >   comes from `gcp/queries/list_intraday_ticker_months.sql`. Verify with
 >   `--verify-months` over a list regenerated from the table (every ticker,
 >   read-only, no vendor calls); `gcp/queries/classify_intraday_ts_convention.sql`
->   is the SPY/QQQ/IWM spot check only.
+>   is the SPY/QQQ/IWM spot check only. A replaced month's rows in the
+>   ts-keyed derived tables (`DERIVED_TS_TABLES`: intraday flow/GEX 15m,
+>   `strat_features_*`) are deleted in the same transaction; re-run their
+>   builders over the range afterwards (the run prints `REBUILD` lines).
+> - **Reading across the migration:** `lib.eastern_time.stored_intraday_to_eastern`.
+>   Raw dates from `TRUE_UTC_FROM` (2026-09-28, the first session after the
+>   writer deploy) are true UTC by construction; earlier dates are inferred.
 > - **Readers (pending, after the data):** until then converting
 >   unconditionally still CORRUPTS the ET-framed rows (4-5 hours early). An
 >   attempt was reverted for exactly this reason (#992). Keep the existing
