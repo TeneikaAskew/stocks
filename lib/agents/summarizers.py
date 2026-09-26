@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -976,6 +977,9 @@ def summarize_backtest_metrics(
         pattern_today: dict — features describing today's setup
         analog_count: int   — how many historical matches
         cross_ticker_used: bool — whether cross-ticker analogs were merged
+        cross_ticker_source: 'watchlists' | 'INSIGHT_TICKERS' | None —
+                                which universe the expansion drew from;
+                                None when it did not run or was empty
         forward_returns: dict — day_1/3/5/10 stats (median, mean,
                                 win_rate, p25, p75, max, min)
         top_analogs: list[dict] — up to 5 closest historical
@@ -1111,11 +1115,17 @@ def summarize_backtest_metrics(
             break
 
     cross_used = False
+    # Which universe the analogs were drawn from ('watchlists' or the
+    # INSIGHT_TICKERS mirror); None when the expansion did not run or the
+    # universe was empty. Surfaced so a cross-source fallback is never
+    # silent (Rule 3.7.1): the raw bundle reaches the researcher prompts.
+    cross_source = None
     # If same-ticker matches are sparse, expand to every other ticker
     # in the table at the *same* tolerance band — keeps match quality
     # comparable while widening the analog universe.
     if cross_ticker and len(matched) < 10:
-        cross_history = _build_cross_ticker_history(ticker, str(cutoff), inclusive_today=inclusive_today)
+        cross_history, cross_source = _build_cross_ticker_history(
+            ticker, str(cutoff), inclusive_today=inclusive_today)
         if cross_history is not None and not cross_history.empty:
             target_band = band_used or bands[-1]
             cross_matched = _matches_in(cross_history, *target_band)
@@ -1131,6 +1141,7 @@ def summarize_backtest_metrics(
             "analog_count": int(len(matched)),
             "tolerance_bands_used": band_used or bands[-1],
             "cross_ticker_used": cross_used,
+            "cross_ticker_source": cross_source,
             "forward_returns": None,
             "top_analogs": [],
             "note": (
@@ -1191,6 +1202,7 @@ def summarize_backtest_metrics(
         "analog_count": int(len(matched)),
         "tolerance_bands_used": band_used,
         "cross_ticker_used": cross_used,
+        "cross_ticker_source": cross_source,
         "forward_returns": forward,
         "top_analogs": top,
     }
@@ -1204,29 +1216,192 @@ def _round_or_none(v):
 
 def _build_cross_ticker_history(target_ticker: str, cutoff: str,
                                 inclusive_today: bool = False):
-    """Pull every other ticker's daily history and engineer the same
+    """Pull the analog universe's daily history and engineer the same
     feature set used for analog matching. Returned frame has a `ticker`
     column so each match can be attributed to its source.
 
-    Implementation: a single SQL pull (orders ticker, date so groupby
-    is contiguous), then a per-ticker pandas pipeline. This is fine for
-    the current ~5-ticker analog universe — if we ever need to scale
-    past 50 tickers, push the gap/vol/RSI math into SQL window
-    functions instead.
+    The universe is the active watchlist, joined in SQL. It used to be
+    ``WHERE ticker <> :ticker`` — literally every other symbol in
+    ``market_data_daily`` — on the docstring's assumption of "the current
+    ~5-ticker analog universe". The table grew to 2,609 tickers while the
+    query kept pace silently, and on 2026-09-15 that shipped 5,597,928
+    rows (Parallel Seq Scan; ``ticker <>`` cannot use an index) which
+    ``pd.read_sql`` expanded to a measured 2.39 GiB, 2.93 GiB once the
+    per-group ``.copy()`` below ran. insight-pipeline was capped at 2Gi,
+    so NVDA and AMD were OOM-killed on signal 9 (PR #1116).
+
+    Two separate defects, both fixed by the join:
+
+    * **Cost.** 15 other watchlist names is 38,850 rows and a measured
+      9.1 MB peak, against 5,597,928 rows and 2.93 GiB. Each additional
+      watchlist ticker costs ~2,600 rows (~1.4 MB), so the size is
+      legible from the watchlist itself; it is logged below so growth
+      is observable rather than silent.
+    * **Correctness.** The unbounded universe included ``^VIX``,
+      ``^VIX3M`` and ``^VVIX``. A volatility index is not an analog for
+      an equity's gap-and-volume setup. Peers must match the target's
+      asset class, which keeps that true even if an index is added to the
+      watchlist for the signal monitor -- a legitimate reason to put one
+      there. Excluding carets *unconditionally* would be wrong in the
+      other direction: an index target would then be compared against
+      equities only (Codex P2 on ``1069e50``).
+
+    Membership is resolved **at the cutoff**, not "active now". The bar
+    predicate was already cutoff-relative while ``removed_at IS NULL``
+    asked about today, so an ``INSIGHT_AS_OF`` replay took its analog
+    universe from the current watchlist: a ticker added after the replay
+    date leaked in, one removed after it vanished, and re-running the same
+    date could return different statistics because someone edited the
+    watchlist in between. That is the #822 look-ahead class arriving
+    through a config table instead of through bars (Codex P2 on
+    ``1069e50``). The live table has the mutation history to show it --
+    MSFT removed 2026-04-28, SPX removed 2026-04-30, MCK added
+    2026-05-04 -- so a 2026-04-29 replay must see SPX and must not see
+    MCK. The boundary is deliberately the cutoff *day* rather than
+    ``cutoff - 1``: a live run's universe should be the watchlist as it
+    stands that morning, and the leak being closed is future edits, not
+    same-day ones.
+
+    **This resolution is approximate, and the limit is structural.**
+    ``watchlists`` is ``PRIMARY KEY (user_id, ticker)``, so it holds
+    current state plus a first-add timestamp, not a membership history.
+    Both re-add paths -- ``gcp/fetchers/_watchlist.py`` and
+    ``gcp/discord_interactions/main.py``, each an
+    ``ON CONFLICT (user_id, ticker) DO UPDATE SET removed_at = NULL`` --
+    clear the removal without touching ``added_at``, which erases the
+    interval. So what the predicate above can and cannot do:
+
+    * catches a ticker whose add is after the cutoff (the MCK case);
+    * catches a ticker removed before the cutoff and never re-added
+      (the MSFT and SPX cases);
+    * **cannot** reconstruct a removal interval that a later re-add
+      erased. Added Jan, removed Mar, re-added Jun reads as present all
+      along, so a replay of Apr wrongly includes it.
+
+    That last case is not detectable from the table -- the evidence is
+    gone, not hidden -- so this docstring is the only record of it.
+    Fixing it needs immutable membership intervals, i.e. a schema change
+    plus both write paths, which is larger than this PR (Codex P2 on
+    ``43a28c9``, raised as a follow-up). The predicate is still a strict
+    improvement on asking whether a row is active *now*; it is just not
+    the complete as-of resolution the paragraph above might suggest on
+    its own.
+
+    The universe is an ``EXISTS`` semi-join scoped to one owner, not a
+    ``JOIN``. ``watchlists`` is ``PRIMARY KEY (user_id, ticker)`` and holds
+    every signed-in user's list beside the shared ``default`` one, so a
+    join returns each bar once per subscriber. The per-ticker pipeline
+    below then reads those duplicate dates as consecutive sessions --
+    ``.diff()``, ``.rolling()``, ``.ewm()`` and the ``shift(-n)`` forward
+    returns are all computed over a doubled series, and analog statistics
+    get weighted by subscriber count. Nothing raises; the numbers are just
+    wrong. Measured 2026-09-17 the table held 16 active rows across 1 user,
+    so this was latent rather than firing (Codex P1 on ``c75c22c``).
+
+    The universe mirrors ``load_watchlist``'s resolution order: the shared
+    owner's DB rows, else ``INSIGHT_TICKERS`` (Codex P2 on ``1069e50``).
+    A run driven by that env var against a DB list that is empty at the
+    cutoff therefore expands over the run's own tickers rather than
+    nothing. That includes every replay dated before the table was
+    seeded on 2026-04-27, for which the as-of predicate above correctly
+    resolves no members at all. The DB wins whenever it has members, so
+    the common ``INSIGHT_TICKERS=NVDA`` replay keeps the curated peers
+    and the env list never *narrows* a universe. The job's
+    ``DEFAULT_TICKERS`` is not mirrored: a hardcoded universe standing in
+    for a real one is the Rule 3.7 shape, and the loud empty path is the
+    honest answer. Which source answered is returned alongside the frame
+    and surfaced as ``cross_ticker_source`` on the section, which the
+    researcher payload dumps whole (Rule 3.7.1). The run's *target* list
+    is not the universe and is not threaded in: on the daily run the
+    targets are the 3 ``in_insight`` names while the 65 NVDA analogs
+    measured above came from AMD/AVGO/MRVL, on the list but not targets.
+
+    Deliberately NOT done: no ``LIMIT``. Truncating an analog sample
+    biases it — ``ORDER BY ticker`` means a LIMIT would silently keep
+    only the alphabetically-early names. The bound belongs on the
+    universe, not on the row count.
+
+    Feature computation stays in pandas. Reading ``market_data_daily``'s
+    stored ``rsi_14`` instead would change results: it is written by
+    ``lib.indicators.calculate_rsi``, which seeds Wilder's average with a
+    simple mean over the first 14 bars, while the matcher below seeds
+    ``ewm(adjust=False)`` from bar one. Measured on NVDA/AMD/AVGO/SPY the
+    two agree to <1 RSI point after ~50 bars (0 disagreements in the last
+    200) but differ by up to 45.7 points before that, and
+    ``calculate_rsi`` ends with ``fillna(50.0)``. Swapping would move
+    ~2% of candidate rows across the +/-5 tight RSI band for no gain here.
     """
     # Same operator as the same-ticker pull, or the as-of bar leaks back
     # in through the analogs (#822).
     daily_op = "<=" if inclusive_today else "<"
-    df = _query(
-        "SELECT ticker, date, open, high, low, close, volume "
-        "FROM market_data_daily "
-        "WHERE ticker <> :ticker "
-        f"  AND date {daily_op} CAST(:cutoff AS date) "
-        "ORDER BY ticker ASC, date ASC",
-        {"ticker": target_ticker.upper(), "cutoff": cutoff},
+    # Lazy, matching `_query` above: keeps `gcp` off this module's import
+    # path. Precedent: lib/agents/ranker/candidates.py:246.
+    from gcp.fetchers._watchlist import DEFAULT_USER_ID, _dedupe_upper
+
+    target = target_ticker.upper()
+    bars_sql = (
+        "SELECT m.ticker, m.date, m.open, m.high, m.low, m.close, m.volume "
+        "FROM market_data_daily m "
+        "WHERE m.ticker <> :ticker "
+        "  AND (left(m.ticker, 1) = '^') = (left(:ticker, 1) = '^') "
+        f"  AND m.date {daily_op} CAST(:cutoff AS date) "
     )
+    params = {"ticker": target, "cutoff": cutoff,
+              "watchlist_owner": DEFAULT_USER_ID}
+
+    df = _query(
+        bars_sql
+        + "  AND EXISTS (SELECT 1 FROM watchlists w "
+          "               WHERE w.ticker = m.ticker "
+          "                 AND w.user_id = :watchlist_owner "
+          "                 AND w.added_at < CAST(:cutoff AS date) + 1 "
+          "                 AND (w.removed_at IS NULL OR w.removed_at >= CAST(:cutoff AS date))) "
+          "ORDER BY m.ticker ASC, m.date ASC",
+        params,
+    )
+    source = "watchlists"
     if df is None or df.empty:
-        return None
+        # Mirror `load_watchlist`'s order: the shared owner's DB rows win,
+        # and INSIGHT_TICKERS is the documented shared-owner fallback when
+        # they are empty. The job's own DEFAULT_TICKERS is deliberately
+        # NOT mirrored: a hardcoded universe standing in for a real one is
+        # the Rule 3.7 shape, and the loud empty path below is the honest
+        # answer. A swallowed DB failure cannot reach this branch in
+        # practice: the same-ticker pull upstream uses the same `_query`
+        # and returns `unavailable` first.
+        env_universe = [
+            t for t in _dedupe_upper(
+                os.environ.get("INSIGHT_TICKERS", "").split(","))
+            if t != target
+        ]
+        if env_universe:
+            logger.warning(
+                "cross-ticker analog universe for %s (cutoff=%s) sourced "
+                "from INSIGHT_TICKERS (%d tickers): the %r watchlist had "
+                "no members with bars at the cutoff",
+                target, cutoff, len(env_universe), DEFAULT_USER_ID,
+            )
+            df = _query(
+                bars_sql
+                + "  AND m.ticker = ANY(:universe) "
+                  "ORDER BY m.ticker ASC, m.date ASC",
+                {**params, "universe": env_universe},
+            )
+            source = "INSIGHT_TICKERS"
+    if df is None or df.empty:
+        # Not a fallback: the caller skips cross-ticker analogs and says so
+        # via cross_ticker_used=False. Logged because an empty result means
+        # an empty watchlist or missing bars, and neither should be silent.
+        logger.warning(
+            "cross-ticker analog universe empty for %s (cutoff=%s) — "
+            "no watchlist rows joined to market_data_daily",
+            target, cutoff,
+        )
+        return None, None
+    logger.info(
+        "cross_ticker_universe target=%s source=%s tickers=%d rows=%d",
+        target, source, df["ticker"].nunique(), len(df),
+    )
 
     out_frames: list[pd.DataFrame] = []
     for tk, group in df.groupby("ticker", sort=False):
@@ -1269,8 +1444,8 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
             out_frames.append(g)
 
     if not out_frames:
-        return None
-    return pd.concat(out_frames, ignore_index=True)
+        return None, None
+    return pd.concat(out_frames, ignore_index=True), source
 
 
 # ---------------------------------------------------------------------------

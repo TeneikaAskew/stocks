@@ -108,6 +108,55 @@ def test_extract_failure_details_reads_protopayload_status_for_audit_log_entries
     )
 
 
+def test_extract_failure_details_recovers_job_name_from_execution_for_cancel_audit_entries():
+    """Executions.CancelExecution audit entries (seen 2026-09-25 on
+    magnitude-engine-2nwd4 et al., issues #1177/#1178) set
+    resource.labels.job_name to "" -- present but empty, not absent -- even
+    though run.googleapis.com/execution_name is populated. Before this fix
+    that fell through to "unknown-job", which 404s in
+    _get_latest_execution_status so reconcile_closures could never close it,
+    even though the underlying magnitude-engine job recovered the same
+    night (#1175)."""
+    log_entry = {
+        "resource": {
+            "type": "cloud_run_job",
+            "labels": {"job_name": "", "location": "us-east1", "project_id": "p"},
+        },
+        "labels": {"run.googleapis.com/execution_name": "magnitude-engine-2nwd4"},
+        "logName": "projects/p/logs/cloudaudit.googleapis.com%2Factivity",
+        "severity": "ERROR",
+        "protoPayload": {
+            "methodName": "google.cloud.run.v1.Executions.CancelExecution",
+            "resourceName": "namespaces/p/executions/magnitude-engine-2nwd4",
+            "status": {
+                "code": 9,
+                "message": (
+                    "Execution 'magnitude-engine-2nwd4' cannot be cancelled "
+                    "because it is not running."
+                ),
+            },
+        },
+    }
+
+    details = fn.extract_failure_details(log_entry)
+
+    assert details["job_name"] == "magnitude-engine"
+    assert details["execution_name"] == "magnitude-engine-2nwd4"
+
+
+def test_extract_failure_details_still_defaults_unknown_job_with_no_execution_name():
+    """Empty resource.labels.job_name with nothing to recover it from (no
+    execution_name either) must still fall back to "unknown-job", not blow
+    up on rsplit."""
+    log_entry = {
+        "resource": {"type": "cloud_run_job", "labels": {"job_name": ""}},
+    }
+
+    details = fn.extract_failure_details(log_entry)
+
+    assert details["job_name"] == "unknown-job"
+
+
 # ── Discord payload ──────────────────────────────────────────────────────────
 def test_build_discord_payload_truncates_long_messages():
     details = {

@@ -1,6 +1,6 @@
 # Backend and API Product Plan
 
-**Last reviewed:** 2026-08-31 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 **VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **92 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
 

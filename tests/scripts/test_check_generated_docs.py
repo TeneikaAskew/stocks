@@ -1899,7 +1899,7 @@ def test_the_provenance_citations_carry_file_line_links(tmp_path):
     for path, line in (("gcp/research/p2_build_gamma_levels.py", 81),
                        ("gcp/research/p2_outcomes_grid.py", 72),
                        ("gcp/research/magnitude_engine/mag_walk_forward.py", 78),
-                       ("gcp/research/strat_engine/strat_data_builder.py", 94),
+                       ("gcp/research/strat_engine/strat_data_builder.py", 96),
                        ("gcp/queries/p7_schema.sql", 7),
                        ("gcp/queries/magnitude_engine_schema.sql", 3),
                        ("gcp/queries/p7_vex_cache.sql", 9),

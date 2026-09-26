@@ -2464,7 +2464,7 @@
    "time_zone": "America/New_York"
   },
   "signal-quality-report-nightly": {
-   "cron": "0 1 * * 2-6",
+   "cron": "30 1 * * 2-6",
    "last_attempt": "2026-09-05T05:00:02.461884Z",
    "last_status": 0,
    "state": "ENABLED",
