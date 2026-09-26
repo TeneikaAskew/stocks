@@ -5,9 +5,15 @@
 
 This document is the human-readable production-promotion contract. Its exact
 machine-readable counterpart is `PRODUCTION_READINESS_CRITERIA` in
-`mag_config.py`. Every experiment summary and every model `CONTRACT.json` must
-record the criteria version above. A version mismatch, a missing version, or an
-unmeasurable mandatory metric blocks promotion.
+`mag_config.py`. Every experiment summary must record the criteria version
+above. A version mismatch, a missing version, or an unmeasurable mandatory
+metric blocks promotion.
+
+The version names the policy governing an experiment; it is not a verdict.
+Model `CONTRACT.json` artifacts do not carry it yet, because nothing evaluates
+these gates yet: stamping a model with it would claim a pass no code produced.
+Serving enforcement arrives with the evaluator that records an explicit
+verdict and its evidence. Until then, no model is promoted under this contract.
 
 ## Objective boundary
 

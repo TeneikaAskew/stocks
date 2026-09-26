@@ -1067,35 +1067,29 @@ def test_a_reordered_class_list_is_still_caught():
     assert got and "classes=" in got
 
 
-def test_an_old_readiness_version_does_not_mask_a_malformed_field():
-    """A version mismatch used to return before any structural check ran, so
-    an artifact carrying an old readiness version AND a scalar `classes` read
-    as ContractMismatch rather than ContractMalformed. Those send on-call to
-    different places; the malformed field must win (Codex P2 on #1187)."""
+def test_the_serving_contract_does_not_claim_a_readiness_verdict():
+    """Nothing evaluates the eight PRODUCTION_READINESS.md gates yet, so a
+    model artifact stamped with the readiness version would claim a verdict
+    no code produced, and inference would serve it as such (Codex P1 on
+    #1187). The version belongs to experiment summaries until an evaluator
+    records an explicit pass."""
     from gcp.research.magnitude_engine.mag_config import contract_mismatch
-    for bad in ({"classes": "TIGHT"}, {"class_priors": [True, False, False, False]},
-                {"class_priors": [0.9, 0.9, 0.1, 0.1]}):
-        with pytest.raises(ValueError):
-            contract_mismatch(_contract(
-                production_readiness_version="magnitude-production-readiness-v0",
-                **bad))
+    assert "production_readiness_version" not in _SERVING_CONTRACT
+    # And an artifact without it stays servable: every LATEST published
+    # before this PR carries no version.
+    assert contract_mismatch(_contract()) is None
 
 
-def test_an_old_readiness_version_is_reported_with_the_other_mismatches():
-    """Once the payload is well formed, the version is one mismatch among the
-    rest, not an early exit that hides them."""
-    from gcp.research.magnitude_engine.mag_config import contract_mismatch
-    got = contract_mismatch(_contract(
-        production_readiness_version="magnitude-production-readiness-v0",
-        label_mode="excursion"))
-    assert got and "production_readiness_version=" in got
-    assert "label_mode=" in got
-
-
-def test_a_non_string_readiness_version_is_malformed():
-    from gcp.research.magnitude_engine.mag_config import contract_mismatch
-    with pytest.raises(ValueError, match="production_readiness_version"):
-        contract_mismatch(_contract(production_readiness_version=1))
+def test_the_backfill_does_not_stamp_the_readiness_policy():
+    """A legacy model's audit establishes its label and decision contract,
+    not any v1 readiness metric, so the backfill must not stamp it as v1
+    (Codex P1 on #1187). Treating the version as a decision key also made a
+    contract with valid training priors look incomplete, and its exact
+    priors were overwritten from the newest sibling (Codex P2 on #1187)."""
+    from scripts.backfill_model_contracts import (
+        _AUDITED_LEGACY_CONTRACT, _DECISION_KEYS)
+    assert "production_readiness_version" not in _AUDITED_LEGACY_CONTRACT
+    assert _DECISION_KEYS == ("class_priors", "decision_lift_min")
 
 
 def test_the_locked_ece_ceilings_do_not_follow_the_mutable_dict(monkeypatch):

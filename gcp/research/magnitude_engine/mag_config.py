@@ -249,6 +249,13 @@ ECE_CEILING_BY_TF: dict[str, float] = {
 # This version identifies the complete, per-(ticker, timeframe) promotion
 # policy documented in PRODUCTION_READINESS.md.  Bump the version only in a
 # prospective code change made before its validation window is examined.
+#
+# It names the policy GOVERNING an experiment, not a verdict. It is recorded
+# in walk-forward and movement-sim summaries only. It is deliberately NOT in
+# CONTRACT.json or checked by contract_mismatch: nothing evaluates the eight
+# gates yet, so stamping it on a model would claim a pass no code produced
+# (Codex P1s on #1187). Serving enforcement lands with the evaluator that
+# records an explicit verdict and its evidence.
 PRODUCTION_READINESS_VERSION = "magnitude-production-readiness-v1"
 PRODUCTION_READINESS_PRIMARY_OBJECTIVE = "four_class_next_bar_body_atr_bucket"
 PRODUCTION_READINESS_BINARY_OBJECTIVE = "binary_explosive_detector"
@@ -630,7 +637,6 @@ def contract_payload(label_mode: str,
             f"class_priors has {len(priors)} entries; one per class in "
             f"{list(LABEL_CLASSES)} is required")
     return {
-        "production_readiness_version": PRODUCTION_READINESS_VERSION,
         "label_mode": label_mode,
         "thresholds": [float(t) for t in thresholds],
         "classes": list(LABEL_CLASSES),
@@ -656,19 +662,13 @@ def contract_mismatch(payload: dict,
         raise ValueError(
             f"{CONTRACT_BLOB} must contain a JSON object, got "
             f"{type(payload).__name__}")
-    missing = [k for k in ("production_readiness_version", "label_mode",
-                           "thresholds", "classes", "class_priors",
-                           "decision_lift_min")
+    missing = [k for k in ("label_mode", "thresholds", "classes",
+                           "class_priors", "decision_lift_min")
                if payload.get(k) is None]
     if missing:
         raise ValueError(
             f"{CONTRACT_BLOB} is missing or null for required key(s) {missing}; "
             f"got keys {sorted(payload)}")
-    got_readiness_version = payload["production_readiness_version"]
-    if not isinstance(got_readiness_version, str):
-        raise ValueError(
-            f"{CONTRACT_BLOB} production_readiness_version="
-            f"{got_readiness_version!r} is not a string")
     # Type-check before comparing. A scalar `classes` used to reach
     # list() and raise TypeError, which is NOT the ValueError the reader
     # translates into ContractMalformed -- so it fell through to the ordinary
@@ -748,14 +748,7 @@ def contract_mismatch(payload: dict,
             f"{CONTRACT_BLOB} decision_lift_min={got_lift!r} must be a finite "
             f"number above 1.0")
 
-    # Compared only after every structural check: an early return here let
-    # an old version mask a malformed field, reporting ContractMismatch where
-    # ContractMalformed was owed (Codex P2 on #1187).
     mismatches = []
-    if got_readiness_version != PRODUCTION_READINESS_VERSION:
-        mismatches.append(
-            f"production_readiness_version={got_readiness_version!r} "
-            f"(serving contract requires {PRODUCTION_READINESS_VERSION!r})")
     if got_mode != label_mode:
         mismatches.append(
             f"label_mode={got_mode!r} (serving contract is {label_mode!r})")
