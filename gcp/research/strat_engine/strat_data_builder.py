@@ -59,7 +59,7 @@ import pandas as pd
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import ET_NAME, utc_to_eastern_naive
 
 from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert, bulk_copy_update
 from lib.data_loader import DataLoader
@@ -353,14 +353,19 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     (lowercase, ready to upsert), indexed by ts. The caller adds context columns.
     """
     df_cap = _capitalize_ohlcv(df_1m)
-    df_cap["Time"] = df_cap.index  # required by add_all_indicators for VWAP
+    # add_all_indicators reads the market clock off Time (VWAP / ORB session
+    # grouping, Mins_Since_Open), so Time is naive Eastern wall time. The index
+    # stays the aware-UTC instant the upsert keys on. Time used to be that
+    # instant, which made the persisted mins_since_open 240/300 min late
+    # (Codex P1 on #1185, reader sweep).
+    df_cap["Time"] = utc_to_eastern_naive(df_cap.index)
 
     if tf_arg is None:
         df_tf = df_cap.copy()
     else:
         loader = DataLoader()
         df_tf = loader.aggregate_to_timeframe(df_cap, tf_arg)
-        df_tf["Time"] = df_tf.index  # re-add Time after aggregation
+        df_tf["Time"] = utc_to_eastern_naive(df_tf.index)  # re-add Time after aggregation
 
     # Strat classification + combo detection
     classifier = StratClassifier()

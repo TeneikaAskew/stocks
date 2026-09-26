@@ -17,10 +17,13 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
+
+import scripts.run_historical_signals as rhs
 
 # Ensure repo root + scripts are importable
 _REPO = Path(__file__).resolve().parents[2]
@@ -282,3 +285,59 @@ def test_map_signals_to_table_handles_missing_signal_strength():
     out = map_signals_to_table(src, "SPY", strategy="momentum")
     assert "timeframe_tag" in out.columns
     assert out["timeframe_tag"].iloc[0] is None
+
+
+
+# ── Codex P1 on #1185 (reader sweep): the market clock MarketAnalyzer reads ──
+
+
+def _av_session(day: str, stored: str) -> pd.DataFrame:
+    wall = pd.date_range(f"{day} 04:00", f"{day} 20:00", freq="1min")
+    minute = wall.hour * 60 + wall.minute
+    ts = (wall.tz_localize("UTC") if stored == "et_label"
+          else wall.tz_localize("America/New_York").tz_convert("UTC"))
+    return pd.DataFrame({"Time": ts, "Open": 1.0, "High": 1.0, "Low": 1.0,
+                         "Last": 1.0,
+                         "Volume": [5000 if 570 <= m < 600 else 100 for m in minute]})
+
+
+@pytest.mark.parametrize("stored", ["et_label", "utc"])
+def test_load_intraday_bars_returns_true_instants_in_both_conventions(monkeypatch, stored):
+    import gcp.historical_signals as hs
+    monkeypatch.setattr(hs, "get_engine", lambda: object())
+    monkeypatch.setattr(hs.pd, "read_sql", lambda *a, **k: _av_session("2026-01-15", stored))
+    bars = hs.load_intraday_bars("SPY", datetime(2026, 1, 15))
+    open_bar = bars.loc[bars["Volume"] == 5000, "Time"].min()
+    assert open_bar == pd.Timestamp("2026-01-15 14:30", tz="UTC")   # 09:30 EST
+    assert len(bars) == 961
+
+
+def test_market_analyzer_sees_eastern_clock_and_entry_time_is_an_instant(monkeypatch):
+    """MarketAnalyzer reads ORB/VWAP/RVOL off Time, so it must see 09:30 at the
+    open; the stored entry_time must still be the bar's UTC instant."""
+    import gcp.historical_signals as hs
+    seen = {}
+    bars = _av_session("2026-01-15", "utc")
+    bars["Time"] = bars["Time"]  # aware UTC, as load_intraday_bars returns
+
+    class FakeAnalyzer:
+        def add_technical_indicators(self, df):
+            seen["first_open"] = df.loc[df["Volume"] == 5000, "Time"].min()
+            return df
+
+        def generate_technical_signals(self, df):
+            t = df.loc[df["Volume"] == 5000, "Time"].min()
+            return pd.DataFrame({"entry_time": [t], "trade_type": ["call"],
+                                 "entry_price": [1.0]})
+
+    captured = {}
+    monkeypatch.setattr(rhs, "load_intraday_bars", lambda *a, **k: bars)
+    monkeypatch.setattr(rhs, "MarketAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr(rhs, "resolve_window", lambda a: (
+        datetime(2026, 1, 15, tzinfo=timezone.utc), datetime(2026, 1, 16, tzinfo=timezone.utc), "backfill"))
+    monkeypatch.setattr(rhs, "map_signals_to_table",
+                        lambda df, t, strategy=None: captured.setdefault("df", df.copy()))
+    args = SimpleNamespace(strategy="momentum", lookback_days=0, dry_run=True, force=False)
+    assert rhs._process_ticker("SPY", args) == 0
+    assert seen["first_open"] == pd.Timestamp("2026-01-15 09:30")
+    assert captured["df"]["entry_time"].iloc[0] == pd.Timestamp("2026-01-15 14:30", tz="UTC")

@@ -21,6 +21,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from gcp.database import get_engine
+from lib.eastern_time import eastern_index_to_utc, stored_intraday_to_eastern
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +280,14 @@ def load_intraday_bars(
     """Load 1-min bars from market_data_intraday into the column shape
     that MarketAnalyzer expects: Time / Open / High / Low / Last / Volume.
 
+    ``Time`` is the bar's true instant, tz-aware UTC, in BOTH stored
+    conventions: each row is read by its own convention through
+    lib.eastern_time.stored_intraday_to_eastern and converted back, so a
+    legacy Eastern-labelled row is not handed out 4-5 h early (CLAUDE.md 3.9).
+    Callers comparing against other instants (signal_quality_report) use it
+    as is; callers reading the market clock convert it to Eastern
+    (scripts/run_historical_signals.py).
+
     ``end`` defaults to NOW(). ``start`` is inclusive, ``end`` exclusive.
     """
     engine = get_engine()
@@ -300,5 +309,9 @@ def load_intraday_bars(
         ORDER BY ts
     """)
     df = pd.read_sql(sql, engine, params=params)
-    df['Time'] = pd.to_datetime(df['Time'])
-    return df
+    if df.empty:
+        return df
+    idx, keep = stored_intraday_to_eastern(df['Time'], df['Volume'])
+    df = df.loc[keep].copy()
+    df['Time'] = eastern_index_to_utc(idx[keep])
+    return df.sort_values('Time').reset_index(drop=True)

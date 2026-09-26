@@ -180,10 +180,6 @@
  "gcp/indicator_correlation_job.py": {
   "host-today": [
    "main::date.today()"
-  ],
-  "tz-localize-none": [
-   "compute_signal_target::pd.to_datetime(bars['Time']).dt.tz_localize(None)",
-   "compute_signal_target::pd.to_datetime(tk_alerts['alert_ts']).dt.tz_localize(None)"
   ]
  },
  "gcp/migrate_to_gcp.py": {

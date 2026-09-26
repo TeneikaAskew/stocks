@@ -31,7 +31,7 @@ The script reads:
   • market_data_intraday (the actual 1-min bars for the session)
 
 Validation runs against the **regular session** 9:30 AM ET → 4:00 PM ET
-(13:30 → 20:00 UTC) by default. Pre-market and after-hours bars are
+(13:30 → 20:00 UTC under EDT, 14:30 → 21:00 under EST) by default. Pre-market and after-hours bars are
 ignored unless --include-extended is passed.
 """
 
@@ -43,7 +43,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field, asdict
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -56,8 +56,24 @@ except Exception:
 # Repo root on path so we can import gcp.* helpers
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from lib.eastern_time import as_eastern_time, eastern_bounds_utc  # noqa: E402
+
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 log = logging.getLogger("validate_brief_accuracy")
+
+
+def _session_bounds(target_date: date, include_extended: bool = False):
+    """UTC instants bounding the Eastern session on *target_date*.
+
+    Regular session 09:30-16:00 ET; extended 04:00 ET through the 20:00 ET
+    bar. DST-aware via lib.eastern_time: the old fixed 13:30-20:00Z window was
+    right only under EDT, so every winter validation scanned an hour of
+    premarket and missed the last regular hour, and its extended window was a
+    UTC day rather than the Eastern one (reader sweep on #1185).
+    """
+    if include_extended:
+        return eastern_bounds_utc(target_date, time(4, 0), time(20, 1))
+    return eastern_bounds_utc(target_date, time(9, 30), time(16, 0))
 
 
 # ── Data classes for the scorecard ─────────────────────────────────────────
@@ -207,17 +223,12 @@ def fetch_intraday(conn, ticker: str, target_date: date,
                    filter_outliers: bool = True) -> Optional[IntradayStats]:
     """Pull 1-min bars for the ticker on target_date and summarize.
 
-    Default: 13:30-20:00 UTC (regular session 9:30-16:00 ET).
+    Default: the regular session 9:30-16:00 ET (DST-aware, _session_bounds).
     With filter_outliers=True, single-bar wick outliers (range > 1.5%
     AND volume < 200) are excluded from MIN(low)/MAX(high) — see
     find_first_cross for the rationale.
     """
-    if include_extended:
-        start_utc = datetime.combine(target_date, time(0, 0), tzinfo=timezone.utc)
-        end_utc = start_utc + timedelta(days=1)
-    else:
-        start_utc = datetime.combine(target_date, time(13, 30), tzinfo=timezone.utc)
-        end_utc = datetime.combine(target_date, time(20, 0), tzinfo=timezone.utc)
+    start_utc, end_utc = _session_bounds(target_date, include_extended)
 
     extra = ""
     if filter_outliers:
@@ -279,14 +290,8 @@ def find_first_cross(conn, ticker: str, target_date: date,
     AND volume < 200. Both conditions together catch the wick outliers
     without dropping legitimate volatile bars (which have high volume).
     """
-    if include_extended:
-        start_utc = datetime.combine(target_date, time(0, 0), tzinfo=timezone.utc)
-        end_utc = start_utc + timedelta(days=1)
-        session_open = start_utc
-    else:
-        start_utc = datetime.combine(target_date, time(13, 30), tzinfo=timezone.utc)
-        end_utc = datetime.combine(target_date, time(20, 0), tzinfo=timezone.utc)
-        session_open = start_utc
+    start_utc, end_utc = _session_bounds(target_date, include_extended)
+    session_open = start_utc
 
     cmp = "high >= %s" if direction == "above" else "low <= %s"
     extra = ""
@@ -319,7 +324,8 @@ def find_first_cross(conn, ticker: str, target_date: date,
             return None
         ts = r[0]
         delta = ts - session_open
-        return (ts.isoformat(), int(delta.total_seconds() // 60))
+        # Eastern, for the report's "at HH:MM": a trader reads market time.
+        return (as_eastern_time(ts).isoformat(), int(delta.total_seconds() // 60))
 
 
 # ── Brief / AI report parsers ──────────────────────────────────────────────
@@ -542,8 +548,7 @@ def validate_ticker(conn, ticker: str, target_date: date,
                     """,
                     (
                         ticker,
-                        datetime.combine(target_date, time(13, 30), tzinfo=timezone.utc),
-                        datetime.combine(target_date, time(20, 0), tzinfo=timezone.utc),
+                        *_session_bounds(target_date),
                         sc.ai_entry_low, sc.ai_entry_high,
                     ),
                 )
