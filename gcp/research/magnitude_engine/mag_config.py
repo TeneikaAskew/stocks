@@ -273,6 +273,17 @@ PRODUCTION_READINESS_TAIL_CLASSES: tuple[str, ...] = ("EXPANDED", "EXPLOSIVE")
 # at that experiment's validation window; they may not be selected post hoc.
 PRODUCTION_READINESS_CRITERIA = MappingProxyType({
     "primary_objective": PRODUCTION_READINESS_PRIMARY_OBJECTIVE,
+    # The only label a v1 promotion may use (PRODUCTION_READINESS.md,
+    # "Objective boundary"). Stated here so an evaluator compares a run's
+    # label_mode and thresholds against the locked policy instead of
+    # hardcoding it (Codex P2 on #1187). The constants are the defaults, not
+    # the MAG_THRESHOLDS research override, and are immutable tuples.
+    "label_contract": MappingProxyType({
+        "label_mode": DEFAULT_LABEL_MODE,
+        "target": "abs(next_close - next_open) / atr_20",
+        "thresholds": MAGNITUDE_THRESHOLDS,
+        "classes": LABEL_CLASSES,
+    }),
     "separate_binary_objective": PRODUCTION_READINESS_BINARY_OBJECTIVE,
     "per_cell": True,
     "untouched_chronological_data": True,

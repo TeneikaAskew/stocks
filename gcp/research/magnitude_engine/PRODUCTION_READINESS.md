@@ -6,7 +6,8 @@
 This document is the human-readable production-promotion contract. Its exact
 machine-readable counterpart is `PRODUCTION_READINESS_CRITERIA` in
 `mag_config.py`. Every experiment summary must record the criteria version
-above. A version mismatch, a missing version, or an unmeasurable mandatory
+above; an analysis derived from a walk-forward run (such as the movement
+simulation) records the version that run recorded, not the current one. A version mismatch, a missing version, or an unmeasurable mandatory
 metric blocks promotion.
 
 The version names the policy governing an experiment; it is not a verdict.

@@ -1092,6 +1092,21 @@ def test_the_backfill_does_not_stamp_the_readiness_policy():
     assert _DECISION_KEYS == ("class_priors", "decision_lift_min")
 
 
+def test_the_locked_criteria_state_the_canonical_label_contract():
+    """PRODUCTION_READINESS.md restricts promotion to the body/ATR label at
+    0.5/1.0/1.5 over the four classes. An evaluator must be able to compare a
+    summary's label_mode and thresholds against the locked criteria rather
+    than hardcode the policy elsewhere (Codex P2 on #1187)."""
+    from gcp.research.magnitude_engine.mag_config import (
+        PRODUCTION_READINESS_CRITERIA)
+    label = PRODUCTION_READINESS_CRITERIA["label_contract"]
+    assert label["label_mode"] == "body"
+    assert label["thresholds"] == (0.5, 1.0, 1.5)
+    assert label["classes"] == ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
+    with pytest.raises(TypeError):
+        label["label_mode"] = "excursion"
+
+
 def test_the_locked_ece_ceilings_do_not_follow_the_mutable_dict(monkeypatch):
     """MappingProxyType is a live view of the dict it wraps. Wrapping the
     exported ECE_CEILING_BY_TF let an in-process edit to that dict change the
