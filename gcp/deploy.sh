@@ -4833,16 +4833,32 @@ deploy_schedulers() {
     # gcp/audit_infra_drift.py::check_scheduler_state now flags any
     # scheduler left PAUSED so a repeat is visible within a day.
 
-    # Nightly: --mode=historical promotes rolling 'pending' rows to
-    # 'final'. Tue-Sat 01:00 ET so it runs AFTER historical-signals-
-    # watchlist (which Cloud Scheduler doesn't have a strict ordering
-    # for, but in practice the watchlist iterator finishes by 22:00 ET).
-    # --lookback-days=2 covers any signal whose 240m (=4h) window
-    # closed in the last day; 2 days is paranoid headroom against DST
-    # edges and weekend gaps.
-    _schedule_with_args "signal-quality-report-nightly" \
-        "0 1 * * 2-6" "signal-quality-report" \
-        "--mode=historical" "--lookback-days=2"
+    # Nightly: --mode=historical scores the sessions its writer,
+    # historical-signals-watchlist-daily, added. That writer fires at
+    # 01:00 ET Tue-Sat and took 1.5-2 min on each run 2026-09-19..26.
+    # This used to fire at 01:00 too, on the claim that the writer
+    # "finishes by 22:00 ET", so it read historical_signals before the
+    # session was written (#1166). The 2-day window picked a Mon-Thu
+    # session up the next night; Friday's fell out of Tuesday's window
+    # and was never scored (0 of 20,323 Friday rows over 120 days).
+    # 01:30 puts it after the writer, and --heal-days=35 does not depend
+    # on the clock: it also scores any unscored row whose entry_time is in
+    # the last 35 days (a late writer, a failed night, and the writer's
+    # 30-day bootstrap of a newly added ticker, BOOTSTRAP_DAYS in
+    # scripts/run_historical_signals.py), then exits 1 if a row it selected
+    # is still missing. Measured 2026-09-26: 5.8 s cold for the source query,
+    # 0.7 s for the coverage check. A heal keyed on inserted_at would also
+    # reach an older manual --backfill-from, but historical_signals has no
+    # index on it and each query seq-scanned all 3.4 GB (14.3 s, twice a
+    # night); a backfill older than 35 days is scored by running the report
+    # over that window, as the #1154 re-run did. --lookback-days=2 keeps
+    # each session's second pass. The alarm below reads signal_metrics at
+    # 02:00, after this run. Verified update-or-create, so `schedulers` and
+    # `all` converge a live entry rather than skip it as "already exists".
+    _schedule_with_args_verified "signal-quality-report-nightly" \
+        "30 1 * * 2-6" "signal-quality-report" \
+        "--mode=historical" "--lookback-days=2" "--heal-days=35" \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
 
     # Phase 0.5 spec item #6 — clean-rate regression alarm.
     # Daily 02:00 ET, after the nightly historical run promotes rolling

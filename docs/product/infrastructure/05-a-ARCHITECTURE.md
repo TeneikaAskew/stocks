@@ -643,7 +643,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | `signal-monitor-daily` | `25 9 * * 1-5` | `signal-monitor` |  | ENABLED | 2026-09-04 |
 | `signal-monitor-eod-resolver-daily` | `30 16 * * 1-5` | `signal-monitor-eod-resolver` |  | ENABLED | 2026-09-04 |
 | `signal-quality-alarm-daily` | `0 2 * * 2-6` | `signal-quality-alarm` |  | ENABLED | 2026-09-05 |
-| `signal-quality-report-nightly` | `0 1 * * 2-6` | `signal-quality-report` | --mode=historical --lookback-days=2 | ENABLED | 2026-09-05 |
+| `signal-quality-report-nightly` | `30 1 * * 2-6` | `signal-quality-report` | --mode=historical --lookback-days=2 --heal-days=35 | ENABLED | 2026-09-05 |
 | `strat-engine-daily` | `35 23 * * 1-5` | `strat-engine` |  | ENABLED | 2026-09-05 |
 | `strat-enrich-daily` | `0 2 * * 2-6` | `strat-engine` | -m gcp.research.strat_engine.strat_enrich_levels --mode=backfill-all | ENABLED | 2026-09-05 |
 | `top-movers-daily` | `15 16 * * 1-5` | `fetch-top-movers` |  | ENABLED | 2026-09-04 |
@@ -659,7 +659,8 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 
 | Time | Fires |
 |---|---|
-| 01:00 Tue–Sat | `historical-signals-watchlist-daily`, `signal-quality-report-nightly` (`--mode=historical --lookback-days=2`) |
+| 01:00 Tue–Sat | `historical-signals-watchlist-daily` |
+| 01:30 Tue–Sat | `signal-quality-report-nightly` (`--mode=historical --lookback-days=2 --heal-days=35`), after the writer it scores (#1166) |
 | 02:00 | `options-retention-daily` (daily); `signal-quality-alarm-daily`, `strat-enrich-daily` (Tue–Sat) |
 | 02:30 Mon–Sat | `backfill-indicators-daily` |
 | 03:00 Sun | `backfill-indicators-weekly` (`BACKFILL_MODE=full` override) |

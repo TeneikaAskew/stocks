@@ -396,7 +396,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [552](../../../scripts/replay_signal_monitor.py#L552)
 
 ### `signal_metrics`
-- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [474](../../../scripts/signal_quality_report.py#L474)
+- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [576](../../../scripts/signal_quality_report.py#L576)
 
 ### `strat_combo_results`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -601,7 +601,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [316](../../../scripts/analyze_timeframe_heuristic.py#L316)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
 - [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [73](../../../scripts/backfill_timeframe_tags.py#L73)
-- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [395](../../../scripts/signal_quality_report.py#L395)
+- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [418](../../../scripts/signal_quality_report.py#L418), [425](../../../scripts/signal_quality_report.py#L425), [445](../../../scripts/signal_quality_report.py#L445)
 
 ### `indicator_correlation`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
@@ -702,7 +702,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [117](../../../scripts/backfill_watchlist_data.py#L117)
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [232](../../../scripts/calibrate_thresholds.py#L232)
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [119](../../../scripts/replay_signal_monitor.py#L119), [494](../../../scripts/replay_signal_monitor.py#L494)
-- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [420](../../../scripts/signal_quality_report.py#L420)
+- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [522](../../../scripts/signal_quality_report.py#L522)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [247](../../../scripts/validation/validate_brief_accuracy.py#L247), [311](../../../scripts/validation/validate_brief_accuracy.py#L311), [538](../../../scripts/validation/validate_brief_accuracy.py#L538)
 
 ### `market_data_intraday_iwm`
@@ -805,6 +805,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/signal_quality_alarm.py`](../../../gcp/signal_quality_alarm.py) — line [180](../../../gcp/signal_quality_alarm.py#L180)
 - [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [317](../../../scripts/analyze_timeframe_heuristic.py#L317)
 - [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [74](../../../scripts/backfill_timeframe_tags.py#L74)
+- [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [383](../../../scripts/signal_quality_report.py#L383)
 
 ### `strat_combo_results`
 - _no readr found in gcp/, lib/, scripts/, platform/api_
@@ -1378,6 +1379,7 @@ flowchart LR
     T_signal_metrics --> J_signal_quality_alarm
     T_historical_signals --> J_signal_quality_report
     T_market_data_intraday --> J_signal_quality_report
+    T_signal_metrics --> J_signal_quality_report
     T_signal_alerts --> J_signal_replay
     T_etf_options_snapshots --> J_strat_engine
     T_market_data_daily --> J_strat_engine
