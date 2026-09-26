@@ -607,3 +607,41 @@ class TestStalenessIgnoresNullCloseRows:
             "load_daily must filter NaN-close placeholder rows before "
             "checking staleness."
         )
+
+
+class TestLoadIntradayFromSqlClock:
+    """Codex P1 on #1185: the Cloud SQL path returned the stored clock with its
+    zone stripped. On a true-UTC day that is naive UTC, so a 09:30 ET bar read
+    as 13:30 and every RTH filter downstream kept 05:30-12:00 ET. Both stored
+    conventions must come back as the same naive-Eastern session."""
+
+    @staticmethod
+    def _stored(stored: str) -> pd.DataFrame:
+        wall = pd.date_range("2026-09-24 04:00", "2026-09-24 20:00", freq="1min")
+        minute = wall.hour * 60 + wall.minute
+        if stored == "et_label":
+            ts = wall.tz_localize("UTC")
+        else:
+            ts = wall.tz_localize("America/New_York").tz_convert("UTC")
+        return pd.DataFrame({
+            "ts": ts, "Open": 1.0, "High": 1.0, "Low": 1.0,
+            "Close": np.arange(len(wall), dtype=float),
+            "Volume": [5000 if 570 <= m < 600 else 100 for m in minute],
+        })
+
+    @pytest.mark.parametrize("stored", ["et_label", "utc"])
+    def test_both_conventions_read_as_eastern(self, loader, monkeypatch, stored):
+        import lib.data_loader as dl
+        rows = self._stored(stored)
+        monkeypatch.setattr(dl, "_cloud_sql_active", lambda: True)
+        monkeypatch.setattr(dl, "_query_cloud_sql", lambda sql, params=None: rows.copy())
+        df = loader.load_intraday("SPY", "2026-09-24", "2026-09-26")
+        assert df.index.tz is None
+        assert df.index[0] == pd.Timestamp("2026-09-24 04:00")
+        assert df.index[-1] == pd.Timestamp("2026-09-24 20:00")
+        assert (df["Time"] == df.index).all()
+        # The open's volume spike sits at 09:30 ET, and the Close series
+        # survives in order.
+        assert df.loc[pd.Timestamp("2026-09-24 09:30"), "Volume"] == 5000
+        assert df["Close"].is_monotonic_increasing
+        assert "ts" not in df.columns

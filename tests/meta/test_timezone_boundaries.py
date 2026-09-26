@@ -157,6 +157,20 @@ def _scopes(tree: ast.AST) -> dict:
     return out
 
 
+def _fstring_text(node: ast.JoinedStr) -> str:
+    """An f-string as ONE text, each placeholder rendered as its expression
+    (``f"DATE({col})"`` reads ``DATE(col)``). Its literal pieces are separate
+    Constant nodes, so matching them one at a time missed a SQL keyword in one
+    piece and ``CURRENT_DATE`` in the next (Codex P2 on #1185)."""
+    parts = []
+    for v in node.values:
+        if isinstance(v, ast.Constant):
+            parts.append(str(v.value))
+        elif isinstance(v, ast.FormattedValue):
+            parts.append(ast.unparse(v.value))
+    return "".join(parts)
+
+
 def _identity(node: ast.AST, scope: str) -> str:
     """What makes a hit THIS hit: its enclosing scope and the offending
     expression itself (a SQL string by a hash of its full text), so two hits
@@ -165,6 +179,8 @@ def _identity(node: ast.AST, scope: str) -> str:
     shifts code is not a change."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return f"{scope}::str#{hashlib.sha1(node.value.encode()).hexdigest()[:12]}"
+    if isinstance(node, ast.JoinedStr):
+        return f"{scope}::fstr#{hashlib.sha1(_fstring_text(node).encode()).hexdigest()[:12]}"
     return f"{scope}::{' '.join(ast.unparse(node).split())[:200]}"
 
 
@@ -180,6 +196,9 @@ def _scan(path: Path) -> list[tuple[str, int, str]]:
     found: list[tuple[str, int]] = []
 
     aliases = _aliases(tree)
+    # The literal pieces of an f-string are matched as part of the whole below.
+    in_fstring = {id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr)
+                  for v in n.values}
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = _resolve(_name(node.func), aliases)
@@ -212,8 +231,13 @@ def _scan(path: Path) -> list[tuple[str, int, str]]:
                   and _host_clock(node, kw)) \
                     or short == "utcnow":
                 found.append(("host-today", node))
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            text = node.value
+        elif isinstance(node, (ast.Constant, ast.JoinedStr)) and id(node) not in in_fstring:
+            if isinstance(node, ast.JoinedStr):
+                text = _fstring_text(node)
+            elif isinstance(node.value, str):
+                text = node.value
+            else:
+                continue
             if _LOOKS_LIKE_SQL.search(text) and _SQL_UTC_DATE.search(text):
                 found.append(("sql-utc-date", node))
 
@@ -337,6 +361,8 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
         "n = pd.Timestamp.now()\n"
         "q = 'SELECT 1 FROM t WHERE DATE(created_at) = CURRENT_DATE'\n"
         "q2 = 'SELECT 1 FROM t WHERE a.created_at::date = :d'\n"
+        "q3 = f'SELECT * FROM t WHERE DATE({column}) = CURRENT_DATE'\n"
+        "q4 = f'SELECT * FROM {tbl} WHERE ' f'{col} >= CURRENT_DATE'\n"
         "ok = datetime.utcnow()  # tz-ok: log stamp\n"
         "ok2 = datetime.now(tz=ET)\n"
         "ok3 = pd.Timestamp.now(tz='UTC')\n"
@@ -354,7 +380,7 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
     rules = Counter(r for r, _ in _hits(sample))
     assert rules == Counter({"tz-localize-none": 3, "utc-parse": 1, "zone-built-locally": 1,
-                             "fixed-offset": 3, "host-today": 11, "sql-utc-date": 2})
+                             "fixed-offset": 3, "host-today": 11, "sql-utc-date": 4})
 
 
 if __name__ == "__main__":

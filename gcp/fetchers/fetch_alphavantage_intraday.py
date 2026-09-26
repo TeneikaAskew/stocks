@@ -502,6 +502,18 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     start, end = month_replace_window(year, month)
     out = {'symbol': symbol, 'month': f"{year}-{month:02d}", 'deleted': 0,
            'inserted': 0, 'held_sessions': None, 'missing_sessions': 0}
+    # Snapshot BEFORE the refetch: a writer that commits while the request is
+    # in flight then differs from this snapshot, and the locked re-check in
+    # verify() below refuses the month. Snapshotting after the fetch let such
+    # bars into ``held`` but not into the refetch, where the shortfall
+    # tolerance could pass them and the DELETE erase them (Codex P1 on #1185).
+    held = _held_session_dates(symbol, start, end)
+    out['held_sessions'] = len(held)
+    if not held:
+        # Nothing to re-frame: deleting would only remove rows (code review
+        # H2), and there is no reason to spend a vendor call finding that out.
+        out['status'] = REPLACE_NOTHING_HELD
+        return out
     df, reason = fetch_month(symbol, year, month, api_key)
     if df is None or df.empty or reason != FETCH_OK:
         out['status'] = reason if reason != FETCH_OK else FETCH_NO_TIMESERIES
@@ -509,7 +521,6 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     df['ts'] = eastern_index_to_utc(df['ts'])
     df = df.drop_duplicates(subset=['ticker', 'interval', 'ts'])
     session = utc_to_eastern_naive(df['ts']).dt.date
-    held = _held_session_dates(symbol, start, end)
     fetched = session.value_counts()
     # A held session is missing if the refetch lacks it, or returns fewer
     # bars than the distinct bars already held (a partial vendor month that
@@ -523,11 +534,7 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     missing = sorted(
         d for d, n in held.items()
         if int(fetched.get(d, 0)) < n - int(n * REPLACE_SHORT_TOLERANCE))
-    out.update(held_sessions=len(held), missing_sessions=len(missing))
-    if not held:
-        # Nothing to re-frame: deleting would only remove rows (code review H2).
-        out['status'] = REPLACE_NOTHING_HELD
-        return out
+    out['missing_sessions'] = len(missing)
     if missing:
         out['status'] = REPLACE_INCOMPLETE
         out['missing'] = [f"{d.isoformat()} ({int(fetched.get(d, 0))}/{held[d]})"

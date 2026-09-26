@@ -527,7 +527,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `earnings_options_snapshots`
 - [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py) — line [189](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py#L189)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [568](../../../lib/data_loader.py#L568), [569](../../../lib/data_loader.py#L569)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [583](../../../lib/data_loader.py#L583), [584](../../../lib/data_loader.py#L584)
 - [`scripts/backtest_playability.py`](../../../scripts/backtest_playability.py) — line [551](../../../scripts/backtest_playability.py#L551)
 
 ### `earnings_options_strategy_insights`
@@ -577,7 +577,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/strat_data_builder.py`](../../../gcp/research/strat_engine/strat_data_builder.py) — line [248](../../../gcp/research/strat_engine/strat_data_builder.py#L248)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [113](../../../lib/agents/ranker/signals.py#L113), [117](../../../lib/agents/ranker/signals.py#L117)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [579](../../../lib/agents/summarizers.py#L579), [584](../../../lib/agents/summarizers.py#L584), [705](../../../lib/agents/summarizers.py#L705), [711](../../../lib/agents/summarizers.py#L711), [732](../../../lib/agents/summarizers.py#L732), [738](../../../lib/agents/summarizers.py#L738)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [568](../../../lib/data_loader.py#L568), [569](../../../lib/data_loader.py#L569)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [583](../../../lib/data_loader.py#L583), [584](../../../lib/data_loader.py#L584)
 - [`lib/features/experimental/options_derived.py`](../../../lib/features/experimental/options_derived.py) — line [67](../../../lib/features/experimental/options_derived.py#L67), [115](../../../lib/features/experimental/options_derived.py#L115)
 - [`lib/features/flow_direction.py`](../../../lib/features/flow_direction.py) — line [408](../../../lib/features/flow_direction.py#L408), [445](../../../lib/features/flow_direction.py#L445)
 - [`lib/options_exec_backtest/iv_lookup.py`](../../../lib/options_exec_backtest/iv_lookup.py) — line [127](../../../lib/options_exec_backtest/iv_lookup.py#L127)
@@ -669,7 +669,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/strat_leakage_audit.py`](../../../gcp/research/strat_engine/strat_leakage_audit.py) — line [112](../../../gcp/research/strat_engine/strat_leakage_audit.py#L112), [114](../../../gcp/research/strat_engine/strat_leakage_audit.py#L114), [116](../../../gcp/research/strat_engine/strat_leakage_audit.py#L116)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [56](../../../lib/agents/ranker/signals.py#L56), [134](../../../lib/agents/ranker/signals.py#L134), [310](../../../lib/agents/ranker/signals.py#L310), [357](../../../lib/agents/ranker/signals.py#L357), [360](../../../lib/agents/ranker/signals.py#L360)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [220](../../../lib/agents/summarizers.py#L220), [253](../../../lib/agents/summarizers.py#L253), [997](../../../lib/agents/summarizers.py#L997), [1222](../../../lib/agents/summarizers.py#L1222)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [416](../../../lib/data_loader.py#L416), [593](../../../lib/data_loader.py#L593)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [431](../../../lib/data_loader.py#L431), [608](../../../lib/data_loader.py#L608)
 - [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [594](../../../lib/earnings_reactions.py#L594)
 - [`lib/features/experimental/cross_asset.py`](../../../lib/features/experimental/cross_asset.py) — line [45](../../../lib/features/experimental/cross_asset.py#L45)
 - [`lib/features/experimental/vol_regime.py`](../../../lib/features/experimental/vol_regime.py) — line [52](../../../lib/features/experimental/vol_regime.py#L52)
@@ -687,13 +687,13 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [497](../../../gcp/backfill_ticker.py#L497)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [107](../../../gcp/build_intraday_gex.py#L107)
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [99](../../../gcp/build_realtime_gex.py#L99)
-- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [210](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L210), [473](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L473)
+- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [210](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L210), [474](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L474)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [399](../../../gcp/fetchers/fetch_market_data.py#L399)
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [298](../../../gcp/historical_signals.py#L298)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [380](../../../gcp/premarket_playbook_resolver.py#L380)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [340](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L340)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1951](../../../gcp/signal_monitor.py#L1951)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [315](../../../lib/data_loader.py#L315)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [321](../../../lib/data_loader.py#L321)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [125](../../../lib/features/intraday_flow.py#L125)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [599](../../../lib/options_intraday.py#L599)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [622](../../../platform/api/main.py#L622), [757](../../../platform/api/main.py#L757), [1257](../../../platform/api/main.py#L1257), [1619](../../../platform/api/main.py#L1619), [1638](../../../platform/api/main.py#L1638)
@@ -830,7 +830,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `trades`
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [176](../../../gcp/trade_logger.py#L176), [212](../../../gcp/trade_logger.py#L212), [243](../../../gcp/trade_logger.py#L243)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [641](../../../lib/data_loader.py#L641)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [656](../../../lib/data_loader.py#L656)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [285](../../../lib/strategies/insight_cache.py#L285)
 - [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) — line [148](../../../platform/api/routers/analytics.py#L148)
 - [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [1045](../../../platform/api/routers/journal.py#L1045), [1341](../../../platform/api/routers/journal.py#L1341)

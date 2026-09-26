@@ -80,7 +80,7 @@
   ],
   "sql-utc-date": [
    "<module>::str#60fba3841c30",
-   "_tickers_with_gaps::str#97a9d55155e3"
+   "_tickers_with_gaps::fstr#b950f2df4227"
   ]
  },
  "gcp/fetchers/build_options_daily_features.py": {
@@ -434,7 +434,6 @@
   ],
   "tz-localize-none": [
    "EODResolver._eod_close_resolution::close_et.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)",
-   "EODResolver._load_day::df.index.tz_localize(None)",
    "EODResolver.resolve_one::alert_ts.tz_localize(None)"
   ]
  },
@@ -486,12 +485,8 @@
    "_check_staleness::date.today()"
   ],
   "tz-localize-none": [
-   "DataLoader._load_intraday_from_sql::pd.to_datetime(df['ts'], utc=True).dt.tz_localize(None)",
    "DataLoader._strip_timezone::df.index.tz_localize(None)",
    "DataLoader._strip_timezone::df['Time'].dt.tz_localize(None)"
-  ],
-  "utc-parse": [
-   "DataLoader._load_intraday_from_sql::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
  "lib/eastern_time.py": {
@@ -722,6 +717,7 @@
  },
  "scripts/audit_data_freshness.py": {
   "sql-utc-date": [
+   "_query_value_sanity::fstr#e4c5080113f7",
    "_query_value_sanity::str#60f0418fa242",
    "_query_value_sanity::str#f3f33e44072b"
   ],

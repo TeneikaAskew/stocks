@@ -20,6 +20,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict
 import warnings
+
+from lib.eastern_time import stored_intraday_to_eastern
 warnings.filterwarnings('ignore')
 
 log = logging.getLogger(__name__)
@@ -229,6 +231,10 @@ class DataLoader:
     ) -> pd.DataFrame:
         """Load intraday (1-minute) data for a ticker.
 
+        The index (and ``Time`` column) is naive Eastern wall clock from every
+        source. A caller that needs instants converts with
+        ``lib.eastern_time.eastern_index_to_utc``.
+
         Priority order:
         0. Cloud SQL market_data_intraday  (when CLOUD_SQL_CONNECTION_NAME is set)
         1. AlphaVantage combined parquet in intraday/
@@ -320,8 +326,17 @@ class DataLoader:
         if df.empty:
             return df
 
-        df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_localize(None)
-        df = df.set_index('ts')
+        # Naive Eastern wall clock, the same contract as the parquet paths
+        # below and what every consumer's RTH / session grouping assumes
+        # (indicator_correlation_job, regime_combo_job, add_all_indicators'
+        # VWAP/ORB). Each row is read by its own stored convention, so this is
+        # right both before and after the re-framing migration. Stripping the
+        # zone instead handed true-UTC rows out as naive UTC: a 09:30 ET bar
+        # read as 13:30 and 'RTH' became 05:30-12:00 ET (Codex P1 on #1185).
+        idx, keep = stored_intraday_to_eastern(df['ts'], df['Volume'])
+        df = df.loc[keep].drop(columns='ts')
+        df.index = idx[keep]
+        df = df.sort_index()
         df.index.name = 'Time'
         df['Time'] = df.index
         return df

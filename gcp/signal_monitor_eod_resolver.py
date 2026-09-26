@@ -63,7 +63,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET
+from lib.eastern_time import ET, eastern_index_to_utc
 
 import pandas as pd
 import requests
@@ -182,14 +182,14 @@ class EODResolver:
             self._intraday_cache[key] = df
             return df
 
-        # Strip TZ so timestamps compare as naive UTC, matching alert_ts.
+        # The loader returns naive Eastern wall clock; alert_ts and the exit_ts
+        # this job writes are naive UTC, so convert the bars to instants and
+        # drop the (UTC) zone. Before #1185 the loader handed out the stored
+        # clock unconverted, which is only UTC on true-UTC days.
         if 'Time' in df.columns:
             df = df.set_index('Time')
         df = df.sort_index()
-        try:
-            df.index = df.index.tz_localize(None)
-        except (TypeError, AttributeError):
-            pass  # already naive
+        df.index = eastern_index_to_utc(df.index).tz_convert(None)
 
         # Precompute RSI once for the whole day; per-bar lookup is O(1).
         df[self.indicator_cfg.rsi_col] = calculate_rsi(

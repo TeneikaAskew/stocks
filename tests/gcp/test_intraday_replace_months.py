@@ -85,6 +85,7 @@ def _vendor_month(days: list[str]) -> pd.DataFrame:
 
 def test_failed_fetch_deletes_nothing():
     with patch.object(fai, "fetch_month", return_value=(None, fai.FETCH_RATE_LIMIT)), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 1}), \
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.FETCH_RATE_LIMIT
@@ -515,3 +516,52 @@ def test_the_shortfall_tolerance_scales_with_the_session(held_n, fetched_n, ok):
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert (r["status"] == fai.REPLACE_OK) is ok
     assert rep.called is ok
+
+
+# ── Codex P1 on #1185 (f65789f): a writer landing DURING the refetch ──────────
+
+
+def test_the_held_snapshot_is_taken_before_the_refetch():
+    order = []
+    with patch.object(fai, "_held_session_dates",
+                      side_effect=lambda *a, **k: order.append("SNAPSHOT") or {date(2026, 9, 24): 1}), \
+         patch.object(fai, "fetch_month",
+                      side_effect=lambda *a, **k: order.append("FETCH")
+                      or (_vendor_month(["2026-09-24"]), fai.FETCH_OK)):
+        fai.replace_month("SPY", 2026, 9, "k", commit=False)
+    assert order == ["SNAPSHOT", "FETCH"]
+
+
+def test_bars_written_while_the_refetch_is_in_flight_roll_the_month_back():
+    """956 bars held when the migration starts; the nightly writer adds 5 while
+    AV is answering. The refetch is within tolerance of either count, so only
+    a snapshot taken BEFORE the fetch lets the locked re-check see the write."""
+    table = {"bars": 956}
+    full = pd.DataFrame({
+        "ts": pd.date_range("2026-09-24 04:00", periods=961, freq="1min"),
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1,
+        "ticker": "SPY", "interval": "1min", "data_source": "alphavantage",
+    })
+
+    def fetch(*a, **k):
+        table["bars"] = 961                      # the writer commits mid-request
+        return full.copy(), fai.FETCH_OK
+
+    def fake_replace(df, table_name, key, ts_col, start, end, **kw):
+        kw["verify"](object())                   # the real one: under the lock
+        return 961, len(df)
+
+    with patch.object(fai, "fetch_month", side_effect=fetch), \
+         patch.object(fai, "_held_session_dates",
+                      side_effect=lambda *a, **k: {date(2026, 9, 24): table["bars"]}), \
+         patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_CHANGED
+
+
+def test_a_month_holding_nothing_spends_no_vendor_call():
+    with patch.object(fai, "_held_session_dates", return_value={}), \
+         patch.object(fai, "fetch_month") as fetch:
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_NOTHING_HELD
+    fetch.assert_not_called()
