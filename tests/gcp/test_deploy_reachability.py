@@ -150,7 +150,9 @@ def _gamma_levels_body() -> str:
 
 
 @pytest.mark.parametrize("flag", [
-    r'research_image="\$\{IMAGE\}:research"',
+    # The research image, resolved to a digest at deploy time (#1171); it
+    # was the floating `${IMAGE}:research` tag.
+    r'research_image=\$\(_research_image_ref\) \|\| return 1',
     r'--image\s+"\$\{research_image\}"',
     r"--memory\s+2Gi",
     r"--cpu\s+2\b",
@@ -196,7 +198,11 @@ def test_all_builds_the_research_image_before_any_research_job():
     order = [f for f in re.findall(r"^\s*([a-z_][a-z0-9_]*)\s*$", ALL_BLOCK, re.M) if f in FNS]
     assert "build_research_image" in order, "all) must build the research image"
     build_at = order.index("build_research_image")
-    research_users = [f for f in order if ":research" in FNS[f] and f != "build_research_image"]
+    # A research deploy reads the image through _research_image_ref (#1171),
+    # which returns what build_research_image built in this run, so a deploy
+    # ordered before the build would pin the previous research digest.
+    research_users = [f for f in order
+                      if "_research_image_ref" in FNS[f] and f != "build_research_image"]
     assert research_users, "expected at least one research-image deploy in all)"
     early = [f for f in research_users if order.index(f) < build_at]
     assert not early, f"research-image deploys before build_research_image: {early}"

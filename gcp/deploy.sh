@@ -94,8 +94,8 @@ build_image() {
     # cleanup policy only deletes UNTAGGED versions, so pinning first keeps
     # those digests alive until the jobs are redeployed (see pin_image_tags).
     pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :latest off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
-    gcloud builds submit --tag "${IMAGE}" "$tmpdir" || { echo "ERROR: build failed; :latest not moved." >&2; rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
+    IMAGE_REF=$(_submit_build "${IMAGE}" "$tmpdir") || { IMAGE_REF=""; echo "ERROR: build failed; nothing to deploy." >&2; rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"; echo "Built ${IMAGE_REF}: every job this run deploys names this digest, never :latest (#1171)."
 }
 
 # ── Artifact Registry hygiene ─────────────────────────────────────────────────
@@ -104,10 +104,10 @@ build_image() {
 # 2026-09 the `trading` repo held 448 versions / 282 GiB (~$30/month, the
 # third-largest line on the bill) for an image that has 7 tags.
 #
-# Deleting untagged versions blindly is NOT safe: a Cloud Run Job resolves its
-# image tag to a digest when it is created/updated and every later execution
-# runs that exact digest (verified 2026-09-06: signal-monitor updated 08-30
-# still executed the 08-30 digest after :latest moved on 09-01). On 2026-09-06
+# Deleting untagged versions blindly is NOT safe: a job's next execution needs its digest.
+# A spec naming a TAG is re-resolved at EACH execution (measured 2026-09-25, #1171: untouched
+# jobs ran the next build's digest), so deploys now pass the build's digest, IMAGE_REF. The
+# 2026-09-06 note here (tags resolve once, from signal-monitor) was never reproduced. On 2026-09-06
 # the 76 jobs pinned 30 distinct digests, 23 of them untagged, the oldest
 # from April. Deleting one of those would fail the job's next execution
 # with "image not found". Services are the same: every revision that still
@@ -591,7 +591,7 @@ deploy_insight_pipeline() {
     # reading the now-uncensored peak; raise again (with another CPU step)
     # if it lands above ~50% of 8Gi.
     gcloud run jobs create insight-pipeline \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 8Gi --cpu 2 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
@@ -600,7 +600,7 @@ deploy_insight_pipeline() {
         --set-env-vars "${admin_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-pipeline \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 8Gi --cpu 2 \
         --command "python,-m,gcp.insight_pipeline_job" \
         ${DB_SECRET_FLAG} \
@@ -616,7 +616,7 @@ deploy_insight_discord_push() {
     echo "Deploying insight-discord-push job..."
 
     gcloud run jobs create insight-discord-push \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --task-timeout 120 \
         --service-account "${SA_EMAIL}" \
@@ -626,7 +626,7 @@ deploy_insight_discord_push() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-discord-push \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 120 \
         --command "python,-m,gcp.insight_discord_push" \
         --args "" \
@@ -651,7 +651,7 @@ deploy_historical_signals_watchlist() {
     # checklist"). Pre-fix this aborted ./gcp/deploy.sh insights and
     # ./gcp/deploy.sh all mid-way through the deploy bundle.
     gcloud run jobs create historical-signals-watchlist \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
@@ -661,7 +661,7 @@ deploy_historical_signals_watchlist() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update historical-signals-watchlist \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,scripts.run_historical_signals" \
         --args="--from-watchlist" \
@@ -704,7 +704,7 @@ deploy_signal_quality_report() {
     # blip, the 15:00 ET run picks up where it left off (rolling
     # mode is incremental).
     gcloud run jobs create signal-quality-report \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
@@ -714,7 +714,7 @@ deploy_signal_quality_report() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-quality-report \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --max-retries 0 \
         --task-timeout 3600 \
         --command "python,-m,scripts.signal_quality_report" \
@@ -745,7 +745,7 @@ deploy_signal_quality_alarm() {
     # with cpu always allocated (unthrottled)". The actual workload
     # (one DB query + small Discord POST) runs comfortably in <100Mi.
     gcloud run jobs create signal-quality-alarm \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 0 \
         --task-timeout 120 \
         --service-account "${SA_EMAIL}" \
@@ -754,7 +754,7 @@ deploy_signal_quality_alarm() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-quality-alarm \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 120 \
         --command "python,-m,gcp.signal_quality_alarm" \
         ${DB_SECRET_FLAG} \
@@ -783,7 +783,7 @@ deploy_signal_quality_alarm() {
 # the research image is the right home so all three metrics compute.
 deploy_indicator_correlation() {
     echo "Deploying indicator-correlation job..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create indicator-correlation \
         --image "${research_image}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
@@ -820,7 +820,7 @@ deploy_regime_combo() {
     # scipy, which are deliberately excluded from the main image (dev-only in
     # requirements-gcp.txt) to keep signal-monitor's cold-start lean. regime-combo
     # is a Lane-2 research job, so the heavier image is the right home.
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create regime-combo \
         --image "${research_image}" --region "${REGION}" \
         --memory 2Gi --cpu 2 --max-retries 1 \
@@ -851,7 +851,7 @@ deploy_regime_combo() {
 deploy_signal_replay() {
     echo "Deploying signal-replay job..."
     gcloud run jobs create signal-replay \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 0 \
         --task-timeout 900 \
         --service-account "${SA_EMAIL}" \
@@ -860,7 +860,7 @@ deploy_signal_replay() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-replay \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 900 \
         --command "python,-m,gcp.signal_replay" \
         ${DB_SECRET_FLAG} \
@@ -880,7 +880,7 @@ deploy_auto_refresh_top_n() {
     env="${ENV_STRING},INSIGHT_AUTO_REFRESH_TOP_N=3"
 
     gcloud run jobs create auto-refresh-top-n \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
@@ -889,7 +889,7 @@ deploy_auto_refresh_top_n() {
         --set-env-vars "${env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update auto-refresh-top-n \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 600 \
         --command "python,-m,gcp.auto_refresh_top_n" \
         ${DB_SECRET_FLAG} \
@@ -1232,7 +1232,7 @@ deploy_discord_interactions() {
     # instead of stalling at ~0 CPU after the response is sent.
     # max-instances=5 caps autocomplete-burst cost.
     gcloud run deploy discord-interactions \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 \
         --min-instances "${discord_min}" --max-instances 5 \
         --no-cpu-throttling \
@@ -1272,7 +1272,7 @@ deploy_discord_interactions() {
 deploy_backfill_ticker() {
     echo "Deploying backfill-ticker job..."
     gcloud run jobs create backfill-ticker \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
@@ -1281,7 +1281,7 @@ deploy_backfill_ticker() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backfill-ticker \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --max-retries 0 \
         --task-timeout 600 \
         --command "python,-m,gcp.backfill_ticker" \
@@ -1299,7 +1299,7 @@ deploy_backfill_ticker() {
 deploy_validate_brief() {
     echo "Deploying validate-brief job..."
     gcloud run jobs create validate-brief \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
         --task-timeout 300 \
         --service-account "${SA_EMAIL}" \
@@ -1308,7 +1308,7 @@ deploy_validate_brief() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update validate-brief \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 300 \
         --command "python,-m,gcp.validate_brief_job" \
         ${DB_SECRET_FLAG} \
@@ -1325,7 +1325,7 @@ deploy_validate_brief() {
 deploy_backtest() {
     echo "Deploying backtest job..."
     gcloud run jobs create backtest \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 1 \
         --task-timeout 900 \
         --service-account "${SA_EMAIL}" \
@@ -1334,7 +1334,7 @@ deploy_backtest() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backtest \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 900 \
         --command "python,-m,gcp.backtest_job" \
         ${DB_SECRET_FLAG} \
@@ -1358,7 +1358,7 @@ deploy_backtest() {
 deploy_premarket() {
     echo "Deploying pre-market brief job..."
     gcloud run jobs create premarket-brief \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
@@ -1367,7 +1367,7 @@ deploy_premarket() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-brief \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --max-retries 0 --task-timeout 1800 \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
@@ -1388,7 +1388,7 @@ deploy_premarket() {
 deploy_earnings_reactions_brief() {
     echo "Deploying earnings-reactions-brief job..."
     gcloud run jobs create earnings-reactions-brief \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
@@ -1397,7 +1397,7 @@ deploy_earnings_reactions_brief() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update earnings-reactions-brief \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 600 \
         --command "python,-m,gcp.earnings_reactions_brief" \
         ${DB_SECRET_FLAG} \
@@ -1421,7 +1421,7 @@ deploy_earnings_reactions_brief() {
 deploy_earnings_long_watchlist() {
     echo "Deploying earnings-long-watchlist job..."
     gcloud run jobs create earnings-long-watchlist \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 0 \
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
@@ -1430,7 +1430,7 @@ deploy_earnings_long_watchlist() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update earnings-long-watchlist \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 0 \
         --task-timeout 600 \
         --command "python,-m,gcp.earnings_long_watchlist" \
@@ -1443,7 +1443,7 @@ deploy_earnings_long_watchlist() {
 deploy_monitor() {
     echo "Deploying signal monitor job..."
     gcloud run jobs create signal-monitor \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 0 \
         --task-timeout 28800 \
         --service-account "${SA_EMAIL}" \
@@ -1452,7 +1452,7 @@ deploy_monitor() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-monitor \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.signal_monitor" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -1477,7 +1477,7 @@ deploy_monitor() {
 deploy_signal_monitor_eod_resolver() {
     echo "Deploying signal-monitor-eod-resolver job..."
     gcloud run jobs create signal-monitor-eod-resolver \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
@@ -1486,7 +1486,7 @@ deploy_signal_monitor_eod_resolver() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-monitor-eod-resolver \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.signal_monitor_eod_resolver" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -1510,7 +1510,7 @@ deploy_signal_monitor_eod_resolver() {
 deploy_premarket_playbook_resolver() {
     echo "Deploying premarket-playbook-resolver job..."
     gcloud run jobs create premarket-playbook-resolver \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
@@ -1519,7 +1519,7 @@ deploy_premarket_playbook_resolver() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-playbook-resolver \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.premarket_playbook_resolver" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -1562,7 +1562,7 @@ deploy_premarket_playbook_resolver() {
 deploy_phase6_playbook() {
     echo "Deploying phase6-playbook job..."
     gcloud run jobs create phase6-playbook \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 16Gi --cpu 4 --max-retries 0 \
         --tasks 3 --parallelism 3 \
         --task-timeout 3600 \
@@ -1573,7 +1573,7 @@ deploy_phase6_playbook() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update phase6-playbook \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 16Gi --cpu 4 --max-retries 0 \
         --tasks 3 --parallelism 3 \
         --task-timeout 3600 \
@@ -1609,7 +1609,7 @@ deploy_phase6_playbook() {
 # captured. tests/gcp/test_deploy_reachability.py pins the spec.
 deploy_p2_build_gamma_levels() {
     echo "Deploying p2-build-gamma-levels job..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create p2-build-gamma-levels \
         --image "${research_image}" --region "${REGION}" \
         --memory 2Gi --cpu 2 --max-retries 0 \
@@ -1661,8 +1661,8 @@ build_research_image() {
     # Same guard as build_image: this build moves :research, which the
     # research jobs pin by digest (Codex, PR #1004).
     pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :research off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
-    gcloud builds submit --tag "${IMAGE}:research" "$tmpdir" || { echo "ERROR: research build failed; :research not moved." >&2; rm -rf "$tmpdir"; return 1; }
-    rm -rf "$tmpdir"
+    RESEARCH_IMAGE_REF=$(_submit_build "${IMAGE}:research" "$tmpdir") || { RESEARCH_IMAGE_REF=""; echo "ERROR: research build failed; nothing to deploy." >&2; rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"; echo "Built ${RESEARCH_IMAGE_REF} (#1171)."
 }
 
 deploy_strat_engine() {
@@ -1681,7 +1681,7 @@ deploy_strat_engine() {
     #       --args="-m,gcp.research.strat_engine.strat_data_builder,--rebuild,--start-date=2016-01-01" \
     #       --region us-east1 --wait
     #   gcloud run jobs update strat-engine --memory 8Gi --region us-east1
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
 
     # DAILY-INCREMENTAL args: bare strat_data_builder dispatch picks up
     # TICKERS_DEFAULT = ['SPY','IWM','QQQ'] across every TF in TF_LIST
@@ -1740,7 +1740,7 @@ deploy_strat_engine() {
 #             --experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=5"
 deploy_direction_probe() {
     echo "Deploying direction-probe job (Phase 1 directionality probes)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     # 4 CPU / 8Gi mirrors strat-engine: featurize-once over ~5-15 yr of
     # intraday bars for one ticker/tf, then 8 LightGBM folds. max-retries 0
     # (Rule 0: a stuck run fails loud). task-timeout 5400 is ≥4× the ~3-min
@@ -1783,7 +1783,7 @@ deploy_direction_probe() {
 # --backfill path above, which scans every stored session.
 deploy_build_options_greeks() {
     echo "Deploying build-options-greeks job (materialized daily greeks)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create build-options-greeks \
         --image "${research_image}" --region "${REGION}" \
         --memory 4Gi --cpu 2 --max-retries 0 \
@@ -1820,7 +1820,7 @@ deploy_build_options_greeks() {
 # 4Gi/2CPU mirrors build-options-greeks; the daily frame is tiny. max-retries 0.
 deploy_build_options_daily_features() {
     echo "Deploying build-options-daily-features job (materialized options flow)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create build-options-daily-features \
         --image "${research_image}" --region "${REGION}" \
         --memory 4Gi --cpu 2 --max-retries 0 \
@@ -1850,7 +1850,7 @@ deploy_build_options_daily_features() {
 # real-intraday-DEX LEAD accrues in a query-cheap table for a future walk-forward.
 deploy_build_realtime_gex() {
     echo "Deploying build-realtime-gex job (real intraday GEX/DEX)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create build-realtime-gex \
         --image "${research_image}" --region "${REGION}" \
         --memory 4Gi --cpu 2 --max-retries 1 \
@@ -1881,7 +1881,7 @@ deploy_build_realtime_gex() {
 #   --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m"
 deploy_magnitude_engine() {
     echo "Deploying magnitude-engine job (task-parallel)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     # Task-parallel design:
     #   --tasks=27 --parallelism=27   — fan out to 27 independent workers,
     #                                   one per (phase, ticker, tf) cell of
@@ -1943,7 +1943,7 @@ deploy_magnitude_engine() {
 #   max-retries 0 — Rule 0: a stuck cell fails loud, no double-runs.
 deploy_direction_baseline() {
     echo "Deploying direction-baseline job (one-shot 3-axis baseline)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create direction-baseline \
         --image "${research_image}" --region "${REGION}" \
         --memory 8Gi --cpu 4 --max-retries 0 \
@@ -1978,7 +1978,7 @@ deploy_direction_baseline() {
 #   Cost: ~$0.15 per manual run, on demand only. max-retries 0 (fail loud).
 deploy_direction_importance() {
     echo "Deploying direction-importance job (feature-importance/SHAP audit)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create direction-importance \
         --image "${research_image}" --region "${REGION}" \
         --memory 8Gi --cpu 4 --max-retries 0 \
@@ -2019,13 +2019,13 @@ deploy_direction_importance() {
 # phase-2 size baseline. One-shot, not scheduled. max-retries 0.
 deploy_magnitude_recal() {
     echo "Deploying magnitude-recal job (isotonic calibration experiment)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     gcloud run jobs create magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --service-account "${SA_EMAIL}"         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet 2>/dev/null ||     gcloud run jobs update magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet
 }
 
 deploy_direction_phase2() {
     echo "Deploying direction-phase2 ablation job (task-parallel)..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
     local n=14
     gcloud run jobs create direction-phase2 \
         --image "${research_image}" --region "${REGION}" \
@@ -2063,7 +2063,7 @@ deploy_direction_phase2() {
 # threshold pattern from 2026-06-01-pipeline-failures-audit F6/F11.
 deploy_magnitude_inference() {
     echo "Deploying magnitude-inference job..."
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
 
     gcloud run jobs create magnitude-inference \
         --image "${research_image}" --region "${REGION}" \
@@ -2098,7 +2098,7 @@ deploy_p7b_classifier_DEPRECATED() {
 deploy_weekend() {
     echo "Deploying weekend review job..."
     gcloud run jobs create weekend-review \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.weekend_review" \
@@ -2106,7 +2106,7 @@ deploy_weekend() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update weekend-review \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.weekend_review" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -2126,7 +2126,7 @@ deploy_fetch_market_data() {
     env="${ENV_STRING},EARNINGS_WINDOW_DAYS=7"
 
     gcloud run jobs create fetch-market-data \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 2 \
         --task-timeout 5400 \
         --service-account "${SA_EMAIL}" \
@@ -2135,7 +2135,7 @@ deploy_fetch_market_data() {
         --set-env-vars "${env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-market-data \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 5400 \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
         ${DB_SECRET_FLAG} \
@@ -2160,7 +2160,7 @@ deploy_backfill_daily_indicators() {
     # threads overlap pg8000 I/O with pandas compute.
     # Cost: typical day ≲$0.02; worst-case full sweep ≈ $0.45/run.
     gcloud run jobs create backfill-daily-indicators \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 2Gi --cpu 2 --max-retries 0 \
         --task-timeout 36000 \
         --service-account "${SA_EMAIL}" \
@@ -2169,7 +2169,7 @@ deploy_backfill_daily_indicators() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backfill-daily-indicators \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 2Gi --cpu 2 \
         --task-timeout 36000 \
         --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
@@ -2184,7 +2184,7 @@ deploy_fetch_alphavantage() {
     # ALPHA_VANTAGE_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per
     # G.P0.9; no per-deploy resolution needed.
     gcloud run jobs create fetch-alphavantage-intraday \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 1 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
@@ -2193,7 +2193,7 @@ deploy_fetch_alphavantage() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-alphavantage-intraday \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -2248,7 +2248,7 @@ deploy_av_options_backfill() {
     # mirroring memory/cpu/retries/timeout/SA on the update branch a
     # hand-tweaked job would never reconverge from `deploy.sh fetchers`.
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 2Gi --cpu 1 --max-retries 0
         --task-timeout 43200
         --service-account "${SA_EMAIL}"
@@ -2298,7 +2298,7 @@ deploy_av_options_realtime() {
     #   transient AV blip at 14:05 is recovered automatically by the 14:10
     #   fire 5 min later; no need for Cloud Run-side retry to double-write.
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
         --task-timeout 600
         --service-account "${SA_EMAIL}"
@@ -2345,7 +2345,7 @@ deploy_options_retention() {
     #   one-time disk shrink after a large one-off delete (e.g. if the window is
     #   ever cut below 30 days).
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
         --task-timeout 3600
         --service-account "${SA_EMAIL}"
@@ -2398,7 +2398,7 @@ deploy_options_exec_backtest() {
     # depends on lightgbm + scikit-learn — both are in the RESEARCH
     # image, not the prod image. The research image must be built
     # first (see deploy_strat_engine for the same dependency).
-    local research_image="${IMAGE}:research"
+    local research_image; research_image=$(_research_image_ref) || return 1
 
     local non_secret_env
     non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
@@ -2457,7 +2457,7 @@ deploy_db_query() {
     local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
         --task-timeout 600
         --service-account "${SA_EMAIL}"
@@ -2502,7 +2502,7 @@ deploy_freshness_watchdog() {
     non_secret_env="${non_secret_env},DB_NAME=trading"
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
         # 3600s (1h) task-timeout: observed wall-clock floats 8m–14m9s
         # across recent runs (variance >50%). The 900s budget had only
@@ -2547,7 +2547,7 @@ deploy_audit_infra_drift() {
     non_secret_env="GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
         # Drift detection is gcloud-API-bound (one `list jobs`, one
         # `list schedulers`, one `describe image`, N `executions list`).
@@ -2579,7 +2579,7 @@ deploy_audit_magnitude_drift() {
     non_secret_env="${non_secret_env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
         # Model-quality drift check is one SQL aggregate over the last
         # 7d of magnitude_per_bar_predictions (~3300 rows/cell × 3
@@ -2631,7 +2631,7 @@ deploy_audit_walkforward() {
     non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 1Gi --cpu 1 --max-retries 0
         --task-timeout 1800
         --service-account "${SA_EMAIL}"
@@ -2669,7 +2669,7 @@ deploy_audit_brief_bias() {
     non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 1Gi --cpu 1 --max-retries 0
         --task-timeout 1800
         --service-account "${SA_EMAIL}"
@@ -2691,7 +2691,7 @@ deploy_fetch_fred_rates() {
     echo "Deploying fetch-fred-rates job..."
     # FRED_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-fred-rates \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
@@ -2699,7 +2699,7 @@ deploy_fetch_fred_rates() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-fred-rates \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -2716,7 +2716,7 @@ deploy_fetch_economic_events() {
     echo "Deploying fetch-economic-events job..."
     # FRED_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-economic-events \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
@@ -2724,7 +2724,7 @@ deploy_fetch_economic_events() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-economic-events \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         --args="" \
         ${DB_SECRET_FLAG} \
@@ -2744,7 +2744,7 @@ deploy_fetch_earnings_calendar() {
     # window. At ~800–2000 unique tickers × 150 RPM ≈ 5–14 min, plus
     # source fetches (~3 min) = ~10–17 min total. 30 min gives 2× headroom.
     gcloud run jobs create fetch-earnings-calendar \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
@@ -2753,7 +2753,7 @@ deploy_fetch_earnings_calendar() {
         --set-env-vars "${ew_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-calendar \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
         ${DB_SECRET_FLAG} \
@@ -2772,7 +2772,7 @@ deploy_fetch_earnings_calendar() {
 deploy_fetch_premarket_refresh() {
     echo "Deploying fetch-premarket-refresh job..."
     gcloud run jobs create fetch-premarket-refresh \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --task-timeout 300 \
         --service-account "${SA_EMAIL}" \
@@ -2781,7 +2781,7 @@ deploy_fetch_premarket_refresh() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-premarket-refresh \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -2799,7 +2799,7 @@ deploy_fetch_premarket_refresh() {
 deploy_evaluate_ew_strikes() {
     echo "Deploying evaluate-ew-strikes job..."
     gcloud run jobs create evaluate-ew-strikes \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
@@ -2808,7 +2808,7 @@ deploy_evaluate_ew_strikes() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update evaluate-ew-strikes \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -2829,7 +2829,7 @@ deploy_fetch_insider_transactions() {
     echo "Deploying fetch-insider-transactions job..."
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-insider-transactions \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
@@ -2838,7 +2838,7 @@ deploy_fetch_insider_transactions() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-insider-transactions \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
         ${DB_SECRET_FLAG} \
@@ -2867,7 +2867,7 @@ deploy_fetch_top_movers() {
     echo "Deploying fetch-top-movers job..."
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-top-movers \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 0 \
         --task-timeout 300 \
         --service-account "${SA_EMAIL}" \
@@ -2876,7 +2876,7 @@ deploy_fetch_top_movers() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-top-movers \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --max-retries 0 \
         --task-timeout 300 \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
@@ -2895,7 +2895,7 @@ deploy_fetch_sec_filings() {
     env="${ENV_STRING}${sec_ua:+,SEC_USER_AGENT=${sec_ua}}"
 
     gcloud run jobs create fetch-sec-filings \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
@@ -2904,7 +2904,7 @@ deploy_fetch_sec_filings() {
         --set-env-vars "${env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-sec-filings \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_sec_filings" \
         ${DB_SECRET_FLAG} \
@@ -2946,7 +2946,7 @@ deploy_fetch_earnings_history() {
     local env_string
     env_string="${ENV_STRING},BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
     gcloud run jobs create fetch-earnings-history \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
         --task-timeout 28800 \
         --service-account "${SA_EMAIL}" \
@@ -2955,7 +2955,7 @@ deploy_fetch_earnings_history() {
         --set-env-vars "${env_string}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-history \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 28800 \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
@@ -2971,7 +2971,7 @@ deploy_compute_earnings_reactions() {
     # external API calls — 1Gi/1CPU is plenty for ~300 tickers.
     # 1800s timeout: ~1s per ticker × 320 tickers = ~5 min typical.
     gcloud run jobs create compute-earnings-reactions \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
@@ -2980,7 +2980,7 @@ deploy_compute_earnings_reactions() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update compute-earnings-reactions \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.compute_earnings_reactions" \
         ${DB_SECRET_FLAG} \
@@ -3005,7 +3005,7 @@ deploy_compute_earnings_reactions() {
 deploy_refresh_earnings_views() {
     echo "Deploying refresh-earnings-views job..."
     gcloud run jobs create refresh-earnings-views \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 1200 \
         --service-account "${SA_EMAIL}" \
@@ -3015,7 +3015,7 @@ deploy_refresh_earnings_views() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update refresh-earnings-views \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 1200 \
         --command "python,-m,gcp.refresh_earnings_views" \
@@ -3062,7 +3062,7 @@ deploy_backtest_pipeline() {
     # was SIGKILL'd (exit -9 / OOM) ~60s in. The GitHub runner this
     # migrated off of had 16GB; 8Gi is the verified-sufficient floor.
     gcloud run jobs create backtest-pipeline \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 8Gi --cpu 2 --max-retries 0 \
         --task-timeout 28800 \
         --service-account "${SA_EMAIL}" \
@@ -3071,7 +3071,7 @@ deploy_backtest_pipeline() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backtest-pipeline \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 8Gi --cpu 2 \
         --task-timeout 28800 \
         --command "python,-m,scripts.run_pipeline" \
@@ -3090,7 +3090,7 @@ deploy_fetch_news_sentiment() {
     # the image. --args="" defensively strips any leftover positional CLI
     # args from prior manual gcloud edits that would break argparse.
     gcloud run jobs create fetch-news-sentiment \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
@@ -3098,7 +3098,7 @@ deploy_fetch_news_sentiment() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
@@ -3117,7 +3117,7 @@ deploy_fetch_news_sentiment_earnings() {
     # consumes it. AV cost: ~30 cold-start reporters × 1 call = 30
     # calls/day — well under the 150 RPM plan ceiling.
     gcloud run jobs create fetch-news-sentiment-earnings \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
@@ -3125,7 +3125,7 @@ deploy_fetch_news_sentiment_earnings() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-earnings \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
@@ -3148,7 +3148,7 @@ deploy_fetch_news_sentiment_topics() {
     # NEWS_TOPICS env var (set below) is the source of truth; --args=""
     # defensively strips any leftover CLI args from prior manual edits.
     gcloud run jobs create fetch-news-sentiment-topics \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
@@ -3156,7 +3156,7 @@ deploy_fetch_news_sentiment_topics() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-topics \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
@@ -3248,7 +3248,7 @@ deploy_weekly_pg_dump() {
     # out of sync and would have silently reverted the fix on the next
     # `./gcp/deploy.sh cloud-sql-weekly-export` run.
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
         --task-timeout 21600
         --service-account "${SA_EMAIL}"
@@ -3391,7 +3391,7 @@ deploy_apply_schema_migrations() {
     echo "Creating apply-schema-migrations job..."
     # shellcheck disable=SC2046  # the flags are deliberately word-split
     gcloud run jobs create apply-schema-migrations \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         $(_apply_schema_job_flags) \
         --quiet
 }
@@ -3405,8 +3405,8 @@ deploy_apply_schema_migrations() {
 # Only the serializer script and the generated config are uploaded.
 apply_schema_via_build() {
     local digest revision revision_time ancestors tmpdir flags rc pin_rc force_flag
-    digest=$(gcloud artifacts docker images describe "${IMAGE}:latest" \
-               --format='value(image_summary.fully_qualified_digest)') || return 1
+    digest=${IMAGE_REF:-}   # this run's build (#1171); :latest may have moved since
+    [ -n "${digest}" ] || digest=$(gcloud artifacts docker images describe "${IMAGE}:latest" --format='value(image_summary.fully_qualified_digest)') || return 1
     if [ -z "${digest}" ]; then
         echo "ERROR: cannot resolve ${IMAGE}:latest to a digest; run ./gcp/deploy.sh build first." >&2
         return 1
@@ -3505,7 +3505,7 @@ EOF
 deploy_compute_spx_greeks_backfill() {
     echo "Deploying compute-spx-greeks-backfill job..."
     gcloud run jobs create compute-spx-greeks-backfill \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 0 --task-timeout 43200 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.maintenance.compute_spx_greeks" \
@@ -3514,7 +3514,7 @@ deploy_compute_spx_greeks_backfill() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update compute-spx-greeks-backfill \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,scripts.maintenance.compute_spx_greeks" \
         --args "--ticker,SPX" \
         ${DB_SECRET_FLAG} \
@@ -3558,7 +3558,7 @@ deploy_compute_spx_greeks_backfill() {
 deploy_calibrate_thresholds() {
     echo "Deploying calibrate-thresholds job..."
     gcloud run jobs create calibrate-thresholds \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.calibrate_thresholds" \
@@ -3566,7 +3566,7 @@ deploy_calibrate_thresholds() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update calibrate-thresholds \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,scripts.calibrate_thresholds" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
@@ -3591,7 +3591,7 @@ deploy_param_sweep() {
     # parallel = ~3.5h wall-clock. --task-timeout is per-task, so 6h is
     # ample for the one-ticker workload each task handles.
     gcloud run jobs create param-sweep \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
         --tasks 3 --parallelism 3 \
         --service-account "${SA_EMAIL}" \
@@ -3600,7 +3600,7 @@ deploy_param_sweep() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update param-sweep \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
         --tasks 3 --parallelism 3 \
         --command "python,-m,scripts.run_param_sweep" \
@@ -3634,7 +3634,7 @@ deploy_earnings_sweep() {
     # which materialises as a ~700 MB DataFrame, plus the per-combo Q5
     # filtering and groupby work peaks 2-3× that during the sweep.
     gcloud run jobs create earnings-sweep \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.calibrate_earnings" \
@@ -3642,7 +3642,7 @@ deploy_earnings_sweep() {
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update earnings-sweep \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
         --command "python,-m,scripts.calibrate_earnings" \
         ${DB_SECRET_FLAG} \
@@ -3721,7 +3721,7 @@ deploy_intraday_bulk_backfill() {
     secrets_flag="${secrets_flag},GH_DATA_QUALITY_TOKEN=gh-stocks-repo-pat:latest"
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 1Gi --cpu 1 --max-retries 0
         --task-timeout 86400
         --tasks 4 --parallelism 4
@@ -3753,7 +3753,7 @@ deploy_earnings_options_backfill() {
     secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 1Gi --cpu 1 --max-retries 0
         --task-timeout 32400
         --service-account "${SA_EMAIL}"
@@ -3884,7 +3884,7 @@ deploy_notifier() {
     # --args= (equals form) is required: the value starts with "-m", which the
     # space form hands to argparse as a flag ("expected one argument").
     gcloud run deploy "${NOTIFIER_SERVICE}" \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
         --service-account "${SA_EMAIL}" \
         --command "python" --args="-m,gcp.failure_notifier" \
@@ -5139,6 +5139,77 @@ PY
     return "$rc"
 }
 
+# ── Build digests (#1171) ─────────────────────────────────────────────────────
+# Cloud Run re-resolves a job's image TAG at each execution: measured
+# 2026-09-25, fetch-av-options-realtime (generation 2) and premarket-brief
+# (generation 83), neither touched, ran a new digest the morning after an
+# unrelated target's build. 50 of 76 specs named the tag-less image, so every
+# build rolled out to all 50. Every deploy now names a digest instead:
+# IMAGE_REF / RESEARCH_IMAGE_REF, read from the build's own record.
+_submit_build() {
+    # _submit_build <image[:tag]> <dir> -> prints <image>@sha256:<digest> of
+    # the image THIS build pushed; nonzero on any failure.
+    #
+    # The digest comes from the build record, not from the tag afterwards:
+    # another build can move the tag between this one finishing and a read
+    # of it, and the deploy would then ship that build's image. Submitted
+    # --async so the build id is known; the log is streamed to stderr and the
+    # status polled to the end, because stdout is the return value.
+    local tag=$1 dir=$2 id row status digests digest base name
+    local poll=${BUILD_POLL_SECONDS:-10} tries=0 max
+    max=$(( ${BUILD_WAIT_SECONDS:-7200} / (poll > 0 ? poll : 1) ))
+    id=$(gcloud builds submit --tag "${tag}" "${dir}" --async --format="value(id)") \
+        || { echo "  ERROR: could not submit the build for ${tag}" >&2; return 1; }
+    [ -n "${id}" ] || { echo "  ERROR: the build submit for ${tag} returned no id" >&2; return 1; }
+    echo "  build ${id} for ${tag}" >&2
+    gcloud builds log --stream "${id}" >&2 \
+        || echo "  (the log stream ended early; waiting on the build status)" >&2
+    while :; do
+        row=$(gcloud builds describe "${id}" --format="value(status,results.images[].digest)") \
+            || { echo "  ERROR: cannot read build ${id}" >&2; return 1; }
+        _split_tsv "${row}" status digests
+        case "${status}" in
+            QUEUED|PENDING|WORKING) ;;
+            *) break ;;
+        esac
+        tries=$((tries + 1))
+        [ "${tries}" -le "${max}" ] \
+            || { echo "  ERROR: build ${id} still ${status} after ${BUILD_WAIT_SECONDS:-7200}s" >&2; return 1; }
+        sleep "${poll}"
+    done
+    [ "${status}" = SUCCESS ] \
+        || { echo "  ERROR: build ${id} ended ${status:-<no status>}; nothing to deploy" >&2; return 1; }
+    # One build pushes one image; its record lists it once per name (untagged
+    # and :latest), with the same digest. Two different digests is not one
+    # image, and guessing which would deploy an unknown one.
+    digest=$(printf '%s\n' "${digests//;/$'\n'}" | sed '/^$/d' | sort -u)
+    [[ "${digest}" == sha256:* && "${digest}" != *$'\n'* ]] \
+        || { echo "  ERROR: build ${id} did not record exactly one digest: ${digests:-<none>}" >&2; return 1; }
+    name=${tag##*/}
+    if [[ "${name}" == *:* ]]; then base=${tag%:*}; else base=${tag}; fi
+    echo "${base}@${digest}"
+}
+
+_research_image_ref() {
+    # _research_image_ref -> the research image as a digest: this invocation's
+    # build_research_image result, else :research resolved to its digest once,
+    # now. Research targets do not build (build-research is its own target), so
+    # the second case is their normal path.
+    if [ -n "${RESEARCH_IMAGE_REF:-}" ]; then
+        echo "${RESEARCH_IMAGE_REF}"; return 0
+    fi
+    local ref
+    ref=$(_resolve_image_ref "${IMAGE}:research") || return 1
+    echo "  no research build in this run: deploying ${IMAGE}:research as ${ref#*@}" >&2
+    echo "${ref}"
+}
+
+# The digests this invocation built; set by build_image / build_research_image
+# and never inherited from the caller's environment, where a stale value would
+# deploy an image nobody built for this change.
+IMAGE_REF=""
+RESEARCH_IMAGE_REF=""
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 # Every command that deploys a job or service is followed by pin_image_tags
 # (see the tail of this file), so the digest a job was just pinned to gets
@@ -5283,8 +5354,14 @@ case "${1:-help}" in
         backfill_watchlist
         echo "All components deployed."
         ;;
-    help|*)
+    *)
         _PIN_AFTER=0
+        # A misspelt target printed this and exited 0, so a caller trusting
+        # the status read a typo as a deploy (#1171). Only `help` and no
+        # argument are asking for it.
+        case "${1:-help}" in help) _usage_fd=1 ;; *) _usage_fd=2 ;; esac
+        [ "${_usage_fd}" = 1 ] || echo "ERROR: unknown target '${1}'" >&2
+        {
         echo "Usage: $0 <command>"
         echo ""
         echo "  setup      Provision Cloud SQL, GCS bucket, service account"
@@ -5369,6 +5446,8 @@ case "${1:-help}" in
         echo "             image packages. Refuses while a live service runs one."
         echo "  all        Build both images + deploy every scheduled job and service"
         echo "             + schedulers + backfill"
+        } >&"${_usage_fd}"
+        [ "${_usage_fd}" = 1 ] || exit 2
         ;;
 esac
 # A failed AND-list inside a case arm (e.g. build_image failing before
