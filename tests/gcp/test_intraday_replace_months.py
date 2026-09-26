@@ -437,3 +437,58 @@ def test_a_sparse_held_session_with_no_refetched_bars_is_refused(held_bars):
     assert r["status"] == fai.REPLACE_INCOMPLETE
     assert r["missing"] == [f"2026-09-02 (0/{held_bars})"]
     rep.assert_not_called()
+
+
+# ── Codex P1 on #1185 (8c1154a): a writer landing mid-replace ─────────────────
+
+
+def test_a_session_added_after_the_precheck_rolls_the_month_back():
+    """The nightly writer adds 09-25 after the held snapshot. Under the replace
+    lock the re-read sees it, so nothing is deleted and the month is retried."""
+    snapshots = iter([{date(2026, 9, 24): 1},                         # pre-check
+                      {date(2026, 9, 24): 1, date(2026, 9, 25): 960}])  # under the lock
+
+    def fake_replace(df, table, key, ts_col, start, end, **kw):
+        kw["verify"](object())            # the real one calls this before DELETE
+        raise AssertionError("verify should have raised")
+
+    with patch.object(fai, "fetch_month",
+                      return_value=(_vendor_month(["2026-09-24"]), fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", side_effect=lambda *a, **k: next(snapshots)), \
+         patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_CHANGED
+
+
+def test_replace_locks_then_verifies_before_deleting():
+    import gcp.database as db
+    engine, conn, tbl = _engine_with(rowcount=1)
+    order = []
+    conn.execute.side_effect = lambda stmt, *a, **k: (
+        order.append(str(stmt).split()[0]), MagicMock(rowcount=1))[1]
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  verify=lambda c: order.append("VERIFY"))
+    assert order[:4] == ["SET", "LOCK", "VERIFY", "DELETE"]
+
+
+def test_a_failed_verify_never_reaches_the_delete():
+    import gcp.database as db
+    engine, conn, tbl = _engine_with(rowcount=1)
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+
+    def boom(c):
+        raise RuntimeError("changed")
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}), \
+         pytest.raises(RuntimeError, match="changed"):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  verify=boom)
+    sqls = [str(c.args[0]) for c in conn.execute.call_args_list]
+    assert not any(q.startswith("DELETE") for q in sqls)

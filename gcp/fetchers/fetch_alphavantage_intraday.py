@@ -441,6 +441,12 @@ REPLACE_OK = 'replaced'
 REPLACE_DRY = 'dry_run'
 REPLACE_INCOMPLETE = 'incomplete_refetch'   # vendor returned fewer sessions than we hold
 REPLACE_NOTHING_HELD = 'nothing_held'       # window holds no session; never delete blind
+REPLACE_CHANGED = 'changed_during_replace'  # a writer changed the month mid-replace; rolled back
+
+
+class _HeldChanged(Exception):
+    """Raised under the replace lock when the held sessions moved since the
+    pre-check; rolls the transaction back."""
 # A replaced month holds at most both conventions of each session (x2) plus
 # stragglers. Deleting more than this multiple of what is re-inserted means
 # something is wrong with the window or the list; the transaction rolls back.
@@ -450,7 +456,7 @@ REPLACE_MAX_DELETE_RATIO = 3.0
 REPLACE_SHORT_TOLERANCE = 0.02
 
 
-def _held_session_dates(symbol: str, start: datetime, end: datetime) -> dict:
+def _held_session_dates(symbol: str, start: datetime, end: datetime, conn=None) -> dict:
     """{Eastern session date: distinct bars held} for the window.
 
     Reads the window's rows and resolves them with
@@ -462,14 +468,19 @@ def _held_session_dates(symbol: str, start: datetime, end: datetime) -> dict:
     review C1). Weekday sessions only. Strict query: a DB error must never read
     as "nothing held".
     """
-    df = query_to_dataframe_strict(
-        """
+    sql = """
         SELECT ts, volume
           FROM market_data_intraday
          WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e
-        """,
-        {'t': symbol, 's': start, 'e': end}, timeout_s=120,
-    )
+    """
+    params = {'t': symbol, 's': start, 'e': end}
+    if conn is None:
+        df = query_to_dataframe_strict(sql, params, timeout_s=120)
+    else:
+        # Inside the replace transaction, under its write lock.
+        import sqlalchemy
+        res = conn.execute(sqlalchemy.text(sql), params)
+        df = pd.DataFrame(res.fetchall(), columns=['ts', 'volume'])
     if df.empty:
         return {}
     idx, keep = stored_intraday_to_eastern(df['ts'], df['volume'])
@@ -529,10 +540,22 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         out['status'] = REPLACE_DRY
         out['inserted'] = len(df)
         return out
-    deleted, inserted = replace_rows_in_window(
-        df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
-        'ts', start, end, chunksize=5000,
-        max_delete_ratio=REPLACE_MAX_DELETE_RATIO)
+    def verify(conn) -> None:
+        # Under the write lock: the month must still hold exactly the sessions
+        # (and bar counts) the refetch was checked against. A writer that
+        # landed in between would otherwise lose its rows to the DELETE.
+        now = _held_session_dates(symbol, start, end, conn=conn)
+        if now != held:
+            raise _HeldChanged(f"held sessions changed: {len(held)} -> {len(now)}")
+
+    try:
+        deleted, inserted = replace_rows_in_window(
+            df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
+            'ts', start, end, chunksize=5000,
+            max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify)
+    except _HeldChanged as e:
+        out.update(status=REPLACE_CHANGED, detail=str(e))
+        return out
     out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted)
     return out
 

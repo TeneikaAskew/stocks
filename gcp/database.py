@@ -534,6 +534,7 @@ def replace_rows_in_window(
     end,
     chunksize: int = 2000,
     max_delete_ratio: Optional[float] = None,
+    verify=None,
 ) -> tuple[int, int]:
     """Atomically replace every row of *table* matching *key* with
     ``start <= ts_col < end`` by the rows of *df*. Returns (deleted, inserted).
@@ -552,6 +553,14 @@ def replace_rows_in_window(
     the rows being inserted, raise inside the transaction so nothing is
     committed. A backstop against a wrong window or list wiping rows the
     insert does not restore.
+
+    ``verify``: called as ``verify(conn)`` inside the transaction AFTER the
+    table is locked against writes (SHARE ROW EXCLUSIVE: reads continue,
+    INSERT/UPDATE/DELETE wait, 30 s lock timeout) and BEFORE the DELETE. It
+    re-checks whatever the caller decided from an earlier read and raises if
+    that no longer holds, which rolls everything back. Without it a writer
+    committing between the caller's read and this DELETE loses its rows
+    (Codex P1 on #1185).
     """
     import sqlalchemy
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -603,6 +612,11 @@ def replace_rows_in_window(
     size = _max_safe_chunksize(len(out.columns), chunksize)
 
     with engine.begin() as conn:
+        if verify is not None:
+            conn.execute(sqlalchemy.text("SET LOCAL lock_timeout = '30s'"))
+            conn.execute(sqlalchemy.text(
+                f"LOCK TABLE {tbl.name} IN SHARE ROW EXCLUSIVE MODE"))
+            verify(conn)
         deleted = conn.execute(delete_sql, params).rowcount
         if max_delete_ratio is not None and deleted > max_delete_ratio * max(len(records), 1):
             raise ValueError(
