@@ -35,7 +35,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from lib.single_flight import SingleFlight
-from lib.eastern_time import ET, ET_NAME
+from lib.eastern_time import ET, ET_NAME, utc_to_eastern_naive
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
 from api.auth import (
     AUTH_MODE,
@@ -1595,6 +1595,64 @@ def market_most_active():
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 
+def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> pd.DatetimeIndex:
+    """Naive-Eastern index for market_data_intraday rows, safe across the
+    timestamp-convention migration (CLAUDE.md 3.9).
+
+    Until the re-framing migration finishes, a raw date's rows are either
+    Eastern wall time stamped as UTC (the legacy writers) or true UTC (every
+    writer from #1185 on). Converting all rows shifts the legacy ones 4-5 h;
+    converting none shifts the new ones. So each raw date is read by the
+    convention its own rows carry.
+
+    AV bars span 04:00-19:59 Eastern, so each convention has raw clock times
+    the other never produces, in both seasons:
+      raw 04:00-07:59   only Eastern labels (true UTC starts at 08:00Z)
+      raw 20:00-00:59   only true UTC (labels stop at 19:59)
+    That settles every full session. When a date shows neither (a partial
+    day) or both (a date both writers touched), the 09:30 ET open decides: it
+    is the day's volume spike, so a spike at raw label 09:30 and none at the
+    converted 09:30 means labels (the test that matched live prices in
+    gcp/queries/classify_intraday_ts_convention.sql). With no spike either
+    way the date is converted: that is every writer's convention from now on.
+    After the migration this reduces to utc_to_eastern_naive.
+    """
+    inst = pd.DatetimeIndex(pd.to_datetime(ts))
+    if inst.tz is None:
+        inst = inst.tz_localize("UTC")  # tz-ok: pg8000 TIMESTAMPTZ in a UTC session
+    inst = inst.tz_convert("UTC")
+    raw = inst.tz_localize(None)  # tz-ok: the raw clock label, read per date below
+    converted = utc_to_eastern_naive(inst)
+    n = len(inst)
+    vol = pd.Series(pd.to_numeric(volume, errors="coerce").to_numpy(), index=range(n))
+    raw_min = pd.Series(raw.hour * 60 + raw.minute, index=vol.index)
+    conv_min = pd.Series(converted.hour * 60 + converted.minute, index=vol.index)
+    raw_date = pd.Series(raw.date, index=vol.index)
+    conv_date = pd.Series(converted.date, index=vol.index)
+    out = pd.Series(converted, index=vol.index)
+
+    def spike(window: pd.Series, day: pd.Series) -> float:
+        """Mean volume of an opening window over the day's median minute."""
+        med = day.median()
+        return float(window.mean() / med) if len(window) and med and med > 0 else 0.0
+
+    for d, rows in raw_date.groupby(raw_date).groups.items():
+        rows = pd.Index(rows)
+        rm, v = raw_min[rows], vol[rows]
+        label_ev = bool(((rm >= 240) & (rm < 480)).any())
+        true_ev = bool(((rm >= 1200) | (rm < 60)).any())
+        if label_ev != true_ev:
+            is_label = label_ev
+        else:
+            label_spike = spike(v[(rm >= 570) & (rm < 600)], v)
+            true_win = (conv_date[rows] == d) & (conv_min[rows] >= 570) & (conv_min[rows] < 600)
+            true_spike = spike(v[true_win], v)
+            is_label = label_spike > 2 and label_spike > 1.5 * max(true_spike, 1.0)
+        if is_label:
+            out[rows] = raw[rows]
+    return pd.DatetimeIndex(out.to_numpy())
+
+
 def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
     """Load intraday data for a specific date or month.
 
@@ -1609,17 +1667,21 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
             if len(date) == 8:
                 # Specific date: YYYYMMDD
                 date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+                # [D 00:00Z, D+1 01:00Z) holds session D in both stored
+                # conventions (Eastern labels sit at raw D 04:00-19:59; true
+                # UTC at D 08:00Z .. D+1 00:59Z in winter). The caller keeps
+                # only rows whose Eastern date is D.
+                d0 = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 df = query_to_dataframe(
                     """
-                    -- Framing must match get_available_dates; both are DATE(ts)
-                    -- pending the data normalisation described there.
-                    SELECT ts, open, high, low, close, volume, data_source
+                    SELECT ts, open, high, low, close, volume
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
-                      AND DATE(ts) = :dt
+                      AND ts >= :start AND ts < :end
                     ORDER BY ts
                     """,
-                    {"ticker": ticker_upper, "dt": date_str},
+                    {"ticker": ticker_upper, "start": d0,
+                     "end": d0 + timedelta(days=1, hours=1)},
                 )
             elif len(date) == 6:
                 # Month: YYYYMM
@@ -1631,48 +1693,24 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                     end = f"{year}-{month + 1:02d}-01"
                 df = query_to_dataframe(
                     """
-                    SELECT ts, open, high, low, close, volume, data_source
+                    SELECT ts, open, high, low, close, volume
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
-                      -- Naive bounds, matching the DATE(ts) framing above.
                       AND ts >= :start AND ts < :end
                     ORDER BY ts
                     """,
-                    {"ticker": ticker_upper, "start": start, "end": end},
+                    # Same widening as the single-date window, month-wide.
+                    {"ticker": ticker_upper,
+                     "start": datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc),
+                     "end": datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                            + timedelta(hours=1)},
                 )
             else:
                 df = pd.DataFrame()
 
             if not df.empty:
-                df.index = pd.to_datetime(df["ts"])
-                # Normalize timezone based on data source.
-                #
-                # REVERTED 2026-09-06 to this branch. It was replaced with an
-                # unconditional ET conversion on evidence from IWM aggregates,
-                # which hid that the table holds TWO conventions:
-                # gcp/fetchers/fetch_market_data.py:445 stores AV wall-clock ET
-                # naively BY DESIGN and labels it 'alphavantage' -- the same
-                # label the true-UTC rows carry. Converting every row shifts the
-                # ET-framed ones 4-5 hours early, and under EST moves 04:00 ET
-                # bars to the previous date where the caller's filter drops them.
-                #
-                # This branch is ALSO wrong: data_source cannot distinguish the
-                # two. But it is what production runs today, and a new wrong
-                # that corrupts premarket bars is worse than the existing one.
-                # Own PR: normalise the writer, migrate the ET-framed rows.
-                is_yfinance = (
-                    "data_source" in df.columns
-                    and not df["data_source"].isna().all()
-                    and df["data_source"].iloc[0] == "yfinance"
-                )
-                df = df.drop(columns=["ts", "data_source"], errors="ignore")
-                if df.index.tz is not None:
-                    if is_yfinance:
-                        df.index = (df.index.tz_convert(ET_NAME)
-                                            .tz_localize(None))
-                    else:
-                        df.index = df.index.tz_localize(None)
-                return df
+                df.index = _intraday_index_to_eastern(df["ts"], df["volume"])
+                return df.drop(columns=["ts"])
         except Exception as e:
             logger.warning("Cloud SQL intraday load failed for %s/%s: %s", ticker_upper, date, e)
 
