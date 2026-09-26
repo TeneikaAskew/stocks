@@ -11,16 +11,21 @@ This guard finds the patterns those helpers replace, by AST rather than by
 grepping for spellings (the retired repo-wide scanner chased spellings and
 drifted; see the module docstring of ``lib/eastern_time.py``):
 
-  tz-localize-none   ``.tz_localize(None)``: drops a zone without converting
+  tz-localize-none   ``.tz_localize(None)`` / ``tz_localize(tz=None)`` /
+                     ``.replace(tzinfo=None)``: drops a zone without converting
+  utc-parse          ``pd.to_datetime(..., utc=True)``: on naive Eastern text it
+                     stamps wall time as UTC (the original bug's other spelling)
   zone-built-locally ``ZoneInfo(...)`` / ``pytz.timezone(...)`` of an Eastern
                      name outside ``lib/eastern_time.py``
-  fixed-offset       ``timedelta(hours=4|5)`` / ``pd.Timedelta(hours=4|5)``:
-                     Eastern is -4 half the year and -5 the other half
-  host-today         ``date.today()``, ``datetime.now()`` with no zone,
+  fixed-offset       ``timedelta(hours=4|5)``, ``minutes=240|300``,
+                     ``pd.Timedelta("4h")``: Eastern is -4 half the year and -5
+                     the other half
+  host-today         ``date.today()``, ``datetime.today()``, ``datetime.now()``
+                     / ``pd.Timestamp.now()`` / ``.today()`` with no zone,
                      ``datetime.utcnow()``: the container's UTC clock, which is
                      already tomorrow from 20:00 Eastern
-  sql-utc-date       SQL text using ``CURRENT_DATE``, ``DATE(<x>ts)`` or
-                     ``<x>ts::date``: a UTC date in this database
+  sql-utc-date       SQL text using ``CURRENT_DATE``, ``DATE(<column>)`` or
+                     ``<x>ts::date`` / ``<x>_at::date``: a UTC date here
 
 It is a ratchet. Existing hits are recorded in
 ``tests/fixtures/timezone_boundary_baseline.json`` by identity (file, rule and
@@ -53,9 +58,10 @@ EASTERN_NAMES = {"America/New_York", "US/Eastern", "EST5EDT", "EST", "EDT"}
 OPT_OUT = "tz-ok:"
 
 _SQL_UTC_DATE = re.compile(
-    r"\bCURRENT_DATE\b|\bDATE\s*\(\s*[\w.]*ts\s*\)|\b[\w.]*ts\s*::\s*date\b",
+    r"\bCURRENT_DATE\b|\bDATE\s*\(\s*[A-Za-z_][\w.]*\s*\)|\b[\w.]*(?:ts|_at)\s*::\s*date\b",
     re.IGNORECASE,
 )
+_OFFSET_STR = re.compile(r"^\s*-?\s*[45]\s*(h|hr|hrs|hour|hours|H)\s*$")
 _LOOKS_LIKE_SQL = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE|WHERE)\b", re.IGNORECASE)
 
 
@@ -97,28 +103,45 @@ def _hits(path: Path) -> list[tuple[str, int]]:
             fn = _name(node.func)
             short = fn.rsplit(".", 1)[-1]
             kw = {k.arg: k.value for k in node.keywords if k.arg}
-            if short == "tz_localize" and node.args and _is_none(node.args[0]):
-                found.append(("tz-localize-none", node.lineno))
+            if short == "tz_localize" and (
+                    (node.args and _is_none(node.args[0])) or ("tz" in kw and _is_none(kw["tz"]))):
+                found.append(("tz-localize-none", node))
+            elif short == "replace" and "tzinfo" in kw and _is_none(kw["tzinfo"]):
+                found.append(("tz-localize-none", node))
+            elif short == "to_datetime" and isinstance(kw.get("utc"), ast.Constant) \
+                    and kw["utc"].value is True:
+                found.append(("utc-parse", node))
             elif short in ("ZoneInfo", "timezone") and fn in ("ZoneInfo", "zoneinfo.ZoneInfo", "pytz.timezone") \
                     and node.args and isinstance(node.args[0], ast.Constant) \
                     and node.args[0].value in EASTERN_NAMES and rel != HELPER:
-                found.append(("zone-built-locally", node.lineno))
-            elif short in ("timedelta", "Timedelta") and "hours" in kw \
-                    and isinstance(kw["hours"], ast.Constant) and kw["hours"].value in (4, 5, -4, -5):
-                found.append(("fixed-offset", node.lineno))
-            elif fn in ("date.today", "datetime.date.today", "datetime.utcnow",
-                        "datetime.datetime.utcnow") \
-                    or (fn in ("datetime.now", "datetime.datetime.now") and not node.args and not kw):
-                found.append(("host-today", node.lineno))
+                found.append(("zone-built-locally", node))
+            elif short in ("timedelta", "Timedelta") and (
+                    ("hours" in kw and isinstance(kw["hours"], ast.Constant)
+                     and kw["hours"].value in (4, 5, -4, -5, 4.0, 5.0, -4.0, -5.0))
+                    or ("minutes" in kw and isinstance(kw["minutes"], ast.Constant)
+                        and kw["minutes"].value in (240, 300, -240, -300))
+                    or (node.args and isinstance(node.args[0], ast.Constant)
+                        and isinstance(node.args[0].value, str)
+                        and _OFFSET_STR.match(node.args[0].value))):
+                found.append(("fixed-offset", node))
+            elif (short == "today" and fn.endswith(("date.today", "datetime.today", "Timestamp.today"))
+                  and not node.args and "tz" not in kw) \
+                    or short == "utcnow" \
+                    or (short == "now" and fn.endswith(("datetime.now", "Timestamp.now"))
+                        and not node.args and not kw):
+                found.append(("host-today", node))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             text = node.value
             if _LOOKS_LIKE_SQL.search(text) and _SQL_UTC_DATE.search(text):
-                found.append(("sql-utc-date", node.lineno))
+                found.append(("sql-utc-date", node))
 
-    def opted_out(lineno: int) -> bool:
-        return 0 < lineno <= len(lines) and OPT_OUT in lines[lineno - 1]
+    def opted_out(node: ast.AST) -> bool:
+        """``# tz-ok:`` on ANY line the node spans (a multi-line call or SQL
+        string carries it on whichever line reads best)."""
+        lo, hi = node.lineno, getattr(node, "end_lineno", node.lineno) or node.lineno
+        return any(OPT_OUT in lines[i - 1] for i in range(lo, min(hi, len(lines)) + 1))
 
-    return [(rule, ln) for rule, ln in found if not opted_out(ln)]
+    return [(rule, node.lineno) for rule, node in found if not opted_out(node)]
 
 
 def current_hits() -> dict[str, dict[str, list[str]]]:
@@ -191,20 +214,35 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
     sample = tmp_path / "gcp" / "seeded.py"
     sample.parent.mkdir(parents=True)
     sample.write_text(
+        "import datetime as dt\n"
+        "import pandas as pd\n"
         "from datetime import date, datetime, timedelta\n"
         "from zoneinfo import ZoneInfo\n"
         "idx = idx.tz_localize(None)\n"
+        "idx = idx.tz_localize(tz=None)\n"
+        "t = t.replace(tzinfo=None)\n"
+        "s = pd.to_datetime(raw, utc=True)\n"
         "z = ZoneInfo('America/New_York')\n"
         "off = timedelta(hours=4)\n"
+        "off = timedelta(minutes=300)\n"
+        "off = pd.Timedelta('4h')\n"
         "d = date.today()\n"
+        "d = datetime.today()\n"
         "n = datetime.now()\n"
-        "q = 'SELECT 1 FROM t WHERE DATE(ts) = CURRENT_DATE'\n"
+        "n = dt.datetime.now()\n"
+        "n = pd.Timestamp.now()\n"
+        "q = 'SELECT 1 FROM t WHERE DATE(created_at) = CURRENT_DATE'\n"
+        "q2 = 'SELECT 1 FROM t WHERE a.created_at::date = :d'\n"
         "ok = datetime.utcnow()  # tz-ok: log stamp\n"
+        "ok2 = datetime.now(tz=ET)\n"
+        "ok3 = pd.Timestamp.now(tz='UTC')\n"
+        "ok4 = datetime.utcnow(\n"
+        ")  # tz-ok: opt-out on the closing line of a multi-line call\n"
     )
     monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
     rules = Counter(r for r, _ in _hits(sample))
-    assert rules == Counter({"tz-localize-none": 1, "zone-built-locally": 1,
-                             "fixed-offset": 1, "host-today": 2, "sql-utc-date": 1})
+    assert rules == Counter({"tz-localize-none": 3, "utc-parse": 1, "zone-built-locally": 1,
+                             "fixed-offset": 3, "host-today": 5, "sql-utc-date": 2})
 
 
 if __name__ == "__main__":

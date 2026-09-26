@@ -5,6 +5,11 @@
    "exec_id = os.environ.get(\"CLOUD_RUN_EXECUTION\", f\"audit-{int(datetime.now().timestamp())}\")"
   ]
  },
+ "gcp/auth_email_templates.py": {
+  "host-today": [
+   "year: int = field(default_factory=lambda: _dt.date.today().year)"
+  ]
+ },
  "gcp/backfill_ticker.py": {
   "host-today": [
    "d = date.today()"
@@ -23,8 +28,13 @@
  },
  "gcp/build_intraday_gex.py": {
   "host-today": [
+   "(pd.Timestamp.utcnow() - t0).total_seconds())",
    "else (date.today() - timedelta(days=args.days)).isoformat())",
+   "t0 = pd.Timestamp.utcnow()",
    "until = date.today().isoformat()"
+  ],
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
   ]
  },
  "gcp/build_options_daily_greeks.py": {
@@ -36,7 +46,13 @@
  "gcp/build_realtime_gex.py": {
   "host-today": [
    "(date.today() - timedelta(days=args.days)).isoformat()))",
+   "t0 = pd.Timestamp.utcnow()",
+   "ticker, len(chain), len(spots), (pd.Timestamp.utcnow() - t0).total_seconds())",
    "until = date.today().isoformat()"
+  ],
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)",
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
   ]
  },
  "gcp/discord_interactions/main.py": {
@@ -59,6 +75,9 @@
   ]
  },
  "gcp/fetchers/backfill_daily_indicators.py": {
+  "host-today": [
+   "cutoff = _date.today() - _timedelta(days=recent_days)"
+  ],
   "sql-utc-date": [
    "\"\"\"",
    "sql = f\"\"\""
@@ -91,6 +110,11 @@
    "start = date.fromisoformat(args.start_date) if args.start_date else date.today()"
   ]
  },
+ "gcp/fetchers/fetch_av_indicators.py": {
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
  "gcp/fetchers/fetch_earnings_history.py": {
   "sql-utc-date": [
    "sql = \"\"\""
@@ -107,6 +131,9 @@
   ]
  },
  "gcp/fetchers/fetch_insider_transactions.py": {
+  "host-today": [
+   "today = pd.Timestamp.utcnow().date()"
+  ],
   "sql-utc-date": [
    "sql = \"\"\""
   ]
@@ -119,6 +146,9 @@
  "gcp/fetchers/fetch_news_sentiment.py": {
   "sql-utc-date": [
    "sql = \"\"\""
+  ],
+  "utc-parse": [
+   "return pd.to_datetime(val, utc=True).to_pydatetime()"
   ]
  },
  "gcp/fetchers/fetch_premarket_refresh.py": {
@@ -152,6 +182,10 @@
   "host-today": [
    "elapsed = (datetime.now() - start).total_seconds()",
    "start = datetime.now()"
+  ],
+  "utc-parse": [
+   "df['snapshot_ts'] = pd.to_datetime(df['snapshot_ts'], utc=True, errors='coerce')",
+   "out['snapshot_ts'] = pd.to_datetime("
   ]
  },
  "gcp/premarket_brief.py": {
@@ -168,6 +202,9 @@
  "gcp/premarket_playbook_resolver.py": {
   "host-today": [
    "'outcome_resolved_at':  datetime.utcnow(),"
+  ],
+  "utc-parse": [
+   "bars['time'] = pd.to_datetime(bars['time'], utc=True)"
   ]
  },
  "gcp/refresh_earnings_views.py": {
@@ -183,9 +220,34 @@
    "if args.as_of else date.today())"
   ]
  },
+ "gcp/research/direction_program/phase2_ablation.py": {
+  "host-today": [
+   "ts = int(pd.Timestamp.utcnow().timestamp())"
+  ]
+ },
+ "gcp/research/direction_program/phase2_features.py": {
+  "utc-parse": [
+   "base_ts = pd.to_datetime(df[\"ts\"], utc=True)",
+   "p_ts = pd.to_datetime(p[\"ts\"], utc=True)"
+  ]
+ },
  "gcp/research/magnitude_engine/mag_dataset.py": {
   "fixed-offset": [
    "+ pd.Timedelta(hours=4)"
+  ],
+  "utc-parse": [
+   "bar_ts = pd.to_datetime(df[\"ts\"], utc=True).values.astype(\"datetime64[ns]\")",
+   "events[\"event_ts\"] = pd.to_datetime(events[\"event_ts\"], utc=True)",
+   "ext[\"av_ts\"] = pd.to_datetime(ext[\"av_ts\"], utc=True)",
+   "ts_et = pd.to_datetime(df[\"ts\"], utc=True).dt.tz_convert(ET_NAME)"
+  ]
+ },
+ "gcp/research/magnitude_engine/mag_walk_forward.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ],
+  "utc-parse": [
+   "ts_arr = pd.to_datetime(df[\"ts\"], utc=True).values.astype(\"datetime64[ns]\")"
   ]
  },
  "gcp/research/p2_build_gamma_levels.py": {
@@ -193,9 +255,152 @@
    "_ET = ZoneInfo(\"America/New_York\")"
   ]
  },
+ "gcp/research/p2_outcomes_grid.py": {
+  "utc-parse": [
+   "bars[\"ts\"] = pd.to_datetime(bars[\"ts\"], utc=True)"
+  ]
+ },
+ "gcp/research/p7_build_multi_tf_features.py": {
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
  "gcp/research/strat_engine/breakout_meta_walk_forward.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ],
   "tz-localize-none": [
    "\"date\": ts.dt.tz_convert(ET_NAME).dt.normalize().dt.tz_localize(None)"
+  ],
+  "utc-parse": [
+   "ts = pd.to_datetime(m[\"ts\"], utc=True)",
+   "ts_ns = pd.to_datetime(g[\"ts\"], utc=True).values.astype(\"datetime64[ns]\").astype(np.int64)"
+  ]
+ },
+ "gcp/research/strat_engine/dir_regime_walk_forward.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/intraday_momentum.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ],
+  "utc-parse": [
+   "ts_et = pd.to_datetime(df[\"ts\"], utc=True).dt.tz_convert(ET_NAME)"
+  ]
+ },
+ "gcp/research/strat_engine/strat_corr_combos.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ],
+  "utc-parse": [
+   "train_mask = (pd.to_datetime(df[\"ts\"], utc=True) < cut).to_numpy()"
+  ]
+ },
+ "gcp/research/strat_engine/strat_corr_indicators.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_data_builder.py": {
+  "host-today": [
+   "_today = _date.today()",
+   "for year in range(2015, _date.today().year + 1):"
+  ],
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
+ "gcp/research/strat_engine/strat_data_pipeline.py": {
+  "host-today": [
+   "\"verified_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_dataset.py": {
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
+ "gcp/research/strat_engine/strat_dir_probes.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat()}",
+   "\"folds\": folds, \"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_dir_report.py": {
+  "utc-parse": [
+   "rep[\"ts\"] = pd.to_datetime(rep[\"ts\"], utc=True).dt.tz_convert(ET_NAME)"
+  ]
+ },
+ "gcp/research/strat_engine/strat_dir_walk_forward.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_dir_walk_forward_extended.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_ece_snapshot.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),",
+   "refreshed_at = pd.Timestamp.utcnow().isoformat()",
+   "since = (pd.Timestamp.utcnow() - pd.Timedelta(days=window_days)).date().isoformat()"
+  ]
+ },
+ "gcp/research/strat_engine/strat_eda_baserates.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_enrich_levels.py": {
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)",
+   "sample[\"ts\"] = pd.to_datetime(sample[\"ts\"], utc=True)",
+   "sample[\"ts\"] = pd.to_datetime(sample[\"ts\"], utc=True)",
+   "times = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
+ "gcp/research/strat_engine/strat_ftfc_assemble.py": {
+  "utc-parse": [
+   "out[\"ts\"] = pd.to_datetime(out[\"ts\"], utc=True) + pd.Timedelta(minutes=duration_min)"
+  ]
+ },
+ "gcp/research/strat_engine/strat_pred_report.py": {
+  "utc-parse": [
+   "rep[\"ts\"] = pd.to_datetime(rep[\"ts\"], utc=True).dt.tz_convert(ET_NAME)"
+  ]
+ },
+ "gcp/research/strat_engine/strat_pred_serve.py": {
+  "host-today": [
+   "since=(pd.Timestamp.utcnow() - pd.Timedelta(days=30)).date().isoformat(),"
+  ],
+  "utc-parse": [
+   "as_of_ts = pd.to_datetime(as_of, utc=True)",
+   "mask = pd.to_datetime(df[\"ts\"], utc=True) <= as_of_ts",
+   "response[\"ts\"] = pd.to_datetime(latest[\"ts\"].iloc[0], utc=True).isoformat()"
+  ]
+ },
+ "gcp/research/strat_engine/strat_pred_train.py": {
+  "host-today": [
+   "\"trained_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_readout.py": {
+  "host-today": [
+   "\"generated_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_walk_forward.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ]
+ },
+ "gcp/research/strat_engine/strat_walk_forward_adaptive.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
   ]
  },
  "gcp/signal_monitor.py": {
@@ -208,6 +413,8 @@
   "tz-localize-none": [
    "idx = df.index.tz_localize(None) if df.index.tz is not None else df.index",
    "idx = idx.dt.tz_localize(None)",
+   "now_min = self._now(_ET).replace(second=0, microsecond=0, tzinfo=None)",
+   "return ts.replace(tzinfo=None) if ts.tzinfo is not None else ts",
    "times = times.dt.tz_convert(_ET).dt.tz_localize(None)",
    "times = times.dt.tz_localize('UTC').dt.tz_convert(_ET).dt.tz_localize(None)"
   ]
@@ -219,6 +426,7 @@
   ],
   "tz-localize-none": [
    "alert_ts = alert_ts.tz_localize(None)",
+   "close_utc_naive = close_et.astimezone(ZoneInfo(\"UTC\")).replace(tzinfo=None)",
    "df.index = df.index.tz_localize(None)"
   ]
  },
@@ -269,6 +477,78 @@
    "df.index = df.index.tz_localize(None)",
    "df['Time'] = df['Time'].dt.tz_localize(None)",
    "df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_localize(None)"
+  ],
+  "utc-parse": [
+   "df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_localize(None)"
+  ]
+ },
+ "lib/eastern_time.py": {
+  "tz-localize-none": [
+   "if candidate.astimezone(UTC).astimezone(ET).replace(tzinfo=None) == value"
+  ]
+ },
+ "lib/exec_backtest/runner.py": {
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
+ "lib/features/experimental/news_sentiment.py": {
+  "utc-parse": [
+   "bar_ts = pd.to_datetime(df[\"ts\"], utc=True)",
+   "df[\"published_ts\"] = pd.to_datetime(df[\"published_ts\"], utc=True)"
+  ]
+ },
+ "lib/features/experimental/options_derived.py": {
+  "host-today": [
+   "elapsed = (pd.Timestamp.utcnow() - t0).total_seconds()",
+   "elapsed = (pd.Timestamp.utcnow() - t0).total_seconds()",
+   "t0 = pd.Timestamp.utcnow()",
+   "t0 = pd.Timestamp.utcnow()"
+  ]
+ },
+ "lib/features/flow_direction.py": {
+  "host-today": [
+   "len(df_y), (pd.Timestamp.utcnow() - t0).total_seconds())",
+   "len(df_y), (pd.Timestamp.utcnow() - t0).total_seconds())",
+   "t0 = pd.Timestamp.utcnow()",
+   "t0 = pd.Timestamp.utcnow()"
+  ]
+ },
+ "lib/features/intraday_flow.py": {
+  "host-today": [
+   "len(df_y), (pd.Timestamp.utcnow() - t0).total_seconds())",
+   "t0 = pd.Timestamp.utcnow()"
+  ],
+  "utc-parse": [
+   "b[\"ts\"] = pd.to_datetime(b[\"ts\"], utc=True)",
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)",
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)",
+   "ts = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
+ "lib/features/intraday_gex.py": {
+  "utc-parse": [
+   "b[\"ts\"] = pd.to_datetime(b[\"ts\"], utc=True)",
+   "c[\"ts\"] = pd.to_datetime(c[\"ts\"], utc=True)",
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)",
+   "out[\"ts\"] = pd.to_datetime(out[\"ts\"], utc=True)",
+   "sp[\"ts\"] = pd.to_datetime(sp[\"ts\"], utc=True)",
+   "ts = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
+ "lib/indicators.py": {
+  "host-today": [
+   "orb_end = (datetime.combine(datetime.today(), market_open) + timedelta(minutes=minutes)).time()"
+  ]
+ },
+ "lib/options_exec_backtest/iv_lookup.py": {
+  "utc-parse": [
+   "df[\"snapshot_ts\"] = pd.to_datetime(df[\"snapshot_ts\"], utc=True)"
+  ]
+ },
+ "lib/options_exec_backtest/runner.py": {
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
   ]
  },
  "lib/options_intraday.py": {
@@ -301,6 +581,7 @@
  },
  "lib/trading_analysis.py": {
   "host-today": [
+   "orb_end_time = (datetime.combine(datetime.today(), market_open) +",
    "timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')"
   ]
  },
@@ -308,16 +589,19 @@
   "host-today": [
    "days_ago = (datetime.now().date() - requested_dt).days"
   ],
-  "sql-utc-date": [
-   "\"\"\""
-  ],
   "tz-localize-none": [
    "df.index = df.index.tz_localize(None)",
    "df.index = df.index.tz_localize(None)"
   ]
  },
+ "platform/api/routers/backtest.py": {
+  "host-today": [
+   "end = pd.Timestamp.utcnow().normalize()"
+  ]
+ },
  "platform/api/routers/catalysts.py": {
   "host-today": [
+   "cutoff = _date.fromisoformat(as_of) if as_of else _date.today()",
    "today = datetime.now()",
    "today = datetime.now()"
   ],
@@ -344,9 +628,19 @@
    "\"snapshot_timestamp\": datetime.utcnow().isoformat(timespec=\"seconds\") + \"Z\","
   ]
  },
+ "scripts/_magnitude_analysis_helpers.py": {
+  "utc-parse": [
+   "ts_et = pd.to_datetime(ts_series, utc=True).dt.tz_convert(\"America/New_York\")"
+  ]
+ },
  "scripts/analysis/bsvp_validation.py": {
   "host-today": [
    "prefix = args.out_prefix or f\"bsvp_validation_{date.today():%Y-%m-%d}\""
+  ]
+ },
+ "scripts/analysis/calibrate_intraday_theta.py": {
+  "utc-parse": [
+   "ts = pd.to_datetime(df[\"snapshot_ts\"], utc=True).dt.tz_convert(\"America/New_York\")"
   ]
  },
  "scripts/analysis/intraday_indicator_correlation.py": {
@@ -360,6 +654,9 @@
    "today = date.today()"
   ],
   "tz-localize-none": [
+   "df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_localize(None)"
+  ],
+  "utc-parse": [
    "df['ts'] = pd.to_datetime(df['ts'], utc=True).dt.tz_localize(None)"
   ]
  },
@@ -379,6 +676,17 @@
    "cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()",
    "default=date.today())",
    "lines.append(f\"_Generated: {datetime.utcnow().isoformat(timespec='seconds')}Z_\\n\\n\")"
+  ],
+  "utc-parse": [
+   "df[\"alert_ts\"] = pd.to_datetime(df[\"alert_ts\"], utc=True, format=\"ISO8601\")",
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)",
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True, format=\"ISO8601\")"
+  ]
+ },
+ "scripts/analysis/phase3_orb_strategies.py": {
+  "host-today": [
+   "orb_end_time = (datetime.combine(datetime.today(), MARKET_OPEN) + timedelta(minutes=int(orb_label.replace('m', '')))).time()",
+   "orb_end_time = (datetime.combine(datetime.today(), MARKET_OPEN) + timedelta(minutes=orb_minutes)).time()"
   ]
  },
  "scripts/analysis/shared_utils.py": {
@@ -400,6 +708,11 @@
   "sql-utc-date": [
    "\"\"\"SELECT COUNT(*) AS bad FROM market_data_daily",
    "\"\"\"SELECT COUNT(*) AS bad FROM market_data_daily"
+  ],
+  "tz-localize-none": [
+   "last_dt = last_dt.replace(tzinfo=None)",
+   "now = now_utc or datetime.now(UTC).replace(tzinfo=None)",
+   "now = now_utc or datetime.now(UTC).replace(tzinfo=None)"
   ]
  },
  "scripts/backfill_and_replay.py": {
@@ -431,11 +744,18 @@
    "\"calibration_date\": as_of or date.today(),",
    "end = as_of or date.today()",
    "if d > date.today():"
+  ],
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)"
   ]
  },
  "scripts/check_event_window_concentration.py": {
   "fixed-offset": [
    "+ pd.Timedelta(hours=4)"
+  ],
+  "utc-parse": [
+   "preds[\"ts\"] = pd.to_datetime(preds[\"ts\"], utc=True)",
+   "preds[\"ts\"] = pd.to_datetime(preds[\"ts\"], utc=True)"
   ]
  },
  "scripts/fetch_alphavantage_intraday.py": {
@@ -507,12 +827,39 @@
    "timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')"
   ]
  },
+ "scripts/implied_vs_realized_check.py": {
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)",
+   "preds[\"ts\"] = pd.to_datetime(preds[\"ts\"], utc=True)"
+  ]
+ },
+ "scripts/magnitude_movement_sim.py": {
+  "host-today": [
+   "\"computed_at\": pd.Timestamp.utcnow().isoformat(),"
+  ],
+  "utc-parse": [
+   "df[\"ts\"] = pd.to_datetime(df[\"ts\"], utc=True)",
+   "preds[\"ts\"] = pd.to_datetime(preds[\"ts\"], utc=True)",
+   "s[\"ts\"] = pd.to_datetime(s[\"ts\"], utc=True)"
+  ]
+ },
  "scripts/match_earnings_strategy.py": {
   "host-today": [
    "fetch_date = datetime.now().strftime('%Y-%m-%d')",
    "output_file = output_dir / f\"matched_{args.strategy}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv\"",
    "print(f\"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\")",
    "today = datetime.now().date()"
+  ]
+ },
+ "scripts/model_vs_calendar_explosive_decomp.py": {
+  "utc-parse": [
+   "preds[\"ts\"] = pd.to_datetime(preds[\"ts\"], utc=True)",
+   "ts_all = pd.to_datetime(df[\"ts\"], utc=True)"
+  ]
+ },
+ "scripts/naive_calendar_lookup_baseline.py": {
+  "utc-parse": [
+   "ts_all = pd.to_datetime(df[\"ts\"], utc=True)"
   ]
  },
  "scripts/refresh_calibration_table.py": {
@@ -532,6 +879,12 @@
  "scripts/run_backtest.py": {
   "host-today": [
    "timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')"
+  ]
+ },
+ "scripts/run_historical_signals.py": {
+  "utc-parse": [
+   "entry_ts = pd.to_datetime(signals_df['entry_time'], utc=True)",
+   "out['entry_time'] = pd.to_datetime(out['entry_time'], utc=True)"
   ]
  },
  "scripts/run_param_sweep.py": {
