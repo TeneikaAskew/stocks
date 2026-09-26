@@ -4522,10 +4522,12 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      - 50 of 76 job specs named the tag-less image, so every build rolled
        out to all 50 at their next run, whatever target was deployed.
 
-     **Jobs deployed before #1171 still float** until each is next
-     redeployed. `gcloud run jobs list --format=json` shows which: a spec
-     image without `@sha256:`. Until a job is converted, a build still
-     reaches it.
+     **A job whose spec still names a tag floats** until it is converted,
+     and a build reaches it. `gcloud run jobs list --format=json` shows
+     which: a spec image without `@sha256:`. `./gcp/deploy.sh pin-floating`
+     converts every such job to the digest its own tag holds, which is the
+     image it would run next anyway, so no job's code changes. It was run
+     once after #1171 merged.
 
      Two checks still apply:
 
