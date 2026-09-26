@@ -164,6 +164,7 @@ _GCLOUD = r"""
         echo "$tag" > "$OUT/submitted_tag"
         echo "build-123"; exit 0 ;;
       "builds log") echo "Step 1/9 : FROM python"; exit 0 ;;
+      "config get-value") echo "${STUB_ACTIVE_PROJECT:-}"; exit 0 ;;
       "builds describe")
         n=$(cat "$OUT/describe_n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$OUT/describe_n"
         status=$(sed -n "${n}p" "$OUT/statuses"); [ -n "$status" ] || status=$(tail -n1 "$OUT/statuses")
@@ -517,3 +518,26 @@ def test_help_needs_no_project(tmp_path, argv):
     assert proc.returncode == 0, proc.stderr[-400:]
     assert "Usage:" in proc.stdout
     assert _calls(tmp_path) == ["config get-value project"], _calls(tmp_path)
+
+
+def test_setup_passes_the_resolved_project_to_its_child_script(tmp_path):
+    """Codex on #1189: with PROJECT_ID resolved from the active config, only
+    CLOUDSDK_CORE_PROJECT was exported. `setup` runs gcp/setup_cloud_sql.sh
+    as a child, which defaults PROJECT_ID to production, so its resource
+    names said production while its gcloud calls went to the selected
+    project. PROJECT_ID is exported too."""
+    env = _env(tmp_path)
+    env.pop("PROJECT_ID", None)
+    env["STUB_ACTIVE_PROJECT"] = "selected-proj"
+    work = tmp_path / "work"
+    (work / "gcp").mkdir(parents=True)
+    child = work / "gcp" / "setup_cloud_sql.sh"
+    child.write_text('#!/usr/bin/env bash\n'
+                     'echo "PROJECT_ID=${PROJECT_ID:-unset} CORE=${CLOUDSDK_CORE_PROJECT:-unset}" '
+                     '> "$OUT/child_env"\n')
+    child.chmod(0o755)
+    proc = subprocess.run(["bash", str(REPO / "gcp/deploy.sh"), "setup"], cwd=work,
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-400:]
+    assert (tmp_path / "child_env").read_text().split() == [
+        "PROJECT_ID=selected-proj", "CORE=selected-proj"]
