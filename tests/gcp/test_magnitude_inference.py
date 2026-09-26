@@ -1067,6 +1067,49 @@ def test_a_reordered_class_list_is_still_caught():
     assert got and "classes=" in got
 
 
+def test_an_old_readiness_version_does_not_mask_a_malformed_field():
+    """A version mismatch used to return before any structural check ran, so
+    an artifact carrying an old readiness version AND a scalar `classes` read
+    as ContractMismatch rather than ContractMalformed. Those send on-call to
+    different places; the malformed field must win (Codex P2 on #1187)."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    for bad in ({"classes": "TIGHT"}, {"class_priors": [True, False, False, False]},
+                {"class_priors": [0.9, 0.9, 0.1, 0.1]}):
+        with pytest.raises(ValueError):
+            contract_mismatch(_contract(
+                production_readiness_version="magnitude-production-readiness-v0",
+                **bad))
+
+
+def test_an_old_readiness_version_is_reported_with_the_other_mismatches():
+    """Once the payload is well formed, the version is one mismatch among the
+    rest, not an early exit that hides them."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    got = contract_mismatch(_contract(
+        production_readiness_version="magnitude-production-readiness-v0",
+        label_mode="excursion"))
+    assert got and "production_readiness_version=" in got
+    assert "label_mode=" in got
+
+
+def test_a_non_string_readiness_version_is_malformed():
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    with pytest.raises(ValueError, match="production_readiness_version"):
+        contract_mismatch(_contract(production_readiness_version=1))
+
+
+def test_the_locked_ece_ceilings_do_not_follow_the_mutable_dict(monkeypatch):
+    """MappingProxyType is a live view of the dict it wraps. Wrapping the
+    exported ECE_CEILING_BY_TF let an in-process edit to that dict change the
+    'locked' criteria without a version bump (Codex P2 on #1187)."""
+    from gcp.research.magnitude_engine import mag_config
+    locked = mag_config.PRODUCTION_READINESS_CRITERIA[
+        "calibration"]["ece_ceiling_by_timeframe"]
+    before = dict(locked)
+    monkeypatch.setitem(mag_config.ECE_CEILING_BY_TF, "5m", 0.99)
+    assert dict(locked) == before
+
+
 def test_the_backfill_refuses_an_unaudited_run():
     """Before #1055 the single-cell dispatch path DID forward --label-mode
     while the persist path checked nothing, so `old` does not imply `body`.

@@ -63,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from gcp.database import get_engine
 from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_TO_IDX, DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
+    PRODUCTION_READINESS_VERSION,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from scripts._magnitude_analysis_helpers import (
@@ -95,6 +96,25 @@ def _strat_direction(engine, ticker: str, tf: str) -> pd.DataFrame:
                        np.where(dn & ~up, "put", None))
     s["ts"] = pd.to_datetime(s["ts"], utc=True)
     return s[["ts", "strat_dir"]]
+
+
+def _build_summary(args, n_bars: int, overall_mean: float,
+                   overall_med: float, rows: list) -> dict:
+    """The uploaded movement-sim summary. It is economic evidence for a
+    walk-forward run, so like that run's summary it records the readiness
+    policy it was produced under (Codex P2 on #1187)."""
+    return {
+        "production_readiness_version": PRODUCTION_READINESS_VERSION,
+        "ticker": args.ticker, "tf": args.tf, "phase": args.phase,
+        "run_id": args.run_id, "position": args.position,
+        "direction": args.direction, "label_mode": args.label_mode,
+        "costs": "DEFERRED — gross movement only",
+        "n_bars": int(n_bars),
+        "overall_mean_payoff_atr": round(overall_mean, 4),
+        "overall_median_payoff_atr": round(overall_med, 4),
+        "folds": rows,
+        "computed_at": pd.Timestamp.utcnow().isoformat(),
+    }
 
 
 def main():
@@ -227,17 +247,7 @@ def main():
     print("\n⚠️  COSTS DEFERRED — gross movement only; not net/tradeable P&L.")
 
     # 6. GCS json (mirrors the gate-7 / walk-forward report convention).
-    summary = {
-        "ticker": args.ticker, "tf": args.tf, "phase": args.phase,
-        "run_id": args.run_id, "position": args.position,
-        "direction": args.direction, "label_mode": args.label_mode,
-        "costs": "DEFERRED — gross movement only",
-        "n_bars": int(len(j)),
-        "overall_mean_payoff_atr": round(overall_mean, 4),
-        "overall_median_payoff_atr": round(overall_med, 4),
-        "folds": rows,
-        "computed_at": pd.Timestamp.utcnow().isoformat(),
-    }
+    summary = _build_summary(args, len(j), overall_mean, overall_med, rows)
     try:
         from google.cloud import storage as gcs
         # The summary belongs beside the run it describes: reading from the

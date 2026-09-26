@@ -277,7 +277,10 @@ PRODUCTION_READINESS_CRITERIA = MappingProxyType({
         "confidence_interval_must_exclude_zero": True,
     }),
     "calibration": MappingProxyType({
-        "ece_ceiling_by_timeframe": MappingProxyType(ECE_CEILING_BY_TF),
+        # A private copy: a proxy over ECE_CEILING_BY_TF itself is a live
+        # view, so an in-process edit to that dict would move the locked
+        # ceilings without a version bump (Codex P2 on #1187).
+        "ece_ceiling_by_timeframe": MappingProxyType(dict(ECE_CEILING_BY_TF)),
         "no_material_reliability_curve_failure_in_populated_class": True,
     }),
     "brier": MappingProxyType({
@@ -666,10 +669,6 @@ def contract_mismatch(payload: dict,
         raise ValueError(
             f"{CONTRACT_BLOB} production_readiness_version="
             f"{got_readiness_version!r} is not a string")
-    if got_readiness_version != PRODUCTION_READINESS_VERSION:
-        return (
-            f"production_readiness_version={got_readiness_version!r} "
-            f"(serving contract requires {PRODUCTION_READINESS_VERSION!r})")
     # Type-check before comparing. A scalar `classes` used to reach
     # list() and raise TypeError, which is NOT the ValueError the reader
     # translates into ContractMalformed -- so it fell through to the ordinary
@@ -749,7 +748,14 @@ def contract_mismatch(payload: dict,
             f"{CONTRACT_BLOB} decision_lift_min={got_lift!r} must be a finite "
             f"number above 1.0")
 
+    # Compared only after every structural check: an early return here let
+    # an old version mask a malformed field, reporting ContractMismatch where
+    # ContractMalformed was owed (Codex P2 on #1187).
     mismatches = []
+    if got_readiness_version != PRODUCTION_READINESS_VERSION:
+        mismatches.append(
+            f"production_readiness_version={got_readiness_version!r} "
+            f"(serving contract requires {PRODUCTION_READINESS_VERSION!r})")
     if got_mode != label_mode:
         mismatches.append(
             f"label_mode={got_mode!r} (serving contract is {label_mode!r})")
