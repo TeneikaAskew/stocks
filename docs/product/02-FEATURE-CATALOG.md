@@ -1,6 +1,6 @@
 # Feature Catalog
 
-**Last reviewed:** 2026-08-31
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 The monitoring ledger. Every row carries the fields the [README](README.md) governance
 contract promises — Owner, Status, Priority, Target Phase, Last Reviewed, Blocking Issues,

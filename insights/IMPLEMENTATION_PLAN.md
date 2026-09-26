@@ -338,3 +338,35 @@ An independent Plan-agent audit identified the following. Each item is CRITICAL 
 - Replacing Gemini in the chat sub-tab.
 - LangGraph adoption.
 - Backtesting the agent system's decisions against signals (valuable but separate work).
+
+---
+
+## Status as of 2026-09-26
+
+Appended, not woven in: `docs/DOC_REGISTRY.md` classifies this file **Class C**,
+a dated record, and its rule is that such a record is never re-dated and never
+rewritten because editing it destroys what it records. An earlier commit on
+stocks#1121 rewrote 33 link destinations here to `../`; that has been reverted
+and this block replaces it. Codex filed the contradiction, and it was right:
+the rewrite left the file internally mixed, with the links whose targets exist
+rebased and the ones that never shipped in their original spelling, so the
+document read as neither the record it is nor a corrected map.
+
+**Following the links.** Every relative destination above is written from the
+REPOSITORY ROOT, not from `insights/`, so clicking one in a rendered view of
+this file resolves to `insights/<path>` and 404s. Read `gcp/schema.sql` as
+`/gcp/schema.sql`. This was true when the plan was written and is left as
+written.
+
+**What the links point at now.** Of 59 destinations, 33 name files that exist,
+and 26 do not:
+
+- `platform/src/**` moved to the **solyra** repository in the frontend split.
+  Those paths are correct about what was planned and describe a tree this
+  repository no longer holds.
+- `lib/agents/` was built, under different names than the plan proposed:
+  `analysts.py`, `debate.py`, `trader.py` and `memory.py` became
+  `trade_planner.py`, `ranker/` and `embeddings.py`. The plan's names are the
+  proposal, not a claim about today's code.
+
+Nothing above this line has been edited.

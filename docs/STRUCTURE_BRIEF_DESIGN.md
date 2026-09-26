@@ -1,5 +1,7 @@
 # Structure Brief — Design Document
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 **Status:** dev-only PR queued. **The gate condition stated below is now met** — Track B (execution-system backtest) reported **FAIL** ([EXEC_BACKTEST_RESULTS.md](EXEC_BACKTEST_RESULTS.md)) and Track C (direction features R&D) reported **FAIL** ([DIRECTION_FEATURES_R&D.md](DIRECTION_FEATURES_R&D.md)). Both verdicts have landed, so deploy is no longer blocked on evidence; what final language the brief takes is an open product decision — tracked in [15-OPEN-DECISIONS](product/15-OPEN-DECISIONS.md). *(Status corrected 2026-09-15: this line still said "deploy is blocked until … both report verdicts" long after both had.)*
 
 ## What this is

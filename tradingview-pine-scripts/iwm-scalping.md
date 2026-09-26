@@ -1,5 +1,7 @@
 # IWM Scalping - Lane-Based Multi-Indicator System
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 ## Overview
 **Purpose:** Visual 27-lane indicator system for IWM 0DTE options scalping
 **Best For:** Quick entries/exits, momentum trades, multi-timeframe confirmation

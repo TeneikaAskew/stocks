@@ -1,5 +1,7 @@
 # Trading System Technical Architecture
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 > **Project:** adept-mountain-474619-d4
 > **Region:** us-east1
 > **Last updated:** 2026-09-15 (research image + magnitude jobs redeployed; `./gcp/deploy.sh magnitude-inference-only` added for deploy-without-rebuild)

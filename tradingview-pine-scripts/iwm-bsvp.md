@@ -1,5 +1,7 @@
 # IWM Buy & Sell Volume Pressure (BSVP) - Complete Guide
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 ## Overview
 **Purpose:** Advanced volume pressure analysis for IWM using Vadim Gimelfarb's Power-Balance algorithm
 **Best For:** Scalping, day trading, volume confirmation, divergence trading

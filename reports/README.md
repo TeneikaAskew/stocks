@@ -1,5 +1,7 @@
 # Reports Directory
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 **This directory is gitignored.** All phase reports (`phase*.md`) and transition/setup CSVs are stored in Google Cloud Storage and streamed by the platform API on demand.
 
 ## Source of truth
