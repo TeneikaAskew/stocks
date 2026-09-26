@@ -695,7 +695,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1951](../../../gcp/signal_monitor.py#L1951)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [315](../../../lib/data_loader.py#L315)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [125](../../../lib/features/intraday_flow.py#L125)
-- [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [592](../../../lib/options_intraday.py#L592)
+- [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [599](../../../lib/options_intraday.py#L599)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [622](../../../platform/api/main.py#L622), [757](../../../platform/api/main.py#L757), [1257](../../../platform/api/main.py#L1257), [1619](../../../platform/api/main.py#L1619), [1638](../../../platform/api/main.py#L1638)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../scripts/analysis/per_ticker_calibration.py#L208), [205](../../../scripts/analysis/per_ticker_calibration.py#L205)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)

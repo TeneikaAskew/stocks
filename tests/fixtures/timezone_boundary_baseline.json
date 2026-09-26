@@ -553,8 +553,6 @@
  },
  "lib/options_intraday.py": {
   "tz-localize-none": [
-   "_interpolate_observed_iv::bar_ts.dt.tz_localize(None)",
-   "_interpolate_observed_iv::rt_ts.dt.tz_localize(None)",
    "reprice_intraday_option::bars['Time'].dt.tz_localize(None)"
   ]
  },

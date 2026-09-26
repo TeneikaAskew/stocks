@@ -64,9 +64,9 @@ Usage
 """
 from __future__ import annotations
 
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import ET_NAME, stored_intraday_to_eastern, utc_to_eastern_naive
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Literal, Optional
 
 import numpy as np
@@ -205,17 +205,17 @@ def _interpolate_observed_iv(
     this via the ``ORDER BY snapshot_ts`` clause in
     ``load_realtime_theta_curve``.
     """
+    # Both onto the module's clock, naive Eastern wall time. An aware value
+    # is an instant and is CONVERTED (snapshot_ts from Cloud SQL is UTC);
+    # stripping its zone put a 13:30Z snapshot against the 13:30 bar instead
+    # of the 09:30 one (CLAUDE.md 3.9, Codex on #1185).
     rt_ts = pd.to_datetime(realtime_path['snapshot_ts'])
-    try:
-        rt_ts = rt_ts.dt.tz_localize(None)
-    except (AttributeError, TypeError):
-        pass
+    if rt_ts.dt.tz is not None:
+        rt_ts = utc_to_eastern_naive(rt_ts)
 
-    bar_ts = pd.to_datetime(bar_times)
-    try:
-        bar_ts = bar_ts.dt.tz_localize(None)
-    except (AttributeError, TypeError):
-        pass
+    bar_ts = pd.Series(pd.to_datetime(bar_times))
+    if bar_ts.dt.tz is not None:
+        bar_ts = utc_to_eastern_naive(bar_ts)
 
     rt_ns = rt_ts.astype('int64').to_numpy()
     bar_ns = bar_ts.astype('int64').to_numpy()
@@ -587,19 +587,27 @@ def _load_intraday_bars(ticker: str, target_date: date) -> Optional[pd.DataFrame
         from gcp.database import query_to_dataframe
     except ImportError:
         return None
+    # [D 00:00Z, D+1 02:00Z) holds session D in both stored conventions;
+    # stored_intraday_to_eastern reads each row by its own convention and the
+    # frame is cut to the Eastern date. ``Time`` is naive Eastern wall clock,
+    # the module's contract (the 16:00 ET expiry arithmetic below relies on
+    # it). Before, a true-UTC row came back as naive UTC: a 09:30 ET bar
+    # read as 13:30, leaving 2.5 h to expiry instead of 6.5 (Codex on #1185).
+    start = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
     df = query_to_dataframe(
-        "SELECT ts AS \"Time\", close AS \"Spot\" "
+        "SELECT ts, close AS \"Spot\", volume "
         "FROM market_data_intraday "
         "WHERE ticker = :t AND ts >= :start AND ts < :end "
         "AND interval = '1min' ORDER BY ts",
-        {"t": ticker.upper(),
-         "start": datetime.combine(target_date, datetime.min.time()),
-         "end": datetime.combine(target_date + timedelta(days=1),
-                                  datetime.min.time())},
+        {"t": ticker.upper(), "start": start,
+         "end": start + timedelta(days=1, hours=2)},
     )
     if df is None or df.empty:
         return None
-    return df
+    idx, keep = stored_intraday_to_eastern(df['ts'], df['volume'])
+    out = pd.DataFrame({'Time': idx[keep], 'Spot': df['Spot'].to_numpy()[keep]})
+    out = out[out['Time'].dt.date == target_date].sort_values('Time').reset_index(drop=True)
+    return out if not out.empty else None
 
 
 # ---------------------------------------------------------------------------
