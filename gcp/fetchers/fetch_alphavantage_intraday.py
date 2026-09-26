@@ -23,7 +23,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import eastern_index_to_utc, utc_to_eastern_naive
+from lib.eastern_time import eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive
 
 from gcp.database import (
     bulk_insert_dataframe,
@@ -445,32 +445,36 @@ REPLACE_NOTHING_HELD = 'nothing_held'       # window holds no session; never del
 # stragglers. Deleting more than this multiple of what is re-inserted means
 # something is wrong with the window or the list; the transaction rolls back.
 REPLACE_MAX_DELETE_RATIO = 3.0
+# A refetched session may hold this share fewer bars than already held (at
+# least 2) before the month is refused as incomplete.
+REPLACE_SHORT_TOLERANCE = 0.02
 
 
 def _held_session_dates(symbol: str, start: datetime, end: datetime) -> dict:
-    """Session dates the window holds now, with their row counts.
+    """{Eastern session date: distinct bars held} for the window.
 
-    Decided the same way under both conventions: Eastern-labelled rows sit at
-    raw 04:00-20:00 of their own date; true-UTC rows at raw 08:00-23:59 of
-    their date plus a spill to 00:00Z (EDT) or 01:00Z (EST) of the next, for
-    the 20:00 ET bar. So a session is a weekday raw date with rows at raw hour
-    4 or later. The spill never counts, so a holiday after a 20:00 ET bar is
-    not a session (code review C1). There is no row-count floor, so a thinly
-    traded ticker's sparse day still counts.
-    Strict query: a DB error must never read as "nothing held".
+    Reads the window's rows and resolves them with
+    lib.eastern_time.stored_intraday_to_eastern, the same rule the Charts API
+    reads by: each row placed in its own convention and duplicates left where
+    both writers collided counted once. So a session both writers touched
+    counts its real bars, not up to twice as many rows, and the 20:00 ET spill
+    counts toward the session it closes, never toward a holiday after it (code
+    review C1). Weekday sessions only. Strict query: a DB error must never read
+    as "nothing held".
     """
     df = query_to_dataframe_strict(
         """
-        SELECT (ts AT TIME ZONE 'UTC')::date AS d, count(*) AS n  -- tz-ok: raw label date, either convention
+        SELECT ts, volume
           FROM market_data_intraday
          WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e
-           AND extract(hour FROM ts AT TIME ZONE 'UTC') >= 4
-         GROUP BY 1
         """,
         {'t': symbol, 's': start, 'e': end}, timeout_s=120,
     )
-    return {pd.Timestamp(d).date(): int(n) for d, n in zip(df['d'], df['n'])
-            if pd.Timestamp(d).weekday() < 5}
+    if df.empty:
+        return {}
+    idx, keep = stored_intraday_to_eastern(df['ts'], df['volume'])
+    days = pd.Series(idx[keep].date).value_counts()
+    return {d: int(n) for d, n in days.items() if d.weekday() < 5}
 
 
 def replace_month(symbol: str, year: int, month: int, api_key: str,
@@ -494,7 +498,15 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     df = df.drop_duplicates(subset=['ticker', 'interval', 'ts'])
     session = utc_to_eastern_naive(df['ts']).dt.date
     held = _held_session_dates(symbol, start, end)
-    missing = sorted(set(held) - set(session))
+    fetched = session.value_counts()
+    # A held session is missing if the refetch lacks it, or returns fewer
+    # bars than the distinct bars already held (a partial vendor month that
+    # still touches every day, Codex P1 on #1185). REPLACE_SHORT_TOLERANCE
+    # absorbs the odd bar AV revises away; anything more leaves the month
+    # untouched.
+    missing = sorted(
+        d for d, n in held.items()
+        if int(fetched.get(d, 0)) < n - max(2, int(n * REPLACE_SHORT_TOLERANCE)))
     out.update(held_sessions=len(held), missing_sessions=len(missing))
     if not held:
         # Nothing to re-frame: deleting would only remove rows (code review H2).
@@ -502,7 +514,8 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         return out
     if missing:
         out['status'] = REPLACE_INCOMPLETE
-        out['missing'] = [d.isoformat() for d in missing[:10]]
+        out['missing'] = [f"{d.isoformat()} ({int(fetched.get(d, 0))}/{held[d]})"
+                          for d in missing[:10]]
         return out
     df = df[session.isin(set(held))]
     if df.empty:

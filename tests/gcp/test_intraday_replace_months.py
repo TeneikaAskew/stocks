@@ -100,7 +100,7 @@ def test_refetch_missing_a_held_session_deletes_nothing():
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_INCOMPLETE
-    assert r["missing"] == ["2026-09-02"]
+    assert r["missing"] == ["2026-09-01 (1/900)", "2026-09-02 (0/900)"]
     rep.assert_not_called()
 
 
@@ -110,7 +110,7 @@ def test_only_held_sessions_are_reinserted():
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01", "2026-09-02", "2026-09-24"]),
                                     fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 12}), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 1}), \
          patch.object(fai, "replace_rows_in_window", return_value=(12, 1)) as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_OK
@@ -121,7 +121,7 @@ def test_only_held_sessions_are_reinserted():
 def test_dry_run_never_writes():
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01"]), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 1): 5}), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 1): 1}), \
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=False)
     assert r["status"] == fai.REPLACE_DRY
@@ -132,7 +132,7 @@ def test_commit_swaps_utc_rows_over_the_month_window():
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01", "2026-09-24"]), fai.FETCH_OK)), \
          patch.object(fai, "_held_session_dates",
-                      return_value={date(2026, 9, 1): 5, date(2026, 9, 24): 5}), \
+                      return_value={date(2026, 9, 1): 1, date(2026, 9, 24): 1}), \
          patch.object(fai, "replace_rows_in_window", return_value=(900, 2)) as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_OK and r["deleted"] == 900
@@ -283,14 +283,67 @@ def test_a_winter_month_end_2000_bar_is_inside_its_own_window():
     assert not (mar[0] <= bar < mar[1])
 
 
+def _stored(day: str, *, stored: str, start="04:00", end="20:00") -> pd.DataFrame:
+    wall = pd.date_range(f"{day} {start}", f"{day} {end}", freq="1min")
+    minute = wall.hour * 60 + wall.minute
+    ts = (wall.tz_localize("UTC") if stored == "et_label"
+          else wall.tz_localize("America/New_York").tz_convert("UTC"))
+    return pd.DataFrame({"ts": ts, "volume": [5000 if 570 <= m < 600 else 100 for m in minute]})
+
+
+def _held_from(rows: pd.DataFrame, y: int, m: int) -> dict:
+    start, end = fai.month_replace_window(y, m)
+    win = rows[(rows["ts"] >= start) & (rows["ts"] < end)].reset_index(drop=True)
+    with patch.object(fai, "query_to_dataframe_strict", return_value=win):
+        return fai._held_session_dates("SPY", start, end)
+
+
 def test_the_2000_bar_before_a_holiday_does_not_make_the_holiday_a_session():
-    """Thanksgiving eve 2024-11-27 20:00 ET sits at raw 2024-11-28 01:00Z.
-    The held-session rule must not count 11-28 as a session, or the month
-    reads as incomplete forever."""
-    import inspect
-    sql = inspect.getsource(fai._held_session_dates)
-    assert "extract(hour FROM ts AT TIME ZONE 'UTC') >= 4" in sql
-    assert datetime(2024, 11, 27, 20, 0, tzinfo=ET).astimezone(UTC).hour < 4
+    """Thanksgiving eve 2024-11-27 20:00 ET sits at raw 2024-11-28 01:00Z; it
+    counts toward 11-27, and 11-28 is not a session."""
+    held = _held_from(_stored("2024-11-27", stored="utc"), 2024, 11)
+    assert held == {date(2024, 11, 27): 961}
+
+
+def test_held_bars_count_a_collided_session_once():
+    """Both writers touched 09-22: true UTC everywhere plus the legacy labels
+    at raw 04:00-07:59 that the refetch never overwrote. Rows: 961 + 240;
+    distinct bars: 961."""
+    rows = pd.concat([_stored("2026-09-22", stored="utc"),
+                      _stored("2026-09-22", stored="et_label", start="04:00", end="07:59")])
+    rows = rows.drop_duplicates("ts", keep="first").sort_values("ts")
+    assert len(rows) == 961 + 240
+    assert _held_from(rows, 2026, 9) == {date(2026, 9, 22): 961}
+
+
+def test_a_partial_refetch_touching_every_day_is_refused():
+    """Codex P1 on #1185: AV returned half of each held day. Every session is
+    present, so the old check passed and the month was cut in half."""
+    half = pd.DataFrame({
+        "ts": pd.date_range("2026-09-24 04:00", periods=480, freq="1min"),
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1,
+        "ticker": "SPY", "interval": "1min", "data_source": "alphavantage",
+    })
+    with patch.object(fai, "fetch_month", return_value=(half, fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "replace_rows_in_window") as rep:
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_INCOMPLETE
+    assert r["missing"] == ["2026-09-24 (480/961)"]
+    rep.assert_not_called()
+
+
+def test_a_session_a_couple_of_bars_short_is_within_tolerance():
+    full = pd.DataFrame({
+        "ts": pd.date_range("2026-09-24 04:00", periods=959, freq="1min"),
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1,
+        "ticker": "SPY", "interval": "1min", "data_source": "alphavantage",
+    })
+    with patch.object(fai, "fetch_month", return_value=(full, fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "replace_rows_in_window", return_value=(961, 959)):
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_OK
 
 
 # ── code review H1/H2 on #1185 ────────────────────────────────────────────────
