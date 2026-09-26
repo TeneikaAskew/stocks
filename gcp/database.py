@@ -380,6 +380,39 @@ def _na_to_none_records(records: list[dict]) -> list[dict]:
 _REFLECTED_TABLES: dict = {}
 
 
+# Tables whose timestamp columns must arrive as tz-aware instants. A naive
+# value is bound as `timestamp` and Postgres (TimeZone=UTC) reads it as UTC,
+# so a writer that hands over naive Eastern wall time silently stores it four
+# or five hours off. That is how market_data_intraday came to hold two
+# conventions (CLAUDE.md 3.9). Refusing naive values here is the backstop for
+# any writer, present or future; the writers themselves convert with
+# lib.eastern_time.eastern_index_to_utc.
+_UTC_TS_COLUMNS: dict[str, tuple[str, ...]] = {
+    "market_data_intraday": ("ts",),
+}
+
+
+def _require_utc_ts(df: pd.DataFrame, table: str) -> None:
+    """Raise ValueError if a guarded timestamp column holds a naive value."""
+    for col in _UTC_TS_COLUMNS.get(table, ()):
+        if col not in df.columns or df.empty:
+            continue
+        s = df[col]
+        if isinstance(s.dtype, pd.DatetimeTZDtype):
+            continue
+        if pd.api.types.is_datetime64_dtype(s):
+            naive = True
+        else:
+            naive = any(getattr(v, "tzinfo", None) is None
+                        for v in s.dropna())
+        if naive:
+            raise ValueError(
+                f"{table}.{col} received naive timestamps; convert them to UTC "
+                "instants first (lib.eastern_time.eastern_index_to_utc for vendor "
+                "Eastern wall time). A naive value would be stored as if it were UTC."
+            )
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: str,
@@ -399,6 +432,7 @@ def upsert_dataframe(
 
     Returns the total number of rows upserted.
     """
+    _require_utc_ts(df, table)
     if df.empty:
         return 0
 
@@ -491,6 +525,80 @@ def upsert_dataframe(
     return total
 
 
+def replace_rows_in_window(
+    df: pd.DataFrame,
+    table: str,
+    key: dict,
+    ts_col: str,
+    start,
+    end,
+    chunksize: int = 2000,
+) -> tuple[int, int]:
+    """Atomically replace every row of *table* matching *key* with
+    ``start <= ts_col < end`` by the rows of *df*. Returns (deleted, inserted).
+
+    DELETE and INSERT run in ONE transaction, so a failure part-way leaves the
+    old rows in place rather than a hole. Built for re-framing
+    market_data_intraday (CLAUDE.md 3.9): an upsert cannot remove a row stored
+    at the wrong key, only a delete over the window can.
+
+    Every row of *df* must match *key* and fall inside the window; anything
+    else is refused before the transaction opens, because inserting outside
+    the deleted window could overwrite a neighbouring month's rows.
+    *start* / *end* must be tz-aware.
+    """
+    import sqlalchemy
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    _require_utc_ts(df, table)
+    for bound in (start, end):
+        if getattr(bound, "tzinfo", None) is None:
+            raise ValueError("replace_rows_in_window: start/end must be tz-aware")
+    if not key or not all(isinstance(k, str) and k.isidentifier() for k in key):
+        raise ValueError(f"replace_rows_in_window: invalid key {key!r}")
+    if not ts_col.isidentifier():
+        raise ValueError(f"replace_rows_in_window: invalid ts_col {ts_col!r}")
+    if not df.empty:
+        ts = pd.DatetimeIndex(df[ts_col])
+        outside = int(((ts < pd.Timestamp(start)) | (ts >= pd.Timestamp(end))).sum())
+        if outside:
+            raise ValueError(
+                f"replace_rows_in_window({table}): {outside} row(s) fall outside "
+                f"[{start}, {end}); refusing to insert beyond the deleted window")
+        for k, v in key.items():
+            if k in df.columns and not (df[k] == v).all():
+                raise ValueError(f"replace_rows_in_window({table}): rows with {k} != {v!r}")
+
+    engine = get_engine()
+    tbl = _REFLECTED_TABLES.get(table)
+    if tbl is None:
+        meta = sqlalchemy.MetaData()
+        meta.reflect(bind=engine, only=[table])
+        tbl = meta.tables[table]
+        _REFLECTED_TABLES[table] = tbl
+
+    where = " AND ".join(f"{k} = :k_{k}" for k in key)
+    params = {f"k_{k}": v for k, v in key.items()}
+    params.update({"w_start": start, "w_end": end})
+    delete_sql = sqlalchemy.text(
+        f"DELETE FROM {tbl.name} WHERE {where} "
+        f"AND {ts_col} >= :w_start AND {ts_col} < :w_end")
+
+    table_cols = {c.name for c in tbl.columns}
+    out = df[[c for c in df.columns if c in table_cols]]
+    out = _coerce_int_columns(out, tbl)
+    records = out.to_dict(orient="records")
+    size = _max_safe_chunksize(len(out.columns), chunksize) if len(out.columns) else chunksize
+
+    with engine.begin() as conn:
+        deleted = conn.execute(delete_sql, params).rowcount
+        for i in range(0, len(records), size):
+            conn.execute(pg_insert(tbl).values(_na_to_none_records(records[i:i + size])))
+    logger.info("replace_rows_in_window(%s %s [%s, %s)): deleted %d, inserted %d",
+                table, key, start, end, deleted, len(records))
+    return int(deleted), len(records)
+
+
 def bulk_copy_upsert(
     df: pd.DataFrame,
     table: str,
@@ -525,6 +633,7 @@ def bulk_copy_upsert(
     1,124 round-trips × 1-2s each = 20-40 min per upsert. COPY does the
     same volume in ~30s.
     """
+    _require_utc_ts(df, table)
     if df.empty:
         return 0
 
@@ -705,6 +814,7 @@ def bulk_insert_dataframe(
 
     Use for initial data loads where duplicates won't exist.
     """
+    _require_utc_ts(df, table)
     if df.empty:
         return 0
 

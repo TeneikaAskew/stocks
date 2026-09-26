@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,12 +23,14 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import eastern_index_to_utc, utc_to_eastern_naive
 
 from gcp.database import (
     bulk_insert_dataframe,
     execute_sql,
     is_cloud_sql_configured,
+    query_to_dataframe_strict,
+    replace_rows_in_window,
     upsert_dataframe,
 )
 from lib.config import AlphaVantageConfig
@@ -295,9 +297,8 @@ def process_symbol(
         if df is None or df.empty:
             continue
 
-        # Localize timestamps to UTC
-        if df['ts'].dt.tz is None:
-            df['ts'] = df['ts'].dt.tz_localize(ET_NAME).dt.tz_convert('UTC')
+        # Naive Eastern vendor stamps -> UTC instants (CLAUDE.md 3.9).
+        df['ts'] = eastern_index_to_utc(df['ts'])
 
         log.info("    %s: %d bars", month_str, len(df))
 
@@ -407,6 +408,167 @@ def _file_data_quality_issue(dead_tickers: list) -> None:
                  new_num)
 
 
+
+# -- Re-framing migration (CLAUDE.md 3.9) -------------------------------------
+#
+# Two writers used to store AV's naive Eastern wall time as if it were UTC, so
+# market_data_intraday holds months in two conventions, and at colliding keys
+# the Eastern-labelled bar overwrote the true one. An upsert cannot repair
+# that: a row at the wrong key stays there. --replace-months refetches each
+# listed (ticker, month) from AV and swaps the whole month in one transaction.
+
+# Every row month M can hold, in either convention, lies in
+#   [M-01 01:00Z, (M+1)-01 01:00Z)
+#   * Eastern-labelled rows: raw labels 04:00-19:59 on each day of M.
+#   * True-UTC rows: 04:00 ET on the 1st (08:00Z EDT / 09:00Z EST) through
+#     19:59 ET on the last day (23:59Z EDT / 00:59Z EST on the next 1st).
+# and no neighbouring month's rows do: M-1's true-UTC rows end by 01:00Z on
+# the 1st of M; M+1's labelled rows start at 04:00Z on its 1st.
+# tests/gcp/test_intraday_replace_months.py checks this across DST changes.
+_WINDOW_HOUR_UTC = 1
+
+
+def month_replace_window(year: int, month: int) -> tuple[datetime, datetime]:
+    """UTC ``[start, end)`` holding every row of (year, month) in either convention."""
+    start = datetime(year, month, 1, _WINDOW_HOUR_UTC, tzinfo=timezone.utc)
+    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+    return start, datetime(ny, nm, 1, _WINDOW_HOUR_UTC, tzinfo=timezone.utc)
+
+
+REPLACE_OK = 'replaced'
+REPLACE_DRY = 'dry_run'
+REPLACE_INCOMPLETE = 'incomplete_refetch'   # vendor returned fewer sessions than we hold
+
+
+def _held_session_dates(symbol: str, start: datetime, end: datetime) -> dict:
+    """Session dates the window holds now, with their row counts.
+
+    Decided the same way under both conventions: Eastern-labelled rows sit at
+    raw hours 04-19 of their own date; true-UTC rows at raw hours 08-23 of their
+    date plus, in winter, a spill into 00:00-00:59Z of the next one. So a
+    session is a weekday raw date with rows outside raw hour 00. There is no
+    row-count floor, so a thinly traded ticker's sparse day still counts.
+    Strict query: a DB error must never read as "nothing held".
+    """
+    df = query_to_dataframe_strict(
+        """
+        SELECT (ts AT TIME ZONE 'UTC')::date AS d, count(*) AS n  -- tz-ok: raw label date, either convention
+          FROM market_data_intraday
+         WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e
+           AND extract(hour FROM ts AT TIME ZONE 'UTC') <> 0
+         GROUP BY 1
+        """,
+        {'t': symbol, 's': start, 'e': end}, timeout_s=120,
+    )
+    return {pd.Timestamp(d).date(): int(n) for d, n in zip(df['d'], df['n'])
+            if pd.Timestamp(d).weekday() < 5}
+
+
+def replace_month(symbol: str, year: int, month: int, api_key: str,
+                  commit: bool) -> dict:
+    """Refetch one (symbol, month) from AV and swap it in atomically.
+
+    Footprint-preserving: only the sessions the month already holds are
+    re-inserted, so the migration re-frames data and never adds coverage the
+    table did not have. Nothing is deleted unless the refetch succeeded AND
+    contains every held session; a shortfall is reported and the month is left
+    untouched.
+    """
+    start, end = month_replace_window(year, month)
+    out = {'symbol': symbol, 'month': f"{year}-{month:02d}", 'deleted': 0,
+           'inserted': 0, 'held_sessions': None, 'missing_sessions': 0}
+    df, reason = fetch_month(symbol, year, month, api_key)
+    if df is None or df.empty or reason != FETCH_OK:
+        out['status'] = reason if reason != FETCH_OK else FETCH_NO_TIMESERIES
+        return out
+    df['ts'] = eastern_index_to_utc(df['ts'])
+    df = df.drop_duplicates(subset=['ticker', 'interval', 'ts'])
+    session = utc_to_eastern_naive(df['ts']).dt.date
+    held = _held_session_dates(symbol, start, end)
+    missing = sorted(set(held) - set(session))
+    out.update(held_sessions=len(held), missing_sessions=len(missing))
+    if missing:
+        out['status'] = REPLACE_INCOMPLETE
+        out['missing'] = [d.isoformat() for d in missing[:10]]
+        return out
+    df = df[session.isin(set(held))]
+    if not commit:
+        out['status'] = REPLACE_DRY
+        out['inserted'] = len(df)
+        return out
+    deleted, inserted = replace_rows_in_window(
+        df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
+        'ts', start, end)
+    out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted)
+    return out
+
+
+def _read_text(path: str) -> str:
+    """Local file or ``gs://bucket/object``. The list is regenerated right
+    before a run (gcp/queries/list_intraday_ticker_months.sql) and uploaded,
+    so it never goes stale inside an image."""
+    if path.startswith('gs://'):
+        from google.cloud import storage as gcs
+        bucket, _, blob = path[len('gs://'):].partition('/')
+        return gcs.Client().bucket(bucket).blob(blob).download_as_text()
+    with open(path) as f:
+        return f.read()
+
+
+def _read_replace_list(path: str) -> list[tuple[str, int, int]]:
+    """Parse ``TICKER,YYYY-MM`` lines (``#`` comments and a header allowed)."""
+    items = []
+    for line in _read_text(path).splitlines():
+        line = line.split('#', 1)[0].strip()
+        if not line or line.lower().startswith('ticker,'):
+            continue
+        sym, ym = [x.strip() for x in line.split(',')]
+        y, m = ym.split('-')
+        items.append((sym.upper(), int(y), int(m)))
+    return items
+
+
+def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
+    """Drive replace_month over the list; striped across Cloud Run tasks."""
+    items = _read_replace_list(path)
+    task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    items = items[task_idx::task_cnt]
+    if limit is not None:
+        items = items[:limit]
+    api_keys = get_api_keys()
+    if not api_keys:
+        log.error("No ALPHA_VANTAGE_API_KEY set. Exiting.")
+        return 1
+    log.info("replace-months: task %d/%d, %d ticker-months, commit=%s",
+             task_idx, task_cnt, len(items), commit)
+    counts: dict = {}
+    systemic = []
+    last = 0.0
+    for n, (sym, y, m) in enumerate(items, 1):
+        wait = _av_cfg.delay_between_calls - (time.time() - last)
+        if wait > 0:
+            time.sleep(wait)
+        last = time.time()
+        try:
+            r = replace_month(sym, y, m, api_keys[n % len(api_keys)], commit)
+        except Exception as e:
+            log.error("  ✗ %s %d-%02d SYSTEMIC: %s", sym, y, m, e)
+            systemic.append(f"{sym} {y}-{m:02d}")
+            continue
+        counts[r['status']] = counts.get(r['status'], 0) + 1
+        log.info("  %d/%d %s %s status=%s held_sessions=%s missing_sessions=%d "
+                 "deleted=%d inserted=%d%s", n, len(items), r['symbol'], r['month'],
+                 r['status'], r['held_sessions'], r['missing_sessions'],
+                 r['deleted'], r['inserted'],
+                 f" missing={r['missing']}" if r.get('missing') else "")
+    log.info("replace-months summary: %s systemic=%d", counts, len(systemic))
+    if systemic:
+        log.error("Systemic failures: %s", systemic)
+        return 1
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -426,7 +588,18 @@ def main():
                         help='Interval (only 1min supported for now)')
     parser.add_argument('--force', action='store_true',
                         help='Re-fetch even if data already exists in GCS')
+    parser.add_argument('--replace-months', default=None, metavar='PATH',
+                        help='Re-framing migration: file of TICKER,YYYY-MM lines. Each '
+                             'month is refetched and swapped in atomically. Dry run '
+                             'unless --commit.')
+    parser.add_argument('--commit', action='store_true',
+                        help='With --replace-months: actually delete and insert.')
+    parser.add_argument('--limit', type=int, default=None,
+                        help='With --replace-months: process at most N items per task.')
     args = parser.parse_args()
+
+    if args.replace_months:
+        sys.exit(run_replace_months(args.replace_months, args.commit, args.limit))
 
     # Default date range: previous month → today
     today = date.today()

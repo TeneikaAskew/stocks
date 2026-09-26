@@ -23,7 +23,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET
+from lib.eastern_time import ET, eastern_bounds_utc, eastern_index_to_utc
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 
@@ -389,16 +389,23 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
     try:
         from lib.indicators import calculate_premarket_context
         # Pull today's intraday bars (extended hours included)
+        # The Eastern premarket window as UTC instants. The old bounds were
+        # UTC midnights (20:00 ET the day before under EDT), which read a
+        # window this same run had just overwritten with Eastern-labelled bars.
+        pm_start, pm_end = eastern_bounds_utc(
+            pd.Timestamp(fetch_date).date(), dt_time(4, 0), dt_time(9, 30))
         intraday_sql = """
             SELECT ts, open, high, low, close, volume
               FROM market_data_intraday
              WHERE ticker = :ticker
-               AND ts >= CAST(:fd AS DATE)
-               AND ts <  CAST(:fd AS DATE) + INTERVAL '1 day'
+               AND interval = '1min'
+               AND ts >= :start
+               AND ts <  :end
              ORDER BY ts
         """
         intraday = query_to_dataframe(
-            intraday_sql, {'ticker': ticker.upper(), 'fd': fetch_date}
+            intraday_sql,
+            {'ticker': ticker.upper(), 'start': pm_start, 'end': pm_end},
         )
         if not intraday.empty:
             prev_close = None
@@ -446,11 +453,10 @@ def write_intraday_to_sql(ticker: str, df: pd.DataFrame, fetch_date: str):
         return
 
     out = df.copy()
-    out.index = pd.to_datetime(out.index)
-    # AV returns naive ET timestamps — strip any tz label if present.
-    # ET-as-UTC convention ensures the frontend RTH filter (9:30-16:00 via getUTCHours) works.
-    if out.index.tz is not None:
-        out.index = out.index.tz_localize(None)
+    # AV stamps are naive Eastern wall time; ts is a UTC instant. This used to
+    # strip any zone and store the wall time as if it were UTC, which put the
+    # 13:30 ET bar on the 09:30 ET bar's key (CLAUDE.md 3.9).
+    out.index = eastern_index_to_utc(pd.to_datetime(out.index))
 
     out['ts'] = out.index
     out['ticker'] = ticker

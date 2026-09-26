@@ -45,7 +45,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import eastern_index_to_utc
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -222,12 +222,16 @@ def migrate_market_data_intraday(data_dir: Path, dry_run: bool):
             df = _normalize_ohlcv(df)
 
             # Normalize timestamp
-            if isinstance(df.index, pd.DatetimeIndex):
-                df['ts'] = df.index
-                if df['ts'].dt.tz is None:
-                    df['ts'] = df['ts'].dt.tz_localize(ET_NAME).dt.tz_convert('UTC')
-            elif 'timestamp' in df.columns:
-                df['ts'] = pd.to_datetime(df['timestamp'], utc=True)
+            # The combined parquet carries naive Eastern AV stamps. An aware
+            # index is already an instant and is only converted. There is no
+            # string-column fallback: pd.to_datetime(..., utc=True) on naive
+            # Eastern text would stamp wall time as UTC (CLAUDE.md 3.9).
+            if not isinstance(df.index, pd.DatetimeIndex):
+                raise ValueError(f"{combined}: expected a DatetimeIndex of bar stamps")
+            if df.index.tz is None:
+                df['ts'] = eastern_index_to_utc(df.index)
+            else:
+                df['ts'] = df.index.tz_convert('UTC')
 
             df['ticker'] = ticker_lower.upper()
             df['interval'] = '1min'
