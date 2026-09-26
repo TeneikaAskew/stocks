@@ -47,6 +47,7 @@ from gcp.research.magnitude_engine.mag_config import (
     SUCCESS_BAR_MIN_FOLDS_LIFT,
     GCS_BUCKET_DEFAULT, gcs_run_prefix, research_namespace,
     CONTRACT_BLOB, contract_payload,
+    PRODUCTION_READINESS_VERSION,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.mag_pred_train import (
@@ -866,6 +867,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
             pred_rows.extend(f["_predictions"])
 
     summary = {
+        "production_readiness_version": PRODUCTION_READINESS_VERSION,
         "phase": phase, "ticker": ticker, "tf": tf,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
@@ -1008,6 +1010,7 @@ def run_all_cells(engine, phase: str,
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
                 all_summaries.append({
+                    "production_readiness_version": PRODUCTION_READINESS_VERSION,
                     "phase": phase, "ticker": ticker, "tf": tf,
                     "status": "ERROR", "error": str(e),
                 })
@@ -1027,6 +1030,7 @@ def run_all_cells(engine, phase: str,
     log.info("=" * 70)
 
     return {
+        "production_readiness_version": PRODUCTION_READINESS_VERSION,
         "phase": phase, "verdict": phase_verdict,
         "pass_count_by_tf": pass_count_by_tf,
         "pass_tfs": phase_pass_tfs,
