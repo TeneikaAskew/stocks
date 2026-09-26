@@ -51,6 +51,16 @@ This rule was added on **2026-05-01** after a Phase 0.5 incident where I shipped
 - **SEARCH** thoroughly for related files using Grep, Glob, and Read tools
 - **NEVER** create new files if functionality can be added to existing files
 - **PREFER** modifying/extending existing modules over creating new ones
+- **PREFER A FOCUSED OWNER, NOT MERELY AN EXISTING FILE**: the rule above must
+  not be used to grow an unrelated monolith. When repeated behavior is a shared
+  domain policy (time, configuration, parsing, provider access, retries,
+  persistence, serialization, notification, or caching), give it one narrowly
+  named, tested owner. Do not create generic `utils.py` / `helpers.py` grab bags
+  and do not import reusable policy from scripts, routers, or entry points.
+- **THE SECOND PRODUCTION IMPLEMENTATION IS THE EXTRACTION TRIGGER**: search
+  first; extend the canonical owner or extract one, migrate feasible callers,
+  and list any intentionally remaining duplicates plus their removal plan in
+  the PR description.
 - When addressing a problem:
   1. First: Read ALL related files to understand current implementation
   2. Second: Check if similar functionality already exists
