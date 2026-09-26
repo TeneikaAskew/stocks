@@ -54,6 +54,13 @@ def wl(db_engine):
     tests can isolate — no application path issues one.
     """
     with db_engine.begin() as conn:
+        # `watchlist_history` refuses TRUNCATE. Tests are the one legitimate
+        # caller, and they say so rather than relying on a standing hole in
+        # the guard. SET LOCAL is transaction-scoped, so the opt-in cannot
+        # outlive this block or be inherited by anything else.
+        conn.execute(
+            sqlalchemy.text("SET LOCAL watchlist_history.allow_truncate = 'on'")
+        )
         conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlists"))
         conn.execute(
             sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY")
@@ -937,6 +944,9 @@ def test_the_seed_horizon_is_the_wall_clock_not_the_transaction_start(wl):
         # The trigger recorded that add; the seed's own guard is "history
         # is entirely empty", so clear it and let the shipped statement run.
         conn.execute(
+            sqlalchemy.text("SET LOCAL watchlist_history.allow_truncate = 'on'")
+        )
+        conn.execute(
             sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY")
         )
 
@@ -1085,6 +1095,8 @@ def test_a_legacy_future_dated_removal_is_refused_by_the_seed(wl):
         )
         conn.execute(sqlalchemy.text(
             "ALTER TABLE watchlists ENABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_truncate = 'on'"))
         conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY"))
 
     with pytest.raises(Exception) as excinfo:
@@ -1111,12 +1123,61 @@ def test_the_seed_guard_passes_on_ordinary_legacy_rows(wl):
         )
         conn.execute(sqlalchemy.text(
             "ALTER TABLE watchlists ENABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_truncate = 'on'"))
         conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY"))
         conn.execute(sqlalchemy.text(_shipped_seed_guard()))
         conn.execute(sqlalchemy.text(_shipped_seed_statement()))
 
     assert sorted(a for a, _ in _events(wl, "SPY")) == ["add"]
     assert sorted(a for a, _ in _events(wl, "MSFT")) == ["add", "remove"]
+
+
+def test_truncating_the_history_is_refused(wl):
+    """Codex P2 on `f94ce61`. The hole I left open, and defended.
+
+    Truncating the log while `watchlists` stays populated does not merely
+    lose history -- it produces a confident wrong answer. Reproduced on a
+    live server before the guard existed:
+
+        watchlists 1 row (ACME, active) | watchlist_history truncated
+        resolve_membership_at(today) -> tickers=()  resolution='exact'
+
+    Empty, and asserted EXACT, because `_HORIZON_SQL` reads the seed rows'
+    max(recorded_at) and there are none left to find. Every replay loses
+    its analog universe silently.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history"))
+    assert "append-only" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"], "the log was erased anyway"
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+
+
+def test_the_truncate_refusal_has_an_explicit_transaction_scoped_opt_in(wl):
+    """The suite needs a reset; it declares one rather than leaving a hole.
+
+    Also pins that the opt-in does NOT leak: a later transaction that has
+    not set it is refused again, which is what makes `SET LOCAL` the right
+    mechanism rather than a session GUC.
+    """
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text("SET LOCAL watchlist_history.allow_truncate = 'on'")
+        )
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history"))
+    assert _events(wl, "ACME") == []
+
+    _add(wl, "BETA", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history"))
+    assert "append-only" in str(excinfo.value), (
+        "the opt-in leaked past its transaction"
+    )
 
 
 def test_an_empty_watchlist_resolves_to_an_empty_universe(wl):

@@ -893,11 +893,12 @@ def test_watchlists_is_locked_before_the_history_is_built():
 PSQL_SCHEMA_LOADERS = {
     # Ephemeral per-run Postgres, created empty. Nothing to guard.
     ".github/workflows/backtest-pipeline.yml",
-    # Provisioning a NEW instance. Re-runnable, so it can in principle be
-    # pointed at the live one -- but doing that rotates the production
-    # database password before it reaches the schema at all, so the
-    # grouping is not what breaks first.
-    "gcp/setup_cloud_sql.sh",
+    # `gcp/setup_cloud_sql.sh` was here until it was moved to
+    # `python -m gcp.apply_schema` (Codex P2 on `f94ce61`). The argument that
+    # kept it -- that pointing it at the live instance rotates the password
+    # before the schema is reached -- is wrong: `ALTER USER ... PASSWORD`
+    # does not terminate already-authenticated sessions or their pools,
+    # measured, so concurrent writers survive into the triggerless window.
     # `scripts/cloud_shell/phase2_deploy.sh` was here until it was moved to
     # `python -m gcp.apply_schema`: it reached the LIVE instance through
     # cloud-sql-proxy, which is the one case where losing the grouping has

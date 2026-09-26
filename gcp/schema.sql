@@ -2426,10 +2426,16 @@ END $$;
 --   .github/workflows/backtest-pipeline.yml — an ephemeral per-run
 --     Postgres, created empty, no concurrent writers, ON_ERROR_STOP=1.
 --     Nothing to guard.
---   gcp/setup_cloud_sql.sh — provisioning a NEW instance. Every step is
---     re-runnable ("already exists"), so it CAN be pointed at the live
---     one; doing that rotates the production database password before it
---     ever reaches the schema, so the grouping is not what breaks first.
+--
+-- `gcp/setup_cloud_sql.sh` was the second until it was moved to
+-- `python -m gcp.apply_schema` (Codex P2 on `f94ce61`). It provisions a NEW
+-- instance, but every step is re-runnable ("already exists"), so it can be
+-- pointed at the live one. The argument that used to sit here -- that doing
+-- so rotates the database password before the schema is reached, so the
+-- grouping is not what breaks first -- is wrong, and measured wrong:
+-- `ALTER USER ... PASSWORD` does not terminate already-authenticated
+-- sessions or their pools. A session opened before the rotation keeps
+-- working, so concurrent writers are still live in the triggerless window.
 --
 -- `scripts/cloud_shell/phase2_deploy.sh` was a third until it was moved to
 -- `python -m gcp.apply_schema`. It reached the LIVE instance through
@@ -2834,9 +2840,9 @@ CREATE TRIGGER trg_watchlists_membership
     FOR EACH ROW EXECUTE FUNCTION watchlists_record_membership();
 
 -- Append-only, enforced rather than merely intended. UPDATE and DELETE
--- are the paths that would silently rewrite the past. TRUNCATE is
--- deliberately NOT blocked: it is not reachable from application code,
--- and the CI integration tests need it to isolate.
+-- are the paths that would silently rewrite the past; TRUNCATE is the path
+-- that would erase it wholesale, and is refused below behind an explicit
+-- transaction-scoped opt-in the tests declare.
 CREATE OR REPLACE FUNCTION watchlist_history_is_append_only()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -2848,6 +2854,52 @@ DROP TRIGGER IF EXISTS trg_watchlist_history_append_only ON watchlist_history;
 CREATE TRIGGER trg_watchlist_history_append_only
     BEFORE UPDATE OR DELETE ON watchlist_history
     FOR EACH ROW EXECUTE FUNCTION watchlist_history_is_append_only();
+
+-- TRUNCATE was deliberately left open here so the integration suite could
+-- isolate, and that was wrong (Codex P2 on `f94ce61`). Truncating this table
+-- while `watchlists` stays populated does not merely lose history -- it
+-- produces a confident wrong answer. Reproduced on a live server:
+--
+--   watchlists 1 row (ACME, active) | watchlist_history truncated
+--   resolve_membership_at(today) -> tickers=()  resolution='exact'
+--
+-- Empty, and asserted as EXACT, because `_HORIZON_SQL` reads
+-- max(recorded_at) of the seed rows and there are now none to find. Every
+-- replay silently loses its analog universe and nothing says so. Reachable
+-- the same way the `watchlists` truncate is: `db_query_cr.sh --commit` runs
+-- arbitrary SQL, and a multi-table reset is exactly the shape that catches
+-- this table by accident.
+--
+-- Refused rather than recorded, the opposite of the `watchlists` truncate
+-- above, because the two differ in what truncation MEANS. Emptying
+-- `watchlists` is a real membership change with a correct representation --
+-- close every open interval. Emptying the log is not a membership change at
+-- all; it is the destruction of the record, and there is nothing to write.
+--
+-- The test suite gets an explicit, transaction-scoped opt-in rather than a
+-- standing hole. `SET LOCAL` cannot outlive its transaction, so it can be
+-- neither forgotten nor inherited by a later statement.
+CREATE OR REPLACE FUNCTION watchlist_history_truncate_is_refused()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF COALESCE(
+           current_setting('watchlist_history.allow_truncate', TRUE), 'off'
+       ) = 'on' THEN
+        RETURN NULL;
+    END IF;
+    RAISE EXCEPTION
+        'watchlist_history is append-only; TRUNCATE is not permitted. It '
+        'would leave watchlists populated while the resolver reports an '
+        'empty universe AND labels it exact, because the seed horizon is '
+        'gone with the rows. A test that must reset the table declares it: '
+        'SET LOCAL watchlist_history.allow_truncate = ''on'';';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_watchlist_history_no_truncate ON watchlist_history;
+CREATE TRIGGER trg_watchlist_history_no_truncate
+    BEFORE TRUNCATE ON watchlist_history
+    FOR EACH STATEMENT EXECUTE FUNCTION watchlist_history_truncate_is_refused();
 
 -- A row trigger does not fire on TRUNCATE -- Postgres does not treat
 -- truncation as row deletes -- so clearing `watchlists` left every open
