@@ -83,6 +83,11 @@ from gcp.research.magnitude_engine import mag_inference  # noqa: E402
 # artifacts cannot be served under the new contract. That is the correct
 # outcome, and it is only reachable because these values do not move.
 _AUDITED_LEGACY_CONTRACT = {
+    # This backfill now publishes contracts under the first locked readiness
+    # policy. Keep the value literal, like the label and decision contracts:
+    # changing the live constant must make this historical backfill fail its
+    # verification pass rather than silently restamp old artifacts.
+    "production_readiness_version": "magnitude-production-readiness-v1",
     "label_mode": "body",
     "thresholds": [0.5, 1.0, 1.5],
     "classes": ["TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE"],
@@ -98,7 +103,8 @@ _AUDITED_LEGACY_CONTRACT = {
 # place below rather than overwritten, and only when what it says agrees with
 # the audited history.
 _LEGACY_KEYS = ("label_mode", "thresholds", "classes")
-_DECISION_KEYS = ("class_priors", "decision_lift_min")
+_DECISION_KEYS = ("production_readiness_version", "class_priors",
+                  "decision_lift_min")
 
 
 def _training_priors_from_sibling(bucket, ticker: str, tf: str):
@@ -150,7 +156,16 @@ def _training_priors_from_sibling(bucket, ticker: str, tf: str):
         # have stamped (1, 0, 0, 0) into the serving artifact (Codex P2 on
         # #1117). One validator, the one that serves.
         try:
-            if contract_mismatch(payload) is not None:
+            # Siblings created before the readiness policy can still provide
+            # a training-label measurement. Validate their probability and
+            # label fields under the policy being stamped without pretending
+            # the stored sibling contract already carried that version.
+            candidate = {
+                **payload,
+                "production_readiness_version":
+                    _AUDITED_LEGACY_CONTRACT["production_readiness_version"],
+            }
+            if contract_mismatch(candidate) is not None:
                 continue
         except ValueError:
             continue

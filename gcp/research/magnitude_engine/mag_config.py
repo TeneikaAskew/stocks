@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Sequence
 
 
@@ -242,6 +243,70 @@ ECE_CEILING_BY_TF: dict[str, float] = {
     "15m": 0.05,
     "30m": 0.075,
 }
+
+
+# ───────────────── Production-readiness criteria (LOCKED) ─────────────────
+# This version identifies the complete, per-(ticker, timeframe) promotion
+# policy documented in PRODUCTION_READINESS.md.  Bump the version only in a
+# prospective code change made before its validation window is examined.
+PRODUCTION_READINESS_VERSION = "magnitude-production-readiness-v1"
+PRODUCTION_READINESS_PRIMARY_OBJECTIVE = "four_class_next_bar_body_atr_bucket"
+PRODUCTION_READINESS_BINARY_OBJECTIVE = "binary_explosive_detector"
+PRODUCTION_READINESS_CONFIDENCE_LEVEL = 0.95
+PRODUCTION_READINESS_MIN_REGIMES = 3
+PRODUCTION_READINESS_MIN_SESSIONS = 20
+PRODUCTION_READINESS_MIN_TAIL_OBSERVATIONS = 50
+PRODUCTION_READINESS_TAIL_CLASSES: tuple[str, ...] = ("EXPANDED", "EXPLOSIVE")
+
+# Machine-readable mirror of PRODUCTION_READINESS.md.  MappingProxyType and
+# tuples make accidental mutation during an experiment fail loudly.  These
+# are conjunctive requirements: an absent/unmeasurable value is a failure,
+# never an exemption.  Numeric definitions that are experiment-specific
+# (regime catastrophe and net utility) must be pre-registered before looking
+# at that experiment's validation window; they may not be selected post hoc.
+PRODUCTION_READINESS_CRITERIA = MappingProxyType({
+    "primary_objective": PRODUCTION_READINESS_PRIMARY_OBJECTIVE,
+    "separate_binary_objective": PRODUCTION_READINESS_BINARY_OBJECTIVE,
+    "per_cell": True,
+    "untouched_chronological_data": True,
+    "log_loss": MappingProxyType({
+        "baseline": "expanding_class_prior",
+        "difference": "model_minus_baseline",
+        "required_direction": "below_zero",
+        "bootstrap_confidence_level": PRODUCTION_READINESS_CONFIDENCE_LEVEL,
+        "confidence_interval_must_exclude_zero": True,
+    }),
+    "calibration": MappingProxyType({
+        "ece_ceiling_by_timeframe": MappingProxyType(ECE_CEILING_BY_TF),
+        "no_material_reliability_curve_failure_in_populated_class": True,
+    }),
+    "brier": MappingProxyType({
+        "baseline": "expanding_class_prior",
+        "improvement_required": True,
+    }),
+    "explosive": MappingProxyType({
+        "precision_with_confidence_interval": True,
+        "recall_with_confidence_interval": True,
+        "lift_alone_is_sufficient": False,
+        "thresholds_selected_post_hoc_from_multiclass_probabilities": False,
+    }),
+    "regimes": MappingProxyType({
+        "minimum": PRODUCTION_READINESS_MIN_REGIMES,
+        "no_catastrophic_degradation": True,
+    }),
+    "utility": MappingProxyType({
+        "must_be_net_positive": True,
+        "costs": ("spread", "slippage", "latency", "abstention"),
+    }),
+    "sample_minimums": MappingProxyType({
+        "independent_sessions": PRODUCTION_READINESS_MIN_SESSIONS,
+        "realized_observations_per_promoted_tail_class":
+            PRODUCTION_READINESS_MIN_TAIL_OBSERVATIONS,
+        "extend_collection_window_if_unmet": True,
+    }),
+    "unmeasurable_mandatory_metric_blocks_promotion": True,
+    "criteria_frozen_before_validation_window_review": True,
+})
 
 # A phase PASSES if all six gates hold across at least 2 of 3 cells per TF
 # (i.e. 2 of 3 tickers). Repeated for each (TF) cell-row of the 3×3 grid.
@@ -562,6 +627,7 @@ def contract_payload(label_mode: str,
             f"class_priors has {len(priors)} entries; one per class in "
             f"{list(LABEL_CLASSES)} is required")
     return {
+        "production_readiness_version": PRODUCTION_READINESS_VERSION,
         "label_mode": label_mode,
         "thresholds": [float(t) for t in thresholds],
         "classes": list(LABEL_CLASSES),
@@ -587,13 +653,23 @@ def contract_mismatch(payload: dict,
         raise ValueError(
             f"{CONTRACT_BLOB} must contain a JSON object, got "
             f"{type(payload).__name__}")
-    missing = [k for k in ("label_mode", "thresholds", "classes",
-                           "class_priors", "decision_lift_min")
+    missing = [k for k in ("production_readiness_version", "label_mode",
+                           "thresholds", "classes", "class_priors",
+                           "decision_lift_min")
                if payload.get(k) is None]
     if missing:
         raise ValueError(
             f"{CONTRACT_BLOB} is missing or null for required key(s) {missing}; "
             f"got keys {sorted(payload)}")
+    got_readiness_version = payload["production_readiness_version"]
+    if not isinstance(got_readiness_version, str):
+        raise ValueError(
+            f"{CONTRACT_BLOB} production_readiness_version="
+            f"{got_readiness_version!r} is not a string")
+    if got_readiness_version != PRODUCTION_READINESS_VERSION:
+        return (
+            f"production_readiness_version={got_readiness_version!r} "
+            f"(serving contract requires {PRODUCTION_READINESS_VERSION!r})")
     # Type-check before comparing. A scalar `classes` used to reach
     # list() and raise TypeError, which is NOT the ValueError the reader
     # translates into ContractMalformed -- so it fell through to the ordinary
