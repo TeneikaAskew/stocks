@@ -138,7 +138,7 @@ def stub_run_pipeline(monkeypatch):
     """
     calls: list[str] = []
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None, **kwargs) -> bool:
         calls.append(ticker)
         return True
 
@@ -168,7 +168,7 @@ def captured_triggers(monkeypatch):
 
     monkeypatch.setattr(job, "_insert_run", fake_insert_run)
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None, **kwargs) -> bool:
         return True
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
@@ -403,7 +403,7 @@ def captured_as_of(monkeypatch):
     """Capture the as_of value passed to _run_one for every ticker."""
     received: list[tuple[str, object]] = []
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None, **kwargs) -> bool:
         received.append((ticker, as_of))
         return True
 
@@ -484,7 +484,8 @@ def stub_fanout(monkeypatch):
 
     async def fake_run_one(run_id: str, ticker: str, as_of=None,
                            allow_update: bool = False,
-                           run_kind: str = "scheduled", triggered_by=None) -> bool:
+                           run_kind: str = "scheduled", triggered_by=None,
+                           **kwargs) -> bool:
         ran.append((run_id, ticker))
         return True
 
@@ -745,3 +746,265 @@ def test_the_claim_is_a_compare_and_swap_on_claimable_states():
         "the running transition must be a conditional claim, not a bare UPDATE"
     )
     assert "rowcount" in src, "the claim must be decided by rows affected"
+
+
+# ---------------------------------------------------------------------------
+# One analog universe per batch, not one per ticker
+# ---------------------------------------------------------------------------
+
+
+def test_the_batch_threads_one_universe_into_every_in_process_ticker():
+    """Codex P2 on `e3463b3`.
+
+    `WatchlistMembership` is frozen so a batch resolves ONE universe and
+    every ticker uses it; nothing honoured that. Each `_run_one` reached
+    `summarize_backtest_metrics` with `universe=None` and resolved
+    independently, so a watchlist edit between two tickers changed the
+    later ones' peers -- the promise in the dataclass's own docstring,
+    unkept.
+
+    Checked by AST rather than by regex: both call sites span several
+    lines, so a line-anchored pattern cannot see their keywords. Asserting
+    on the source is deliberate -- driving `_run_scheduled` end to end
+    would need Cloud SQL, Cloud Tasks and an LLM, and would prove the
+    mocks were wired rather than that the argument is passed.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[2] / "gcp/insight_pipeline_job.py"
+    tree = ast.parse(src.read_text())
+
+    scheduled = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and n.name == "_run_scheduled"
+    )
+    calls = [
+        n for n in ast.walk(scheduled)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name) and n.func.id == "_run_one"
+    ]
+    assert len(calls) == 2, (
+        f"expected the sequential and enqueue-fallback loops, found {len(calls)} "
+        "_run_one call sites; a new one must also be given the batch universe"
+    )
+    for call in calls:
+        passed = {kw.arg for kw in call.keywords}
+        assert "universe" in passed, (
+            "a _run_one call site does not pass the batch universe, so that "
+            "ticker resolves its own and the batch is no longer one universe"
+        )
+
+
+def test_run_one_forwards_the_universe_rather_than_dropping_it():
+    """A parameter accepted and not forwarded is the same bug, hidden."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[2] / "gcp/insight_pipeline_job.py"
+    tree = ast.parse(src.read_text())
+
+    run_one = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and n.name == "_run_one"
+    )
+    assert "universe" in {a.arg for a in run_one.args.args}, \
+        "_run_one does not accept a universe"
+
+    pipeline_calls = [
+        n for n in ast.walk(run_one)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name) and n.func.id == "run_insight_pipeline"
+    ]
+    assert pipeline_calls, "_run_one no longer calls run_insight_pipeline"
+    for call in pipeline_calls:
+        assert "universe" in {kw.arg for kw in call.keywords}, (
+            "_run_one accepts a universe and does not pass it on, so the "
+            "batch's frozen universe is silently discarded"
+        )
+
+
+def _membership(as_of, *tickers):
+    from gcp.fetchers._watchlist import WatchlistMembership
+    return WatchlistMembership(
+        tickers=tuple(tickers) or ("SPY",), as_of=as_of, owner="default",
+        resolution="exact", horizon=None,
+    )
+
+
+def _drive_batch(monkeypatch, resolve_returns, as_of_env=None):
+    """Run one sequential batch, capturing the universe each ticker got."""
+    import datetime as _dt
+
+    import gcp.fetchers._watchlist as wl_mod
+
+    got: list = []
+    got_as_of: list = []
+    calls: list = []
+
+    def fake_resolve(cutoff, *a, **kw):
+        calls.append(cutoff)
+        return resolve_returns(cutoff, len(calls))
+
+    monkeypatch.setattr(wl_mod, "resolve_membership_at", fake_resolve)
+    monkeypatch.setattr(wl_mod, "load_watchlist", lambda **kw: ["SPY", "IWM"])
+    monkeypatch.setattr(job, "_insert_run", lambda ticker, trigger: f"run-{ticker}")
+
+    async def fake_run_one(run_id, ticker, as_of=None, allow_update=False,
+                           run_kind="scheduled", triggered_by=None, universe=None):
+        got.append(universe)
+        got_as_of.append(as_of)
+        return True
+
+    monkeypatch.setattr(job, "_run_one", fake_run_one)
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_MAX_BATCH=None,
+             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None,
+             INSIGHT_AS_OF=as_of_env)
+    monkeypatch.setenv("INSIGHT_FANOUT", "0")
+    assert _run(job._run_scheduled()) == 0
+    _drive_batch.last_as_of = got_as_of
+    return got, calls, _dt.datetime.now(_dt.timezone.utc).date()
+
+
+def test_every_ticker_in_a_batch_gets_the_same_frozen_universe(monkeypatch):
+    """The freeze holds inside one calendar day: resolved once, reused."""
+    got, calls, today = _drive_batch(
+        monkeypatch, lambda cutoff, n: _membership(today_ := cutoff, "SPY", "IWM"))
+    assert len(calls) == 1, (
+        f"membership was resolved {len(calls)} times for one batch; the "
+        "universe is not frozen"
+    )
+    assert len(got) == 2 and got[0] is got[1], \
+        "two tickers in one batch received different universe objects"
+    assert got[0].as_of == today
+
+
+def test_a_utc_day_rollover_mid_batch_re_resolves_rather_than_losing_the_section(
+        monkeypatch):
+    """Codex P2 on `c9637d3`.
+
+    With no `INSIGHT_AS_OF`, each ticker's cutoff is `today` computed when
+    that ticker runs. A batch spanning UTC midnight therefore hands a later
+    ticker a cutoff the frozen universe was not resolved for, and
+    `summarize_backtest_metrics` rightly refuses a universe from another
+    date -- costing that report its backtest section. The scheduled run
+    cannot reach this (08:45 ET, 1800 s timeout), but the documented ad-hoc
+    `INSIGHT_TICKERS` path runs whenever a person runs it.
+
+    Simulated by having the first resolution come back stamped yesterday,
+    which is what a batch that began before midnight holds once the clock
+    rolls over.
+    """
+    import datetime as _dt
+
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    yesterday = today - _dt.timedelta(days=1)
+
+    got, calls, _ = _drive_batch(
+        monkeypatch,
+        lambda cutoff, n: _membership(yesterday if n == 1 else cutoff, "SPY"),
+    )
+    assert len(calls) == 2, (
+        "expected the initial freeze plus ONE re-resolution for the whole "
+        f"batch; got {len(calls)}. This assertion previously read == 3 and "
+        "was pinning the defect: the refreshed universe was passed inline "
+        "and never stored, so every post-midnight ticker resolved its own "
+        "and the freeze was gone for the rest of the run"
+    )
+    assert all(u is not None and u.as_of == today for u in got), (
+        "a ticker was handed a universe resolved for a different date than "
+        "its own cutoff, which the cutoff guard refuses"
+    )
+    assert got[0] is got[1], (
+        "the two post-rollover tickers got different universe objects, so "
+        "a watchlist edit between them would change the later peer set"
+    )
+
+
+def test_a_live_run_is_not_pinned_to_a_date_only_cutoff(monkeypatch):
+    """Codex P2 on `af82694`, reverting the `d01ed78` repair in `2d06c20`.
+
+    `2d06c20` handed the frozen date down as `as_of` so one report would
+    carry one date. `build_context_bundle` defaults to
+    `inclusive_today=False`, so supplying `as_of` AT ALL switches the two
+    option summarizers from "no snapshot bound" to
+    `snapshot_date < :as_of`, which discards the current session entirely.
+
+    Measured against production on 2026-09-26: `etf_options_snapshots`
+    REALTIME rows carry their own session's `snapshot_date` (latest
+    `2026-09-25 19:55:32+00`, `snapshot_date = 2026-09-25`). A live
+    intraday run pinned to today therefore matches ZERO of them and falls
+    through to the prior day's EOD chain, while a fan-out child -- which
+    still receives `as_of=None` -- reads them. The same pipeline, the same
+    minute, different data, and nothing in the report says so.
+
+    The freeze is kept; only the mechanism changes. With `as_of=None` and
+    the universe injected, `summarize_backtest_metrics` takes its cutoff
+    from `universe.as_of` (`lib/agents/summarizers.py:1006`), so peers and
+    bars still agree without converting a live run into a replay.
+
+    What this deliberately does NOT restore is the whole-report pin
+    `d01ed78` asked for: across UTC midnight mid-ticker the backtest stays
+    on the frozen date while the live sections move on. That residue is
+    bounded (`_universe_for` re-resolves per ticker, so the window is one
+    ticker's runtime, and the 08:45 ET scheduler never approaches 00:00
+    UTC) and it is disclosed -- `cross_ticker.universe` carries the as_of
+    the peers came from. Silently dropping a session's options data is not.
+    """
+    _drive_batch(monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY"))
+    assert _drive_batch.last_as_of == [None, None], (
+        "a live in-process run was pinned to a date-only cutoff; its "
+        "option sections now read `snapshot_date < today` and lose the "
+        f"session, got {_drive_batch.last_as_of}"
+    )
+
+
+def test_the_frozen_universe_still_reaches_every_ticker_unpinned(monkeypatch):
+    """Dropping the `as_of` pin must not drop the freeze with it.
+
+    The universe is what keeps peers and bars on one date; `as_of` was
+    only ever a second, lossier way of saying the same thing.
+    """
+    got, _, today = _drive_batch(
+        monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY")
+    )
+    assert all(u is not None for u in got), "the freeze was lost with the pin"
+    assert {u.as_of for u in got} == {today}, (
+        f"tickers got universes from different dates: {[u.as_of for u in got]}"
+    )
+
+
+def test_a_failed_freeze_leaves_as_of_exactly_as_it_was(monkeypatch):
+    """No universe, no pin. The degraded path must not change behaviour.
+
+    If resolution fails there is no frozen date to hand down, and
+    inventing one would apply the premarket cutoff where today's code
+    applies none -- changing what data every section sees, on the path
+    that is already degraded.
+    """
+    def boom(cutoff, n):
+        raise RuntimeError("watchlist_history missing")
+
+    got, calls, _ = _drive_batch(monkeypatch, boom)
+    assert got == [None, None], "a universe survived a failed resolution"
+    assert _drive_batch.last_as_of == [None, None], (
+        "a date was invented for a run whose freeze failed; that silently "
+        "changes the cutoff every section applies"
+    )
+
+
+def test_an_explicit_as_of_replay_is_still_pinned_to_the_date_it_names(monkeypatch):
+    """The operator's own date is forwarded untouched.
+
+    Dropping the *invented* pin must not drop the *stated* one: a replay
+    is meant to be date-keyed, to own its `(ticker, as_of)` row, and to
+    apply the premarket cutoff -- that is what makes it a replay.
+    """
+    import datetime as _dt
+
+    named = _dt.date(2026, 5, 8)
+    _drive_batch(monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY"),
+                 as_of_env=named.isoformat())
+    assert _drive_batch.last_as_of == [named, named]

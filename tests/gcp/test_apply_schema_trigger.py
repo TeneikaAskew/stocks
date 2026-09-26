@@ -765,3 +765,210 @@ def test_the_workflow_apply_refuses_rather_than_waiting_past_its_deadline():
     assert "APPLY lock=" not in r.stdout, r.stdout
     assert "SCAN budget=" not in r.stdout, "the scan must not start either"
     assert "no time left" in r.stderr.lower(), r.stderr
+
+
+def test_watchlist_history_creation_and_trigger_are_one_atomic_unit():
+    """A committed table with no trigger on it is a hole in the guarantee.
+
+    `split_statement_groups` makes every non-marked statement its own unit,
+    and the executor runs each unit in its own transaction. With
+    ATOMIC-BEGIN placed after `CREATE TABLE watchlist_history` and its two
+    indexes, those three commit separately and only then does the trigger
+    install. Between those commits `watchlist_history` exists and
+    `watchlists` has no trigger on it, so membership transitions are not
+    captured.
+
+    The window is not bounded by the applier's speed: if the apply is
+    interrupted there — Cloud Run task timeout, a crash — the table stays
+    committed and triggerless until someone re-runs it, while production
+    keeps writing. A remove/re-add inside that window erases `added_at` on
+    `watchlists` exactly as before, and the seed (guarded on "history is
+    empty") then reconstructs membership FROM that already-corrupted state
+    and records it as fact. That is the corruption this table exists to
+    prevent, reachable through its own migration (Codex P2 on `1155a62`).
+
+    Postgres has transactional DDL and none of these statements is
+    `CREATE INDEX CONCURRENTLY`, so one transaction is available here.
+    """
+    import pathlib
+
+    from gcp.apply_schema import split_statement_groups
+
+    sql = pathlib.Path("gcp/schema.sql").read_text()
+    units = split_statement_groups(sql)
+
+    def _unit_with(needle: str) -> int:
+        hits = [i for i, u in enumerate(units)
+                if any(needle in stmt for stmt in u)]
+        assert len(hits) == 1, f"expected exactly one unit containing {needle!r}, got {hits}"
+        return hits[0]
+
+    table = _unit_with("CREATE TABLE IF NOT EXISTS watchlist_history")
+    idx_asof = _unit_with("idx_watchlist_history_asof")
+    idx_seed = _unit_with("idx_watchlist_history_seed")
+    trigger = _unit_with("CREATE TRIGGER trg_watchlists_membership")
+    guard = _unit_with("CREATE TRIGGER trg_watchlist_history_append_only")
+
+    assert table == trigger == guard == idx_asof == idx_seed, (
+        "watchlist_history's creation, indexes, trigger and append-only "
+        f"guard are in units {table}/{idx_asof}/{idx_seed}/{trigger}/{guard} "
+        "— each unit commits separately, so there is a committed window "
+        "where the table exists and watchlists is untriggered"
+    )
+
+    # And the seed must ride in the same transaction, or the reverse hole
+    # opens: a live trigger with the pre-existing rows never seeded.
+    seed = _unit_with("INSERT INTO watchlist_history")
+    assert seed == table, (
+        "the seed is not in the same transaction as the trigger install"
+    )
+
+
+def test_watchlists_is_locked_before_the_history_is_built():
+    """One transaction is not enough; BEGIN does not lock the source table.
+
+    Postgres takes locks per statement, so `watchlists` stays open to
+    writers until `CREATE TRIGGER` reaches it partway through the group,
+    and the session runs READ COMMITTED so the seed at the end sees
+    whatever committed in the meantime. A remove/re-add landing in that
+    gap is captured by no trigger (not yet installed) and is invisible to
+    the seed, because `watchlists` keeps the original `added_at` on
+    re-add — the precise erasure this table exists to stop. It would be
+    recorded as continuous membership, permanently (Codex P2 on
+    `53b6b6a`).
+
+    The lock must be FIRST: anything before it re-opens the same gap,
+    just narrower.
+
+    SHARE ROW EXCLUSIVE is not an escalation — it is the mode
+    `CREATE TRIGGER` already takes on this table, verified against
+    Postgres 16 by reading `pg_locks.mode` inside a transaction that had
+    just created a trigger on `watchlists` (`ShareRowExclusiveLock`).
+    """
+    import pathlib
+    import re
+
+    from gcp.apply_schema import split_statement_groups
+
+    units = split_statement_groups(pathlib.Path("gcp/schema.sql").read_text())
+    group = next(
+        u for u in units
+        if any("CREATE TABLE IF NOT EXISTS watchlist_history" in s for s in u)
+    )
+
+    first = group[0]
+    assert re.search(
+        r"LOCK\s+TABLE\s+watchlists\s+IN\s+SHARE\s+ROW\s+EXCLUSIVE\s+MODE",
+        first, re.IGNORECASE,
+    ), (
+        "the first statement of the watchlist_history group is not a "
+        f"write-blocking lock on watchlists; it is: {first[:120]!r}"
+    )
+
+    # And it must be DO-wrapped, because this file has more than one kind
+    # of loader. `apply_schema.py` runs an ATOMIC group in one transaction,
+    # so a bare `LOCK TABLE` is legal there — but three tracked scripts load
+    # the same file with `psql -f` (see PSQL_SCHEMA_LOADERS below), where the
+    # ATOMIC markers are ordinary comments and each statement gets its own
+    # implicit transaction. A bare lock is then `ERROR: LOCK TABLE can only
+    # be used in transaction blocks`, which is exactly how CI failed on
+    # `f395a24`. A PL/pgSQL body always runs inside a transaction, so DO
+    # satisfies every loader, and the lock still survives to the end of the
+    # group's transaction under the applier (verified against Postgres 16:
+    # `pg_locks` still reports ShareRowExclusiveLock after the DO exits).
+    assert re.match(r"\s*DO\s*\$", first), (
+        "the lock is not DO-wrapped, so every `psql -f gcp/schema.sql` "
+        "loader will fail with 'LOCK TABLE can only be used in transaction "
+        f"blocks'. Statement: {first[:120]!r}"
+    )
+
+
+# Every tracked script that loads gcp/schema.sql through psql rather than
+# through gcp/apply_schema.py. psql treats `-- ATOMIC-BEGIN` / `-- ATOMIC-END`
+# as ordinary comments, so on these paths NO group in the file is atomic and
+# the watchlist_history group's lock is released with its own DO statement.
+# That is pre-existing and file-wide; what must not happen silently is a
+# FOURTH one appearing, or one of these quietly becoming a production route,
+# while schema.sql's comments still describe the old set.
+PSQL_SCHEMA_LOADERS = {
+    # Ephemeral per-run Postgres, created empty. Nothing to guard.
+    ".github/workflows/backtest-pipeline.yml",
+    # Provisioning a NEW instance. Re-runnable, so it can in principle be
+    # pointed at the live one -- but doing that rotates the production
+    # database password before it reaches the schema at all, so the
+    # grouping is not what breaks first.
+    "gcp/setup_cloud_sql.sh",
+    # `scripts/cloud_shell/phase2_deploy.sh` was here until it was moved to
+    # `python -m gcp.apply_schema`: it reached the LIVE instance through
+    # cloud-sql-proxy, which is the one case where losing the grouping has
+    # real consequences (Codex P2 on `e3463b3`).
+}
+
+# `schema.sql` matched as a whole path component, so `p7_schema.sql` — a
+# different file with its own DDL — does not count as a loader of this one.
+_SCHEMA_REF = re.compile(r"(?<![\w-])schema\.sql")
+_PSQL = re.compile(r"\bpsql\b")
+
+
+def _psql_schema_loaders():
+    """Tracked, executable files invoking psql on gcp/schema.sql.
+
+    Shell line continuations are folded first: setup_cloud_sql.sh and
+    phase2_deploy.sh both spell the invocation across four lines, so a
+    line-at-a-time scan sees `psql` and `schema.sql` on different lines and
+    finds neither. Restricted to executable formats — prose in docs/ and this
+    test's own strings mention the command without being a loader.
+    """
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO, capture_output=True, text=True, check=True,
+    ).stdout.split("\0")
+
+    found = set()
+    for rel in tracked:
+        if not rel or not rel.endswith((".sh", ".bash", ".yml", ".yaml")):
+            continue
+        try:
+            text = (REPO / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line in text.replace("\\\n", " ").split("\n"):
+            if _PSQL.search(line) and _SCHEMA_REF.search(line):
+                found.add(rel)
+                break
+    return found
+
+
+def test_every_psql_loader_of_the_schema_is_accounted_for():
+    """The ATOMIC contract belongs to the applier; psql loaders drop it.
+
+    `b0f9d73` wrapped the watchlists lock in DO so that `psql -f` would
+    accept it, and its comment justified the resulting short lock hold with
+    "that load targets a fresh ephemeral database with no concurrent
+    writers". That was true of the loader I had looked at and false of the
+    set: `gcp/setup_cloud_sql.sh` is re-runnable against the live instance,
+    and `scripts/cloud_shell/phase2_deploy.sh` reaches it through
+    cloud-sql-proxy by design. I asserted a property of a population after
+    reading one member of it (CLAUDE.md Rule 3.11).
+
+    This pins the population. A new psql loader — or a rename of one of
+    these — turns it red, so schema.sql's account of them cannot go stale
+    without someone reading it.
+    """
+    assert _psql_schema_loaders() == PSQL_SCHEMA_LOADERS
+
+
+def test_the_schema_names_each_psql_loader_it_is_subject_to():
+    """A set pinned in a test nobody reads is the unread disclosure again.
+
+    The operator-facing copy is schema.sql's own comments, so each loader
+    must be named there too. Adding a loader then has to touch both.
+    """
+    schema = (REPO / "gcp/schema.sql").read_text()
+    missing = sorted(p for p in PSQL_SCHEMA_LOADERS if p not in schema)
+    assert not missing, (
+        "gcp/schema.sql does not name these psql loaders, so its account of "
+        f"which loads honour the ATOMIC groups is incomplete: {missing}"
+    )

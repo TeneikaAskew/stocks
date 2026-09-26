@@ -27,15 +27,19 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from datetime import date as date_type, datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from .embeddings import format_vector_literal
 from .schema import JournalRef
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Import guarded so `gcp` stays off this module's runtime import path
+    # (the same reason the call sites below import it lazily).
+    from gcp.fetchers._watchlist import WatchlistMembership
 
 logger = logging.getLogger(__name__)
 
@@ -943,6 +947,7 @@ def summarize_backtest_metrics(
     *,
     cross_ticker: bool = True,
     inclusive_today: bool = False,
+    universe: Optional["WatchlistMembership"] = None,
 ) -> dict:
     """Catalyst-analog 'backtest' for the ticker's current pattern.
 
@@ -977,15 +982,32 @@ def summarize_backtest_metrics(
         pattern_today: dict — features describing today's setup
         analog_count: int   — how many historical matches
         cross_ticker_used: bool — whether cross-ticker analogs were merged
-        cross_ticker_source: 'watchlists' | 'INSIGHT_TICKERS' | None —
-                                which universe the expansion drew from;
-                                None when it did not run or was empty
         forward_returns: dict — day_1/3/5/10 stats (median, mean,
                                 win_rate, p25, p75, max, min)
         top_analogs: list[dict] — up to 5 closest historical
                                    examples with their forward moves
     """
-    cutoff = as_of or datetime.now(timezone.utc).date()
+    # An injected universe's own date IS this run's date. Reading the clock
+    # here instead re-decides it, and the two decisions can differ: the
+    # caller freezes a universe, then `_run_one` loads a route snapshot and
+    # `build_context_bundle` runs four analyst sections before this one, so
+    # a batch begun near UTC midnight can freeze on one date and arrive
+    # here on the next. The guard below would then correctly refuse the
+    # universe and the report would lose its backtest section -- a
+    # time-of-check/time-of-use gap that narrowing the window cannot close,
+    # only removing the second clock read can (Codex P2 on `8de8e82`).
+    #
+    # Freezing the universe is HOW a caller pins the date; honouring it is
+    # what makes peers and bars agree instead of racing. An explicit
+    # `as_of` still wins over both, and a universe that disagrees with it
+    # is still refused below -- that is the replay-cache bug, where the
+    # caller named a date and handed over a universe from another one.
+    if as_of is not None:
+        cutoff = as_of
+    elif universe is not None:
+        cutoff = universe.as_of
+    else:
+        cutoff = datetime.now(timezone.utc).date()
     # `<` under the premarket contract: the as-of day's own bar is not
     # knowable at brief time (see docstring / #822).
     daily_op = "<=" if inclusive_today else "<"
@@ -1115,23 +1137,82 @@ def summarize_backtest_metrics(
             break
 
     cross_used = False
-    # Which universe the analogs were drawn from ('watchlists' or the
-    # INSIGHT_TICKERS mirror); None when the expansion did not run or the
-    # universe was empty. Surfaced so a cross-source fallback is never
-    # silent (Rule 3.7.1): the raw bundle reaches the researcher prompts.
-    cross_source = None
-    # If same-ticker matches are sparse, expand to every other ticker
-    # in the table at the *same* tolerance band — keeps match quality
-    # comparable while widening the analog universe.
+    # `cross_ticker_used=False` used to mean three different things —
+    # expansion was not needed, the universe was empty, or peers existed
+    # but none matched the band — and a reader could not tell which. That
+    # is a value the caller cannot distinguish from a legitimate result
+    # (CLAUDE.md Rule 3.7), so the reason is recorded alongside it.
+    cross_detail: dict = {
+        "attempted": False,
+        "used": False,
+        "reason": "enough same-ticker analogs; expansion not needed",
+        "universe": None,
+    }
+    # If same-ticker matches are sparse, expand to the watchlist universe
+    # at the *same* tolerance band — keeps match quality comparable while
+    # widening the analog set.
     if cross_ticker and len(matched) < 10:
-        cross_history, cross_source = _build_cross_ticker_history(
-            ticker, str(cutoff), inclusive_today=inclusive_today)
-        if cross_history is not None and not cross_history.empty:
+        cross_detail["attempted"] = True
+        # `cutoff` is `as_of` unnormalized and `datetime` subclasses `date`,
+        # so it can be an aware datetime here. `resolve_membership_at`
+        # normalizes internally and `WatchlistMembership.as_of` is always a
+        # plain date, so both sides must go through the same normalization
+        # or an agreeing pair would compare unequal.
+        cutoff_day = cutoff.date() if isinstance(cutoff, datetime) else cutoff
+        if universe is None:
+            # Resolved here rather than at every entry point so the cost is
+            # paid only on the sparse path. It is the SAME resolver a caller
+            # would have used — one function, injectable, never two
+            # resolutions that can disagree.
+            from gcp.fetchers._watchlist import resolve_membership_at
+
+            universe = resolve_membership_at(cutoff_day)
+        elif universe.as_of != cutoff_day:
+            # An injected universe resolved for a DIFFERENT date selects
+            # peers from one day while the bars are queried at another, and
+            # `describe()` below would persist that universe's as_of as this
+            # report's provenance — a fabricated claim about how the analog
+            # set was chosen, which is what this whole change exists to stop.
+            # Easy to hit from replay code that resolves once and reuses the
+            # object across dates, which is precisely the usage the
+            # `universe` parameter invites. INTERNAL bucket (Rule 3.7): a
+            # mismatch is a bug in our caller, so fail loud. The per-section
+            # guard in `build_context_bundle` turns this into an explicit
+            # `available: False` with the reason attached, so the pipeline
+            # degrades visibly rather than reporting a wrong peer set.
+            raise ValueError(
+                f"injected analog universe was resolved for {universe.as_of}, "
+                f"but this backtest's cutoff is {cutoff_day}; peers and bars "
+                f"would come from different dates"
+            )
+        cross_detail["universe"] = universe.describe()
+        cross_history, cross_empty_reason = _build_cross_ticker_history(
+            ticker, str(cutoff), inclusive_today=inclusive_today,
+            universe=universe,
+        )
+        if cross_history is None or cross_history.empty:
+            # The helper returns WHICH of the three causes it was — no
+            # same-class peers, peers without bars, or peers without enough
+            # history. Pointing the reader at Cloud Logging instead would
+            # leave the report unable to distinguish them, which is the
+            # indistinguishable-value shape Rule 3.7 forbids and exactly
+            # what `cross_ticker_used=False` already suffered from.
+            cross_detail["reason"] = cross_empty_reason or (
+                "no analog universe for this target at the cutoff"
+            )
+        else:
             target_band = band_used or bands[-1]
             cross_matched = _matches_in(cross_history, *target_band)
-            if not cross_matched.empty:
+            if cross_matched.empty:
+                cross_detail["reason"] = (
+                    f"{cross_history['ticker'].nunique()} peer(s) had bars but "
+                    "none matched the tolerance band"
+                )
+            else:
                 matched = pd.concat([matched, cross_matched], ignore_index=True)
                 cross_used = True
+                cross_detail["used"] = True
+                cross_detail["reason"] = None
 
     if len(matched) < 3:
         return {
@@ -1141,7 +1222,7 @@ def summarize_backtest_metrics(
             "analog_count": int(len(matched)),
             "tolerance_bands_used": band_used or bands[-1],
             "cross_ticker_used": cross_used,
-            "cross_ticker_source": cross_source,
+            "cross_ticker": cross_detail,
             "forward_returns": None,
             "top_analogs": [],
             "note": (
@@ -1202,7 +1283,7 @@ def summarize_backtest_metrics(
         "analog_count": int(len(matched)),
         "tolerance_bands_used": band_used,
         "cross_ticker_used": cross_used,
-        "cross_ticker_source": cross_source,
+        "cross_ticker": cross_detail,
         "forward_returns": forward,
         "top_analogs": top,
     }
@@ -1214,8 +1295,31 @@ def _round_or_none(v):
     return round(float(v), 2)
 
 
+# Index roots this repo carries WITHOUT a caret. `^VIX` is self-describing;
+# these are not, and `startswith("^")` files them as equities — which puts
+# SPX index bars in an equity's analog statistics and equities in SPX's.
+# SPX is on the production watchlist (the history tests have it active on
+# 2026-04-29), so this is reachable, not theoretical.
+#
+# Deliberately a local constant rather than an import of
+# `lib.options_greeks.COMPUTE_GREEKS_TICKERS`, which happens to hold the
+# same symbols today: that set answers "whose Greeks must we compute
+# ourselves", and coupling asset-class classification to it would let a
+# Greeks-side edit silently reclassify an instrument. A test asserts this
+# set covers that one, so the two cannot drift in the direction that
+# matters.
+_CARETLESS_INDEX_SYMBOLS = frozenset({"SPX", "SPXW", "NDX", "RUT", "XSP"})
+
+
+def _is_index_symbol(ticker: str) -> bool:
+    """True when `ticker` names an index rather than a tradeable equity."""
+    t = ticker.upper()
+    return t.startswith("^") or t in _CARETLESS_INDEX_SYMBOLS
+
+
 def _build_cross_ticker_history(target_ticker: str, cutoff: str,
-                                inclusive_today: bool = False):
+                                inclusive_today: bool = False,
+                                *, universe: "WatchlistMembership"):
     """Pull the analog universe's daily history and engineer the same
     feature set used for analog matching. Returned frame has a `ticker`
     column so each match can be attributed to its source.
@@ -1262,59 +1366,47 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
     stands that morning, and the leak being closed is future edits, not
     same-day ones.
 
-    **This resolution is approximate, and the limit is structural.**
+    Membership comes from ``watchlist_history``, not from ``watchlists``.
     ``watchlists`` is ``PRIMARY KEY (user_id, ticker)``, so it holds
-    current state plus a first-add timestamp, not a membership history.
-    Both re-add paths -- ``gcp/fetchers/_watchlist.py`` and
-    ``gcp/discord_interactions/main.py``, each an
-    ``ON CONFLICT (user_id, ticker) DO UPDATE SET removed_at = NULL`` --
-    clear the removal without touching ``added_at``, which erases the
-    interval. So what the predicate above can and cannot do:
+    current state plus a first-add timestamp and cannot represent a
+    history at all: all three re-add paths are
+    ``ON CONFLICT (user_id, ticker) DO UPDATE SET removed_at = NULL`` and
+    none touches ``added_at``, so "added Jan, removed Mar, re-added Jun"
+    reads as present the whole time and a replay of April wrongly
+    includes the ticker. That case is not detectable from the table --
+    the evidence is erased, not hidden -- which is why the fix had to be
+    a second table rather than a better predicate (Codex P2 on
+    ``43a28c9``). ``watchlist_history`` is append-only and written by a
+    trigger on ``watchlists``, so it records the transition inside the
+    writer's own transaction and no application path can skip it.
 
-    * catches a ticker whose add is after the cutoff (the MCK case);
-    * catches a ticker removed before the cutoff and never re-added
-      (the MSFT and SPX cases);
-    * **cannot** reconstruct a removal interval that a later re-add
-      erased. Added Jan, removed Mar, re-added Jun reads as present all
-      along, so a replay of Apr wrongly includes it.
+    ``universe.resolution`` says how far that goes. ``exact`` means every
+    transition on or after the cutoff was observed live. ``approximate``
+    means the cutoff predates the history horizon, where the table was
+    seeded from ``watchlists`` and therefore inherits its blind spot:
+    adds after the cutoff and removals never followed by a re-add still
+    resolve correctly, an interval erased before the horizon does not.
+    The caller records it on the report rather than letting the two look
+    alike (CLAUDE.md Rule 3.7.1).
 
-    That last case is not detectable from the table -- the evidence is
-    gone, not hidden -- so this docstring is the only record of it.
-    Fixing it needs immutable membership intervals, i.e. a schema change
-    plus both write paths, which is larger than this PR (Codex P2 on
-    ``43a28c9``, raised as a follow-up). The predicate is still a strict
-    improvement on asking whether a row is active *now*; it is just not
-    the complete as-of resolution the paragraph above might suggest on
-    its own.
+    The bar pull is ``ticker = ANY(...)`` over the resolved peers, not a
+    join. Its predecessor joined ``watchlists`` directly, which returns
+    each bar once per subscriber because of that same composite key; the
+    per-ticker pipeline below then reads the duplicate dates as
+    consecutive sessions, so ``.diff()``, ``.rolling()``, ``.ewm()`` and
+    the ``shift(-n)`` forward returns are computed over a doubled series
+    and analog statistics get weighted by subscriber count. Nothing
+    raises; the numbers are just wrong (Codex P1 on ``c75c22c``).
+    Resolving membership in Python makes that structurally impossible --
+    a list of distinct tickers cannot fan out.
 
-    The universe is an ``EXISTS`` semi-join scoped to one owner, not a
-    ``JOIN``. ``watchlists`` is ``PRIMARY KEY (user_id, ticker)`` and holds
-    every signed-in user's list beside the shared ``default`` one, so a
-    join returns each bar once per subscriber. The per-ticker pipeline
-    below then reads those duplicate dates as consecutive sessions --
-    ``.diff()``, ``.rolling()``, ``.ewm()`` and the ``shift(-n)`` forward
-    returns are all computed over a doubled series, and analog statistics
-    get weighted by subscriber count. Nothing raises; the numbers are just
-    wrong. Measured 2026-09-17 the table held 16 active rows across 1 user,
-    so this was latent rather than firing (Codex P1 on ``c75c22c``).
-
-    The universe mirrors ``load_watchlist``'s resolution order: the shared
-    owner's DB rows, else ``INSIGHT_TICKERS`` (Codex P2 on ``1069e50``).
-    A run driven by that env var against a DB list that is empty at the
-    cutoff therefore expands over the run's own tickers rather than
-    nothing. That includes every replay dated before the table was
-    seeded on 2026-04-27, for which the as-of predicate above correctly
-    resolves no members at all. The DB wins whenever it has members, so
-    the common ``INSIGHT_TICKERS=NVDA`` replay keeps the curated peers
-    and the env list never *narrows* a universe. The job's
-    ``DEFAULT_TICKERS`` is not mirrored: a hardcoded universe standing in
-    for a real one is the Rule 3.7 shape, and the loud empty path is the
-    honest answer. Which source answered is returned alongside the frame
-    and surfaced as ``cross_ticker_source`` on the section, which the
-    researcher payload dumps whole (Rule 3.7.1). The run's *target* list
-    is not the universe and is not threaded in: on the daily run the
-    targets are the 3 ``in_insight`` names while the 65 NVDA analogs
-    measured above came from AMD/AVGO/MRVL, on the list but not targets.
+    Measured 2026-09-17 against production, NVDA at cutoff 2026-09-15:
+    15 peers, 38,850 rows, the same count the semi-join returned. The two
+    query shapes are equivalent in cost -- 22,220 vs 24,588 heap blocks
+    for the identical result -- and wall-clock between them is buffer
+    cache, not plan quality (452 ms vs 1085 ms cold, 335 ms vs 260 ms
+    warm, in both orders the second query wins). This change is for
+    correctness and visibility; there is no speedup to claim.
 
     Deliberately NOT done: no ``LIMIT``. Truncating an analog sample
     biases it — ``ORDER BY ticker`` means a LIMIT would silently keep
@@ -1330,77 +1422,90 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
     200) but differ by up to 45.7 points before that, and
     ``calculate_rsi`` ends with ``fillna(50.0)``. Swapping would move
     ~2% of candidate rows across the +/-5 tight RSI band for no gain here.
+    ``universe`` is a resolved ``WatchlistMembership``, passed in rather
+    than looked up here. Two reasons, one structural and one practical.
+
+    Structural: membership now comes from ``watchlist_history``, whose
+    as-of answer is a ``DISTINCT ON`` over an event log. Inlining that as
+    a correlated sub-select against a 3.9 GB table would bury the one
+    piece of this query a reader needs to check. Resolved in Python, the
+    bar pull is a flat ``ticker = ANY(...)`` and the membership rule is
+    testable on its own.
+
+    Practical: nothing upstream could previously see what the universe
+    resolved to. It could not be pinned for a replay, injected by a test
+    without a database, or recorded on the report — so "no cross-ticker
+    analogs" and "peers existed but none matched" were the same output.
+    The caller now reports both, and the resolution's own quality with
+    them (Codex P2 on ``1069e50``).
+
+    Peer narrowing stays here, not in the resolver: it is per-target
+    (asset class is relative to the target, and the target excludes
+    itself) while membership is per-run.
+
+    Returns ``(frame, reason)``. On success ``reason`` is None; when there
+    is no usable universe ``frame`` is None and ``reason`` names WHICH of
+    three causes it was — no same-class peers, peers without bars, or peers
+    without enough history for the feature window. The caller persists it
+    on the section, because a single "see the logs" string leaves a report
+    consumer unable to tell a curation fact from an ingestion gap from a
+    timing one (Rule 3.7's indistinguishable-value shape; Codex P2 on
+    ``775a29f``).
     """
     # Same operator as the same-ticker pull, or the as-of bar leaks back
     # in through the analogs (#822).
     daily_op = "<=" if inclusive_today else "<"
-    # Lazy, matching `_query` above: keeps `gcp` off this module's import
-    # path. Precedent: lib/agents/ranker/candidates.py:246.
-    from gcp.fetchers._watchlist import DEFAULT_USER_ID, _dedupe_upper
 
     target = target_ticker.upper()
-    bars_sql = (
+    target_is_index = _is_index_symbol(target)
+    peers = [
+        t for t in universe.tickers
+        if t != target and _is_index_symbol(t) == target_is_index
+    ]
+    if not peers:
+        # Not a fallback: the caller skips cross-ticker analogs and says
+        # which of the reasons it was. Substituting a default peer set
+        # here would be a cross-source fallback (CLAUDE.md Rule 3.7.1) —
+        # the curated universe silently replaced by a baked-in one, with
+        # the report unable to tell which answered.
+        reason = (
+            f"{len(universe.tickers)} watchlist ticker(s) resolved, none of "
+            f"the target's asset class after excluding the target itself"
+        )
+        logger.warning(
+            "cross-ticker analog universe empty for %s (cutoff=%s): %s",
+            target, cutoff, reason,
+        )
+        return None, reason
+
+    # `_query_strict`, not `_query`: `query_to_dataframe` returns an empty
+    # frame on error, which lands on the same branch as "this universe has
+    # no bars" and would report a database outage as "no analogs exist"
+    # (CLAUDE.md Rule 3.7). build_context_bundle catches per-section and
+    # records the reason, so the failure is visible rather than silent.
+    df = _query_strict(
         "SELECT m.ticker, m.date, m.open, m.high, m.low, m.close, m.volume "
         "FROM market_data_daily m "
-        "WHERE m.ticker <> :ticker "
-        "  AND (left(m.ticker, 1) = '^') = (left(:ticker, 1) = '^') "
+        "WHERE m.ticker = ANY(:tickers) "
         f"  AND m.date {daily_op} CAST(:cutoff AS date) "
+        "ORDER BY m.ticker ASC, m.date ASC",
+        {"tickers": peers, "cutoff": cutoff},
     )
-    params = {"ticker": target, "cutoff": cutoff,
-              "watchlist_owner": DEFAULT_USER_ID}
-
-    df = _query(
-        bars_sql
-        + "  AND EXISTS (SELECT 1 FROM watchlists w "
-          "               WHERE w.ticker = m.ticker "
-          "                 AND w.user_id = :watchlist_owner "
-          "                 AND w.added_at < CAST(:cutoff AS date) + 1 "
-          "                 AND (w.removed_at IS NULL OR w.removed_at >= CAST(:cutoff AS date))) "
-          "ORDER BY m.ticker ASC, m.date ASC",
-        params,
-    )
-    source = "watchlists"
     if df is None or df.empty:
-        # Mirror `load_watchlist`'s order: the shared owner's DB rows win,
-        # and INSIGHT_TICKERS is the documented shared-owner fallback when
-        # they are empty. The job's own DEFAULT_TICKERS is deliberately
-        # NOT mirrored: a hardcoded universe standing in for a real one is
-        # the Rule 3.7 shape, and the loud empty path below is the honest
-        # answer. A swallowed DB failure cannot reach this branch in
-        # practice: the same-ticker pull upstream uses the same `_query`
-        # and returns `unavailable` first.
-        env_universe = [
-            t for t in _dedupe_upper(
-                os.environ.get("INSIGHT_TICKERS", "").split(","))
-            if t != target
-        ]
-        if env_universe:
-            logger.warning(
-                "cross-ticker analog universe for %s (cutoff=%s) sourced "
-                "from INSIGHT_TICKERS (%d tickers): the %r watchlist had "
-                "no members with bars at the cutoff",
-                target, cutoff, len(env_universe), DEFAULT_USER_ID,
-            )
-            df = _query(
-                bars_sql
-                + "  AND m.ticker = ANY(:universe) "
-                  "ORDER BY m.ticker ASC, m.date ASC",
-                {**params, "universe": env_universe},
-            )
-            source = "INSIGHT_TICKERS"
-    if df is None or df.empty:
-        # Not a fallback: the caller skips cross-ticker analogs and says so
-        # via cross_ticker_used=False. Logged because an empty result means
-        # an empty watchlist or missing bars, and neither should be silent.
-        logger.warning(
-            "cross-ticker analog universe empty for %s (cutoff=%s) — "
-            "no watchlist rows joined to market_data_daily",
-            target, cutoff,
+        reason = (
+            f"{len(peers)} peer(s) resolved ({', '.join(peers[:10])}) but "
+            f"none has daily bars at or before the cutoff"
         )
-        return None, None
+        logger.warning(
+            "cross-ticker analog universe empty for %s (cutoff=%s): %s",
+            target, cutoff, reason,
+        )
+        return None, reason
     logger.info(
-        "cross_ticker_universe target=%s source=%s tickers=%d rows=%d",
-        target, source, df["ticker"].nunique(), len(df),
+        "cross_ticker_universe target=%s peers=%d with_bars=%d rows=%d "
+        "resolution=%s",
+        target, len(peers), df["ticker"].nunique(), len(df),
+        universe.resolution,
     )
 
     out_frames: list[pd.DataFrame] = []
@@ -1444,8 +1549,21 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str,
             out_frames.append(g)
 
     if not out_frames:
-        return None, None
-    return pd.concat(out_frames, ignore_index=True), source
+        # Third distinct cause, and the one most easily mistaken for the
+        # second: every peer HAD bars, but none cleared the 60-bar minimum
+        # the feature window needs (or lost every row to the 20-day recency
+        # trim). A newly-added ticker looks exactly like an outage here
+        # unless the caller is told which it was.
+        reason = (
+            f"{df['ticker'].nunique()} peer(s) had bars but none had enough "
+            f"history to compute analog features at the cutoff"
+        )
+        logger.warning(
+            "cross-ticker analog universe empty for %s (cutoff=%s): %s",
+            target, cutoff, reason,
+        )
+        return None, reason
+    return pd.concat(out_frames, ignore_index=True), None
 
 
 # ---------------------------------------------------------------------------
@@ -1813,6 +1931,7 @@ def retrieve_similar_journal(
 def build_context_bundle(
     ticker: str, as_of: Optional[date_type] = None,
     inclusive_today: bool = False,
+    *, universe: Optional["WatchlistMembership"] = None,
 ) -> dict:
     """Collect all summarizer outputs into one dict for analyst prompts.
 
@@ -1826,6 +1945,11 @@ def build_context_bundle(
     either doesn't exist yet (live) or would be look-ahead (replay).
     Set True only for explicit EOD analytics that *want* today's
     closed bar.
+
+    ``universe`` is an optional pre-resolved ``WatchlistMembership`` for
+    the cross-ticker analog set, forwarded to ``summarize_backtest_metrics``.
+    Left at None it is resolved there, on the sparse path only, by the one
+    resolver — this parameter is an injection point, not a second source.
     """
     bundle = {
         "ticker": ticker.upper(),
@@ -1851,7 +1975,8 @@ def build_context_bundle(
         # remains callable for external analytics / debugging, but
         # the insight prompt no longer sees it.
         "backtest": lambda: summarize_backtest_metrics(
-            ticker, as_of=as_of, inclusive_today=inclusive_today),
+            ticker, as_of=as_of, inclusive_today=inclusive_today,
+            universe=universe),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),
         "sentiment": lambda: summarize_news_sentiment(ticker, as_of),
     }
