@@ -1,0 +1,272 @@
+{
+ "gcp/audit_job_runner.py": {
+  "host-today": 2
+ },
+ "gcp/backfill_ticker.py": {
+  "host-today": 1
+ },
+ "gcp/backtest_job.py": {
+  "host-today": 1
+ },
+ "gcp/build_intraday_flow.py": {
+  "host-today": 2
+ },
+ "gcp/build_intraday_gex.py": {
+  "host-today": 2
+ },
+ "gcp/build_options_daily_greeks.py": {
+  "host-today": 2
+ },
+ "gcp/build_realtime_gex.py": {
+  "host-today": 2
+ },
+ "gcp/discord_interactions/main.py": {
+  "host-today": 1
+ },
+ "gcp/earnings_long_watchlist.py": {
+  "host-today": 1,
+  "sql-utc-date": 1
+ },
+ "gcp/earnings_reactions_brief.py": {
+  "host-today": 2
+ },
+ "gcp/fetchers/backfill_daily_indicators.py": {
+  "sql-utc-date": 2
+ },
+ "gcp/fetchers/build_options_daily_features.py": {
+  "host-today": 2
+ },
+ "gcp/fetchers/evaluate_ew_strikes.py": {
+  "tz-localize-none": 2
+ },
+ "gcp/fetchers/fetch_alphavantage_intraday.py": {
+  "host-today": 2
+ },
+ "gcp/fetchers/fetch_av_historical_options.py": {
+  "host-today": 5
+ },
+ "gcp/fetchers/fetch_earnings_history.py": {
+  "sql-utc-date": 1
+ },
+ "gcp/fetchers/fetch_economic_events.py": {
+  "host-today": 1
+ },
+ "gcp/fetchers/fetch_fred_rates.py": {
+  "host-today": 1
+ },
+ "gcp/fetchers/fetch_insider_transactions.py": {
+  "sql-utc-date": 1
+ },
+ "gcp/fetchers/fetch_market_data.py": {
+  "sql-utc-date": 1
+ },
+ "gcp/fetchers/fetch_news_sentiment.py": {
+  "sql-utc-date": 1
+ },
+ "gcp/fetchers/fetch_premarket_refresh.py": {
+  "host-today": 1
+ },
+ "gcp/fetchers/fetch_sec_filings.py": {
+  "host-today": 1,
+  "sql-utc-date": 1
+ },
+ "gcp/fetchers/fetch_top_movers.py": {
+  "host-today": 1
+ },
+ "gcp/indicator_correlation_job.py": {
+  "host-today": 1,
+  "tz-localize-none": 2
+ },
+ "gcp/migrate_to_gcp.py": {
+  "host-today": 2
+ },
+ "gcp/premarket_brief.py": {
+  "host-today": 3,
+  "tz-localize-none": 2
+ },
+ "gcp/premarket_playbook_resolver.py": {
+  "host-today": 1
+ },
+ "gcp/refresh_earnings_views.py": {
+  "host-today": 1,
+  "sql-utc-date": 1
+ },
+ "gcp/regime_combo_job.py": {
+  "host-today": 1
+ },
+ "gcp/research/magnitude_engine/mag_dataset.py": {
+  "fixed-offset": 1
+ },
+ "gcp/research/p2_build_gamma_levels.py": {
+  "zone-built-locally": 1
+ },
+ "gcp/research/strat_engine/breakout_meta_walk_forward.py": {
+  "tz-localize-none": 1
+ },
+ "gcp/signal_monitor.py": {
+  "host-today": 4,
+  "tz-localize-none": 4
+ },
+ "gcp/signal_monitor_eod_resolver.py": {
+  "sql-utc-date": 2,
+  "tz-localize-none": 2
+ },
+ "gcp/trade_logger.py": {
+  "host-today": 5
+ },
+ "gcp/weekend_review.py": {
+  "host-today": 1
+ },
+ "lib/agents/ranker/candidates.py": {
+  "sql-utc-date": 5
+ },
+ "lib/agents/ranker/signals.py": {
+  "sql-utc-date": 5
+ },
+ "lib/agents/summarizers.py": {
+  "tz-localize-none": 3
+ },
+ "lib/data_loader.py": {
+  "host-today": 1,
+  "tz-localize-none": 3
+ },
+ "lib/options_intraday.py": {
+  "tz-localize-none": 3
+ },
+ "lib/strat.py": {
+  "tz-localize-none": 2
+ },
+ "lib/strat_levels.py": {
+  "tz-localize-none": 1
+ },
+ "lib/strategies/calibration.py": {
+  "host-today": 1
+ },
+ "lib/strategies/exit_config_overrides.py": {
+  "host-today": 1
+ },
+ "lib/trading_analysis.py": {
+  "host-today": 1
+ },
+ "platform/api/main.py": {
+  "host-today": 1,
+  "sql-utc-date": 3,
+  "tz-localize-none": 4
+ },
+ "platform/api/routers/catalysts.py": {
+  "host-today": 2,
+  "sql-utc-date": 1
+ },
+ "platform/api/routers/dashboard.py": {
+  "host-today": 2,
+  "tz-localize-none": 1
+ },
+ "platform/api/routers/earnings.py": {
+  "sql-utc-date": 1
+ },
+ "platform/api/routers/options.py": {
+  "host-today": 1
+ },
+ "scripts/analysis/bsvp_validation.py": {
+  "host-today": 1
+ },
+ "scripts/analysis/intraday_indicator_correlation.py": {
+  "host-today": 1
+ },
+ "scripts/analysis/momentum_eligibility.py": {
+  "host-today": 2,
+  "tz-localize-none": 1
+ },
+ "scripts/analysis/options_pnl_translation.py": {
+  "tz-localize-none": 2
+ },
+ "scripts/analysis/per_factor_walkforward.py": {
+  "sql-utc-date": 1
+ },
+ "scripts/analysis/per_ticker_calibration.py": {
+  "host-today": 3
+ },
+ "scripts/analysis/shared_utils.py": {
+  "host-today": 1
+ },
+ "scripts/analyze_market_data.py": {
+  "host-today": 1
+ },
+ "scripts/analyze_market_data_enhanced.py": {
+  "host-today": 1
+ },
+ "scripts/audit_data_freshness.py": {
+  "sql-utc-date": 2
+ },
+ "scripts/backfill_and_replay.py": {
+  "zone-built-locally": 1
+ },
+ "scripts/backfill_watchlist_data.py": {
+  "host-today": 2,
+  "sql-utc-date": 1
+ },
+ "scripts/backtest_playability.py": {
+  "host-today": 1
+ },
+ "scripts/calibrate_earnings.py": {
+  "sql-utc-date": 1
+ },
+ "scripts/calibrate_thresholds.py": {
+  "host-today": 3
+ },
+ "scripts/check_event_window_concentration.py": {
+  "fixed-offset": 1
+ },
+ "scripts/fetch_alphavantage_intraday.py": {
+  "host-today": 4
+ },
+ "scripts/fetch_alphavantage_options.py": {
+  "host-today": 4
+ },
+ "scripts/fetch_catalyst_calendar.py": {
+  "host-today": 2
+ },
+ "scripts/fetch_earnings_calendar.py": {
+  "host-today": 15
+ },
+ "scripts/fetch_market_data.py": {
+  "host-today": 6,
+  "zone-built-locally": 1
+ },
+ "scripts/find_swing_trades.py": {
+  "host-today": 1
+ },
+ "scripts/generate_backtest_report.py": {
+  "host-today": 1
+ },
+ "scripts/handle_workflow_failure.py": {
+  "host-today": 1
+ },
+ "scripts/match_earnings_strategy.py": {
+  "host-today": 4
+ },
+ "scripts/refresh_calibration_table.py": {
+  "host-today": 1
+ },
+ "scripts/replay_signal_monitor.py": {
+  "host-today": 1,
+  "tz-localize-none": 2
+ },
+ "scripts/run_backtest.py": {
+  "host-today": 1
+ },
+ "scripts/run_param_sweep.py": {
+  "host-today": 1,
+  "sql-utc-date": 1
+ },
+ "scripts/run_timeframe_sweep.py": {
+  "host-today": 1
+ },
+ "scripts/run_walk_forward.py": {
+  "host-today": 1
+ },
+ "scripts/validate_market_data.py": {
+  "host-today": 2,
+  "zone-built-locally": 3
+ }
+}
