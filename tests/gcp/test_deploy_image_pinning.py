@@ -78,19 +78,19 @@ def test_every_image_argument_is_a_digest_ref_not_a_tag():
     # apply_schema_via_build writes a Cloud Build config whose --image is its
     # own `digest`, which is IMAGE_REF or a :latest lookup resolved to a digest
     # (checked below), so it is a digest ref too.
-    # pin_floating_jobs passes `pinned`, which only _resolve_image_ref sets
-    # (checked below), and that returns a digest ref.
+    # pin_floating_jobs passes its tag snapshot, filled only from
+    # _resolve_image_ref (checked below), which returns a digest ref.
     floating = [(f, a) for f, a in args
                 if not (a.startswith('"${IMAGE_REF:?') or a == '"${research_image}"'
                         or (f == "apply_schema_via_build" and a == "${digest}")
-                        or (f == "pin_floating_jobs" and a == '"${pinned}"'))]
+                        or (f == "pin_floating_jobs" and a == '"${pin_of[${ref}]}"'))]
     assert not floating, f"--image passed something other than a digest ref: {floating[:10]}"
 
 
 def test_pin_floating_passes_only_a_resolved_digest():
     body = FNS["pin_floating_jobs"]
-    assigned = re.findall(r"\bpinned=(\S+)", body)
-    assert assigned == ['$(_resolve_image_ref'], assigned
+    assert re.findall(r"\bpinned=(\S+)", body) == ['$(_resolve_image_ref']
+    assert re.findall(r"\bpin_of\[[^]]*\]=(\S+)", body) == ['${pinned}']
 
 
 def test_the_schema_apply_build_prefers_the_digest_this_run_built():
@@ -169,9 +169,12 @@ _GCLOUD = r"""
         exit 0 ;;
       "builds list") [ -z "${ONGOING:-}" ] || echo "${ONGOING}"; exit 0 ;;
       "artifacts docker")
+        # A build landing mid-pass: after RESOLVE_FLIP_AFTER resolutions the
+        # tag answers RESOLVE_DIGEST_NEW.
+        n=$(cat "$OUT/resolve_n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$OUT/resolve_n"
         case "$*" in
           *:research*) echo "${RESEARCH_RESOLVE:-${RESOLVE_DIGEST}}" ;;
-          *) echo "${RESOLVE_DIGEST}" ;;
+          *) if [ "$n" -gt "${RESOLVE_FLIP_AFTER:-999999}" ]; then echo "${RESOLVE_DIGEST_NEW}"; else echo "${RESOLVE_DIGEST}"; fi ;;
         esac
         exit 0 ;;
       "run jobs")
@@ -349,6 +352,23 @@ def test_pin_floating_pins_each_job_to_the_digest_its_own_tag_holds(tmp_path):
     }
     updated = sorted(c.split()[3] for c in _calls(tmp_path) if c.startswith("run jobs update"))
     assert updated == ["latest", "research", "tagless"]
+
+
+def test_pin_floating_pins_every_job_from_one_snapshot_and_names_a_moved_tag(tmp_path):
+    """Codex on #1189: resolving each job's tag at its own update meant a
+    build landing mid-pass pinned earlier jobs to the old digest and later
+    ones to the new, and the read-back, which only looked for @sha256:,
+    called that mixed rollout a success. Each tag is resolved once, before
+    any update, so jobs on one tag share a digest; a tag that moved during
+    the pass is named and fails it."""
+    env = _env(tmp_path)
+    env.update(RESOLVE_FLIP_AFTER="1", RESOLVE_DIGEST_NEW="sha256:" + "6" * 64)
+    _jobs(tmp_path, {"first": IMAGE, "second": IMAGE, "third": IMAGE})
+    r = _run(tmp_path, env, _PIN_FNS, "pin_floating_jobs")
+    specs = _specs(tmp_path)
+    assert set(specs.values()) == {f"{IMAGE}@{RESOLVED}"}, specs
+    assert "rc=0" not in r.stdout, r.stdout + r.stderr
+    assert f"{IMAGE} moved during the pass" in r.stderr, r.stderr
 
 
 def test_pin_floating_refuses_while_a_build_is_in_flight(tmp_path):

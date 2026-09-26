@@ -5211,9 +5211,16 @@ pin_floating_jobs() {
     # job's code changes, and later builds stop reaching jobs their target did
     # not deploy. Jobs deployed before #1171 floated until redeployed (70 of
     # 76 on 2026-09-26, on :latest, :research and four hand-made tags); this
-    # converts them in one pass. Refuses while a build is in flight, since it
-    # could move a tag mid-pass, and fails if any spec still names a tag after.
-    local ongoing listing job ref pinned converted=0 failures=0 left=0
+    # converts them in one pass.
+    #
+    # Each tag is resolved ONCE, before any update, and every job on it is
+    # pinned to that digest. Resolving per job let a build that landed
+    # mid-pass pin earlier jobs to the old digest and later ones to the new
+    # (Codex on #1189). The pass then reads every spec back against that
+    # snapshot and re-resolves the tags: a tag that moved during it is named
+    # and fails the pass, since a build ran while jobs were being pinned.
+    local ongoing listing job ref pinned now converted=0 failures=0 left=0 moved=0
+    local -A pin_of=() converted_from=()
     ongoing=$(gcloud builds list --ongoing --format="value(id)") \
         || { echo "ERROR: cannot list ongoing builds; nothing pinned." >&2; return 1; }
     [ -z "${ongoing}" ] \
@@ -5224,29 +5231,51 @@ pin_floating_jobs() {
     while IFS=$'\t' read -r job ref; do
         [ -n "${job}" ] || continue
         [[ "${ref}" == *@sha256:* ]] && continue
-        if ! pinned=$(_resolve_image_ref "${ref}"); then
-            failures=$((failures + 1)); continue
+        [ -z "${pin_of[${ref}]+x}" ] || continue
+        if pinned=$(_resolve_image_ref "${ref}"); then
+            pin_of[${ref}]=${pinned}
+        else
+            failures=$((failures + 1))
         fi
-        if gcloud run jobs update "${job}" --region "${REGION}" --image "${pinned}" --quiet >/dev/null; then
+    done <<< "${listing}"
+    while IFS=$'\t' read -r job ref; do
+        [ -n "${job}" ] || continue
+        [[ "${ref}" == *@sha256:* ]] && continue
+        [ -n "${pin_of[${ref}]+x}" ] || continue   # its tag did not resolve; counted above
+        if gcloud run jobs update "${job}" --region "${REGION}" --image "${pin_of[${ref}]}" --quiet >/dev/null; then
             converted=$((converted + 1))
-            echo "  ${job}: ${ref} -> ${pinned#*@}"
+            converted_from[${job}]=${ref}
+            echo "  ${job}: ${ref} -> ${pin_of[${ref}]#*@}"
         else
             echo "  ERROR: could not update ${job}" >&2
             failures=$((failures + 1))
         fi
     done <<< "${listing}"
-    # Done only when no spec names a tag, read back rather than assumed.
+    # Done only when every spec names a digest, each converted job the one
+    # its tag held in the snapshot, read back rather than assumed.
     listing=$(gcloud run jobs list --region "${REGION}" \
         --format="value(metadata.name,spec.template.spec.template.spec.containers[0].image)") \
         || { echo "ERROR: cannot list Cloud Run jobs to read the pins back." >&2; return 1; }
     while IFS=$'\t' read -r job ref; do
         [ -n "${job}" ] || continue
-        [[ "${ref}" == *@sha256:* ]] && continue
-        echo "  ERROR: ${job} still names ${ref}" >&2
-        left=$((left + 1))
+        if [[ "${ref}" != *@sha256:* ]]; then
+            echo "  ERROR: ${job} still names ${ref}" >&2
+            left=$((left + 1))
+        elif [ -n "${converted_from[${job}]+x}" ] && [ "${ref}" != "${pin_of[${converted_from[${job}]}]}" ]; then
+            echo "  ERROR: ${job} names ${ref}, not ${pin_of[${converted_from[${job}]}]}: changed during the pass" >&2
+            left=$((left + 1))
+        fi
     done <<< "${listing}"
-    echo "Pinned ${converted} job(s) to a digest; ${left} still name a tag; ${failures} failure(s)."
-    [ "${failures}" -eq 0 ] && [ "${left}" -eq 0 ]
+    for ref in "${!pin_of[@]}"; do
+        if ! now=$(_resolve_image_ref "${ref}"); then
+            failures=$((failures + 1))
+        elif [ "${now}" != "${pin_of[${ref}]}" ]; then
+            echo "  ERROR: ${ref} moved during the pass (${pin_of[${ref}]#*@} -> ${now#*@}): a build ran. Its jobs are pinned to the first." >&2
+            moved=$((moved + 1))
+        fi
+    done
+    echo "Pinned ${converted} job(s) to a digest; ${left} not as expected; ${moved} tag(s) moved; ${failures} failure(s)."
+    [ "${failures}" -eq 0 ] && [ "${left}" -eq 0 ] && [ "${moved}" -eq 0 ]
 }
 
 # The digests this invocation built; set by build_image / build_research_image
