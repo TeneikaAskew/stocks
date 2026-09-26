@@ -36,6 +36,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 DEPLOY_SH = (REPO / "gcp/deploy.sh").read_text()
 # Comment lines would otherwise count: the header comments quote the old form.
@@ -182,7 +184,7 @@ _GCLOUD = r"""
         # $OUT/jobs is the project's job list, "name<TAB>image" per line;
         # an update with --image rewrites that job's line.
         case "$3" in
-          list) [ ! -f "$OUT/jobs" ] || cat "$OUT/jobs" ;;
+          list) [ -z "${FAIL_LIST:-}" ] || exit 1; [ ! -f "$OUT/jobs" ] || cat "$OUT/jobs" ;;
           update)
             [ "${FAIL_UPDATE:-}" != "$4" ] || exit 1
             img=""; prev=""
@@ -300,7 +302,7 @@ def test_a_deploy_names_the_built_digest(tmp_path):
     fns = _BUILD_FNS + ("deploy_evaluate_ew_strikes",)
     r = _run(tmp_path, env, fns, "build_image && deploy_evaluate_ew_strikes")
     assert "rc=0" in r.stdout, r.stdout + r.stderr
-    jobs = [c for c in _calls(tmp_path) if c.startswith("run jobs")]
+    jobs = [c for c in _calls(tmp_path) if c.startswith(("run jobs create", "run jobs update"))]
     assert jobs, _calls(tmp_path)
     assert all(f"--image {IMAGE}@{BUILT}" in c for c in jobs), jobs
 
@@ -314,6 +316,64 @@ def test_a_deploy_without_a_build_mutates_nothing(tmp_path):
     assert r.returncode != 0
     assert "IMAGE_REF" in r.stderr, r.stderr
     assert not any(c.startswith("run jobs") for c in _calls(tmp_path)), _calls(tmp_path)
+
+
+# ── a build refuses while a job floats on the tag it moves ─────────────────
+
+def _floating_named(stderr: str) -> set[str]:
+    line = next((l for l in stderr.splitlines() if "which this build moves" in l), "")
+    return set(line.split("next execution:", 1)[-1].split(". Run", 1)[0].split()) if line else set()
+
+
+def test_a_build_refuses_while_a_job_floats_on_the_tag_it_moves(tmp_path):
+    """Codex on #1189: build_image moved :latest while the jobs deployed
+    before #1171 still named it, so the first narrow deploy after this change
+    would still have rolled its build out to all of them. The build now
+    refuses, names those jobs, and points at pin-floating; nothing is built.
+    Jobs on a tag this build does not move are not named."""
+    env = _env(tmp_path)
+    _jobs(tmp_path, {
+        "tagless": IMAGE,
+        "latest": f"{IMAGE}:latest",
+        "research": f"{IMAGE}:research",
+        "handmade": f"{IMAGE}:research-p2",
+        "pinned": f"{IMAGE}@{ALREADY_PINNED}",
+    })
+    r = _run(tmp_path, env, _BUILD_FNS, 'build_image && echo "IMAGE_REF=${IMAGE_REF}"')
+    assert "IMAGE_REF=" not in r.stdout and "rc=0" not in r.stdout, r.stdout + r.stderr
+    assert _floating_named(r.stderr) == {"tagless", "latest"}, r.stderr
+    assert "pin-floating" in r.stderr, r.stderr
+    assert not any(c.startswith("builds submit") for c in _calls(tmp_path)), _calls(tmp_path)
+
+
+def test_the_research_build_refuses_while_a_job_floats_on_research(tmp_path):
+    env = _env(tmp_path, build_digest=RESEARCH_BUILT)
+    _jobs(tmp_path, {"research": f"{IMAGE}:research", "tagless": IMAGE})
+    r = _run(tmp_path, env, _BUILD_FNS, 'build_research_image && echo "R=${RESEARCH_IMAGE_REF}"')
+    assert "R=" not in r.stdout and "rc=0" not in r.stdout, r.stdout + r.stderr
+    assert _floating_named(r.stderr) == {"research"}, r.stderr
+    assert not any(c.startswith("builds submit") for c in _calls(tmp_path)), _calls(tmp_path)
+
+
+def test_a_build_proceeds_when_no_job_floats_on_its_tag(tmp_path):
+    """After pin-floating, or with only other tags floating, the build runs."""
+    env = _env(tmp_path)
+    _jobs(tmp_path, {
+        "research": f"{IMAGE}:research",
+        "handmade": f"{IMAGE}:research-p2",
+        "pinned": f"{IMAGE}@{ALREADY_PINNED}",
+    })
+    r = _run(tmp_path, env, _BUILD_FNS, 'build_image && echo "IMAGE_REF=${IMAGE_REF}"')
+    assert f"IMAGE_REF={IMAGE}@{BUILT}" in r.stdout, r.stdout + r.stderr
+
+
+def test_a_build_refuses_when_the_job_list_cannot_be_read(tmp_path):
+    """An unreadable job list must not read as "no job floats"."""
+    env = _env(tmp_path)
+    env["FAIL_LIST"] = "1"
+    r = _run(tmp_path, env, _BUILD_FNS, 'build_image && echo "IMAGE_REF=${IMAGE_REF}"')
+    assert "IMAGE_REF=" not in r.stdout and "rc=0" not in r.stdout, r.stdout + r.stderr
+    assert not any(c.startswith("builds submit") for c in _calls(tmp_path)), _calls(tmp_path)
 
 
 # ── pin-floating: the jobs deployed before #1171 ───────────────────────────
@@ -443,3 +503,17 @@ def test_help_still_exits_0(tmp_path):
     proc, _ = _run_target(tmp_path, "help")
     assert proc.returncode == 0, proc.stderr[-400:]
     assert "Usage:" in proc.stdout
+
+
+@pytest.mark.parametrize("argv", [["help"], []], ids=["help", "no-argument"])
+def test_help_needs_no_project(tmp_path, argv):
+    """Codex on #1189: the required-project check ran before dispatch, so
+    with neither PROJECT_ID nor an active project, `deploy.sh help` and a
+    bare `deploy.sh` exited 1 without printing the usage."""
+    env = _env(tmp_path)
+    env.pop("PROJECT_ID", None)
+    proc = subprocess.run(["bash", str(REPO / "gcp/deploy.sh"), *argv], cwd=REPO,
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-400:]
+    assert "Usage:" in proc.stdout
+    assert _calls(tmp_path) == ["config get-value project"], _calls(tmp_path)

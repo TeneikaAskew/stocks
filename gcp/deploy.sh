@@ -22,7 +22,7 @@
 
 set -euo pipefail
 # Every gcloud call runs in PROJECT_ID, never the active config's project (#1189).
-PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"; export CLOUDSDK_CORE_PROJECT="${PROJECT_ID:?set PROJECT_ID or run: gcloud config set project <id>}"
+PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"; [ "${1:-help}" = help ] || : "${PROJECT_ID:?set PROJECT_ID or run: gcloud config set project <id>}"; export CLOUDSDK_CORE_PROJECT="${PROJECT_ID}"
 REGION="${REGION:-us-east1}"
 IMAGE="us-east1-docker.pkg.dev/${PROJECT_ID}/trading/trading-system"
 SA_EMAIL="trading-runner@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -2549,10 +2549,10 @@ deploy_audit_infra_drift() {
     local common_flags=(
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        # Drift detection is gcloud-API-bound (one `list jobs`, one
-        # `list schedulers`, one `describe image`, N `executions list`).
-        # ~50 gcloud calls × ~0.3s each = ~15s p100. 300s is 20x —
-        # the cap covers the tail when gcloud is throttled.
+        # Drift detection is API-bound: two `list jobs` and two
+        # `list schedulers`, none per job since #1171 (the per-job
+        # `executions list` went with the old digest comparison). 300s
+        # is far above that; it covers the tail when the APIs throttle.
         --task-timeout 300
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.audit_infra_drift"
@@ -5155,9 +5155,23 @@ _submit_build() {
     # of it, and the deploy would then ship that build's image. Submitted
     # --async so the build id is known; the log is streamed to stderr and the
     # status polled to the end, because stdout is the return value.
-    local tag=$1 dir=$2 id row status digests digest base name
+    local tag=$1 dir=$2 id row status digests digest base name moved listing floating
     local poll=${BUILD_POLL_SECONDS:-10} tries=0 max
     max=$(( ${BUILD_WAIT_SECONDS:-7200} / (poll > 0 ? poll : 1) ))
+    # A job whose spec names the tag this build moves runs the build at its
+    # next execution, whatever the target deployed. Refuse while any does:
+    # `pin-floating` converts them once, to the digest the tag holds now.
+    # Codex on #1189: the first narrow deploy after #1171 would otherwise
+    # still have rolled out to every job deployed before it.
+    name=${tag##*/}
+    if [[ "${name}" == *:* ]]; then base=${tag%:*}; moved=${name#*:}; else base=${tag}; moved=latest; fi
+    listing=$(gcloud run jobs list --region "${REGION}" \
+        --format="value(metadata.name,spec.template.spec.template.spec.containers[0].image)") \
+        || { echo "  ERROR: cannot list Cloud Run jobs, so none can be ruled out as floating on ${base}:${moved}; not building." >&2; return 1; }
+    floating=$(awk -F'\t' -v t="${base}:${moved}" -v b="${base}" -v l="${moved}" \
+        '$2 == t || ($2 == b && l == "latest") { printf " %s", $1 }' <<< "${listing}")
+    [ -z "${floating}" ] \
+        || { echo "  ERROR: jobs name ${base}:${moved}, which this build moves, so each would run it at its next execution:${floating}. Run ./gcp/deploy.sh pin-floating first; nothing built." >&2; return 1; }
     id=$(gcloud builds submit --tag "${tag}" "${dir}" --async --format="value(id)") \
         || { echo "  ERROR: could not submit the build for ${tag}" >&2; return 1; }
     [ -n "${id}" ] || { echo "  ERROR: the build submit for ${tag} returned no id" >&2; return 1; }
