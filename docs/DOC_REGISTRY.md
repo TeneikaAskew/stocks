@@ -1,6 +1,6 @@
 # Documentation registry
 
-**Last reviewed:** 2026-09-16 · **Last scanned:** 2026-09-18 · **Owner:** TBD
+**Last reviewed:** 2026-09-16 · **Last scanned:** 2026-09-26 · **Owner:** TBD
 
 Which documents this repo maintains, who owns each one, and what code each one
 describes. `scripts/maintenance/docs_audit.py` reads the table below; the prose

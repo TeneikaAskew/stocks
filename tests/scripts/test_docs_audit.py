@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import subprocess
+import unicodedata
 
 import pytest
 
@@ -2127,7 +2128,7 @@ def test_a_document_with_two_markers_is_not_stamped(audit_repo, capsys):
 # ── citations the dead-link check could not see ────────────────────────────
 
 def test_a_line_qualified_backticked_path_is_checked():
-    """`gcp/database.py:88-102` never matched BACKTICK_PATH_RE at all, because
+    """`gcp/database.py:88-102` never matched the backticked-path pattern at all, because
     the closing backtick had to follow the extension. 1,207 such citations are
     in this tree, so a rename or deletion of any of those files was invisible.
     """
@@ -4405,9 +4406,9 @@ def test_a_tracked_extension_longer_than_five_characters_is_citable():
     `docs/STRAT_ENGINE_ERD.drawio` never matched and could not be checked --
     though this tree tracks five `.drawio` files and check_dead_links derives
     its allowlist from the tree precisely so those are covered."""
-    assert m.BACKTICK_PATH_RE.findall("see `docs/gone.drawio` here") == ["docs/gone.drawio"]
-    assert m.BACKTICK_PATH_RE.findall("`a/b.properties`") == ["a/b.properties"]
-    assert m.BACKTICK_PATH_RE.findall("`docs/x.py:88-102`") == ["docs/x.py:88-102"]
+    assert m.backtick_path_re().findall("see `docs/gone.drawio` here") == ["docs/gone.drawio"]
+    assert m.backtick_path_re().findall("`a/b.properties`") == ["a/b.properties"]
+    assert m.backtick_path_re().findall("`docs/x.py:88-102`") == ["docs/x.py:88-102"]
 
 
 def test_a_citation_of_a_long_extension_that_is_gone_is_reported():
@@ -5592,17 +5593,17 @@ def test_a_backticked_path_may_hold_a_non_ascii_character():
     an accent, so deleting or renaming that file produced no dead-link finding
     -- while the git inventory is deliberately decoded to preserve exactly such
     filenames."""
-    hit = m.BACKTICK_PATH_RE.search("see `docs/café.md` for detail")
+    hit = m.backtick_path_re().search("see `docs/café.md` for detail")
     assert hit and hit.group("path") == "docs/café.md"
-    assert m.BACKTICK_PATH_RE.search("`docs/a.md`").group("path") == "docs/a.md"
+    assert m.backtick_path_re().search("`docs/a.md`").group("path") == "docs/a.md"
     # A spaced segment is a path too, now that a space is admitted in every
     # one of them rather than only in the basename.
-    spaced = m.BACKTICK_PATH_RE.search("`docs/user guides/x.md`")
+    spaced = m.backtick_path_re().search("`docs/user guides/x.md`")
     assert spaced and spaced.group("path") == "docs/user guides/x.md"
     # Prose no longer fails at the PATTERN -- see the end-to-end assertions in
     # test_a_backticked_path_may_carry_spaces_in_its_basename for the guard
     # that actually keeps it out of the report.
-    root = m.BACKTICK_ROOT_FILE_RE.search("`café.md`")
+    root = m.backtick_root_file_re().search("`café.md`")
     assert root and root.group("path") == "café.md"
 
 
@@ -7752,7 +7753,7 @@ def test_a_raw_html_block_ends_with_its_blockquote():
 
 def test_a_multi_backtick_span_holding_only_a_path_is_a_citation(monkeypatch):
     """``scripts/missing.py`` renders nothing but the path, so it is a
-    citation. `BACKTICK_PATH_RE` matches from the second opening tick to the
+    citation. `backtick_path_re()` matches from the second opening tick to the
     first closing one, which is STRICTLY inside the span, so the enclosure
     test classified it as sample text and deleting the target produced no
     finding at all. Codex filed it."""
@@ -7768,7 +7769,7 @@ def test_a_multi_backtick_span_holding_only_a_path_is_a_citation(monkeypatch):
     # this would fail --check over a document's own illustration.
     assert det("``example `scripts/missing.py` here``\n") == []
     # A PADDED span is a citation no pass reports, and that is unchanged
-    # here rather than fixed: `BACKTICK_PATH_RE` requires the path flush
+    # here rather than fixed: `backtick_path_re()` requires the path flush
     # against the ticks, so `` `` scripts/missing.py `` `` yields no candidate
     # at all. Recorded because the behaviour is easy to mistake for the
     # nesting rule above, and it is not -- the one-tick spelling does the same
@@ -8709,17 +8710,29 @@ def test_a_marker_that_names_an_owned_field_twice_is_not_rewritten():
     assert m.repeated_owned_fields(single) == []
 
 
-def test_a_root_file_citation_may_carry_a_non_ascii_name():
+def test_a_non_ascii_name_is_a_citation_in_either_normal_form():
     """`known_root` holds a deleted root file specifically so a citation to it
     can be reported, but an ASCII-only pattern never reached that check -- so
-    a broken `café.md` citation passed cleanly. BACKTICK_PATH_RE has used the
-    Unicode classes for rounds."""
-    assert m.BACKTICK_ROOT_FILE_RE.search("see `café.md` here") is not None
-    assert m.BACKTICK_ROOT_FILE_RE.search("see `vite.config.ts` here") is not None
+    a broken `café.md` citation passed cleanly.
+
+    This test asserted the PRECOMPOSED spelling only, and passed, which is why
+    it read as covered: `\\w` matches U+00E9 and does not match category M, so
+    the same filename written DECOMPOSED (`e` + U+0301) -- identical on a
+    filesystem and on GitHub -- was invisible to both patterns and its deletion
+    produced no finding. The proxy was the spelling the fixture happened to
+    use. Codex filed it (stocks#1121)."""
+    deco = unicodedata.normalize("NFD", "café.md")
+    assert deco != "café.md" and len(deco) == len("café.md") + 1, ascii(deco)
+    for name in ("café.md", deco):
+        assert m.backtick_root_file_re().search(f"see `{name}` here") is not None, ascii(name)
+    for path in ("docs/café.md", unicodedata.normalize("NFD", "docs/café.md")):
+        hit = m.backtick_path_re().search(f"see `{path}` here")
+        assert hit is not None and hit.group("path") == path, ascii(path)
+    assert m.backtick_root_file_re().search("see `vite.config.ts` here") is not None
     # The narrowings that keep this from matching prose are unchanged: it
     # needs an extension, and a path with a slash belongs to the other pattern.
-    assert m.BACKTICK_ROOT_FILE_RE.search("see `hello world` here") is None
-    assert m.BACKTICK_ROOT_FILE_RE.search("see `docs/g.md` here") is None
+    assert m.backtick_root_file_re().search("see `hello world` here") is None
+    assert m.backtick_root_file_re().search("see `docs/g.md` here") is None
 
 
 def test_registry_specificity_is_not_pattern_length():

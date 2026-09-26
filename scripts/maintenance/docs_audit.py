@@ -44,8 +44,9 @@ Checks
 Class A is a property of a REGION, not of a file
 ------------------------------------------------
 ``README.md`` is 64 lines of which the refresh writes 5 (four badges and the
-closing date); the file says so itself at line 49, "the prose and the
-documentation map are hand-written and no model touches them".
+closing date); the file says so itself, in its own row of the table of what
+the refresh writes: "the prose and the documentation map are hand-written and
+no model touches them".
 ``docs/INVESTMENT_MODELS_SUMMARY.md`` is 1,247 lines of which
 ``scripts/refresh_calibration_table.py`` writes 11. ``05-e-API.md`` is 160 of
 which 130 are inventory blocks. Treating the whole file as machine-owned
@@ -793,23 +794,76 @@ REF_DEF_CONT_RE = re.compile(
 # to be a directory this tree actually has, which is what keeps ordinary
 # backticked prose from reading as a path. Parity with the Node twin
 # (solyra#69); Codex filed it here.
-_PW = r"\w"
-_PWS = rf"(?:{_PW}|[.-])(?:(?:{_PW}|[.-])| (?=(?:{_PW}|[.-])))*"
-# The root form must still START with a name character, so a backticked
-# `.eslintrc`-shaped string does not become a root-file citation.
-_PWS_ROOT = rf"{_PW}(?:(?:{_PW}|[.-])| (?=(?:{_PW}|[.-])))*"
 _LINE_SUFFIX = r"(?::\d+(?:-\d+)?)?"
-BACKTICK_PATH_RE = re.compile(
-    rf"`(?P<path>(?:{_PWS}/)+{_PWS}\.[A-Za-z0-9]{{1,10}}{_LINE_SUFFIX})`")
 
-# The other shape a citation takes: a bare root-level filename. Requiring a
-# slash meant `requirements-gcp.txt` and `alert_config.json` -- both cited
-# exactly that way here -- could never produce a finding when deleted. A bare
-# name is checked ONLY against the root files this tree actually tracks (see
-# check_dead_links), because `v1.2` and `api.md` in prose are otherwise
-# indistinguishable from a path.
-BACKTICK_ROOT_FILE_RE = re.compile(
-    rf"`(?P<path>{_PWS_ROOT}\.[A-Za-z0-9]{{1,10}}{_LINE_SUFFIX})`")
+
+# `\w` alone is NOT a name-character class for a filename: it excludes category
+# M, so a path stored in DECOMPOSED Unicode is invisible. Measured, on the two
+# spellings of `docs/café.md` that a filesystem and GitHub render identically:
+#
+#     precomposed  'docs/caf\xe9.md'      ->  'docs/café.md'
+#     decomposed   'docs/cafe\u0301.md'   ->  None            <- the defect
+#
+# So deleting or renaming that tracked file produced no dead-link finding at
+# all -- the hiding direction. This module already knows the rule one screen
+# down: `_is_combining`, and the comment above `_SLUG_STRIP_RE` saying a
+# combining mark is part of the letter before it. The path scan had not been
+# told. One rule, two implementations. Codex filed it (stocks#1121).
+#
+# ENUMERATED rather than approximated. Category M is 2,408 codepoints in 299
+# ranges and `re` has no `\p{M}`, so a hand-picked block list would be a quiet
+# partial answer in the direction that loses findings.
+#
+# LAZILY, because enumerating it costs 272 ms against a 33 ms import -- a 9x
+# import regression paid by every test collection to answer a question most
+# runs never ask. Accessor FUNCTIONS rather than module constants: PEP 562's
+# `__getattr__` covers attribute access on the module and not a bare global
+# lookup inside it, so the first internal caller raised NameError while every
+# test reading `m.BACKTICK_PATH_RE` passed -- one way in is the point.
+@functools.cache
+def _name_char_class() -> str:
+    marks: list[tuple[int, int]] = []
+    start = last = None
+    for cp in range(sys.maxunicode + 1):
+        if _is_combining(chr(cp)):
+            if start is None:
+                start = cp
+            last = cp
+        elif start is not None:
+            marks.append((start, last))
+            start = None
+    if start is not None:
+        marks.append((start, last))
+    return "[\\w" + "".join(
+        rf"\U{a:08x}-\U{b:08x}" if a != b else rf"\U{a:08x}"
+        for a, b in marks) + "]"
+
+
+@functools.cache
+def backtick_path_re() -> re.Pattern[str]:
+    """A backticked path with at least one directory component."""
+    pw = _name_char_class()
+    pws = rf"(?:{pw}|[.-])(?:(?:{pw}|[.-])| (?=(?:{pw}|[.-])))*"
+    return re.compile(
+        rf"`(?P<path>(?:{pws}/)+{pws}\.[A-Za-z0-9]{{1,10}}{_LINE_SUFFIX})`")
+
+
+@functools.cache
+def backtick_root_file_re() -> re.Pattern[str]:
+    """The other shape a citation takes: a bare root-level filename.
+
+    Requiring a slash meant `requirements-gcp.txt` and `alert_config.json` --
+    both cited exactly that way here -- could never produce a finding when
+    deleted. A bare name is checked ONLY against the root files this tree
+    actually tracks (see check_dead_links), because `v1.2` and `api.md` in
+    prose are otherwise indistinguishable from a path. It must still START
+    with a name character, so a backticked `.eslintrc`-shaped string does not
+    become a root-file citation.
+    """
+    pw = _name_char_class()
+    pws_root = rf"{pw}(?:(?:{pw}|[.-])| (?=(?:{pw}|[.-])))*"
+    return re.compile(
+        rf"`(?P<path>{pws_root}\.[A-Za-z0-9]{{1,10}}{_LINE_SUFFIX})`")
 
 # The `:line` or `:start-end` suffix above, which is a citation's coordinate
 # inside the file and not part of its path.
@@ -6143,7 +6197,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         def _nested(m: re.Match[str]) -> bool:
             # STRICT enclosure alone is not the test. A valid MULTI-backtick
             # span renders nothing but the path -- ``scripts/missing.py`` is a
-            # citation, not a demonstration -- but `BACKTICK_PATH_RE` matches
+            # citation, not a demonstration -- but `backtick_path_re()` matches
             # from the second opening tick to the first closing one, which is
             # strictly inside it, so the path was classified as sample text
             # and deleting the target produced no finding at all. A span whose
@@ -6156,7 +6210,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
         # A bare root filename resolves against the tree's ROOT only. Anything
         # it does not hold is prose, not rot -- which is what makes the second
         # pattern safe to run at all.
-        for m in BACKTICK_ROOT_FILE_RE.finditer(line):
+        for m in backtick_root_file_re().finditer(line):
             if (any(lo <= m.start() < hi for lo, hi in hidden) or _nested(m)
                     or _in_label(m.start())):
                 continue
@@ -6166,7 +6220,7 @@ def check_dead_links(doc: str, text: str, tracked: set[str],
                 continue
             out.append({"check": "dead-link", "doc": doc, "line": n,
                         "detail": f"backticked path -> {cited}", "severity": "P2"})
-        for m in BACKTICK_PATH_RE.finditer(line):
+        for m in backtick_path_re().finditer(line):
             if (any(lo <= m.start() < hi for lo, hi in hidden) or _nested(m)
                     or _in_label(m.start())):
                 continue

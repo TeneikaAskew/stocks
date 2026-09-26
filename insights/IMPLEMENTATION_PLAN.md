@@ -6,8 +6,8 @@
 
 Before any code changes, the first commit on `claude/research-trading-agents-LFNT2` creates a new top-level `insights/` folder with two docs so the research and the execution plan live in-repo (not just in the Claude plan file):
 
-- [insights/RESEARCH.md](../insights/RESEARCH.md) — TradingAgents research: architecture, orchestration, LLM calls, output shape, data sources, license, and critical evaluation (what to copy / skip / adapt). Source material is the agent report from Phase 1 of this plan.
-- [insights/IMPLEMENTATION_PLAN.md](../insights/IMPLEMENTATION_PLAN.md) — A copy of this plan (Context through Out of Scope), checked in so reviewers and future-me can see the rationale next to the code.
+- [insights/RESEARCH.md](insights/RESEARCH.md) — TradingAgents research: architecture, orchestration, LLM calls, output shape, data sources, license, and critical evaluation (what to copy / skip / adapt). Source material is the agent report from Phase 1 of this plan.
+- [insights/IMPLEMENTATION_PLAN.md](insights/IMPLEMENTATION_PLAN.md) — A copy of this plan (Context through Out of Scope), checked in so reviewers and future-me can see the rationale next to the code.
 
 Both files are documentation only — no code depends on them.
 
@@ -66,12 +66,12 @@ Orchestration is a **hand-rolled async orchestrator** (~200 lines) — no LangGr
 
 These are pure-Python functions that query existing tables and return typed dicts. No LLM. They are what makes this system actually grounded.
 
-- `summarize_market_context(ticker, date)` — reads [market_data_daily](../gcp/schema.sql) for OHLCV, `sma_200`, `ema_20`, `macd*`, `bb_*`, `price_vs_ema20`. Computes % distance from key MAs, regime tag (trending/ranging), 20-day realized vol.
-- `summarize_strat_status(ticker, date)` — reuses [StratClassifier](../lib/strat.py) via the `premarket_analysis` Cloud SQL row. Emits last candle type, in-force combo, FTFC score + direction, trigger high/low.
-- `summarize_options_flow(ticker, date)` — queries [etf_options_snapshots](../gcp/schema.sql) for the latest `data_source='alphavantage'` row, computes put/call volume ratio, max-pain strike, top OI strikes, IV percentile.
-- `summarize_signals_history(ticker, lookback=30)` — reads [signals router data source](../platform/api/routers/signals.py); emits recent signal count, win rate of last N fires, current active signals.
-- `summarize_backtest_metrics(ticker)` — reads latest run from [backtest router](../platform/api/routers/backtest.py); emits win rate, profit factor, Sharpe, max DD, expectancy.
-- `summarize_catalysts(ticker, date)` — reads [economic_events](../gcp/schema.sql) and earnings calendar; emits next 5 events in the next 14 days with impact tags.
+- `summarize_market_context(ticker, date)` — reads [market_data_daily](gcp/schema.sql) for OHLCV, `sma_200`, `ema_20`, `macd*`, `bb_*`, `price_vs_ema20`. Computes % distance from key MAs, regime tag (trending/ranging), 20-day realized vol.
+- `summarize_strat_status(ticker, date)` — reuses [StratClassifier](lib/strat.py) via the `premarket_analysis` Cloud SQL row. Emits last candle type, in-force combo, FTFC score + direction, trigger high/low.
+- `summarize_options_flow(ticker, date)` — queries [etf_options_snapshots](gcp/schema.sql) for the latest `data_source='alphavantage'` row, computes put/call volume ratio, max-pain strike, top OI strikes, IV percentile.
+- `summarize_signals_history(ticker, lookback=30)` — reads [signals router data source](platform/api/routers/signals.py); emits recent signal count, win rate of last N fires, current active signals.
+- `summarize_backtest_metrics(ticker)` — reads latest run from [backtest router](platform/api/routers/backtest.py); emits win rate, profit factor, Sharpe, max DD, expectancy.
+- `summarize_catalysts(ticker, date)` — reads [economic_events](gcp/schema.sql) and earnings calendar; emits next 5 events in the next 14 days with impact tags.
 - `retrieve_similar_journal(ticker, setup_embedding, k=5)` — pgvector lookup on `journal_entries`. Returns past trades with similar setup for reflection memory.
 
 The bundle is cached per (ticker, date) — same day re-runs reuse it.
@@ -108,7 +108,7 @@ Every field is enforced via Claude's tool-use structured output mode. No prose p
 
 ### Storage
 
-New Cloud SQL table `insight_reports` (add to [gcp/schema.sql](../gcp/schema.sql)):
+New Cloud SQL table `insight_reports` (add to [gcp/schema.sql](gcp/schema.sql)):
 
 ```sql
 CREATE TABLE insight_reports (
@@ -156,23 +156,23 @@ INSERT INTO model_routing (role, provider, model) VALUES
 
 | Action | Path | Purpose |
 |---|---|---|
-| CREATE | [lib/agents/__init__.py](../lib/agents/__init__.py) | package root |
-| CREATE | [lib/agents/schema.py](../lib/agents/schema.py) | Pydantic models (`InsightReport` and sub-models) |
-| CREATE | [lib/agents/summarizers.py](../lib/agents/summarizers.py) | 7 deterministic summarizer fns above |
-| CREATE | [lib/agents/prompts.py](../lib/agents/prompts.py) | System prompts for each agent (cached block) |
+| CREATE | [lib/agents/__init__.py](lib/agents/__init__.py) | package root |
+| CREATE | [lib/agents/schema.py](lib/agents/schema.py) | Pydantic models (`InsightReport` and sub-models) |
+| CREATE | [lib/agents/summarizers.py](lib/agents/summarizers.py) | 7 deterministic summarizer fns above |
+| CREATE | [lib/agents/prompts.py](lib/agents/prompts.py) | System prompts for each agent (cached block) |
 | CREATE | [lib/agents/analysts.py](lib/agents/analysts.py) | market/strat/options/catalyst analyst fns (Haiku) |
 | CREATE | [lib/agents/debate.py](lib/agents/debate.py) | bull/bear + research_manager (Sonnet) |
 | CREATE | [lib/agents/trader.py](lib/agents/trader.py) | trader + risk debate + portfolio_manager (Sonnet) |
 | CREATE | [lib/agents/memory.py](lib/agents/memory.py) | pgvector retrieval from `journal_entries` |
-| CREATE | [lib/agents/orchestrator.py](../lib/agents/orchestrator.py) | async pipeline: `run_insight_pipeline(ticker, date) -> InsightReport` |
-| CREATE | [lib/agents/llm_client.py](../lib/agents/llm_client.py) | Abstract `LLMClient` + provider adapters (`VertexGeminiAdapter`, `AnthropicAdapter`, `OpenAIAdapter`). Exposes `complete(role, system, messages, response_schema)`. Handles per-provider prompt caching, cost accounting (tokens → USD via a price table), and retries. Provider selection is per-role, read from the `model_routing` table on every call (cached 60s). |
-| CREATE | [lib/agents/model_routing.py](../lib/agents/model_routing.py) | CRUD helpers for the `model_routing` Cloud SQL table — `get_route(role)`, `set_route(role, provider, model)`, `list_routes()`, `list_available_models()`. The available-models list is a hand-maintained catalog in code (Vertex Gemini models, Anthropic models, OpenAI models) plus a flag for which providers have API keys configured. |
-| MODIFY | [platform/api/routers/insights.py](../platform/api/routers/insights.py) | REPLACE existing single chat endpoint. Add: `GET /api/insights/report/{ticker}` (reads latest cached row), `POST /api/insights/report/{ticker}/refresh` (triggers on-demand `run_insight_pipeline` in background task, returns run_id), `GET /api/insights/report/{ticker}/history?limit=30`. KEEP `POST /api/insights/chat` (Gemini) unchanged for the chat sub-tab. |
-| MODIFY | [gcp/schema.sql](../gcp/schema.sql) | Add `insight_reports` table + `pgvector` extension + `journal_entries.embedding` column + `model_routing` table (see Admin Dashboard below) |
-| CREATE | [platform/api/routers/admin.py](../platform/api/routers/admin.py) | NEW router. Endpoints: `GET /api/admin/model-routing` (current per-role routes + available providers/models), `PUT /api/admin/model-routing/{role}` (set provider+model for one role), `POST /api/admin/model-routing/test` (fire a 1-token dry-run against a provider+model combo to verify credentials before committing). Gated by an `ADMIN_TOKEN` env var header check for v1 — proper auth is a v2 follow-up. |
-| CREATE | [gcp/insight_pipeline_job.py](../gcp/insight_pipeline_job.py) | Cloud Run job entry point — runs pipeline for SPY/IWM/QQQ, upserts to `insight_reports` |
+| CREATE | [lib/agents/orchestrator.py](lib/agents/orchestrator.py) | async pipeline: `run_insight_pipeline(ticker, date) -> InsightReport` |
+| CREATE | [lib/agents/llm_client.py](lib/agents/llm_client.py) | Abstract `LLMClient` + provider adapters (`VertexGeminiAdapter`, `AnthropicAdapter`, `OpenAIAdapter`). Exposes `complete(role, system, messages, response_schema)`. Handles per-provider prompt caching, cost accounting (tokens → USD via a price table), and retries. Provider selection is per-role, read from the `model_routing` table on every call (cached 60s). |
+| CREATE | [lib/agents/model_routing.py](lib/agents/model_routing.py) | CRUD helpers for the `model_routing` Cloud SQL table — `get_route(role)`, `set_route(role, provider, model)`, `list_routes()`, `list_available_models()`. The available-models list is a hand-maintained catalog in code (Vertex Gemini models, Anthropic models, OpenAI models) plus a flag for which providers have API keys configured. |
+| MODIFY | [platform/api/routers/insights.py](platform/api/routers/insights.py) | REPLACE existing single chat endpoint. Add: `GET /api/insights/report/{ticker}` (reads latest cached row), `POST /api/insights/report/{ticker}/refresh` (triggers on-demand `run_insight_pipeline` in background task, returns run_id), `GET /api/insights/report/{ticker}/history?limit=30`. KEEP `POST /api/insights/chat` (Gemini) unchanged for the chat sub-tab. |
+| MODIFY | [gcp/schema.sql](gcp/schema.sql) | Add `insight_reports` table + `pgvector` extension + `journal_entries.embedding` column + `model_routing` table (see Admin Dashboard below) |
+| CREATE | [platform/api/routers/admin.py](platform/api/routers/admin.py) | NEW router. Endpoints: `GET /api/admin/model-routing` (current per-role routes + available providers/models), `PUT /api/admin/model-routing/{role}` (set provider+model for one role), `POST /api/admin/model-routing/test` (fire a 1-token dry-run against a provider+model combo to verify credentials before committing). Gated by an `ADMIN_TOKEN` env var header check for v1 — proper auth is a v2 follow-up. |
+| CREATE | [gcp/insight_pipeline_job.py](gcp/insight_pipeline_job.py) | Cloud Run job entry point — runs pipeline for SPY/IWM/QQQ, upserts to `insight_reports` |
 | CREATE | [.github/workflows/daily-insight-reports.yml](.github/workflows/daily-insight-reports.yml) | Cron `30 21 * * 1-5` (4:30 PM ET after premarket brief data is fresh). Uses `handle-workflow-failure.yml`. |
-| MODIFY | [platform/api/main.py](../platform/api/main.py) | (verify router still registered — no change expected) |
+| MODIFY | [platform/api/main.py](platform/api/main.py) | (verify router still registered — no change expected) |
 
 ### Frontend
 
@@ -201,27 +201,27 @@ INSERT INTO model_routing (role, provider, model) VALUES
 
 | Action | Path |
 |---|---|
-| CREATE | [tests/agents/test_agent_summarizers.py](../tests/agents/test_agent_summarizers.py) — fixture SQL → expected JSON shape |
-| CREATE | [tests/agents/test_agent_schema.py](../tests/agents/test_agent_schema.py) — Pydantic validation edge cases |
-| CREATE | [tests/agents/test_agent_orchestrator.py](../tests/agents/test_agent_orchestrator.py) — mocked LLM client; asserts pipeline topology + structured output contract |
+| CREATE | [tests/agents/test_agent_summarizers.py](tests/agents/test_agent_summarizers.py) — fixture SQL → expected JSON shape |
+| CREATE | [tests/agents/test_agent_schema.py](tests/agents/test_agent_schema.py) — Pydantic validation edge cases |
+| CREATE | [tests/agents/test_agent_orchestrator.py](tests/agents/test_agent_orchestrator.py) — mocked LLM client; asserts pipeline topology + structured output contract |
 | CREATE | [tests/test_insights_router.py](tests/test_insights_router.py) — FastAPI TestClient: GET cached, POST refresh, chat still works |
 | CREATE | [tests/e2e/insights.spec.ts](tests/e2e/insights.spec.ts) — Playwright: landing view renders structured report, sub-tabs navigate, re-analyze button triggers refresh |
 
 ## Reuse Map (existing code we must NOT re-implement)
 
-- [lib/strat.py](../lib/strat.py) `StratClassifier` → feeds `summarize_strat_status` directly
-- [gcp/premarket_brief.py](../gcp/premarket_brief.py) → its `premarket_analysis` row is the source for market + strat summarizers (not re-run)
-- [platform/api/routers/signals.py](../platform/api/routers/signals.py) → `load_signals_for_ticker` helper → reused by `summarize_signals_history`
-- [platform/api/routers/backtest.py](../platform/api/routers/backtest.py) → `load_latest_run` helper → reused by `summarize_backtest_metrics`
-- [platform/api/routers/options.py](../platform/api/routers/options.py) → options chain loader → reused by `summarize_options_flow`
-- [platform/api/routers/journal.py](../platform/api/routers/journal.py) → `journal_entries` Cloud SQL path → reused by `lib/agents/memory.py`
-- [platform/api/routers/dashboard.py](../platform/api/routers/dashboard.py) — confirmed it already pulls `premarket_analysis`; the report's "strat" card can reuse the same loader
-- [gcp/schema.sql](../gcp/schema.sql) — add to this file, don't create a new schema file
+- [lib/strat.py](lib/strat.py) `StratClassifier` → feeds `summarize_strat_status` directly
+- [gcp/premarket_brief.py](gcp/premarket_brief.py) → its `premarket_analysis` row is the source for market + strat summarizers (not re-run)
+- [platform/api/routers/signals.py](platform/api/routers/signals.py) → `load_signals_for_ticker` helper → reused by `summarize_signals_history`
+- [platform/api/routers/backtest.py](platform/api/routers/backtest.py) → `load_latest_run` helper → reused by `summarize_backtest_metrics`
+- [platform/api/routers/options.py](platform/api/routers/options.py) → options chain loader → reused by `summarize_options_flow`
+- [platform/api/routers/journal.py](platform/api/routers/journal.py) → `journal_entries` Cloud SQL path → reused by `lib/agents/memory.py`
+- [platform/api/routers/dashboard.py](platform/api/routers/dashboard.py) — confirmed it already pulls `premarket_analysis`; the report's "strat" card can reuse the same loader
+- [gcp/schema.sql](gcp/schema.sql) — add to this file, don't create a new schema file
 - `handle-workflow-failure.yml` — wire into the new daily workflow per CLAUDE.md rules
 
 ## Secrets & Config
 
-- **Day one requires no new secrets.** Vertex Gemini is already wired via `.gcp-key.json` in [platform/api/routers/insights.py](../platform/api/routers/insights.py) — the new `VertexGeminiAdapter` reuses the same auth path.
+- **Day one requires no new secrets.** Vertex Gemini is already wired via `.gcp-key.json` in [platform/api/routers/insights.py](platform/api/routers/insights.py) — the new `VertexGeminiAdapter` reuses the same auth path.
 - **Optional env vars** (only needed when admin switches a role away from Vertex):
   - `ANTHROPIC_API_KEY` — enables Anthropic models in the dropdown. Add to `.env`, GitHub Actions secrets, and Cloud Run env when the user wants to try Claude.
   - `OPENAI_API_KEY` — same, for OpenAI models.
@@ -338,3 +338,35 @@ An independent Plan-agent audit identified the following. Each item is CRITICAL 
 - Replacing Gemini in the chat sub-tab.
 - LangGraph adoption.
 - Backtesting the agent system's decisions against signals (valuable but separate work).
+
+---
+
+## Status as of 2026-09-26
+
+Appended, not woven in: `docs/DOC_REGISTRY.md` classifies this file **Class C**,
+a dated record, and its rule is that such a record is never re-dated and never
+rewritten because editing it destroys what it records. An earlier commit on
+stocks#1121 rewrote 33 link destinations here to `../`; that has been reverted
+and this block replaces it. Codex filed the contradiction, and it was right:
+the rewrite left the file internally mixed, with the links whose targets exist
+rebased and the ones that never shipped in their original spelling, so the
+document read as neither the record it is nor a corrected map.
+
+**Following the links.** Every relative destination above is written from the
+REPOSITORY ROOT, not from `insights/`, so clicking one in a rendered view of
+this file resolves to `insights/<path>` and 404s. Read `gcp/schema.sql` as
+`/gcp/schema.sql`. This was true when the plan was written and is left as
+written.
+
+**What the links point at now.** Of 59 destinations, 33 name files that exist,
+and 26 do not:
+
+- `platform/src/**` moved to the **solyra** repository in the frontend split.
+  Those paths are correct about what was planned and describe a tree this
+  repository no longer holds.
+- `lib/agents/` was built, under different names than the plan proposed:
+  `analysts.py`, `debate.py`, `trader.py` and `memory.py` became
+  `trade_planner.py`, `ranker/` and `embeddings.py`. The plan's names are the
+  proposal, not a claim about today's code.
+
+Nothing above this line has been edited.
