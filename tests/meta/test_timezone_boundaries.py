@@ -94,6 +94,7 @@ _ALIASABLE = {
     ("pandas", "to_datetime"): "pandas.to_datetime",
     ("datetime", "timedelta"): "datetime.timedelta",
     ("zoneinfo", "ZoneInfo"): "zoneinfo.ZoneInfo",
+    ("pytz", "timezone"): "pytz.timezone",
 }
 
 
@@ -106,11 +107,15 @@ def _aliases(tree: ast.AST) -> dict[str, str]:
         if isinstance(node, ast.ImportFrom) and node.module:
             for a in node.names:
                 canon = _ALIASABLE.get((node.module, a.name))
-                if canon and a.asname:
-                    out[a.asname] = canon
+                # Plain imports too: ``from pytz import timezone`` leaves a bare
+                # ``timezone(...)`` that no canonical name matches (Codex P2 on
+                # #1185). Every name below still ends in its short form, so the
+                # suffix matches on now()/today() are unchanged.
+                if canon:
+                    out[a.asname or a.name] = canon
         elif isinstance(node, ast.Import):
             for a in node.names:
-                if a.asname and a.name in ("datetime", "pandas", "zoneinfo"):
+                if a.asname and a.name in ("datetime", "pandas", "zoneinfo", "pytz"):
                     out[a.asname] = a.name
     return out
 
@@ -374,12 +379,18 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
         "n = clock.now()\n"
         "d = day.today()\n"
         "n = p2.Timestamp.now()\n"
+        "from pytz import timezone\n"
+        "from pytz import timezone as tzf\n"
+        "import pytz as pz\n"
+        "z = timezone('America/New_York')\n"
+        "z = tzf('US/Eastern')\n"
+        "z = pz.timezone('America/New_York')\n"
         "ok4 = datetime.utcnow(\n"
         ")  # tz-ok: opt-out on the closing line of a multi-line call\n"
     )
     monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
     rules = Counter(r for r, _ in _hits(sample))
-    assert rules == Counter({"tz-localize-none": 3, "utc-parse": 1, "zone-built-locally": 1,
+    assert rules == Counter({"tz-localize-none": 3, "utc-parse": 1, "zone-built-locally": 4,
                              "fixed-offset": 3, "host-today": 11, "sql-utc-date": 4})
 
 
