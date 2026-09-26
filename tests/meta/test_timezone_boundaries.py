@@ -28,8 +28,9 @@ drifted; see the module docstring of ``lib/eastern_time.py``):
                      ``<x>ts::date`` / ``<x>_at::date``: a UTC date here
 
 It is a ratchet. Existing hits are recorded in
-``tests/fixtures/timezone_boundary_baseline.json`` by identity (file, rule and
-the stripped source line, as a multiset), not by count or line number, so a
+``tests/fixtures/timezone_boundary_baseline.json`` by identity (file, rule,
+enclosing scope and the offending expression, as a multiset; a SQL string by a
+hash of its full text), not by count or line number, so a
 fixed hit cannot be traded for a new one elsewhere in the file and an edit
 that only shifts lines is not a change. They are the remediation backlog. A
 hit not in the baseline fails: that is a new violation. A baseline entry that
@@ -43,6 +44,7 @@ Regenerate the baseline after fixing sites:
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import sys
@@ -99,6 +101,39 @@ def _host_clock(call: ast.Call, kw: dict) -> bool:
 
 
 def _hits(path: Path) -> list[tuple[str, int]]:
+    """(rule, line) for each hit in *path*."""
+    return [(rule, ln) for rule, ln, _ in _scan(path)]
+
+
+def _scopes(tree: ast.AST) -> dict:
+    """node -> dotted name of its enclosing class/function, or '<module>'."""
+    out: dict = {}
+
+    def visit(node: ast.AST, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            out[child] = scope
+            name = getattr(child, "name", None)
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                visit(child, name if scope == "<module>" else f"{scope}.{name}")
+            else:
+                visit(child, scope)
+    visit(tree, "<module>")
+    return out
+
+
+def _identity(node: ast.AST, scope: str) -> str:
+    """What makes a hit THIS hit: its enclosing scope and the offending
+    expression itself (a SQL string by a hash of its full text), so two hits
+    whose first line reads the same (e.g. a bare triple quote) are distinct
+    (Codex P2 on #1185). Line numbers are left out, so an edit that only
+    shifts code is not a change."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return f"{scope}::str#{hashlib.sha1(node.value.encode()).hexdigest()[:12]}"
+    return f"{scope}::{' '.join(ast.unparse(node).split())[:200]}"
+
+
+def _scan(path: Path) -> list[tuple[str, int, str]]:
+    """(rule, line, identity) for each hit in *path*."""
     rel = path.relative_to(REPO).as_posix()
     src = path.read_text(encoding="utf-8")
     try:
@@ -151,20 +186,21 @@ def _hits(path: Path) -> list[tuple[str, int]]:
         lo, hi = node.lineno, getattr(node, "end_lineno", node.lineno) or node.lineno
         return any(OPT_OUT in lines[i - 1] for i in range(lo, min(hi, len(lines)) + 1))
 
-    return [(rule, node.lineno) for rule, node in found if not opted_out(node)]
+    scope = _scopes(tree)
+    return [(rule, node.lineno, _identity(node, scope.get(node, "<module>")))
+            for rule, node in found if not opted_out(node)]
 
 
 def current_hits() -> dict[str, dict[str, list[str]]]:
-    """{file: {rule: sorted stripped source lines}}, the identity of each hit."""
+    """{file: {rule: sorted hit identities}} (see _identity)."""
     out: dict[str, dict[str, list[str]]] = {}
     for p in _files():
-        hits = _hits(p)
+        hits = _scan(p)
         if not hits:
             continue
-        lines = p.read_text(encoding="utf-8").splitlines()
         by_rule: dict[str, list[str]] = {}
-        for rule, ln in hits:
-            by_rule.setdefault(rule, []).append(lines[ln - 1].strip())
+        for rule, _, ident in hits:
+            by_rule.setdefault(rule, []).append(ident)
         out[p.relative_to(REPO).as_posix()] = {r: sorted(v) for r, v in sorted(by_rule.items())}
     return dict(sorted(out.items()))
 
@@ -210,6 +246,27 @@ def test_a_swapped_violation_is_caught_even_when_the_count_is_unchanged(tmp_path
         assert "datetime.now()" in str(e)
     else:
         raise AssertionError("a swapped violation passed the ratchet")
+
+
+def test_two_sql_strings_that_open_the_same_way_are_distinct(tmp_path, monkeypatch):
+    """Codex P2 on #1185 (538ffc2): identities were the stripped first line, so
+    every multi-line SQL string was just a triple quote. Fixing one and adding
+    another left the multiset unchanged and passed."""
+    mod = sys.modules[__name__]
+    f = tmp_path / "gcp" / "q.py"
+    f.parent.mkdir(parents=True)
+    f.write_text('A = """\nSELECT 1 FROM t WHERE DATE(ts) = :d\n"""\n')
+    monkeypatch.setattr(mod, "REPO", tmp_path)
+    base = tmp_path / "baseline.json"
+    monkeypatch.setattr(mod, "BASELINE", base)
+    base.write_text(json.dumps(current_hits()))
+    f.write_text('A = """\nSELECT 1 FROM t WHERE created_at::date = CURRENT_DATE\n"""\n')
+    try:
+        test_no_new_timezone_relabels_and_the_backlog_only_shrinks()
+    except AssertionError as e:
+        assert "str#" in str(e)
+    else:
+        raise AssertionError("a replaced SQL string passed the ratchet")
 
 
 def test_the_helper_module_is_the_only_place_eastern_is_built():
