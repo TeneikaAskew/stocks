@@ -98,6 +98,17 @@ def _events(engine, ticker: str) -> list[tuple[str, datetime]]:
     return [(r[0], r[1]) for r in rows]
 
 
+def _shipped_seed_guard() -> str:
+    """The pre-seed validation DO block exactly as `gcp/schema.sql` ships it."""
+    schema = (
+        pathlib.Path(__file__).resolve().parents[2] / "gcp" / "schema.sql"
+    ).read_text()
+    found = re.findall(
+        r"^DO \$\$\nDECLARE\n    unseedable.*?^\$\$;", schema, re.S | re.M)
+    assert len(found) == 1, f"expected one seed guard, found {len(found)}"
+    return found[0]
+
+
 def _shipped_seed_statement() -> str:
     """The seed INSERT exactly as `gcp/schema.sql` ships it.
 
@@ -988,6 +999,124 @@ def test_a_recorded_event_is_stamped_when_it_was_written(wl):
         f"the row claims it was recorded ({recorded_at}) before the event "
         f"it records happened ({effective_at})"
     )
+
+
+def test_truncating_watchlists_closes_every_open_interval(wl):
+    """Codex P2 on `7fba374`. A row trigger does not fire on TRUNCATE.
+
+    Postgres does not treat truncation as row deletes, so clearing
+    `watchlists` left every `add` in history unclosed. Reproduced against
+    a live server before the statement trigger existed:
+
+        before truncate:  watchlists 1 | history 1
+        after  truncate:  watchlists 0 | history 1
+        history: add 2026-01-10       <- no remove, ever
+
+    `watchlists` is then empty while `resolve_membership_at` still reports
+    the ticker a member, permanently. Reachable: `db_query_cr.sh --commit`
+    runs arbitrary SQL, which is how the earlier comment claiming
+    truncation was unreachable from application code was wrong -- it is
+    not reachable from the APPLICATION, but it is reachable.
+    """
+    _add(wl, "ACME", JAN)
+    _add(wl, "BETA", JAN)
+    _remove(wl, "BETA", MAR)
+
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlists"))
+
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"], (
+        "truncation left ACME's interval open, so it resolves as a member "
+        "of a watchlist that no longer has any rows"
+    )
+    # BETA was already removed; truncation must not record a second remove.
+    assert [a for a, _ in _events(wl, "BETA")] == ["add", "remove"], (
+        "truncation recorded a duplicate removal for an already-removed row"
+    )
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == (), (
+        "the resolver still reports members after the source was emptied"
+    )
+
+
+def test_the_truncate_removal_is_stamped_at_execution(wl):
+    """Same clock rule as every other live transition."""
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        before = conn.execute(sqlalchemy.text("SELECT clock_timestamp()")).scalar()
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlists"))
+    events = _events(wl, "ACME")
+    assert events[1][0] == "remove"
+    assert events[1][1] >= before, (
+        f"the truncate removal was stamped {events[1][1]}, before the "
+        f"truncate ran ({before})"
+    )
+
+
+def test_a_legacy_future_dated_removal_is_refused_by_the_seed(wl):
+    """Codex P2 on `7fba374`. The seed bypassed the live validator.
+
+    The trigger now refuses a future-dated `removed_at`, but the seed is a
+    plain INSERT ... SELECT into `watchlist_history` and the append-only
+    trigger only covers UPDATE and DELETE -- so a row written BEFORE this
+    schema existed, when a future stamp was still allowed, would be copied
+    into the log unchecked. `watchlists` reads it as removed immediately
+    (the value is non-NULL) while the log would not apply it until the
+    date arrives, and the resolution would still be labelled `exact`.
+
+    Measured against production 2026-09-26 before adding this guard: 18
+    rows, 2 removed, 0 future-dated, 0 inverted, newest removal
+    2026-04-30 -- so the real seed is unaffected. The guard is for the
+    database this cannot be proven about at apply time.
+
+    Simulated by disabling the trigger, which is exactly what "written
+    before this schema existed" means.
+    """
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "ALTER TABLE watchlists DISABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, removed_at, source) "
+                "VALUES (:u, 'OLDCO', :added, :removed, 'legacy')"
+            ),
+            {"u": OWNER, "added": JAN,
+             "removed": datetime.now(timezone.utc) + timedelta(days=30)},
+        )
+        conn.execute(sqlalchemy.text(
+            "ALTER TABLE watchlists ENABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY"))
+
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text(_shipped_seed_guard()))
+    msg = str(excinfo.value)
+    assert "OLDCO" in msg and "future" in msg.lower(), msg
+
+
+def test_the_seed_guard_passes_on_ordinary_legacy_rows(wl):
+    """It must refuse only the unrepresentable, not ordinary history.
+
+    Production's shape exactly: some active, some removed in the past.
+    """
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "ALTER TABLE watchlists DISABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, removed_at, source) "
+                "VALUES (:u,'SPY',:jan,NULL,'legacy'), (:u,'MSFT',:jan,:mar,'legacy')"
+            ),
+            {"u": OWNER, "jan": JAN, "mar": MAR},
+        )
+        conn.execute(sqlalchemy.text(
+            "ALTER TABLE watchlists ENABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY"))
+        conn.execute(sqlalchemy.text(_shipped_seed_guard()))
+        conn.execute(sqlalchemy.text(_shipped_seed_statement()))
+
+    assert sorted(a for a, _ in _events(wl, "SPY")) == ["add"]
+    assert sorted(a for a, _ in _events(wl, "MSFT")) == ["add", "remove"]
 
 
 def test_an_empty_watchlist_resolves_to_an_empty_universe(wl):

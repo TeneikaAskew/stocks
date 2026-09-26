@@ -1,10 +1,24 @@
 -- Cloud SQL (PostgreSQL 15) schema for the trading system.
 --
 -- Apply with the applier, not with psql:
---   python -m gcp.apply_schema
+--   ./gcp/deploy.sh apply-schema
 -- In production this runs as the `apply-schema-migrations` Cloud Run Job,
 -- fired by the `apply-schema-on-change` trigger on any push to main that
 -- touches this file.
+--
+-- `python -m gcp.apply_schema` with no arguments EXITS 2 and applies
+-- nothing -- an earlier version of this header named it as the canonical
+-- command and was wrong (Codex P2 on `7fba374`; I documented it without
+-- running it). A mutating apply must be recordable, so --revision and
+-- --revision-time are required. `deploy.sh apply-schema` supplies them.
+-- For a manual or recovery run, the raw form is:
+--
+--   python -m gcp.apply_schema \
+--       --revision="$(git rev-parse HEAD)" \
+--       --revision-time="$(git log -1 --format=%ct HEAD)" \
+--       --revision-ancestors="$(git rev-list --max-count=100 HEAD | tr '\n' ' ')"
+--
+-- Only --dry-run may omit them, because it changes nothing.
 --
 -- `psql -f` / `gcloud sql connect < ` DO still work and are what the
 -- ephemeral integration-test database uses, but they are not equivalent:
@@ -2835,6 +2849,41 @@ CREATE TRIGGER trg_watchlist_history_append_only
     BEFORE UPDATE OR DELETE ON watchlist_history
     FOR EACH ROW EXECUTE FUNCTION watchlist_history_is_append_only();
 
+-- A row trigger does not fire on TRUNCATE -- Postgres does not treat
+-- truncation as row deletes -- so clearing `watchlists` left every open
+-- interval unclosed and the resolver went on reporting members of a table
+-- with no rows in it. Reproduced on a live server (Codex P2 on `7fba374`):
+--
+--   before truncate:  watchlists 1 | history 1
+--   after  truncate:  watchlists 0 | history 1   <- the add, never closed
+--
+-- An earlier comment here called truncation unreachable from application
+-- code and left it at that. Unreachable from the APPLICATION is not
+-- unreachable: `scripts/db_query_cr.sh --commit` runs arbitrary SQL.
+--
+-- Recorded rather than refused, because the integration suite truncates to
+-- isolate and refusing would break the one legitimate caller. It is a
+-- STATEMENT trigger, fired BEFORE so the rows are still readable, and it
+-- closes only intervals that are still open -- an already-removed row has
+-- its remove and must not get a second one.
+CREATE OR REPLACE FUNCTION watchlists_record_truncate()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO watchlist_history
+        (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+    SELECT user_id, ticker, 'remove', clock_timestamp(),
+           source, in_brief, in_insight, signals
+      FROM watchlists
+     WHERE removed_at IS NULL;
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_watchlists_truncate ON watchlists;
+CREATE TRIGGER trg_watchlists_truncate
+    BEFORE TRUNCATE ON watchlists
+    FOR EACH STATEMENT EXECUTE FUNCTION watchlists_record_truncate();
+
 -- One-shot seed from current `watchlists` state. added_at, and a
 -- non-null removed_at, are genuine; what cannot be recovered is an
 -- interval a re-add already erased — hence origin='seed'.
@@ -2844,6 +2893,52 @@ CREATE TRIGGER trg_watchlist_history_append_only
 -- write nothing and stay satisfiable forever: a later apply, after the
 -- trigger had recorded real adds, would seed on top of them and
 -- duplicate every active ticker's add event.
+-- The seed is a plain INSERT and the append-only trigger covers only
+-- UPDATE and DELETE, so it does not pass through
+-- `watchlist_history_assert_recordable` the way every live write does. A
+-- row written BEFORE this schema existed, when a future-dated or inverted
+-- `removed_at` was still accepted, would therefore be copied into the log
+-- unchecked -- and `watchlists` reads such a row as removed immediately
+-- while the log would not apply it until its date arrives, with the
+-- resolution still labelled `exact` (Codex P2 on `7fba374`).
+--
+-- Refused rather than repaired: the correct value is not inferable here,
+-- and seeding an append-only log with an event its own source cannot
+-- express is the one thing this table exists to prevent. The apply fails,
+-- the operator fixes the data, the apply runs again.
+--
+-- Measured against production 2026-09-26: 18 rows, 2 removed, 0
+-- future-dated, 0 inverted, newest removal 2026-04-30 -- so this changes
+-- nothing about the real seed. It is for the database whose contents
+-- cannot be checked from here.
+DO $$
+DECLARE
+    unseedable INTEGER;
+    sample     TEXT;
+BEGIN
+    -- Only when the seed below will actually run; a re-apply must not
+    -- start failing over rows it already declined to seed.
+    IF EXISTS (SELECT 1 FROM watchlist_history) THEN
+        RETURN;
+    END IF;
+    SELECT count(*), min(ticker || ' (added_at=' || added_at ||
+                         ', removed_at=' || COALESCE(removed_at::text, 'NULL') || ')')
+      INTO unseedable, sample
+      FROM watchlists
+     WHERE added_at > clock_timestamp()
+        OR removed_at > clock_timestamp()
+        OR (removed_at IS NOT NULL AND removed_at < added_at);
+    IF unseedable > 0 THEN
+        RAISE EXCEPTION
+            '% watchlists row(s) cannot be seeded into watchlist_history: a '
+            'future-dated or inverted timestamp is an event the source table '
+            'cannot express, so the log would disagree with it from the moment '
+            'it is written. First: %. Correct the row(s) and re-apply.',
+            unseedable, sample;
+    END IF;
+END
+$$;
+
 INSERT INTO watchlist_history
     (user_id, ticker, action, effective_at, origin, source, in_brief, in_insight, signals)
 SELECT s.user_id, s.ticker, s.action, s.effective_at, 'seed',
