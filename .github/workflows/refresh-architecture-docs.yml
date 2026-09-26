@@ -1,5 +1,14 @@
 name: Monthly architecture doc refresh
 
+# The ONLY place a dry run is recorded anywhere a reader can see it. The REST
+# API exposes no `inputs` for a workflow_dispatch run -- not on the runs list,
+# not on `GET /actions/runs/{id}` -- so scripts/maintenance/docs_audit.py read
+# a key that is never present and treated every dry run as a delivery. Keep
+# this line and `DRY_RUN_MARKER` in that script identical; a test pins them to
+# each other.
+run-name: >-
+  Monthly architecture doc refresh ${{ inputs.dry_run == 'true' && '[dry-run]' || '[delivering]' }}
+
 # Refreshes the infrastructure documents under docs/product/infrastructure/
 # (05-a-ARCHITECTURE, 05-c-DATA_DEPENDENCIES, 05-d-COST_ANALYSIS, plus the
 # rendered 05-e-API) and README.md from live GCP state, monthly.

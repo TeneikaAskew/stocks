@@ -600,8 +600,11 @@ class TestMarketDataAPI:
     def _intraday_day_df(self, date_str="2026-02-20", n_bars=120):
         """Build a synthetic 1-min intraday bar DataFrame matching the
         `market_data_intraday` SELECT shape (ts/open/high/low/close/volume/
-        data_source). RTH starting 09:30 ET."""
-        ts = pd.date_range(f"{date_str} 09:30:00", periods=n_bars, freq="1min")
+        data_source). RTH starting 09:30 ET, stored as the table stores it:
+        true UTC instants (CLAUDE.md 3.9; #1185). The loader converts to
+        naive Eastern for the chart."""
+        ts = pd.date_range(f"{date_str} 09:30:00", periods=n_bars, freq="1min",
+                           tz="America/New_York").tz_convert("UTC")
         return pd.DataFrame({
             "ts": ts,
             "open": [200.0 + i * 0.01 for i in range(n_bars)],
