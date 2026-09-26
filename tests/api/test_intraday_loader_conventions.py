@@ -231,3 +231,24 @@ def test_flat_volume_premarket_plus_rth_keeps_its_convention(stored):
     df = _flat(_session("2026-09-24", stored=stored, start="08:00", end="16:00"))
     idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
     assert list(idx[keep]) == list(_expected("2026-09-24", "08:00", "16:00"))
+
+
+# ── Codex P2 on #1185 (a1d6354): the label-only region follows the season ────
+
+
+def test_a_winter_legacy_slice_at_raw_0800_is_read_as_labels():
+    """Under EST true UTC starts at 09:00Z (04:00 ET), so a raw 08:xx row can
+    only be a label. A flat-volume 08:00-08:59 slice has no spike or
+    regular-session evidence and used to fall through to 03:00-03:59 ET."""
+    df = _flat(_session("2026-01-15", stored="et_label", start="08:00", end="08:59"))
+    idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
+    assert list(idx[keep]) == list(_expected("2026-01-15", "08:00", "08:59"))
+
+
+@pytest.mark.parametrize("day", ["2026-01-15", "2026-07-15"])
+def test_true_utc_premarket_still_converts_in_both_seasons(day):
+    """The mirror: the first true-UTC hour (04:00-04:59 ET) sits at raw 08:xx
+    under EDT and raw 09:xx under EST, and neither is taken for labels."""
+    df = _flat(_session(day, stored="utc", start="04:00", end="04:59"))
+    idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
+    assert list(idx[keep]) == list(_expected(day, "04:00", "04:59"))

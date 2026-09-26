@@ -489,6 +489,32 @@ def _held_session_dates(symbol: str, start: datetime, end: datetime, conn=None) 
     return {d: int(n) for d, n in days.items() if d.weekday() < 5}
 
 
+def _held_digest(symbol: str, start: datetime, end: datetime, conn=None) -> str:
+    """md5 of every stored row in the window, in ts order, computed
+    server-side so only 32 characters cross the wire. Times are rendered as
+    epoch values so the text never depends on the session's TimeZone.
+
+    Bar counts cannot see a writer that upserts new values at keys already
+    held; this changes on any insert, delete or value update, so the locked
+    re-check in replace_month refuses the month rather than let the DELETE
+    replace a newer write with an older refetch (Codex P1 on #1185).
+    """
+    sql = """
+        SELECT md5(coalesce(string_agg(concat_ws(',',
+                   extract(epoch FROM m.ts), m.open, m.high, m.low, m.close,
+                   m.volume, m.data_source, extract(epoch FROM m.inserted_at)),
+                   E'\\n' ORDER BY m.ts), '')) AS digest
+          FROM market_data_intraday m
+         WHERE m.ticker = :t AND m.interval = '1min' AND m.ts >= :s AND m.ts < :e
+    """
+    params = {'t': symbol, 's': start, 'e': end}
+    if conn is None:
+        df = query_to_dataframe_strict(sql, params, timeout_s=120)
+        return str(df['digest'].iloc[0])
+    import sqlalchemy
+    return str(conn.execute(sqlalchemy.text(sql), params).scalar_one())
+
+
 def replace_month(symbol: str, year: int, month: int, api_key: str,
                   commit: bool) -> dict:
     """Refetch one (symbol, month) from AV and swap it in atomically.
@@ -514,6 +540,9 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         # H2), and there is no reason to spend a vendor call finding that out.
         out['status'] = REPLACE_NOTHING_HELD
         return out
+    # Content, not just counts: a same-count upsert must also refuse the month.
+    # Only a committed run deletes, so only it needs the baseline.
+    digest = _held_digest(symbol, start, end) if commit else None
     df, reason = fetch_month(symbol, year, month, api_key)
     if df is None or df.empty or reason != FETCH_OK:
         out['status'] = reason if reason != FETCH_OK else FETCH_NO_TIMESERIES
@@ -549,12 +578,15 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         out['inserted'] = len(df)
         return out
     def verify(conn) -> None:
-        # Under the write lock: the month must still hold exactly the sessions
-        # (and bar counts) the refetch was checked against. A writer that
-        # landed in between would otherwise lose its rows to the DELETE.
+        # Under the write lock: the month must still hold exactly what it held
+        # before the refetch, in sessions, bar counts and row content. A writer
+        # that landed in between would otherwise lose its rows (or its newer
+        # values) to the DELETE.
         now = _held_session_dates(symbol, start, end, conn=conn)
         if now != held:
             raise _HeldChanged(f"held sessions changed: {len(held)} -> {len(now)}")
+        if _held_digest(symbol, start, end, conn=conn) != digest:
+            raise _HeldChanged("held rows changed (same bar counts, new content)")
 
     try:
         deleted, inserted = replace_rows_in_window(

@@ -198,7 +198,10 @@ def stored_intraday_to_eastern(ts, volume):
 
     AV bars span 04:00-20:00 Eastern (there is a bar AT 20:00), so some raw
     clock times belong to one convention only, in both seasons:
-      raw 04:00-07:59         only Eastern labels (true UTC starts at 08:00Z)
+      raw 04:00 up to the date's true-UTC start
+                              only Eastern labels (true UTC starts at 04:00 ET:
+                              08:00Z under EDT, 09:00Z under EST, so raw 08:xx
+                              is a label on a winter date, Codex #1185)
       raw 20:01-01:00         only true UTC (the last label is raw 20:00)
     Such a row is read in its own convention wherever it sits. Every other row
     follows its raw date's verdict, decided by, in order:
@@ -237,7 +240,13 @@ def stored_intraday_to_eastern(ts, volume):
     conv_min = pd.Series(converted.hour * 60 + converted.minute, index=pos)
     raw_date = pd.Series(raw.date, index=pos)
     conv_date = pd.Series(converted.date, index=pos)
-    label_only = (raw_min >= 240) & (raw_min < 480)
+    # Where true UTC begins on each raw date: 04:00 ET in UTC minutes, 480
+    # under EDT and 540 under EST. Taken from the date's own offset (at noon,
+    # clear of the 02:00 Sunday transitions, and markets are shut on Sundays).
+    first_true = {d: 240 - int(pd.Timestamp(d).replace(hour=12).tz_localize(ET_NAME)
+                               .utcoffset().total_seconds() // 60)
+                  for d in raw_date.unique()}
+    label_only = (raw_min >= 240) & (raw_min < raw_date.map(first_true))
     true_only = (raw_min > 1200) | (raw_min <= 60)
     as_label = pd.Series(False, index=pos)
     follows_verdict = pd.Series(True, index=pos)

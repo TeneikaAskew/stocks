@@ -687,7 +687,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [497](../../../gcp/backfill_ticker.py#L497)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [107](../../../gcp/build_intraday_gex.py#L107)
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [99](../../../gcp/build_realtime_gex.py#L99)
-- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [210](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L210), [474](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L474)
+- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [210](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L210), [474](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L474), [507](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L507)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [399](../../../gcp/fetchers/fetch_market_data.py#L399)
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [298](../../../gcp/historical_signals.py#L298)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [380](../../../gcp/premarket_playbook_resolver.py#L380)

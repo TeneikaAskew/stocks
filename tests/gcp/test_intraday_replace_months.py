@@ -23,6 +23,13 @@ import pytest
 import gcp.fetchers.fetch_alphavantage_intraday as fai
 from lib.eastern_time import ET
 
+
+@pytest.fixture(autouse=True)
+def _stable_digest(monkeypatch):
+    """The row digest is a live DB read; hold it constant unless a test is
+    about a change in content."""
+    monkeypatch.setattr(fai, "_held_digest", lambda *a, **k: "digest-0")
+
 UTC = timezone.utc
 
 
@@ -565,3 +572,54 @@ def test_a_month_holding_nothing_spends_no_vendor_call():
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_NOTHING_HELD
     fetch.assert_not_called()
+
+
+# ── Codex P1 on #1185 (a1d6354): a same-count write between fetch and lock ────
+
+
+def _full_session(day="2026-09-24", n=961) -> pd.DataFrame:
+    return pd.DataFrame({
+        "ts": pd.date_range(f"{day} 04:00", periods=n, freq="1min"),
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1,
+        "ticker": "SPY", "interval": "1min", "data_source": "alphavantage",
+    })
+
+
+def test_a_same_count_upsert_during_the_refetch_rolls_the_month_back():
+    """The nightly writer upserts revised values at keys already held while AV
+    is answering. Bar counts are unchanged, so only the row digest sees it."""
+    table = {"digest": "before"}
+
+    def fetch(*a, **k):
+        table["digest"] = "after"                # same keys, new values
+        return _full_session(), fai.FETCH_OK
+
+    def fake_replace(df, table_name, key, ts_col, start, end, **kw):
+        kw["verify"](object())
+        return 961, len(df)
+
+    with patch.object(fai, "fetch_month", side_effect=fetch), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "_held_digest", side_effect=lambda *a, **k: table["digest"]), \
+         patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_CHANGED
+    assert "content" in r["detail"]
+
+
+def test_an_unchanged_month_still_replaces_under_the_digest_check():
+    with patch.object(fai, "fetch_month", return_value=(_full_session(), fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "replace_rows_in_window",
+                      side_effect=lambda df, *a, **kw: (kw["verify"](object()), (961, len(df)))[1]):
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_OK
+
+
+def test_a_dry_run_takes_no_digest():
+    with patch.object(fai, "fetch_month", return_value=(_full_session(), fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "_held_digest") as dig:
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=False)
+    assert r["status"] == fai.REPLACE_DRY
+    dig.assert_not_called()
