@@ -56,7 +56,10 @@ except Exception:
 # Repo root on path so we can import gcp.* helpers
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from lib.eastern_time import as_eastern_time, eastern_bounds_utc  # noqa: E402
+from lib.eastern_time import (  # noqa: E402
+    as_eastern_time, eastern_bounds_utc, eastern_index_to_utc,
+    stored_intraday_to_eastern, utc_to_eastern_naive,
+)
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 log = logging.getLogger("validate_brief_accuracy")
@@ -142,6 +145,67 @@ class TickerScorecard:
 # ── Database helpers ───────────────────────────────────────────────────────
 
 
+def _drop_outliers(bars):
+    """Single-bar wick outliers, excluded from every level check. Two
+    complementary conditions:
+      1. Wick > 3% of close (low/close < 0.97 OR high/close > 1.03): a real
+         liquid-name 1-min bar rarely wicks 3%; a wick 5-25% below close is
+         almost always a bad tick / partial fill.
+      2. Range > 1.5% of open AND volume < 200: short-volume bars with
+         abnormally wide ranges.
+    """
+    close = bars["close"].where(bars["close"] != 0)
+    open_ = bars["open"].where(bars["open"] != 0)
+    bad = (((bars["low"] / close - 1).abs() > 0.03)
+           | ((bars["high"] / close - 1).abs() > 0.03)
+           | (((bars["high"] - bars["low"]) / open_ > 0.015)
+              & (bars["volume"].fillna(0) < 200)))
+    return bars[~bad.fillna(False)]
+
+
+def _session_bars(conn, ticker: str, target_date: date,
+                  include_extended: bool = False, filter_outliers: bool = True):
+    """The session's 1-min bars with ``ts`` as true UTC instants, in either
+    stored convention.
+
+    Until the re-framing migration finishes, a row may be an Eastern
+    wall-clock label stored as UTC (CLAUDE.md 3.9). A bar at instant I sits
+    at raw I or at I's Eastern wall clock, which is earlier, so the raw
+    window opens at the session start read as a label; each row is resolved
+    by lib.eastern_time.stored_intraday_to_eastern and the result cut back
+    to the session. Querying the instants directly, as this used to, scored
+    a legacy session against the wrong bars and reported a 14:31 ET hit as
+    10:31 (Codex P2 on #1185).
+    """
+    import pandas as pd
+    start_utc, end_utc = _session_bounds(target_date, include_extended)
+    raw_start = utc_to_eastern_naive(pd.DatetimeIndex([start_utc]))[0].tz_localize("UTC")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT ts, open, high, low, close, volume
+              FROM market_data_intraday
+             WHERE ticker = %s AND ts >= %s AND ts < %s
+             ORDER BY ts
+            """,
+            (ticker, raw_start.to_pydatetime(), end_utc),
+        )
+        rows = cur.fetchall()
+    cols = ["ts", "open", "high", "low", "close", "volume"]
+    bars = pd.DataFrame(rows, columns=cols)
+    if bars.empty:
+        return bars
+    for c in cols[1:]:
+        bars[c] = pd.to_numeric(bars[c], errors="coerce")
+    idx, keep = stored_intraday_to_eastern(bars["ts"], bars["volume"])
+    bars = bars.loc[keep].copy()
+    bars["ts"] = eastern_index_to_utc(idx[keep])
+    bars = bars[(bars["ts"] >= start_utc) & (bars["ts"] < end_utc)]
+    if filter_outliers:
+        bars = _drop_outliers(bars)
+    return bars.sort_values("ts").reset_index(drop=True)
+
+
 def _connect():
     """Open Cloud SQL connection.
 
@@ -224,50 +288,20 @@ def fetch_intraday(conn, ticker: str, target_date: date,
     """Pull 1-min bars for the ticker on target_date and summarize.
 
     Default: the regular session 9:30-16:00 ET (DST-aware, _session_bounds).
-    With filter_outliers=True, single-bar wick outliers (range > 1.5%
-    AND volume < 200) are excluded from MIN(low)/MAX(high) — see
-    find_first_cross for the rationale.
+    With filter_outliers=True, single-bar wick outliers are excluded from
+    the high/low (_drop_outliers). Bars are read in either stored convention
+    (_session_bars).
     """
-    start_utc, end_utc = _session_bounds(target_date, include_extended)
-
-    extra = ""
-    if filter_outliers:
-        # Drop single-bar wick outliers. Two complementary conditions:
-        #   1. Wick > 3% of close (low/close < 0.97 OR high/close > 1.03):
-        #      a real liquid-name 1-min bar rarely wicks 3%; a wick 5-25%
-        #      below close is almost always a bad tick / partial fill.
-        #   2. ALTERNATIVE catch: range > 1.5% of open AND volume < 200
-        #      — short-volume bars with abnormally wide ranges.
-        # Either condition flags an outlier and excludes it from the query.
-        extra = (
-            " AND NOT ("
-            "      ABS(low / NULLIF(close, 0) - 1) > 0.03 "
-            "   OR ABS(high / NULLIF(close, 0) - 1) > 0.03 "
-            "   OR ((high - low) / NULLIF(open, 0) > 0.015 "
-            "       AND COALESCE(volume, 0) < 200)"
-            " )"
-        )
-
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT MIN(ts), MAX(ts), COUNT(*),
-                   (ARRAY_AGG(open ORDER BY ts ASC))[1] AS open_,
-                   MAX(high), MIN(low),
-                   (ARRAY_AGG(close ORDER BY ts DESC))[1] AS close_
-              FROM market_data_intraday
-             WHERE ticker = %s AND ts >= %s AND ts < %s{extra};
-            """,
-            (ticker, start_utc, end_utc),
-        )
-        row = cur.fetchone()
-        if not row or row[2] == 0:
-            return None
-        return IntradayStats(
-            open=float(row[3]), high=float(row[4]), low=float(row[5]),
-            close=float(row[6]), bar_count=int(row[2]),
-            session_start=row[0].isoformat(), session_end=row[1].isoformat(),
-        )
+    bars = _session_bars(conn, ticker, target_date, include_extended, filter_outliers)
+    if bars.empty:
+        return None
+    return IntradayStats(
+        open=float(bars["open"].iloc[0]), high=float(bars["high"].max()),
+        low=float(bars["low"].min()), close=float(bars["close"].iloc[-1]),
+        bar_count=int(len(bars)),
+        session_start=bars["ts"].iloc[0].isoformat(),
+        session_end=bars["ts"].iloc[-1].isoformat(),
+    )
 
 
 def find_first_cross(conn, ticker: str, target_date: date,
@@ -290,42 +324,17 @@ def find_first_cross(conn, ticker: str, target_date: date,
     AND volume < 200. Both conditions together catch the wick outliers
     without dropping legitimate volatile bars (which have high volume).
     """
-    start_utc, end_utc = _session_bounds(target_date, include_extended)
-    session_open = start_utc
-
-    cmp = "high >= %s" if direction == "above" else "low <= %s"
-    extra = ""
-    if filter_outliers:
-        # Same outlier filter as fetch_intraday. Most important leg here
-        # is the low/close > 3% wick check — that's what catches the
-        # AV bad-tick bars where a single 1-min bar reports low far
-        # below the bars before/after it.
-        extra = (
-            " AND NOT ("
-            "      ABS(low / NULLIF(close, 0) - 1) > 0.03 "
-            "   OR ABS(high / NULLIF(close, 0) - 1) > 0.03 "
-            "   OR ((high - low) / NULLIF(open, 0) > 0.015 "
-            "       AND COALESCE(volume, 0) < 200)"
-            " )"
-        )
-
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT ts, open, high, low, close, volume
-              FROM market_data_intraday
-             WHERE ticker = %s AND ts >= %s AND ts < %s AND {cmp}{extra}
-             ORDER BY ts ASC LIMIT 1
-            """,
-            (ticker, start_utc, end_utc, price),
-        )
-        r = cur.fetchone()
-        if not r:
-            return None
-        ts = r[0]
-        delta = ts - session_open
-        # Eastern, for the report's "at HH:MM": a trader reads market time.
-        return (as_eastern_time(ts).isoformat(), int(delta.total_seconds() // 60))
+    bars = _session_bars(conn, ticker, target_date, include_extended, filter_outliers)
+    if bars.empty:
+        return None
+    hit = bars[bars["high"] >= price] if direction == "above" else bars[bars["low"] <= price]
+    if hit.empty:
+        return None
+    ts = hit["ts"].iloc[0].to_pydatetime()
+    session_open, _ = _session_bounds(target_date, include_extended)
+    delta = ts - session_open
+    # Eastern, for the report's "at HH:MM": a trader reads market time.
+    return (as_eastern_time(ts).isoformat(), int(delta.total_seconds() // 60))
 
 
 # ── Brief / AI report parsers ──────────────────────────────────────────────
@@ -528,31 +537,10 @@ def validate_ticker(conn, ticker: str, target_date: date,
             # Did price ever fall in the entry zone during the session?
             # Apply the same outlier filter as find_first_cross so a single
             # bad-tick bar can't fake an "entry reached" verdict.
-            entry_extra = ""
-            if filter_outliers:
-                entry_extra = (
-                    " AND NOT ("
-                    "      ABS(low / NULLIF(close, 0) - 1) > 0.03 "
-                    "   OR ABS(high / NULLIF(close, 0) - 1) > 0.03 "
-                    "   OR ((high - low) / NULLIF(open, 0) > 0.015 "
-                    "       AND COALESCE(volume, 0) < 200)"
-                    " )"
-                )
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT COUNT(*) FROM market_data_intraday
-                     WHERE ticker = %s
-                       AND ts >= %s AND ts < %s
-                       AND high >= %s AND low <= %s{entry_extra}
-                    """,
-                    (
-                        ticker,
-                        *_session_bounds(target_date),
-                        sc.ai_entry_low, sc.ai_entry_high,
-                    ),
-                )
-                sc.ai_entry_reached = cur.fetchone()[0] > 0
+            bars = _session_bars(conn, ticker, target_date, False, filter_outliers)
+            sc.ai_entry_reached = bool(
+                ((bars["high"] >= sc.ai_entry_low) & (bars["low"] <= sc.ai_entry_high)).any()
+            ) if not bars.empty else False
 
         if ai.get("stop") is not None:
             sc.ai_stop = float(ai["stop"])

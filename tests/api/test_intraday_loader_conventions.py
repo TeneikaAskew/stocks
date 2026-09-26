@@ -289,3 +289,18 @@ def test_a_single_date_load_excludes_the_prior_sessions_spill(monkeypatch):
     assert df.index.max() == pd.Timestamp("2026-01-15 20:00")
     assert (df.index.date == pd.Timestamp("2026-01-15").date()).all()
     assert len(df) == 961
+
+
+
+# ── Codex P2 on #1185 (ceb79d5): a true-UTC premarket snapshot ──────────────
+
+
+@pytest.mark.parametrize("day", ["2026-07-15", "2026-01-15"])
+def test_a_flat_true_utc_premarket_snapshot_is_converted(day):
+    """Today's session before the open, as every writer now stores it: flat
+    04:00-09:29 ET bars at raw 08:00-13:29Z (EDT) / 09:00-14:29Z (EST). The
+    labels reading sees 240 minutes of a regular session there and used to
+    win, moving every bar 4-5 h late."""
+    df = _flat(_session(day, stored="utc", start="04:00", end="09:29"))
+    idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
+    assert list(idx[keep]) == list(_expected(day, "04:00", "09:29"))

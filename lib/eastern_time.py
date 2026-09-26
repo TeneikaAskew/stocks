@@ -215,6 +215,8 @@ def stored_intraday_to_eastern(ts, volume):
          finds at least half of them and half again as many as the true-UTC
          reading (a flat-volume legacy day, with or without after-hours bars,
          Codex #1185);
+         A date whose true reading lies wholly in 04:00-09:29 ET is a
+         premarket snapshot and skips this test (step 4);
       4. otherwise convert: every writer's convention from now on.
 
     A row is dropped only when another row lands on the same Eastern minute:
@@ -278,9 +280,21 @@ def stored_intraday_to_eastern(ts, volume):
                 # the default (Codex #1185: RTH plus sparse post-market reads
                 # as labels, which a clock envelope alone could not tell).
                 cm = conv_min[rows]
-                label_rth = int(((rm >= 570) & (rm < 960)).sum()) / 390
-                true_rth = int(((conv_date[rows] == d) & (cm >= 570) & (cm < 960)).sum()) / 390
-                verdict_label = label_rth >= 0.5 and label_rth >= 1.5 * true_rth
+                # A true-UTC premarket snapshot (today's session before the
+                # open, or a retained 04:00-09:29 ET slice) sits at raw
+                # 08:00-13:29 EDT / 09:00-14:29 EST, where the labels reading
+                # sees most of a regular session. When the true reading lies
+                # wholly in premarket, keep the convert default: from #1185
+                # on every writer produces exactly this shape each morning
+                # (Codex P2 on #1185). Legacy premarket from 04:00 is settled
+                # by the label-only region above.
+                in_premarket = (conv_date[rows] == d) & (cm >= 240) & (cm < 570)
+                if bool(in_premarket.all()):
+                    verdict_label = False
+                else:
+                    label_rth = int(((rm >= 570) & (rm < 960)).sum()) / 390
+                    true_rth = int(((conv_date[rows] == d) & (cm >= 570) & (cm < 960)).sum()) / 390
+                    verdict_label = label_rth >= 0.5 and label_rth >= 1.5 * true_rth
         row_label = lo | (~to & verdict_label)
         as_label[rows] = row_label
         follows_verdict[rows] = (row_label == verdict_label)
