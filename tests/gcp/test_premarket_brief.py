@@ -2375,11 +2375,11 @@ class TestEmbedAmcReactionsSection:
                 f"section; saw between=[{between!r}]"
             )
 
-    def test_ew_verdict_renders_in_whispers_section(self):
-        """When evaluate_ew_strikes has scored a row, the verdict shows
-        in the Whispers section (NOT in the BMO/AMC row — strategies
-        moved to a dedicated section to avoid 'this is actionable today'
-        confusion)."""
+    def test_a_verdict_on_todays_row_is_never_rendered(self):
+        """Today's picks are unscored when the brief runs at 08:30 ET. A
+        verdict on one can only come from a BRIEF_AS_OF replay reading a
+        result computed from the day it replays, so the Whispers section
+        shows the pick and not the verdict (#1168)."""
         from gcp.premarket_brief import _build_earnings_embed
         embed = _build_earnings_embed(_earnings_brief([
             _row_out('TEVA', 'premarket', 1,
@@ -2390,17 +2390,10 @@ class TestEmbedAmcReactionsSection:
                      ew_minutes_in_zone=142,
                      ew_day_change_pct=1.2),
         ]))
-        desc = embed['description']
-        assert 'Whispers' in desc
-        # Verdict block lives in Whispers, not BMO row
-        whispers_idx = desc.index('Whispers')
-        teva_in_bmo = desc.index('TEVA')  # first occurrence
-        teva_after_whispers = desc.find('TEVA', whispers_idx)
-        assert 'EW LC $30 HIT' in desc[whispers_idx:]
-        assert '+18.7%' in desc
-        assert 'in 5m' in desc
-        assert 'held 142m' in desc
-        assert 'day +1.2%' in desc
+        whispers = embed['description'].split('Whispers')[1]
+        assert 'TEVA' in whispers and 'Strike $30' in whispers
+        assert 'HIT' not in whispers and '+18.7%' not in whispers
+        assert '\U0001f7e2' not in whispers
 
     def test_ew_verdict_omitted_when_not_evaluated(self):
         """No verdict column = no verdict text. Strategy + strike still
@@ -2924,3 +2917,133 @@ class TestDeleteNullCloseRows:
         monkeypatch.setattr(database, "execute_sql", _boom)
 
         assert _delete_null_close_rows("SPY") == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #1168: the last session's EW verdicts are recapped; today's never shown
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _ew_pick(pid, ticker, earnings_date, timing, verdict=None):
+    """An earnings_calendar EW row as load_ew_recap selects it."""
+    scored = verdict is not None
+    return {'id': pid, 'ticker': ticker, 'earnings_date': earnings_date,
+            'earnings_time': timing, 'strategy': 'Long Calls', 'strike': 30.0,
+            'ew_strike_verdict': verdict,
+            'ew_strike_move_pct': 18.7 if scored else None,
+            'ew_minutes_to_hit': 5 if scored else None,
+            'ew_minutes_in_zone': 142 if scored else None,
+            'ew_day_change_pct': 1.2 if scored else None}
+
+
+# Monday 2026-09-28's brief recaps Friday 09-25; Friday's recaps Thursday.
+_EW_PICKS = [
+    _ew_pick(1, 'PRE_FRI', date(2026, 9, 25), 'premarket', 'HIT'),     # session Fri
+    _ew_pick(2, 'POST_THU', date(2026, 9, 24), 'postmarket', 'MISS'),  # session Fri (#1151)
+    _ew_pick(3, 'POST_FRI', date(2026, 9, 25), 'postmarket'),          # session Mon
+    _ew_pick(4, 'PRE_THU', date(2026, 9, 24), 'premarket', 'KEPT'),    # session Thu
+    _ew_pick(5, 'INTRA_FRI', date(2026, 9, 25), 'intraday'),           # session Fri, unscored
+]
+
+
+def test_mondays_brief_recaps_fridays_session(mock_cloud_sql):
+    """One query over the prior session through the recapped one, then the
+    evaluator's own session rule picks the picks scored on that session."""
+    install, captured = mock_cloud_sql
+    install(pd.DataFrame(_EW_PICKS))
+    from gcp.premarket_brief import load_ew_recap
+    recap = load_ew_recap(date(2026, 9, 28))
+    assert recap['session'] == date(2026, 9, 25)
+    assert [p['ticker'] for p in recap['picks']] == ['POST_THU', 'PRE_FRI']
+    assert recap['unscored'] == 1                       # INTRA_FRI
+    assert len(captured['sqls']) == 1
+    assert (captured['params']['s'], captured['params']['e']) == (
+        date(2026, 9, 24), date(2026, 9, 25))
+
+
+def test_a_thursday_after_close_pick_is_recapped_monday_not_friday(mock_cloud_sql):
+    """#1151: an after-close report is scored on the next session. POST_THU
+    reacts on Friday, so Friday's brief (Thursday's session) leaves it out
+    and Monday's shows it."""
+    install, _ = mock_cloud_sql
+    install(pd.DataFrame(_EW_PICKS))
+    from gcp.premarket_brief import load_ew_recap
+    friday = load_ew_recap(date(2026, 9, 25))
+    assert friday['session'] == date(2026, 9, 24)
+    assert [p['ticker'] for p in friday['picks']] == ['PRE_THU']
+    assert 'POST_THU' in [p['ticker'] for p in load_ew_recap(date(2026, 9, 28))['picks']]
+
+
+def test_todays_rows_never_carry_a_verdict(mock_cloud_sql):
+    """The loader selects no verdict column, and its rows carry none even
+    when the frame does, so no path from today's rows reaches a verdict."""
+    install, captured = mock_cloud_sql
+    install(pd.DataFrame([_row('TEVA', 'earnings_whispers', strategy='Long Calls',
+                               strike=30.0, ew_strike_verdict='HIT',
+                               ew_strike_move_pct=18.7)]))
+    from gcp.premarket_brief import load_earnings_for_brief
+    result = load_earnings_for_brief(date(2026, 4, 27))
+    assert 'ew_' not in captured['sqls'][0]
+    assert result['earnings']
+    assert not [k for r in result['earnings'] for k in r if k.startswith('ew_')]
+
+
+def test_the_recap_renders_the_last_sessions_verdicts():
+    from gcp.premarket_brief import _build_earnings_embed
+    picks = [p for p in _EW_PICKS if p['ew_strike_verdict']][:1]   # PRE_FRI, HIT
+    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': picks, 'unscored': 1}
+    desc = _build_earnings_embed(data)['description']
+    recap = desc.split('EW picks, Fri 09/25 session')[1]
+    assert '\U0001f7e2 **PRE_FRI**' in recap
+    assert 'EW LC $30 HIT +18.7%' in recap
+    assert 'in 5m' in recap and 'held 142m' in recap and 'day +1.2%' in recap
+    assert '+1 not scored' in recap
+
+
+def test_the_recap_renders_on_a_day_without_earnings():
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _earnings_brief([])
+    data['ew_recap'] = {'session': date(2026, 9, 25),
+                        'picks': [_EW_PICKS[1]], 'unscored': 0}   # POST_THU, MISS
+    desc = _build_earnings_embed(data)['description']
+    assert 'EW picks, Fri 09/25 session' in desc
+    assert '\U0001f534 **POST_THU**' in desc and 'EW LC $30 MISS' in desc
+
+
+def test_an_unavailable_recap_is_said_not_hidden(monkeypatch, caplog):
+    """The recap is not worth failing the morning brief for, but a missing
+    one must read as missing: an ERROR with the stack, and a line in the
+    embed (CLAUDE.md §3.7)."""
+    from gcp import premarket_brief as pb
+
+    def boom(today):
+        raise RuntimeError('calendar unavailable')
+
+    monkeypatch.setattr(pb, 'load_ew_recap', boom)
+    with caplog.at_level('ERROR'):
+        recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
+    assert recap['unavailable'] == 'RuntimeError: calendar unavailable'
+    assert any(r.levelname == 'ERROR' and r.exc_info for r in caplog.records)
+    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
+    data['ew_recap'] = recap
+    desc = pb._build_earnings_embed(data)['description']
+    assert 'EW picks, last session: unavailable (RuntimeError: calendar unavailable)' in desc
+
+
+def test_a_null_metric_read_back_as_nan_renders_as_absent(mock_cloud_sql):
+    """pandas hands a NULL integer back as NaN, and `_ew_verdict_str` calls
+    int() on the minutes. Production's SNX (KEPT, 2026-09-24) has a NULL
+    ew_minutes_to_hit. The recap passes None, never NaN, so the row renders
+    without that figure instead of raising."""
+    install, _ = mock_cloud_sql
+    pick = _ew_pick(9, 'SNX', date(2026, 9, 24), 'premarket', 'HIT')
+    pick.update(ew_minutes_to_hit=float('nan'), ew_minutes_in_zone=float('nan'))
+    install(pd.DataFrame([pick]))
+    from gcp.premarket_brief import _build_earnings_embed, load_ew_recap
+    recap = load_ew_recap(date(2026, 9, 25))
+    assert recap['picks'][0]['ew_minutes_to_hit'] is None
+    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
+    data['ew_recap'] = recap
+    desc = _build_earnings_embed(data)['description']
+    assert 'EW LC $30 HIT +18.7%' in desc and 'in ' not in desc.split('SNX')[1].split('\n')[0]

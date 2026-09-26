@@ -355,9 +355,6 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
                ec.stock_volume, ec.options_volume, ec.open_interest,
                ec.rv_1d_last_12q,
                ec.strategy, ec.strike, ec.premium, ec.score, ec.data_source,
-               ec.ew_strike_verdict, ec.ew_strike_move_pct,
-               ec.ew_minutes_to_hit, ec.ew_minutes_in_zone,
-               ec.ew_day_change_pct,
                md.gap_pct, md.pre_high, md.pre_low, md.pre_vwap,
                -- Most recent trading day's close BEFORE earnings_date.
                -- Used to convert ec.expected_move (in DOLLARS) to a
@@ -497,20 +494,16 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
                      and not pd.isna(r.get('eps_surprise_pct'))]
         eps_surprise_pct = surprises[0] if surprises else None
 
-        # EW strike verdict columns — only the EW source row carries
-        # them; coalesce so the inline render works regardless of which
-        # row was 'best'.
+        # No ew_* verdict column: today's picks are unscored when the brief
+        # runs, and a BRIEF_AS_OF replay reading them would show a verdict
+        # computed from the day it replays. load_ew_recap shows the last
+        # session's instead (#1168).
         def _first_non_null(key):
             for rr in rows_list:
                 v = rr.get(key)
                 if v is not None and not (isinstance(v, float) and pd.isna(v)):
                     return v
             return None
-        ew_verdict = _first_non_null('ew_strike_verdict')
-        ew_move_pct = _first_non_null('ew_strike_move_pct')
-        ew_min_to_hit = _first_non_null('ew_minutes_to_hit')
-        ew_min_in_zone = _first_non_null('ew_minutes_in_zone')
-        ew_day_chg = _first_non_null('ew_day_change_pct')
 
         earnings.append({
             'ticker': ticker,
@@ -541,11 +534,6 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             # the dollar-denominated expected_move to a percent for
             # recommended_structure()'s long-only SKIP guard.
             'prev_close': _first_non_null('prev_close'),
-            'ew_strike_verdict': ew_verdict,
-            'ew_strike_move_pct': ew_move_pct,
-            'ew_minutes_to_hit': ew_min_to_hit,
-            'ew_minutes_in_zone': ew_min_in_zone,
-            'ew_day_change_pct': ew_day_chg,
         })
 
     # Filter out names without options flow — earnings are only tradeable
@@ -726,6 +714,77 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             'low_conviction': low_conviction}
 
 # ── Yesterday-AMC reaction view (PR 3) ──────────────────────────────────────
+
+def load_ew_recap(today: date) -> dict:
+    """The Earnings Whispers picks scored on the last NYSE session before
+    `today`, with their verdicts (#1168).
+
+    evaluate-ew-strikes scores a pick at 23:00 ET once its session has
+    closed, so an 08:30 brief can show the session before it, never its own:
+    today's picks are unscored, and a replay reading them would show a
+    verdict computed from the day it replays. The session each pick is
+    scored on comes from the evaluator's own rule (scoring_session), so the
+    two cannot disagree about which picks belong to a session.
+
+    One query: the picks dated from the prior session through the recapped
+    one. That covers an after-close report on the prior session and a
+    before-open or intraday one on the recapped session; scoring_session
+    keeps exactly those. Returns ``{'session', 'picks', 'unscored'}``. The
+    picks are the scored ones, and ``unscored`` counts the rest, so a
+    missing verdict is counted rather than hidden. Raises on any failure;
+    _ew_recap_or_unavailable decides what the brief shows then.
+    """
+    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    from gcp.fetchers.evaluate_ew_strikes import nyse_sessions, scoring_session
+
+    if not is_cloud_sql_configured():
+        raise RuntimeError("Cloud SQL not configured")
+    # Three weeks back always holds two sessions; a week ahead lets
+    # scoring_session place a pick dated on the recapped session.
+    sessions = nyse_sessions(today - timedelta(days=21), today + timedelta(days=7))
+    before = sessions.index[sessions.index < pd.Timestamp(today)]
+    session, prior = before[-1].date(), before[-2].date()
+    df = query_to_dataframe("""
+        SELECT id, ticker, earnings_date, earnings_time, strategy, strike,
+               ew_strike_verdict, ew_strike_move_pct, ew_minutes_to_hit,
+               ew_minutes_in_zone, ew_day_change_pct
+          FROM earnings_calendar
+         WHERE data_source = 'earnings_whispers'
+           AND strike IS NOT NULL
+           AND earnings_date BETWEEN :s AND :e
+    """, {'s': prior, 'e': session})
+    picks, unscored = [], 0
+    for rec in df.to_dict('records'):
+        # pandas reads a NULL number back as NaN, and the render calls int()
+        # on the minutes: pass None, which it skips.
+        row = {k: (None if isinstance(v, float) and pd.isna(v) else v)
+               for k, v in rec.items()}
+        scored_on = scoring_session(pd.Timestamp(row['earnings_date']).date(),
+                                    row['earnings_time'], sessions)
+        if scored_on is None or scored_on.date != session:
+            continue
+        if row.get('ew_strike_verdict') is None:
+            unscored += 1
+            continue
+        picks.append(row)
+    picks.sort(key=lambda r: (r['ticker'], r['id']))
+    return {'session': session, 'picks': picks, 'unscored': unscored}
+
+
+def _ew_recap_or_unavailable(today: date) -> dict:
+    """load_ew_recap, or an envelope that says why it is missing.
+
+    The recap is not worth failing the morning brief for, but a missing one
+    must read as missing (CLAUDE.md §3.7): the error is logged with its
+    stack, and the embed names it instead of showing nothing.
+    """
+    try:
+        return load_ew_recap(today)
+    except Exception as e:
+        logger.exception("EW recap load failed for %s", today)
+        return {'session': None, 'picks': [], 'unscored': 0,
+                'unavailable': f'{type(e).__name__}: {e}'}
+
 
 def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
     """Yesterday's AMC reporters + today's pre-market gap reaction.
@@ -1290,6 +1349,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                 today, top_n=top_amc)
         except Exception as e:
             logger.warning("yesterday-AMC-reactions load failed: %s", e)
+
+    # The last session's EW verdicts (#1168). Weekdays only, like the AMC
+    # reactions: Monday's brief recaps Friday's session.
+    if not is_sunday:
+        brief['earnings']['ew_recap'] = _ew_recap_or_unavailable(today)
 
     # Economic events: Sunday brief needs a full week lookahead, weekday needs ~5 days
     brief['events'] = load_economic_events(today, days_ahead=7 if is_sunday else 5)
@@ -2361,8 +2425,11 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
 
     mode = earnings_data.get('mode', 'daily')
     rows = earnings_data.get('earnings', [])
+    ew_recap = earnings_data.get('ew_recap') or {}
+    has_recap = mode == 'daily' and bool(
+        ew_recap.get('picks') or ew_recap.get('unscored') or ew_recap.get('unavailable'))
 
-    if not rows:
+    if not rows and not has_recap:
         return {
             'title': 'Earnings (Today)' if mode == 'daily' else 'Earnings (Week Ahead)',
             'description': 'No earnings scheduled',
@@ -2605,32 +2672,27 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         return f'{badge}**{ticker}**{extra_str}'
 
     def _whispers_row(r):
-        """🔮 Whispers section row: strategy + strike + historical EW
-        verdict. Lead dot reflects the verdict outcome (NOT the source
-        tier — different signal in this section):
-            🟢 = HIT (long calls/puts went above/below) or KEPT (CC held)
-            🔴 = MISS (strike never crossed) or ASSIGNED (CC breached)
-            (no dot) = verdict pending (today's pick, evaluator hasn't run)
-        """
-        ticker = r['ticker']
-        verdict = r.get('ew_strike_verdict')
-        if verdict in ('HIT', 'KEPT'):
-            dot = '\U0001f7e2 '   # green
-        elif verdict in ('MISS', 'ASSIGNED'):
-            dot = '\U0001f534 '   # red
-        else:
-            dot = ''
+        """🔮 Whispers section row: today's pick, strategy + strike. Never
+        a verdict: today's picks are unscored when the brief runs, and a
+        verdict here could only come from a replay reading a result from
+        the day it replays (#1168). _recap_row shows the last session's."""
         parts = []
         if r.get('strategy'):
             parts.append(r['strategy'])
         strike = _valid_num(r.get('strike'))
         if strike is not None:
             parts.append(f'Strike ${strike:.0f}')
-        ew_v = _ew_verdict_str(r)
-        if ew_v:
-            parts.append(ew_v)
         extra = f' — {" | ".join(parts)}' if parts else ''
-        return f'{dot}**{ticker}**{extra}'
+        return f'**{r["ticker"]}**{extra}'
+
+    def _recap_row(r):
+        """A scored pick from the last session. Lead dot is the outcome:
+            🟢 = HIT (long calls/puts went above/below) or KEPT (CC held)
+            🔴 = MISS (strike never crossed) or ASSIGNED (CC breached)
+        """
+        verdict = r.get('ew_strike_verdict')
+        dot = '\U0001f7e2 ' if verdict in ('HIT', 'KEPT') else '\U0001f534 '
+        return f'{dot}**{r["ticker"]}** — {_ew_verdict_str(r)}'
 
     def _confirmed_count(day_rows):
         return sum(1 for r in day_rows if r.get('tier', 6) <= 3)
@@ -2829,6 +2891,24 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             w_lines = [f'\n**\U0001f52e Whispers** ({len(whispers)})']
             w_lines.extend(_whispers_row(r) for r in whispers)
             sections.append('\n'.join(w_lines))
+
+        # 6. How the last session's EW picks played out (#1168): scored by
+        # evaluate-ew-strikes the evening after their session.
+        if ew_recap.get('unavailable'):
+            sections.append(f'\n**\U0001f52e EW picks, last session: unavailable '
+                            f'({ew_recap["unavailable"]})**')
+        elif has_recap:
+            s = ew_recap.get('session')
+            label = s.strftime('%a %m/%d') if hasattr(s, 'strftime') else str(s)
+            picks = ew_recap.get('picks') or []
+            RECAP_CAP = 10
+            r_lines = [f'\n**\U0001f52e EW picks, {label} session** ({len(picks)} scored)']
+            r_lines.extend(_recap_row(r) for r in picks[:RECAP_CAP])
+            if len(picks) > RECAP_CAP:
+                r_lines.append(f'_+{len(picks) - RECAP_CAP} more_')
+            if ew_recap.get('unscored'):
+                r_lines.append(f'_+{ew_recap["unscored"]} not scored_')
+            sections.append('\n'.join(r_lines))
 
         description = '\n'.join(sections).strip()
 

@@ -2793,9 +2793,9 @@ deploy_fetch_premarket_refresh() {
 # session has closed (the next session for an after-close report, #1151)
 # against that session's intraday bars. Populates ew_strike_verdict +
 # ew_strike_move_pct + ew_minutes_to_hit + ew_minutes_in_zone +
-# ew_day_change_pct on earnings_calendar. Only BRIEF_AS_OF replays of the
-# brief reach its render path (#1168). Idempotent: scored rows skip unless
-# --force is passed, which also clears a row it cannot re-score.
+# ew_day_change_pct on earnings_calendar. The next weekday's premarket
+# brief recaps that session's verdicts (#1168). Idempotent: scored rows skip
+# unless --force is passed, which also clears a row it cannot re-score.
 deploy_evaluate_ew_strikes() {
     echo "Deploying evaluate-ew-strikes job..."
     gcloud run jobs create evaluate-ew-strikes \
