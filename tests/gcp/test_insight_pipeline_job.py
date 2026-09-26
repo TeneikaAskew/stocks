@@ -834,7 +834,7 @@ def _membership(as_of, *tickers):
     )
 
 
-def _drive_batch(monkeypatch, resolve_returns):
+def _drive_batch(monkeypatch, resolve_returns, as_of_env=None):
     """Run one sequential batch, capturing the universe each ticker got."""
     import datetime as _dt
 
@@ -842,6 +842,7 @@ def _drive_batch(monkeypatch, resolve_returns):
 
     got: list = []
     got_as_of: list = []
+    got_stamp: list = []
     calls: list = []
 
     def fake_resolve(cutoff, *a, **kw):
@@ -853,17 +854,21 @@ def _drive_batch(monkeypatch, resolve_returns):
     monkeypatch.setattr(job, "_insert_run", lambda ticker, trigger: f"run-{ticker}")
 
     async def fake_run_one(run_id, ticker, as_of=None, allow_update=False,
-                           run_kind="scheduled", triggered_by=None, universe=None):
+                           run_kind="scheduled", triggered_by=None, universe=None,
+                           report_as_of=None):
         got.append(universe)
         got_as_of.append(as_of)
+        got_stamp.append(report_as_of)
         return True
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
     _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_MAX_BATCH=None,
-             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None, INSIGHT_AS_OF=None)
+             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None,
+             INSIGHT_AS_OF=as_of_env)
     monkeypatch.setenv("INSIGHT_FANOUT", "0")
     assert _run(job._run_scheduled()) == 0
     _drive_batch.last_as_of = got_as_of
+    _drive_batch.last_stamp = got_stamp
     return got, calls, _dt.datetime.now(_dt.timezone.utc).date()
 
 
@@ -963,4 +968,53 @@ def test_a_failed_freeze_leaves_as_of_exactly_as_it_was(monkeypatch):
     assert _drive_batch.last_as_of == [None, None], (
         "a date was invented for a run whose freeze failed; that silently "
         "changes the cutoff every section applies"
+    )
+
+
+def test_a_live_run_is_stamped_at_execution_time_not_at_the_frozen_date(monkeypatch):
+    """Codex P2 on `2d06c20`, and a consequence I called cosmetic.
+
+    I justified the midnight stamp as "more honest for a report that IS
+    as-of a date" without checking that `as_of` is half of
+    `insight_reports`' upsert key (`ON CONFLICT (ticker, as_of)`). It is.
+    A live row stamped at midnight therefore collides with a date-only
+    `INSIGHT_AS_OF` replay of the same day, and that replay runs with
+    allow_update and rewrites `run_kind` -- so the live-only reader at
+    `platform/api/routers/insights.py:228` is left serving a stale report
+    or a 404. A midnight row also sorts behind an exact-timestamp fan-out
+    row for the same day and is never served as latest.
+
+    The cutoff stays frozen; only the persisted timestamp goes back to
+    execution time.
+    """
+    import datetime as _dt
+
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    _drive_batch(monkeypatch, lambda cutoff, n: _membership(cutoff, "SPY"))
+
+    assert _drive_batch.last_as_of == [today, today], "the cutoff stopped being frozen"
+    for stamp in _drive_batch.last_stamp:
+        assert isinstance(stamp, _dt.datetime), (
+            f"a live run was not given an execution timestamp: {stamp!r}"
+        )
+        assert (stamp.hour, stamp.minute, stamp.second) != (0, 0, 0), (
+            "the live stamp is midnight, so it collides with a date-only "
+            "replay of the same day on (ticker, as_of)"
+        )
+
+
+def test_an_explicit_as_of_replay_keeps_its_date_keyed_stamp(monkeypatch):
+    """A replay is MEANT to own its date key; do not hand it a live stamp."""
+    import datetime as _dt
+
+    named = _dt.date(2026, 5, 8)
+
+    def resolve(cutoff, n):
+        return _membership(cutoff, "SPY")
+
+    _drive_batch(monkeypatch, resolve, as_of_env=named.isoformat())
+    assert _drive_batch.last_as_of == [named, named]
+    assert _drive_batch.last_stamp == [None, None], (
+        "an as-of replay was given an execution stamp, which would stop it "
+        "owning the (ticker, as_of) row it is supposed to rewrite"
     )

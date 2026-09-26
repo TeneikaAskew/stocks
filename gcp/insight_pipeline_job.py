@@ -494,6 +494,7 @@ async def _run_one(
     run_kind: str = 'scheduled',
     triggered_by: Optional[str] = None,
     universe=None,
+    report_as_of: Optional[datetime] = None,
 ) -> bool:
     """Execute one pipeline run and persist transitions. Returns True
     on success.
@@ -526,7 +527,8 @@ async def _run_one(
     try:
         snapshot = load_routes_snapshot()
         report = await run_insight_pipeline(
-            ticker, as_of=as_of, snapshot=snapshot, universe=universe)
+            ticker, as_of=as_of, snapshot=snapshot, universe=universe,
+            report_as_of=report_as_of)
         # Always append to history first; current-table write is conditional.
         _insert_report_history(report, run_id, run_kind, triggered_by)
         report_id = _upsert_report(report, allow_update=allow_update)
@@ -884,6 +886,26 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
             return as_of
         return current.as_of
 
+    def _live_stamp(current):
+        """Execution time for a run whose cutoff WE pinned, else None.
+
+        The mirror of `_run_as_of`, and it has to stay the mirror: exactly
+        when that returns the frozen date instead of the operator's own
+        `as_of`, this run is LIVE and its persisted timestamp must not
+        become the frozen date. `insight_reports` keys on
+        `(ticker, as_of)`, so a live row stamped at midnight collides with
+        a date-only `INSIGHT_AS_OF` replay of the same day -- and that
+        replay runs with allow_update and rewrites `run_kind`, leaving the
+        live-only reader nothing to serve (Codex P2 on `2d06c20`).
+
+        When the operator DID name a date, this returns None and the
+        replay keeps its date-keyed semantics, which is the point of a
+        replay: it is meant to own that key.
+        """
+        if as_of is not None or current is None:
+            return None
+        return datetime.now(timezone.utc)
+
     any_failures = False
     if pending is None:
         # Sequential mode: insert each run row immediately before
@@ -900,6 +922,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
                 run_id, ticker, as_of=_run_as_of(batch_universe),
                 allow_update=allow_update, run_kind=run_kind,
                 triggered_by=triggered_by, universe=batch_universe,
+                report_as_of=_live_stamp(batch_universe),
             )
             if not ok:
                 any_failures = True
@@ -911,6 +934,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
                 run_id, ticker, as_of=_run_as_of(batch_universe),
                 allow_update=allow_update, run_kind=run_kind,
                 triggered_by=triggered_by, universe=batch_universe,
+                report_as_of=_live_stamp(batch_universe),
             )
             if not ok:
                 any_failures = True

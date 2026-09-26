@@ -2488,6 +2488,10 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
 -- non-empty table and skip the seed permanently.
 CREATE OR REPLACE FUNCTION watchlists_record_membership()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+    -- Newest transition already recorded for this key, used by the
+    -- backdate guard in the UPDATE removal branch below.
+    latest_effective_at TIMESTAMPTZ;
 BEGIN
     -- Any timestamp a writer produced with NOW() IS transaction_timestamp():
     -- fixed when THEIR transaction began, so it can predate an event that
@@ -2634,6 +2638,45 @@ BEGIN
             -- the remover's transaction-start clock and must not be able to
             -- precede a re-add that committed while that transaction was
             -- open; a deliberately backdated one is kept verbatim.
+            --
+            -- Kept verbatim, but NOT unconditionally. A backdate must still
+            -- fall AFTER the newest transition already recorded for this
+            -- key, or the log inverts and the append-only table cannot be
+            -- repaired. Reproduced against a live server before this guard
+            -- existed -- added Jan, removed Mar, re-added today, then
+            -- removed with `removed_at = 2026-02-01`:
+            --
+            --   3  add     2026-09-26 17:09:00   (the re-add)
+            --   4  remove  2026-02-01 00:00:00   (written LAST, 7 months earlier)
+            --   resolver -> 'add';  watchlists -> REMOVED
+            --
+            -- A removed ticker reporting active, which is the failure the
+            -- clock_timestamp work above exists to prevent, reached instead
+            -- through a value the writer chose (Codex P2 on `2d06c20`). The
+            -- earlier backdate coverage exercised only a FIRST removal, so
+            -- there was no prior re-add for it to invert against.
+            --
+            -- Refused rather than silently re-stamped, for the same reason
+            -- as the other guards here: recording the transition at
+            -- execution time while keeping the operator's requested date as
+            -- a separate historical correction needs a third `action` value
+            -- and a resolver that understands supersession -- a contract
+            -- change to decide, not to infer from an UPDATE.
+            IF NEW.removed_at <> transaction_timestamp() THEN
+                SELECT MAX(effective_at) INTO latest_effective_at
+                  FROM watchlist_history
+                 WHERE user_id = NEW.user_id AND ticker = NEW.ticker;
+                IF latest_effective_at IS NOT NULL
+                   AND NEW.removed_at < latest_effective_at THEN
+                    RAISE EXCEPTION
+                        'backdated removal % precedes this ticker''s latest '
+                        'recorded transition at %; watchlist_history is '
+                        'append-only and ordered by effective_at, so the '
+                        'removal would sort behind an earlier add and '
+                        'resolve as still active.',
+                        NEW.removed_at, latest_effective_at;
+                END IF;
+            END IF;
             INSERT INTO watchlist_history
                 (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
             VALUES (NEW.user_id, NEW.ticker, 'remove',

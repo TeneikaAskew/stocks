@@ -451,6 +451,70 @@ def test_a_deliberately_backdated_removal_is_kept_verbatim(wl):
     assert resolve_membership_at(date(2026, 4, 1), OWNER).tickers == ()
 
 
+def test_a_backdated_removal_before_a_re_add_is_refused(wl):
+    """Codex P2 on `2d06c20`. The backdate exemption had a hole.
+
+    Preserving a deliberately-stated `removed_at` is right, and
+    `test_a_deliberately_backdated_removal_is_kept_verbatim` pins it -- but
+    that test only ever exercised a FIRST removal, with no prior re-add for
+    the backdate to sort behind. Once a ticker has been removed and
+    re-added, a removal backdated before that re-add leaves the `add` as
+    the newest event and the resolver reports a REMOVED ticker as active,
+    in a table that forbids its own correction.
+
+    Reproduced against real SQL before the guard existed:
+
+        3  add     2026-09-26 17:09:00   (the re-add)
+        4  remove  2026-02-01 00:00:00   (written LAST, seven months earlier)
+        resolver -> 'add';  watchlists -> REMOVED
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)          # re-add: stamped at execution time
+
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = :at "
+                    " WHERE ticker='ACME' AND removed_at IS NULL"
+                ),
+                {"at": datetime(2026, 2, 1, tzinfo=timezone.utc)},
+            )
+    assert "precedes" in str(excinfo.value)
+
+    # Nothing was appended, and the ticker is still active in both sources.
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove", "add"]
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == (
+        "ACME",
+    )
+
+
+def test_a_backdate_after_the_latest_transition_is_still_allowed(wl):
+    """The guard bounds the exemption; it must not abolish it.
+
+    A stated removal time that falls AFTER everything already recorded
+    cannot invert the log, so it is kept verbatim -- which is what makes
+    as-of resolution able to answer for a real historical removal.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)
+
+    later = datetime.now(timezone.utc) + timedelta(seconds=5)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET removed_at = :at "
+                " WHERE ticker='ACME' AND removed_at IS NULL"
+            ),
+            {"at": later},
+        )
+    events = _events(wl, "ACME")
+    assert [a for a, _ in events] == ["add", "remove", "add", "remove"]
+    assert events[3][1] == later, "a legitimate backdate was re-stamped"
+
+
 # ---------------------------------------------------------------------------
 # The append-only guarantee
 # ---------------------------------------------------------------------------
