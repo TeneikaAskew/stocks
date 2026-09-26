@@ -465,6 +465,29 @@ DERIVED_TS_TABLES = (
     "strat_features_1m", "strat_features_5m", "strat_features_15m",
     "strat_features_30m", "strat_features_60m", "strat_features_4h",
 )
+
+# Result tables computed FROM the bars that the migration does NOT touch:
+# they hold outcomes people have read, so invalidating them is a separate,
+# approved recompute step, not a side effect of the replace (Codex P1 on
+# #1185). The run lists every replaced ticker-month (REPLACED lines) and how
+# to recompute each table over them (RECOMPUTE lines), so the contamination
+# is stated rather than silent. Each command re-derives from the corrected
+# bars; the old rows must be removed first where keys move.
+BAR_DERIVED_RESULTS = {
+    "historical_signals / signal_metrics":
+        "scripts/run_historical_signals.py --symbol T --force --start-date <first "
+        "replaced month> (deletes the ticker's rows for the strategy, then "
+        "regenerates; entry_time keys move with the bars), then "
+        "signal_quality_report --heal-days covering the range",
+    "premarket_analysis outcomes":
+        "PLAYBOOK_RESOLVE_DATE=<d> PLAYBOOK_RESOLVE_TICKERS=T "
+        "PLAYBOOK_RESOLVE_FORCE=true python -m gcp.premarket_playbook_resolver "
+        "for each replaced session",
+    "signal_alerts exits":
+        "signal-monitor-eod-resolver over the replaced dates",
+    "market_data_daily premarket fields (pre_high/pre_low/pre_vwap/gap_pct)":
+        "backfill_daily_indicators over the replaced dates",
+}
 # A refetched session may hold this share fewer bars than already held
 # (rounded down, so a session under 50 bars must be complete) before the
 # month is refused as incomplete.
@@ -653,6 +676,10 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
     ``RETRY TICKER,YYYY-MM`` line: collect them into the next list.
     """
     items = _read_replace_list(path)
+    if not items:
+        # A truncated or failed list upload must not read as "nothing to do".
+        log.error("replace-months: %s lists no ticker-months; refusing to run.", path)
+        return 1
     task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
     task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
     items = items[task_idx::task_cnt]
@@ -668,6 +695,7 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
     counts: dict = {}
     retry: list[str] = []
     rebuild: dict = {}
+    replaced: list[str] = []
     last = 0.0
     # The AV key's RPM is shared by every task, so each task paces at
     # delay x task_count (code review H1): N tasks together stay at the cap.
@@ -685,6 +713,8 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
             retry.append(f"{sym},{y}-{m:02d}")
             continue
         counts[r['status']] = counts.get(r['status'], 0) + 1
+        if r['status'] == REPLACE_OK:
+            replaced.append(f"{r['symbol']},{r['month']}")
         for t, n in (r.get('derived_cleared') or {}).items():
             rebuild[t] = rebuild.get(t, 0) + n
         if r['status'] != expected:
@@ -701,6 +731,13 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
         # gaps are explicit until each builder re-runs over the range.
         for t in sorted(rebuild):
             log.warning("REBUILD %s rows_cleared=%d", t, rebuild[t])
+    if replaced:
+        # Results computed from the old bars are still in place until the
+        # approved recompute step runs over exactly these windows.
+        for item in replaced:
+            log.warning("REPLACED %s", item)
+        for table, how in BAR_DERIVED_RESULTS.items():
+            log.warning("RECOMPUTE %s: %s", table, how)
     if retry:
         for item in retry:
             log.error("RETRY %s", item)
@@ -756,6 +793,14 @@ def run_verify_months(path: str, limit: Optional[int]) -> int:
     no AlphaVantage calls.
     """
     items = _read_replace_list(path)
+    if not items:
+        # This is the reader-cutover gate: an empty or header-only list (a
+        # failed or truncated upload) must fail, not pass having checked
+        # nothing (Codex P1 on #1185). Checked before sharding, since a task
+        # may legitimately get no items when the list is shorter than the
+        # task count.
+        log.error("verify-months: %s lists no ticker-months; nothing was verified.", path)
+        return 1
     task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
     task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
     items = items[task_idx::task_cnt]

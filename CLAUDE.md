@@ -643,6 +643,11 @@ whether the win still holds.
 >   ts-keyed derived tables (`DERIVED_TS_TABLES`: intraday flow/GEX 15m,
 >   `strat_features_*`) are deleted in the same transaction; re-run their
 >   builders over the range afterwards (the run prints `REBUILD` lines).
+>   Result tables computed from the old bars (`historical_signals`,
+>   `premarket_analysis` outcomes, `signal_alerts` exits, `market_data_daily`
+>   premarket fields) are NOT touched by the migration: recomputing them is a
+>   separate approved step over the `REPLACED` windows, with the commands the
+>   run prints as `RECOMPUTE` lines.
 > - **Reading across the migration:** `lib.eastern_time.stored_intraday_to_eastern`.
 >   Raw dates from `TRUE_UTC_FROM` (2026-09-28, the first session after the
 >   writer deploy) are true UTC by construction; earlier dates are inferred.

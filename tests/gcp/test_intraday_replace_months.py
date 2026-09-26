@@ -819,3 +819,48 @@ def test_a_bad_derived_table_name_is_refused():
         db.replace_rows_in_window(df, "market_data_intraday",
                                   {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
                                   clear_tables=("x; DROP TABLE y",))
+
+
+# ── Codex P1 x2 on #1185 (65bdc4f) ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize("body", ["", "ticker,month\n", "# only a comment\n"])
+def test_an_empty_verification_list_fails(tmp_path, caplog, body):
+    lst = tmp_path / "l.csv"
+    lst.write_text(body)
+    with patch.object(fai, "query_to_dataframe_strict") as q:
+        assert fai.run_verify_months(str(lst), None) == 1
+    q.assert_not_called()
+    assert "nothing was verified" in caplog.text
+
+
+def test_a_short_list_leaves_a_task_empty_without_failing(tmp_path, monkeypatch):
+    """Two tasks, one item: task 1 gets nothing, which is not the failure."""
+    lst = tmp_path / "l.csv"
+    lst.write_text("AAA,2026-09\n")
+    monkeypatch.setenv("CLOUD_RUN_TASK_INDEX", "1")
+    monkeypatch.setenv("CLOUD_RUN_TASK_COUNT", "2")
+    assert fai.run_verify_months(str(lst), None) == 0
+
+
+def test_an_empty_replace_list_fails(tmp_path):
+    lst = tmp_path / "l.csv"
+    lst.write_text("ticker,month\n")
+    with patch.object(fai, "replace_month") as rm:
+        assert fai.run_replace_months(str(lst), commit=True, limit=None) == 1
+    rm.assert_not_called()
+
+
+def test_a_committed_run_lists_replaced_windows_and_every_result_to_recompute(tmp_path, caplog):
+    lst = tmp_path / "l.csv"
+    lst.write_text("SPY,2026-09\n")
+    ok = {"symbol": "SPY", "month": "2026-09", "status": fai.REPLACE_OK,
+          "held_sessions": 1, "missing_sessions": 0, "deleted": 1, "inserted": 1}
+    with patch.object(fai, "get_api_keys", return_value=["k"]), \
+         patch.object(fai, "replace_month", return_value=ok), \
+         patch.object(fai.time, "sleep"):
+        assert fai.run_replace_months(str(lst), commit=True, limit=None) == 0
+    assert "REPLACED SPY,2026-09" in caplog.text
+    for table in ("historical_signals", "premarket_analysis", "signal_alerts",
+                  "market_data_daily"):
+        assert f"RECOMPUTE {table}" in caplog.text
