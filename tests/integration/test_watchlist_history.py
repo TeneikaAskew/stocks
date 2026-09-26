@@ -913,6 +913,28 @@ def test_an_empty_seed_still_marks_pre_install_cutoffs_approximate(wl):
     assert resolved.resolution == "approximate"
 
 
+def test_the_install_day_itself_is_approximate(wl):
+    """Codex P2 on `d8b0332`. The horizon is an instant; as_of is a day.
+
+    The comparison was `as_of < horizon.date()`, so the install date came
+    back `exact` -- but the membership query spans the whole calendar day
+    (`day_start` 00:00 to `day_end` next 00:00) while observation began
+    partway through it. A ticker hard-deleted at 09:00 on an install day
+    that started recording at 22:30 is in neither the seed nor the log, so
+    resolving that date omits a member and calls the answer precise.
+
+    The horizon's own day is therefore the LAST approximate one, not the
+    first exact one.
+    """
+    _add(wl, "ACME", JAN)
+    resolved = resolve_membership_at(date.today(), OWNER)
+    assert resolved.horizon is not None
+    assert resolved.resolution == "approximate", (
+        "the install day was reported exact, but only part of it was "
+        "observed -- anything removed earlier that day is invisible"
+    )
+
+
 def test_a_cutoff_after_the_install_horizon_is_exact(wl):
     """The horizon must bound the claim, not abolish it.
 

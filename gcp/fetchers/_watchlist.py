@@ -210,7 +210,16 @@ def resolve_membership_at(
         # `horizon` is tz-aware (TIMESTAMPTZ); day_start is naive local.
         # Compare on the calendar date, which is the granularity the
         # caller reasons in and avoids inventing a timezone here.
-        if as_of < horizon.date():
+        #
+        # `<=`, not `<`: the horizon is an INSTANT and `as_of` is a DAY. The
+        # query above spans that whole day (`day_start` 00:00 to `day_end`
+        # next 00:00) while observation began partway through it, so the
+        # install day is partly unobserved -- a ticker hard-deleted at 09:00
+        # on a day that started recording at 22:30 is in neither the seed nor
+        # the log. Reporting it `exact` omits a member and calls the answer
+        # precise (Codex P2 on `d8b0332`). The horizon's own day is the LAST
+        # approximate one, not the first exact one.
+        if as_of <= horizon.date():
             resolution = "approximate"
 
     logger.info(
