@@ -150,7 +150,9 @@ def test_process_symbol_does_not_classify_dead_when_any_transient(monkeypatch):
 def test_process_symbol_returns_ok_on_any_success(monkeypatch):
     """One real month of data → OUTCOME_OK regardless of other failures."""
     df = pd.DataFrame({
-        'ts': [pd.Timestamp('2025-01-02 09:30', tz='UTC')],
+        # Naive Eastern, as fetch_month really returns it (pd.Timestamp of the
+        # AV key); process_symbol converts it to UTC.
+        'ts': [pd.Timestamp('2025-01-02 09:30')],
         'open': [100.0], 'high': [101.0], 'low': [99.5],
         'close': [100.5], 'volume': [5000],
         'ticker': ['SPY'], 'interval': ['1min'], 'data_source': ['alphavantage'],

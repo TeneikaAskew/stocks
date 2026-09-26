@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,12 +23,15 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive
 
 from gcp.database import (
     bulk_insert_dataframe,
     execute_sql,
     is_cloud_sql_configured,
+    query_to_dataframe_strict,
+    WindowChanged,
+    replace_rows_in_window,
     upsert_dataframe,
 )
 from lib.config import AlphaVantageConfig
@@ -295,9 +298,8 @@ def process_symbol(
         if df is None or df.empty:
             continue
 
-        # Localize timestamps to UTC
-        if df['ts'].dt.tz is None:
-            df['ts'] = df['ts'].dt.tz_localize(ET_NAME).dt.tz_convert('UTC')
+        # Naive Eastern vendor stamps -> UTC instants (CLAUDE.md 3.9).
+        df['ts'] = eastern_index_to_utc(df['ts'])
 
         log.info("    %s: %d bars", month_str, len(df))
 
@@ -407,6 +409,358 @@ def _file_data_quality_issue(dead_tickers: list) -> None:
                  new_num)
 
 
+
+# -- Re-framing migration (CLAUDE.md 3.9) -------------------------------------
+#
+# Two writers used to store AV's naive Eastern wall time as if it were UTC, so
+# market_data_intraday holds months in two conventions, and at colliding keys
+# the Eastern-labelled bar overwrote the true one. An upsert cannot repair
+# that: a row at the wrong key stays there. --replace-months refetches each
+# listed (ticker, month) from AV and swaps the whole month in one transaction.
+
+# Every row month M can hold, in either convention, lies in
+#   [M-01 02:00Z, (M+1)-01 02:00Z)
+#   * Eastern-labelled rows: raw labels 04:00-20:00 on each day of M.
+#   * True-UTC rows: 04:00 ET on the 1st (08:00Z EDT / 09:00Z EST) through
+#     the 20:00 ET bar on the last day (00:00Z EDT / 01:00Z EST on the next 1st).
+#     AV stores a bar AT 20:00 ET; the window must include it (code review C1).
+# and no neighbouring month's rows do: M-1's true-UTC rows end at 01:00Z on
+# the 1st of M; M+1's labelled rows start at 04:00Z on its 1st. Any boundary
+# in (01:00Z, 04:00Z] works; 02:00Z leaves an hour either side.
+# tests/gcp/test_intraday_replace_months.py checks this across DST changes.
+_WINDOW_HOUR_UTC = 2
+
+
+def month_replace_window(year: int, month: int) -> tuple[datetime, datetime]:
+    """UTC ``[start, end)`` holding every row of (year, month) in either convention."""
+    start = datetime(year, month, 1, _WINDOW_HOUR_UTC, tzinfo=timezone.utc)
+    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+    return start, datetime(ny, nm, 1, _WINDOW_HOUR_UTC, tzinfo=timezone.utc)
+
+
+REPLACE_OK = 'replaced'
+REPLACE_DRY = 'dry_run'
+REPLACE_INCOMPLETE = 'incomplete_refetch'   # vendor returned fewer sessions than we hold
+REPLACE_NOTHING_HELD = 'nothing_held'       # window holds no session; never delete blind
+REPLACE_CHANGED = 'changed_during_replace'  # a writer changed the month mid-replace; rolled back
+
+
+class _HeldChanged(Exception):
+    """Raised under the replace lock when the held sessions moved since the
+    pre-check; rolls the transaction back."""
+# A replaced month holds at most both conventions of each session (x2) plus
+# stragglers. Deleting more than this multiple of what is re-inserted means
+# something is wrong with the window or the list; the transaction rolls back.
+REPLACE_MAX_DELETE_RATIO = 3.0
+# A refetched session may hold this share fewer bars than already held
+# (rounded down, so a session under 50 bars must be complete) before the
+# month is refused as incomplete.
+REPLACE_SHORT_TOLERANCE = 0.02
+
+
+def _held_session_dates(symbol: str, start: datetime, end: datetime, conn=None) -> dict:
+    """{Eastern session date: distinct bars held} for the window.
+
+    Reads the window's rows and resolves them with
+    lib.eastern_time.stored_intraday_to_eastern, the same rule the Charts API
+    reads by: each row placed in its own convention and duplicates left where
+    both writers collided counted once. So a session both writers touched
+    counts its real bars, not up to twice as many rows, and the 20:00 ET spill
+    counts toward the session it closes, never toward a holiday after it (code
+    review C1). Weekday sessions only. Strict query: a DB error must never read
+    as "nothing held".
+    """
+    sql = """
+        SELECT ts, volume
+          FROM market_data_intraday
+         WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e
+    """
+    params = {'t': symbol, 's': start, 'e': end}
+    if conn is None:
+        df = query_to_dataframe_strict(sql, params, timeout_s=120)
+    else:
+        # Inside the replace transaction, under its write lock.
+        import sqlalchemy
+        res = conn.execute(sqlalchemy.text(sql), params)
+        df = pd.DataFrame(res.fetchall(), columns=['ts', 'volume'])
+    if df.empty:
+        return {}
+    idx, keep = stored_intraday_to_eastern(df['ts'], df['volume'])
+    days = pd.Series(idx[keep].date).value_counts()
+    return {d: int(n) for d, n in days.items() if d.weekday() < 5}
+
+
+def _held_digest(symbol: str, start: datetime, end: datetime, conn=None) -> str:
+    """md5 of every stored row in the window, in ts order, computed
+    server-side so only 32 characters cross the wire. Times are rendered as
+    epoch values so the text never depends on the session's TimeZone.
+
+    Bar counts cannot see a writer that upserts new values at keys already
+    held; this changes on any insert, delete or value update, so the locked
+    re-check in replace_month refuses the month rather than let the DELETE
+    replace a newer write with an older refetch (Codex P1 on #1185).
+    """
+    sql = """
+        SELECT md5(coalesce(string_agg(concat_ws(',',
+                   extract(epoch FROM m.ts), m.open, m.high, m.low, m.close,
+                   m.volume, m.data_source, extract(epoch FROM m.inserted_at)),
+                   E'\\n' ORDER BY m.ts), '')) AS digest
+          FROM market_data_intraday m
+         WHERE m.ticker = :t AND m.interval = '1min' AND m.ts >= :s AND m.ts < :e
+    """
+    params = {'t': symbol, 's': start, 'e': end}
+    if conn is None:
+        df = query_to_dataframe_strict(sql, params, timeout_s=120)
+        return str(df['digest'].iloc[0])
+    import sqlalchemy
+    return str(conn.execute(sqlalchemy.text(sql), params).scalar_one())
+
+
+def replace_month(symbol: str, year: int, month: int, api_key: str,
+                  commit: bool) -> dict:
+    """Refetch one (symbol, month) from AV and swap it in atomically.
+
+    Footprint-preserving: only the sessions the month already holds are
+    re-inserted, so the migration re-frames data and never adds coverage the
+    table did not have. Nothing is deleted unless the refetch succeeded AND
+    contains every held session; a shortfall is reported and the month is left
+    untouched.
+    """
+    start, end = month_replace_window(year, month)
+    out = {'symbol': symbol, 'month': f"{year}-{month:02d}", 'deleted': 0,
+           'inserted': 0, 'held_sessions': None, 'missing_sessions': 0}
+    # Snapshot BEFORE the refetch: a writer that commits while the request is
+    # in flight then differs from this snapshot, and the locked re-check in
+    # verify() below refuses the month. Snapshotting after the fetch let such
+    # bars into ``held`` but not into the refetch, where the shortfall
+    # tolerance could pass them and the DELETE erase them (Codex P1 on #1185).
+    held = _held_session_dates(symbol, start, end)
+    out['held_sessions'] = len(held)
+    if not held:
+        # Nothing to re-frame: deleting would only remove rows (code review
+        # H2), and there is no reason to spend a vendor call finding that out.
+        out['status'] = REPLACE_NOTHING_HELD
+        return out
+    # Content, not just counts: a same-count upsert must also refuse the month.
+    # Only a committed run deletes, so only it needs the baseline.
+    digest = _held_digest(symbol, start, end) if commit else None
+    df, reason = fetch_month(symbol, year, month, api_key)
+    if df is None or df.empty or reason != FETCH_OK:
+        out['status'] = reason if reason != FETCH_OK else FETCH_NO_TIMESERIES
+        return out
+    df['ts'] = eastern_index_to_utc(df['ts'])
+    df = df.drop_duplicates(subset=['ticker', 'interval', 'ts'])
+    session = utc_to_eastern_naive(df['ts']).dt.date
+    fetched = session.value_counts()
+    # A held session is missing if the refetch lacks it, or returns fewer
+    # bars than the distinct bars already held (a partial vendor month that
+    # still touches every day, Codex P1 on #1185). REPLACE_SHORT_TOLERANCE
+    # absorbs the odd bar AV revises away on a full session; anything more
+    # leaves the month untouched.
+    # The tolerance is a share of the session, floored, with no absolute
+    # minimum: a sparse session (under 50 bars) must come back whole. A fixed
+    # 2-bar allowance let 0 of 2 or 1 of 3 through, deleting bars for good
+    # (Codex P1 x2 on #1185).
+    missing = sorted(
+        d for d, n in held.items()
+        if int(fetched.get(d, 0)) < n - int(n * REPLACE_SHORT_TOLERANCE))
+    out['missing_sessions'] = len(missing)
+    if missing:
+        out['status'] = REPLACE_INCOMPLETE
+        out['missing'] = [f"{d.isoformat()} ({int(fetched.get(d, 0))}/{held[d]})"
+                          for d in missing[:10]]
+        return out
+    df = df[session.isin(set(held))]
+    if df.empty:
+        out['status'] = REPLACE_NOTHING_HELD
+        return out
+    if not commit:
+        out['status'] = REPLACE_DRY
+        out['inserted'] = len(df)
+        return out
+    def verify(conn) -> None:
+        # Under the row locks: the month must still hold exactly what it held
+        # before the refetch, in sessions, bar counts and row content. A writer
+        # that landed in between would otherwise lose its rows (or its newer
+        # values) to the DELETE.
+        now = _held_session_dates(symbol, start, end, conn=conn)
+        if now != held:
+            raise _HeldChanged(f"held sessions changed: {len(held)} -> {len(now)}")
+        if _held_digest(symbol, start, end, conn=conn) != digest:
+            raise _HeldChanged("held rows changed (same bar counts, new content)")
+
+    try:
+        deleted, inserted = replace_rows_in_window(
+            df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
+            'ts', start, end, chunksize=5000,
+            max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify)
+    except (_HeldChanged, WindowChanged) as e:
+        out.update(status=REPLACE_CHANGED, detail=str(e))
+        return out
+    out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted)
+    return out
+
+
+def _read_text(path: str) -> str:
+    """Local file or ``gs://bucket/object``. The list is regenerated right
+    before a run (gcp/queries/list_intraday_ticker_months.sql) and uploaded,
+    so it never goes stale inside an image."""
+    if path.startswith('gs://'):
+        from google.cloud import storage as gcs
+        bucket, _, blob = path[len('gs://'):].partition('/')
+        return gcs.Client().bucket(bucket).blob(blob).download_as_text()
+    with open(path) as f:
+        return f.read()
+
+
+def _read_replace_list(path: str) -> list[tuple[str, int, int]]:
+    """Parse ``TICKER,YYYY-MM`` lines (``#`` comments and a header allowed)."""
+    items = []
+    for line in _read_text(path).splitlines():
+        line = line.split('#', 1)[0].strip()
+        if not line or line.lower().startswith('ticker,'):
+            continue
+        sym, ym = [x.strip() for x in line.split(',')]
+        y, m = ym.split('-')
+        items.append((sym.upper(), int(y), int(m)))
+    return items
+
+
+def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
+    """Drive replace_month over the list; striped across Cloud Run tasks.
+
+    Exits non-zero unless EVERY item reached the expected status (replaced,
+    or dry_run without --commit). A rate limit, request error, empty vendor
+    month or incomplete refetch leaves that month untouched, which is safe,
+    but it means the migration is not done, and a green run must never imply
+    it is (the reader cutover depends on it). Each such month is printed as a
+    ``RETRY TICKER,YYYY-MM`` line: collect them into the next list.
+    """
+    items = _read_replace_list(path)
+    task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    items = items[task_idx::task_cnt]
+    if limit is not None:
+        items = items[:limit]
+    api_keys = get_api_keys()
+    if not api_keys:
+        log.error("No ALPHA_VANTAGE_API_KEY set. Exiting.")
+        return 1
+    expected = REPLACE_OK if commit else REPLACE_DRY
+    log.info("replace-months: task %d/%d, %d ticker-months, commit=%s",
+             task_idx, task_cnt, len(items), commit)
+    counts: dict = {}
+    retry: list[str] = []
+    last = 0.0
+    # The AV key's RPM is shared by every task, so each task paces at
+    # delay x task_count (code review H1): N tasks together stay at the cap.
+    pace = _av_cfg.delay_between_calls * max(task_cnt, 1)
+    for n, (sym, y, m) in enumerate(items, 1):
+        wait = pace - (time.time() - last)
+        if wait > 0:
+            time.sleep(wait)
+        last = time.time()
+        try:
+            r = replace_month(sym, y, m, api_keys[n % len(api_keys)], commit)
+        except Exception as e:
+            log.error("  ✗ %s %d-%02d SYSTEMIC: %s", sym, y, m, e)
+            counts['systemic'] = counts.get('systemic', 0) + 1
+            retry.append(f"{sym},{y}-{m:02d}")
+            continue
+        counts[r['status']] = counts.get(r['status'], 0) + 1
+        if r['status'] != expected:
+            retry.append(f"{r['symbol']},{r['month']}")
+        log.info("  %d/%d %s %s status=%s held_sessions=%s missing_sessions=%d "
+                 "deleted=%d inserted=%d%s", n, len(items), r['symbol'], r['month'],
+                 r['status'], r['held_sessions'], r['missing_sessions'],
+                 r['deleted'], r['inserted'],
+                 f" missing={r['missing']}" if r.get('missing') else "")
+    log.info("replace-months summary: %s (expected %s for all %d)",
+             counts, expected, len(items))
+    if retry:
+        for item in retry:
+            log.error("RETRY %s", item)
+        log.error("%d of %d ticker-months did not reach %s; the migration is NOT "
+                  "complete. Re-run with the RETRY lines above as the list.",
+                  len(retry), len(items), expected)
+        return 1
+    return 0
+
+def verify_month(symbol: str, year: int, month: int) -> dict:
+    """Is one ticker-month fully in the true-UTC convention?
+
+    Reads the month's window (the same read replace_month's snapshot does)
+    and runs it through stored_intraday_to_eastern. A migrated month reads
+    every row as a true instant and drops nothing; a row read as an Eastern
+    label, or a duplicate left where both writers met, means the month still
+    holds legacy data. No vendor call.
+
+    Blind spot, by construction: a flat-volume legacy slice confined to one
+    ambiguous stretch (no premarket label rows, no opening spike, under half a
+    regular session) reads as true UTC here too, as it does in the reader
+    (see the reply on #1185). Every month in the migration list either
+    reached ``replaced`` or is on the RETRY list, which is the check for those.
+    """
+    start, end = month_replace_window(year, month)
+    df = query_to_dataframe_strict(
+        "SELECT ts, volume FROM market_data_intraday "
+        "WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e",
+        {'t': symbol, 's': start, 'e': end}, timeout_s=120)
+    out = {'symbol': symbol, 'month': f"{year}-{month:02d}", 'rows': len(df),
+           'label_rows': 0, 'dropped_rows': 0}
+    if df.empty:
+        out['status'] = 'empty'
+        return out
+    inst = pd.DatetimeIndex(pd.to_datetime(df['ts']))
+    if inst.tz is None:
+        inst = inst.tz_localize('UTC')  # pg8000 TIMESTAMPTZ read in a UTC session
+    idx, keep = stored_intraday_to_eastern(inst, df['volume'])
+    out['label_rows'] = int((idx != utc_to_eastern_naive(inst)).sum())
+    out['dropped_rows'] = int((~keep).sum())
+    out['status'] = 'clean' if not (out['label_rows'] or out['dropped_rows']) else 'legacy'
+    return out
+
+
+def run_verify_months(path: str, limit: Optional[int]) -> int:
+    """Verify every listed ticker-month; exit non-zero if any is not clean.
+
+    Generate the list from the TABLE (gcp/queries/list_intraday_ticker_months.sql)
+    at verification time, not from the migration manifest, so a month the
+    manifest omitted is checked too (Codex P1 on #1185). Capacity: one indexed
+    window read per item, measured 607 ms for an SPY month (25,174 rows) and
+    less for the long tail: 39,311 items over 4 tasks is at most ~1.7 h, with
+    no AlphaVantage calls.
+    """
+    items = _read_replace_list(path)
+    task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    items = items[task_idx::task_cnt]
+    if limit is not None:
+        items = items[:limit]
+    log.info("verify-months: task %d/%d, %d ticker-months", task_idx, task_cnt, len(items))
+    counts: dict = {}
+    failed: list[str] = []
+    for n, (sym, y, m) in enumerate(items, 1):
+        r = verify_month(sym, y, m)      # strict: a DB error fails the run loudly
+        counts[r['status']] = counts.get(r['status'], 0) + 1
+        # Anything but clean fails, empty included: a listed month with no rows
+        # is data that went missing after the list was made (Codex P1 on #1185).
+        if r['status'] != 'clean':
+            failed.append(f"{sym},{y}-{m:02d} status={r['status']} "
+                          f"label_rows={r['label_rows']} "
+                          f"dropped_rows={r['dropped_rows']} rows={r['rows']}")
+        if n % 500 == 0:
+            log.info("  verify %d/%d %s", n, len(items), counts)
+    log.info("verify-months summary: %s over %d", counts, len(items))
+    for line in failed:
+        log.error("VERIFY-FAIL %s", line)
+    if failed:
+        log.error("%d of %d ticker-months are not clean (legacy rows, or empty).",
+                  len(failed), len(items))
+        return 1
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -426,7 +780,26 @@ def main():
                         help='Interval (only 1min supported for now)')
     parser.add_argument('--force', action='store_true',
                         help='Re-fetch even if data already exists in GCS')
+    parser.add_argument('--replace-months', default=None, metavar='PATH',
+                        help='Re-framing migration: file of TICKER,YYYY-MM lines. Each '
+                             'month is refetched and swapped in atomically. Dry run '
+                             'unless --commit.')
+    parser.add_argument('--commit', action='store_true',
+                        help='With --replace-months: actually delete and insert.')
+    parser.add_argument('--limit', type=int, default=None,
+                        help='With --replace-months / --verify-months: process at '
+                             'most N items per task.')
+    parser.add_argument('--verify-months', default=None, metavar='PATH',
+                        help='Read-only: check each TICKER,YYYY-MM holds only true-UTC '
+                             'rows. Exits 1 listing VERIFY-FAIL lines otherwise.')
     args = parser.parse_args()
+
+    if args.replace_months and args.verify_months:
+        parser.error('--replace-months and --verify-months are separate runs')
+    if args.replace_months:
+        sys.exit(run_replace_months(args.replace_months, args.commit, args.limit))
+    if args.verify_months:
+        sys.exit(run_verify_months(args.verify_months, args.limit))
 
     # Default date range: previous month → today
     today = date.today()

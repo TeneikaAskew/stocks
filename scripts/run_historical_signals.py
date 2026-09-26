@@ -38,6 +38,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.trading_analysis import MarketAnalyzer  # noqa: E402
+from lib.eastern_time import eastern_index_to_utc, utc_to_eastern_naive  # noqa: E402
 from gcp.historical_signals import (  # noqa: E402
     bulk_insert,
     delete_for_ticker,
@@ -442,6 +443,12 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
 
     log.info('  %s: computing indicators (shared across strategies)', ticker)
     analyzer = MarketAnalyzer()
+    # MarketAnalyzer reads the market clock off ``Time`` (ORB from 09:30, VWAP
+    # and RVOL per session), so it gets naive Eastern wall time. Handing it
+    # the UTC instants put the "09:30" ORB at 05:30 EDT premarket and seeded
+    # a winter session's VWAP with the prior evening's bars (Codex P1 on
+    # #1185). entry_time is converted back to an instant below.
+    bars = bars.assign(Time=utc_to_eastern_naive(bars['Time']))
     enriched = analyzer.add_technical_indicators(bars)
 
     # Dispatch by strategy. Both share `enriched` so indicator computation
@@ -460,6 +467,8 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
     if signals_df.empty:
         return 0
 
+    # Back to the bar's instant (the table's entry_time is TIMESTAMPTZ).
+    signals_df['entry_time'] = eastern_index_to_utc(pd.DatetimeIndex(signals_df['entry_time']))
     entry_ts = pd.to_datetime(signals_df['entry_time'], utc=True)
     signals_df = signals_df.loc[(entry_ts >= start) & (entry_ts < end)].copy()
     log.info('  %s: %d signals after window trim', ticker, len(signals_df))

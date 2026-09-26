@@ -112,3 +112,27 @@ def test_dealer_regime_null_when_gex_missing():
     # d17: prior GEX present → valid 9-cell label, no "nan"
     dr = res.loc[d17, "dealer_regime"]
     assert dr is not None and dr.startswith("GEX_") and "nan" not in dr
+
+
+# ── Codex P1 on #1185 (reader sweep): mins_since_open on the market clock ────
+
+
+def test_featurize_tf_counts_minutes_from_the_eastern_open():
+    """The bars' index is the aware UTC instant; add_all_indicators read the
+    clock off Time, so the persisted mins_since_open ran 240/300 min late."""
+    import numpy as np
+    import pandas as pd
+    from gcp.research.strat_engine import strat_data_builder as sdb
+    frames = []
+    for day in ("2026-01-14", "2026-01-15"):   # EST
+        wall = pd.date_range(f"{day} 09:30", f"{day} 15:59", freq="1min")
+        idx = wall.tz_localize("America/New_York").tz_convert("UTC")
+        px = 100 + np.cumsum(np.random.default_rng(3).normal(0, 0.05, len(idx)))
+        frames.append(pd.DataFrame({"open": px, "high": px + 0.05, "low": px - 0.05,
+                                    "close": px, "volume": 1000.0}, index=idx))
+    df_1m = pd.concat(frames)
+    out = sdb._featurize_tf(df_1m, "1m", None)
+    col = "mins_since_open" if "mins_since_open" in out.columns else "Mins_Since_Open"
+    first = out.loc[pd.Timestamp("2026-01-15 14:30", tz="UTC"), col]
+    assert first == 0
+    assert out.loc[pd.Timestamp("2026-01-15 15:30", tz="UTC"), col] == 60

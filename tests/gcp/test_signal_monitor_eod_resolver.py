@@ -36,10 +36,16 @@ def make_resolver():
 
 
 def _intraday(rows):
-    """Build a fake intraday DataFrame: rows = [(ts, close), ...]."""
+    """Build a fake DataLoader.load_intraday frame: rows = [(ts, close), ...].
+
+    The cases below are written in the resolver's own frame, naive UTC (the
+    frame of alert_ts and exit_ts). The loader hands out naive Eastern wall
+    clock, so each stamp is converted to that contract here."""
+    from lib.eastern_time import utc_to_eastern_naive
+    utc = pd.DatetimeIndex([pd.Timestamp(ts) for ts, _ in rows]).tz_localize('UTC')
     df = pd.DataFrame([
-        {'Time': pd.Timestamp(ts), 'Open': c, 'High': c, 'Low': c, 'Close': c, 'Volume': 1_000_000}
-        for ts, c in rows
+        {'Time': t, 'Open': c, 'High': c, 'Low': c, 'Close': c, 'Volume': 1_000_000}
+        for t, (_, c) in zip(utc_to_eastern_naive(utc), rows)
     ])
     return df
 
@@ -691,3 +697,26 @@ def test_persist_updates_live_rows_only(make_resolver):
     trade_stmt = " ".join(str(conn.execute.call_args_list[1].args[0]).split())
     assert "AND run_kind = 'live'" in alert_stmt, alert_stmt
     assert "AND run_kind = 'live'" in trade_stmt, trade_stmt
+
+
+# ── Codex P1 on #1185: the loader's clock is Eastern ─────────────────────────
+
+
+def test_eastern_loader_bars_line_up_with_a_utc_alert(make_resolver):
+    """DataLoader.load_intraday returns naive Eastern. The 09:31 ET bar is
+    13:31Z (EDT), one minute after a 13:30Z alert, and it hits the target."""
+    bars = pd.DataFrame([
+        {'Time': pd.Timestamp('2026-05-07 09:30'), 'Open': 100.0, 'High': 100.0,
+         'Low': 100.0, 'Close': 100.0, 'Volume': 1},
+        {'Time': pd.Timestamp('2026-05-07 09:31'), 'Open': 101.0, 'High': 101.0,
+         'Low': 101.0, 'Close': 101.0, 'Volume': 1},
+    ])
+    resolver = make_resolver(intraday_df=bars)
+    alert = pd.Series({
+        'ticker': 'SPY', 'alert_ts': pd.Timestamp('2026-05-07 13:30'),
+        'alert_date': '2026-05-07', 'direction': 'CALL', 'price_at_signal': 100.0,
+        'target_price': 101.0, 'time_stop_minutes': 30,
+    })
+    r = resolver.resolve_one(alert)
+    assert r['exit_reason'] == 'target_hit'
+    assert pd.Timestamp(r['exit_ts']) == pd.Timestamp('2026-05-07 13:31')
