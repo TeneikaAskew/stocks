@@ -514,29 +514,140 @@ def test_a_backdated_removal_before_a_re_add_is_refused(wl):
     )
 
 
-def test_a_backdate_after_the_latest_transition_is_still_allowed(wl):
+def test_a_stated_time_after_the_latest_transition_is_kept_verbatim(wl):
     """The guard bounds the exemption; it must not abolish it.
 
-    A stated removal time that falls AFTER everything already recorded
-    cannot invert the log, so it is kept verbatim -- which is what makes
-    as-of resolution able to answer for a real historical removal.
+    Two stated times in order are both recorded exactly as given. This
+    used to be asserted with `now() + 5s`, which is no longer a legal
+    value -- see `test_a_future_dated_removal_is_refused` -- so it is
+    asserted on a pair that is ordered and entirely in the past.
     """
-    _add(wl, "ACME", JAN)
-    _remove(wl, "ACME", MAR)
-    _add(wl, "ACME", JUN)
-
-    later = datetime.now(timezone.utc) + timedelta(seconds=5)
     with wl.begin() as conn:
         conn.execute(
             sqlalchemy.text(
-                "UPDATE watchlists SET removed_at = :at "
-                " WHERE ticker='ACME' AND removed_at IS NULL"
+                "INSERT INTO watchlists "
+                "  (user_id, ticker, added_at, removed_at, source) "
+                "VALUES (:u, 'ACME', :added, :removed, 'test')"
             ),
-            {"at": later},
+            {"u": OWNER, "added": JAN, "removed": MAR},
+        )
+    assert _events(wl, "ACME") == [("add", JAN), ("remove", MAR)], (
+        "an ordered pair of stated times was refused or re-stamped"
+    )
+
+
+def test_a_live_removal_after_a_re_add_still_works(wl):
+    """The production removal path is `SET removed_at = NOW()`.
+
+    After a re-add the newest recorded transition is `clock_timestamp()`,
+    so every stated value that would clear the ordering guard is now in
+    the future and therefore refused. That must not reach the path every
+    real remover uses, which is exempt because its value IS
+    `transaction_timestamp()`.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)                      # re-add: stamped live
+
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET removed_at = NOW() "
+                " WHERE ticker='ACME' AND removed_at IS NULL"
+            )
         )
     events = _events(wl, "ACME")
     assert [a for a, _ in events] == ["add", "remove", "add", "remove"]
-    assert events[3][1] == later, "a legitimate backdate was re-stamped"
+    assert events[3][1] > events[2][1], (
+        "the live removal did not sort after the re-add it follows"
+    )
+
+
+def test_a_future_dated_removal_is_refused(wl):
+    """Codex P2 on `966ed12`, and the root is wider than the report.
+
+    `watchlists` encodes membership as `removed_at IS NULL` and NO live
+    reader looks at the value -- `load_watchlist`, the two discord
+    handlers, `signal_monitor` and both partial indexes all test only for
+    NULL. So a future-dated `removed_at` reads as REMOVED NOW, while
+    `watchlist_history` does not apply the event until that date. The two
+    sources disagree from the moment it is written, with no re-add
+    involved. Reproduced against a live server:
+
+        UPDATE watchlists SET removed_at = now() + interval '30 days'
+
+        watchlists (removed_at IS NULL) -> REMOVED
+        resolver as of today            -> 'add'   (ACTIVE)
+
+    The table cannot express "scheduled removal", so the trigger refuses
+    to record one rather than let the two readings drift apart.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = :at "
+                    " WHERE ticker='ACME' AND removed_at IS NULL"
+                ),
+                {"at": datetime.now(timezone.utc) + timedelta(days=30)},
+            )
+    assert "future" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+
+
+def test_a_future_dated_removal_cannot_strand_a_later_re_add(wl):
+    """The case as Codex framed it, closed at the point of creation.
+
+    With a future `remove` on the log, a live re-add appends an `add` at
+    `clock_timestamp()` -- which is EARLIER than that remove, so the
+    future removal stays the newest event and the ticker flips to absent
+    once its date arrives while `watchlists` still says active:
+
+        1 add     2026-01-10
+        2 remove  2026-10-26 18:19:21   <- stated, 30 days out
+        3 add     2026-09-26 18:19:21   <- the live re-add, EARLIER
+
+    Guarding the re-add instead would strand the row: its removal can no
+    longer be corrected either (the append-only correction guard), so it
+    could never be re-added again. Refusing the future removal is what
+    keeps the state reachable.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception):
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = :at "
+                    " WHERE ticker='ACME' AND removed_at IS NULL"
+                ),
+                {"at": datetime.now(timezone.utc) + timedelta(days=30)},
+            )
+
+    # The row is untouched, so the ordinary remove / re-add cycle still runs.
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)
+    actions = [a for a, _ in _events(wl, "ACME")]
+    assert actions == ["add", "remove", "add"]
+    events = _events(wl, "ACME")
+    assert events[2][1] > events[1][1], "the re-add did not sort after the removal"
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+
+
+def test_a_future_dated_insert_is_refused(wl):
+    """Same rule on the INSERT branch, which takes stated times too."""
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                    "VALUES (:u, 'ACME', :at, 'test')"
+                ),
+                {"u": OWNER, "at": datetime.now(timezone.utc) + timedelta(days=7)},
+            )
+    assert "future" in str(excinfo.value)
+    assert _events(wl, "ACME") == []
 
 
 def test_an_insert_backdated_behind_recorded_history_is_refused(wl):

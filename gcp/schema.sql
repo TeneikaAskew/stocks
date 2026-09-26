@@ -2496,11 +2496,32 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_history_asof
 CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
     ON watchlist_history (recorded_at) WHERE origin = 'seed';
 
--- Every event this trigger records must be at or after the newest event
--- already recorded for that key. `watchlist_history` is ordered by
--- `effective_at` and resolved with DISTINCT ON, so an event written out of
--- order does not merely look odd -- it changes the answer for every date
--- after it, in a table that forbids its own correction.
+-- Validates a writer-STATED effective_at before it is recorded. Two
+-- invariants, both about keeping `watchlists` and `watchlist_history`
+-- answering the same question.
+--
+-- 1. Not in the future. `watchlists` encodes membership as
+--    `removed_at IS NULL` and no live reader looks at the value --
+--    `load_watchlist`, both discord handlers, `signal_monitor` and both
+--    partial indexes test only for NULL. A future-dated `removed_at`
+--    therefore reads as REMOVED NOW while this log does not apply the
+--    event until that date arrives, so the two disagree from the moment
+--    it is written. Reproduced against a live server: a removal 30 days
+--    out left `watchlists` -> REMOVED and the resolver -> 'add'.
+--    Codex reported the re-add form of it (P2 on `966ed12`) -- a live
+--    re-add appends at `clock_timestamp()`, EARLIER than the future
+--    remove, so the removal stays newest and the ticker flips to absent
+--    when its date arrives. Refusing the future stamp closes both, and
+--    closes them at creation. Guarding the re-add instead would STRAND
+--    the row: its removal cannot be corrected either, so it could never
+--    be re-added again. `watchlists` cannot express "scheduled removal",
+--    so the trigger declines to record one.
+--
+-- 2. At or after the newest event already recorded for that key.
+--    `watchlist_history` is ordered by `effective_at` and resolved with
+--    DISTINCT ON, so an event written out of order does not merely look
+--    odd -- it changes the answer for every date after it, in a table
+--    that forbids its own correction.
 --
 -- Extracted rather than written three times. `af82694` guarded the UPDATE
 -- removal path alone and Codex found the INSERT path open on the next
@@ -2518,7 +2539,14 @@ CREATE INDEX IF NOT EXISTS idx_watchlist_history_seed
 -- supersession contract the surface-flag thread is still waiting on, and
 -- a refusal is visible and recoverable where an inverted append-only log
 -- is neither.
-CREATE OR REPLACE FUNCTION watchlist_history_assert_monotonic(
+-- Renamed from `watchlist_history_assert_monotonic`, which described only
+-- the second invariant. Dropped rather than left orphaned so a re-apply
+-- converges; it can only exist in a database that applied an earlier
+-- commit of this unmerged branch.
+DROP FUNCTION IF EXISTS watchlist_history_assert_monotonic(
+    VARCHAR, VARCHAR, VARCHAR, TIMESTAMPTZ);
+
+CREATE OR REPLACE FUNCTION watchlist_history_assert_recordable(
     p_user_id      VARCHAR,
     p_ticker       VARCHAR,
     p_action       VARCHAR,
@@ -2527,6 +2555,15 @@ CREATE OR REPLACE FUNCTION watchlist_history_assert_monotonic(
 DECLARE
     latest_effective_at TIMESTAMPTZ;
 BEGIN
+    IF p_effective_at > clock_timestamp() THEN
+        RAISE EXCEPTION
+            'future-dated % at % cannot be recorded: watchlists encodes '
+            'membership as removed_at IS NULL, which every live reader '
+            'takes as effective immediately, while watchlist_history would '
+            'not apply the event until that time arrives. The two sources '
+            'would disagree from the moment it is written.',
+            p_action, p_effective_at;
+    END IF;
     SELECT MAX(effective_at) INTO latest_effective_at
       FROM watchlist_history
      WHERE user_id = p_user_id AND ticker = p_ticker;
@@ -2577,9 +2614,9 @@ BEGIN
         add_effective_at := CASE WHEN NEW.added_at = transaction_timestamp()
                                  THEN clock_timestamp() ELSE NEW.added_at END;
         -- Only a value the writer STATED is checked. One this trigger just
-        -- read off the wall clock cannot precede anything already recorded,
-        -- and checking it would refuse a live re-insert whenever some
-        -- earlier row carried a deliberately future-dated event.
+        -- read off the wall clock is neither in the future nor -- now that
+        -- future stamps are refused outright -- able to precede anything
+        -- already recorded.
         --
         -- An INSERT reaches a key that already HAS history through a hard
         -- delete: deleting an already-removed row records nothing, so the
@@ -2587,7 +2624,7 @@ BEGIN
         -- an `add` that sorts earlier. `watchlists` then reports active
         -- while the resolver reports absent (Codex P2 on `af82694`).
         IF NEW.added_at <> transaction_timestamp() THEN
-            PERFORM watchlist_history_assert_monotonic(
+            PERFORM watchlist_history_assert_recordable(
                 NEW.user_id, NEW.ticker, 'add', add_effective_at);
         END IF;
         INSERT INTO watchlist_history
@@ -2603,7 +2640,7 @@ BEGIN
             -- (`removed_at` earlier than `added_at`) -- the case left open
             -- on the `2d06c20` thread.
             IF NEW.removed_at <> transaction_timestamp() THEN
-                PERFORM watchlist_history_assert_monotonic(
+                PERFORM watchlist_history_assert_recordable(
                     NEW.user_id, NEW.ticker, 'remove', remove_effective_at);
             END IF;
             INSERT INTO watchlist_history
@@ -2752,7 +2789,7 @@ BEGIN
                 CASE WHEN NEW.removed_at = transaction_timestamp()
                      THEN clock_timestamp() ELSE NEW.removed_at END;
             IF NEW.removed_at <> transaction_timestamp() THEN
-                PERFORM watchlist_history_assert_monotonic(
+                PERFORM watchlist_history_assert_recordable(
                     NEW.user_id, NEW.ticker, 'remove', remove_effective_at);
             END IF;
             INSERT INTO watchlist_history
