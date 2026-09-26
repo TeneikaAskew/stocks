@@ -418,14 +418,16 @@ def _file_data_quality_issue(dead_tickers: list) -> None:
 # listed (ticker, month) from AV and swaps the whole month in one transaction.
 
 # Every row month M can hold, in either convention, lies in
-#   [M-01 01:00Z, (M+1)-01 01:00Z)
-#   * Eastern-labelled rows: raw labels 04:00-19:59 on each day of M.
+#   [M-01 02:00Z, (M+1)-01 02:00Z)
+#   * Eastern-labelled rows: raw labels 04:00-20:00 on each day of M.
 #   * True-UTC rows: 04:00 ET on the 1st (08:00Z EDT / 09:00Z EST) through
-#     19:59 ET on the last day (23:59Z EDT / 00:59Z EST on the next 1st).
-# and no neighbouring month's rows do: M-1's true-UTC rows end by 01:00Z on
-# the 1st of M; M+1's labelled rows start at 04:00Z on its 1st.
+#     the 20:00 ET bar on the last day (00:00Z EDT / 01:00Z EST on the next 1st).
+#     AV stores a bar AT 20:00 ET; the window must include it (code review C1).
+# and no neighbouring month's rows do: M-1's true-UTC rows end at 01:00Z on
+# the 1st of M; M+1's labelled rows start at 04:00Z on its 1st. Any boundary
+# in (01:00Z, 04:00Z] works; 02:00Z leaves an hour either side.
 # tests/gcp/test_intraday_replace_months.py checks this across DST changes.
-_WINDOW_HOUR_UTC = 1
+_WINDOW_HOUR_UTC = 2
 
 
 def month_replace_window(year: int, month: int) -> tuple[datetime, datetime]:
@@ -438,16 +440,23 @@ def month_replace_window(year: int, month: int) -> tuple[datetime, datetime]:
 REPLACE_OK = 'replaced'
 REPLACE_DRY = 'dry_run'
 REPLACE_INCOMPLETE = 'incomplete_refetch'   # vendor returned fewer sessions than we hold
+REPLACE_NOTHING_HELD = 'nothing_held'       # window holds no session; never delete blind
+# A replaced month holds at most both conventions of each session (x2) plus
+# stragglers. Deleting more than this multiple of what is re-inserted means
+# something is wrong with the window or the list; the transaction rolls back.
+REPLACE_MAX_DELETE_RATIO = 3.0
 
 
 def _held_session_dates(symbol: str, start: datetime, end: datetime) -> dict:
     """Session dates the window holds now, with their row counts.
 
     Decided the same way under both conventions: Eastern-labelled rows sit at
-    raw hours 04-19 of their own date; true-UTC rows at raw hours 08-23 of their
-    date plus, in winter, a spill into 00:00-00:59Z of the next one. So a
-    session is a weekday raw date with rows outside raw hour 00. There is no
-    row-count floor, so a thinly traded ticker's sparse day still counts.
+    raw 04:00-20:00 of their own date; true-UTC rows at raw 08:00-23:59 of
+    their date plus a spill to 00:00Z (EDT) or 01:00Z (EST) of the next, for
+    the 20:00 ET bar. So a session is a weekday raw date with rows at raw hour
+    4 or later. The spill never counts, so a holiday after a 20:00 ET bar is
+    not a session (code review C1). There is no row-count floor, so a thinly
+    traded ticker's sparse day still counts.
     Strict query: a DB error must never read as "nothing held".
     """
     df = query_to_dataframe_strict(
@@ -455,7 +464,7 @@ def _held_session_dates(symbol: str, start: datetime, end: datetime) -> dict:
         SELECT (ts AT TIME ZONE 'UTC')::date AS d, count(*) AS n  -- tz-ok: raw label date, either convention
           FROM market_data_intraday
          WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e
-           AND extract(hour FROM ts AT TIME ZONE 'UTC') <> 0
+           AND extract(hour FROM ts AT TIME ZONE 'UTC') >= 4
          GROUP BY 1
         """,
         {'t': symbol, 's': start, 'e': end}, timeout_s=120,
@@ -487,18 +496,26 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     held = _held_session_dates(symbol, start, end)
     missing = sorted(set(held) - set(session))
     out.update(held_sessions=len(held), missing_sessions=len(missing))
+    if not held:
+        # Nothing to re-frame: deleting would only remove rows (code review H2).
+        out['status'] = REPLACE_NOTHING_HELD
+        return out
     if missing:
         out['status'] = REPLACE_INCOMPLETE
         out['missing'] = [d.isoformat() for d in missing[:10]]
         return out
     df = df[session.isin(set(held))]
+    if df.empty:
+        out['status'] = REPLACE_NOTHING_HELD
+        return out
     if not commit:
         out['status'] = REPLACE_DRY
         out['inserted'] = len(df)
         return out
     deleted, inserted = replace_rows_in_window(
         df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
-        'ts', start, end)
+        'ts', start, end, chunksize=5000,
+        max_delete_ratio=REPLACE_MAX_DELETE_RATIO)
     out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted)
     return out
 
@@ -554,8 +571,11 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
     counts: dict = {}
     retry: list[str] = []
     last = 0.0
+    # The AV key's RPM is shared by every task, so each task paces at
+    # delay x task_count (code review H1): N tasks together stay at the cap.
+    pace = _av_cfg.delay_between_calls * max(task_cnt, 1)
     for n, (sym, y, m) in enumerate(items, 1):
-        wait = _av_cfg.delay_between_calls - (time.time() - last)
+        wait = pace - (time.time() - last)
         if wait > 0:
             time.sleep(wait)
         last = time.time()

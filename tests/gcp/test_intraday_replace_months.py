@@ -7,7 +7,7 @@ than reasoned about:
   1. The delete window for month M holds every row M can have in EITHER
      convention (true UTC, and Eastern wall time stamped as UTC), and no row of
      M-1 or M+1 in either convention. Checked exhaustively, every minute AV can
-     return (04:00-19:59 ET), every day, every month 2016-2027, across DST.
+     return (04:00-20:00 ET: AV stores a bar AT 20:00), every day, every month 2016-2027, across DST.
   2. Nothing is deleted unless the refetch succeeded and covers the sessions
      already held; dry run never writes.
 """
@@ -36,11 +36,12 @@ def _month_days(y: int, m: int):
 def _extremes(y: int, m: int) -> dict[str, tuple[datetime, datetime]]:
     """Earliest and latest stored instant of month (y, m) per convention.
 
-    AV extended hours are 04:00-19:59 ET. True UTC stores the real instant;
+    AV extended hours are 04:00-20:00 ET inclusive: production holds a bar at
+    exactly 20:00 ET (01:00Z the next day in winter). True UTC stores the real instant;
     the legacy writers stored the Eastern wall clock labelled UTC.
     """
     first, last = min(_month_days(y, m)), max(_month_days(y, m))
-    lo_wall, hi_wall = time(4, 0), time(19, 59)
+    lo_wall, hi_wall = time(4, 0), time(20, 0)
     return {
         "true_utc": (datetime.combine(first, lo_wall, ET).astimezone(UTC),
                      datetime.combine(last, hi_wall, ET).astimezone(UTC)),
@@ -267,3 +268,103 @@ def test_commit_run_fails_on_a_raised_month(tmp_path, monkeypatch, caplog):
 def test_dry_run_expects_dry_run_status(tmp_path, monkeypatch):
     assert _run(tmp_path, monkeypatch, [fai.REPLACE_DRY], commit=False) == 0
     assert _run(tmp_path, monkeypatch, [fai.REPLACE_INCOMPLETE], commit=False) == 1
+
+
+# ── the 20:00 ET bar (code review C1 on #1185) ────────────────────────────────
+
+
+def test_a_winter_month_end_2000_bar_is_inside_its_own_window():
+    """2025-02-28 20:00 ET = 2025-03-01 01:00Z: it must belong to February's
+    window, not fall on its end (which refused every winter month) nor into
+    March's (which deleted it without re-inserting)."""
+    bar = datetime(2025, 2, 28, 20, 0, tzinfo=ET).astimezone(UTC)
+    feb, mar = fai.month_replace_window(2025, 2), fai.month_replace_window(2025, 3)
+    assert feb[0] <= bar < feb[1]
+    assert not (mar[0] <= bar < mar[1])
+
+
+def test_the_2000_bar_before_a_holiday_does_not_make_the_holiday_a_session():
+    """Thanksgiving eve 2024-11-27 20:00 ET sits at raw 2024-11-28 01:00Z.
+    The held-session rule must not count 11-28 as a session, or the month
+    reads as incomplete forever."""
+    import inspect
+    sql = inspect.getsource(fai._held_session_dates)
+    assert "extract(hour FROM ts AT TIME ZONE 'UTC') >= 4" in sql
+    assert datetime(2024, 11, 27, 20, 0, tzinfo=ET).astimezone(UTC).hour < 4
+
+
+# ── code review H1/H2 on #1185 ────────────────────────────────────────────────
+
+
+def test_a_month_holding_no_session_is_never_deleted():
+    """held == {} used to leave `missing` empty and pass an empty frame to the
+    replace, which deleted the whole window and inserted nothing."""
+    with patch.object(fai, "fetch_month",
+                      return_value=(_vendor_month(["2026-09-01"]), fai.FETCH_OK)), \
+         patch.object(fai, "_held_session_dates", return_value={}), \
+         patch.object(fai, "replace_rows_in_window") as rep:
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_NOTHING_HELD
+    rep.assert_not_called()
+
+
+def _engine_with(rowcount):
+    import sqlalchemy
+    meta = sqlalchemy.MetaData()
+    tbl = sqlalchemy.Table(
+        "market_data_intraday", meta,
+        sqlalchemy.Column("ticker", sqlalchemy.Text), sqlalchemy.Column("interval", sqlalchemy.Text),
+        sqlalchemy.Column("ts", sqlalchemy.DateTime(timezone=True)),
+        *[sqlalchemy.Column(c, sqlalchemy.Float) for c in ("open", "high", "low", "close")],
+        sqlalchemy.Column("volume", sqlalchemy.BigInteger),
+    )
+    conn = MagicMock()
+    conn.execute.return_value.rowcount = rowcount
+    engine = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    return engine, conn, tbl
+
+
+def test_an_oversized_delete_raises_inside_the_transaction():
+    import gcp.database as db
+    engine, conn, tbl = _engine_with(rowcount=100)
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30", "2026-09-24 13:31"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}), \
+         pytest.raises(ValueError, match="rolled back"):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  max_delete_ratio=3.0)
+    # Raised after the DELETE and before any INSERT; engine.begin() rolls back.
+    assert conn.execute.call_count == 1
+
+
+def test_replace_refuses_identifiers_that_are_not_table_columns():
+    import gcp.database as db
+    engine, _, tbl = _engine_with(rowcount=0)
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}), \
+         pytest.raises(ValueError, match="not columns"):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "Interval1": "1min"}, "ts", start, end)
+
+
+def test_pacing_scales_with_the_task_count(tmp_path, monkeypatch):
+    """N striped tasks share one AV key; each must wait delay x N between calls."""
+    lst = tmp_path / "l.csv"
+    lst.write_text("".join(f"T{i},2026-09\n" for i in range(8)))   # task 0 of 4 gets T0, T4
+    monkeypatch.setenv("CLOUD_RUN_TASK_COUNT", "4")
+    monkeypatch.setenv("CLOUD_RUN_TASK_INDEX", "0")
+    monkeypatch.setattr(fai, "get_api_keys", lambda: ["k"])
+    monkeypatch.setattr(fai, "_av_cfg", SimpleNamespace(delay_between_calls=0.4))
+    monkeypatch.setattr(fai, "replace_month", lambda sym, y, m, key, commit: {
+        "symbol": sym, "month": f"{y}-{m:02d}", "status": fai.REPLACE_OK, "deleted": 0,
+        "inserted": 0, "held_sessions": 1, "missing_sessions": 0})
+    waits = []
+    monkeypatch.setattr(fai.time, "sleep", waits.append)
+    monkeypatch.setattr(fai.time, "time", lambda: 100.0)   # frozen clock
+    assert fai.run_replace_months(str(lst), True, None) == 0
+    assert waits == [pytest.approx(1.6)]   # 0.4 s x 4 tasks, before the 2nd call

@@ -254,6 +254,10 @@ def migrate_market_data_intraday(data_dir: Path, dry_run: bool):
             else:
                 log.info("  [DRY RUN] would load %d rows for %s", len(df), ticker_lower.upper())
 
+        # AUDIT-2026-05-13: silent fallback — a per-ticker failure (including the
+        # ValueError eastern_index_to_utc raises on a bad or ambiguous stamp, and a
+        # failed insert after the DELETE above, which is not atomic) is logged and
+        # the migration carries on reporting success. One-shot manual CLI only.
         except Exception as e:
             log.warning("  ✗ %s: %s", ticker_lower.upper(), e)
 

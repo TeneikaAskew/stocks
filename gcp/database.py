@@ -533,6 +533,7 @@ def replace_rows_in_window(
     start,
     end,
     chunksize: int = 2000,
+    max_delete_ratio: Optional[float] = None,
 ) -> tuple[int, int]:
     """Atomically replace every row of *table* matching *key* with
     ``start <= ts_col < end`` by the rows of *df*. Returns (deleted, inserted).
@@ -546,6 +547,11 @@ def replace_rows_in_window(
     else is refused before the transaction opens, because inserting outside
     the deleted window could overwrite a neighbouring month's rows.
     *start* / *end* must be tz-aware.
+
+    ``max_delete_ratio``: if the DELETE removes more than this multiple of
+    the rows being inserted, raise inside the transaction so nothing is
+    committed. A backstop against a wrong window or list wiping rows the
+    insert does not restore.
     """
     import sqlalchemy
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -554,10 +560,8 @@ def replace_rows_in_window(
     for bound in (start, end):
         if getattr(bound, "tzinfo", None) is None:
             raise ValueError("replace_rows_in_window: start/end must be tz-aware")
-    if not key or not all(isinstance(k, str) and k.isidentifier() for k in key):
-        raise ValueError(f"replace_rows_in_window: invalid key {key!r}")
-    if not ts_col.isidentifier():
-        raise ValueError(f"replace_rows_in_window: invalid ts_col {ts_col!r}")
+    if not key:
+        raise ValueError("replace_rows_in_window: key must not be empty")
     if not df.empty:
         ts = pd.DatetimeIndex(df[ts_col])
         outside = int(((ts < pd.Timestamp(start)) | (ts >= pd.Timestamp(end))).sum())
@@ -577,6 +581,11 @@ def replace_rows_in_window(
         tbl = meta.tables[table]
         _REFLECTED_TABLES[table] = tbl
 
+    # Identifiers are interpolated, so they must be real columns of the table.
+    table_cols = {c.name for c in tbl.columns}
+    bad = [c for c in [*key, ts_col] if c not in table_cols]
+    if bad:
+        raise ValueError(f"replace_rows_in_window({table}): not columns of the table: {bad}")
     where = " AND ".join(f"{k} = :k_{k}" for k in key)
     params = {f"k_{k}": v for k, v in key.items()}
     params.update({"w_start": start, "w_end": end})
@@ -584,14 +593,21 @@ def replace_rows_in_window(
         f"DELETE FROM {tbl.name} WHERE {where} "
         f"AND {ts_col} >= :w_start AND {ts_col} < :w_end")
 
-    table_cols = {c.name for c in tbl.columns}
+    dropped = [c for c in df.columns if c not in table_cols]
+    if dropped:
+        logger.warning("replace_rows_in_window(%s): dropping column(s) not in the "
+                       "table schema: %s", table, dropped)
     out = df[[c for c in df.columns if c in table_cols]]
     out = _coerce_int_columns(out, tbl)
     records = out.to_dict(orient="records")
-    size = _max_safe_chunksize(len(out.columns), chunksize) if len(out.columns) else chunksize
+    size = _max_safe_chunksize(len(out.columns), chunksize)
 
     with engine.begin() as conn:
         deleted = conn.execute(delete_sql, params).rowcount
+        if max_delete_ratio is not None and deleted > max_delete_ratio * max(len(records), 1):
+            raise ValueError(
+                f"replace_rows_in_window({table} {key}): DELETE removed {deleted} rows "
+                f"for {len(records)} re-inserted (> {max_delete_ratio}x); rolled back")
         for i in range(0, len(records), size):
             conn.execute(pg_insert(tbl).values(_na_to_none_records(records[i:i + size])))
     logger.info("replace_rows_in_window(%s %s [%s, %s)): deleted %d, inserted %d",
