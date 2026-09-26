@@ -162,3 +162,51 @@ def test_date_list_counts_sessions_not_the_winter_spill():
     assert "DISTINCT DATE(ts)" not in src
     assert "extract(hour FROM ts AT TIME ZONE 'UTC') >= 4" in src
     assert "extract(isodow FROM" in src
+
+
+# ── Codex round 3 on #1185 ────────────────────────────────────────────────────
+
+
+def _flat(df: pd.DataFrame) -> pd.DataFrame:
+    return df.assign(volume=100)
+
+
+@pytest.mark.parametrize("stored,expect_label", [("et_label", True), ("utc", False)])
+def test_a_flat_volume_regular_session_day_keeps_its_convention(stored, expect_label):
+    """No pre/post-market rows and no opening spike to test: the raw
+    09:30-16:00 envelope still identifies a legacy day."""
+    df = _flat(_session("2026-09-24", stored=stored, start="09:30", end="16:00"))
+    idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
+    assert list(idx[keep]) == list(_expected("2026-09-24", "09:30", "16:00"))
+
+
+def test_a_true_utc_2000_spill_before_a_legacy_date_is_kept():
+    """A true-UTC session's 20:00 ET bar sits at raw 00:00Z of the next date;
+    when that next date is legacy-labelled its group reads as labels, but the
+    spill is the only copy of the 20:00 bar and must survive."""
+    df = pd.concat([_session("2026-09-23", stored="utc"),
+                    _session("2026-09-24", stored="et_label")]).sort_values("ts")
+    idx, keep = main_module._intraday_index_to_eastern(df["ts"], df["volume"])
+    got = sorted(idx[keep])
+    assert got == list(_expected("2026-09-23")) + list(_expected("2026-09-24"))
+    assert pd.Timestamp("2026-09-23 20:00") in got
+
+
+def test_a_month_load_excludes_the_prior_months_spill(client, monkeypatch):
+    """The 20:00 ET bar of 2026-08-31 sits at 2026-09-01 00:00Z; a September
+    load must not return it."""
+    rows = pd.concat([_session("2026-08-31", stored="utc"),
+                      _session("2026-09-01", stored="utc")]).reset_index(drop=True)
+    seen = {}
+
+    def fake_query(sql, params=None):
+        seen.update(params or {})
+        lo, hi = params["start"], params["end"]
+        return rows[(rows["ts"] >= lo) & (rows["ts"] < hi)].reset_index(drop=True)
+
+    monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
+    monkeypatch.setattr(main_module, "query_to_dataframe", fake_query)
+    df = main_module._load_date_data("spy", "202609")
+    assert df.index.min() == pd.Timestamp("2026-09-01 04:00")
+    assert (df.index.month == 9).all()
+    assert seen["start"] == pd.Timestamp("2026-09-01 02:00", tz="UTC")

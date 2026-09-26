@@ -11,6 +11,7 @@ from collections import OrderedDict
 from typing import Optional
 
 import httpx
+import numpy as np
 import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import MISS, ThreadSafeCache
@@ -1591,35 +1592,37 @@ def market_most_active():
 
 def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> "tuple[pd.DatetimeIndex, object]":
     """Naive-Eastern index for market_data_intraday rows, safe across the
-    timestamp-convention migration (CLAUDE.md 3.9).
+    timestamp-convention migration (CLAUDE.md 3.9). Returns (index, keep mask).
 
     Until the re-framing migration finishes, a raw date's rows are either
     Eastern wall time stamped as UTC (the legacy writers) or true UTC (every
     writer from #1185 on). Converting all rows shifts the legacy ones 4-5 h;
-    converting none shifts the new ones. So each raw date is read by the
-    convention its own rows carry.
+    converting none shifts the new ones.
 
-    AV bars span 04:00-20:00 Eastern (there is a bar AT 20:00), so each
-    convention has raw clock times the other never produces, in both seasons:
+    AV bars span 04:00-20:00 Eastern (there is a bar AT 20:00), so some raw
+    clock times belong to one convention only, in both seasons:
       raw 04:00-07:59         only Eastern labels (true UTC starts at 08:00Z)
       raw 20:01-01:00         only true UTC (the last label is raw 20:00)
-    That settles every full session. When a date shows neither (a partial
-    day) or both (a date both writers touched), the 09:30 ET open decides: it
-    is the day's volume spike, so a spike at raw label 09:30 and none at the
-    converted 09:30 means labels (the test that matched live prices in
-    gcp/queries/classify_intraday_ts_convention.sql). With no spike either
-    way the date is converted: that is every writer's convention from now on.
+    Such a row is read in its own convention wherever it sits. Every other row
+    follows its raw date's verdict, decided by, in order:
+      1. which exclusive region the date has rows in, if only one;
+      2. the 09:30 ET open: the day's volume spike at raw label 09:30 and not
+         at the converted 09:30 means labels, and the reverse means true UTC
+         (the test that matched live prices in
+         gcp/queries/classify_intraday_ts_convention.sql);
+      3. the regular-session envelope: a legacy regular-session-only day sits
+         at raw 09:30-16:00 and nowhere else, which true UTC never does (its
+         RTH reaches past raw 16:00, its premarket starts at 08:00Z); a
+         flat-volume legacy day (Codex #1185);
+      4. otherwise convert: every writer's convention from now on.
 
-    A date both writers touched keeps, beside the winning convention's rows,
-    the loser's rows at the times only it can occupy: legacy labels at raw
-    04:00-07:59 after a true-UTC refetch, or true-UTC post-market at raw
-    20:01-01:00 after a legacy overwrite (Codex P1 on #1185). The winner already
-    holds those bars at its own keys, so the stragglers are duplicates that
-    would render as 00:00-03:59 ET or doubled post-market candles; they are
-    dropped. Returns (naive-Eastern index, keep mask).
-
-    After the migration this reduces to utc_to_eastern_naive with nothing
-    dropped.
+    A row is dropped only when another row lands on the same Eastern minute:
+    the one following its date's verdict wins over a straggler of the other
+    convention, and then the one stored on its own date (raw date == Eastern
+    date) wins. So stale duplicates left where both writers collided go, but
+    the only copy of a bar, such as a true-UTC 20:00 ET spill in front of a
+    legacy date, is kept (Codex #1185). After the migration this reduces to
+    utc_to_eastern_naive with nothing dropped.
     """
     inst = pd.DatetimeIndex(pd.to_datetime(ts))
     if inst.tz is None:
@@ -1627,14 +1630,16 @@ def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> "tuple[pd.Da
     inst = inst.tz_convert("UTC")
     raw = inst.tz_localize(None)  # tz-ok: the raw clock label, read per date below
     converted = utc_to_eastern_naive(inst)
-    n = len(inst)
-    vol = pd.Series(pd.to_numeric(volume, errors="coerce").to_numpy(), index=range(n))
-    raw_min = pd.Series(raw.hour * 60 + raw.minute, index=vol.index)
-    conv_min = pd.Series(converted.hour * 60 + converted.minute, index=vol.index)
-    raw_date = pd.Series(raw.date, index=vol.index)
-    conv_date = pd.Series(converted.date, index=vol.index)
-    out = pd.Series(converted, index=vol.index)
-    keep = pd.Series(True, index=vol.index)
+    pos = range(len(inst))
+    vol = pd.Series(pd.to_numeric(volume, errors="coerce").to_numpy(), index=pos)
+    raw_min = pd.Series(raw.hour * 60 + raw.minute, index=pos)
+    conv_min = pd.Series(converted.hour * 60 + converted.minute, index=pos)
+    raw_date = pd.Series(raw.date, index=pos)
+    conv_date = pd.Series(converted.date, index=pos)
+    label_only = (raw_min >= 240) & (raw_min < 480)
+    true_only = (raw_min > 1200) | (raw_min <= 60)
+    as_label = pd.Series(False, index=pos)
+    follows_verdict = pd.Series(True, index=pos)
 
     def spike(window: pd.Series, day: pd.Series) -> float:
         """Mean volume of an opening window over the day's median minute."""
@@ -1644,31 +1649,34 @@ def _intraday_index_to_eastern(ts: pd.Series, volume: pd.Series) -> "tuple[pd.Da
     for d, rows in raw_date.groupby(raw_date).groups.items():
         rows = pd.Index(rows)
         rm, v = raw_min[rows], vol[rows]
-        label_only = (rm >= 240) & (rm < 480)
-        true_only = (rm > 1200) | (rm <= 60)
-        label_ev, true_ev = bool(label_only.any()), bool(true_only.any())
-        if label_ev != true_ev:
-            is_label = label_ev
+        lo, to = label_only[rows], true_only[rows]
+        if lo.any() != to.any():
+            verdict_label = bool(lo.any())
         else:
             label_spike = spike(v[(rm >= 570) & (rm < 600)], v)
             true_win = (conv_date[rows] == d) & (conv_min[rows] >= 570) & (conv_min[rows] < 600)
             true_spike = spike(v[true_win], v)
-            is_label = label_spike > 2 and label_spike > 1.5 * max(true_spike, 1.0)
-        if is_label:
-            out[rows] = raw[rows]
-            keep[rows[true_only.to_numpy()]] = False
-        else:
-            keep[rows[label_only.to_numpy()]] = False
-    # A stale true-UTC 20:00 ET bar sits at raw 00:00/01:00Z of the NEXT date,
-    # so it is read in that date's group and can land on the same Eastern
-    # minute as a kept label bar. Where two kept rows share a minute, keep the
-    # one stored on its own date (raw date == Eastern date): a label, or an
-    # in-date true-UTC row, never a neighbour's spill.
-    out_idx = pd.DatetimeIndex(out.to_numpy())
-    dup = pd.Series(out_idx, index=vol.index)[keep].duplicated(keep=False)
-    if dup.any():
-        foreign = pd.Series(raw_date.to_numpy() != out_idx.date, index=vol.index)
-        keep[dup[dup].index[foreign[dup[dup].index].to_numpy()]] = False
+            if label_spike > 2 and label_spike > 1.5 * max(true_spike, 1.0):
+                verdict_label = True
+            elif true_spike > 2 and true_spike > 1.5 * max(label_spike, 1.0):
+                verdict_label = False
+            else:
+                # A legacy regular-session-only day is raw 09:30-16:00 and
+                # nothing else; true UTC would reach past raw 16:00 (RTH) or
+                # start before 09:30 (premarket from 08:00Z).
+                early = bool(((rm >= 570) & (rm < 810)).any())    # raw 09:30-13:29
+                before = bool((rm < 570).any())                   # raw < 09:30
+                late = bool(((rm > 960) & (rm <= 1260)).any())    # raw 16:01-21:00
+                verdict_label = early and not before and not late
+        row_label = lo | (~to & verdict_label)
+        as_label[rows] = row_label
+        follows_verdict[rows] = (row_label == verdict_label)
+
+    out_idx = pd.DatetimeIndex(np.where(as_label.to_numpy(), raw.to_numpy(), converted.to_numpy()))
+    own_date = pd.Series(raw_date.to_numpy() == out_idx.date, index=pos)
+    # One row per Eastern minute: verdict-followers first, then own-date rows.
+    rank = pd.DataFrame({"t": out_idx, "f": ~follows_verdict, "o": ~own_date}, index=pos)
+    keep = ~rank.sort_values(["t", "f", "o"], kind="stable").duplicated("t").reindex(pos)
     return out_idx, keep.to_numpy()
 
 
@@ -1718,9 +1726,12 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                       AND ts >= :start AND ts < :end
                     ORDER BY ts
                     """,
-                    # Same widening as the single-date window, month-wide.
+                    # [M-01 02:00Z, M+1-01 02:00Z): month M in both conventions and
+                    # no neighbour's 20:00 ET spill, the framing of the migration's
+                    # month_replace_window (Codex P2 on #1185).
                     {"ticker": ticker_upper,
-                     "start": datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc),
+                     "start": datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                              + timedelta(hours=2),
                      "end": datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                             + timedelta(hours=2)},
                 )
@@ -1731,6 +1742,8 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 idx, keep = _intraday_index_to_eastern(df["ts"], df["volume"])
                 df = df[keep]
                 df.index = idx[keep]
+                if len(date) == 6:
+                    df = df[(df.index.year == int(date[:4])) & (df.index.month == int(date[4:6]))]
                 return df.drop(columns=["ts"])
         except Exception as e:
             logger.warning("Cloud SQL intraday load failed for %s/%s: %s", ticker_upper, date, e)
