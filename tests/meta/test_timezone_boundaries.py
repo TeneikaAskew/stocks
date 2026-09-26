@@ -88,6 +88,16 @@ def _is_none(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is None
 
 
+def _host_clock(call: ast.Call, kw: dict) -> bool:
+    """now()/today() read the container's clock unless given a real zone.
+    An explicit ``tz=None`` (or a positional None) is the same host clock
+    (Codex P2 on #1185)."""
+    if call.args:
+        return _is_none(call.args[0])
+    tz = kw.get("tz", kw.get("tzinfo"))
+    return tz is None or _is_none(tz)
+
+
 def _hits(path: Path) -> list[tuple[str, int]]:
     rel = path.relative_to(REPO).as_posix()
     src = path.read_text(encoding="utf-8")
@@ -124,11 +134,11 @@ def _hits(path: Path) -> list[tuple[str, int]]:
                         and isinstance(node.args[0].value, str)
                         and _OFFSET_STR.match(node.args[0].value))):
                 found.append(("fixed-offset", node))
-            elif (short == "today" and fn.endswith(("date.today", "datetime.today", "Timestamp.today"))
-                  and not node.args and "tz" not in kw) \
-                    or short == "utcnow" \
-                    or (short == "now" and fn.endswith(("datetime.now", "Timestamp.now"))
-                        and not node.args and not kw):
+            elif (short in ("now", "today")
+                  and fn.endswith(("datetime.now", "Timestamp.now", "date.today",
+                                   "datetime.today", "Timestamp.today"))
+                  and _host_clock(node, kw)) \
+                    or short == "utcnow":
                 found.append(("host-today", node))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             text = node.value
@@ -236,13 +246,16 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
         "ok = datetime.utcnow()  # tz-ok: log stamp\n"
         "ok2 = datetime.now(tz=ET)\n"
         "ok3 = pd.Timestamp.now(tz='UTC')\n"
+        "n = datetime.now(tz=None)\n"
+        "n = pd.Timestamp.now(None)\n"
+        "d = pd.Timestamp.today(tz=None)\n"
         "ok4 = datetime.utcnow(\n"
         ")  # tz-ok: opt-out on the closing line of a multi-line call\n"
     )
     monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
     rules = Counter(r for r, _ in _hits(sample))
     assert rules == Counter({"tz-localize-none": 3, "utc-parse": 1, "zone-built-locally": 1,
-                             "fixed-offset": 3, "host-today": 5, "sql-utc-date": 2})
+                             "fixed-offset": 3, "host-today": 8, "sql-utc-date": 2})
 
 
 if __name__ == "__main__":
