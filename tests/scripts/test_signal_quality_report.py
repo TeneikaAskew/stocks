@@ -914,12 +914,16 @@ def test_build_quality_report_embed_reports_healed_rows():
     assert "before the window" not in plain["description"]
 
 
+def _nightly_schedulers():
+    from scripts.maintenance.doc_inventory import deploy_schedulers
+    return {s["name"]: s for s in deploy_schedulers()}
+
+
 def test_nightly_report_is_scheduled_after_its_writer_and_heals():
     """The schedule half of #1166, read from gcp/deploy.sh with the parser the
     doc inventory uses. Same days, a later clock time than the writer, and
     the heal window in its args."""
-    from scripts.maintenance.doc_inventory import deploy_schedulers
-    sched = {s["name"]: s for s in deploy_schedulers()}
+    sched = _nightly_schedulers()
     report = sched["signal-quality-report-nightly"]
     writer = sched["historical-signals-watchlist-daily"]
     r_min, r_hour, *_, r_dow = report["cron"].split()
@@ -930,3 +934,31 @@ def test_nightly_report_is_scheduled_after_its_writer_and_heals():
     alarm = sched["signal-quality-alarm-daily"]
     a_min, a_hour, *_ = alarm["cron"].split()
     assert (int(a_hour), int(a_min)) > (int(r_hour), int(r_min))
+
+
+def test_the_nightly_scheduler_is_updated_not_only_created():
+    """Codex on #1186: `_schedule_with_args` swallows "already exists", so
+    `deploy.sh schedulers` or `all` left the live entry at the old cron and
+    args. The verified helper updates, reads back, and counts a failure."""
+    assert _nightly_schedulers()["signal-quality-report-nightly"]["helper"] \
+        == "_schedule_with_args_verified"
+
+
+def test_the_nightly_heal_reaches_a_new_tickers_bootstrap():
+    """Codex on #1186: the writer bootstraps a (ticker, strategy) with no rows
+    from BOOTSTRAP_DAYS back. A 7-day heal left the rest of that month written
+    and never scored. The window must reach the whole bootstrap, which starts
+    BOOTSTRAP_DAYS - 1 days before the writer's run (its end is exclusive, a
+    day ahead), from a report run half an hour later."""
+    import re
+    from scripts.run_historical_signals import BOOTSTRAP_DAYS
+    args = _nightly_schedulers()["signal-quality-report-nightly"]["args"]
+    heal = int(re.search(r"--heal-days=(\d+)", args).group(1))
+    assert heal >= BOOTSTRAP_DAYS, (heal, BOOTSTRAP_DAYS)
+    # And in the report's own terms: the oldest bootstrap row is selected.
+    run = _TUE
+    oldest_bootstrap = run + timedelta(days=1) - timedelta(days=BOOTSTRAP_DAYS)
+    start, end = run - timedelta(days=2), run
+    heal_start = sqr._resolve_heal_start(
+        _nightly_args("--heal-days", str(heal)), start, end)
+    assert heal_start <= oldest_bootstrap < start

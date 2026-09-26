@@ -180,10 +180,21 @@ reproduced on 2026-09-26. The writer ran 05:00:12 to 05:01:45 UTC and the report
 **The fix has three parts:**
 
 - **Order.** The report fires at `30 1 * * 2-6`, after the writer and before the alarm at 02:00.
-- **Heal, which does not depend on the clock.** `--heal-days 7` makes the source query also select
-  rows from the last 7 days that have no `signal_metrics` row, through an anti-join on its primary
-  key. `fetch_source_rows` gains a `UNION ALL` branch, still one query. A late writer, a failed
-  night or a long weekend is scored by the next run.
+- **Heal, which does not depend on the clock.** `--heal-days 35` makes the source query also select
+  rows whose `entry_time` is in the last 35 days and that have no `signal_metrics` row, through an
+  anti-join on its primary key. `fetch_source_rows` gains a `UNION ALL` branch, still one query.
+  - A late writer, a failed night or a long weekend is scored by the next run.
+  - So is a newly added ticker. The writer bootstraps a (ticker, strategy) with no rows from
+    `BOOTSTRAP_DAYS` (30) back, and a 7-day heal, the first version, left most of that month
+    written and never scored (Codex on #1186). A test ties the scheduler's `--heal-days` to that
+    constant.
+  - Keying the heal on `inserted_at` would also reach a manual `--backfill-from` older than 35
+    days. But `historical_signals` has no index on it, and each query seq-scanned all 3.4 GB
+    (14.3 s, twice a night). Such a backfill is scored by running the report over its window, as
+    the #1154 re-run did.
+- **Updated, not only created.** The scheduler is declared with `_schedule_with_args_verified`, so
+  `deploy.sh schedulers` and `all` converge a live entry instead of skipping it as "already
+  exists" (Codex on #1186).
 - **Say so.** After the upsert, `check_coverage` runs `find_unscored_rows` over the heal range and
   the window. `coverage_gaps` splits the result by whether this run selected the row:
   - A selected row still unscored (a ticker with no intraday bars, or a bug) fails the run with
@@ -197,10 +208,14 @@ reproduced on 2026-09-26. The writer ran 05:00:12 to 05:01:45 UTC and the report
 | Query | Time | Rows |
 |---|---|---|
 | Window-only source query | 6.6 s cold | 2,706 |
-| With the heal branch (warm) | 0.63 s | 2,706 |
-| Coverage query | 0.19 s | 1,377 |
+| With a 7-day heal branch (warm) | 0.63 s | 2,706 |
+| With the 35-day heal branch | 5.8 s cold | 1,530 |
+| Coverage query, 35 days | 0.70 s | 1,377 |
 
-The coverage query returned 1,377 rows, exactly the gap above.
+The 35-day coverage query returned 1,377 of the 32,778 rows in the range, exactly the gap above.
+The 35-day row was measured at 17:40 UTC with a window ending then, not at 05:30, so its 2-day
+window held 1,530 rows. Its heal branch returned 0, because the unscored Friday sat inside that
+window.
 
 Each query walks all of `idx_historical_signals_ticker_time`, because `entry_time` is that index's
 second column, so its cost grows with the table (12,207 pages today), not with the window. That
@@ -264,15 +279,18 @@ of 17 weeks, and fourteen never did (#1152).
 
 ## Tests
 
-`tests/scripts/test_signal_quality_report.py` — **69 tests**, importing `CLEAN_THRESHOLD`,
+`tests/scripts/test_signal_quality_report.py` — **71 tests**, importing `CLEAN_THRESHOLD`,
 `NOISE_THRESHOLD`, `classify`, `main` and `parse_args` by name.
-Seventeen pin #1166, each run red against the code before it:
+Nineteen pin #1166, each run red against the code before it:
 - the heal window's bounds, including Tuesday's run reaching Friday's session
 - the missed and deferred split
 - the I/O shape: one source query and one coverage query however much is healed
 - exit 1 on a selected row left unscored, exit 0 on a deferred one, no check on `--dry-run`
 - the schedule, read from `gcp/deploy.sh` with the inventory's own parser (it failed as
   `(1, 0) > (1, 0)`)
+- the two Codex findings on #1186: the scheduler is the verified update-or-create helper, and
+  `--heal-days` reaches the writer's `BOOTSTRAP_DAYS` (they failed as
+  `'_schedule_with_args' == '_schedule_with_args_verified'` and `assert 7 >= 30`)
 
 `tests/integration/test_schema_query_contract.py::test_signal_quality_heal_and_coverage_queries_real_schema`
 runs both queries against the real schema.

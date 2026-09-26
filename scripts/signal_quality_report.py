@@ -600,7 +600,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                    help="Historical mode: also score rows from the last N days "
                         "that have no signal_metrics row yet, then exit 1 if a "
                         "row this run selected is still unscored. The nightly "
-                        "scheduler passes 7 (#1166).")
+                        "scheduler passes 35, which covers the historical-signals "
+                        "writer's 30-day bootstrap of a new ticker (#1166).")
     p.add_argument("--lookback-hours", type=int, default=4,
                    help="Rolling mode: how far back to scan for fires (default 4)")
     p.add_argument("--tickers", default="",

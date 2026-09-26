@@ -272,12 +272,15 @@ def test_signal_quality_heal_and_coverage_queries_real_schema(clean_db, seed):
     from scripts.signal_quality_report import fetch_source_rows, find_unscored_rows
 
     tue = datetime(2026, 9, 29, 5, 30, tzinfo=timezone.utc)
-    start, end, heal_start = tue - timedelta(days=2), tue, tue - timedelta(days=7)
+    # The nightly heal is 35 days: it reaches the writer's 30-day bootstrap.
+    start, end, heal_start = tue - timedelta(days=2), tue, tue - timedelta(days=35)
     at = {
         "fri_unscored": datetime(2026, 9, 25, 19, 0, tzinfo=timezone.utc),
         "thu_scored": datetime(2026, 9, 24, 18, 0, tzinfo=timezone.utc),
         "mon_in_window": datetime(2026, 9, 28, 18, 0, tzinfo=timezone.utc),
-        "before_heal": datetime(2026, 9, 21, 18, 0, tzinfo=timezone.utc),
+        # A new ticker's bootstrap writes a month back in one run.
+        "bootstrap_unscored": datetime(2026, 9, 4, 18, 0, tzinfo=timezone.utc),
+        "before_heal": datetime(2026, 8, 21, 18, 0, tzinfo=timezone.utc),
     }
     seed("historical_signals", [
         {"ticker": "SPY", "entry_time": ts, "trade_type": "call",
@@ -294,11 +297,11 @@ def test_signal_quality_heal_and_coverage_queries_real_schema(clean_db, seed):
         return sorted(pd.Timestamp(at[k]) for k in keys)
 
     healed = fetch_source_rows(clean_db, start, end, heal_start=heal_start)
-    assert times(healed) == expect("fri_unscored", "mon_in_window")
+    assert times(healed) == expect("bootstrap_unscored", "fri_unscored", "mon_in_window")
 
     # Without a heal window the query is today's: the window only.
     assert times(fetch_source_rows(clean_db, start, end)) == expect("mon_in_window")
 
     unscored = find_unscored_rows(clean_db, heal_start, end)
-    assert times(unscored) == expect("fri_unscored", "mon_in_window")
+    assert times(unscored) == expect("bootstrap_unscored", "fri_unscored", "mon_in_window")
     assert {"ticker", "entry_time", "strategy"} <= set(unscored.columns)
