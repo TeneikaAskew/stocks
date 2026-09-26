@@ -63,7 +63,9 @@ _SQL_UTC_DATE = re.compile(
     r"\bCURRENT_DATE\b|\bDATE\s*\(\s*[A-Za-z_][\w.]*\s*\)|\b[\w.]*(?:ts|_at)\s*::\s*date\b"
     # CAST(col AS date), the standard spelling of the same truncation
     # (Codex P2 on #1185).
-    r"|\bCAST\s*\(\s*[A-Za-z_][\w.]*\s+AS\s+date\s*\)",
+    r"|\bCAST\s*\(\s*[A-Za-z_][\w.]*\s+AS\s+date\s*\)"
+    # date_trunc('day', col): the session's UTC midnight, same boundary.
+    r"|\bdate_trunc\s*\(\s*'day'\s*,\s*[A-Za-z_][\w.]*\s*\)",
     re.IGNORECASE,
 )
 _OFFSET_STR = re.compile(r"^\s*-?\s*[45]\s*(h|hr|hrs|hour|hours|H)\s*$")
@@ -429,6 +431,7 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
         "q3 = f'SELECT * FROM t WHERE DATE({column}) = CURRENT_DATE'\n"
         "q4 = f'SELECT * FROM {tbl} WHERE ' f'{col} >= CURRENT_DATE'\n"
         "q5 = 'SELECT 1 FROM market_data_intraday m WHERE CAST(m.ts AS date) = :day'\n"
+        "q6 = \"SELECT date_trunc('day', ts) FROM market_data_intraday\"\n"
         "ok = datetime.utcnow()  # tz-ok: log stamp\n"
         "ok2 = datetime.now(tz=ET)\n"
         "ok3 = pd.Timestamp.now(tz='UTC')\n"
@@ -452,7 +455,7 @@ def test_the_guard_catches_each_pattern(tmp_path, monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
     rules = Counter(r for r, _ in _hits(sample))
     assert rules == Counter({"tz-localize-none": 3, "utc-parse": 1, "zone-built-locally": 4,
-                             "fixed-offset": 3, "host-today": 11, "sql-utc-date": 5})
+                             "fixed-offset": 3, "host-today": 11, "sql-utc-date": 6})
 
 
 if __name__ == "__main__":

@@ -435,3 +435,27 @@ def test_drift_min_prior_rows_threshold(monkeypatch):
     assert drift is False, "fewer than 3 prior rows should pass-through"
     assert refuse is False
     assert any("skipping drift check" in m for m in msgs)
+
+
+# ── Codex P1 on #1185: resample on the Eastern clock in either convention ────
+
+
+@pytest.mark.parametrize("stored", ["et_label", "utc"])
+def test_fetch_bars_returns_the_eastern_clock_in_either_convention(monkeypatch, stored):
+    """The 240m buckets are clock-anchored; on the UTC instants a winter
+    session split on 12:00/16:00/20:00Z instead of 08:00/12:00/16:00 ET."""
+    import scripts.calibrate_thresholds as ct
+    from datetime import date
+    wall = pd.date_range("2026-01-15 04:00", "2026-01-15 20:00", freq="1min")
+    ts = (wall.tz_localize("UTC") if stored == "et_label"
+          else wall.tz_localize("America/New_York").tz_convert("UTC"))
+    minute = wall.hour * 60 + wall.minute
+    rows = pd.DataFrame({"ts": ts, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                         "volume": [5000 if 570 <= m < 600 else 100 for m in minute]})
+    monkeypatch.setattr(ct.pd, "read_sql", lambda *a, **k: rows.copy())
+    bars = ct.fetch_bars("SPY", 5, object(), as_of=date(2026, 1, 15))
+    assert bars["ts"].iloc[0] == pd.Timestamp("2026-01-15 04:00")
+    assert bars["ts"].iloc[-1] == pd.Timestamp("2026-01-15 20:00")
+    four_h = ct.resample_to_tf(bars, 240)
+    # Right-labelled 240m bars on the Eastern clock: 08:00, 12:00, 16:00, 20:00.
+    assert set(four_h["ts"].dt.hour) <= {4, 8, 12, 16, 20}

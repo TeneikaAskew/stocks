@@ -864,3 +864,18 @@ def test_a_committed_run_lists_replaced_windows_and_every_result_to_recompute(tm
     for table in ("historical_signals", "premarket_analysis", "signal_alerts",
                   "market_data_daily"):
         assert f"RECOMPUTE {table}" in caplog.text
+
+
+
+def test_the_recompute_advice_never_names_a_destructive_or_no_op_command():
+    """Codex P1 x2 on #1185 (ee9912e): the EOD resolver never re-selects
+    resolved alerts and backfill_daily_indicators never reads bars, so naming
+    them was a no-op; and --force --start-date <window> would have deleted
+    every earlier historical_signals row for the ticker."""
+    adv = fai.BAR_DERIVED_RESULTS
+    assert "NO PATH YET" in adv["signal_alerts exits"]
+    assert "#1190" in adv["signal_alerts exits"]
+    premarket = next(v for k, v in adv.items() if k.startswith("market_data_daily"))
+    assert "NO PATH YET" in premarket and "backfill_daily_indicators" not in premarket
+    hs = adv["historical_signals / signal_metrics"]
+    assert "FULL regeneration" in hs and "earliest" in hs

@@ -171,3 +171,22 @@ def test_load_1m_bars_keeps_the_regular_session_in_either_convention(monkeypatch
     assert len(out) == 390
     assert out.index[0] == pd.Timestamp("2026-07-15 13:30", tz="UTC")   # 09:30 EDT
     assert out["close"].iloc[0] == 570.0                               # the 09:30 bar
+
+
+
+def test_four_hour_bars_sit_on_the_eastern_grid_in_winter():
+    """Codex P1 on #1185 (ee9912e): 4h bars resampled on the UTC index split a
+    winter session on 12:00/16:00/20:00Z. On the Eastern clock the session's
+    bars open at 08:00 and 12:00 ET, keyed by their UTC instants."""
+    import numpy as np
+    import pandas as pd
+    from gcp.research.strat_engine import strat_data_builder as sdb
+    wall = pd.date_range("2026-01-15 09:30", "2026-01-15 15:59", freq="1min")
+    idx = wall.tz_localize("America/New_York").tz_convert("UTC")
+    px = 100 + np.cumsum(np.random.default_rng(5).normal(0, 0.05, len(idx)))
+    df = pd.DataFrame({"open": px, "high": px + 0.05, "low": px - 0.05,
+                       "close": px, "volume": 1000.0}, index=idx)
+    out = sdb._featurize_tf(df, "4h", "4h")
+    keys = sorted(out.index)
+    assert keys == [pd.Timestamp("2026-01-15 13:00", tz="UTC"),   # 08:00 EST
+                    pd.Timestamp("2026-01-15 17:00", tz="UTC")]   # 12:00 EST

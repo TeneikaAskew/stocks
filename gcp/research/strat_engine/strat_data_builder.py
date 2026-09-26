@@ -381,9 +381,17 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     if tf_arg is None:
         df_tf = df_cap.copy()
     else:
+        # Aggregate on the Eastern clock, then key the bars by their UTC
+        # instant again. Resampling the UTC index put a winter session's 4h
+        # bars on 12:00/16:00/20:00Z instead of 08:00/12:00/16:00 ET, a
+        # DST-dependent change to OHLC and every indicator on it (Codex P1 on
+        # #1185). Sub-hour and hourly grids coincide either way.
         loader = DataLoader()
-        df_tf = loader.aggregate_to_timeframe(df_cap, tf_arg)
-        df_tf["Time"] = utc_to_eastern_naive(df_tf.index)  # re-add Time after aggregation
+        east = df_cap.set_axis(utc_to_eastern_naive(df_cap.index), axis=0)
+        df_tf = loader.aggregate_to_timeframe(east, tf_arg)
+        df_tf["Time"] = df_tf.index  # naive Eastern bucket start
+        df_tf.index = eastern_index_to_utc(df_tf.index)
+        df_tf.index.name = df_cap.index.name
 
     # Strat classification + combo detection
     classifier = StratClassifier()

@@ -646,8 +646,10 @@ whether the win still holds.
 >   Result tables computed from the old bars (`historical_signals`,
 >   `premarket_analysis` outcomes, `signal_alerts` exits, `market_data_daily`
 >   premarket fields) are NOT touched by the migration: recomputing them is a
->   separate approved step over the `REPLACED` windows, with the commands the
->   run prints as `RECOMPUTE` lines.
+>   separate approved step over the `REPLACED` windows, with the paths the
+>   run prints as `RECOMPUTE` lines. Two have no correct path yet
+>   (`signal_alerts` exits, the premarket fields), so **do not run
+>   `--replace-months --commit` until #1190 lands.**
 > - **Reading across the migration:** `lib.eastern_time.stored_intraday_to_eastern`.
 >   Raw dates from `TRUE_UTC_FROM` (2026-09-28, the first session after the
 >   writer deploy) are true UTC by construction; earlier dates are inferred.

@@ -224,6 +224,11 @@
    "<sql>::sql#f71852eb6bdd"
   ]
  },
+ "gcp/queries/p1_universe_inventory.sql": {
+  "sql-utc-date": [
+   "<sql>::sql#ee66783fcedb"
+  ]
+ },
  "gcp/queries/validate_gamma_proximity.sql": {
   "sql-utc-date": [
    "<sql>::sql#a6211e0beb38"
@@ -782,9 +787,6 @@
    "_parse_as_of::date.today()",
    "calibrate_ticker::date.today()",
    "fetch_bars::date.today()"
-  ],
-  "utc-parse": [
-   "fetch_bars::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
  "scripts/check_event_window_concentration.py": {

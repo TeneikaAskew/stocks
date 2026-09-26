@@ -405,7 +405,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1844](../../../lib/strat_levels.py#L1844)
 
 ### `ticker_calibration`
-- [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [487](../../../scripts/calibrate_thresholds.py#L487)
+- [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [497](../../../scripts/calibrate_thresholds.py#L497)
 
 ### `ticker_info`
 - [`lib/ticker_info.py`](../../../lib/ticker_info.py) — line [66](../../../lib/ticker_info.py#L66), [629](../../../lib/ticker_info.py#L629)
@@ -687,7 +687,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [497](../../../gcp/backfill_ticker.py#L497)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [107](../../../gcp/build_intraday_gex.py#L107)
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [99](../../../gcp/build_realtime_gex.py#L99)
-- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [211](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L211), [511](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L511), [544](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L544), [767](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L767)
+- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [211](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L211), [511](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L511), [544](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L544), [770](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L770)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [399](../../../gcp/fetchers/fetch_market_data.py#L399)
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [315](../../../gcp/historical_signals.py#L315)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [380](../../../gcp/premarket_playbook_resolver.py#L380)
@@ -700,7 +700,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../scripts/analysis/per_ticker_calibration.py#L208), [205](../../../scripts/analysis/per_ticker_calibration.py#L205)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [117](../../../scripts/backfill_watchlist_data.py#L117)
-- [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [232](../../../scripts/calibrate_thresholds.py#L232)
+- [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [233](../../../scripts/calibrate_thresholds.py#L233)
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [119](../../../scripts/replay_signal_monitor.py#L119), [494](../../../scripts/replay_signal_monitor.py#L494)
 - [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [522](../../../scripts/signal_quality_report.py#L522)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [187](../../../scripts/validation/validate_brief_accuracy.py#L187)
@@ -816,7 +816,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `ticker_calibration`
 - [`lib/strategies/calibration.py`](../../../lib/strategies/calibration.py) — line [91](../../../lib/strategies/calibration.py#L91), [110](../../../lib/strategies/calibration.py#L110)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [216](../../../scripts/analysis/per_ticker_calibration.py#L216)
-- [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [313](../../../scripts/calibrate_thresholds.py#L313)
+- [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [323](../../../scripts/calibrate_thresholds.py#L323)
 - [`scripts/refresh_calibration_table.py`](../../../scripts/refresh_calibration_table.py) — line [74](../../../scripts/refresh_calibration_table.py#L74)
 
 ### `ticker_info`
