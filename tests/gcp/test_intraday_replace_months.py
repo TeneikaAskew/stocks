@@ -681,3 +681,14 @@ def test_run_verify_months_passes_when_all_clean(tmp_path):
     lst.write_text("AAA,2026-09\n")
     with patch.object(fai, "query_to_dataframe_strict", return_value=_stored_month_rows("utc")):
         assert fai.run_verify_months(str(lst), None) == 0
+
+
+def test_run_verify_months_fails_on_an_empty_listed_month(tmp_path, caplog):
+    """Codex P1 on #1185 (4d466b6): a listed month with no rows is missing
+    data, not a pass."""
+    lst = tmp_path / "l.csv"
+    lst.write_text("AAA,2026-09\n")
+    with patch.object(fai, "query_to_dataframe_strict",
+                      return_value=pd.DataFrame(columns=["ts", "volume"])):
+        assert fai.run_verify_months(str(lst), None) == 1
+    assert "VERIFY-FAIL AAA,2026-09 status=empty" in caplog.text

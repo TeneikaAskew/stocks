@@ -742,8 +742,11 @@ def run_verify_months(path: str, limit: Optional[int]) -> int:
     for n, (sym, y, m) in enumerate(items, 1):
         r = verify_month(sym, y, m)      # strict: a DB error fails the run loudly
         counts[r['status']] = counts.get(r['status'], 0) + 1
-        if r['status'] == 'legacy':
-            failed.append(f"{sym},{y}-{m:02d} label_rows={r['label_rows']} "
+        # Anything but clean fails, empty included: a listed month with no rows
+        # is data that went missing after the list was made (Codex P1 on #1185).
+        if r['status'] != 'clean':
+            failed.append(f"{sym},{y}-{m:02d} status={r['status']} "
+                          f"label_rows={r['label_rows']} "
                           f"dropped_rows={r['dropped_rows']} rows={r['rows']}")
         if n % 500 == 0:
             log.info("  verify %d/%d %s", n, len(items), counts)
@@ -751,7 +754,8 @@ def run_verify_months(path: str, limit: Optional[int]) -> int:
     for line in failed:
         log.error("VERIFY-FAIL %s", line)
     if failed:
-        log.error("%d of %d ticker-months still hold legacy rows.", len(failed), len(items))
+        log.error("%d of %d ticker-months are not clean (legacy rows, or empty).",
+                  len(failed), len(items))
         return 1
     return 0
 
