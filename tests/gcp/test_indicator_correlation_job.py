@@ -355,9 +355,13 @@ def test_signal_target_scores_matched_alerts(monkeypatch):
     enr = _enriched_fixture(["2026-05-04", "2026-05-05", "2026-05-06"])
     # Build 60 synthetic alerts pinned to real bar timestamps, alternating win/loss.
     fire_bars = enr.iloc[20:200:3]
+    # alert_ts as the DB returns it: a TIMESTAMPTZ instant. The bars are
+    # DataLoader's naive Eastern clock (Codex P1 on #1185: stripping the zone
+    # from the alert left the UTC clock, and no alert found its bar).
+    from lib.eastern_time import eastern_index_to_utc
     alerts = pd.DataFrame({
         "ticker": "SPY",
-        "alert_ts": pd.to_datetime(fire_bars["Time"]).values,
+        "alert_ts": eastern_index_to_utc(pd.DatetimeIndex(fire_bars["Time"])),
         "exit_return_pct": [0.5 if i % 2 == 0 else -0.5 for i in range(len(fire_bars))],
     })
     monkeypatch.setattr(job, "_load_signal_outcomes", lambda *a, **k: alerts)
@@ -392,3 +396,23 @@ def test_run_default_targets_includes_all_four(monkeypatch):
     # forward_return rows still carry the empty-string class sentinel.
     fr = results[results["target_name"] == "forward_return"]
     assert (fr["target_class"] == "").all()
+
+
+def test_signal_target_joins_utc_alerts_to_eastern_bars(monkeypatch):
+    """Codex P1 on #1185 (reader sweep): DataLoader bars are naive Eastern and
+    alert_ts is a UTC instant. Alerts after 13:00 ET have a UTC clock of 17:00+,
+    past the regular session, so stripping the zone matched none of them."""
+    from lib.eastern_time import eastern_index_to_utc
+    enr = _enriched_fixture(["2026-05-04", "2026-05-05", "2026-05-06"])
+    t = pd.to_datetime(enr["Time"])
+    late = enr[(t.dt.hour >= 13) & (t.dt.hour < 16)].iloc[::3]
+    assert len(late) >= 40
+    alerts = pd.DataFrame({
+        "ticker": "SPY",
+        "alert_ts": eastern_index_to_utc(pd.DatetimeIndex(late["Time"])),
+        "exit_return_pct": [0.5 if i % 2 == 0 else -0.5 for i in range(len(late))],
+    })
+    monkeypatch.setattr(job, "_load_signal_outcomes", lambda *a, **k: alerts)
+    out = job.compute_signal_target({"SPY": enr}, ["SPY"], "2026-05-01", "2026-05-06")
+    assert not out.empty
+    assert (out["target_name"] == "signal").all()

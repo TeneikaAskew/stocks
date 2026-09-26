@@ -52,7 +52,7 @@ import os
 import sys
 from collections import Counter
 from collections.abc import Mapping
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -61,6 +61,8 @@ import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from lib.eastern_time import eastern_bounds_utc, eastern_index_to_utc  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -489,14 +491,14 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
 
         # Pre-market context from intraday bars
         try:
+            pm_start, pm_end = eastern_bounds_utc(fd, dt_time(4, 0), dt_time(9, 30))
             ibars = query_to_dataframe(
                 "SELECT ts, open, high, low, close, volume "
                 "FROM market_data_intraday "
-                "WHERE ticker = :ticker "
-                "  AND ts >= CAST(:fd AS DATE) "
-                "  AND ts <  CAST(:fd AS DATE) + INTERVAL '1 day' "
+                "WHERE ticker = :ticker AND interval = '1min' "
+                "  AND ts >= :start AND ts < :end "
                 "ORDER BY ts",
-                {"ticker": ticker.upper(), "fd": str(fd)},
+                {"ticker": ticker.upper(), "start": pm_start, "end": pm_end},
             )
             if not ibars.empty:
                 prev_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else None
@@ -602,6 +604,8 @@ def run() -> int:
     for m in sorted(months):
         intraday = av_intraday_month(ticker, m, api_key)
         if not intraday.empty:
+            # Naive Eastern vendor stamps -> UTC instants (CLAUDE.md 3.9).
+            intraday.index = eastern_index_to_utc(intraday.index)
             ir_rows = [{
                 "ticker": ticker, "interval": "1min",
                 "ts": ts.to_pydatetime(),

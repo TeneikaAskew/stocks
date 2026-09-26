@@ -6,6 +6,7 @@ tercile distribution with fake zeros. A genuine 0.0 is preserved.
 """
 from __future__ import annotations
 
+import pytest
 import math
 
 import pandas as pd
@@ -112,3 +113,80 @@ def test_dealer_regime_null_when_gex_missing():
     # d17: prior GEX present → valid 9-cell label, no "nan"
     dr = res.loc[d17, "dealer_regime"]
     assert dr is not None and dr.startswith("GEX_") and "nan" not in dr
+
+
+# ── Codex P1 on #1185 (reader sweep): mins_since_open on the market clock ────
+
+
+def test_featurize_tf_counts_minutes_from_the_eastern_open():
+    """The bars' index is the aware UTC instant; add_all_indicators read the
+    clock off Time, so the persisted mins_since_open ran 240/300 min late."""
+    import numpy as np
+    import pandas as pd
+    from gcp.research.strat_engine import strat_data_builder as sdb
+    frames = []
+    for day in ("2026-01-14", "2026-01-15"):   # EST
+        wall = pd.date_range(f"{day} 09:30", f"{day} 15:59", freq="1min")
+        idx = wall.tz_localize("America/New_York").tz_convert("UTC")
+        px = 100 + np.cumsum(np.random.default_rng(3).normal(0, 0.05, len(idx)))
+        frames.append(pd.DataFrame({"open": px, "high": px + 0.05, "low": px - 0.05,
+                                    "close": px, "volume": 1000.0}, index=idx))
+    df_1m = pd.concat(frames)
+    out = sdb._featurize_tf(df_1m, "1m", None)
+    col = "mins_since_open" if "mins_since_open" in out.columns else "Mins_Since_Open"
+    first = out.loc[pd.Timestamp("2026-01-15 14:30", tz="UTC"), col]
+    assert first == 0
+    assert out.loc[pd.Timestamp("2026-01-15 15:30", tz="UTC"), col] == 60
+
+
+
+@pytest.mark.parametrize("stored", ["et_label", "utc"])
+def test_load_1m_bars_keeps_the_regular_session_in_either_convention(monkeypatch, stored):
+    """Codex P1 on #1185 (3dd141d): an AT TIME ZONE filter in SQL read legacy
+    raw 13:30-15:59 labels as 09:30-11:59 ET and dropped the real open."""
+    import pandas as pd
+    from gcp.research.strat_engine import strat_data_builder as sdb
+    wall = pd.date_range("2026-07-15 04:00", "2026-07-15 20:00", freq="1min")
+    ts = (wall.tz_localize("UTC") if stored == "et_label"
+          else wall.tz_localize("America/New_York").tz_convert("UTC"))
+    minute = wall.hour * 60 + wall.minute
+    rows = pd.DataFrame({"ts": ts, "open": 1.0, "high": 1.0, "low": 1.0,
+                         "close": minute.astype(float),
+                         "volume": [5000 if 570 <= m < 600 else 100 for m in minute]})
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(sdb.pd, "read_sql",
+                        lambda sql, conn, params=None: rows[rows["ts"] >= params["start_ts"]].copy())
+    out = sdb._load_1m_bars(_Engine(), "SPY", "2026-07-15")
+    assert len(out) == 390
+    assert out.index[0] == pd.Timestamp("2026-07-15 13:30", tz="UTC")   # 09:30 EDT
+    assert out["close"].iloc[0] == 570.0                               # the 09:30 bar
+
+
+
+def test_four_hour_bars_sit_on_the_eastern_grid_in_winter():
+    """Codex P1 on #1185 (ee9912e): 4h bars resampled on the UTC index split a
+    winter session on 12:00/16:00/20:00Z. On the Eastern clock the session's
+    bars open at 08:00 and 12:00 ET, keyed by their UTC instants."""
+    import numpy as np
+    import pandas as pd
+    from gcp.research.strat_engine import strat_data_builder as sdb
+    wall = pd.date_range("2026-01-15 09:30", "2026-01-15 15:59", freq="1min")
+    idx = wall.tz_localize("America/New_York").tz_convert("UTC")
+    px = 100 + np.cumsum(np.random.default_rng(5).normal(0, 0.05, len(idx)))
+    df = pd.DataFrame({"open": px, "high": px + 0.05, "low": px - 0.05,
+                       "close": px, "volume": 1000.0}, index=idx)
+    out = sdb._featurize_tf(df, "4h", "4h")
+    keys = sorted(out.index)
+    assert keys == [pd.Timestamp("2026-01-15 13:00", tz="UTC"),   # 08:00 EST
+                    pd.Timestamp("2026-01-15 17:00", tz="UTC")]   # 12:00 EST

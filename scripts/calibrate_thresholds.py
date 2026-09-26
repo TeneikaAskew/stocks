@@ -49,6 +49,7 @@ from sqlalchemy import text
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gcp.database import get_engine, is_cloud_sql_configured, upsert_dataframe  # noqa: E402
+from lib.eastern_time import stored_intraday_to_eastern  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("calibrate_thresholds")
@@ -242,8 +243,17 @@ def fetch_bars(
                 "cutoff": cutoff,
                 "end_excl": end + timedelta(days=1)},
     )
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    return df
+    if df.empty:
+        return df
+    # Naive Eastern wall clock, read per row's stored convention: the 90/120/
+    # 240m buckets resample_to_tf builds are anchored on the clock, so they
+    # must be Eastern-anchored whichever convention a month is stored in.
+    # Resampling the UTC instants moved them 30-60 min with DST once the
+    # writers stored true UTC (Codex P1 on #1185).
+    idx, keep = stored_intraday_to_eastern(df["ts"], df["volume"])
+    df = df.loc[keep].copy()
+    df["ts"] = idx[keep]
+    return df.sort_values("ts").reset_index(drop=True)
 
 
 # ── #250 Drift guard ───────────────────────────────────────────────────

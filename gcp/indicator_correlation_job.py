@@ -59,6 +59,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("indicator_correlation_job")
 
+from lib.eastern_time import utc_to_eastern_naive  # noqa: E402
 from lib.config import IndicatorConfig  # noqa: E402
 from lib.indicators import add_all_indicators, FEATURE_GROUPS  # noqa: E402
 
@@ -444,13 +445,20 @@ def compute_signal_target(
             continue
         # Align each alert to its intraday bar by timestamp (minute resolution).
         bars = enr.copy()
-        bars_ts = pd.to_datetime(bars["Time"]).dt.tz_localize(None).dt.floor("min")
+        # Both sides on the naive Eastern clock: DataLoader.load_intraday hands
+        # out Eastern bars, and alert_ts (TIMESTAMPTZ) is converted, not
+        # stripped. Stripping it left the naive UTC clock and every alert
+        # missed its bar by 4-5 h (Codex P1 on #1185, reader sweep).
+        bars_ts = pd.to_datetime(bars["Time"]).dt.floor("min")
         bars = bars.assign(_ts=bars_ts.values)
         # Guard against duplicate/overlapping source bars on the same minute —
         # reindex raises InvalidIndexError on a non-unique index. Keep the last
         # bar for a given minute (matches the monitor's last-write-wins window).
         bars = bars[~bars["_ts"].duplicated(keep="last")].set_index("_ts")
-        a_ts = pd.to_datetime(tk_alerts["alert_ts"]).dt.tz_localize(None).dt.floor("min")
+        a_inst = pd.to_datetime(tk_alerts["alert_ts"])
+        if a_inst.dt.tz is None:
+            a_inst = a_inst.dt.tz_localize("UTC")  # TIMESTAMPTZ read in a UTC session
+        a_ts = utc_to_eastern_naive(a_inst).dt.floor("min")
         joined = bars.reindex(a_ts.values)
         joined = joined.assign(_win=(tk_alerts["exit_return_pct"].to_numpy() > 0).astype(int))
         frames.append(joined)

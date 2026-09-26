@@ -59,7 +59,9 @@ import pandas as pd
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import (
+    ET_NAME, eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive,
+)
 
 from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert, bulk_copy_update
 from lib.data_loader import DataLoader
@@ -174,22 +176,38 @@ def _max_cached_date(engine, ticker: str, tf_label: str) -> Optional[_date]:
 
 
 def _load_1m_bars(engine, ticker: str, start_date: str) -> pd.DataFrame:
-    """Pull 1-min RTH bars for one ticker."""
+    """Pull 1-min RTH bars for one ticker, indexed by the true UTC instant.
+
+    Rows are read whole-day and resolved by lib.eastern_time.
+    stored_intraday_to_eastern before the 09:30-15:59 ET filter. Until the
+    re-framing migration finishes a row may be an Eastern label stored as UTC,
+    and filtering in SQL with ``AT TIME ZONE`` kept raw 13:30-15:59 labels as
+    "09:30-11:59 ET" and dropped the real open (Codex P1 on #1185). Loading
+    extended hours too costs ~2.4x the rows; the daily run reads ~45 days.
+    """
     table = INTRADAY_TABLE[ticker]
     sql = text(f"""
         SELECT ts, open, high, low, close, volume
         FROM {table}
         WHERE interval = '1min'
           AND ts >= :start_ts
-          AND (ts AT TIME ZONE 'America/New_York')::time BETWEEN '09:30' AND '15:59'
         ORDER BY ts
     """)
+    # start_date's Eastern midnight read as a label: the earlier of the two
+    # raw placements, so both conventions of the first session are fetched.
     start_ts = pd.Timestamp(start_date, tz="UTC")
     with engine.connect() as conn:
         df = pd.read_sql(sql, conn, params={"start_ts": start_ts})
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df = df.set_index("ts")
-    return df
+    if df.empty:
+        return df.set_index("ts")
+    idx, keep = stored_intraday_to_eastern(df["ts"], df["volume"])
+    df, eastern = df.loc[keep].drop(columns="ts"), idx[keep]
+    t = eastern.hour * 60 + eastern.minute
+    rth = (t >= 570) & (t <= 959) & (eastern.date >= pd.Timestamp(start_date).date())
+    df = df.loc[rth]
+    df.index = eastern_index_to_utc(eastern[rth])
+    df.index.name = "ts"
+    return df.sort_index()
 
 
 def _load_vix_per_date(engine) -> pd.DataFrame:
@@ -353,14 +371,27 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     (lowercase, ready to upsert), indexed by ts. The caller adds context columns.
     """
     df_cap = _capitalize_ohlcv(df_1m)
-    df_cap["Time"] = df_cap.index  # required by add_all_indicators for VWAP
+    # add_all_indicators reads the market clock off Time (VWAP / ORB session
+    # grouping, Mins_Since_Open), so Time is naive Eastern wall time. The index
+    # stays the aware-UTC instant the upsert keys on. Time used to be that
+    # instant, which made the persisted mins_since_open 240/300 min late
+    # (Codex P1 on #1185, reader sweep).
+    df_cap["Time"] = utc_to_eastern_naive(df_cap.index)
 
     if tf_arg is None:
         df_tf = df_cap.copy()
     else:
+        # Aggregate on the Eastern clock, then key the bars by their UTC
+        # instant again. Resampling the UTC index put a winter session's 4h
+        # bars on 12:00/16:00/20:00Z instead of 08:00/12:00/16:00 ET, a
+        # DST-dependent change to OHLC and every indicator on it (Codex P1 on
+        # #1185). Sub-hour and hourly grids coincide either way.
         loader = DataLoader()
-        df_tf = loader.aggregate_to_timeframe(df_cap, tf_arg)
-        df_tf["Time"] = df_tf.index  # re-add Time after aggregation
+        east = df_cap.set_axis(utc_to_eastern_naive(df_cap.index), axis=0)
+        df_tf = loader.aggregate_to_timeframe(east, tf_arg)
+        df_tf["Time"] = df_tf.index  # naive Eastern bucket start
+        df_tf.index = eastern_index_to_utc(df_tf.index)
+        df_tf.index.name = df_cap.index.name
 
     # Strat classification + combo detection
     classifier = StratClassifier()
