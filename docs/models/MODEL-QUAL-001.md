@@ -3,7 +3,7 @@
 **Code:** `scripts/signal_quality_report.py` (the classifier) ·
 `gcp/signal_quality_alarm.py` (the regression alarm) ·
 **Table:** `signal_metrics` ·
-**Jobs:** `signal-quality-report` (`0 1 * * 2-6`), `signal-quality-alarm` (`0 2 * * 2-6`) ·
+**Jobs:** `signal-quality-report` (`30 1 * * 2-6`), `signal-quality-alarm` (`0 2 * * 2-6`) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RETEST
 **Doc health:** CURRENT · **Last verified:** 2026-09-25
@@ -166,6 +166,61 @@ paired with their own exits, where the old join had matched none. That rho is in
 It is about signals, not infrastructure, which is what separates it from the
 `freshness-watchdog` and `audit-infra-drift` alarms that this registry deliberately excludes.
 
+### Every session scored: after its writer, and self-healing (#1166)
+
+**Until #1166 a Friday was never scored.** `signal-quality-report-nightly` and its writer,
+`historical-signals-watchlist-daily`, both fired at `0 1 * * 2-6` ET. The `deploy.sh` comment
+said the writer "finishes by 22:00 ET"; it ran 01:00 to about 01:02. So the report read
+`historical_signals` before the session it was about to score had been written. A Mon to Thu
+session was picked up by the next night's 2-day window. Friday's, written by the Saturday run,
+fell outside Tuesday's window: 0 of 20,323 Friday rows over 120 days (measured 2026-09-24). It
+reproduced on 2026-09-26. The writer ran 05:00:12 to 05:01:45 UTC and the report
+05:00:20 to 05:01:06 UTC, leaving Friday 2026-09-25's 1,357 rows and 20 late Thursday rows unscored.
+
+**The fix has three parts:**
+
+- **Order.** The report fires at `30 1 * * 2-6`, after the writer and before the alarm at 02:00.
+- **Heal, which does not depend on the clock.** `--heal-days 35` makes the source query also select
+  rows whose `entry_time` is in the last 35 days and that have no `signal_metrics` row, through an
+  anti-join on its primary key. `fetch_source_rows` gains a `UNION ALL` branch, still one query.
+  - A late writer, a failed night or a long weekend is scored by the next run.
+  - So is a newly added ticker. The writer bootstraps a (ticker, strategy) with no rows from
+    `BOOTSTRAP_DAYS` (30) back, and a 7-day heal, the first version, left most of that month
+    written and never scored (Codex on #1186). A test ties the scheduler's `--heal-days` to that
+    constant.
+  - Keying the heal on `inserted_at` would also reach a manual `--backfill-from` older than 35
+    days. But `historical_signals` has no index on it, and each query seq-scanned all 3.4 GB
+    (14.3 s, twice a night). Such a backfill is scored by running the report over its window, as
+    the #1154 re-run did.
+- **Updated, not only created.** The scheduler is declared with `_schedule_with_args_verified`, so
+  `deploy.sh schedulers` and `all` converge a live entry instead of skipping it as "already
+  exists" (Codex on #1186).
+- **Say so.** After the upsert, `check_coverage` runs `find_unscored_rows` over the heal range and
+  the window. `coverage_gaps` splits the result by whether this run selected the row:
+  - A selected row still unscored (a ticker with no intraday bars, or a bug) fails the run with
+    exit 1.
+  - A row the writer inserted after the source query is logged as deferred to the next run.
+
+  The split uses the query's own result, not a clock.
+
+**Capacity**, from `EXPLAIN (ANALYZE, BUFFERS)` on production, 2026-09-26:
+
+| Query | Time | Rows |
+|---|---|---|
+| Window-only source query | 6.6 s cold | 2,706 |
+| With a 7-day heal branch (warm) | 0.63 s | 2,706 |
+| With the 35-day heal branch | 5.8 s cold | 1,530 |
+| Coverage query, 35 days | 0.70 s | 1,377 |
+
+The 35-day coverage query returned 1,377 of the 32,778 rows in the range, exactly the gap above.
+The 35-day row was measured at 17:40 UTC with a window ending then, not at 05:30, so its 2-day
+window held 1,530 rows. Its heal branch returned 0, because the unscored Friday sat inside that
+window.
+
+Each query walks all of `idx_historical_signals_ticker_time`, because `entry_time` is that index's
+second column, so its cost grows with the table (12,207 pages today), not with the window. That
+predates this change, which adds two more such walks to a once-a-night job with a 3,600 s timeout.
+
 ## These are the thresholds MODEL-CALIB-001 writes and nothing reads
 
 [MODEL-CALIB-001](MODEL-CALIB-001.md) upserts `threshold_clean`, `threshold_wrong` and
@@ -215,7 +270,8 @@ of 17 weeks, and fourteen never did (#1152).
 
 | Symbol | Role |
 |---|---|
-| `signal_quality_report.main` | The classifier; `--mode=historical` / `--mode=rolling`, `--lookback-days` |
+| `signal_quality_report.main` | The classifier; `--mode=historical` / `--mode=rolling`, `--lookback-days`, `--heal-days` |
+| `check_coverage` / `coverage_gaps` | The nightly coverage check: exit 1 when a selected row stays unscored (#1166) |
 | `classify` (`:92`) | The four-way verdict |
 | `signal_quality_alarm.detect_regression` (`:110`) | The clean-rate alarm decision |
 | `compute_score_quality_correlation` (`:248`) | The quartile rank correlation the report-only check posts |
@@ -223,8 +279,21 @@ of 17 weeks, and fourteen never did (#1152).
 
 ## Tests
 
-`tests/scripts/test_signal_quality_report.py` — **51 tests**, importing `CLEAN_THRESHOLD`,
+`tests/scripts/test_signal_quality_report.py` — **71 tests**, importing `CLEAN_THRESHOLD`,
 `NOISE_THRESHOLD`, `classify`, `main` and `parse_args` by name.
+Nineteen pin #1166, each run red against the code before it:
+- the heal window's bounds, including Tuesday's run reaching Friday's session
+- the missed and deferred split
+- the I/O shape: one source query and one coverage query however much is healed
+- exit 1 on a selected row left unscored, exit 0 on a deferred one, no check on `--dry-run`
+- the schedule, read from `gcp/deploy.sh` with the inventory's own parser (it failed as
+  `(1, 0) > (1, 0)`)
+- the two Codex findings on #1186: the scheduler is the verified update-or-create helper, and
+  `--heal-days` reaches the writer's `BOOTSTRAP_DAYS` (they failed as
+  `'_schedule_with_args' == '_schedule_with_args_verified'` and `assert 7 >= 30`)
+
+`tests/integration/test_schema_query_contract.py::test_signal_quality_heal_and_coverage_queries_real_schema`
+runs both queries against the real schema.
 `test_classify_noise_below_noise_threshold` and `test_classify_mixed_between_noise_and_clean`
 exercise the cut-points directly.
 `tests/scripts/test_signal_quality_alarm.py` — **24 tests** over the alarm entry point. Four
@@ -253,9 +322,6 @@ are right.
 
 [#905](https://github.com/TeneikaAskew/stocks/issues/905) owns the finding the #1152 fix surfaced: the
 live score has no measurable edge.
-
-[#1166](https://github.com/TeneikaAskew/stocks/issues/1166) the nightly report never scores Friday signals: it reads
-`historical_signals` before the nightly writer has run.
 
 [#1167](https://github.com/TeneikaAskew/stocks/issues/1167) `EMPIRICAL_LOOKUP` was fitted on the 100x-lenient 5 to 60m
 classes and needs re-deriving on the re-classified table.

@@ -946,6 +946,12 @@
    "main::datetime.now()"
   ]
  },
+ "scripts/signal_quality_report.py": {
+  "utc-parse": [
+   "_row_keys::pd.to_datetime(df['entry_time'], utc=True)",
+   "main::pd.to_datetime(src['entry_time'], utc=True)"
+  ]
+ },
  "scripts/validate_market_data.py": {
   "host-today": [
    "ValidationResult.get_summary::datetime.now()",

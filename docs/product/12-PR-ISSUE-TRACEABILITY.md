@@ -81,7 +81,7 @@ Three conventions were also made explicit, because each had been applied inconsi
   record.
 
 The current ledger is **130 rows**: the 2026-09-22 reconciliation's 128 (126 open in stocks + 2 in
-solyra), less #1154 and #1152, both closed 2026-09-25, plus #1166, #1167, #1168 and #1171, filed the same day. It has not been re-reconciled against `list_issues` since. Counts derived from
+solyra), less #1154 and #1152 (closed 2026-09-25) and #1151 (closed 2026-09-26), plus #1166, #1167, #1168 and #1171 (filed 2026-09-25) and #1181 (filed 2026-09-26). It has not been re-reconciled against `list_issues` since. Counts derived from
 GitHub are a snapshot: #1157 closed between two calls made minutes apart while this was being
 written, which is why the gate checks the documents against each other and leaves the refresh
 against GitHub to the maintenance procedure at the end of this file.
@@ -212,17 +212,17 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LOW +2: #1167/#1168, all four filed while resolving them). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
+As of 2026-09-26 (P1 −1: #1151 closed after its stored verdicts were re-scored; LOW +1: #1181, filed from that re-score). As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LOW +2: #1167/#1168, all four filed while resolving them). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
 
 | Severity | Count |
 |---|---|
 | CRITICAL | 15 |
 | P0 | 14 |
 | HIGH | 15 |
-| P1 | 30 |
+| P1 | 29 |
 | MEDIUM | 11 |
 | P2 | 15 |
-| LOW | 5 |
+| LOW | 6 |
 | P3 | 2 |
 | DEBT | 11 |
 | ENH | 5 |
@@ -292,7 +292,7 @@ As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LO
 | [#854](https://github.com/TeneikaAskew/stocks/issues/854) | MEDIUM | [audit] K9 — update branches inconsistently mirror create sizing flags |
 | [#853](https://github.com/TeneikaAskew/stocks/issues/853) | MEDIUM | [audit] K8 / C6 / C7 — Widespread unjustified non-zero --max-retries (~23 jobs) |
 | [#852](https://github.com/TeneikaAskew/stocks/issues/852) | MEDIUM | [audit] K7 — 19 deploy_* functions reachable only via the bundled fetchers target |
-| [#1171](https://github.com/TeneikaAskew/stocks/issues/1171) | MEDIUM | Every trading-system build rolls out to every job at its next run; deploy.sh:107-110 says jobs keep their deploy-time digest |
+| [#1171](https://github.com/TeneikaAskew/stocks/issues/1171) | MEDIUM | Every trading-system build rolls out to the 50 jobs that float on :latest at their next run; deploy.sh:107-110 says jobs keep their deploy-time digest |
 | [#1140](https://github.com/TeneikaAskew/stocks/issues/1140) | ops | [ESCALATED] magnitude-inference: fix in #1122 merged 2026-09-16 but never deployed — job still failing nightly, auto-closed each time |
 
 **PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation*
@@ -310,13 +310,13 @@ As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LO
 | [#914](https://github.com/TeneikaAskew/stocks/issues/914) | P1 | [P1][Calendar] Centralize exchange sessions, holidays, half-days, and DST |
 | [#913](https://github.com/TeneikaAskew/stocks/issues/913) | P1 | [P1][Data] Enforce a raw-versus-adjusted corporate-action policy |
 | [#1135](https://github.com/TeneikaAskew/stocks/issues/1135) | P1 | [P1][Earnings] `_derive_archetype` reimplements `classify_archetype` and diverges on missing consistency data |
-| [#1151](https://github.com/TeneikaAskew/stocks/issues/1151) | P1 | [P1][Earnings] `evaluate-ew-strikes` scores the pre-announcement session for after-close reporters — 1,261 of 2,372 scored rows |
 | [#860](https://github.com/TeneikaAskew/stocks/issues/860) | MEDIUM | [audit] D9-D11 — Live columns absent from gcp/schema.sql; p7_schema.sql documents a stale process |
 | [#842](https://github.com/TeneikaAskew/stocks/issues/842) | MEDIUM | [audit] FB-M1..M6 — Six MEDIUM silent fallbacks on financial fields (Rule 3.7) |
 | [#919](https://github.com/TeneikaAskew/stocks/issues/919) | P2 | [P2][Dormant Data] Restore or retire wired-but-unfed production tables |
 | [#918](https://github.com/TeneikaAskew/stocks/issues/918) | P2 | [P2][Database] Replace schema convergence sprawl with ordered migrations |
 | [#1138](https://github.com/TeneikaAskew/stocks/issues/1138) | P2 | [P2][Earnings] `query_typical_daily_return` normalizes over 64 returns, not the 60 its parameter names |
 | [#1158](https://github.com/TeneikaAskew/stocks/issues/1158) | P2 | [P2][Earnings] playability quintile boundaries were calibrated on a score with two of five inputs frozen, and bucketed by rank rather than the absolute cut-points production applies |
+| [#1181](https://github.com/TeneikaAskew/stocks/issues/1181) | LOW | evaluate-ew-strikes counts symbols AlphaVantage rejects as an outage: a run whose only fetches are unsupported tickers exits 1 |
 | [#1047](https://github.com/TeneikaAskew/stocks/issues/1047) | DEBT | Fallback audit wave 3: the ~106 silent-fallback sites left after #1022, by module and priority |
 | [#1076](https://github.com/TeneikaAskew/stocks/issues/1076) | DEBT | `MARKET_HOLIDAYS_2026` is a single-year constant; holiday-aware checks break in 2027 |
 

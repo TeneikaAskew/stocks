@@ -85,7 +85,7 @@ def parse_pubsub_envelope(body: bytes) -> dict[str, Any]:
 def extract_failure_details(log_entry: dict[str, Any]) -> dict[str, Any]:
     """Extract the fields we care about from a Cloud Logging entry."""
     resource_labels = (log_entry.get("resource") or {}).get("labels") or {}
-    job_name = resource_labels.get("job_name") or "unknown-job"
+    job_name = resource_labels.get("job_name") or ""
     location = resource_labels.get("location") or os.environ.get("GCP_REGION", "us-east1")
 
     labels = log_entry.get("labels") or {}
@@ -94,6 +94,21 @@ def extract_failure_details(log_entry: dict[str, Any]) -> dict[str, Any]:
         or labels.get("execution_name")
         or ""
     )
+
+    if not job_name and execution_name and "-" in execution_name:
+        # Executions.CancelExecution audit-log entries set
+        # resource.labels.job_name to "" (present but empty, not absent)
+        # even though the execution name is populated. Cloud Run execution
+        # names are always "{job_name}-{5-char suffix}", so recover it from
+        # there. Without this, these failures group under "unknown-job",
+        # which 404s against the Cloud Run Jobs API in
+        # _get_latest_execution_status, so reconcile_closures can never
+        # close them even after the job recovers (#1177, #1178 stayed open
+        # after the same-incident magnitude-engine issue, #1175, auto-closed
+        # the same night).
+        job_name = execution_name.rsplit("-", 1)[0]
+
+    job_name = job_name or "unknown-job"
 
     severity = log_entry.get("severity", "ERROR")
     timestamp = log_entry.get("timestamp") or datetime.now(timezone.utc).isoformat()
