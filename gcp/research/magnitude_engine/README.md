@@ -56,7 +56,7 @@ score, calibration/ECE, precision, recall, false alerts per session, and
 expected net utility.
 
 Artifacts are confined to
-`magnitude-binary-research/v1/<TICKER>/report.json`, never the four-class
+`magnitude-binary-research/v1/<TICKER>/<TIMEFRAME>/report.json`, never the four-class
 production path. There is no fleet threshold or implicit pooled model. A future
 pooled experiment must independently beat the ticker-specific validation PR
 AUC for every ticker before it can be selected.
