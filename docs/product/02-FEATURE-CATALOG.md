@@ -32,7 +32,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-ADMIN-001](#feat-admin-001) | Administration | Operator surface | `/admin` | `/api/admin` (7), `/api/config` | `model_routing` | Production but needs remediation | P2 | 6 | 0 | — |
 | [FEAT-HELP-001](#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | Production | P3 | 5 | 0 | — |
 | [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Device-local appearance/layout | `/settings` | **none — `localStorage`** | **none** | Incomplete | P3 | 5 | 0 | — |
-| [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 18 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
+| [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 19 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
 | [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 65 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 14 | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#859](https://github.com/TeneikaAskew/stocks/issues/859) [#857](https://github.com/TeneikaAskew/stocks/issues/857) |
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 9 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 9 | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) |
@@ -520,7 +520,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py` |
 | Tests | `tests/lib/test_data_loader*.py`, integration suite |
-| Open issues | 18 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-data-001--data-platform-18-open) |
+| Open issues | 19 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-data-001--data-platform-19-open) |
 | Blocking issues | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#927](https://github.com/TeneikaAskew/stocks/issues/927) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
