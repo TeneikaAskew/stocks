@@ -39,7 +39,7 @@ from gcp.research.magnitude_engine.mag_config import (
     ECE_CEILING_BY_TF, SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_EXPLOSIVE_LIFT_MIN,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
-    SUCCESS_BAR_MIN_FOLDS_LIFT,
+    SUCCESS_BAR_MIN_FOLDS_LIFT, min_folds_required,
 )
 from gcp.research.magnitude_engine.evaluation_windows import eastern_sessions
 from gcp.research.magnitude_engine.mag_pred_train import (
@@ -118,13 +118,16 @@ def fold_gates(fold_df: pd.DataFrame, tf: str, prior=None) -> dict:
 
 def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1):
     """Resample Eastern sessions within each fold N times and count
-    how often each cell-level gate (g1, g2, g3, g4) passes its 6/8 threshold."""
+    how often each cell-level gate (g1, g2, g3, g4) passes its bar: the
+    6-of-8 fraction scaled to the folds this run holds (min_folds_required),
+    the same bar _evaluate_phase_gate applied."""
     if "ts" not in preds:
         raise ValueError("predictions need ts to bootstrap by Eastern session")
     preds = preds.copy()
     preds["_eastern_session"] = eastern_sessions(preds["ts"])
     folds = sorted(preds["fold"].unique())
     n_folds = len(folds)
+    required = min_folds_required(n_folds)
     rng = np.random.default_rng(seed)
 
     # Per-iteration counts
@@ -172,15 +175,16 @@ def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1)
     counts = np.array(iter_g_counts)
     return {
         "n_folds": n_folds,
+        "min_folds_required": required,
         "deterministic": tuple(det_g),
         "mean": counts.mean(axis=0),
-        "p_lt_6":  (counts < 6).mean(axis=0),
-        "p_eq_6":  (counts == 6).mean(axis=0),
-        "p_gt_6":  (counts > 6).mean(axis=0),
+        "p_below_bar": (counts < required).mean(axis=0),
+        "p_at_bar":    (counts == required).mean(axis=0),
+        "p_above_bar": (counts > required).mean(axis=0),
         "p5":  np.percentile(counts, 5, axis=0),
         "p50": np.percentile(counts, 50, axis=0),
         "p95": np.percentile(counts, 95, axis=0),
-        "cell_pass_rate": float((counts >= 6).all(axis=1).mean()),
+        "cell_pass_rate": float((counts >= required).all(axis=1).mean()),
     }
 
 
@@ -197,7 +201,8 @@ def main():
     args = p.parse_args()
 
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-                                 research=args.research)
+                                 research=args.research,
+        evaluation_window=args.evaluation_window)
     print(f"\nLoaded {len(preds)} prediction rows for {args.phase} {args.ticker} {args.tf}")
     print(f"Bootstrap iterations: {args.bootstrap_n}")
 
@@ -207,24 +212,26 @@ def main():
     print("=" * 86)
     print(f"BOOTSTRAP GATE FRAGILITY — {args.phase} {args.ticker} {args.tf}")
     print("=" * 86)
+    bar = f"{r['min_folds_required']}/{r['n_folds']}"
+    print(f"Gate bar: {bar} folds (6/8 scaled to this run's folds)")
     gate_names = ["g1 logloss-beat", "g2 ece-pass", "g3 monotone", "g4 lift>=1.5"]
     print(f"\n{'gate':20} {'det':>5} {'mean':>6} {'p5':>4} {'p50':>4} {'p95':>4} "
-           f"{'P(<6)':>7} {'P(=6)':>7} {'P(>6)':>7}")
+           f"{'P(<bar)':>8} {'P(=bar)':>8} {'P(>bar)':>8}")
     print("-" * 86)
     for i, name in enumerate(gate_names):
         print(f"{name:20} {r['deterministic'][i]:>5d} "
               f"{r['mean'][i]:>6.2f} "
               f"{int(r['p5'][i]):>4d} {int(r['p50'][i]):>4d} {int(r['p95'][i]):>4d} "
-              f"{r['p_lt_6'][i]:>7.1%} {r['p_eq_6'][i]:>7.1%} {r['p_gt_6'][i]:>7.1%}")
+              f"{r['p_below_bar'][i]:>8.1%} {r['p_at_bar'][i]:>8.1%} {r['p_above_bar'][i]:>8.1%}")
     print()
     print(f"Cell-level PASS rate across {args.bootstrap_n} bootstrap samples: "
           f"{r['cell_pass_rate']:.1%}")
     print()
     print("Interpretation:")
-    print(f"  P(<6) is the bootstrap-estimated probability that a gate falls")
-    print(f"  below the 6/8 threshold under resampling of Eastern sessions within folds.")
-    print(f"  For a gate that 'just-barely-passed' (deterministic=6), a P(<6)")
-    print(f"  near 50% signals the gate is at the edge of sampling noise.")
+    print(f"  P(<bar) is the bootstrap-estimated probability that a gate falls")
+    print(f"  below its {bar} bar under resampling of Eastern sessions within folds.")
+    print(f"  For a gate that 'just-barely-passed' (deterministic={r['min_folds_required']}),")
+    print(f"  a P(<bar) near 50% signals the gate is at the edge of sampling noise.")
 
 
 if __name__ == "__main__":

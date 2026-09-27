@@ -14,6 +14,8 @@ import sys
 import pandas as pd
 from google.cloud import storage as gcs
 
+from gcp.research.magnitude_engine.evaluation_windows import WINDOWS
+
 
 def add_research_arg(p) -> None:
     """Register --research on a post-hoc analysis script.
@@ -34,6 +36,13 @@ def add_research_arg(p) -> None:
              "path segment mag_config.research_namespace() produced for the "
              "run, and it is recorded in the run's walk_forward JSON as "
              "label_mode + thresholds.")
+    p.add_argument(
+        "--evaluation-window", default="development", choices=tuple(WINDOWS),
+        help="Read the artifacts of this evaluation window "
+             "(evaluation_windows.py). Validation and final-test runs live "
+             "under their own _windows/<name>/ root, so a listing of the "
+             "development prefix never reaches them; the run's walk_forward "
+             "JSON records the window as split_name.")
 
 
 def apply_research_contract(research: str | None,
@@ -88,18 +97,30 @@ def apply_research_contract(research: str | None,
 
 
 def research_prefix(phase: str, ticker: str, tf: str,
-                    research: str | None = None) -> str:
-    """GCS prefix for a cell's artifacts, canonical or research."""
-    cell = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
-    if not research:
-        return cell
-    return (f"research/magnitude_engine/_research/{research}/"
-            f"{phase}/{ticker.lower()}_{tf}/")
+                    research: str | None = None,
+                    evaluation_window: str | None = None) -> str:
+    """GCS prefix for a cell's artifacts: canonical, research, or windowed.
+
+    Mirrors mag_config.gcs_run_prefix (which the writer uses) with the slug
+    already resolved: a `_windows/<name>/` root for any window but
+    development, then a `_research/<slug>/` root, then the cell.
+    """
+    root = "research/magnitude_engine"
+    if evaluation_window not in (None, "development"):
+        if evaluation_window not in WINDOWS:
+            raise ValueError(
+                f"unknown evaluation window {evaluation_window!r}; "
+                f"expected one of {list(WINDOWS)}")
+        root = f"{root}/_windows/{evaluation_window}"
+    if research:
+        root = f"{root}/_research/{research}"
+    return f"{root}/{phase}/{ticker.lower()}_{tf}/"
 
 
 def load_predictions(phase: str, ticker: str, tf: str,
                       bucket: str, run_id: str | None,
-                      research: str | None = None) -> pd.DataFrame:
+                      research: str | None = None,
+                      evaluation_window: str | None = None) -> pd.DataFrame:
     """Load the latest predictions CSV for a (phase, ticker, tf) cell.
 
     Filters by run_id when supplied. `research` selects the namespace a
@@ -108,7 +129,7 @@ def load_predictions(phase: str, ticker: str, tf: str,
     """
     client = gcs.Client()
     bkt = client.bucket(bucket)
-    prefix = research_prefix(phase, ticker, tf, research)
+    prefix = research_prefix(phase, ticker, tf, research, evaluation_window)
     blobs = [b for b in bkt.list_blobs(prefix=prefix)
              if b.name.endswith(".csv") and "predictions_" in b.name]
     if not blobs:
@@ -130,7 +151,8 @@ def load_predictions(phase: str, ticker: str, tf: str,
 
 def load_run_readiness_version(phase: str, ticker: str, tf: str,
                                bucket: str, run_id: str,
-                               research: str | None = None) -> str | None:
+                               research: str | None = None,
+                               evaluation_window: str | None = None) -> str | None:
     """The production_readiness_version the walk-forward run recorded.
 
     Read from that run's own walk_forward_<run_id>.json, so an analysis of
@@ -139,7 +161,8 @@ def load_run_readiness_version(phase: str, ticker: str, tf: str,
     that is a fact about the run, not a default. A missing summary raises,
     like a missing predictions CSV.
     """
-    name = research_prefix(phase, ticker, tf, research) + f"walk_forward_{run_id}.json"
+    name = (research_prefix(phase, ticker, tf, research, evaluation_window)
+            + f"walk_forward_{run_id}.json")
     blob = gcs.Client().bucket(bucket).blob(name)
     if not blob.exists():
         raise SystemExit(f"no walk-forward summary at gs://{bucket}/{name}")

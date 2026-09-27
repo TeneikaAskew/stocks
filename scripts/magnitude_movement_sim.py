@@ -153,10 +153,12 @@ def main():
     args.label_mode, _thresholds = apply_research_contract(
         args.research, args.label_mode)
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-                                 research=args.research)
+                                 research=args.research,
+        evaluation_window=args.evaluation_window)
     readiness_version = load_run_readiness_version(
         args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-        research=args.research)
+        research=args.research,
+        evaluation_window=args.evaluation_window)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     expl = LABEL_TO_IDX["EXPLOSIVE"]
     pe = preds[preds["pred_bucket_idx"] == expl].copy()
@@ -261,7 +263,8 @@ def main():
         # The summary belongs beside the run it describes: reading from the
         # research namespace and writing back to the canonical one would file
         # a call/put/excursion result among body-contract artifacts.
-        blob = (research_prefix(args.phase, args.ticker, args.tf, args.research)
+        blob = (research_prefix(args.phase, args.ticker, args.tf, args.research,
+                                evaluation_window=args.evaluation_window)
                 + f"movement_sim_{args.position}_{args.direction}_{int(time.time())}.json")
         gcs.Client().bucket(args.bucket).blob(blob).upload_from_string(
             json.dumps(summary, indent=2, default=str), content_type="application/json")

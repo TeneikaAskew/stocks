@@ -1001,8 +1001,7 @@ def test_walk_forward_writes_under_the_namespace_it_resolved():
     # both artifact paths — the predictions CSV and the summary JSON — or one
     # of them leaks a research run into the canonical prefix
     assert src.count("gcs_run_prefix(phase, ticker, tf,") == 2
-    assert src.count(
-        "label_mode=label_mode, thresholds=thresholds)") == 2
+    assert src.count("evaluation_window=window.name)") == 2
     # and the persist path is told the same semantics it wrote under
     assert "gates=gates, label_mode=label_mode, thresholds=thresholds," in src
 
@@ -1201,7 +1200,9 @@ def test_movement_sim_writes_into_its_own_namespace():
     """Reading from _research/<slug>/ and writing back to the canonical prefix
     would file a research result among body-contract artifacts."""
     src = pathlib.Path("scripts/magnitude_movement_sim.py").read_text()
-    assert "research_prefix(args.phase, args.ticker, args.tf, args.research)" in src
+    assert "research_prefix(args.phase, args.ticker, args.tf, args.research," in src
+    # and the window it read from is the window it writes back to (#1193)
+    assert "evaluation_window=args.evaluation_window)" in src
     assert 'blob = (f"research/magnitude_engine/{args.phase}' not in src
 
 

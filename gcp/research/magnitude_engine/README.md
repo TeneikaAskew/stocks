@@ -89,7 +89,25 @@ Every run selects `--evaluation-window development`, `validation`, or
 folds keep an entire trading session together and purge one observed session
 (the prediction horizon) before evaluation. The final-test marker is created
 atomically in GCS; reusing the same final-test version for the same cell is
-rejected rather than silently re-reading the holdout.
+rejected rather than silently re-reading the holdout, and the claim is
+refused while the window is still open on the market date, so a partial
+year can never consume the one-time version.
+
+A run reads the dataset only through its window's end (`until`), so a
+development or validation run never labels, class-balances or fingerprints
+final-test rows. Gates 1-4 keep the 6-of-8 bar as a fraction of the folds
+the run holds (`mag_config.min_folds_required`: 8 -> 6, 5 -> 4, 2 -> 2,
+1 -> 1); the bar and the fold count are recorded in the summary's `gates`.
+
+Validation and final-test artifacts are written under their own
+`research/magnitude_engine/_windows/<name>/` root (development keeps the
+historical path), and every reader (`assemble_magnitude_results`, the
+analysis scripts' `--evaluation-window`) selects a window and checks the
+summary's `split_name` against it. Provenance records the image digest the
+job was deployed with (`CONTAINER_IMAGE_DIGEST`, set by
+`deploy_magnitude_engine`) and the source commit baked into the image
+(`gcp/build_info.json`, written by `deploy.sh _stamp_build_info`); either is
+NULL, never a placeholder, when unavailable.
 
 ## Target
 

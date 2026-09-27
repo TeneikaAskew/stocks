@@ -83,7 +83,8 @@ def main():
     # Load predictions
     _label_mode, _thresholds = apply_research_contract(args.research)
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-                                 research=args.research)
+                                 research=args.research,
+        evaluation_window=args.evaluation_window)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     print(f"loaded {len(preds)} prediction rows", file=sys.stderr)
 

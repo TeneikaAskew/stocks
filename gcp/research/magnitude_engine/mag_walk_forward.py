@@ -46,7 +46,7 @@ from gcp.research.magnitude_engine.mag_config import (
     ECE_CEILING_BY_TF, SUCCESS_BAR_EXPLOSIVE_LIFT_MIN,
     SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
-    SUCCESS_BAR_MIN_FOLDS_LIFT,
+    SUCCESS_BAR_MIN_FOLDS_LIFT, min_folds_required,
     GCS_BUCKET_DEFAULT, gcs_run_prefix, research_namespace,
     CONTRACT_BLOB, contract_payload,
     PRODUCTION_READINESS_VERSION,
@@ -55,6 +55,7 @@ from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.evaluation_windows import (
     CRITERIA_VERSION, FINAL_TEST_VERSION, PREDICTION_HORIZON_SESSIONS,
     WINDOWS, assert_disjoint, eastern_sessions, purged_session_masks,
+    utc_instants,
 )
 from gcp.research.magnitude_engine.mag_pred_train import (
     featurize, make_lgbm, resolve_class_weight, class_weight_power,
@@ -66,6 +67,7 @@ from gcp.research.direction_program.phase2_features import (
 )
 from gcp.research.direction_program.phase2_prune_sets import NEAR_DEAD
 from google.cloud import storage as gcs
+from lib.eastern_time import market_today, utc_now
 from lib.logging_config import setup_logging
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import log_loss
@@ -210,24 +212,79 @@ def _gcs_upload(content: bytes, blob_path: str, ctype: str = "application/json")
     return f"gs://{bucket_name}/{blob_path}"
 
 
+# Written into the build context by deploy.sh _stamp_build_info, so it ships
+# inside the image: the container copies lib/ gcp/ scripts/ and no .git, and
+# a runtime `git rev-parse` there cannot answer (Codex P1 on #1193).
+# Module-level so a test can point it elsewhere.
+BUILD_INFO_PATH = Path(__file__).resolve().parents[2] / "build_info.json"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _source_commit() -> str | None:
+    """The revision this code came from, or None when nothing can say.
+
+    The image stamp is the truth for a container and wins; GIT_COMMIT serves
+    a local or ad-hoc run; `git rev-parse` covers a plain checkout. None is
+    an explicit unknown recorded as NULL, never a raise: provenance must not
+    be able to fail the run whose provenance it records.
+    """
+    try:
+        info = json.loads(BUILD_INFO_PATH.read_text())
+        stamped = info.get("git_commit") if isinstance(info, dict) else None
+        if stamped:
+            return str(stamped)
+    except (OSError, ValueError):
+        pass
+    env = os.environ.get("GIT_COMMIT")
+    if env:
+        return env
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                             text=True, check=True, cwd=_REPO_ROOT)
+        return out.stdout.strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def _execution_provenance(X: np.ndarray, y: np.ndarray,
                           timestamps: np.ndarray) -> dict:
     digest = hashlib.sha256()
     digest.update(np.ascontiguousarray(X).view(np.uint8))
     digest.update(np.ascontiguousarray(y).view(np.uint8))
     digest.update(np.ascontiguousarray(timestamps).view(np.uint8))
-    commit = os.environ.get("GIT_COMMIT")
-    if not commit:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-            check=True).stdout.strip()
+    commit = _source_commit()
+    if commit is None:
+        log.warning("provenance: source commit unknown (no build stamp at %s, "
+                    "no GIT_COMMIT, no git checkout); code_commit is NULL",
+                    BUILD_INFO_PATH)
+    # deploy_magnitude_engine deploys the digest :research resolves to and
+    # hands the job that same string. K_REVISION is a Cloud Run revision
+    # name, not an image identity, and is not set for jobs at all; it is not
+    # a substitute (Codex P2 on #1193).
+    image = os.environ.get("CONTAINER_IMAGE_DIGEST") or None
+    if image is None:
+        log.warning("provenance: CONTAINER_IMAGE_DIGEST unset; "
+                    "container_digest is NULL")
     return {
         "criteria_version": CRITERIA_VERSION,
         "dataset_fingerprint": digest.hexdigest(),
         "code_commit": commit,
-        "container_digest": os.environ.get(
-            "CONTAINER_IMAGE_DIGEST", os.environ.get("K_REVISION", "unknown")),
+        "container_digest": image,
     }
+
+
+def _require_closed_window(window) -> None:
+    """A final-test window may be claimed only once every session in it is
+    over. Claiming earlier evaluates a partial year and consumes the one-time
+    version on it, permanently (Codex P1 on #1193). Compared on the market
+    date, since the window is an Eastern-session range."""
+    today = market_today()
+    if today < window.end:
+        raise RuntimeError(
+            f"evaluation window {window.name!r} runs through "
+            f"{window.end.isoformat()} and is still open on {today.isoformat()} "
+            f"(market date); the one-time final-test version is not claimed "
+            f"on a partial window")
 
 
 def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
@@ -237,7 +294,7 @@ def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
     path = f"research/magnitude_engine/final-test-consumed/{version}/{phase}_{ticker}_{tf}.json"
     payload = json.dumps({"version": version, "phase": phase, "ticker": ticker,
                           "tf": tf, "run_id": run_id,
-                          "consumed_at": pd.Timestamp.utcnow().isoformat()})
+                          "consumed_at": utc_now().isoformat()})
     try:
         gcs.Client().bucket(bucket_name).blob(path).upload_from_string(
             payload, content_type="application/json", if_generation_match=0)
@@ -277,7 +334,7 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     assert_disjoint(bar_dates[train_mask], bar_dates[test_mask])
     n_train = int(train_mask.sum())
     n_test = int(test_mask.sum())
-    timestamps = pd.to_datetime(ts_arr, utc=True)
+    timestamps = utc_instants(ts_arr)
     audit = {
         **(provenance or {}),
         "train_data_max_ts": (timestamps[train_mask].max().isoformat()
@@ -430,6 +487,14 @@ def _results_dataframe(phase: str, ticker: str, tf: str,
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    # ISO-8601 text from an aware UTC index landed as object dtype and to_sql
+    # bound it as text, which PostgreSQL refuses for a TIMESTAMPTZ column;
+    # the caught persist error then dropped every fold row (Codex P2 on
+    # #1193). The strings carry their +00:00 offset; utc=True only fixes the
+    # dtype.
+    for col in ("train_data_max_ts", "evaluation_data_min_ts",
+                "evaluation_data_max_ts"):
+        df[col] = pd.to_datetime(df[col], utc=True)  # tz-ok: offset-carrying ISO from an aware UTC index
     for _c in _RESULTS_FLOAT_COLS:
         if _c in df.columns:
             df[_c] = pd.to_numeric(df[_c], errors="coerce")
@@ -789,6 +854,10 @@ def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
     """Apply the pre-set success bar to a phase's folds and return a verdict."""
     ok = [f for f in folds if f.get("status") == "OK"]
     n_ok = len(ok)
+    # Every attempted fold counts toward the bar; only OK folds can pass it.
+    n_folds = len(folds)
+    required = (min_folds_required(n_folds) if n_folds
+                else SUCCESS_BAR_MIN_FOLDS_LOGLOSS)
     n_beat = sum(1 for f in ok if f["beat"] > 0)
     n_ece_pass = sum(1 for f in ok if f["ece_pass"])
     n_lift_pass = sum(
@@ -810,18 +879,20 @@ def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
     n_mono = sum(1 for f in ok if _monotone(f))
 
     gates = {
+        "n_folds": n_folds,
+        "min_folds_required": required,
         "n_ok_folds": n_ok,
         "g1_logloss_beat_folds": n_beat,
-        "g1_pass": n_beat >= SUCCESS_BAR_MIN_FOLDS_LOGLOSS,
+        "g1_pass": n_beat >= required,
         "g2_ece_pass_folds": n_ece_pass,
-        "g2_pass": n_ece_pass >= SUCCESS_BAR_MIN_FOLDS_ECE,
+        "g2_pass": n_ece_pass >= required,
         "g3_monotone_folds": n_mono,
         # Spec gate 3 is described as "rises monotonically" — interpret
         # as "monotonic in at least the majority of folds"; gating
         # threshold mirrors the same 6/8 strictness as the others.
-        "g3_pass": n_mono >= SUCCESS_BAR_MIN_FOLDS_LOGLOSS,
+        "g3_pass": n_mono >= required,
         "g4_lift_pass_folds": n_lift_pass,
-        "g4_pass": n_lift_pass >= SUCCESS_BAR_MIN_FOLDS_LIFT,
+        "g4_pass": n_lift_pass >= required,
     }
     # Gates 1-4 only — gates 5 (bootstrap), 6 (mechanism), 7 (implied-vs-realized)
     # are computed by external scripts and are NOT reflected here. A cell with
@@ -864,14 +935,23 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                     or os.environ.get("MAG_RUN_ID")
                     or f"run_{int(time.time())}")
     if window.final:
-        _claim_final_test(final_test_version, phase, ticker, tf, execution_id)
+        _require_closed_window(window)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
              "label_mode=%s  thresholds=%s",
              phase, ticker, tf, len(cutoffs), label_mode, thresholds)
     log.info("=" * 70)
 
-    df = load_magnitude_dataset(engine, ticker, tf, phase, label_mode=label_mode)
+    # Read only through the window's end. History before it stays, since the
+    # anchored folds train on it; rows after it are another window's
+    # evidence and must not be labelled, class-balanced or fingerprinted by
+    # this run (Codex P1 on #1193). `until` bounds `s.bar_date < :until`, and
+    # bar_date is the bar's Eastern session date (strat_data_builder writes
+    # index.tz_convert(ET).date), so the cut falls exactly on the window's
+    # session boundary.
+    df = load_magnitude_dataset(engine, ticker, tf, phase,
+                                until=window.end.isoformat(),
+                                label_mode=label_mode)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     log.info("loaded: %d rows  (%s..%s)",
              len(df), df["bar_date"].min(), df["bar_date"].max())
@@ -916,6 +996,11 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "split_end": window.end.isoformat(),
     })
     log.info("featurize-once: %d × %d in %.1fs", X_full.shape[0], X_full.shape[1], time.time() - t0)
+    if window.final:
+        # Claimed only now, with the data and its provenance in hand: a load
+        # or feature failure above must not consume the one-time version on
+        # a run that evaluated nothing.
+        _claim_final_test(final_test_version, phase, ticker, tf, execution_id)
 
     cores = max(1, os.cpu_count() or 1)
     lgbm_n_jobs = max(1, cores // cv) if calibration != "none" else -1
@@ -972,17 +1057,20 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     log.info("CELL VERDICT (gates 1-4 only — gates 5-7 are post-hoc)  "
               "phase=%s  ticker=%s  tf=%s  →  %s",
              phase, ticker, tf, "PASS" if gates["cell_pass_gates_1_to_4"] else "FAIL")
-    log.info("  g1 log-loss beat ≥ %d/8 folds: %d  →  %s",
-             SUCCESS_BAR_MIN_FOLDS_LOGLOSS, gates["g1_logloss_beat_folds"],
+    log.info("  g1 log-loss beat ≥ %d/%d folds: %d  →  %s",
+             gates["min_folds_required"], gates["n_folds"],
+             gates["g1_logloss_beat_folds"],
              "PASS" if gates["g1_pass"] else "FAIL")
-    log.info("  g2 ECE ≤ %.3f in ≥ %d/8 folds: %d  →  %s",
-             ECE_CEILING_BY_TF[tf], SUCCESS_BAR_MIN_FOLDS_ECE,
-             gates["g2_ece_pass_folds"], "PASS" if gates["g2_pass"] else "FAIL")
+    log.info("  g2 ECE ≤ %.3f in ≥ %d/%d folds: %d  →  %s",
+             ECE_CEILING_BY_TF[tf], gates["min_folds_required"],
+             gates["n_folds"], gates["g2_ece_pass_folds"],
+             "PASS" if gates["g2_pass"] else "FAIL")
     log.info("  g3 monotone decisive-hit folds: %d  →  %s",
              gates["g3_monotone_folds"], "PASS" if gates["g3_pass"] else "FAIL")
-    log.info("  g4 EXPLOSIVE lift ≥ %.1f in ≥ %d/8 folds: %d  →  %s",
-             SUCCESS_BAR_EXPLOSIVE_LIFT_MIN, SUCCESS_BAR_MIN_FOLDS_LIFT,
-             gates["g4_lift_pass_folds"], "PASS" if gates["g4_pass"] else "FAIL")
+    log.info("  g4 EXPLOSIVE lift ≥ %.1f in ≥ %d/%d folds: %d  →  %s",
+             SUCCESS_BAR_EXPLOSIVE_LIFT_MIN, gates["min_folds_required"],
+             gates["n_folds"], gates["g4_lift_pass_folds"],
+             "PASS" if gates["g4_pass"] else "FAIL")
     log.info("=" * 70)
 
     # Harvest predictions for the per-cell CSV, the one durable home of the
@@ -1031,7 +1119,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         w.writerow(pred_columns)
         w.writerows(pred_rows)
         prefix = gcs_run_prefix(phase, ticker, tf,
-                label_mode=label_mode, thresholds=thresholds)
+                label_mode=label_mode, thresholds=thresholds,
+                evaluation_window=window.name)
         pred_blob = f"{prefix}/predictions_{run_id}.csv"
         _gcs_upload(buf.getvalue().encode(), pred_blob, "text/csv")
         log.info("predictions: wrote %d rows to gs://%s/%s",
@@ -1105,7 +1194,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf,
-            label_mode=label_mode, thresholds=thresholds)
+            label_mode=label_mode, thresholds=thresholds,
+            evaluation_window=window.name)
     # Only now that the CSV harvest above has read them do the per-bar rows
     # come off the folds -- they would otherwise bloat the summary JSON by
     # orders of magnitude.

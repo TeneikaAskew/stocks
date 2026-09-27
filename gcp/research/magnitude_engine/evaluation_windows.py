@@ -3,16 +3,19 @@
 Dates are half-open Eastern trading-session ranges.  They are deliberately
 code constants: changing an already observed boundary requires a new criteria
 and final-test version, rather than silently redefining an experiment.
+
+Every timezone conversion here goes through lib/eastern_time.py (CLAUDE.md
+3.9); this module adds session semantics on top, never its own clock rules.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-EASTERN = ZoneInfo("America/New_York")
+from lib.eastern_time import ET as EASTERN, utc_to_eastern_naive
+
 CRITERIA_VERSION = "magnitude-evaluation-v1"
 FINAL_TEST_VERSION = "magnitude-final-v1"
 PREDICTION_HORIZON_SESSIONS = 1
@@ -59,10 +62,23 @@ def validate_windows() -> None:
             raise ValueError(f"evaluation windows overlap: {left.name}/{right.name}")
 
 
+def utc_instants(timestamps) -> pd.DatetimeIndex:
+    """Aware UTC index for the harness's bar timestamps.
+
+    Naive input is UTC by contract: ``strat_features.ts`` is TIMESTAMPTZ read
+    in the UTC session, and the walk-forward hands each fold a
+    ``datetime64[ns]`` view of the index it built from that column. Aware
+    input is converted, never relabelled.
+    """
+    values = pd.DatetimeIndex(timestamps)
+    if values.tz is None:
+        return values.tz_localize("UTC")
+    return values.tz_convert("UTC")
+
+
 def eastern_sessions(timestamps) -> pd.DatetimeIndex:
     """Return normalized America/New_York session labels for UTC timestamps."""
-    values = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True))
-    return values.tz_convert(EASTERN).normalize().tz_localize(None)
+    return utc_to_eastern_naive(utc_instants(timestamps)).normalize()
 
 
 def assert_disjoint(train_sessions, evaluation_sessions) -> None:
