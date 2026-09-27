@@ -18,7 +18,13 @@
     "session_timezone": "America/New_York",
     "session_unit": "exchange_session",
     "dataset_snapshot": "REQUIRED_AT_RUN_TIME",
-    "code_commit": "REQUIRED_AT_RUN_TIME"
+    "code_commit": "REQUIRED_AT_RUN_TIME",
+    "magnitude_thresholds_atr": [
+      0.5,
+      1.0,
+      1.5
+    ],
+    "dataset_snapshot_end_utc": "REQUIRED_AT_RUN_TIME"
   },
   "search": {
     "method": "bayesian_tpe_discrete",
@@ -95,7 +101,10 @@
       "num_leaves <= 2 ** max_depth",
       "binary_tail_threshold is active only for a pre-registered binary-tail run",
       "calibration is fitted only on inner-training sessions and scored on the following inner-validation sessions"
-    ]
+    ],
+    "fixed_parameters": {
+      "bagging_freq": 1
+    }
   },
   "validation": {
     "design": "nested_anchored_chronological",
@@ -110,7 +119,7 @@
       "2025-01-01",
       "2026-01-01"
     ],
-    "outer_test_horizon": "until_next_outer_test_start",
+    "outer_test_horizon": "until_next_outer_test_start; final fold ends exclusively at data_contract.dataset_snapshot_end_utc",
     "inner_folds": 4,
     "inner_scheme": "expanding_train_followed_by_contiguous_validation",
     "purge_sessions": 1,
@@ -120,12 +129,10 @@
     "test_role": "locked_once; never used for search, calibration, thresholding, or selection"
   },
   "selection": {
-    "pre_registered_objective": "validation_multiclass_log_loss",
     "allowed_objectives": {
       "validation_multiclass_log_loss": "mean inner-fold multiclass log loss; lower is better",
       "validation_binary_tail_cost": "mean inner-fold cost for EXPLOSIVE versus all other buckets at binary_tail_threshold: (3 * false_negatives + false_positives) / observations; lower is better"
     },
-    "objective_must_be_fixed_before_first_attempt": true,
     "rule": "one_standard_error",
     "standard_error_unit": "inner_fold",
     "candidate_set": "configurations with mean validation objective <= best mean + best standard error",
@@ -140,7 +147,19 @@
       "calibration_method order: none, sigmoid, isotonic",
       "lower canonical configuration hash"
     ],
-    "test_accuracy_forbidden": true
+    "test_accuracy_forbidden": true,
+    "registered_runs": {
+      "magnitude-hpo-v1-multiclass": {
+        "objective": "validation_multiclass_log_loss"
+      },
+      "magnitude-hpo-v1-binary-tail": {
+        "objective": "validation_binary_tail_cost",
+        "positive_class": "EXPLOSIVE",
+        "false_negative_cost": 3,
+        "false_positive_cost": 1
+      }
+    },
+    "registration_rule": "run_id must equal one immutable registered_runs key before its first attempt and cannot change thereafter"
   },
   "attempt_log": {
     "path": "spy_attempts.csv",

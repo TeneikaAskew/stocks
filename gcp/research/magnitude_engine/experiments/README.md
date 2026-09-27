@@ -2,7 +2,7 @@
 
 The JSON files are the pre-registered, per-ticker contracts for magnitude-model
 hyperparameter searches. A run must fill `dataset_snapshot` and `code_commit`
-in its emitted run metadata without editing the manifest. The search is capped
+and `dataset_snapshot_end_utc` in emitted run metadata without editing the manifest. The effective ATR bucket thresholds are pinned in every manifest and copied into every attempt row. The search is capped
 at 64 attempted configurations for every ticker/timeframe/label-mode cell and
 uses the fixed seed in the manifest.
 
@@ -16,9 +16,7 @@ The outer test period stays locked until the one-standard-error rule has chosen
 a configuration and the model has been refit on all eligible outer-training
 sessions. Test accuracy is neither an objective nor a tie-breaker.
 
-The objective must be selected before the first attempt and cannot change
-within a run. The default is validation multiclass log loss. A run explicitly
-registered as binary-tail may instead use the pre-registered EXPLOSIVE-tail
+Before the first attempt, each `run_id` must bind immutably to either the `multiclass` or `binary_tail` entry in `selection.registered_runs`. The former uses validation multiclass log loss; the latter uses the pre-registered EXPLOSIVE-tail
 cost `(3 * false_negatives + false_positives) / observations`; its threshold is
 learned inside the same inner validation procedure. The one-standard-error candidate set prevents a
 noisy minimum from winning, and the ordered tie-breaks select the least complex
@@ -27,7 +25,7 @@ statistically indistinguishable candidate.
 ## Append-only attempt tables
 
 Each manifest owns a sibling `<ticker>_attempts.csv`. The checked-in header is
-the table schema. Runners must open it in append mode, take an exclusive file
+the table schema. The final outer fold ends exclusively at the registered dataset snapshot boundary. Runners must open each ledger in append mode, take an exclusive file
 or database lock, append exactly one row after **every** attempt, and `fsync`
 before starting another attempt. Existing rows must never be updated or
 removed. Invalid configurations, exceptions, pruning, and timeouts are rows,
