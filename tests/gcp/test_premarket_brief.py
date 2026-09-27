@@ -3087,6 +3087,47 @@ def test_an_unavailable_recap_survives_the_cut_too():
     assert desc.endswith('EW picks, last session: unavailable (RuntimeError: connection refused)**')
 
 
+def test_a_database_error_is_named_in_one_short_line(monkeypatch):
+    """The strict path lets a real database error reach the embed, and a
+    SQLAlchemy error's text runs the whole statement over a dozen lines (584
+    characters for this query), which would break the line's bold and take
+    the space the recap reserves. The embed names the error on one line; the
+    stack is in the log."""
+    import sqlalchemy
+    from gcp import database
+    from gcp import premarket_brief as pb
+    engine = sqlalchemy.create_engine('sqlite://')  # no earnings_calendar
+
+    def strict(sql, params=None, timeout_s=None):
+        with engine.connect() as conn:
+            return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
+
+    # Only for the load: the embed reads other metrics whenever Cloud SQL
+    # reports as configured, and this test must not reach for a database.
+    with monkeypatch.context() as m:
+        m.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        m.setattr(database, 'query_to_dataframe_strict', strict)
+        recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
+    assert '[SQL:' in recap['unavailable']
+    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
+    data['ew_recap'] = recap
+    desc = pb._build_earnings_embed(data)['description']
+    assert '[SQL:' not in desc
+    assert desc.splitlines()[-1] == (
+        '**\U0001f52e EW picks, last session: unavailable (OperationalError: '
+        '(sqlite3.OperationalError) no such table: earnings_calendar)**')
+
+
+def test_a_long_reason_is_cut_to_200_characters():
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
+    data['ew_recap'] = {'session': None, 'picks': [], 'unscored': 0,
+                        'unavailable': 'RuntimeError: ' + 'x' * 500}
+    line = _build_earnings_embed(data)['description'].splitlines()[-1]
+    frame = '**\U0001f52e EW picks, last session: unavailable ()**'
+    assert line.endswith('x…)**') and len(line) == len(frame) + 200
+
+
 def test_a_quiet_day_is_not_cut():
     from gcp.premarket_brief import _build_earnings_embed
     data = _busy_day(3)

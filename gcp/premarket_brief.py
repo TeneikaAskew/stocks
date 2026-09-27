@@ -2896,8 +2896,12 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         # evaluate-ew-strikes the evening after their session.
         recap = ''
         if ew_recap.get('unavailable'):
+            # One line, bounded: the stack is in the log, and a SQLAlchemy
+            # error's text runs the whole statement over a dozen lines.
+            why = ew_recap['unavailable'].splitlines()[0]
+            why = why if len(why) <= 200 else why[:199] + '…'
             recap = (f'\n**\U0001f52e EW picks, last session: unavailable '
-                     f'({ew_recap["unavailable"]})**')
+                     f'({why})**')
         elif has_recap:
             s = ew_recap.get('session')
             label = s.strftime('%a %m/%d') if hasattr(s, 'strftime') else str(s)
