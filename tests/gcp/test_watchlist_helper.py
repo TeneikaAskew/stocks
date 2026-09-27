@@ -384,6 +384,15 @@ def test_a_universe_with_no_horizon_round_trips():
 @pytest.mark.parametrize("raw", [
     "not json",
     '{"tickers":["SPY"]}',
+    # Codex P2 on `adbd259`: a JSON string is iterable, so without a type
+    # check "SPY" deserialized to ("S", "P", "Y") and the child backtested
+    # against three fabricated one-letter peers under valid provenance.
+    '{"tickers":"SPY","as_of":"2026-09-26","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":[1,2],"as_of":"2026-09-26","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":["SPY",""],"as_of":"2026-09-26","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":"p"}',
     '{"tickers":["SPY"],"as_of":"2026-13-45","owner":"d","resolution":"exact",'
     '"horizon":null,"inherited_from":"p"}',
     '{"tickers":["SPY"],"as_of":"2026-09-26","owner":"d","resolution":"guess",'

@@ -454,7 +454,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 ### `watchlists`
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [328](../../../gcp/backfill_ticker.py#L328), [332](../../../gcp/backfill_ticker.py#L332)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [655](../../../gcp/discord_interactions/main.py#L655), [691](../../../gcp/discord_interactions/main.py#L691)
-- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [526](../../../gcp/fetchers/_watchlist.py#L526), [530](../../../gcp/fetchers/_watchlist.py#L530), [531](../../../gcp/fetchers/_watchlist.py#L531), [563](../../../gcp/fetchers/_watchlist.py#L563)
+- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [539](../../../gcp/fetchers/_watchlist.py#L539), [543](../../../gcp/fetchers/_watchlist.py#L543), [544](../../../gcp/fetchers/_watchlist.py#L544), [576](../../../gcp/fetchers/_watchlist.py#L576)
 <!-- inventory:writes:end -->
 
 ---
@@ -867,14 +867,14 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - _no readr found in gcp/, lib/, scripts/, platform/api_
 
 ### `watchlist_history`
-- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [190](../../../gcp/fetchers/_watchlist.py#L190), [199](../../../gcp/fetchers/_watchlist.py#L199), [222](../../../gcp/fetchers/_watchlist.py#L222)
+- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [203](../../../gcp/fetchers/_watchlist.py#L203), [212](../../../gcp/fetchers/_watchlist.py#L212), [235](../../../gcp/fetchers/_watchlist.py#L235)
 
 ### `watchlist_history_origin`
-- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [224](../../../gcp/fetchers/_watchlist.py#L224)
+- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [237](../../../gcp/fetchers/_watchlist.py#L237)
 
 ### `watchlists`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [178](../../../gcp/discord_interactions/main.py#L178), [711](../../../gcp/discord_interactions/main.py#L711)
-- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [358](../../../gcp/fetchers/_watchlist.py#L358)
+- [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [371](../../../gcp/fetchers/_watchlist.py#L371)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [746](../../../gcp/fetchers/fetch_market_data.py#L746)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [227](../../../scripts/analysis/per_ticker_calibration.py#L227)
 <!-- inventory:reads:end -->

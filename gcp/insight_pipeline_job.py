@@ -655,8 +655,7 @@ def _universe_current_for(current, as_of):
     (`insight-pipeline-daily` fires 08:45 America/New_York against an
     1800 s timeout), but the ad-hoc `INSIGHT_TICKERS` path runs whenever a
     person runs it, including just before midnight UTC (Codex P2 on
-    `c9637d3`), and a fan-out child inherits the batch's universe and may
-    start later still.
+    `c9637d3`).
 
     Re-resolving is the correct answer rather than a concession: a new
     calendar day genuinely has a new cutoff, so a new universe is what
@@ -664,9 +663,12 @@ def _universe_current_for(current, as_of):
     unavailable -- it is a REPLAY cutoff, and switches on the option
     summarizers' `snapshot_date < :as_of` filters (see `_run_scheduled`).
 
-    One rule for both callers on purpose: the batch loop and the child
-    must age a frozen universe identically, or a child that started after
-    midnight would backtest a different day than its siblings.
+    Batch loop ONLY. It can age the universe because it holds one object
+    for every remaining ticker, so the refresh is itself shared. A fan-out
+    child must not call this: siblings are separate executions that cannot
+    share a refreshed object, so each would re-resolve on its own and race
+    every watchlist edit between child starts. They keep the inherited
+    universe instead (see `_run_on_demand`, Codex P2 on `adbd259`).
     """
     if current is None or as_of is not None:
         return current
@@ -706,6 +708,18 @@ async def _run_on_demand(allow_update_arg: bool = False) -> int:
     # Malformed is a bug in the parent (the only writer is `to_json`), so
     # it fails this child loudly rather than resolving a different universe
     # and reporting it as the batch's (CLAUDE.md Rule 3.7, INTERNAL).
+    #
+    # Used AS-IS, deliberately not aged through `_universe_current_for`
+    # (Codex P2 on `adbd259`). Siblings of one batch dispatched just before
+    # UTC midnight all start with the same previous-day payload; if each
+    # re-resolved `today` on its own, a watchlist edit between two child
+    # starts would give them different peer sets -- the race the freeze
+    # exists to remove, reintroduced one hop later. Keeping the inherited
+    # universe is safe because `summarize_backtest_metrics` takes its cutoff
+    # from `universe.as_of` when `as_of` is None, so bars and peers stay on
+    # the batch's date together. The sequential loop can age its universe
+    # because it holds ONE object for every remaining ticker; separate
+    # executions cannot share a refreshed one, so they share the original.
     universe = None
     raw_universe = os.environ.get("INSIGHT_UNIVERSE")
     if raw_universe:
@@ -721,7 +735,6 @@ async def _run_on_demand(allow_update_arg: bool = False) -> int:
             universe.inherited_from, universe.as_of, universe.resolution,
             len(universe.tickers),
         )
-        universe = _universe_current_for(universe, as_of)
     allow_update, run_kind = _resolve_run_kind_and_update(allow_update_arg)
     triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY')
     ok = await _run_one(

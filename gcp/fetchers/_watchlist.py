@@ -134,7 +134,20 @@ class WatchlistMembership:
 
         try:
             d = json.loads(raw)
-            tickers = tuple(str(t) for t in d["tickers"])
+            raw_tickers = d["tickers"]
+            # A JSON string is iterable, so without this check "SPY" would
+            # deserialize to ("S", "P", "Y") and the child would backtest
+            # against three fabricated one-letter peers under valid
+            # provenance (Codex P2 on `adbd259`). A list of non-empty
+            # strings, or nothing.
+            if not isinstance(raw_tickers, list) or not all(
+                isinstance(t, str) and t.strip() for t in raw_tickers
+            ):
+                raise ValueError(
+                    f"tickers must be a list of non-empty strings, got "
+                    f"{raw_tickers!r}"
+                )
+            tickers = tuple(raw_tickers)
             as_of = date_type.fromisoformat(d["as_of"])
             horizon = (datetime.fromisoformat(d["horizon"])
                        if d.get("horizon") else None)

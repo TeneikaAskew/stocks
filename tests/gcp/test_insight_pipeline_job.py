@@ -511,12 +511,20 @@ def test_a_malformed_inherited_universe_fails_the_child_loudly(captured_universe
     assert received == [] and resolutions == []
 
 
-def test_a_child_that_starts_after_utc_midnight_re_resolves_like_the_batch_would(
+def test_a_child_that_starts_after_utc_midnight_keeps_the_batch_universe(
         captured_universe, monkeypatch):
-    """One rollover rule for the batch loop and the child, on purpose: a
-    universe frozen yesterday is one `summarize_backtest_metrics` refuses
-    today, and a child that started after midnight would otherwise lose
-    its backtest section while its siblings kept theirs."""
+    """Codex P2 on `adbd259`. The first version of this test asserted the
+    opposite and was wrong: it had the child re-resolve `today` like the
+    batch loop does. Siblings dispatched just before UTC midnight all start
+    with the same previous-day payload, and if each re-resolved on its own,
+    a watchlist edit between two child starts would give them different
+    peer sets -- the race the freeze exists to remove, one hop later. The
+    batch loop may age its universe because it holds ONE object for every
+    remaining ticker; separate executions cannot share a refreshed one, so
+    they share the original. `summarize_backtest_metrics` reads its cutoff
+    from `universe.as_of`, so bars and peers stay on the batch's date
+    together.
+    """
     import datetime as _dt
 
     today = _dt.datetime.now(_dt.timezone.utc).date()
@@ -526,10 +534,13 @@ def test_a_child_that_starts_after_utc_midnight_re_resolves_like_the_batch_would
              INSIGHT_AS_OF=None, INSIGHT_UNIVERSE=payload)
     received, resolutions = captured_universe
     assert _run(job._run_on_demand()) == 0
-    assert resolutions == [today], "a stale inherited universe was used as-is"
+    assert resolutions == [], (
+        "a child re-resolved the universe on its own; two siblings starting "
+        "after midnight would then race every watchlist edit between them"
+    )
     (u,) = received
-    assert u.as_of == today and u.inherited_from is None, (
-        "a universe this child resolved itself must not carry the batch's provenance"
+    assert u.as_of == yesterday and u.inherited_from == "batch-1@t", (
+        "the child did not keep the batch's universe as-is"
     )
 
 
