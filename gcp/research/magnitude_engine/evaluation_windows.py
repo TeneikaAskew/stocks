@@ -149,29 +149,59 @@ def assert_window_covered(window: EvaluationWindow, session_labels) -> None:
             f"table is incomplete, refusing to consume the final-test version")
 
 
-def assert_final_session_complete(window: EvaluationWindow, last_count: int,
-                                  prior_counts) -> None:
-    """Refuse a last session that holds fewer bars than the sessions before it.
-
-    assert_window_covered proves the last session's DATE is present; this
-    proves the session is whole. A partially ingested final session still
-    answers MAX(bar_date) with that date, so a handful of bars could consume
-    the one-time version and stage against a truncated holdout (Codex P1 on
-    #1193). The bar is the median count of the preceding sessions, an
-    unlabelled signal that needs no per-timeframe session model; a genuine
-    half-day at the window's end would be refused, which fails closed.
+def expected_session_bars(window: EvaluationWindow, tf_minutes: int) -> dict[date, int]:
+    """Every NYSE session in the window with the regular-hours bar count a
+    `tf_minutes` table must hold for it: (close - open) / tf_minutes, so an
+    early close expects fewer. Requires pandas_market_calendars; without it
+    the window cannot be verified and this refuses rather than guessing.
     """
-    prior = [int(c) for c in prior_counts]
-    if not prior:
-        raise ValueError(f"no sessions before the last {window.name} session to "
-                         f"judge its completeness against")
-    expected = int(pd.Series(prior).median())
-    if last_count < expected:
-        raise ValueError(
-            f"{window.name} last session holds {last_count} bars but the "
-            f"median of the preceding {len(prior)} sessions is {expected}; the "
-            f"session is still being ingested, refusing to consume the "
-            f"final-test version")
+    try:
+        import pandas_market_calendars as mcal
+    except ImportError as exc:
+        raise RuntimeError("pandas_market_calendars is required to verify the "
+                           "final window's sessions") from exc
+    if tf_minutes < 1:
+        raise ValueError(f"tf_minutes must be positive, got {tf_minutes}")
+    sched = mcal.get_calendar("NYSE").schedule(
+        start_date=window.start.isoformat(),
+        end_date=(pd.Timestamp(window.end) - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+    expected: dict[date, int] = {}
+    for day, row in sched.iterrows():
+        minutes = (row["market_close"] - row["market_open"]).total_seconds() / 60
+        expected[day.date()] = int(minutes // tf_minutes)
+    if not expected:
+        raise RuntimeError(f"NYSE calendar returned no session in {window.name}")
+    return expected
+
+
+def assert_final_window_complete(window: EvaluationWindow,
+                                 expected: dict[date, int],
+                                 observed: dict[date, int]) -> None:
+    """Refuse a final window whose source rows are not every session, whole.
+
+    `expected` is expected_session_bars; `observed` is the per-session bar
+    count the source table holds inside the window, read unlabelled. A
+    session the calendar has and the table lacks, a session holding fewer
+    bars than its regular hours, or a date the calendar has no session for,
+    each refuse the claim: checking only the newest date and count let a
+    truncated holdout consume the one-time version (Codex P1 on #1193).
+    """
+    missing = sorted(d for d in expected if d not in observed)
+    short = sorted((d, observed[d], n) for d, n in expected.items()
+                   if d in observed and observed[d] < n)
+    extra = sorted(d for d in observed if d not in expected)
+    problems = []
+    if missing:
+        problems.append(f"missing sessions {[d.isoformat() for d in missing]}")
+    if short:
+        problems.append("incomplete sessions " + str(
+            [f"{d.isoformat()}: {have} < {need}" for d, have, need in short]))
+    if extra:
+        problems.append(f"rows on non-session dates {[d.isoformat() for d in extra]}")
+    if problems:
+        raise ValueError(f"{window.name} window is not complete in the source "
+                         f"table, refusing to consume the final-test version: "
+                         + "; ".join(problems))
 
 
 def utc_instants(timestamps) -> pd.DatetimeIndex:

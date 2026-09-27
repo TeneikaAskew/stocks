@@ -167,11 +167,19 @@ def test_the_dataset_load_stops_at_the_window_end(monkeypatch):
         assert seen["until"] == end, window
 
 
-def _sessions(last: date, last_count: int = 78, n: int = 21):
-    """Newest-first (bar_date, bar count) rows, as the unlabelled preflight
-    returns them: `last` with `last_count` bars, then n-1 full sessions."""
-    return [(last, last_count)] + [
-        (last - pd.Timedelta(days=i).to_pytimedelta(), 78) for i in range(1, n)]
+_FINAL_SESSIONS = [date(2026, 1, 2), date(2026, 6, 30), date(2026, 12, 31)]
+
+
+def _complete_window(monkeypatch, mwf, missing=(), short=(), extra=()):
+    """Stub the unlabelled preflight: the calendar expects 78 bars on each of
+    _FINAL_SESSIONS; the table holds them all unless `missing`, `short`
+    (count 9) or `extra` (a non-session date) say otherwise."""
+    expected = {d: 78 for d in _FINAL_SESSIONS}
+    observed = {d: (9 if d in short else 78) for d in _FINAL_SESSIONS if d not in missing}
+    for d in extra:
+        observed[d] = 78
+    monkeypatch.setattr(mwf, "expected_session_bars", lambda *a, **k: dict(expected))
+    monkeypatch.setattr(mwf, "_session_bar_counts", lambda *a, **k: dict(observed))
 
 
 # ── P1: the final test cannot be claimed on a partial window ──────────────
@@ -189,14 +197,12 @@ def test_the_final_test_is_refused_until_its_window_has_closed(monkeypatch):
     assert claimed == [], "the one-time version must not be consumed"
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
     # (round 5) the coverage preflight is unlabelled and precedes the claim
-    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
-                        lambda *a, **k: _sessions(date(2026, 12, 24)))
+    _complete_window(monkeypatch, mwf, missing=[date(2026, 12, 31)])
     with pytest.raises(ValueError, match="2026-12-31"):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test")
     assert claimed == [], "a stale source table must not consume the version"
-    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
-                        lambda *a, **k: _sessions(date(2026, 12, 31)))
+    _complete_window(monkeypatch, mwf)
     with pytest.raises(_Stop):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test")
@@ -204,7 +210,7 @@ def test_the_final_test_is_refused_until_its_window_has_closed(monkeypatch):
     # the order is the guarantee: refuse while open, preflight, claim, load
     import inspect
     src = inspect.getsource(mwf.walk_forward)
-    assert (src.index("_require_closed_window(") < src.index("_recent_session_bar_counts(")
+    assert (src.index("_require_closed_window(") < src.index("_session_bar_counts(")
             < src.index("_claim_final_test(") < src.index("load_magnitude_dataset("))
 
 
@@ -346,7 +352,9 @@ def test_the_report_refuses_a_summary_from_another_window(monkeypatch):
     # summaries written before windows existed carry no split_name: they are
     # development only when their own schedule proves it (round 5)
     monkeypatch.setattr(am, "_cat", lambda uri: {
-        "gates": {}, "cutoffs": ["2019-01-01", "2020-01-01", "2021-01-01"]})
+        "gates": {}, "cutoffs": ["2019-01-01", "2020-01-01", "2021-01-01"],
+        "folds": [{"test_end": "2020-01-01"}, {"test_end": "2021-01-01"},
+                  {"test_end": "2023-12-29"}]})
     assert am.latest_result("phase0", "SPY", "15m", "b") is not None
 
 
@@ -361,7 +369,7 @@ def test_final_test_folds_cannot_be_overridden(monkeypatch):
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
     monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: None)
-    monkeypatch.setattr(mwf, "_recent_session_bar_counts", lambda *a, **k: _sessions(date(2026, 12, 31)))
+    _complete_window(monkeypatch, mwf)
     with pytest.raises(ValueError, match="holdout"):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test", cutoffs=["2026-06-01"])
@@ -624,7 +632,19 @@ def test_legacy_summaries_are_development_only_when_their_cutoffs_prove_it(monke
     monkeypatch.setattr(am, "_cat", lambda uri: {"gates": {}})
     with pytest.raises(RuntimeError, match="neither split_name nor cutoffs"):
         am.latest_result("phase0", "SPY", "15m", "b")
+    # (round 9) the cutoffs bound fold STARTS; the old harness ended the last
+    # fold at bar_date.max() + 1, so the folds' test_end must be inside too
     monkeypatch.setattr(am, "_cat", lambda uri: {"gates": {}, "cutoffs": eight[:5]})
+    with pytest.raises(RuntimeError, match="records no folds"):
+        am.latest_result("phase0", "SPY", "15m", "b")
+    monkeypatch.setattr(am, "_cat", lambda uri: {
+        "gates": {}, "cutoffs": eight[:5],
+        "folds": [{"test_end": "2020-01-01"}, {"test_end": "2026-09-16"}]})
+    with pytest.raises(RuntimeError, match="folds end at.*2026-09-16"):
+        am.latest_result("phase0", "SPY", "15m", "b")
+    monkeypatch.setattr(am, "_cat", lambda uri: {
+        "gates": {}, "cutoffs": eight[:5],
+        "folds": [{"test_end": "2020-01-01"}, {"test_end": "2024-01-01"}]})
     assert am.latest_result("phase0", "SPY", "15m", "b")["cutoffs"] == eight[:5]
 
 
@@ -636,8 +656,10 @@ def test_the_final_test_is_claimed_before_any_holdout_label_exists(monkeypatch):
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
     order: list[str] = []
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
-    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
-                        lambda *a, **k: order.append("preflight") or _sessions(date(2026, 12, 31)))
+    _complete_window(monkeypatch, mwf)
+    real_counts = mwf._session_bar_counts
+    monkeypatch.setattr(mwf, "_session_bar_counts",
+                        lambda *a, **k: order.append("preflight") or real_counts())
 
     def refused(*a, **k):
         order.append("claim")
@@ -675,7 +697,7 @@ def test_a_non_serving_contract_cannot_consume_the_final_test(monkeypatch):
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
     claimed: list = []
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
-    monkeypatch.setattr(mwf, "_recent_session_bar_counts", lambda *a, **k: _sessions(date(2026, 12, 31)))
+    _complete_window(monkeypatch, mwf)
     monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
     with pytest.raises(ValueError, match="serving contract"):
@@ -698,33 +720,57 @@ def test_a_non_serving_contract_cannot_consume_the_final_test(monkeypatch):
 
 # ═══════════════ Codex review of #1193, seventh round (bccbc84) ═══════════════
 
-def test_a_partially_ingested_final_session_cannot_be_claimed(monkeypatch):
-    """MAX(bar_date) answers the last session's date from a handful of bars,
-    so a still-ingesting session consumed the version and staged against a
-    truncated holdout (Codex P1). The preflight now compares the last
-    session's bar count with the median of the sessions before it."""
+def test_every_final_session_must_be_present_and_whole_before_the_claim(monkeypatch):
+    """Round 7: MAX(bar_date) accepted a still-ingesting last session. Round
+    9: checking the newest date and count still let a wholly missing or
+    partially loaded earlier session pass (Codex P1). The preflight now
+    compares the WHOLE window against the NYSE schedule: every session
+    present, each holding at least its regular-hours bars, no rows on a
+    non-session date."""
     from gcp.research.magnitude_engine.evaluation_windows import (
-        assert_final_session_complete)
+        assert_final_window_complete)
     final = WINDOWS["final_test"]
-    with pytest.raises(ValueError, match="still being ingested"):
-        assert_final_session_complete(final, 9, [78] * 20)
-    with pytest.raises(ValueError, match="no sessions before"):
-        assert_final_session_complete(final, 78, [])
-    assert_final_session_complete(final, 78, [78, 77, 79, 78])
+    expected = {d: 78 for d in _FINAL_SESSIONS}
+    with pytest.raises(ValueError, match="missing sessions.*2026-06-30"):
+        assert_final_window_complete(final, expected, {
+            d: 78 for d in _FINAL_SESSIONS if d != date(2026, 6, 30)})
+    with pytest.raises(ValueError, match="incomplete sessions.*2026-01-02: 9 < 78"):
+        assert_final_window_complete(final, expected, {**{d: 78 for d in _FINAL_SESSIONS},
+                                                       date(2026, 1, 2): 9})
+    with pytest.raises(ValueError, match="non-session dates.*2026-07-04"):
+        assert_final_window_complete(final, expected, {**{d: 78 for d in _FINAL_SESSIONS},
+                                                       date(2026, 7, 4): 78})
+    assert_final_window_complete(final, expected, {d: 80 for d in _FINAL_SESSIONS})
+
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
     claimed: list = []
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
     monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
-    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
-                        lambda *a, **k: _sessions(date(2026, 12, 31), last_count=9))
-    with pytest.raises(ValueError, match="still being ingested"):
-        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
-                         evaluation_window="final_test")
+    for kw in ({"missing": [date(2026, 6, 30)]}, {"short": [date(2026, 1, 2)]},
+               {"extra": [date(2026, 7, 4)]}):
+        _complete_window(monkeypatch, mwf, **kw)
+        with pytest.raises(ValueError, match="not complete in the source table"):
+            mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                             evaluation_window="final_test")
     assert claimed == []
     src = inspect.getsource(mwf.walk_forward)
-    assert (src.index("assert_window_covered(") < src.index("assert_final_session_complete(")
+    assert (src.index("_session_bar_counts(") < src.index("assert_final_window_complete(")
             < src.index("_claim_final_test("))
+    # the query covers the window, not the newest N sessions
+    q = (REPO / "gcp/research/magnitude_engine/mag_walk_forward.py").read_text()
+    q = q[q.index("def _session_bar_counts("):q.index("def final_test_config_refusal(")]
+    assert "bar_date >= :since AND bar_date < :until" in q and "LIMIT" not in q
+
+
+def test_expected_session_bars_follows_the_nyse_schedule():
+    pytest.importorskip("pandas_market_calendars")
+    from gcp.research.magnitude_engine.evaluation_windows import expected_session_bars
+    exp = expected_session_bars(WINDOWS["final_test"], 5)
+    assert exp[date(2026, 11, 27)] == 42, "early close: 210 regular minutes"
+    assert exp[date(2026, 11, 30)] == 78
+    assert date(2026, 11, 26) not in exp and date(2026, 7, 4) not in exp
+    assert min(exp) == date(2026, 1, 2) and max(exp) == date(2026, 12, 31)
 
 
 def test_a_failed_final_staging_is_recovered_from_the_recorded_verdict(monkeypatch):
@@ -759,9 +805,16 @@ def test_a_failed_final_staging_is_recovered_from_the_recorded_verdict(monkeypat
     with pytest.raises(RuntimeError, match="held by run 'r1'"):
         mwf.resume_final_staging(MagicMock(), "IWM", "15m", "r2")
     gates = {"cell_pass_gates_1_to_4": True}
-    monkeypatch.setattr(mwf, "_final_run_summary", lambda *a: {
+    recorded = {
         "gates": gates, "split_name": "final_test", "label_mode": "body",
-        "thresholds": list(mwf.MAGNITUDE_THRESHOLDS), "calibration": "none", "cv": 3})
+        "thresholds": list(mwf.MAGNITUDE_THRESHOLDS), "calibration": "none", "cv": 3,
+        "dataset_fingerprint": "fp1", "code_commit": "c1", "random_seed": 42,
+        "class_weight_power": 0.75, "feature_cols": ["x"]}
+    monkeypatch.setattr(mwf, "_final_run_summary", lambda *a: dict(recorded))
+    monkeypatch.setattr(mwf, "_execution_provenance",
+                        lambda *a, **k: {"dataset_fingerprint": "fp1", "code_commit": "c1"})
+    monkeypatch.delenv("MAG_SEED", raising=False)
+    monkeypatch.delenv("MAG_CLASS_WEIGHT_POWER", raising=False)
     df = pd.DataFrame({"ts": pd.to_datetime(["2026-12-31T15:00:00Z"] * 4),
                        mwf.LABEL_COL: ["TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE"]})
     seen: dict = {}
@@ -773,7 +826,15 @@ def test_a_failed_final_staging_is_recovered_from_the_recorded_verdict(monkeypat
                         lambda *a, **k: seen.update(persist=k) or "gs://b/p/")
     assert mwf.resume_final_staging(MagicMock(), "IWM", "15m", "r1") == "gs://b/p/"
     assert seen["load"]["until"] == "2027-01-01"
-    assert seen["persist"]["stage_only"] is True and seen["persist"]["gates"] is gates
+    assert seen["persist"]["stage_only"] is True and seen["persist"]["gates"] == gates
+    # (round 9) the staged model must be THE recorded candidate: a different
+    # dataset, commit, seed, class weighting or column set refuses
+    for drift in ({"dataset_fingerprint": "fp2"}, {"code_commit": "c2"},
+                  {"random_seed": 7}, {"class_weight_power": 0.5},
+                  {"feature_cols": ["x", "y"]}):
+        monkeypatch.setattr(mwf, "_final_run_summary", lambda *a, d=drift: {**recorded, **d})
+        with pytest.raises(RuntimeError, match="cannot be reproduced here"):
+            mwf.resume_final_staging(MagicMock(), "IWM", "15m", "r1")
     # the CLI exposes it and stops there
     assert "--resume-staging" in inspect.getsource(mwf.main)
 
@@ -789,8 +850,7 @@ def test_the_final_claim_is_one_per_cell_and_reserved_for_the_serving_phase(monk
     assert "phase" not in mwf._final_claim_path("v1", "IWM", "15m").split("/")[-1]
     claimed: list = []
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
-    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
-                        lambda *a, **k: _sessions(date(2026, 12, 31)))
+    _complete_window(monkeypatch, mwf)
     monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
     for phase in ("phase1", "phase3"):
@@ -812,8 +872,7 @@ def test_a_non_serving_feature_set_cannot_consume_the_final_test(monkeypatch):
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
     claimed: list = []
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
-    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
-                        lambda *a, **k: _sessions(date(2026, 12, 31)))
+    _complete_window(monkeypatch, mwf)
     monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
     for feats in ("options_iv", "prune,calendar", "bogus"):
@@ -833,3 +892,110 @@ def test_the_decomposition_reads_the_analyzed_runs_fold_schedule():
     assert "test_end = window.end.isoformat()" in src
     assert "list(DEFAULT_CUTOFFS)" not in src
     assert "purged_session_masks(sessions, cut, test_end)" in src
+
+
+# ═══════════════ Codex review of #1193, ninth round (4b2997a) ═══════════════
+
+def test_the_frozen_serving_configuration_is_required_before_the_claim(monkeypatch):
+    """`--calibration`, MAG_CLASS_WEIGHT_POWER and MAG_SEED were unrestricted,
+    so a final run could consume the holdout for a configuration validation
+    never selected (Codex P1)."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    monkeypatch.delenv("MAG_SEED", raising=False)
+    monkeypatch.delenv("MAG_CLASS_WEIGHT_POWER", raising=False)
+    assert mwf.final_test_config_refusal(mwf.DEFAULT_CALIBRATION, mwf.DEFAULT_CV) is None
+    assert "calibration" in mwf.final_test_config_refusal("isotonic", mwf.DEFAULT_CV)
+    assert "cv=5" in mwf.final_test_config_refusal(mwf.DEFAULT_CALIBRATION, 5)
+    monkeypatch.setenv("MAG_SEED", "7")
+    assert "MAG_SEED" in mwf.final_test_config_refusal(mwf.DEFAULT_CALIBRATION, mwf.DEFAULT_CV)
+    monkeypatch.delenv("MAG_SEED")
+    monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", "0.5")
+    assert "MAG_CLASS_WEIGHT_POWER" in mwf.final_test_config_refusal(
+        mwf.DEFAULT_CALIBRATION, mwf.DEFAULT_CV)
+
+    claimed: list = []
+    monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
+    _complete_window(monkeypatch, mwf)
+    monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
+    monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
+    with pytest.raises(ValueError, match="frozen serving configuration"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m", evaluation_window="final_test")
+    monkeypatch.delenv("MAG_CLASS_WEIGHT_POWER")
+    with pytest.raises(ValueError, match="frozen serving configuration"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test", calibration="isotonic")
+    assert claimed == []
+    src = inspect.getsource(mwf.walk_forward)
+    assert src.index("final_test_config_refusal(") < src.index("_claim_final_test(")
+
+
+def test_a_claim_whose_holder_died_before_any_output_can_be_reclaimed_once(monkeypatch):
+    """The marker was consumed before the load, folds and summary, so a
+    worker dying in between lost the cell's one-time test for good (Codex
+    P1). The claim is now a state machine: 'claimed' -> 'evaluated' once the
+    summary is durable; a 'claimed' holder with NO durable output may be
+    reclaimed, audited immutably, at most FINAL_RECLAIM_LIMIT times."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    store: dict = {}
+    gens: dict = {}
+
+    class _Blob:
+        def __init__(self, name): self.name = name
+        def exists(self): return self.name in store
+        def reload(self): self.generation = gens.get(self.name)
+        def download_as_text(self): return store[self.name]
+        def upload_from_string(self, data, content_type=None, if_generation_match=None):
+            if if_generation_match == 0 and self.name in store:
+                raise RuntimeError("Conflict")
+            if if_generation_match not in (None, 0) and gens.get(self.name) != if_generation_match:
+                raise RuntimeError("PreconditionFailed")
+            store[self.name] = data
+            gens[self.name] = gens.get(self.name, 0) + 1
+
+    class _Bucket:
+        def blob(self, name): return _Blob(name)
+
+    class _Client:
+        def bucket(self, _): return _Bucket()
+        def list_blobs(self, _, prefix=""):
+            return [type("B", (), {"name": n})() for n in store if n.startswith(prefix)]
+    monkeypatch.setattr(mwf.gcs, "Client", lambda: _Client())
+    monkeypatch.setenv("GCS_BUCKET", "b")
+    monkeypatch.setattr(mwf, "FINAL_TEST_VERSION", "v")
+
+    mwf._claim_final_test("v", "phase0", "IWM", "15m", "r1")
+    path = mwf._final_claim_path("v", "IWM", "15m")
+    assert json.loads(store[path])["state"] == "claimed"
+
+    # r1 died with nothing durable: r2 may take over, once per holder
+    mwf.reclaim_incomplete_final_test("IWM", "15m", "r1", "r2")
+    marker = json.loads(store[path])
+    assert marker["run_id"] == "r2" and marker["history"][0]["run_id"] == "r1"
+    assert f"{path}.reclaims/r1.json" in store, "immutable audit of the transition"
+    with pytest.raises(RuntimeError, match="held by 'r2', not 'r1'"):
+        mwf.reclaim_incomplete_final_test("IWM", "15m", "r1", "r3")
+    # the limit bounds how often a cell can be re-taken
+    mwf.reclaim_incomplete_final_test("IWM", "15m", "r2", "r3")
+    with pytest.raises(RuntimeError, match="limit is 2"):
+        mwf.reclaim_incomplete_final_test("IWM", "15m", "r3", "r4")
+    # a holder that left durable output is not incomplete
+    monkeypatch.setattr(mwf, "FINAL_RECLAIM_LIMIT", 9)
+    pred = mwf.gcs_run_prefix("phase0", "IWM", "15m", label_mode="body",
+                              thresholds=mwf.MAGNITUDE_THRESHOLDS,
+                              evaluation_window="final_test") + "/predictions_r3.csv"
+    store[pred] = "x"
+    with pytest.raises(RuntimeError, match="left durable output"):
+        mwf.reclaim_incomplete_final_test("IWM", "15m", "r3", "r4")
+    del store[pred]
+    # once the summary is durable the claim is 'evaluated' and final
+    mwf._mark_final_test_evaluated("v", "IWM", "15m", "r3", "some/summary.json")
+    assert json.loads(store[path])["state"] == "evaluated"
+    with pytest.raises(RuntimeError, match="cannot be reclaimed"):
+        mwf.reclaim_incomplete_final_test("IWM", "15m", "r3", "r4")
+    with pytest.raises(RuntimeError, match="not held by 'zz'"):
+        mwf._mark_final_test_evaluated("v", "IWM", "15m", "zz", "s")
+    # the transition is written after the summary upload, on the final path only
+    src = inspect.getsource(mwf.walk_forward)
+    assert src.index("_gcs_upload(json.dumps(summary") < src.index("_mark_final_test_evaluated(")
+    assert "--reclaim-incomplete" in inspect.getsource(mwf.main)
+    assert "claim_held=True" in inspect.getsource(mwf.main)

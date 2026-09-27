@@ -38,7 +38,7 @@ from gcp.database import get_engine, execute_sql
 from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, PHASES, LABEL_MODES, DEFAULT_LABEL_MODE,
     LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
-    DEFAULT_CUTOFFS, MIN_TEST_BARS,
+    DEFAULT_CUTOFFS, MIN_TEST_BARS, TF_MINUTES,
     MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds,
     DEFAULT_CALIBRATION, DEFAULT_CV,
     PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MIN_TAIL_CALL_SHARE,
@@ -54,10 +54,12 @@ from gcp.research.magnitude_engine.mag_config import (
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.evaluation_windows import (
     CRITERIA_VERSION, FINAL_TEST_VERSION, PREDICTION_HORIZON_SESSIONS,
-    WINDOWS, assert_disjoint, assert_final_session_complete, assert_window_complete, assert_window_covered,
+    WINDOWS, assert_disjoint, assert_final_window_complete, assert_window_complete, assert_window_covered,
+    expected_session_bars,
     eastern_sessions, purged_session_masks, utc_instants, window_cutoffs,
 )
 from gcp.research.magnitude_engine.mag_pred_train import (
+    MAG_CLASS_WEIGHT_POWER_DEFAULT,
     featurize, make_lgbm, resolve_class_weight, class_weight_power,
     decide_bucket, expected_calibration_error,
     decisive_call_hit_rate, explosive_lift,
@@ -299,33 +301,63 @@ def production_persist_refusal(window) -> str | None:
             f"{window.end.isoformat()}")
 
 
-FINAL_PREFLIGHT_SESSIONS = 21
 # The phase whose candidate serves (the only one _persist_production_model
 # publishes) and therefore the only one allowed to read the final holdout.
 SERVING_PHASE = "phase0"
+# The seed the serving model is trained with (mag_pred_train.make_lgbm).
+LOCKED_SEED = 42
+# A final-test claim may be re-taken at most this many times, each only for
+# a holder that died before any durable evaluation output, each recorded
+# immutably (see reclaim_incomplete_final_test).
+FINAL_RECLAIM_LIMIT = 2
 
 
-def _recent_session_bar_counts(engine, ticker: str, tf: str, until: str,
-                               n_sessions: int = FINAL_PREFLIGHT_SESSIONS):
-    """The newest `n_sessions` Eastern sessions before `until` with their bar
-    counts, newest first, read WITHOUT labels, features or OHLC.
+def _session_bar_counts(engine, ticker: str, tf: str, since: str, until: str) -> dict:
+    """Per-session bar counts the source table holds for bar_date in
+    [since, until), read WITHOUT labels, features or OHLC.
 
-    The final-test coverage and completeness checks run on this, so the
-    one-time claim can be taken before any final-test label is constructed
-    or logged: a rerun after the marker exists, or the loser of a concurrent
-    claim, never sees the holdout (Codex P1 on #1193). The counts let the
-    last session be judged whole, not merely present (Codex P1 on #1193).
-    Returns [] when no row exists.
+    The final-test preflight compares this against the exchange calendar for
+    the WHOLE window, so the one-time claim is taken before any final-test
+    label is constructed or logged and only when every session is present
+    and whole (Codex P1 x3 on #1193). Returns {} when no row exists.
     """
     from sqlalchemy import text
     from gcp.research.strat_engine.strat_config import strat_features_table
     sql = text(f"SELECT bar_date, COUNT(*) AS n FROM {strat_features_table(tf)} "
-               f"WHERE ticker = :t AND bar_date < :until "
-               f"GROUP BY bar_date ORDER BY bar_date DESC LIMIT :n")
+               f"WHERE ticker = :t AND bar_date >= :since AND bar_date < :until "
+               f"GROUP BY bar_date")
     with engine.connect() as conn:
-        rows = conn.execute(sql, {"t": ticker, "until": until,
-                                  "n": n_sessions}).fetchall()
-    return [(r[0], int(r[1])) for r in rows]
+        rows = conn.execute(sql, {"t": ticker, "since": since, "until": until}).fetchall()
+    return {pd.Timestamp(r[0]).date(): int(r[1]) for r in rows}
+
+
+def final_test_config_refusal(calibration: str, cv: int) -> str | None:
+    """Why this invocation is not the frozen serving configuration, or None.
+
+    The marker path encodes none of these, so a final run under another
+    calibration, class-weight power or seed would consume the cell's sole
+    holdout for a configuration validation never selected (Codex P1 on
+    #1193). The frozen configuration is the code's defaults: DEFAULT_CALIBRATION,
+    DEFAULT_CV, MAG_CLASS_WEIGHT_POWER_DEFAULT and LOCKED_SEED, with no env
+    override present.
+    """
+    problems = []
+    if calibration != DEFAULT_CALIBRATION:
+        problems.append(f"calibration={calibration!r} (frozen: {DEFAULT_CALIBRATION!r})")
+    if cv != DEFAULT_CV:
+        problems.append(f"cv={cv} (frozen: {DEFAULT_CV})")
+    if os.environ.get("MAG_CLASS_WEIGHT_POWER", "").strip():
+        problems.append(f"MAG_CLASS_WEIGHT_POWER={os.environ['MAG_CLASS_WEIGHT_POWER']!r} "
+                        f"(frozen: {MAG_CLASS_WEIGHT_POWER_DEFAULT}, unset)")
+    if os.environ.get("MAG_SEED", "").strip():
+        problems.append(f"MAG_SEED={os.environ['MAG_SEED']!r} (frozen: {LOCKED_SEED}, unset)")
+    return "; ".join(problems) or None
+
+
+def _execution_id() -> str:
+    return (os.environ.get("CLOUD_RUN_EXECUTION")
+            or os.environ.get("MAG_RUN_ID")
+            or f"run_{int(time.time())}")
 
 
 def _require_closed_window(window) -> None:
@@ -346,9 +378,12 @@ def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
     """
     bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
     path = _final_claim_path(version, ticker, tf)
+    # state: "claimed" until the run's summary is durable, then "evaluated"
+    # (_mark_final_test_evaluated). A holder that dies in "claimed" with no
+    # durable output can be reclaimed once, audited (Codex P1 on #1193).
     payload = json.dumps({"version": version, "phase": phase, "ticker": ticker,
-                          "tf": tf, "run_id": run_id,
-                          "consumed_at": utc_now().isoformat()})
+                          "tf": tf, "run_id": run_id, "state": "claimed",
+                          "consumed_at": utc_now().isoformat(), "history": []})
     blob = gcs.Client().bucket(bucket_name).blob(path)
     try:
         blob.upload_from_string(
@@ -362,14 +397,112 @@ def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
         # #1193).
         if getattr(exc, "code", None) in (409, 412) or type(exc).__name__ in {
                 "Conflict", "PreconditionFailed"}:
-            holder = json.loads(blob.download_as_text()).get("run_id")
+            marker = json.loads(blob.download_as_text())
+            holder = marker.get("run_id")
             raise RuntimeError(
                 f"final-test version {version!r} has already been consumed "
-                f"for {ticker}/{tf} by run {holder!r}; a failed staging is "
+                f"for {ticker}/{tf} by run {holder!r} (state "
+                f"{marker.get('state', 'claimed')!r}); a failed staging is "
                 f"recovered with --resume-staging={holder} --ticker={ticker} "
-                f"--tf={tf}, which stages from that run's recorded verdict "
-                f"without re-evaluating the holdout") from exc
+                f"--tf={tf}, and a holder that died before any durable output "
+                f"with --reclaim-incomplete={holder}") from exc
         raise
+
+
+def _read_final_marker(version: str, ticker: str, tf: str):
+    """(marker dict, blob generation) for the cell, or (None, None)."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    blob = gcs.Client().bucket(bucket_name).blob(_final_claim_path(version, ticker, tf))
+    if not blob.exists():
+        return None, None
+    blob.reload()
+    return json.loads(blob.download_as_text()), blob.generation
+
+
+def _mark_final_test_evaluated(version: str, ticker: str, tf: str, run_id: str,
+                               summary_blob: str) -> None:
+    """Checkpoint: the holder's summary is durable, the claim is 'evaluated'.
+
+    Written with the marker's generation, so a concurrent reclaim cannot be
+    silently overwritten. From here the cell can never be reclaimed; a
+    failed staging is recovered from the summary (resume_final_staging).
+    """
+    marker, generation = _read_final_marker(version, ticker, tf)
+    if marker is None or marker.get("run_id") != run_id:
+        raise RuntimeError(f"final-test marker for {ticker}/{tf} is not held by "
+                           f"{run_id!r}: {marker!r}")
+    marker.update({"state": "evaluated", "summary": summary_blob,
+                   "evaluated_at": utc_now().isoformat()})
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    gcs.Client().bucket(bucket_name).blob(_final_claim_path(version, ticker, tf)) \
+        .upload_from_string(json.dumps(marker), content_type="application/json",
+                            if_generation_match=generation)
+
+
+def _final_run_outputs_exist(ticker: str, tf: str, run_id: str) -> bool:
+    """Whether the run left ANY durable output under the final-test prefix
+    (summary, predictions CSV, anything else keyed by its run id)."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    prefix = gcs_run_prefix(SERVING_PHASE, ticker, tf, label_mode=DEFAULT_LABEL_MODE,
+                            thresholds=MAGNITUDE_THRESHOLDS,
+                            evaluation_window="final_test")
+    return any(run_id in b.name for b in
+               gcs.Client().list_blobs(bucket_name, prefix=f"{prefix}/"))
+
+
+def reclaim_incomplete_final_test(ticker: str, tf: str, holder: str,
+                                  new_run_id: str) -> None:
+    """Move the cell's claim from a holder that died before ANY durable
+    output to `new_run_id`, once, audited.
+
+    The marker is consumed before the load, the folds and the summary, so a
+    worker dying in between left the cell's one-time test permanently lost
+    (Codex P1 on #1193). Conditions, every one refused loudly: the marker is
+    held by `holder` in state "claimed"; `holder` left no summary, no
+    predictions, nothing under the final prefix; fewer than
+    FINAL_RECLAIM_LIMIT reclaims so far. The transition writes an immutable
+    audit blob per holder (generation 0, so a holder can be reclaimed exactly
+    once) and rewrites the marker against its read generation, appending the
+    holder to `history`. What a died run may have logged before dying is the
+    residual; the audit trail bounds how often it can happen.
+    """
+    marker, generation = _read_final_marker(FINAL_TEST_VERSION, ticker, tf)
+    if marker is None:
+        raise RuntimeError(f"{ticker}/{tf} holds no final-test claim to reclaim")
+    if marker.get("run_id") != holder:
+        raise RuntimeError(f"final-test claim for {ticker}/{tf} is held by "
+                           f"{marker.get('run_id')!r}, not {holder!r}")
+    if marker.get("state", "claimed") != "claimed":
+        raise RuntimeError(f"run {holder} reached state {marker.get('state')!r}; "
+                           f"its verdict is durable and the cell cannot be reclaimed "
+                           f"(recover staging with --resume-staging={holder})")
+    if _final_run_outputs_exist(ticker, tf, holder):
+        raise RuntimeError(f"run {holder} left durable output under the final-test "
+                           f"prefix; it is not an incomplete run and cannot be reclaimed")
+    history = list(marker.get("history", []))
+    if len(history) >= FINAL_RECLAIM_LIMIT:
+        raise RuntimeError(f"final-test claim for {ticker}/{tf} was already reclaimed "
+                           f"{len(history)} time(s) ({history}); the limit is "
+                           f"{FINAL_RECLAIM_LIMIT}")
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    bucket = gcs.Client().bucket(bucket_name)
+    audit = {"version": FINAL_TEST_VERSION, "ticker": ticker, "tf": tf,
+             "from_run_id": holder, "to_run_id": new_run_id,
+             "reclaimed_at": utc_now().isoformat(), "prior_history": history}
+    # Immutable: a second reclaim of the same holder fails here.
+    bucket.blob(f"{_final_claim_path(FINAL_TEST_VERSION, ticker, tf)}.reclaims/"
+                f"{holder}.json").upload_from_string(
+        json.dumps(audit), content_type="application/json", if_generation_match=0)
+    marker.update({"run_id": new_run_id, "state": "claimed",
+                   "consumed_at": utc_now().isoformat(),
+                   "history": history + [{"run_id": holder,
+                                          "reclaimed_at": audit["reclaimed_at"]}]})
+    bucket.blob(_final_claim_path(FINAL_TEST_VERSION, ticker, tf)).upload_from_string(
+        json.dumps(marker), content_type="application/json",
+        if_generation_match=generation)
+    log.warning("final-test claim for %s:%s reclaimed from dead run %s by %s "
+                "(reclaim %d of %d)", ticker, tf, holder, new_run_id,
+                len(history) + 1, FINAL_RECLAIM_LIMIT)
 
 
 def _final_claim_path(version: str, ticker: str, tf: str) -> str:
@@ -441,6 +574,22 @@ def resume_final_staging(engine, ticker: str, tf: str, run_id: str) -> str:
     X_df, feature_cols = featurize(df)
     X_full = X_df.values.astype(np.float32, copy=False)
     y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
+    ts_arr = utc_instants(df["ts"]).values.astype("datetime64[ns]")
+    # The staged model must be THE candidate whose gates were recorded: the
+    # same rows, code, seed, class weighting and columns. Anything the run
+    # recorded that this environment does not reproduce refuses the resume
+    # (Codex P1 on #1193).
+    provenance = _execution_provenance(X_full, y_full, ts_arr)
+    current = {"dataset_fingerprint": provenance["dataset_fingerprint"],
+               "code_commit": provenance["code_commit"],
+               "random_seed": int(os.environ.get("MAG_SEED", str(LOCKED_SEED))),
+               "class_weight_power": class_weight_power(),
+               "feature_cols": list(feature_cols)}
+    drift = [f"{k}: run={summary.get(k)!r} now={v!r}"
+             for k, v in current.items() if summary.get(k) != v]
+    if drift:
+        raise RuntimeError(f"run {run_id} cannot be reproduced here, refusing to "
+                           f"stage a different candidate: " + "; ".join(drift))
     log.info("resuming final-test staging for %s:%s from run %s (gates 1-4 %s)",
              ticker, tf, run_id,
              "PASS" if summary["gates"].get("cell_pass_gates_1_to_4") else "FAIL")
@@ -1082,13 +1231,12 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   label_mode: str = DEFAULT_LABEL_MODE,
                   persist_production_model: bool = False,
                   features: str = "",
-                  evaluation_window: str = "development") -> dict:
+                  evaluation_window: str = "development",
+                  claim_held: bool = False) -> dict:
     window = WINDOWS[evaluation_window]
     cutoffs = window_cutoffs(window, cutoffs)
     thresholds = resolve_magnitude_thresholds()
-    execution_id = (os.environ.get("CLOUD_RUN_EXECUTION")
-                    or os.environ.get("MAG_RUN_ID")
-                    or f"run_{int(time.time())}")
+    execution_id = _execution_id()
     if window.final:
         _require_closed_window(window)
         # The final test exists to stage the SERVING candidate. A run under a
@@ -1119,19 +1267,35 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                 f"the {window.name} window is reserved for the serving feature "
                 f"set (baseline); --features={features!r} would stage a model "
                 f"mag_inference cannot serve")
-        # Unlabelled coverage preflight, then the one-time claim, and only
-        # then the labelled load below: the holdout's labels are never
-        # constructed, logged or fingerprinted by a run that does not hold
-        # the claim (Codex P1 on #1193). The preflight proves the table
-        # reaches the window's last session, so a load failure after the
-        # claim is an infrastructure fault, not a data gap; and a rerun after
-        # the marker exists is refused before it reads a single holdout row.
-        sessions = _recent_session_bar_counts(engine, ticker, tf,
-                                              window.end.isoformat())
-        assert_window_covered(window, [d for d, _ in sessions[:1]])
-        assert_final_session_complete(window, sessions[0][1],
-                                      [c for _, c in sessions[1:]])
-        _claim_final_test(FINAL_TEST_VERSION, phase, ticker, tf, execution_id)
+        # The complete frozen configuration, not only labels and features
+        # (Codex P1 on #1193).
+        config_reason = final_test_config_refusal(calibration, cv)
+        if config_reason:
+            raise ValueError(
+                f"the {window.name} window is reserved for the frozen serving "
+                f"configuration and would consume the one-time version: "
+                f"{config_reason}")
+        # Unlabelled preflight, then the one-time claim, and only then the
+        # labelled load below: the holdout's labels are never constructed,
+        # logged or fingerprinted by a run that does not hold the claim
+        # (Codex P1 on #1193). The preflight proves EVERY session of the
+        # window is present and whole against the exchange calendar, so a
+        # load failure after the claim is an infrastructure fault, not a
+        # data gap; and a rerun after the marker exists is refused before it
+        # reads a single holdout row.
+        observed = _session_bar_counts(engine, ticker, tf,
+                                       window.start.isoformat(), window.end.isoformat())
+        assert_window_covered(window, list(observed))
+        assert_final_window_complete(window, expected_session_bars(window, TF_MINUTES[tf]),
+                                     observed)
+        if claim_held:
+            # reclaim_incomplete_final_test moved the claim to this run id.
+            holder = _final_claim_holder(FINAL_TEST_VERSION, ticker, tf)
+            if holder != execution_id:
+                raise RuntimeError(f"final-test claim for {ticker}/{tf} is held by "
+                                   f"{holder!r}, not this run {execution_id!r}")
+        else:
+            _claim_final_test(FINAL_TEST_VERSION, phase, ticker, tf, execution_id)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
              "label_mode=%s  thresholds=%s",
@@ -1444,6 +1608,10 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved gs://%s/%s",
              os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), blob)
+    if window.final:
+        # The verdict is durable: the claim moves to "evaluated" and the cell
+        # can never be reclaimed; staging failures recover from this summary.
+        _mark_final_test_evaluated(FINAL_TEST_VERSION, ticker, tf, run_id, blob)
     return summary
 
 
@@ -1632,6 +1800,12 @@ def main():
                         "after the one-time claim: stage the production "
                         "candidate from that run's recorded verdict, with "
                         "--ticker --tf. Nothing is re-evaluated.")
+    p.add_argument("--reclaim-incomplete", default=None, metavar="RUN_ID",
+                   help="Recovery for a final-test run that died after the "
+                        "one-time claim and before ANY durable output: move "
+                        "the claim to this run (audited, at most "
+                        f"{FINAL_RECLAIM_LIMIT} times per cell) and run the "
+                        "final test, with --ticker --tf.")
     args = p.parse_args()
     if args.resume_staging:
         if not args.ticker or not args.tf:
@@ -1639,6 +1813,17 @@ def main():
         uri = resume_final_staging(get_engine(), args.ticker, args.tf,
                                    args.resume_staging)
         log.info("staged -> %s", uri)
+        return
+    if args.reclaim_incomplete:
+        if not args.ticker or not args.tf:
+            raise SystemExit("--reclaim-incomplete needs --ticker and --tf")
+        reclaim_incomplete_final_test(args.ticker, args.tf, args.reclaim_incomplete,
+                                      _execution_id())
+        walk_forward(get_engine(), SERVING_PHASE, args.ticker, args.tf,
+                      calibration=args.calibration, label_mode=args.label_mode,
+                      persist_production_model=args.persist_production_model,
+                      features=args.features, evaluation_window="final_test",
+                      claim_held=True)
         return
     # Validate the threshold override BEFORE any fan-out. run_all_cells
     # catches every per-cell exception and main() does not act on its FAIL

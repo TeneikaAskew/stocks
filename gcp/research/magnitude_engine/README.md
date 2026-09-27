@@ -92,20 +92,37 @@ atomically in GCS; reusing the same final-test version for the same cell is
 rejected rather than silently re-reading the holdout, and the claim is
 refused while the window is still open on the market date, so a partial
 year can never consume the one-time version. The claim is taken after an
-unlabelled preflight (per-session bar counts of the source table: the last
-session must be present AND hold at least the median bar count of the
-sessions before it, so a still-ingesting session is refused) and before the
-labelled load, so a rerun after the marker exists, or the loser of a
-concurrent claim, never constructs a final-test label. The marker is one
-per (version, ticker, timeframe), not per phase, and only the serving phase
-(`phase0`) with the serving contract and the baseline feature set may take
-it; `dispatch_magnitude_phase.sh` refuses `--evaluation-window=final_test`
-for any plan but `phase0`. No run may re-evaluate a claimed holdout, the
-holder included: a staging failure after the claim is recorded as
-`production_model_staging_failed` and recovered with
-`--resume-staging=<run id> --ticker --tf`, which stages the candidate from
-that run's recorded gates 1-4 verdict without scoring a fold or writing a
-prediction.
+unlabelled preflight and before the labelled load, so a rerun after the
+marker exists, or the loser of a concurrent claim, never constructs a
+final-test label. The preflight compares the WHOLE window against the NYSE
+schedule (`evaluation_windows.expected_session_bars`): every session
+present, each holding at least its regular-hours bar count for the
+timeframe (an early close expects fewer), no rows on a non-session date.
+The marker is one per (version, ticker, timeframe), not per phase, and
+only the serving phase (`phase0`) under the frozen serving configuration
+may take it: the serving label contract, the baseline feature set,
+`DEFAULT_CALIBRATION` / `DEFAULT_CV`, and no `MAG_CLASS_WEIGHT_POWER` or
+`MAG_SEED` override (`mag_walk_forward.final_test_config_refusal`).
+`dispatch_magnitude_phase.sh` refuses `--evaluation-window=final_test` for
+any plan but `phase0`.
+
+The claim is a state machine. It is written as `claimed`; once the run's
+summary is durable it moves to `evaluated` and the cell can never be
+reclaimed. Two recoveries exist, neither of which re-evaluates a holdout
+that has a recorded verdict:
+
+- **Staging failed after the verdict** (`production_model_staging_failed`
+  in the summary): `--resume-staging=<run id> --ticker --tf` stages the
+  candidate from that run's recorded gates 1-4 verdict. It refuses unless
+  the current dataset fingerprint, code commit, seed, class-weight power and
+  feature columns equal the ones the run recorded, so the staged model is
+  the candidate that was judged, and it scores no fold and writes no
+  prediction.
+- **The holder died before ANY durable output** (state still `claimed`, no
+  summary, no predictions): `--reclaim-incomplete=<run id> --ticker --tf`
+  moves the claim to a new run and runs the final test. Each transition
+  writes an immutable audit blob per holder and appends to the marker's
+  `history`; at most `FINAL_RECLAIM_LIMIT` (2) reclaims per cell.
 
 The final-test folds are fixed at `[window.start]`; custom `--cutoffs` are
 refused there, and the one-time version is the `FINAL_TEST_VERSION` constant,

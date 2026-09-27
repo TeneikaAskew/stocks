@@ -20,6 +20,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pandas as pd
 from typing import Any
 
 # Import gate thresholds from mag_config — this enforces that we apply the
@@ -98,13 +100,30 @@ def _legacy_split_name(uri: str, result: dict) -> str:
         raise RuntimeError(
             f"{uri} records neither split_name nor cutoffs; refusing to "
             f"assign it to a window")
+    dev = WINDOWS["development"]
     try:
-        window_cutoffs(WINDOWS["development"], [str(c) for c in cutoffs])
+        window_cutoffs(dev, [str(c) for c in cutoffs])
     except ValueError as exc:
         raise RuntimeError(
             f"{uri} predates evaluation windows and its cutoffs {cutoffs} "
             f"reach past the development window; it is not development "
             f"evidence and is not reported") from exc
+    # The cutoffs bound where folds START. The old harness ended its last
+    # fold at bar_date.max() + 1 day, so a run whose cutoffs all precede 2024
+    # still evaluated 2024-2026 in that fold (Codex P2 on #1193): every
+    # recorded fold must END inside the window too.
+    folds = result.get("folds")
+    if not folds:
+        raise RuntimeError(f"{uri} records no folds; its evaluation extent is "
+                           f"unknown and it is not reported")
+    late = [str(f.get("test_end")) for f in folds
+            if f.get("test_end") is None
+            or pd.Timestamp(str(f["test_end"])).date() > dev.end]
+    if late:
+        raise RuntimeError(
+            f"{uri} predates evaluation windows and its folds end at {late}, "
+            f"past the development window end {dev.end.isoformat()}; it is "
+            f"not development evidence and is not reported")
     return "development"
 
 

@@ -870,8 +870,9 @@ def test_every_dispatch_path_forwards_label_mode():
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
     src = inspect.getsource(mwf.main)
-    # one per dispatch path: task-parallel, --plan, --all-cells, single cell
-    assert src.count("label_mode=args.label_mode") == 4, (
+    # one per dispatch path: task-parallel, --plan, --all-cells, single cell,
+    # and the --reclaim-incomplete final-test recovery (#1193)
+    assert src.count("label_mode=args.label_mode") == 5, (
         "every dispatch path must forward the requested label mode; a path "
         "that drops it trains the default and reports success")
 
