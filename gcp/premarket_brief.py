@@ -734,7 +734,7 @@ def load_ew_recap(today: date) -> dict:
     missing verdict is counted rather than hidden. Raises on any failure;
     _ew_recap_or_unavailable decides what the brief shows then.
     """
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    from gcp.database import is_cloud_sql_configured, query_to_dataframe_strict
     from gcp.fetchers.evaluate_ew_strikes import nyse_sessions, scoring_session
 
     if not is_cloud_sql_configured():
@@ -744,7 +744,7 @@ def load_ew_recap(today: date) -> dict:
     sessions = nyse_sessions(today - timedelta(days=21), today + timedelta(days=7))
     before = sessions.index[sessions.index < pd.Timestamp(today)]
     session, prior = before[-1].date(), before[-2].date()
-    df = query_to_dataframe("""
+    df = query_to_dataframe_strict("""
         SELECT id, ticker, earnings_date, earnings_time, strategy, strike,
                ew_strike_verdict, ew_strike_move_pct, ew_minutes_to_hit,
                ew_minutes_in_zone, ew_day_change_pct
@@ -2894,9 +2894,10 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
 
         # 6. How the last session's EW picks played out (#1168): scored by
         # evaluate-ew-strikes the evening after their session.
+        recap = ''
         if ew_recap.get('unavailable'):
-            sections.append(f'\n**\U0001f52e EW picks, last session: unavailable '
-                            f'({ew_recap["unavailable"]})**')
+            recap = (f'\n**\U0001f52e EW picks, last session: unavailable '
+                     f'({ew_recap["unavailable"]})**')
         elif has_recap:
             s = ew_recap.get('session')
             label = s.strftime('%a %m/%d') if hasattr(s, 'strftime') else str(s)
@@ -2908,9 +2909,18 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 r_lines.append(f'_+{len(picks) - RECAP_CAP} more_')
             if ew_recap.get('unscored'):
                 r_lines.append(f'_+{ew_recap["unscored"]} not scored_')
-            sections.append('\n'.join(r_lines))
+            recap = '\n'.join(r_lines)
 
         description = '\n'.join(sections).strip()
+        if recap:
+            # The recap comes last but must survive the 4,090-character cut
+            # below: on a busy day the Whispers section alone passes it, so
+            # the sections above give way instead, and say so (Codex on #1203).
+            room = 4090 - len(recap) - 1
+            if len(description) > room:
+                cut = '\n_... truncated_'
+                description = description[:max(room - len(cut), 0)].rstrip() + cut
+            description = f'{description}\n{recap}'.strip()
 
     return {
         'title': title,

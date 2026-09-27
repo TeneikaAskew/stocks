@@ -61,6 +61,10 @@ def mock_cloud_sql(monkeypatch):
 
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
         monkeypatch.setattr(database, "query_to_dataframe", fake_query)
+        # The recap reads through the strict path (#1203), which raises
+        # where query_to_dataframe returns an empty frame.
+        monkeypatch.setattr(database, "query_to_dataframe_strict",
+                            lambda sql, params=None, timeout_s=None: fake_query(sql, params))
         # Re-bind the import inside premarket_brief too — the fn does
         # `from gcp.database import ...` at call time, so module-level
         # patches on `gcp.database` are sufficient. (No second patch
@@ -3029,6 +3033,67 @@ def test_an_unavailable_recap_is_said_not_hidden(monkeypatch, caplog):
     data['ew_recap'] = recap
     desc = pb._build_earnings_embed(data)['description']
     assert 'EW picks, last session: unavailable (RuntimeError: calendar unavailable)' in desc
+
+
+def test_a_failed_recap_query_reads_as_unavailable_not_as_no_picks(monkeypatch):
+    """Codex on #1203: the recap read through query_to_dataframe, which
+    turns any failure into an empty frame, so a failed query looked like a
+    session with no picks and the unavailable line never appeared. It reads
+    through the strict path, so a failure is named."""
+    from gcp import database
+    from gcp import premarket_brief as pb
+
+    def strict(sql, params=None, timeout_s=None):
+        raise RuntimeError('connection refused')
+
+    monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(database, 'query_to_dataframe', lambda sql, params=None: pd.DataFrame())
+    monkeypatch.setattr(database, 'query_to_dataframe_strict', strict)
+    recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
+    assert recap.get('unavailable') == 'RuntimeError: connection refused'
+    assert recap['picks'] == []
+
+
+def _busy_day(n=150):
+    """A daily brief whose earlier sections alone pass Discord's limit: the
+    Whispers section lists every EW pick of the day, uncapped (191 on the
+    busiest day since 2026-04-13)."""
+    return _earnings_brief([_row_out(f'W{i:03d}', 'premarket', 1,
+                                     strategy='Long Calls', strike=10.0 + i)
+                            for i in range(n)])
+
+
+def test_the_recap_survives_a_busy_days_description_cut():
+    """Codex on #1203: the recap came last and the description was then
+    sliced to 4,090 characters, so on a busy day it was the first thing cut.
+    The sections above it give way instead, and say they were cut."""
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _busy_day()
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 1}
+    desc = _build_earnings_embed(data)['description']
+    assert len(desc) <= 4090
+    assert 'EW picks, Fri 09/25 session' in desc
+    assert '\U0001f7e2 **PRE_FRI**' in desc and desc.endswith('_+1 not scored_')
+    assert desc.index('_... truncated_') < desc.index('EW picks, Fri 09/25 session')
+
+
+def test_an_unavailable_recap_survives_the_cut_too():
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _busy_day()
+    data['ew_recap'] = {'session': None, 'picks': [], 'unscored': 0,
+                        'unavailable': 'RuntimeError: connection refused'}
+    desc = _build_earnings_embed(data)['description']
+    assert len(desc) <= 4090
+    assert desc.endswith('EW picks, last session: unavailable (RuntimeError: connection refused)**')
+
+
+def test_a_quiet_day_is_not_cut():
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _busy_day(3)
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 0}
+    desc = _build_earnings_embed(data)['description']
+    assert '_... truncated_' not in desc
+    assert '**W002** — Long Calls | Strike $12' in desc and 'EW picks, Fri 09/25 session' in desc
 
 
 def test_a_null_metric_read_back_as_nan_renders_as_absent(mock_cloud_sql):
