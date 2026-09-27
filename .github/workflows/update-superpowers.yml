@@ -41,8 +41,17 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # The update is always built on, and proposed against, the default
+      # branch. A manual run dispatched from another ref would otherwise check
+      # that ref out and carry its unrelated commits into the bot branch.
+      # Scheduled runs carry no github.event.repository, but they always run
+      # on the default branch, so github.ref_name is it there.
+      BASE: ${{ github.event.repository.default_branch || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE }}
 
       - name: Refresh vendored skills
         id: refresh
@@ -64,23 +73,31 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
           VERSION: ${{ steps.refresh.outputs.version }}
-          BASE: ${{ github.event.repository.default_branch }}
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::error::PR_WORKFLOW_TOKEN secret is not set"; exit 1; }
           BRANCH="bot/superpowers-${VERSION}"
           if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
-            echo "::notice::$BRANCH already exists, so $VERSION was already proposed"
-            exit 0
+            # The version counts as proposed only once a PR exists for it, open
+            # or closed. A branch without one means an earlier run pushed and
+            # then failed to open the PR; open it now rather than skip forever.
+            PR_URL=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}" \
+              --jq '.[0].html_url // empty')
+            if [ -n "$PR_URL" ]; then
+              echo "::notice::$VERSION was already proposed in $PR_URL"
+              exit 0
+            fi
+            echo "::warning::$BRANCH exists without a PR; opening it now"
+            git fetch -q origin "$BRANCH"
+            STAT=$(git diff --stat HEAD FETCH_HEAD)
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+            git checkout -b "$BRANCH"
+            git add -A -- .claude/skills
+            git commit -q -m "chore(claude): update Superpowers skills to ${VERSION}"
+            git push -u origin "$BRANCH"
+            STAT=$(git diff --stat HEAD~1 HEAD)
           fi
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git add -A -- .claude/skills
-          git commit -q -m "chore(claude): update Superpowers skills to ${VERSION}"
-          git push -u origin "$BRANCH"
-
-          STAT=$(git diff --stat HEAD~1 HEAD)
           # A PR body is capped at 65,536 characters; several skipped releases
           # could exceed it. Upstream headings drop one level to nest under
           # this body's "Upstream release notes".

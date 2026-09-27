@@ -29,6 +29,10 @@ SELF=${0#"$ROOT"/}
 
 log() { echo "update-superpowers: $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
+release_tags() {
+  git ls-remote --tags --refs "$UPSTREAM" 'v*' | sed 's#.*refs/tags/##' | sort -V
+}
+newest_of() { printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1; }
 
 current=$(sed -n 's/^- Version: //p' "$NOTE")
 [ -n "$current" ] || die "no '- Version:' line in $NOTE"
@@ -36,11 +40,9 @@ current=$(sed -n 's/^- Version: //p' "$NOTE")
 if [ -n "${1:-}" ]; then
   target=$1
 else
-  target=$(git ls-remote --tags --refs "$UPSTREAM" 'v*' \
-    | sed 's#.*refs/tags/##' | sort -V | tail -n 1)
+  target=$(release_tags | tail -n 1)
   [ -n "$target" ] || die "no release tags found at $UPSTREAM"
-  newest=$(printf '%s\n%s\n' "$current" "$target" | sort -V | tail -n 1)
-  [ "$newest" = "$target" ] \
+  [ "$(newest_of "$current" "$target")" = "$target" ] \
     || die "vendored $current is newer than upstream's newest tag $target"
 fi
 
@@ -119,12 +121,24 @@ every Monday and opens a PR when there is one. To update by hand, run
 EOF
 } >"$NOTE"
 
-# Release notes for (current, target]: from the target's heading up to the
-# vendored version's heading.
-awk -v cur="$current" -v tgt="$target" '
-  index($0, "## " tgt " ") == 1 || $0 == "## " tgt { on = 1 }
-  index($0, "## " cur " ") == 1 || $0 == "## " cur { exit }
-  on { print }
-' "$src/RELEASE-NOTES.md"
+# Release notes for the released versions in (current, target]. Selecting the
+# sections by version, rather than reading down to the vendored version's
+# heading, keeps a downgrade bounded: an older release's notes have no heading
+# for the newer vendored version, so that scan ran to the end of the file.
+if [ "$(newest_of "$current" "$target")" != "$target" ]; then
+  echo "Downgrade from $current to $target: no forward release notes apply."
+else
+  in_range=" "
+  for tag in $(release_tags); do
+    if [ "$tag" != "$current" ] && [ "$(newest_of "$current" "$tag")" = "$tag" ] \
+      && [ "$(newest_of "$tag" "$target")" = "$target" ]; then
+      in_range+="$tag "
+    fi
+  done
+  awk -v set="$in_range" '
+    /^## / { split($0, h, " "); on = index(set, " " h[2] " ") > 0 }
+    on { print }
+  ' "$src/RELEASE-NOTES.md"
+fi
 
 log "updated to $target ($commit)"
