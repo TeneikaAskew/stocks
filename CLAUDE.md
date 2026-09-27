@@ -1,5 +1,7 @@
 # Project Instructions for Claude Code
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 ## Project Overview
 This is a stocks/trading application project that includes Google Apps Script components for market data fetching, historical data backfilling, and continuation systems for long-running operations.
 
@@ -623,24 +625,45 @@ whether the win still holds.
 
 ### 3.9. Market Time Is Eastern, Named, Converted Once
 
-> **UNRESOLVED as of 2026-09-06 — `market_data_intraday` holds TWO
-> conventions.** Older rows are true UTC instants; rows from
-> `gcp/fetchers/fetch_market_data.py:445` are ET wall-clock stored naively
-> ("ET-as-UTC convention", by design), and BOTH carry
-> `data_source='alphavantage'`, so no per-row rule separates them:
+> **PARTLY RESOLVED, 2026-09-26: writers fixed, data migration and readers
+> pending.** `market_data_intraday` holds TWO conventions. True UTC instants,
+> and Eastern wall-clock stamped as UTC, written by `fetch_market_data.py`
+> (`write_intraday_to_sql`, nightly) and `backfill_ticker.py`. BOTH carry
+> `data_source='alphavantage'`, and because they share the primary key the
+> Eastern-labelled 13:30 bar overwrote the true 09:30 bar wherever they met.
 >
-> ```
-> 2025-06-02  raw UTC 08:00-23:59  = 04:00-20:00 ET   true UTC
-> 2026-03-02  raw UTC 09:00-23:58  = 04:00-19:00 ET   true UTC
-> 2026-09-04  raw UTC 00:00-23:59  = a full 24 hours, no session either way
-> ```
+> - **Writers (done):** every writer now converts with
+>   `lib.eastern_time.eastern_index_to_utc`, and `gcp.database` refuses a naive
+>   `ts` for this table (`tests/gcp/test_intraday_writers_utc.py`).
+> - **Data (pending, gated):** `fetch_alphavantage_intraday --replace-months`
+>   refetches each ticker-month from AV and swaps it in one transaction.
+>   A relabel in SQL cannot restore the bars that were overwritten. The list
+>   comes from `gcp/queries/list_intraday_ticker_months.sql`. Verify with
+>   `--verify-months` over a list regenerated from the table (every ticker,
+>   read-only, no vendor calls); `gcp/queries/classify_intraday_ts_convention.sql`
+>   is the SPY/QQQ/IWM spot check only. A replaced month's rows in the
+>   ts-keyed derived tables (`DERIVED_TS_TABLES`: intraday flow/GEX 15m,
+>   `strat_features_*`) are deleted in the same transaction; re-run their
+>   builders over the range afterwards (the run prints `REBUILD` lines).
+>   Result tables computed from the old bars (`historical_signals`,
+>   `premarket_analysis` outcomes, `signal_alerts` exits, `market_data_daily`
+>   premarket fields) are NOT touched by the migration: recomputing them is a
+>   separate approved step over the `REPLACED` windows, with the paths the
+>   run prints as `RECOMPUTE` lines. Two have no correct path yet
+>   (`signal_alerts` exits, the premarket fields), so **do not run
+>   `--replace-months --commit` until #1190 lands.**
+> - **Reading across the migration:** `lib.eastern_time.stored_intraday_to_eastern`.
+>   Raw dates from `TRUE_UTC_FROM` (2026-09-28, the first session after the
+>   writer deploy) are true UTC by construction; earlier dates are inferred.
+> - **Readers (pending, after the data):** until then converting
+>   unconditionally still CORRUPTS the ET-framed rows (4-5 hours early). An
+>   attempt was reverted for exactly this reason (#992). Keep the existing
+>   reader framing until the migration is verified.
 >
-> Until the writer is normalised and the ET-framed rows migrated, converting
-> unconditionally CORRUPTS data (4-5 hours early; under EST it moves 04:00 ET
-> bars to the previous date, where the date filter discards them). An attempt
-> to apply this rule to that table was reverted for exactly this reason. The
-> rule below is correct and still binding for every OTHER timestamp; this one
-> table needs the data fixed first.
+> The rule below is binding for every OTHER timestamp now, and for this table
+> once the migration lands. Convert only through `lib/eastern_time.py`;
+> `tests/meta/test_timezone_boundaries.py` ratchets the remaining hand-rolled
+> sites down.
 
 `ts` is `TIMESTAMPTZ` and the Cloud SQL session runs in **UTC**, so `DATE(ts)`
 yields UTC calendar dates. Market data is Eastern. Measured on IWM: bars span

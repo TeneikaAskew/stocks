@@ -65,8 +65,10 @@ from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_TO_IDX, DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
+from lib.eastern_time import utc_now
 from scripts._magnitude_analysis_helpers import (
     add_research_arg, apply_research_contract, load_predictions,
+    load_run_readiness_version,
     research_prefix)
 
 # Minutes in a trading year, for the implied-move scaling (mirrors gate-7).
@@ -95,6 +97,28 @@ def _strat_direction(engine, ticker: str, tf: str) -> pd.DataFrame:
                        np.where(dn & ~up, "put", None))
     s["ts"] = pd.to_datetime(s["ts"], utc=True)
     return s[["ts", "strat_dir"]]
+
+
+def _build_summary(args, n_bars: int, overall_mean: float,
+                   overall_med: float, rows: list, *,
+                   readiness_version: str | None) -> dict:
+    """The uploaded movement-sim summary. It is economic evidence for ONE
+    walk-forward run, so it records that run's readiness policy, read from
+    the run's own summary: re-running the sim after a version bump must not
+    relabel old evidence as the new policy (Codex P2s on #1187). None means
+    the source run predates the policy."""
+    return {
+        "production_readiness_version": readiness_version,
+        "ticker": args.ticker, "tf": args.tf, "phase": args.phase,
+        "run_id": args.run_id, "position": args.position,
+        "direction": args.direction, "label_mode": args.label_mode,
+        "costs": "DEFERRED — gross movement only",
+        "n_bars": int(n_bars),
+        "overall_mean_payoff_atr": round(overall_mean, 4),
+        "overall_median_payoff_atr": round(overall_med, 4),
+        "folds": rows,
+        "computed_at": utc_now().isoformat(),
+    }
 
 
 def main():
@@ -130,6 +154,9 @@ def main():
         args.research, args.label_mode)
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
                                  research=args.research)
+    readiness_version = load_run_readiness_version(
+        args.phase, args.ticker, args.tf, args.bucket, args.run_id,
+        research=args.research)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     expl = LABEL_TO_IDX["EXPLOSIVE"]
     pe = preds[preds["pred_bucket_idx"] == expl].copy()
@@ -227,17 +254,8 @@ def main():
     print("\n⚠️  COSTS DEFERRED — gross movement only; not net/tradeable P&L.")
 
     # 6. GCS json (mirrors the gate-7 / walk-forward report convention).
-    summary = {
-        "ticker": args.ticker, "tf": args.tf, "phase": args.phase,
-        "run_id": args.run_id, "position": args.position,
-        "direction": args.direction, "label_mode": args.label_mode,
-        "costs": "DEFERRED — gross movement only",
-        "n_bars": int(len(j)),
-        "overall_mean_payoff_atr": round(overall_mean, 4),
-        "overall_median_payoff_atr": round(overall_med, 4),
-        "folds": rows,
-        "computed_at": pd.Timestamp.utcnow().isoformat(),
-    }
+    summary = _build_summary(args, len(j), overall_mean, overall_med, rows,
+                             readiness_version=readiness_version)
     try:
         from google.cloud import storage as gcs
         # The summary belongs beside the run it describes: reading from the

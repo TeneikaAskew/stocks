@@ -1,5 +1,7 @@
 # Unified Trading Education Platform
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 ## Context
 
 We have **4 separate vanilla JS web apps** that each solve a piece of the trading workflow but share no code, use different chart libraries (TradingView, D3.js, Chart.js), and have no unified navigation. Meanwhile, a powerful Python analysis engine (`lib/`, `scripts/analysis/`, `trade_analysis_pipeline.py`) produces reports, backtests, signals, and playbook cards that are only accessible via CLI. The goal is to merge everything into a single **production-grade React/TypeScript platform** where users can learn trading setups, run backtests, view live market data, analyze options flow (heatseeker), and journal trades — all powered by the existing Python backend.

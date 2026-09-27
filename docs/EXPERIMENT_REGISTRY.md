@@ -1,5 +1,7 @@
 # Experiment Registry — Unified Complete Record
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 **This registry is the UNION of the two organizational schemes the research
 program produced. Nothing is dropped: every section from both editions is
 preserved below in full. Where the two describe the same experiment with

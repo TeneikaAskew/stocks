@@ -631,3 +631,52 @@ class TestIntradayThetaDecay:
         assert minutes_from_rth_open(None) is None
         assert minutes_from_rth_open(pd.NaT) is None
         assert minutes_from_rth_open("not-a-time") is None
+
+
+
+# ── the stored convention and the module's naive-Eastern clock (#1185) ───────
+
+
+def _stored_rows(day: str, stored: str) -> pd.DataFrame:
+    wall = pd.date_range(f"{day} 04:00", f"{day} 20:00", freq="1min")
+    minute = wall.hour * 60 + wall.minute
+    ts = (wall.tz_localize("UTC") if stored == "et_label"
+          else wall.tz_localize("America/New_York").tz_convert("UTC"))
+    return pd.DataFrame({"ts": ts, "Spot": np.arange(len(wall), dtype=float),
+                         "volume": [5000 if 570 <= m < 600 else 100 for m in minute]})
+
+
+@pytest.mark.parametrize("stored", ["et_label", "utc"])
+def test_db_bars_come_back_on_the_eastern_clock_in_both_conventions(monkeypatch, stored):
+    """Codex P1 on #1185: a true-UTC row came back as naive UTC, so a 09:30 ET
+    bar read as 13:30 and the 0DTE model left 2.5 h to expiry, not 6.5."""
+    import gcp.database as db
+    import lib.options_intraday as oi
+    rows = _stored_rows("2026-09-24", stored)
+    seen = {}
+
+    def fake(sql, params=None):
+        seen.update(params)
+        return rows[(rows["ts"] >= params["start"]) & (rows["ts"] < params["end"])].reset_index(drop=True)
+    monkeypatch.setattr(db, "query_to_dataframe", fake)
+    bars = oi._load_intraday_bars("SPY", date(2026, 9, 24))
+    assert bars["Time"].dt.tz is None
+    assert bars["Time"].iloc[0] == pd.Timestamp("2026-09-24 04:00")
+    assert pd.Timestamp("2026-09-24 09:30") in set(bars["Time"])
+    assert (bars["Time"].dt.date == date(2026, 9, 24)).all()
+    assert seen["end"] - seen["start"] == pd.Timedelta(days=1, hours=2)
+
+
+def test_utc_snapshots_align_with_eastern_bars():
+    """A Cloud SQL snapshot at 13:30Z is the 09:30 ET observation. Stripping
+    its zone paired it with the 13:30 bar."""
+    d = date(2026, 9, 24)
+    rt = pd.DataFrame({
+        "snapshot_ts": pd.to_datetime(["2026-09-24 13:30", "2026-09-24 13:40"]).tz_localize("UTC"),
+        "implied_volatility": [0.50, 0.40],
+    })
+    bars = _synthetic_bars(d, [100.0] * 11)   # naive ET 09:30..09:40
+    iv = _interpolate_observed_iv(rt, bars["Time"])
+    assert iv[0] == pytest.approx(0.50, abs=1e-9)
+    assert iv[-1] == pytest.approx(0.40, abs=1e-9)
+    assert iv[5] == pytest.approx(0.45, abs=0.01)

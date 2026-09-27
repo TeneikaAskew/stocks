@@ -1,5 +1,7 @@
 # Claude Code Auth in Codespaces
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+
 Quick guide for installing and authenticating Claude Code in a GitHub Codespaces browser terminal.
 
 ## Install
