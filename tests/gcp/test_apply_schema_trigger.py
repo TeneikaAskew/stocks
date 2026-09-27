@@ -295,6 +295,9 @@ def _run_fn(tmp_path, env, call: str) -> subprocess.CompletedProcess:
     script = f"""set -uo pipefail
 PROJECT_ID=proj; REGION=us-east1; SA_EMAIL=sa@proj.iam.gserviceaccount.com
 IMAGE=us-east1-docker.pkg.dev/proj/trading/trading-system; DB_SECRET_FLAG='--set-secrets DB_PASSWORD=db-pw:latest'
+# What build_image sets before any deploy in the same run (#1171): the digest
+# its own build pushed. Every job deploy names it.
+IMAGE_REF=us-east1-docker.pkg.dev/proj/trading/trading-system@sha256:abc123
 # Resolved once at startup in deploy.sh (#1022), so the harness supplies the
 # VALUE rather than the function it used to call at each site.
 ENV_STRING='CLOUD_SQL_CONNECTION_NAME=proj:us-east1:db,DB_USER=trading,DB_NAME=trading'

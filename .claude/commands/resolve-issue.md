@@ -4213,9 +4213,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
      ```bash
      # THE CONCURRENCY CHECK RUNS BEFORE THE DEPLOY, NOT IN THE PROSE AFTER IT.
-     # `:latest` floats and any other build re-points it, so a build already in
-     # flight is the one condition under which this whole function's checks all
-     # pass and the wrong image ships. That was written as advice to the reader
+     # Before #1171 `:latest` floated and any other build re-pointed it, so a
+     # build in flight was the one condition under which every check here passed
+     # and the wrong image shipped. deploy.sh now deploys the digest its own
+     # build recorded, but two deploys still race each other's job updates and
+     # pins, so the gate stays. It was first written as advice to the reader
      # BELOW the bare `deploy_candidate` invocation, which is the wrong side of
      # the thing it guards: an operator working the file in order deployed
      # first and read the warning afterwards. It is a gate now.
@@ -4494,25 +4496,42 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      deploy_candidate      # BARE. `|| echo` here exits 0 — see below
      ```
 
-     **`$SRC` fixes the SOURCE. It does not fix the IMAGE, and nothing above
-     binds the two.** `IMAGE` is declared without a tag
-     (`gcp/deploy.sh:27`), so it resolves `:latest`, and every
-     `gcloud run jobs create|update` passes `--image "${IMAGE}"` — the
-     floating tag, at **122 sites** — 96 `--image "${IMAGE}"` and 26
-     `--image "${research_image}"`. The script's own comments say what
-     that means: *"every build re-points `:latest`"* (`:67`) and *"every
-     `gcloud builds submit --tag IMAGE` moves `:latest`"* (`:77`).
+     **`$SRC` fixes the SOURCE, and since #1171 the deploy binds the IMAGE to
+     it.**
+     - **The digest comes from the build record.** `build_image` submits
+       `--async`, follows its own build id to the end, and reads the digest
+       from `results.images[].digest` (`_submit_build`), never from the tag
+       afterwards.
+     - **Every deploy names that digest.** Each `gcloud run jobs
+       create|update` and `gcloud run deploy` passes it as
+       `${IMAGE_REF:?…}`, which aborts before any mutation if nothing was
+       built.
+     - **Research jobs too.** They resolve `:research` to a digest once
+       (`_research_image_ref`), or take the digest `build_research_image`
+       just produced.
 
-     So between `build-research`/the build and the job update, any other build
-     — another resolver, a workflow, a person at a terminal — moves the tag,
-     and your `deploy.sh <target>` then ships **whatever `:latest` points at
-     when it runs**, not what you just built from the tree you validated.
-     Every check in this function still passes: `$SRC` is a real ancestor, the
-     worktree HEAD matches, the build succeeded, the deploy succeeded. The
-     unique worktree path makes concurrent runs *possible*; it does nothing to
-     make them *safe*.
+     So a concurrent build moving `:latest` no longer changes what your
+     `deploy.sh <target>` ships, and a narrow target updates only its own
+     jobs' images.
 
-     Two things to do about it, neither of which is a fix:
+     **Why it mattered (measured 2026-09-25).** Cloud Run re-resolves a job's
+     image TAG at each execution:
+     - `fetch-av-options-realtime` (generation 2) and `premarket-brief`
+       (generation 83), neither touched, ran a new digest the morning after
+       an unrelated target's build.
+     - 50 of 76 job specs named the tag-less image, so every build rolled
+       out to all 50 at their next run, whatever target was deployed.
+
+     **A job whose spec still names a tag floats** until it is converted:
+     it runs whatever the tag holds at its next execution. So a build
+     refuses to move a tag while any job's spec names it, and names those
+     jobs. `gcloud run jobs list --format=json` shows them too: a spec image
+     without `@sha256:`. `./gcp/deploy.sh pin-floating` converts every such
+     job to the digest its own tag holds, which is the image it would run
+     next anyway, so no job's code changes. It was run once after #1171
+     merged.
+
+     Two checks still apply:
 
      1. **Do not run this concurrently with another deploy.** `deploy_candidate`
         now checks this itself, as its first step, and refuses. It used to be
@@ -4523,10 +4542,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
             export PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
             gcloud builds list --ongoing --project="$PROJECT_ID" --format='value(id)'
 
-        A snapshot is not a lock — it narrows the window between your build and
-        the job update without closing it, and §2 below says why nothing here
-        can close it today. What a gate adds over a paragraph is the one case
-        it CAN refuse: the window already open when you start.
+        A concurrent build no longer changes the digest your deploy names
+        (#1171), but two deploys still race each other's job updates and
+        `inuse-*` pins, and a snapshot is not a lock. What a gate adds over a
+        paragraph is the one case it CAN refuse: the window already open when
+        you start.
 
         # EXPORT IT, or the probe and the deploy watch DIFFERENT PROJECTS.
         # `./gcp/deploy.sh <target>` below is a CHILD PROCESS and cannot see an
@@ -4560,46 +4580,17 @@ inside that window.** An empty review list at 60 seconds means "wait", not
         the tag you are about to ship is being moved. The retirement checks in
         Phase 4 were pinned for the same reason; this one was written after
         them and inherited the defect anyway.
-     2. **Compare the job's digest against the tag — and know what that does
-        NOT prove.** `deploy.sh` records a job's deployed digest from its
-        latest execution (`gcp/deploy.sh:112-119`), and `_resolve_image_ref`
-        (`:235`) turns a reference into `image@sha256:…`. Comparing them
-        catches a job left on an older digest.
+     2. **Confirm the job runs the digest your build printed.** `build_image`
+        prints `Built <image>@sha256:…`. After the deploy, each updated job's
+        spec must end in that digest:
 
-        It does **not** bind the deployment to YOUR build, and this is the
-        trap: `_resolve_image_ref` resolves `${base}:${tag}` at the moment it
-        is called (`:238`), so if another build moved the tag between your
-        build finishing and your capture, you capture *their* digest, the job
-        update resolves the same tag to the same wrong digest, and the equality
-        check passes. It is a self-consistency check wearing the clothes of a
-        provenance check. `gcloud builds list --ongoing --project="$PROJECT_ID"`
-        beforehand is a snapshot, not a lock, and narrows the window without
-        closing it.
+            gcloud run jobs describe <job> --region=us-east1 \
+              --format='value(spec.template.spec.template.spec.containers[0].image)'
 
-        Binding it properly means taking the digest from the build invocation
-        itself rather than from the tag afterwards. **This repo cannot do that
-        today**: `gcloud builds submit` is called bare at `gcp/deploy.sh:72`
-        and `:1418`, capturing no build id, and nothing anywhere reads a
-        build's `results.images[].digest`. So it belongs to the same follow-up
-        PR as the digest-pinning below, not to a resolution that happens to
-        deploy. Until then, treat a matching digest as "nothing obviously
-        drifted", not as "production runs my code".
-
-     The actual fix is to pin `--image` to a digest resolved from the
-     validated source instead of a moving tag. That is a change to
-     `gcp/deploy.sh` at all 122 of those sites — best done once, through a shared
-     helper, rather than edited in place. (An earlier draft of this section said
-     "fourteen": that is the number of functions assigning
-     `research_image="${IMAGE}:research"`, not the number of deployment sites.
-     Counted, not recalled.) So per Rule 3.6's coverage-gap clause
-     it lands in its own PR **before** a resolution leans on it — not bolted
-     onto whichever issue happens to notice.
-
-     **Read from the source, not measured.** The session that wrote this had
-     an unauthenticated `gcloud` (CLAUDE.md "GitHub API access from the
-     sandbox"), so the tag behaviour above is read out of `gcp/deploy.sh` and
-     its comments, and the race is inferred from them rather than reproduced
-     against Artifact Registry.
+        This is now a provenance check, not only a self-consistency one. The
+        digest was read from the build record rather than resolved from the
+        tag afterwards (`_submit_build`, #1171), so another build moving
+        `:latest` in between cannot make the two agree by accident.
 
      **The call is bare on purpose.** `deploy_candidate || echo "STOPPED"`
      turns every guard inside the function into a status nothing reads: the

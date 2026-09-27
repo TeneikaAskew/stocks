@@ -5,12 +5,14 @@ Daily scheduled check that compares deployed GCP state against the
 repo's expected state for the failure modes that have caused the most
 recent production incidents:
 
-* **Image-pinning drift** — every Cloud Run Job has an image field. The
-  `:latest` tag gets resolved to a specific digest at `gcloud run jobs
-  update` time, NOT at execute time. So a job can keep running an
-  outdated digest indefinitely while `:latest` advances. This was the
-  root cause of `fetch-earnings-history` running pre-PR-#580 code for
-  ~12 hours after the fix merged (incident 2026-06-01 F1).
+* **Floating images** — a job whose spec names an image TAG runs
+  whatever that tag holds at its next execution: Cloud Run resolves the
+  tag at each execution, not at `gcloud run jobs update` time (measured
+  2026-09-25, #1171). So every build of the tag reaches the job, whatever
+  target was deployed. `gcp/deploy.sh` deploys every job by digest and
+  refuses to build while a job names the tag the build moves;
+  `./gcp/deploy.sh pin-floating` converts one. A job pinned by digest runs
+  exactly that digest, and moves when its own target is deployed.
 
 * **Scheduler orphans** — Cloud Scheduler entries can point at Cloud Run
   Jobs that have been renamed or deprecated. A scheduler firing a
@@ -34,7 +36,6 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Iterable
 
 import requests
 
@@ -43,13 +44,12 @@ log = logging.getLogger(__name__)
 
 PROJECT = os.environ.get("GCP_PROJECT", "adept-mountain-474619-d4")
 REGION = os.environ.get("GCP_REGION", "us-east1")
-IMAGE_TAG = "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest"
 
 
 @dataclass
 class Finding:
     severity: str       # 'HIGH' | 'MEDIUM' | 'LOW'
-    check: str          # 'image-drift' | 'scheduler-orphan' | ...
+    check: str          # 'image-floating' | 'scheduler-orphan' | ...
     target: str         # the job/scheduler/resource name
     detail: str         # human-readable diagnosis
 
@@ -77,56 +77,6 @@ class Report:
             for e in self.errors[:5]:
                 lines.append(f"  · {e}")
         return "\n".join(lines)
-
-
-def latest_image_digest() -> str:
-    """Resolve the `trading-system:latest` tag to its current digest.
-
-    Hits the Artifact Registry control-plane API via the Python SDK
-    (gcloud CLI is not in the trading-system Docker image).
-
-    Returns the bare sha256:... portion (no registry prefix)."""
-    from google.cloud import artifactregistry_v1
-    client = artifactregistry_v1.ArtifactRegistryClient()
-    # parent: projects/<project>/locations/<region>/repositories/<repo>/packages/<package>
-    parent = (f"projects/{PROJECT}/locations/{REGION}/"
-              f"repositories/trading/packages/trading-system")
-    # List tags; find the one named 'latest' and follow its .version.
-    for tag in client.list_tags(parent=parent):
-        if tag.name.rsplit("/", 1)[-1] == "latest":
-            # tag.version is the FULL resource path; the last segment is the digest.
-            digest = tag.version.rsplit("/", 1)[-1]
-            if not digest.startswith("sha256:"):
-                raise RuntimeError(f"unexpected digest format: {digest!r}")
-            return digest
-    raise RuntimeError(f"no 'latest' tag found at {parent}")
-
-
-def resolve_tag_digest(tag: str) -> str:
-    """Resolve any `trading-system:<tag>` to its current digest via
-    Artifact Registry. Raises when the tag does not exist — the caller
-    records that as an error rather than skipping the job (#835)."""
-    from google.cloud import artifactregistry_v1
-    client = artifactregistry_v1.ArtifactRegistryClient()
-    parent = (f"projects/{PROJECT}/locations/{REGION}/"
-              f"repositories/trading/packages/trading-system")
-    for t in client.list_tags(parent=parent):
-        if t.name.rsplit("/", 1)[-1] == tag:
-            digest = t.version.rsplit("/", 1)[-1]
-            if not digest.startswith("sha256:"):
-                raise RuntimeError(f"unexpected digest format: {digest!r}")
-            return digest
-    raise RuntimeError(f"no tag {tag!r} at {parent}")
-
-
-# Image families gcp/deploy.sh deploys on purpose. `latest` is the main
-# trading-system build; `research` is the heavier research build (scikit-learn,
-# LightGBM, …) that every research job is deployed from as `${IMAGE}:research`.
-# A configured tag outside this set is a hand `jobs update --image` that
-# deploy.sh will never converge (#835); a job's executions are compared
-# against ITS OWN family's current digest, never blindly against :latest
-# (Codex P2, #1005 — research jobs are not drift).
-MANAGED_IMAGE_TAGS = frozenset({"latest", "research"})
 
 
 def _image_tag(image: str) -> str | None:
@@ -182,129 +132,41 @@ def list_schedulers() -> list[dict]:
     return rows
 
 
-def latest_execution_image(job_name: str) -> str:
-    """Return the resolved image (typically a digest reference) for the
-    most-recent execution of `job_name`. Empty string if the job has
-    never executed."""
-    from google.cloud import run_v2
-    client = run_v2.ExecutionsClient()
-    parent = f"projects/{PROJECT}/locations/{REGION}/jobs/{job_name}"
-    # Pull just the first page; we only need the most-recent execution.
-    # page_size=1 makes the iterator stop after one element naturally.
-    # NOTE: do NOT add a `finally: return ""` to "stop early" — `return`
-    # in a `finally` block in Python silently overrides the surrounding
-    # try-block's return value, which would make this function always
-    # blank. Codex caught exactly that bug on PR #601.
-    request = run_v2.ListExecutionsRequest(parent=parent, page_size=1)
-    for exe in client.list_executions(request=request):
-        try:
-            return exe.template.containers[0].image
-        except (AttributeError, IndexError):
-            return ""
-    return ""
+def check_floating_images(report: Report) -> None:
+    """Flag every trading-system job whose SPEC names an image tag.
 
+    Such a job runs whatever the tag holds at its next execution, so every
+    build of the tag reaches it (#1171). A job pinned by digest runs exactly
+    that digest and is not drift, even when a newer build exists: it moves
+    when its own target is deployed.
 
-def check_image_drift(report: Report) -> None:
-    """For each CR Job, compare its pinned digest to current :latest.
-
-    A job that holds the `:latest` TAG (not a digest) is itself fine —
-    the displayed image string is just the tag. What we need is the
-    DIGEST Cloud Run resolved at update time. The Cloud Run REST API
-    exposes that via the metadata.annotations on the executed revision,
-    but the `gcloud run jobs describe` shape varies. As a stable
-    proxy: check the latest EXECUTION's resolved image digest.
+    This replaces the comparison of each job's last execution with its tag's
+    current digest. That assumed a tag resolves once, at update time, so it
+    stayed silent on a floating job whose last run matched the tag, and it
+    told the operator to re-pin a pinned job to a tag, which floats it
+    again; a research job pinned by digest was compared with `:latest` and
+    sent to the main image, which lacks the research stack.
     """
     try:
-        latest = latest_image_digest()
-    except Exception as e:
-        report.errors.append(f"latest_image_digest: {e}")
-        return
-
-    try:
-        jobs = list_run_jobs()
-    except Exception as e:
-        report.errors.append(f"list_run_jobs: {e}")
-        return
-
-    family_digest: dict[str, str] = {"latest": latest}
-    for j in jobs:
-        if "trading-system" not in j["image"]:
-            # Image doesn't share the trading-system base — skip.
-            continue
-        # The family this job declares (its configured tag; untagged = latest).
-        # Its executions are compared with THAT tag's current digest.
-        family = _image_tag(j["image"]) or "latest"
-        if family not in family_digest:
-            try:
-                family_digest[family] = resolve_tag_digest(family)
-            except Exception as e:
-                report.errors.append(
-                    f"{j['name']}: cannot resolve configured image tag "
-                    f"{family!r}: {e!s}"[:200])
-                continue
-        expected = family_digest[family]
-        try:
-            exec_image = latest_execution_image(j["name"])
-        except Exception as e:
-            report.errors.append(f"executions list {j['name']}: {e!s}"[:160])
-            continue
-        if not exec_image:
-            continue  # job has never executed
-        # exec_image is either `...@sha256:...` or a tag. A tag used to be
-        # skipped ("can't compare directly"), which is exactly how
-        # fetch-fred-rates ran on `:spx-removal-fred-20260516` for 3.5
-        # months unnoticed (#835). Resolve it through Artifact Registry;
-        # an unresolvable tag is an error, not a skip.
-        m = re.search(r"@(sha256:[0-9a-f]+)", exec_image)
-        via = ""
-        if m:
-            pinned = m.group(1)
-        else:
-            tag = _image_tag(exec_image) or "latest"
-            try:
-                pinned = resolve_tag_digest(tag)
-            except Exception as e:
-                report.errors.append(
-                    f"{j['name']}: cannot resolve execution image tag "
-                    f"{tag!r}: {e!s}"[:200])
-                continue
-            via = f" (tag `{tag}`)"
-        if pinned != expected:
-            report.add(
-                severity="MEDIUM",
-                check="image-drift",
-                target=j["name"],
-                detail=(f"pinned `{pinned[:19]}…`{via} ≠ current `:{family}` "
-                        f"`{expected[:19]}…` — run `gcloud run jobs update "
-                        f"--image=...:{family}` to re-pin"),
-            )
-
-
-def check_configured_image_tags(report: Report) -> None:
-    """Flag any trading-system job whose SPEC pins a tag outside
-    MANAGED_IMAGE_TAGS. deploy.sh deploys `${IMAGE}` (implicit :latest) or
-    `${IMAGE}:research`; a hand `gcloud run jobs update --image=...:sometag`
-    leaves the spec on that tag until someone notices (#835:
-    fetch-fred-rates on a May tag). This catches it from the spec alone,
-    before or regardless of execution."""
-    try:
         jobs = list_run_jobs()
     except Exception as e:
         report.errors.append(f"list_run_jobs: {e}")
         return
     for j in jobs:
-        if "trading-system" not in j["image"]:
+        if not j["image"]:
+            report.errors.append(f"{j['name']}: no image in the job spec, so it "
+                                 "cannot be ruled out as floating")
             continue
-        tag = _image_tag(j["image"])
-        if tag is None or tag in MANAGED_IMAGE_TAGS:
+        if "trading-system" not in j["image"] or "@sha256:" in j["image"]:
             continue
+        tag = _image_tag(j["image"]) or "latest"
         report.add(
             severity="MEDIUM",
-            check="image-tag-pinned",
+            check="image-floating",
             target=j["name"],
-            detail=(f"job spec pins `trading-system:{tag}`; deploy.sh only deploys "
-                    f"{sorted(MANAGED_IMAGE_TAGS)} — run `./gcp/deploy.sh <target>` "
-                    "to converge"),
+            detail=(f"job spec names `trading-system:{tag}`, which Cloud Run resolves "
+                    "at each execution, so every build of that tag reaches this job; "
+                    "run `./gcp/deploy.sh pin-floating` (#1171)"),
         )
 
 
@@ -383,8 +245,7 @@ def main() -> int:
     report = Report()
     log.info("infra-drift-detector starting (project=%s region=%s)", PROJECT, REGION)
 
-    check_image_drift(report)
-    check_configured_image_tags(report)
+    check_floating_images(report)
     check_scheduler_orphans(report)
     check_scheduler_state(report)
 

@@ -274,11 +274,12 @@ def test_the_research_build_stamps_the_commit_into_the_image():
 
 def test_the_magnitude_job_is_deployed_with_the_digest_it_records():
     body = _deploy_fn("deploy_magnitude_engine")
-    assert "_resolve_image_ref" in body
-    assert "CONTAINER_IMAGE_DIGEST=${image_digest}" in body
-    # the env names the image the job runs, not the tag it was resolved from
-    assert '--image "${image_digest}"' in body
-    assert '--image "${research_image}"' not in body
+    # ${research_image} comes from _research_image_ref, a digest (#1189); the
+    # env names exactly the image the job runs
+    assert "research_image=$(_research_image_ref)" in body
+    assert "CONTAINER_IMAGE_DIGEST=${research_image}" in body
+    assert '--image "${research_image}"' in body
+    assert "K_REVISION" not in body
 
 
 # ── P2: provenance timestamps bind as TIMESTAMPTZ ─────────────────────────
