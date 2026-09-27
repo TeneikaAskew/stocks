@@ -3077,6 +3077,18 @@ def test_the_recap_survives_a_busy_days_description_cut():
     assert desc.index('_... truncated_') < desc.index('EW picks, Fri 09/25 session')
 
 
+def test_the_cut_keeps_whole_lines():
+    """A line cut short left `**W` open, and Discord pairs an open bold
+    marker with the next one, the recap's own header."""
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _busy_day()
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 1}
+    desc = _build_earnings_embed(data)['description']
+    head = desc[:desc.index('_... truncated_')]
+    assert all(line.count('**') % 2 == 0 for line in head.splitlines())
+    assert head.rstrip().endswith('Long Calls | Strike $113')
+
+
 def test_an_unavailable_recap_survives_the_cut_too():
     from gcp.premarket_brief import _build_earnings_embed
     data = _busy_day()

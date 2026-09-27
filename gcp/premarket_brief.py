@@ -2922,8 +2922,12 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             # the sections above give way instead, and say so (Codex on #1203).
             room = 4090 - len(recap) - 1
             if len(description) > room:
+                # Whole lines only: a line cut short can leave a bold marker
+                # open, and Discord pairs it with the recap header's.
                 cut = '\n_... truncated_'
-                description = description[:max(room - len(cut), 0)].rstrip() + cut
+                head = description[:max(room - len(cut), 0) + 1]
+                kept = head.rsplit('\n', 1)[0] if '\n' in head else ''
+                description = kept.rstrip() + cut
             description = f'{description}\n{recap}'.strip()
 
     return {
