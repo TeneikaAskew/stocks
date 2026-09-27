@@ -1049,6 +1049,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`lib/insights.py`](../../../lib/insights.py) | Template-driven insight generator for backtest results. | — |
 | [`lib/logging_config.py`](../../../lib/logging_config.py) | Centralized logging configuration for the trading system. | — |
 | [`lib/movement_statement.py`](../../../lib/movement_statement.py) | Movement-statement assembler — PHASE 2 (feature-flagged, NOT user-facing). | — |
+| [`lib/oof_event_evaluation.py`](../../../lib/oof_event_evaluation.py) | Leak-safe, event-driven evaluation of out-of-fold trading decisions. | — |
 | [`lib/options_exec_backtest/cli.py`](../../../lib/options_exec_backtest/cli.py) | Options exec backtest — Cloud Run Job entry point. | `options-exec-backtest` |
 | [`lib/options_exec_backtest/engine.py`](../../../lib/options_exec_backtest/engine.py) | Trade-lifecycle simulator — options edition. | — |
 | [`lib/options_exec_backtest/iv_lookup.py`](../../../lib/options_exec_backtest/iv_lookup.py) | IV-lookup layer for the options exec backtest. | — |
