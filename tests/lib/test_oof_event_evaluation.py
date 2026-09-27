@@ -74,6 +74,15 @@ def test_rejects_negative_latency():
         EvaluationConfig(latency_ms=-1)
 
 
+def test_rejects_invalid_multiplier_and_null_alert_id():
+    with pytest.raises(ValueError, match="multiplier"):
+        EvaluationConfig(multiplier=0)
+    candidates = _candidates()
+    candidates.loc[0, "alert_id"] = None
+    with pytest.raises(ValueError, match="alert_id"):
+        evaluate_oof_events(candidates, _quotes())
+
+
 def test_overlapping_alerts_share_position_capacity():
     candidates = _candidates(
         ("2025-01-02 14:30Z", "2025-01-02 14:35Z"), ("long", "long")
@@ -148,6 +157,8 @@ def test_entry_without_exit_is_not_censored_and_blocks_eligibility():
     report = evaluate_oof_events(_candidates(), quotes, EvaluationConfig(bootstrap_samples=20))
     assert report.events.iloc[0].status == "open_no_exit_quote"
     assert report.events.iloc[0].notional_in > 0
+    assert report.metrics["net"]["fills"] == 1
+    assert report.metrics["net"]["turnover"] > 0
     assert not report.production_eligible
     assert "lack an executable exit quote" in report.eligibility_reasons[-1]
 
@@ -158,6 +169,28 @@ def test_invalid_quotes_are_not_trading_performance_evidence():
     report = evaluate_oof_events(_candidates(), quotes, EvaluationConfig(bootstrap_samples=20))
     assert report.evidence_classification == "model-quality evidence only"
     assert not report.production_eligible
+
+
+def test_missing_strike_is_not_an_executable_contract():
+    quotes = _quotes()
+    quotes["strike"] = None
+    report = evaluate_oof_events(_candidates(), quotes, EvaluationConfig(bootstrap_samples=20))
+    assert report.evidence_classification == "model-quality evidence only"
+
+
+def test_bid_only_exit_is_executable_and_scoped_to_instrument():
+    quotes = _quotes()
+    quotes.loc[1, "ask"] = None
+    collision = quotes.iloc[[1]].copy()
+    collision["instrument"] = "QQQ"
+    collision["bid"] = 99.0
+    collision["timestamp"] = pd.Timestamp("2025-01-02 15:00Z")
+    report = evaluate_oof_events(
+        _candidates(), pd.concat([quotes, collision], ignore_index=True),
+        EvaluationConfig(bootstrap_samples=20),
+    )
+    assert report.events.iloc[0].status == "filled"
+    assert report.events.iloc[0].gross_pnl == pytest.approx(30.0)
 
 
 @pytest.mark.parametrize("prediction, expected", [(1.0, 1), (-1.0, -1)])
@@ -195,3 +228,24 @@ def test_drawdown_preserves_intraday_loss_before_recovery():
     )
     assert report.metrics["net"]["total_pnl"] > 0
     assert report.metrics["net"]["max_drawdown"] > 100
+
+
+def test_capacity_is_processed_in_actual_entry_order():
+    candidates = _candidates(
+        ("2025-01-02 14:30Z", "2025-01-02 15:00Z"), ("long", "long")
+    )
+    early = _quotes()
+    early["timestamp"] = [pd.Timestamp("2025-01-02 15:01Z"),
+                          pd.Timestamp("2025-01-02 15:31Z")]
+    # The earlier alert sees no quote until 15:01 too in a shared chain, so use
+    # a different instrument to give it a genuinely delayed 16:00 entry.
+    candidates.loc[0, "instrument"] = "QQQ"
+    late = _quotes()
+    late["instrument"] = "QQQ"
+    late["timestamp"] = [pd.Timestamp("2025-01-02 16:00Z"),
+                         pd.Timestamp("2025-01-02 16:30Z")]
+    report = evaluate_oof_events(
+        candidates, pd.concat([early, late], ignore_index=True),
+        EvaluationConfig(bootstrap_samples=20, max_open_positions=1),
+    )
+    assert report.events.status.tolist() == ["filled", "filled"]

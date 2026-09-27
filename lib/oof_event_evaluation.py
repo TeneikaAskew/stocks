@@ -45,6 +45,8 @@ class EvaluationConfig:
             raise ValueError("fill_probability must be in [0, 1]")
         if self.contracts_per_trade < 1 or self.max_contracts < 1:
             raise ValueError("contract limits must be positive")
+        if self.multiplier <= 0:
+            raise ValueError("multiplier must be positive")
         if self.max_open_positions < 1 or self.holding_minutes <= 0:
             raise ValueError("position/time limits must be positive")
         if self.latency_ms < 0:
@@ -87,7 +89,7 @@ def _normalise(candidates: pd.DataFrame, quotes: Optional[pd.DataFrame]) -> tupl
     c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True)  # tz-ok: evaluator input timestamps are UTC by contract
     c["session"] = pd.to_datetime(c["session"]).dt.date
     c["trained_through"] = pd.to_datetime(c["trained_through"], utc=True)  # tz-ok: model training boundaries are UTC by contract
-    if c["alert_id"].duplicated().any():
+    if c["alert_id"].isna().any() or c["alert_id"].duplicated().any():
         raise ValueError("alert_id must be unique")
     # A prediction is OOF only when its training information set ends before
     # the event.  A non-empty fold id is also required for auditability.
@@ -110,8 +112,16 @@ def _normalise(candidates: pd.DataFrame, quotes: Optional[pd.DataFrame]) -> tupl
     numeric = ["strike", "bid", "ask"]
     q[numeric] = q[numeric].apply(pd.to_numeric, errors="coerce")
     q = q[q["timestamp"].notna() & q["expiration"].notna() &
-          (q["bid"] >= 0) & (q["ask"] >= q["bid"])].sort_values("timestamp")
-    return c, q if not q.empty else None
+          np.isfinite(q["strike"])].sort_values("timestamp")
+    valid_bid = np.isfinite(q["bid"]) & (q["bid"] >= 0)
+    valid_ask = (np.isfinite(q["ask"]) & (q["ask"] >= 0) &
+                 (~valid_bid | (q["ask"] >= q["bid"])))
+    # Retain bid-only rows because they can liquidate an existing position,
+    # but a dataset with no executable entry side is not execution evidence.
+    q = q[valid_bid | valid_ask].copy()
+    q["_valid_bid"] = valid_bid[valid_bid | valid_ask]
+    q["_valid_ask"] = valid_ask[valid_bid | valid_ask]
+    return c, q if not q.empty and q["_valid_ask"].any() else None
 
 
 def _direction(value: object) -> int:
@@ -140,7 +150,7 @@ def _select_contract(row: pd.Series, q: pd.DataFrame,
     desired_exp = earliest.normalize() + pd.Timedelta(days=desired_dte)
     eligible = q[(q["instrument"] == row["instrument"]) &
                  (q["option_type"].astype(str).str.lower().str.rstrip("s") == option_type) &
-                 (q["timestamp"] >= earliest)]
+                 q["_valid_ask"] & (q["timestamp"] >= earliest)]
     if eligible.empty:
         return None
     # Freeze the chain at the first executable snapshot. Looking across later
@@ -156,7 +166,9 @@ def _select_contract(row: pd.Series, q: pd.DataFrame,
     contract = universe.sort_values(["distance", "strike", "contract"], kind="stable").iloc[0]["contract"]
     entry = universe[universe["contract"] == contract].sort_values("timestamp").iloc[0]
     exit_after = entry["timestamp"] + pd.Timedelta(minutes=config.holding_minutes)
-    exits = q[(q["contract"] == contract) & (q["timestamp"] >= exit_after)].sort_values("timestamp")
+    exits = q[(q["instrument"] == row["instrument"]) &
+              (q["contract"] == contract) & q["_valid_bid"] &
+              (q["timestamp"] >= exit_after)].sort_values("timestamp")
     if exits.empty:
         return entry, None
     return entry, exits.iloc[0]
@@ -164,6 +176,7 @@ def _select_contract(row: pd.Series, q: pd.DataFrame,
 
 def _metrics(events: pd.DataFrame, config: EvaluationConfig) -> Dict[str, Dict[str, float]]:
     alerts = len(events)
+    entered = events[events["status"].isin(("filled", "open_no_exit_quote"))].copy()
     filled = events[events["status"] == "filled"].copy()
     sessions = max(events["session"].nunique(), 1)
     result: Dict[str, Dict[str, float]] = {}
@@ -175,22 +188,22 @@ def _metrics(events: pd.DataFrame, config: EvaluationConfig) -> Dict[str, Dict[s
         realized = filled.sort_values(["exit_timestamp", "alert_id"], kind="stable")[col]
         equity = realized.cumsum()
         drawdown = equity - equity.cummax().clip(lower=0)
-        downside = by_session[by_session < 0].std(ddof=1)
+        downside = float(np.sqrt(np.mean(np.minimum(by_session.to_numpy(), 0.0) ** 2)))
         std = by_session.std(ddof=1)
         wins, losses = pnl[pnl > 0].sum(), -pnl[pnl < 0].sum()
         result[label] = {
             "total_pnl": float(pnl.sum()),
             "expected_value_per_alert": float(pnl.sum() / alerts) if alerts else 0.0,
             "max_drawdown": float(-drawdown.min()) if not drawdown.empty else 0.0,
-            "turnover": float(filled["notional_in"].sum() + filled["notional_out"].sum()),
+            "turnover": float(entered["notional_in"].sum() + filled["notional_out"].sum()),
             "exposure": float(filled["duration_seconds"].sum() / (sessions * 6.5 * 3600)),
             "sharpe": float(by_session.mean() / std * np.sqrt(config.annual_sessions)) if pd.notna(std) and std > 0 else 0.0,
-            "sortino": float(by_session.mean() / downside * np.sqrt(config.annual_sessions)) if pd.notna(downside) and downside > 0 else 0.0,
+            "sortino": float(by_session.mean() / downside * np.sqrt(config.annual_sessions)) if downside > 0 else 0.0,
             "profit_factor": float(wins / losses) if losses > 0 else (float("inf") if wins > 0 else 0.0),
             "hit_rate": float((pnl > 0).mean()) if len(pnl) else 0.0,
             "alerts": float(alerts),
-            "fills": float(len(filled)),
-            "fill_rate": float(len(filled) / alerts) if alerts else 0.0,
+            "fills": float(len(entered)),
+            "fill_rate": float(len(entered) / alerts) if alerts else 0.0,
         }
     return result
 
@@ -238,17 +251,27 @@ def _simulate(c: pd.DataFrame, q: Optional[pd.DataFrame], config: EvaluationConf
     open_until: list[pd.Timestamp] = []
     rng = np.random.default_rng(seed)
     fill_draws = dict(zip(c["alert_id"], rng.random(len(c))))
-    for _, candidate in c.iterrows():
+    plans = []
+    for order, (_, candidate) in enumerate(c.iterrows()):
+        selected = None
+        if _direction(candidate["prediction"]) != 0 and q is not None:
+            selected = _select_contract(candidate, q, config)
+        # Capacity is chronological by executable entry, not alert emission.
+        # Non-entering alerts are stable at their original event time.
+        event_time = selected[0]["timestamp"] if selected is not None else candidate["timestamp"]
+        plans.append((event_time, order, candidate, selected))
+    plans.sort(key=lambda plan: (plan[0], plan[1]))
+    for _, original_order, candidate, selected in plans:
         base = {"alert_id": candidate["alert_id"], "timestamp": candidate["timestamp"],
                 "session": candidate["session"], "instrument": candidate["instrument"],
                 "direction": _direction(candidate["prediction"]), "contract": None,
                 "status": "abstained", "gross_pnl": 0.0, "net_pnl": 0.0,
-                "notional_in": 0.0, "notional_out": 0.0, "duration_seconds": 0.0}
+                "notional_in": 0.0, "notional_out": 0.0, "duration_seconds": 0.0,
+                "_original_order": original_order}
         if base["direction"] == 0:
             rows.append(base); continue
         if q is None:
             base["status"] = "no_execution_data"; rows.append(base); continue
-        selected = _select_contract(candidate, q, config)
         if selected is None:
             base["status"] = "no_executable_quote"; rows.append(base); continue
         entry, exit_quote = selected
@@ -288,8 +311,9 @@ def _simulate(c: pd.DataFrame, q: Optional[pd.DataFrame], config: EvaluationConf
         rows.append(base)
     columns = ["alert_id", "timestamp", "session", "instrument", "direction",
                "contract", "status", "gross_pnl", "net_pnl", "notional_in",
-               "notional_out", "duration_seconds", "exit_timestamp"]
-    return pd.DataFrame(rows, columns=columns)
+               "notional_out", "duration_seconds", "exit_timestamp", "_original_order"]
+    result = pd.DataFrame(rows, columns=columns).sort_values("_original_order", kind="stable")
+    return result.drop(columns="_original_order").reset_index(drop=True)
 
 
 def evaluate_oof_events(
