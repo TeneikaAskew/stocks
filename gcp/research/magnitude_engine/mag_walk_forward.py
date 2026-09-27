@@ -300,6 +300,9 @@ def production_persist_refusal(window) -> str | None:
 
 
 FINAL_PREFLIGHT_SESSIONS = 21
+# The phase whose candidate serves (the only one _persist_production_model
+# publishes) and therefore the only one allowed to read the final holdout.
+SERVING_PHASE = "phase0"
 
 
 def _recent_session_bar_counts(engine, ticker: str, tf: str, until: str,
@@ -342,7 +345,7 @@ def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
     marker path (Codex P1 on #1193).
     """
     bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
-    path = f"research/magnitude_engine/final-test-consumed/{version}/{phase}_{ticker}_{tf}.json"
+    path = _final_claim_path(version, ticker, tf)
     payload = json.dumps({"version": version, "phase": phase, "ticker": ticker,
                           "tf": tf, "run_id": run_id,
                           "consumed_at": utc_now().isoformat()})
@@ -353,24 +356,103 @@ def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
     except Exception as exc:
         # A generation-0 conditional write fails when the marker exists. Do
         # not weaken this to exists()+write: concurrent final runs could race.
+        # No run, the holder included, may re-evaluate the holdout: a failed
+        # staging is recovered by resume_final_staging from the claimed
+        # run's durable summary, never by another walk-forward (Codex P1 on
+        # #1193).
         if getattr(exc, "code", None) in (409, 412) or type(exc).__name__ in {
                 "Conflict", "PreconditionFailed"}:
-            # The SAME run may resume: a staging failure after the claim
-            # (model fit, GCS upload) must be recoverable without exposing
-            # the holdout under a new version (Codex P1 on #1193). The
-            # operator reruns with MAG_RUN_ID=<the run id in the marker>;
-            # every artifact is keyed by that run id, so the rerun overwrites
-            # its own outputs and nothing else.
             holder = json.loads(blob.download_as_text()).get("run_id")
-            if holder == run_id:
-                log.warning("final-test version %s already claimed by THIS run "
-                            "(%s); resuming it", version, run_id)
-                return
             raise RuntimeError(
                 f"final-test version {version!r} has already been consumed "
-                f"for {phase}/{ticker}/{tf} by run {holder!r}; to recover a "
-                f"failed staging, rerun with MAG_RUN_ID={holder}") from exc
+                f"for {ticker}/{tf} by run {holder!r}; a failed staging is "
+                f"recovered with --resume-staging={holder} --ticker={ticker} "
+                f"--tf={tf}, which stages from that run's recorded verdict "
+                f"without re-evaluating the holdout") from exc
         raise
+
+
+def _final_claim_path(version: str, ticker: str, tf: str) -> str:
+    """The marker is keyed by (version, ticker, tf), NOT by phase: the
+    holdout is one dataset per cell, and a per-phase marker let the
+    no_backfill plan score it three times and pick a model family after the
+    nominal one-time test (Codex P1 on #1193)."""
+    return f"research/magnitude_engine/final-test-consumed/{version}/{ticker}_{tf}.json"
+
+
+def _final_claim_holder(version: str, ticker: str, tf: str) -> str | None:
+    """run_id recorded in the cell's final-test marker, or None if unclaimed."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    blob = gcs.Client().bucket(bucket_name).blob(_final_claim_path(version, ticker, tf))
+    if not blob.exists():
+        return None
+    return json.loads(blob.download_as_text()).get("run_id")
+
+
+def _final_run_summary(ticker: str, tf: str, run_id: str) -> dict | None:
+    """The durable walk_forward_<run_id>.json a phase0 final-test run wrote
+    under the serving contract, or None."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    prefix = gcs_run_prefix("phase0", ticker, tf, label_mode=DEFAULT_LABEL_MODE,
+                            thresholds=MAGNITUDE_THRESHOLDS,
+                            evaluation_window="final_test")
+    blob = gcs.Client().bucket(bucket_name).blob(f"{prefix}/walk_forward_{run_id}.json")
+    if not blob.exists():
+        return None
+    return json.loads(blob.download_as_text())
+
+
+def resume_final_staging(engine, ticker: str, tf: str, run_id: str) -> str:
+    """Stage the production candidate of an already-claimed final-test run.
+
+    Recovery for a staging failure (model fit, GCS upload) after the one-time
+    claim. It stages FROM the claimed run's durable outputs: the run must
+    hold the cell's marker and have written its summary, and the gates 1-4
+    verdict is the one that summary recorded. Nothing is re-evaluated: no
+    fold is scored, no prediction or result row is written, so nothing here
+    can be tuned against the holdout (Codex P1 on #1193). The full-data fit
+    reads the dataset through the window's end exactly as the run did, under
+    the serving contract only.
+    """
+    window = WINDOWS["final_test"]
+    holder = _final_claim_holder(FINAL_TEST_VERSION, ticker, tf)
+    if holder != run_id:
+        raise RuntimeError(
+            f"final-test version {FINAL_TEST_VERSION!r} for {ticker}/{tf} is "
+            f"held by run {holder!r}, not {run_id!r}; only the claimed run "
+            f"can be staged")
+    summary = _final_run_summary(ticker, tf, run_id)
+    if summary is None or "gates" not in summary:
+        raise RuntimeError(
+            f"run {run_id} left no final-test summary for {ticker}/{tf}; "
+            f"there is no recorded verdict to stage from")
+    if summary.get("split_name") != window.name:
+        raise RuntimeError(f"run {run_id} summary records split_name="
+                           f"{summary.get('split_name')!r}, not {window.name!r}")
+    thresholds = tuple(summary["thresholds"])
+    label_mode = summary["label_mode"]
+    contract_reason = serving_contract_reason(label_mode, thresholds)
+    if contract_reason:
+        raise RuntimeError(f"run {run_id} is not a serving-contract run: {contract_reason}")
+    df = load_magnitude_dataset(engine, ticker, tf, "phase0",
+                                until=window.end.isoformat(), label_mode=label_mode)
+    if df.empty:
+        raise ValueError(f"dataset has no rows before {window.end.isoformat()}")
+    X_df, feature_cols = featurize(df)
+    X_full = X_df.values.astype(np.float32, copy=False)
+    y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
+    log.info("resuming final-test staging for %s:%s from run %s (gates 1-4 %s)",
+             ticker, tf, run_id,
+             "PASS" if summary["gates"].get("cell_pass_gates_1_to_4") else "FAIL")
+    uri = _persist_production_model_artifact(
+        ticker, tf, run_id, X_full, y_full, feature_cols,
+        gates=summary["gates"], label_mode=label_mode, thresholds=thresholds,
+        calibration=summary.get("calibration", DEFAULT_CALIBRATION),
+        cv=summary.get("cv", DEFAULT_CV), stage_only=True)
+    if not uri:
+        raise RuntimeError(f"staging produced no candidate for {ticker}:{tf} run "
+                           f"{run_id}; see PROMOTION_BLOCKED or the log")
+    return uri
 
 
 def _base_rate_logloss(y_train_idx: np.ndarray, y_test_idx: np.ndarray) -> float:
@@ -1020,6 +1102,23 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                 f"the {window.name} window is reserved for the serving "
                 f"contract and would consume the one-time version: "
                 f"{contract_reason}")
+        # One holdout, one model family: only the serving phase may read it.
+        # The marker is keyed per cell, so a phase1/phase3 task of the
+        # no_backfill plan would otherwise consume the version and stage
+        # nothing (Codex P1 on #1193).
+        if phase != SERVING_PHASE:
+            raise ValueError(
+                f"the {window.name} window is reserved for the serving phase "
+                f"{SERVING_PHASE!r}; {phase!r} would consume the one-time "
+                f"version for {ticker}/{tf} and stage no candidate")
+        # mag_inference constructs the baseline feature set only. A phase2
+        # family here would stage a model whose columns serving never builds
+        # (Codex P1 on #1193): refuse before the claim.
+        if features.strip():
+            raise ValueError(
+                f"the {window.name} window is reserved for the serving feature "
+                f"set (baseline); --features={features!r} would stage a model "
+                f"mag_inference cannot serve")
         # Unlabelled coverage preflight, then the one-time claim, and only
         # then the labelled load below: the holdout's labels are never
         # constructed, logged or fingerprinted by a run that does not hold
@@ -1315,8 +1414,9 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                 # recovery path (the claim resumes for this run id).
                 summary["production_model_staging_failed"] = (
                     f"no candidate staged (see PROMOTION_BLOCKED or the log); "
-                    f"rerun with MAG_RUN_ID={run_id} to retry staging under "
-                    f"the same final-test claim")
+                    f"recover with --resume-staging={run_id} --ticker={ticker} "
+                    f"--tf={tf}, which stages from this summary's verdict "
+                    f"without re-evaluating the holdout")
                 log.error("final-test staging produced no candidate for %s:%s; %s",
                           ticker, tf, summary["production_model_staging_failed"])
         except Exception as e:
@@ -1324,8 +1424,10 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                       type(e).__name__, e)
             if window.final:
                 summary["production_model_staging_failed"] = (
-                    f"{type(e).__name__}: {e}; rerun with MAG_RUN_ID={run_id} "
-                    f"to retry staging under the same final-test claim")
+                    f"{type(e).__name__}: {e}; recover with "
+                    f"--resume-staging={run_id} --ticker={ticker} --tf={tf}, "
+                    f"which stages from this summary's verdict without "
+                    f"re-evaluating the holdout")
 
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf,
@@ -1525,7 +1627,19 @@ def main():
                    help="Comma-separated phase2 family names (prune, "
                         "options_iv, positioning, cross_asset, calendar). "
                         "Default empty = baseline (no phase2 change).")
+    p.add_argument("--resume-staging", default=None, metavar="RUN_ID",
+                   help="Recovery for a final-test run whose staging failed "
+                        "after the one-time claim: stage the production "
+                        "candidate from that run's recorded verdict, with "
+                        "--ticker --tf. Nothing is re-evaluated.")
     args = p.parse_args()
+    if args.resume_staging:
+        if not args.ticker or not args.tf:
+            raise SystemExit("--resume-staging needs --ticker and --tf")
+        uri = resume_final_staging(get_engine(), args.ticker, args.tf,
+                                   args.resume_staging)
+        log.info("staged -> %s", uri)
+        return
     # Validate the threshold override BEFORE any fan-out. run_all_cells
     # catches every per-cell exception and main() does not act on its FAIL
     # verdict, so a malformed MAG_THRESHOLDS reaching that path would error

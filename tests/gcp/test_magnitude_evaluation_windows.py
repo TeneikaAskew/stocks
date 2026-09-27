@@ -727,10 +727,12 @@ def test_a_partially_ingested_final_session_cannot_be_claimed(monkeypatch):
             < src.index("_claim_final_test("))
 
 
-def test_the_final_claim_resumes_for_the_run_that_holds_it(monkeypatch):
+def test_a_failed_final_staging_is_recovered_from_the_recorded_verdict(monkeypatch):
     """A staging failure after the claim left no candidate and every rerun
-    refused (Codex P1). The same run id may resume; any other is refused
-    with the recovery instruction."""
+    refused (Codex P1, round 7). Round 8: the same-run resume re-evaluated
+    the holdout, so recovery now stages FROM the claimed run's durable
+    summary: the claim is strict for every run id, and resume_final_staging
+    scores no fold and writes no prediction (Codex P1)."""
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
     class Taken(Exception):
@@ -739,11 +741,95 @@ def test_the_final_claim_resumes_for_the_run_that_holds_it(monkeypatch):
     class _Blob:
         def upload_from_string(self, *a, **k): raise Taken()
         def download_as_text(self): return json.dumps({"run_id": "r1"})
+        def exists(self): return True
     client = MagicMock()
     client.bucket.return_value.blob.return_value = _Blob()
     monkeypatch.setattr(mwf.gcs, "Client", lambda: client)
-    mwf._claim_final_test("v1", "phase0", "IWM", "15m", "r1")  # resumes
-    with pytest.raises(RuntimeError, match="MAG_RUN_ID=r1"):
-        mwf._claim_final_test("v1", "phase0", "IWM", "15m", "r2")
+    for run_id in ("r1", "r2"):  # the holder itself may not re-run the holdout
+        with pytest.raises(RuntimeError, match="--resume-staging=r1"):
+            mwf._claim_final_test("v1", "phase0", "IWM", "15m", run_id)
     src = inspect.getsource(mwf.walk_forward)
-    assert src.count('summary["production_model_staging_failed"] = ') == 2
+    assert src.count("--resume-staging={run_id}") == 2
+
+    # resume: holder must match, summary must exist, nothing is re-evaluated
+    monkeypatch.setattr(mwf, "_final_claim_holder", lambda *a: "r1")
+    monkeypatch.setattr(mwf, "_final_run_summary", lambda *a: None)
+    with pytest.raises(RuntimeError, match="no recorded verdict"):
+        mwf.resume_final_staging(MagicMock(), "IWM", "15m", "r1")
+    with pytest.raises(RuntimeError, match="held by run 'r1'"):
+        mwf.resume_final_staging(MagicMock(), "IWM", "15m", "r2")
+    gates = {"cell_pass_gates_1_to_4": True}
+    monkeypatch.setattr(mwf, "_final_run_summary", lambda *a: {
+        "gates": gates, "split_name": "final_test", "label_mode": "body",
+        "thresholds": list(mwf.MAGNITUDE_THRESHOLDS), "calibration": "none", "cv": 3})
+    df = pd.DataFrame({"ts": pd.to_datetime(["2026-12-31T15:00:00Z"] * 4),
+                       mwf.LABEL_COL: ["TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE"]})
+    seen: dict = {}
+    monkeypatch.setattr(mwf, "load_magnitude_dataset",
+                        lambda *a, **k: seen.update(load=k) or df)
+    monkeypatch.setattr(mwf, "featurize", lambda d: (pd.DataFrame({"x": [1.0] * 4}), ["x"]))
+    monkeypatch.setattr(mwf, "train_and_evaluate_fold", _stop)
+    monkeypatch.setattr(mwf, "_persist_production_model_artifact",
+                        lambda *a, **k: seen.update(persist=k) or "gs://b/p/")
+    assert mwf.resume_final_staging(MagicMock(), "IWM", "15m", "r1") == "gs://b/p/"
+    assert seen["load"]["until"] == "2027-01-01"
+    assert seen["persist"]["stage_only"] is True and seen["persist"]["gates"] is gates
+    # the CLI exposes it and stops there
+    assert "--resume-staging" in inspect.getsource(mwf.main)
+
+
+# ═══════════════ Codex review of #1193, eighth round (e3200e8) ═══════════════
+
+def test_the_final_claim_is_one_per_cell_and_reserved_for_the_serving_phase(monkeypatch):
+    """A per-phase marker let the no_backfill plan's phase0, phase1 and
+    phase3 tasks each score the same holdout and pick a model family after
+    the one-time test (Codex P1)."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    assert mwf._final_claim_path("v1", "IWM", "15m").endswith("/v1/IWM_15m.json")
+    assert "phase" not in mwf._final_claim_path("v1", "IWM", "15m").split("/")[-1]
+    claimed: list = []
+    monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
+    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
+                        lambda *a, **k: _sessions(date(2026, 12, 31)))
+    monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
+    monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
+    for phase in ("phase1", "phase3"):
+        with pytest.raises(ValueError, match="serving phase"):
+            mwf.walk_forward(MagicMock(), phase, "IWM", "15m",
+                             evaluation_window="final_test")
+    assert claimed == []
+    with pytest.raises(_Stop):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test")
+    assert len(claimed) == 1
+    wrapper = (REPO / "scripts/dispatch_magnitude_phase.sh").read_text()
+    assert '"$evaluation_window" = "final_test" ] && [ "$plan" != "phase0" ]' in wrapper
+
+
+def test_a_non_serving_feature_set_cannot_consume_the_final_test(monkeypatch):
+    """`--features=options_iv` staged a model whose columns mag_inference
+    never constructs, after consuming the version (Codex P1)."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    claimed: list = []
+    monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
+    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
+                        lambda *a, **k: _sessions(date(2026, 12, 31)))
+    monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
+    monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
+    for feats in ("options_iv", "prune,calendar", "bogus"):
+        with pytest.raises(ValueError, match="serving feature set"):
+            mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                             evaluation_window="final_test", features=feats)
+    assert claimed == []
+    src = inspect.getsource(mwf.walk_forward)
+    assert src.index("features.strip()") < src.index("_claim_final_test(")
+
+
+def test_the_decomposition_reads_the_analyzed_runs_fold_schedule():
+    """Predictions of a run with custom --cutoffs are labelled by that
+    schedule, so DEFAULT_CUTOFFS lookups found no predictions (Codex P2)."""
+    src = (REPO / "scripts/model_vs_calendar_explosive_decomp.py").read_text()
+    assert "load_run_summary(" in src and 'summary["cutoffs"]' in src
+    assert "test_end = window.end.isoformat()" in src
+    assert "list(DEFAULT_CUTOFFS)" not in src
+    assert "purged_session_masks(sessions, cut, test_end)" in src

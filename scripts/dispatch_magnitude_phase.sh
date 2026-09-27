@@ -83,6 +83,14 @@ for arg in "$@"; do
   esac
 done
 
+# The final holdout is read by the serving phase only (mag_walk_forward
+# SERVING_PHASE); the module refuses other phases before the claim, and the
+# wrapper refuses the fan-out plans so 26 tasks do not fail for one.
+if [ "$evaluation_window" = "final_test" ] && [ "$plan" != "phase0" ]; then
+  echo "ERROR: --evaluation-window=final_test dispatches only plan phase0 (got '$plan')" >&2
+  exit 64
+fi
+
 mag_args="-m,gcp.research.magnitude_engine.mag_walk_forward"
 [ -n "$label_mode" ] && mag_args="${mag_args},--label-mode=${label_mode}"
 [ -n "$evaluation_window" ] && mag_args="${mag_args},--evaluation-window=${evaluation_window}"

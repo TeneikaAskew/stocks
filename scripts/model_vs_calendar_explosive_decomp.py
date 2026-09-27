@@ -61,12 +61,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from gcp.database import get_engine
 from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
-    DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
+    GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
-from gcp.research.magnitude_engine.evaluation_windows import WINDOWS
+from gcp.research.magnitude_engine.evaluation_windows import (
+    WINDOWS, eastern_sessions, purged_session_masks)
 from scripts._magnitude_analysis_helpers import (
     add_research_arg, apply_research_contract, load_predictions,
+    load_run_summary,
     calendar_keys)
 
 
@@ -104,10 +106,18 @@ def main():
 
     y_all = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
     ts_all = pd.to_datetime(df["ts"], utc=True)
-    bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
+    sessions = eastern_sessions(ts_all).values.astype("datetime64[D]")
 
     explosive_idx = LABEL_TO_IDX["EXPLOSIVE"]
-    cutoffs = list(DEFAULT_CUTOFFS)
+    # The run's OWN fold schedule and window end: fold labels are
+    # `<cut>..<next cut or window end>`, so a run with custom --cutoffs
+    # found "no predictions" for every fold under DEFAULT_CUTOFFS (Codex P2
+    # on #1193). Training masks use the harness's session purge.
+    summary = load_run_summary(args.phase, args.ticker, args.tf, args.bucket,
+                               args.run_id, research=args.research,
+                               evaluation_window=args.evaluation_window)
+    window = WINDOWS[args.evaluation_window]
+    cutoffs = [str(c) for c in summary["cutoffs"]]
 
     print()
     print("=" * 100)
@@ -132,10 +142,9 @@ def main():
         if i + 1 < len(cutoffs):
             test_end = cutoffs[i + 1]
         else:
-            test_end = str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
+            test_end = window.end.isoformat()
         fold_label = f"{cut}..{test_end}"
-        train_end_dt = np.datetime64(cut)
-        train_mask = bar_dates_arr < train_end_dt
+        train_mask, _ = purged_session_masks(sessions, cut, test_end)
 
         # Build cell rates from THIS fold's training data
         y_tr = y_all[train_mask]

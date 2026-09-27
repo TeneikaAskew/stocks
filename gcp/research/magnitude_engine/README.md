@@ -96,10 +96,16 @@ unlabelled preflight (per-session bar counts of the source table: the last
 session must be present AND hold at least the median bar count of the
 sessions before it, so a still-ingesting session is refused) and before the
 labelled load, so a rerun after the marker exists, or the loser of a
-concurrent claim, never constructs a final-test label. The claim resumes
-for the run id that holds it: a staging failure after the claim is
-recorded as `production_model_staging_failed` and recovered by rerunning
-with `MAG_RUN_ID=<that run id>`, never under a new version.
+concurrent claim, never constructs a final-test label. The marker is one
+per (version, ticker, timeframe), not per phase, and only the serving phase
+(`phase0`) with the serving contract and the baseline feature set may take
+it; `dispatch_magnitude_phase.sh` refuses `--evaluation-window=final_test`
+for any plan but `phase0`. No run may re-evaluate a claimed holdout, the
+holder included: a staging failure after the claim is recorded as
+`production_model_staging_failed` and recovered with
+`--resume-staging=<run id> --ticker --tf`, which stages the candidate from
+that run's recorded gates 1-4 verdict without scoring a fold or writing a
+prediction.
 
 The final-test folds are fixed at `[window.start]`; custom `--cutoffs` are
 refused there, and the one-time version is the `FINAL_TEST_VERSION` constant,
