@@ -74,10 +74,13 @@ PROMOTION_STATUSES = frozenset({
 })
 
 
-def _feature_set_name(phase: str, features: str, alpha: float) -> str:
+def _feature_set_name(phase: str, features: str, alpha: float | None,
+                      calibration: str, cv: int) -> str:
     """Return the stable feature/training variant used in a decision key."""
     families = ",".join(sorted(filter(None, features.split(",")))) or "baseline"
-    return f"{phase}:{families}:class_weight_alpha={alpha:g}"
+    weight = "unknown" if alpha is None else f"{alpha:g}"
+    return (f"{phase}:{families}:class_weight_alpha={weight}:"
+            f"calibration={calibration}:cv={cv}")
 
 
 def _label_version(label_mode: str, thresholds: tuple[float, ...]) -> str:
@@ -537,6 +540,7 @@ def _persist_production_model_artifact(
     thresholds: tuple[float, ...],
     calibration: str = DEFAULT_CALIBRATION,
     cv: int = DEFAULT_CV,
+    outcome: dict | None = None,
 ) -> str | None:
     """Train a 'production' model on the ENTIRE dataset (no held-out test)
     and upload it to gs://<bucket>/magnitude-models/production/{ticker}/{tf}/.
@@ -566,8 +570,10 @@ def _persist_production_model_artifact(
     # production namespace for a run that has no business there (Codex on
     # #1055). The walk-forward output the experiment is actually for is
     # unaffected; it lives under the research namespace.
+    outcome = outcome if outcome is not None else {}
     contract_reason = serving_contract_reason(label_mode, thresholds)
     if contract_reason:
+        outcome.update({"status": "blocked", "reason": contract_reason})
         log.info("production model NOT trained for %s:%s — %s. The "
                  "walk-forward results are unaffected; they are written under "
                  "the research namespace.", ticker, tf, contract_reason)
@@ -677,6 +683,7 @@ def _persist_production_model_artifact(
         # keeping the blocked candidate lets an operator diagnose WHY it
         # collapsed without re-running an 8-fold job.
         if not verdict["ok"]:
+            outcome.update({"status": "blocked", "reason": verdict["reason"]})
             bucket.blob(f"{run_prefix}/PROMOTION_BLOCKED").upload_from_string(
                 json.dumps(verdict, indent=2), content_type="application/json")
             log.error(
@@ -691,10 +698,12 @@ def _persist_production_model_artifact(
         bucket.blob(f"{base_prefix}/LATEST").upload_from_string(
             run_id, content_type="text/plain")
         uri = f"gs://{bucket_name}/{base_prefix}/"
+        outcome.update({"status": "promoted", "uri": uri})
         log.info("production model persisted (run=%s, LATEST flipped) -> %s",
                  run_id, uri)
         return uri
     except Exception as e:
+        outcome.update({"status": "error", "reason": str(e)})
         log.error("production model persist FAILED (%s): %s",
                   type(e).__name__, e)
         return None
@@ -763,6 +772,22 @@ def _clears_every_registered_gate(summary: dict) -> bool:
     return all(gates.get(f"g{i}_pass") is True for i in range(1, 8))
 
 
+def _apply_promotion_evidence(gates: dict, evidence: dict,
+                              phase: str, ticker: str, tf: str) -> None:
+    """Attach independently produced post-hoc gates to exactly one cell."""
+    expected = {"phase": phase, "ticker": ticker, "tf": tf}
+    if any(evidence.get(key) != value for key, value in expected.items()):
+        raise ValueError("promotion evidence does not identify this cell")
+    if evidence.get("preregistered_experiment") is not True:
+        raise ValueError("promotion evidence is not pre-registered")
+    evidence_gates = evidence.get("gates") or {}
+    for gate_number in range(5, 8):
+        key = f"g{gate_number}_pass"
+        if evidence_gates.get(key) is not True:
+            raise ValueError(f"promotion evidence did not pass {key}")
+        gates[key] = True
+
+
 def _scorecard_cell(summary: dict, *, disabled: bool = False) -> dict:
     """Build one atomic promotion decision without consulting fleet totals."""
     ticker, tf = summary["ticker"], summary["tf"]
@@ -770,9 +795,10 @@ def _scorecard_cell(summary: dict, *, disabled: bool = False) -> dict:
     label_mode = summary.get("label_mode", DEFAULT_LABEL_MODE)
     thresholds = tuple(summary.get("thresholds", MAGNITUDE_THRESHOLDS))
     recorded_alpha = summary.get("class_weight_power")
-    alpha = float(class_weight_power() if recorded_alpha is None else recorded_alpha)
+    alpha = None if recorded_alpha is None else float(recorded_alpha)
     feature_set = summary.get("feature_set") or _feature_set_name(
-        phase, summary.get("features", ""), alpha)
+        phase, summary.get("features", ""), alpha,
+        summary.get("calibration", "unknown"), int(summary.get("cv", 0)))
     decision_key = {
         "ticker": ticker,
         "timeframe": tf,
@@ -788,6 +814,8 @@ def _scorecard_cell(summary: dict, *, disabled: bool = False) -> dict:
     reason: str
     if disabled:
         status, reason = "withdrawn", "timeframe disabled for this ticker"
+    elif summary.get("promotion_blocked_reason"):
+        status, reason = "rejected", summary["promotion_blocked_reason"]
     elif summary.get("status") == "ERROR" or not cell_pass:
         status, reason = "rejected", "cell failed or did not report its own gates"
     elif tf in {"15m", "30m"} and not (preregistered and every_gate):
@@ -798,6 +826,8 @@ def _scorecard_cell(summary: dict, *, disabled: bool = False) -> dict:
         status, reason = "research", "label contract is research-only"
     elif phase != "phase0" or bool(summary.get("features", "")):
         status, reason = "shadow", "non-baseline configuration remains in shadow"
+    elif tf == "5m" and alpha is None:
+        status, reason = "research", "class-weight metadata is unrecoverable"
     elif tf == "5m" and alpha != 0.0:
         status, reason = "research", "phase-0 5m promotion track is unweighted"
     elif summary.get("production_model_uri"):
@@ -861,7 +891,9 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cv: int = DEFAULT_CV,
                   label_mode: str = DEFAULT_LABEL_MODE,
                   persist_production_model: bool = False,
-                  features: str = "") -> dict:
+                  features: str = "",
+                  disabled: bool = False,
+                  promotion_evidence: dict | None = None) -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
     thresholds = resolve_magnitude_thresholds()
     log.info("=" * 70)
@@ -956,6 +988,11 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                           "status": "ERROR", "error": str(e)})
 
     gates = _evaluate_phase_gate(folds, tf)
+    preregistered_experiment = False
+    if promotion_evidence is not None:
+        _apply_promotion_evidence(
+            gates, promotion_evidence, phase, ticker, tf)
+        preregistered_experiment = True
     log.info("=" * 70)
     log.info("CELL VERDICT (gates 1-4 only — gates 5-7 are post-hoc)  "
               "phase=%s  ticker=%s  tf=%s  →  %s",
@@ -994,7 +1031,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # unrecoverable (see mag_pred_train.class_weight_power).
         "class_weight_power": class_weight_power(),
         "features": features,
-        "feature_set": _feature_set_name(phase, features, class_weight_power()),
+        "feature_set": _feature_set_name(
+            phase, features, class_weight_power(), calibration, cv),
         "decision_lift_min": float(DECISION_LIFT_MIN),
         # Recorded so a run's own output says which labels it trained on.
         # Before #1048's follow-up the summary named neither, and three of the
@@ -1006,6 +1044,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "feature_cols": feature_cols,
         "folds": folds,
         "gates": gates,
+        "preregistered_experiment": preregistered_experiment,
         "computed_at": pd.Timestamp.utcnow().isoformat(),
     }
     run_id = (os.environ.get("CLOUD_RUN_EXECUTION")
@@ -1079,23 +1118,31 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # aborted it and silently left the production model un-persisted.)
     # Only emit from phase0 — phase1+ share the same backbone features and we
     # want exactly one canonical artifact per (ticker, tf).
-    if persist_production_model and phase == "phase0":
+    if persist_production_model and phase == "phase0" and not disabled:
         try:
             policy = _scorecard_cell(summary)
             if policy["status"] != "eligible":
                 log.info("production publish skipped for %s:%s — %s (%s)",
                          ticker, tf, policy["status"], policy["reason"])
             else:
+                promotion_outcome: dict = {}
                 uri = _persist_production_model_artifact(
                     ticker, tf, run_id, X_full, y_full, feature_cols,
                     gates=gates, label_mode=label_mode, thresholds=thresholds,
-                    calibration=calibration, cv=cv,
+                    calibration=calibration, cv=cv, outcome=promotion_outcome,
                 )
                 if uri:
                     summary["production_model_uri"] = uri
+                elif promotion_outcome.get("status") in {"blocked", "error"}:
+                    summary["promotion_blocked_reason"] = promotion_outcome.get(
+                        "reason", "production artifact gate failed")
         except Exception as e:
             log.error("Production-model persist FAILED (%s): %s",
                       type(e).__name__, e)
+
+    # Every execution path, including one-task-per-cell Cloud Run dispatches,
+    # emits its promotion decision in the durable summary.
+    summary["promotion_scorecard"] = _scorecard_cell(summary, disabled=disabled)
 
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf,
@@ -1126,11 +1173,12 @@ def run_all_cells(engine, phase: str,
     for ticker in TICKERS:
         for tf in TIMEFRAMES:
             try:
+                disabled = tf in (disabled_timeframes or {}).get(ticker, set())
                 s = walk_forward(engine, phase, ticker, tf,
                                  cutoffs=cutoffs, calibration=calibration,
                                  label_mode=label_mode,
                                  persist_production_model=persist_production_model,
-                                 features=features)
+                                 features=features, disabled=disabled)
                 all_summaries.append(s)
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
@@ -1277,6 +1325,10 @@ def main():
                    help="Comma-separated phase2 family names (prune, "
                         "options_iv, positioning, cross_asset, calendar). "
                         "Default empty = baseline (no phase2 change).")
+    p.add_argument("--promotion-evidence", default=None,
+                   help="JSON file with this cell's pre-registration identity "
+                        "and independently computed g5_pass..g7_pass evidence. "
+                        "Intended for a single validated 15m/30m promotion run.")
     args = p.parse_args()
     # Validate the threshold override BEFORE any fan-out. run_all_cells
     # catches every per-cell exception and main() does not act on its FAIL
@@ -1285,6 +1337,12 @@ def main():
     # a config mistake into an immediate non-zero exit on every path.
     resolve_magnitude_thresholds()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
+    promotion_evidence = None
+    if args.promotion_evidence:
+        with open(args.promotion_evidence, encoding="utf-8") as evidence_file:
+            promotion_evidence = json.load(evidence_file)
+    if promotion_evidence is not None and args.all_cells:
+        raise SystemExit("--promotion-evidence requires a single-cell dispatch")
     engine = get_engine()
 
     # Resolution priority:
@@ -1304,7 +1362,8 @@ def main():
                       cutoffs=cutoffs, calibration=args.calibration,
                       label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
-                      features=args.features)
+                      features=args.features,
+                      promotion_evidence=promotion_evidence)
         return
 
     if args.plan and args.task_index is not None:
@@ -1317,7 +1376,8 @@ def main():
                       cutoffs=cutoffs, calibration=args.calibration,
                       label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
-                      features=args.features)
+                      features=args.features,
+                      promotion_evidence=promotion_evidence)
         return
 
     if args.all_cells:
@@ -1341,7 +1401,8 @@ def main():
                   cutoffs=cutoffs, calibration=args.calibration,
                   label_mode=args.label_mode,
                   persist_production_model=args.persist_production_model,
-                  features=args.features)
+                  features=args.features,
+                  promotion_evidence=promotion_evidence)
 
 
 if __name__ == "__main__":

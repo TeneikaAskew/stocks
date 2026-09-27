@@ -75,5 +75,5 @@ def test_magnitude_engine_deploy_carries_the_persist_and_class_weight_env():
     for ln in env_lines:
         assert "${mag_env}" in ln, ln
     assert re.search(r'mag_env=".*MAG_PERSIST_PRODUCTION_MODEL=true', body)
-    assert re.search(r'mag_env=".*MAG_CLASS_WEIGHT_POWER=0\.75', body)
+    assert re.search(r'mag_env=".*MAG_CLASS_WEIGHT_POWER=0(?:[,\"]|$)', body)
     assert re.search(r'mag_env=".*MAG_PLAN=\$\{plan_default\}', body)
