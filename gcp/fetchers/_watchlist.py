@@ -54,15 +54,18 @@ class WatchlistMembership:
     ticker's analog set. ``gcp/insight_pipeline_job.py`` does that for
     every ticker it runs in-process.
 
-    It does NOT reach fan-out children (``INSIGHT_FANOUT=1``, the
-    default). Each child is its own Cloud Run execution launched from
-    container env vars, so freezing across them would mean serializing
-    this object -- ``resolution`` and ``horizon`` included -- into an env
-    var for the child to assert without having computed it, which is the
-    fabricated provenance this class exists to prevent. Until that is
-    designed, a fan-out child resolves its own universe and reports
-    honestly which one it used, so two children of one batch can differ
-    if the watchlist changes between them (Codex P2 on ``e3463b3``).
+    It reaches fan-out children too (``INSIGHT_FANOUT=1``, the default).
+    Each child is its own Cloud Run execution launched from container env
+    vars, so the batch serializes this object into ``INSIGHT_UNIVERSE``
+    (``to_json`` / ``from_json``) and the child uses it verbatim. That was
+    resisted for eight review rounds as "fabricated provenance": a child
+    reporting ``resolution: exact`` on a string it did not compute. The
+    objection was to the claim, not the transport, and it is answered by
+    making the claim true -- ``inherited_from`` names the batch that
+    resolved it and ``describe()`` renders it, so the report says exactly
+    where the universe came from (Codex P2 on ``e3463b3`` and
+    ``af82694``). A child that resolved its own instead raced every
+    watchlist edit made between two children of one batch.
 
     ``resolution`` is the honest part and callers are expected to render
     it (CLAUDE.md Rule 3.7.1 — an undisclosed quality difference is a
@@ -83,6 +86,10 @@ class WatchlistMembership:
     owner: str
     resolution: str
     horizon: Optional[datetime]
+    # Set only on a copy handed to a fan-out child: who resolved this and
+    # when, so the child's report attributes the universe rather than
+    # claiming to have computed it. None means "this process resolved it".
+    inherited_from: Optional[str] = None
 
     def describe(self) -> dict:
         """Render for the context bundle / insight report."""
@@ -93,7 +100,64 @@ class WatchlistMembership:
             "owner": self.owner,
             "resolution": self.resolution,
             "horizon": str(self.horizon) if self.horizon else None,
+            "inherited_from": self.inherited_from,
         }
+
+    def to_json(self, *, inherited_from: str) -> str:
+        """Serialize for a fan-out child's ``INSIGHT_UNIVERSE`` env var.
+
+        ``inherited_from`` is required, not optional: a serialized universe
+        exists only to be handed to another process, and that process must
+        be able to say where it came from.
+        """
+        import json
+
+        return json.dumps({
+            "tickers": list(self.tickers),
+            "as_of": self.as_of.isoformat(),
+            "owner": self.owner,
+            "resolution": self.resolution,
+            "horizon": self.horizon.isoformat() if self.horizon else None,
+            "inherited_from": inherited_from,
+        }, separators=(",", ":"))
+
+    @classmethod
+    def from_json(cls, raw: str) -> "WatchlistMembership":
+        """Inverse of ``to_json``.
+
+        Raises ``ValueError`` on anything malformed. The only writer is
+        ``to_json`` in the parent, so a bad payload is a bug in code we own
+        (CLAUDE.md Rule 3.7, INTERNAL); silently resolving a different
+        universe instead would hide it and misattribute the result.
+        """
+        import json
+
+        try:
+            d = json.loads(raw)
+            tickers = tuple(str(t) for t in d["tickers"])
+            as_of = date_type.fromisoformat(d["as_of"])
+            horizon = (datetime.fromisoformat(d["horizon"])
+                       if d.get("horizon") else None)
+            resolution = d["resolution"]
+            owner = d["owner"]
+            inherited = d["inherited_from"]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"INSIGHT_UNIVERSE is not a serialized WatchlistMembership: {exc}"
+            ) from exc
+        if resolution not in ("exact", "approximate"):
+            raise ValueError(
+                f"INSIGHT_UNIVERSE resolution {resolution!r} is neither exact "
+                "nor approximate"
+            )
+        if not inherited:
+            raise ValueError(
+                "INSIGHT_UNIVERSE carries no inherited_from; a child may not "
+                "present an inherited universe as its own"
+            )
+        return cls(tickers=tickers, as_of=as_of, owner=owner,
+                   resolution=resolution, horizon=horizon,
+                   inherited_from=inherited)
 
 
 # Membership at any point during the as-of DAY, which is exactly the
@@ -108,6 +172,12 @@ class WatchlistMembership:
 # represents (a brief runs 08:30 ET; a ticker added at noon counts). That
 # is a smaller leak than the one being closed and needs a run-instant
 # concept the pipeline does not currently carry.
+# `action IN ('add', 'remove')` INSIDE the DISTINCT ON, not outside it: a
+# surface-flag transition is recorded as its own `flags` event (see the
+# trigger in gcp/schema.sql), and without the filter the newest such row
+# would WIN the DISTINCT ON for an active ticker, be neither add nor remove,
+# and the ticker would silently vanish from every universe resolved after
+# its flags changed. Filtering after the DISTINCT ON would be the same bug.
 # Placeholders are POSITIONAL %s, not %(name)s. `connect()` returns
 # psycopg2 locally and under CLOUD_SQL_URL, but pg8000 through the Cloud SQL
 # Connector in production, and pg8000's paramstyle is `format` — named
@@ -120,6 +190,7 @@ _MEMBERSHIP_AT_SQL = """
           FROM watchlist_history
          WHERE user_id = %s
            AND effective_at < %s
+           AND action IN ('add', 'remove')
          ORDER BY ticker, effective_at DESC, id DESC
     ) carried
      WHERE carried.action = 'add'

@@ -217,7 +217,26 @@ def test_the_re_add_event_is_stamped_at_the_re_add_not_the_original_add(wl):
 # ---------------------------------------------------------------------------
 
 
-def test_a_flag_edit_records_no_membership_event(wl):
+def _flags(engine, ticker: str) -> list[tuple[str, bool, bool, bool]]:
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sqlalchemy.text(
+                "SELECT action, in_brief, in_insight, signals "
+                "  FROM watchlist_history WHERE ticker = :t ORDER BY id"
+            ),
+            {"t": ticker},
+        ).fetchall()
+    return [tuple(r) for r in rows]
+
+
+def test_a_flag_edit_records_a_flags_event_not_a_membership_one(wl):
+    """Codex P2 on `c9637d3`. This test used to pin the opposite.
+
+    It asserted a flag edit recorded nothing, which left the three flag
+    columns as a snapshot at add/remove time and every transition between
+    them unrecoverable. A flag change on an ACTIVE row is now its own
+    `flags` event carrying the NEW values; membership is untouched.
+    """
     _add(wl, "ACME", JAN)
     with wl.begin() as conn:
         conn.execute(
@@ -226,6 +245,68 @@ def test_a_flag_edit_records_no_membership_event(wl):
                 "       source = 'ui' WHERE ticker = 'ACME'"
             )
         )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "flags"]
+    assert _flags(wl, "ACME")[-1] == ("flags", True, True, False), (
+        "the flags event must carry the values as they stand AFTER the edit"
+    )
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+
+
+def test_a_flags_event_landing_latest_does_not_drop_the_ticker(wl):
+    """The reason `flags` is a contract change, not a column.
+
+    `resolve_membership_at` takes `DISTINCT ON (ticker) ... ORDER BY
+    effective_at DESC`. A flags row is the newest event for an active
+    ticker, and without the add/remove filter INSIDE that DISTINCT ON it
+    wins, is neither add nor remove, and the ticker silently vanishes
+    from every universe resolved after its flags changed. Both branches of
+    the resolver's UNION are exercised: the carried-over branch (cutoff
+    after the flag change) and the same-day branch.
+    """
+    _add(wl, "ACME", JAN)
+    _add(wl, "BETA", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "UPDATE watchlists SET in_insight = TRUE WHERE ticker = 'ACME'"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "flags"]
+
+    tomorrow = date.today() + timedelta(days=1)
+    assert resolve_membership_at(tomorrow, OWNER).tickers == ("ACME", "BETA"), (
+        "a ticker whose newest event is a flags row dropped out of the "
+        "universe: the DISTINCT ON picked the flags row"
+    )
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME", "BETA")
+
+
+def test_a_flag_edit_on_a_removed_row_records_nothing(wl):
+    """Removed tickers are on no surface; their next re-add carries the
+    flags they come back with."""
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "UPDATE watchlists SET in_brief = TRUE WHERE ticker = 'ACME'"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+    _add(wl, "ACME", JUN)
+    assert _flags(wl, "ACME")[-1] == ("add", True, False, False), (
+        "the re-add must carry the flags as they stand at the re-add"
+    )
+
+
+def test_a_source_or_notes_edit_is_still_a_non_event(wl):
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "UPDATE watchlists SET source = 'ui', notes = 'peer for /similar' "
+            " WHERE ticker = 'ACME'"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+
+
+def test_rewriting_a_flag_with_its_own_value_is_a_non_event(wl):
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "UPDATE watchlists SET in_brief = in_brief WHERE ticker = 'ACME'"))
     assert [a for a, _ in _events(wl, "ACME")] == ["add"]
 
 

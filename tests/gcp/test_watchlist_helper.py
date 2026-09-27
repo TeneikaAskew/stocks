@@ -334,3 +334,69 @@ def test_an_aware_datetime_cutoff_resolves_instead_of_raising():
     assert resolved.as_of == _dt.date(2026, 9, 15)
     assert not isinstance(resolved.as_of, _dt.datetime)
     assert resolved.resolution == "exact"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# WatchlistMembership transport to fan-out children
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _membership(**over):
+    from datetime import date, datetime, timezone
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    base = dict(tickers=("IWM", "SPY"), as_of=date(2026, 9, 26), owner="default",
+                resolution="approximate",
+                horizon=datetime(2026, 9, 26, 22, 55, 1, tzinfo=timezone.utc))
+    base.update(over)
+    return WatchlistMembership(**base)
+
+
+def test_a_universe_round_trips_through_the_child_env_with_its_provenance():
+    """Codex P2 on `e3463b3` / `af82694`. The child gets the batch's
+    universe verbatim AND a record of who resolved it, so its report
+    attributes the universe rather than claiming to have computed it."""
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    u = _membership()
+    back = WatchlistMembership.from_json(u.to_json(inherited_from="exec-1@2026-09-26T12:45:00+00:00"))
+    assert back.tickers == u.tickers
+    assert back.as_of == u.as_of
+    assert back.owner == u.owner
+    assert back.resolution == u.resolution
+    assert back.horizon == u.horizon
+    assert back.inherited_from == "exec-1@2026-09-26T12:45:00+00:00"
+    assert back.describe()["inherited_from"] == "exec-1@2026-09-26T12:45:00+00:00"
+
+
+def test_a_universe_resolved_here_describes_itself_as_not_inherited():
+    assert _membership().describe()["inherited_from"] is None
+
+
+def test_a_universe_with_no_horizon_round_trips():
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    back = WatchlistMembership.from_json(
+        _membership(horizon=None, resolution="exact").to_json(inherited_from="p"))
+    assert back.horizon is None and back.resolution == "exact"
+
+
+@pytest.mark.parametrize("raw", [
+    "not json",
+    '{"tickers":["SPY"]}',
+    '{"tickers":["SPY"],"as_of":"2026-13-45","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":["SPY"],"as_of":"2026-09-26","owner":"d","resolution":"guess",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":["SPY"],"as_of":"2026-09-26","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":""}',
+])
+def test_a_malformed_child_universe_is_refused_not_repaired(raw):
+    """The only writer is `to_json` in the parent, so a bad payload is a
+    bug in code we own (CLAUDE.md Rule 3.7, INTERNAL). Resolving a
+    different universe instead and reporting it as the batch's would hide
+    the bug and misattribute the result."""
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    with pytest.raises(ValueError):
+        WatchlistMembership.from_json(raw)

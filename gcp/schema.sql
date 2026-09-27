@@ -2459,7 +2459,7 @@ CREATE TABLE IF NOT EXISTS watchlist_history (
     id            BIGSERIAL     PRIMARY KEY,
     user_id       VARCHAR(320)  NOT NULL,
     ticker        VARCHAR(10)   NOT NULL,
-    action        VARCHAR(10)   NOT NULL CHECK (action IN ('add', 'remove')),
+    action        VARCHAR(10)   NOT NULL CHECK (action IN ('add', 'remove', 'flags')),
     -- When membership actually changed (added_at / removed_at, or
     -- clock_timestamp() on a re-add), NOT when the row was written.
     -- As-of resolution reads this one.
@@ -2492,24 +2492,32 @@ CREATE TABLE IF NOT EXISTS watchlist_history (
     -- Not read by the analog universe, which applies no surface filter.
     --
     -- This does NOT amount to surface history, and an earlier version of
-    -- this comment claimed it did -- that a future as-of resolution for
-    -- the brief / signal surfaces would need no second migration (Codex
-    -- P2 on `c9637d3`). It would. Moving a ticker between surfaces is an
-    -- UPDATE that changes these flags while membership is unchanged, and
-    -- the trigger deliberately records nothing for it, so the WHEN of a
-    -- flag change is not captured here at all. Answering "was this ticker
-    -- in_brief on date D" needs flag-transition events, which means a
-    -- third `action` value and a resolver that filters to add/remove --
-    -- a contract change, not a column. Until then these columns are a
-    -- snapshot at the membership transition and nothing more.
-    --
-    -- The cost of waiting is real and bounded: flag changes made before
-    -- that lands are not recoverable afterwards. Recorded here rather
-    -- than left implied so the decision is visible.
+    -- Surface flags, and the WHEN of their transitions (Codex P2 on
+    -- `c9637d3`). Every add/remove carries the flags as they stood, and a
+    -- flag change on an ACTIVE row is its own `flags` event with the new
+    -- values, so "was this ticker in_brief on date D" is answerable from
+    -- this table alone. That is a contract, not a column: `flags` rows
+    -- are membership non-events, and `resolve_membership_at` filters to
+    -- add/remove INSIDE its DISTINCT ON so a flag change landing latest
+    -- cannot make an active ticker resolve to neither. The one thing not
+    -- recorded is a flag edit on a REMOVED row: the ticker is on no
+    -- surface while removed, and its next re-add carries whatever the
+    -- flags are then.
     in_brief      BOOLEAN       NULL,
     in_insight    BOOLEAN       NULL,
     signals       BOOLEAN       NULL
 );
+
+-- `CREATE TABLE IF NOT EXISTS` never touches an existing table's CHECK, so
+-- a database that created this table before `flags` existed would keep
+-- refusing it forever while the trigger above tries to write it. Swap the
+-- constraint idempotently so a re-apply converges (CLAUDE.md Rule 0).
+-- Postgres names an inline column CHECK `<table>_<column>_check`.
+ALTER TABLE watchlist_history
+    DROP CONSTRAINT IF EXISTS watchlist_history_action_check;
+ALTER TABLE watchlist_history
+    ADD CONSTRAINT watchlist_history_action_check
+    CHECK (action IN ('add', 'remove', 'flags'));
 
 CREATE INDEX IF NOT EXISTS idx_watchlist_history_asof
     ON watchlist_history (user_id, ticker, effective_at DESC, id DESC);
@@ -2748,9 +2756,12 @@ BEGIN
         END IF;
 
         -- Membership is `removed_at IS NULL`; only a transition of THAT
-        -- predicate is an event. A flag edit, a source rewrite, or a
-        -- re-add of an already-active row must record nothing, or the
-        -- log fills with non-events and DISTINCT ON picks one of them.
+        -- predicate is a membership event. A source rewrite, a notes
+        -- edit, or a re-add of an already-active row records nothing, or
+        -- the log fills with non-events. A surface-flag change on an
+        -- active row is the one non-membership change that IS recorded,
+        -- as `flags` (last branch below), because the alternative was
+        -- three columns whose transitions were unrecoverable.
         IF OLD.removed_at IS NOT NULL AND NEW.removed_at IS NULL THEN
             -- Re-add. added_at is deliberately NOT read: the re-add
             -- paths leave it at the original first-add, which is the
@@ -2815,6 +2826,25 @@ BEGIN
             INSERT INTO watchlist_history
                 (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
             VALUES (NEW.user_id, NEW.ticker, 'remove', remove_effective_at,
+                    NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
+        ELSIF OLD.removed_at IS NULL AND NEW.removed_at IS NULL
+              AND (NEW.in_brief   IS DISTINCT FROM OLD.in_brief
+                   OR NEW.in_insight IS DISTINCT FROM OLD.in_insight
+                   OR NEW.signals    IS DISTINCT FROM OLD.signals) THEN
+            -- Surface-flag transition on an active row (Codex P2 on
+            -- `c9637d3`). Not a membership event: the resolver ignores
+            -- `flags` rows when deciding who was a member, and reads them
+            -- when asked which surface a member was on. The values are
+            -- the NEW ones, so the row reads as "from this instant, these
+            -- flags". clock_timestamp() for the reason given on the re-add
+            -- branch: the change happened when this fired, not when the
+            -- writer's transaction opened, and no writer states a time for
+            -- a flag edit. Only when the row is active on both sides: a
+            -- flag edit on a removed row puts the ticker on no surface, and
+            -- its next re-add records the flags it comes back with.
+            INSERT INTO watchlist_history
+                (user_id, ticker, action, effective_at, source, in_brief, in_insight, signals)
+            VALUES (NEW.user_id, NEW.ticker, 'flags', clock_timestamp(),
                     NEW.source, NEW.in_brief, NEW.in_insight, NEW.signals);
         END IF;
         RETURN NEW;

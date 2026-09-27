@@ -454,6 +454,98 @@ def test_run_on_demand_threads_as_of(captured_as_of, monkeypatch):
     assert as_of == datetime(2026, 4, 27, 13, 15, tzinfo=timezone.utc)
 
 
+@pytest.fixture
+def captured_universe(monkeypatch):
+    """Capture the universe `_run_one` receives, and count resolutions."""
+    import gcp.fetchers._watchlist as wl_mod
+
+    received: list = []
+    resolutions: list = []
+
+    async def fake_run_one(run_id, ticker, as_of=None, allow_update=False,
+                           run_kind="scheduled", triggered_by=None, universe=None):
+        received.append(universe)
+        return True
+
+    def fake_resolve(cutoff, *a, **kw):
+        resolutions.append(cutoff)
+        return _membership(cutoff, "RESOLVED")
+
+    monkeypatch.setattr(job, "_run_one", fake_run_one)
+    monkeypatch.setattr(wl_mod, "resolve_membership_at", fake_resolve)
+    return received, resolutions
+
+
+def test_a_child_uses_the_inherited_universe_instead_of_resolving_its_own(
+        captured_universe, monkeypatch):
+    import datetime as _dt
+
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    payload = _membership(today, "SPY", "IWM").to_json(inherited_from="batch-1@t")
+    _set_env(monkeypatch, INSIGHT_RUN_ID="rid-1", INSIGHT_TICKER="SPY",
+             INSIGHT_AS_OF=None, INSIGHT_UNIVERSE=payload)
+    received, resolutions = captured_universe
+    assert _run(job._run_on_demand()) == 0
+    assert resolutions == [], "the child resolved its own universe and raced the batch"
+    (u,) = received
+    assert u.tickers == ("SPY", "IWM")
+    assert u.inherited_from == "batch-1@t", "the inherited universe lost its provenance"
+
+
+def test_a_child_with_no_inherited_universe_behaves_as_before(captured_universe, monkeypatch):
+    _set_env(monkeypatch, INSIGHT_RUN_ID="rid-1", INSIGHT_TICKER="SPY",
+             INSIGHT_AS_OF=None, INSIGHT_UNIVERSE=None)
+    received, resolutions = captured_universe
+    assert _run(job._run_on_demand()) == 0
+    assert received == [None] and resolutions == []
+
+
+def test_a_malformed_inherited_universe_fails_the_child_loudly(captured_universe, monkeypatch):
+    """INTERNAL (CLAUDE.md Rule 3.7): the only writer is the parent's
+    `to_json`, so this is a bug, not a condition to route around by
+    resolving a different universe and reporting it as the batch's."""
+    _set_env(monkeypatch, INSIGHT_RUN_ID="rid-1", INSIGHT_TICKER="SPY",
+             INSIGHT_AS_OF=None, INSIGHT_UNIVERSE='{"tickers":["SPY"]}')
+    received, resolutions = captured_universe
+    assert _run(job._run_on_demand()) == 1
+    assert received == [] and resolutions == []
+
+
+def test_a_child_that_starts_after_utc_midnight_re_resolves_like_the_batch_would(
+        captured_universe, monkeypatch):
+    """One rollover rule for the batch loop and the child, on purpose: a
+    universe frozen yesterday is one `summarize_backtest_metrics` refuses
+    today, and a child that started after midnight would otherwise lose
+    its backtest section while its siblings kept theirs."""
+    import datetime as _dt
+
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    yesterday = today - _dt.timedelta(days=1)
+    payload = _membership(yesterday, "SPY").to_json(inherited_from="batch-1@t")
+    _set_env(monkeypatch, INSIGHT_RUN_ID="rid-1", INSIGHT_TICKER="SPY",
+             INSIGHT_AS_OF=None, INSIGHT_UNIVERSE=payload)
+    received, resolutions = captured_universe
+    assert _run(job._run_on_demand()) == 0
+    assert resolutions == [today], "a stale inherited universe was used as-is"
+    (u,) = received
+    assert u.as_of == today and u.inherited_from is None, (
+        "a universe this child resolved itself must not carry the batch's provenance"
+    )
+
+
+def test_an_explicit_replay_cutoff_keeps_the_inherited_universe(captured_universe, monkeypatch):
+    """With INSIGHT_AS_OF set the cutoff is the operator's, not today's, so
+    an older inherited universe is exactly right and must not be replaced."""
+    import datetime as _dt
+
+    payload = _membership(_dt.date(2026, 4, 27), "SPY").to_json(inherited_from="batch-1@t")
+    _set_env(monkeypatch, INSIGHT_RUN_ID="rid-1", INSIGHT_TICKER="SPY",
+             INSIGHT_AS_OF="2026-04-27", INSIGHT_UNIVERSE=payload)
+    received, resolutions = captured_universe
+    assert _run(job._run_on_demand()) == 0
+    assert resolutions == [] and received[0].as_of == _dt.date(2026, 4, 27)
+
+
 def test_run_on_demand_invalid_as_of_returns_one(captured_as_of, monkeypatch):
     _set_env(monkeypatch, INSIGHT_RUN_ID="rid-1", INSIGHT_TICKER="AVGO",
              INSIGHT_AS_OF="2099-01-01")  # future
@@ -465,6 +557,13 @@ def test_run_on_demand_invalid_as_of_returns_one(captured_as_of, monkeypatch):
 # ---------------------------------------------------------------------------
 # Fan-out dispatch
 # ---------------------------------------------------------------------------
+
+
+# Resolutions made by the parent while `stub_fanout` is active. A module
+# list rather than an attribute on the fixture: inside a test the fixture
+# name is bound to its RETURN value, so nothing hung on the function is
+# reachable there.
+_FANOUT_RESOLUTIONS: list = []
 
 
 @pytest.fixture
@@ -493,6 +592,19 @@ def stub_fanout(monkeypatch):
     monkeypatch.setattr(job, "_run_one", fake_run_one)
     monkeypatch.setattr(job, "_insert_run", lambda ticker, trigger: f"run-{ticker}")
     monkeypatch.delenv("INSIGHT_FANOUT", raising=False)
+    monkeypatch.delenv("INSIGHT_UNIVERSE", raising=False)
+    # The parent now freezes one universe BEFORE dispatch so the children
+    # inherit it; keep that hermetic and count the resolutions.
+    import datetime as _dt
+    import gcp.fetchers._watchlist as wl_mod
+
+    _FANOUT_RESOLUTIONS.clear()
+
+    def fake_resolve(cutoff, *a, **kw):
+        _FANOUT_RESOLUTIONS.append(cutoff)
+        return _membership(_dt.datetime.now(_dt.timezone.utc).date(), "SPY", "IWM")
+
+    monkeypatch.setattr(wl_mod, "resolve_membership_at", fake_resolve)
     return enqueued, ran
 
 
@@ -636,6 +748,55 @@ def test_an_unknown_enqueue_is_not_run_in_process(stub_fanout, monkeypatch):
     assert code == 0
     assert [e["ticker"] for e in enqueued] == ["SPY", "QQQ"]
     assert ran == [], "an unknown outcome must not be resolved by running it again"
+
+
+def test_fanout_children_inherit_one_universe_resolved_once_before_dispatch(
+        stub_fanout, monkeypatch):
+    """Codex P2 on `e3463b3`, and again on `af82694` when the first fix
+    stopped at the in-process loop.
+
+    With every ticker enqueued, `_dispatch_fanout` returned an empty
+    `pending` and the batch skipped resolution entirely; each child then
+    resolved its own universe, so a watchlist edit between two children of
+    one scheduled batch changed the later ones' peers. Now: resolved
+    exactly once, before dispatch, and every child receives that same
+    serialized universe with this execution named as `inherited_from`.
+    """
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    enqueued, ran = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_RUN_ID=None,
+             INSIGHT_AS_OF=None, CLOUD_RUN_EXECUTION="insight-pipeline-abc12")
+    assert _run(job._run_scheduled()) == 0
+    assert ran == [], "every ticker was enqueued; none should run in-process"
+    assert len(_FANOUT_RESOLUTIONS) == 1, (
+        f"the universe was resolved {len(_FANOUT_RESOLUTIONS)} times for "
+        "one batch; it must be frozen once before dispatch"
+    )
+    payloads = {e["universe_json"] for e in enqueued}
+    assert len(payloads) == 1, "children of one batch received different universes"
+    inherited = WatchlistMembership.from_json(payloads.pop())
+    assert inherited.tickers == ("SPY", "IWM")
+    assert inherited.inherited_from.startswith("insight-pipeline-abc12@"), (
+        "the child cannot say which batch resolved its universe"
+    )
+
+
+def test_a_batch_that_cannot_freeze_sends_children_no_universe(stub_fanout, monkeypatch):
+    """No universe, no key. The child then resolves its own and says so,
+    exactly as the parent would -- the degraded path is unchanged, and
+    a failed freeze must not abort the dispatch."""
+    import gcp.fetchers._watchlist as wl_mod
+
+    def boom(cutoff, *a, **kw):
+        raise RuntimeError("watchlist_history missing")
+
+    monkeypatch.setattr(wl_mod, "resolve_membership_at", boom)
+    enqueued, _ = stub_fanout
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM", INSIGHT_RUN_ID=None, INSIGHT_AS_OF=None)
+    assert _run(job._run_scheduled()) == 0
+    assert len(enqueued) == 2
+    assert all(e["universe_json"] is None for e in enqueued)
 
 
 def test_a_definitive_refusal_still_runs_in_process(stub_fanout, monkeypatch):
