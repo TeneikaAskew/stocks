@@ -1,0 +1,1612 @@
+"""Real-SQL tests for `watchlist_history` and as-of membership resolution.
+
+These exercise the trigger in `gcp/schema.sql` against a real Postgres.
+They cannot be hermetic: the whole mechanism under test IS the database
+trigger, so a mocked connection would assert that the test's own fake
+fired, which proves nothing.
+
+The case that motivates the table is `test_a_re_add_does_not_backdate_
+membership`, which also reproduces the pre-existing defect on the same
+data so the two answers can be compared rather than asserted apart.
+"""
+from __future__ import annotations
+
+import pathlib
+import re
+from datetime import date, datetime, timedelta, timezone
+
+import pytest
+import sqlalchemy
+
+from gcp.fetchers._watchlist import resolve_membership_at
+
+
+OWNER = "default"
+
+# The predicate `lib/agents/summarizers.py` used before this table existed,
+# kept verbatim so the tests can show where the two answers diverge instead
+# of only asserting the new one.
+LEGACY_PREDICATE = sqlalchemy.text(
+    """
+    SELECT ticker FROM watchlists
+     WHERE user_id = :owner
+       AND added_at < CAST(:cutoff AS date) + 1
+       AND (removed_at IS NULL OR removed_at >= CAST(:cutoff AS date))
+     ORDER BY ticker
+    """
+)
+
+
+def _legacy(engine, cutoff: date) -> list[str]:
+    with engine.begin() as conn:
+        rows = conn.execute(
+            LEGACY_PREDICATE, {"owner": OWNER, "cutoff": str(cutoff)}
+        ).fetchall()
+    return sorted(r[0] for r in rows)
+
+
+@pytest.fixture
+def wl(db_engine):
+    """Empty `watchlists` + `watchlist_history` before each test.
+
+    TRUNCATE rather than DELETE: the append-only trigger blocks DELETE,
+    which is the point of it. TRUNCATE is deliberately left reachable so
+    tests can isolate — no application path issues one.
+    """
+    with db_engine.begin() as conn:
+        # `watchlist_history` refuses TRUNCATE. Tests are the one legitimate
+        # caller, and they say so rather than relying on a standing hole in
+        # the guard. SET LOCAL is transaction-scoped, so the opt-in cannot
+        # outlive this block or be inherited by anything else.
+        conn.execute(
+            sqlalchemy.text("SET LOCAL watchlist_history.allow_truncate = 'on'")
+        )
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlists"))
+        conn.execute(
+            sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY")
+        )
+    return db_engine
+
+
+def _add(engine, ticker: str, at: datetime, owner: str = OWNER) -> None:
+    """Add through the same ON CONFLICT shape all three writers use."""
+    with engine.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, :t, :at, 'test') "
+                "ON CONFLICT (user_id, ticker) DO UPDATE "
+                "  SET removed_at = NULL"
+            ),
+            {"u": owner, "t": ticker, "at": at},
+        )
+
+
+def _remove(engine, ticker: str, at: datetime, owner: str = OWNER) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET removed_at = :at "
+                " WHERE user_id = :u AND ticker = :t AND removed_at IS NULL"
+            ),
+            {"u": owner, "t": ticker, "at": at},
+        )
+
+
+def _events(engine, ticker: str) -> list[tuple[str, datetime]]:
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sqlalchemy.text(
+                "SELECT action, effective_at FROM watchlist_history "
+                " WHERE ticker = :t ORDER BY id"
+            ),
+            {"t": ticker},
+        ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def _shipped_seed_guard() -> str:
+    """The pre-seed validation DO block exactly as `gcp/schema.sql` ships it."""
+    schema = (
+        pathlib.Path(__file__).resolve().parents[2] / "gcp" / "schema.sql"
+    ).read_text()
+    found = re.findall(
+        r"^DO \$\$\nDECLARE\n    unseedable.*?^\$\$;", schema, re.S | re.M)
+    assert len(found) == 1, f"expected one seed guard, found {len(found)}"
+    return found[0]
+
+
+def _shipped_seed_statement() -> str:
+    """The seed INSERT exactly as `gcp/schema.sql` ships it.
+
+    Read from the file rather than copied, so a test asserting what the
+    seed stamps cannot drift away from the statement that actually runs.
+    """
+    schema = (
+        pathlib.Path(__file__).resolve().parents[2] / "gcp" / "schema.sql"
+    ).read_text()
+    # Anchored at column 0: the trigger's own INSERTs are indented, and
+    # splitting on ";" is wrong because the comments above the seed contain
+    # semicolons of their own.
+    found = re.findall(
+        r"^INSERT INTO watchlist_history\b.*?"
+        r"WHERE NOT EXISTS \(SELECT 1 FROM watchlist_history\);",
+        schema,
+        re.S | re.M,
+    )
+    assert len(found) == 1, f"expected one seed statement, found {len(found)}"
+    return found[0]
+
+
+JAN = datetime(2026, 1, 10, tzinfo=timezone.utc)
+MAR = datetime(2026, 3, 10, tzinfo=timezone.utc)
+JUN = datetime(2026, 6, 10, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# The case the table exists for
+# ---------------------------------------------------------------------------
+
+
+def test_a_re_add_does_not_backdate_membership(wl):
+    """Added Jan, removed Mar, re-added Jun: April must not see it.
+
+    The `watchlists` row after the re-add is indistinguishable from a
+    ticker that was never removed — `added_at` still reads January and
+    `removed_at` is back to NULL — so the legacy predicate answers
+    "member" for every date after January. Asserted here too, because a
+    fix whose defect cannot be reproduced on the same data is a fix for
+    something else.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)  # ON CONFLICT ... SET removed_at = NULL
+
+    with wl.begin() as conn:
+        row = conn.execute(
+            sqlalchemy.text(
+                "SELECT added_at, removed_at FROM watchlists WHERE ticker='ACME'"
+            )
+        ).fetchone()
+    assert row[0] == JAN, "added_at was rewritten; the premise changed"
+    assert row[1] is None, "the re-add did not clear removed_at"
+
+    april = date(2026, 4, 15)
+    assert _legacy(wl, april) == ["ACME"], "legacy predicate should be wrong here"
+
+    resolved = resolve_membership_at(april, OWNER)
+    assert resolved.tickers == (), (
+        "April is inside the removed interval; membership must be empty"
+    )
+
+    # And the surrounding periods still resolve correctly. The re-add is
+    # stamped at the transaction clock, not at JUN, because the ON CONFLICT
+    # path cannot carry a caller-supplied timestamp — so membership resumes
+    # today, and every date between MAR and today is still outside it.
+    assert resolve_membership_at(date(2026, 2, 1), OWNER).tickers == ("ACME",)
+    assert resolve_membership_at(date(2026, 7, 1), OWNER).tickers == ()
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+    assert resolve_membership_at(date(2026, 1, 1), OWNER).tickers == ()
+
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove", "add"]
+
+
+def test_the_re_add_event_is_stamped_at_the_re_add_not_the_original_add(wl):
+    """The trigger must use NOW(), not NEW.added_at.
+
+    Reading `added_at` on the re-add branch would re-record January and
+    reproduce the exact erasure the table exists to prevent, while
+    looking correct in a test that only checks the event count.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    before = datetime.now(timezone.utc)
+    _add(wl, "ACME", JUN)
+    after = datetime.now(timezone.utc)
+
+    events = _events(wl, "ACME")
+    re_add_at = events[-1][1]
+    assert before <= re_add_at <= after, (
+        f"re-add stamped {re_add_at}, expected the transaction clock; "
+        "reading NEW.added_at would give 2026-01-10"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Non-events: the log must not fill with writes that changed no membership
+# ---------------------------------------------------------------------------
+
+
+def _flags(engine, ticker: str) -> list[tuple[str, bool, bool, bool]]:
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sqlalchemy.text(
+                "SELECT action, in_brief, in_insight, signals "
+                "  FROM watchlist_history WHERE ticker = :t ORDER BY id"
+            ),
+            {"t": ticker},
+        ).fetchall()
+    return [tuple(r) for r in rows]
+
+
+def test_a_flag_edit_records_a_flags_event_not_a_membership_one(wl):
+    """Codex P2 on `c9637d3`. This test used to pin the opposite.
+
+    It asserted a flag edit recorded nothing, which left the three flag
+    columns as a snapshot at add/remove time and every transition between
+    them unrecoverable. A flag change on an ACTIVE row is now its own
+    `flags` event carrying the NEW values; membership is untouched.
+    """
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET in_brief = TRUE, in_insight = TRUE, "
+                "       source = 'ui' WHERE ticker = 'ACME'"
+            )
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "flags"]
+    assert _flags(wl, "ACME")[-1] == ("flags", True, True, False), (
+        "the flags event must carry the values as they stand AFTER the edit"
+    )
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+
+
+def test_a_flags_event_landing_latest_does_not_drop_the_ticker(wl):
+    """The reason `flags` is a contract change, not a column.
+
+    `resolve_membership_at` takes `DISTINCT ON (ticker) ... ORDER BY
+    effective_at DESC`. A flags row is the newest event for an active
+    ticker, and without the add/remove filter INSIDE that DISTINCT ON it
+    wins, is neither add nor remove, and the ticker silently vanishes
+    from every universe resolved after its flags changed. Both branches of
+    the resolver's UNION are exercised: the carried-over branch (cutoff
+    after the flag change) and the same-day branch.
+    """
+    _add(wl, "ACME", JAN)
+    _add(wl, "BETA", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "UPDATE watchlists SET in_insight = TRUE WHERE ticker = 'ACME'"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "flags"]
+
+    tomorrow = date.today() + timedelta(days=1)
+    assert resolve_membership_at(tomorrow, OWNER).tickers == ("ACME", "BETA"), (
+        "a ticker whose newest event is a flags row dropped out of the "
+        "universe: the DISTINCT ON picked the flags row"
+    )
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME", "BETA")
+
+
+def test_a_flag_edit_on_a_removed_row_records_nothing(wl):
+    """Removed tickers are on no surface; their next re-add carries the
+    flags they come back with."""
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "UPDATE watchlists SET in_brief = TRUE WHERE ticker = 'ACME'"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+    _add(wl, "ACME", JUN)
+    assert _flags(wl, "ACME")[-1] == ("add", True, False, False), (
+        "the re-add must carry the flags as they stand at the re-add"
+    )
+
+
+def test_a_source_or_notes_edit_is_still_a_non_event(wl):
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "UPDATE watchlists SET source = 'ui', notes = 'peer for /similar' "
+            " WHERE ticker = 'ACME'"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+
+
+def test_rewriting_a_flag_with_its_own_value_is_a_non_event(wl):
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "UPDATE watchlists SET in_brief = in_brief WHERE ticker = 'ACME'"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+
+
+def test_re_adding_an_already_active_row_records_no_event(wl):
+    """`/watchlist add` on an active ticker is a flag update, not a re-add."""
+    _add(wl, "ACME", JAN)
+    _add(wl, "ACME", JUN)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+    assert resolve_membership_at(date(2026, 2, 1), OWNER).tickers == ("ACME",)
+
+
+def test_correcting_a_removal_timestamp_is_refused(wl):
+    """Codex P2 on `8de8e82`. This test used to pin the opposite.
+
+    It asserted that correcting `removed_at` on an already-removed row
+    recorded no second event -- true, and the reason it is a defect:
+    `watchlists` took the new time while history kept the old one, so
+    as-of resolution and the source row disagreed for every date in
+    between, with nothing saying so. The earlier event cannot be amended,
+    because the append-only trigger forbids exactly that, so the edit is
+    refused instead of half-applied.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = :at WHERE ticker='ACME'"
+                ),
+                {"at": MAR + timedelta(days=1)},
+            )
+    assert "cannot be corrected" in str(excinfo.value)
+
+    # Source and history still agree, which is the whole point.
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+    with wl.begin() as conn:
+        assert conn.execute(
+            sqlalchemy.text("SELECT removed_at FROM watchlists WHERE ticker='ACME'")
+        ).scalar() == MAR
+
+
+def test_rewriting_a_timestamp_with_its_own_value_is_still_a_non_event(wl):
+    """The guard compares values, not which columns the SET names."""
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET removed_at = removed_at, "
+                "       added_at = added_at, source = 'ui' WHERE ticker='ACME'"
+            )
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+
+
+def test_editing_added_at_is_refused(wl):
+    """Same divergence, other column: history holds the original add."""
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET added_at = :at WHERE ticker='ACME'"
+                ),
+                {"at": JUN},
+            )
+    assert "immutable" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+
+
+# ---------------------------------------------------------------------------
+# Isolation and completeness
+# ---------------------------------------------------------------------------
+
+
+def test_owners_do_not_cross_talk(wl):
+    _add(wl, "ACME", JAN, owner="default")
+    _add(wl, "ACME", JAN, owner="someone@example.com")
+    _remove(wl, "ACME", MAR, owner="someone@example.com")
+
+    april = date(2026, 4, 15)
+    assert resolve_membership_at(april, "default").tickers == ("ACME",)
+    assert resolve_membership_at(april, "someone@example.com").tickers == ()
+
+
+def test_a_hard_delete_closes_the_open_interval(wl):
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("DELETE FROM watchlists WHERE ticker='ACME'"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+    # The row is gone from `watchlists` entirely, so no predicate over that
+    # table could report anything; the interval survives only here.
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == ()
+
+
+def test_a_removal_today_still_counts_as_a_member_today(wl):
+    """Pinning the day boundary as a contract, not an accident.
+
+    Resolution is membership at ANY point during the as-of day, which is
+    verbatim the predicate the inline semi-join used before this table
+    existed. Preserved deliberately so this change moves accuracy without
+    also moving semantics. The residual it carries: an edit made later in
+    the as-of day than the moment a run represents still counts. Closing
+    that needs a run-instant the pipeline does not currently carry, and
+    would be a second behaviour change riding on this one.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", datetime.now(timezone.utc))
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == ()
+
+
+def test_an_insert_that_arrives_already_removed_records_both_ends(wl):
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, removed_at) "
+                "VALUES (:u, 'ACME', :a, :r)"
+            ),
+            {"u": OWNER, "a": JAN, "r": MAR},
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+    assert resolve_membership_at(date(2026, 2, 1), OWNER).tickers == ("ACME",)
+    assert resolve_membership_at(date(2026, 4, 1), OWNER).tickers == ()
+
+
+# ---------------------------------------------------------------------------
+# Clocks: a later event must never carry an earlier timestamp
+# ---------------------------------------------------------------------------
+
+
+def test_a_re_add_is_never_stamped_before_the_removal_it_follows(wl):
+    """Codex P2 on `e3463b3`, reproduced against real concurrency first.
+
+    `NOW()` is `transaction_timestamp()` -- fixed when the transaction
+    BEGAN, not when the row changed. A writer whose transaction starts
+    before another transaction's removal, and which re-adds after that
+    removal commits, stamped its `add` EARLIER than the `remove` it
+    followed. `resolve_membership_at` orders by `effective_at` first, so it
+    picked the removal and reported a currently-active ticker as absent.
+
+    This is the normal interleaving under contention, not an exotic one:
+    the re-add blocks on the remover's row lock, so "started earlier,
+    committed later" is what waiting on that lock produces. Measured
+    against a live server before the fix:
+
+        id 6  remove  17:43:13.027248   (committed second)
+        id 7  add     17:43:11.024156   (written last, two seconds earlier)
+        resolver -> 'remove';  watchlists -> ACTIVE
+
+    `clock_timestamp()` reads the wall clock when the trigger fires, which
+    is necessarily after the removal it followed.
+    """
+    _add(wl, "ACME", JAN)
+
+    # A opens its transaction and touches the database, fixing its
+    # transaction_timestamp strictly before B runs at all.
+    conn_a = wl.connect()
+    tx_a = conn_a.begin()
+    conn_a.execute(sqlalchemy.text("SELECT 1"))
+    try:
+        # B removes and commits, entirely inside A's transaction.
+        with wl.begin() as conn_b:
+            conn_b.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = now() "
+                    " WHERE ticker = 'ACME' AND removed_at IS NULL"
+                )
+            )
+        # A now re-adds, through the ON CONFLICT shape all three writers use.
+        conn_a.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, 'ACME', now(), 'test') "
+                "ON CONFLICT (user_id, ticker) DO UPDATE SET removed_at = NULL"
+            ),
+            {"u": OWNER},
+        )
+        tx_a.commit()
+    finally:
+        conn_a.close()
+
+    events = _events(wl, "ACME")
+    assert [a for a, _ in events] == ["add", "remove", "add"]
+    _, removed_at = events[1]
+    _, readded_at = events[2]
+    assert readded_at > removed_at, (
+        f"the re-add is stamped {removed_at - readded_at} BEFORE the removal "
+        "it follows, so as-of resolution will pick the removal"
+    )
+
+    # The consequence, stated as the consumer sees it.
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == (
+        "ACME",
+    ), "a currently-active ticker resolved as absent"
+
+
+def test_a_removal_is_never_stamped_before_the_re_add_it_follows(wl):
+    """Codex P2 on `45846a3` -- the mirror of the case above, and a
+    correction to the reasoning I gave when I fixed that one.
+
+    I argued the removal branch should keep `NEW.removed_at` because it is
+    a value the writer *stated* rather than a clock read. That is true of a
+    backfill and false of production: both live removers spell it
+    `SET removed_at = NOW()`, and `NOW()` IS `transaction_timestamp()`. So
+    a removal whose transaction opened before a concurrent re-add committed
+    carries a stamp EARLIER than that re-add, the resolver picks the add,
+    and a removed ticker reports as active. Reproduced before fixing:
+
+        13  add     18:16:55.160928   (re-add, committed FIRST)
+        14  remove  18:16:54.164695   (removal, written LAST, a second earlier)
+        resolver -> 'add';  watchlists -> REMOVED
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+
+    # A (the remover) opens its transaction first and removes last.
+    conn_a = wl.connect()
+    tx_a = conn_a.begin()
+    conn_a.execute(sqlalchemy.text("SELECT 1"))
+    try:
+        # B re-adds and commits entirely inside A's transaction.
+        _add(wl, "ACME", JUN)
+        # A now removes, exactly as the production writers spell it.
+        conn_a.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET removed_at = now() "
+                " WHERE ticker = 'ACME' AND removed_at IS NULL"
+            )
+        )
+        tx_a.commit()
+    finally:
+        conn_a.close()
+
+    events = _events(wl, "ACME")
+    assert [a for a, _ in events] == ["add", "remove", "add", "remove"]
+    _, readded_at = events[2]
+    _, removed_at = events[3]
+    assert removed_at > readded_at, (
+        f"the removal is stamped {readded_at - removed_at} BEFORE the re-add "
+        "it follows, so as-of resolution will pick the re-add"
+    )
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == (
+        ()
+    ), "a removed ticker resolved as active"
+
+
+def test_a_deliberately_backdated_removal_is_kept_verbatim(wl):
+    """The fix above must not swallow a stated historical time.
+
+    Distinguishing them is the whole point: a value equal to
+    `transaction_timestamp()` came from `NOW()` and is a stale clock read;
+    anything else was chosen. Backdating is a live path here -- the
+    fixtures remove as of March, and a backfill states real dates -- and
+    rewriting those to execution time would destroy the as-of resolution
+    this table exists to provide.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    assert [(a, ts) for a, ts in _events(wl, "ACME")][1][1] == MAR
+
+    # And the as-of answer that depends on it.
+    assert resolve_membership_at(date(2026, 2, 1), OWNER).tickers == ("ACME",)
+    assert resolve_membership_at(date(2026, 4, 1), OWNER).tickers == ()
+
+
+def test_a_backdated_removal_before_a_re_add_is_refused(wl):
+    """Codex P2 on `2d06c20`. The backdate exemption had a hole.
+
+    Preserving a deliberately-stated `removed_at` is right, and
+    `test_a_deliberately_backdated_removal_is_kept_verbatim` pins it -- but
+    that test only ever exercised a FIRST removal, with no prior re-add for
+    the backdate to sort behind. Once a ticker has been removed and
+    re-added, a removal backdated before that re-add leaves the `add` as
+    the newest event and the resolver reports a REMOVED ticker as active,
+    in a table that forbids its own correction.
+
+    Reproduced against real SQL before the guard existed:
+
+        3  add     2026-09-26 17:09:00   (the re-add)
+        4  remove  2026-02-01 00:00:00   (written LAST, seven months earlier)
+        resolver -> 'add';  watchlists -> REMOVED
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)          # re-add: stamped at execution time
+
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = :at "
+                    " WHERE ticker='ACME' AND removed_at IS NULL"
+                ),
+                {"at": datetime(2026, 2, 1, tzinfo=timezone.utc)},
+            )
+    assert "precedes" in str(excinfo.value)
+
+    # Nothing was appended, and the ticker is still active in both sources.
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove", "add"]
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == (
+        "ACME",
+    )
+
+
+def test_a_stated_time_after_the_latest_transition_is_kept_verbatim(wl):
+    """The guard bounds the exemption; it must not abolish it.
+
+    Two stated times in order are both recorded exactly as given. This
+    used to be asserted with `now() + 5s`, which is no longer a legal
+    value -- see `test_a_future_dated_removal_is_refused` -- so it is
+    asserted on a pair that is ordered and entirely in the past.
+    """
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists "
+                "  (user_id, ticker, added_at, removed_at, source) "
+                "VALUES (:u, 'ACME', :added, :removed, 'test')"
+            ),
+            {"u": OWNER, "added": JAN, "removed": MAR},
+        )
+    assert _events(wl, "ACME") == [("add", JAN), ("remove", MAR)], (
+        "an ordered pair of stated times was refused or re-stamped"
+    )
+
+
+def test_a_live_removal_after_a_re_add_still_works(wl):
+    """The production removal path is `SET removed_at = NOW()`.
+
+    After a re-add the newest recorded transition is `clock_timestamp()`,
+    so every stated value that would clear the ordering guard is now in
+    the future and therefore refused. That must not reach the path every
+    real remover uses, which is exempt because its value IS
+    `transaction_timestamp()`.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)                      # re-add: stamped live
+
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET removed_at = NOW() "
+                " WHERE ticker='ACME' AND removed_at IS NULL"
+            )
+        )
+    events = _events(wl, "ACME")
+    assert [a for a, _ in events] == ["add", "remove", "add", "remove"]
+    assert events[3][1] > events[2][1], (
+        "the live removal did not sort after the re-add it follows"
+    )
+
+
+def test_a_future_dated_removal_is_refused(wl):
+    """Codex P2 on `966ed12`, and the root is wider than the report.
+
+    `watchlists` encodes membership as `removed_at IS NULL` and NO live
+    reader looks at the value -- `load_watchlist`, the two discord
+    handlers, `signal_monitor` and both partial indexes all test only for
+    NULL. So a future-dated `removed_at` reads as REMOVED NOW, while
+    `watchlist_history` does not apply the event until that date. The two
+    sources disagree from the moment it is written, with no re-add
+    involved. Reproduced against a live server:
+
+        UPDATE watchlists SET removed_at = now() + interval '30 days'
+
+        watchlists (removed_at IS NULL) -> REMOVED
+        resolver as of today            -> 'add'   (ACTIVE)
+
+    The table cannot express "scheduled removal", so the trigger refuses
+    to record one rather than let the two readings drift apart.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = :at "
+                    " WHERE ticker='ACME' AND removed_at IS NULL"
+                ),
+                {"at": datetime.now(timezone.utc) + timedelta(days=30)},
+            )
+    assert "future" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+
+
+def test_a_future_dated_removal_cannot_strand_a_later_re_add(wl):
+    """The case as Codex framed it, closed at the point of creation.
+
+    With a future `remove` on the log, a live re-add appends an `add` at
+    `clock_timestamp()` -- which is EARLIER than that remove, so the
+    future removal stays the newest event and the ticker flips to absent
+    once its date arrives while `watchlists` still says active:
+
+        1 add     2026-01-10
+        2 remove  2026-10-26 18:19:21   <- stated, 30 days out
+        3 add     2026-09-26 18:19:21   <- the live re-add, EARLIER
+
+    Guarding the re-add instead would strand the row: its removal can no
+    longer be corrected either (the append-only correction guard), so it
+    could never be re-added again. Refusing the future removal is what
+    keeps the state reachable.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception):
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = :at "
+                    " WHERE ticker='ACME' AND removed_at IS NULL"
+                ),
+                {"at": datetime.now(timezone.utc) + timedelta(days=30)},
+            )
+
+    # The row is untouched, so the ordinary remove / re-add cycle still runs.
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)
+    actions = [a for a, _ in _events(wl, "ACME")]
+    assert actions == ["add", "remove", "add"]
+    events = _events(wl, "ACME")
+    assert events[2][1] > events[1][1], "the re-add did not sort after the removal"
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+
+
+def test_a_future_dated_insert_is_refused(wl):
+    """Same rule on the INSERT branch, which takes stated times too."""
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                    "VALUES (:u, 'ACME', :at, 'test')"
+                ),
+                {"u": OWNER, "at": datetime.now(timezone.utc) + timedelta(days=7)},
+            )
+    assert "future" in str(excinfo.value)
+    assert _events(wl, "ACME") == []
+
+
+def test_an_insert_backdated_behind_recorded_history_is_refused(wl):
+    """Codex P2 on `af82694`. The INSERT branch had the same hole.
+
+    `af82694` bounded the backdate exemption on the UPDATE removal path
+    and left the INSERT path taking `added_at` on trust. Reached through
+    a hard delete and a re-insert, which is an ad-hoc backfill shape
+    rather than anything a writer does today:
+
+        add    2026-01-10
+        remove 2026-03-10
+        DELETE FROM watchlists ...        (records nothing: already removed)
+        INSERT ... added_at = 2026-02-01  (backdated BEHIND the removal)
+
+    `watchlists` now says active; history's newest event is still the
+    March removal, so `resolve_membership_at` says absent. The same
+    two-sources-disagree failure the removal guard closed, entered from
+    the other side.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "DELETE FROM watchlists WHERE user_id = :u AND ticker = 'ACME'"
+            ),
+            {"u": OWNER},
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"], (
+        "the hard delete of an already-removed row should record nothing"
+    )
+
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                    "VALUES (:u, 'ACME', :at, 'test')"
+                ),
+                {"u": OWNER, "at": datetime(2026, 2, 1, tzinfo=timezone.utc)},
+            )
+    assert "precedes" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"], (
+        "the refused insert still appended to an append-only log"
+    )
+
+
+def test_an_insert_carrying_an_inverted_pair_is_refused(wl):
+    """One statement, both ends, `removed_at` before `added_at`.
+
+    The INSERT branch writes both events from a single row, so a
+    contradictory pair inverts the log without any prior history to sort
+    behind. I flagged this on the `2d06c20` thread as untouched and
+    asked whether to close it; the answer was yes.
+    """
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlists "
+                    "  (user_id, ticker, added_at, removed_at, source) "
+                    "VALUES (:u, 'ACME', :added, :removed, 'test')"
+                ),
+                {"u": OWNER, "added": MAR, "removed": JAN},
+            )
+    assert "precedes" in str(excinfo.value)
+    assert _events(wl, "ACME") == [], "an inverted pair was recorded anyway"
+
+
+def test_a_first_insert_with_a_historical_added_at_is_still_allowed(wl):
+    """The guard bounds the exemption; it must not abolish it.
+
+    A ticker with no recorded history can be inserted at any date -- that
+    is how a backfill, a fixture and the seed all work, and refusing it
+    would break the ordinary case to close the inverted one.
+    """
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists "
+                "  (user_id, ticker, added_at, removed_at, source) "
+                "VALUES (:u, 'ACME', :added, :removed, 'test')"
+            ),
+            {"u": OWNER, "added": JAN, "removed": MAR},
+        )
+    assert _events(wl, "ACME") == [("add", JAN), ("remove", MAR)], (
+        "a legitimate historical interval was refused or re-stamped"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The append-only guarantee
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE watchlist_history SET action = 'remove' WHERE ticker = 'ACME'",
+        "DELETE FROM watchlist_history WHERE ticker = 'ACME'",
+    ],
+)
+def test_history_rejects_update_and_delete(wl, statement):
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text(statement))
+    assert "append-only" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+
+
+# ---------------------------------------------------------------------------
+# Identity changes: the one mutation the trigger cannot interpret
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE watchlists SET ticker = 'META' WHERE ticker = 'ACME'",
+        "UPDATE watchlists SET user_id = 'someone@example.com' WHERE ticker = 'ACME'",
+    ],
+)
+def test_changing_a_rows_identity_is_refused(wl, statement):
+    """Codex P2 on `b0f9d73`, reproduced against real SQL before fixing.
+
+    `(user_id, ticker)` is the primary key, and Postgres lets you UPDATE a
+    primary key. The UPDATE branch only fires on a transition of the
+    `removed_at IS NULL` predicate, so a key change on an active row
+    matched neither arm and recorded nothing: history kept an `add` for the
+    OLD key with no `remove` (active forever) and never saw the NEW key at
+    all (never a member). Both answers wrong, in an append-only table that
+    cannot be corrected afterwards.
+
+    Refusing rather than recording is deliberate. A key change has two
+    readings the database cannot tell apart -- a corporate-action rename
+    that should preserve one interval, and a membership handoff that should
+    close one and open another -- and writing the wrong one into an
+    append-only log is irreversible. DELETE + INSERT expresses the second
+    reading exactly, through branches the trigger already records
+    correctly, so the refusal costs an error message and buys an explicit
+    choice. No writer performs a key update today: all three go through
+    `ON CONFLICT (user_id, ticker) DO UPDATE`, whose SET list never
+    contains the conflict target.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text(statement))
+    assert "identity" in str(excinfo.value).lower()
+
+    # The refusal rolled the statement back: state and history both intact.
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"]
+    with wl.begin() as conn:
+        assert conn.execute(
+            sqlalchemy.text("SELECT ticker, user_id FROM watchlists")
+        ).fetchall() == [("ACME", OWNER)]
+
+
+def test_the_refusal_names_the_route_that_does_work(wl):
+    """An error that only says no would push the operator to disable it."""
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text("UPDATE watchlists SET ticker='META' WHERE ticker='ACME'")
+            )
+    message = str(excinfo.value)
+    assert "DELETE" in message and "INSERT" in message
+
+
+def test_delete_then_insert_records_the_handoff(wl):
+    """The route the refusal names has to actually produce a correct log."""
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("DELETE FROM watchlists WHERE ticker='ACME'"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, 'META', :at, 'test')"
+            ),
+            {"u": OWNER, "at": JUN},
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+    assert [a for a, _ in _events(wl, "META")] == ["add"]
+
+    # The DELETE branch stamps its `remove` at NOW() -- the moment the row
+    # actually stopped existing -- not at META's `added_at`. So ACME and
+    # META genuinely overlap between JUN and today, and asserting they do
+    # not would be asserting a backdate. February predates META; tomorrow
+    # postdates ACME's removal.
+    assert resolve_membership_at(date(2026, 2, 1), OWNER).tickers == ("ACME",)
+    tomorrow = date.today() + timedelta(days=1)
+    assert resolve_membership_at(tomorrow, OWNER).tickers == ("META",)
+
+
+def test_an_unchanged_key_in_the_set_list_is_not_an_identity_change(wl):
+    """Writing the same value must not trip the guard.
+
+    `ON CONFLICT (user_id, ticker) DO UPDATE` is how all three writers
+    re-add, and a guard comparing "is the key in the SET list" rather than
+    "did the key change" would reject every re-add in production.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "UPDATE watchlists SET ticker = ticker, user_id = user_id, "
+                "       removed_at = NULL WHERE ticker = 'ACME'"
+            )
+        )
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove", "add"]
+
+
+# ---------------------------------------------------------------------------
+# Resolution quality
+# ---------------------------------------------------------------------------
+
+
+def test_an_empty_seed_still_marks_pre_install_cutoffs_approximate(wl):
+    """Codex P2 on `fab26ec`, and this test used to assert the defect.
+
+    It was `test_resolution_is_exact_when_nothing_was_seeded`, and that is
+    exactly the anomaly: the horizon was read off the newest seed ROW, so a
+    database whose `watchlists` was already empty at install -- rows hard
+    deleted before any of this existed -- got no seed rows, a NULL horizon,
+    and `exact` for every historical cutoff. Reproduced before the fix:
+
+        watchlists 0 | watchlist_history 0 | horizon NULL
+        resolve_membership_at(2026-04-01) -> tickers=()  resolution='exact'
+
+    Pre-install membership is unrecoverable whether or not the seed found
+    anything, so the horizon belongs to the install. Nothing here can tell
+    "never had members" from "had members, deleted before we watched", and
+    over-warning is the side of that error to be on.
+    """
+    _add(wl, "ACME", JAN)
+    resolved = resolve_membership_at(date(2026, 4, 1), OWNER)
+    assert resolved.horizon is not None, (
+        "no horizon at all: a database with an empty seed claims to know "
+        "about dates before it existed"
+    )
+    assert resolved.resolution == "approximate"
+
+
+def test_the_install_day_itself_is_approximate(wl):
+    """Codex P2 on `d8b0332`. The horizon is an instant; as_of is a day.
+
+    The comparison was `as_of < horizon.date()`, so the install date came
+    back `exact` -- but the membership query spans the whole calendar day
+    (`day_start` 00:00 to `day_end` next 00:00) while observation began
+    partway through it. A ticker hard-deleted at 09:00 on an install day
+    that started recording at 22:30 is in neither the seed nor the log, so
+    resolving that date omits a member and calls the answer precise.
+
+    The horizon's own day is therefore the LAST approximate one, not the
+    first exact one.
+
+    Ask the resolver which day that is rather than assuming it is today.
+    A test database outlives the run that created it, so the install day
+    equals `date.today()` only when the schema happened to be loaded on the
+    same calendar day -- always true of CI's ephemeral Postgres, and true of
+    a local one right up until midnight, where an earlier version of this
+    test asserted `approximate` for a day the resolver had correctly called
+    `exact`.
+    """
+    _add(wl, "ACME", JAN)
+    probe = resolve_membership_at(date.today(), OWNER)
+    assert probe.horizon is not None
+    resolved = resolve_membership_at(probe.horizon.date(), OWNER)
+    assert resolved.resolution == "approximate", (
+        "the install day was reported exact, but only part of it was "
+        "observed -- anything removed earlier that day is invisible"
+    )
+
+
+def test_a_cutoff_after_the_install_horizon_is_exact(wl):
+    """The horizon must bound the claim, not abolish it.
+
+    After install, every transition is trigger-recorded, so resolution is
+    exact -- otherwise the label would carry no information at all.
+    """
+    _add(wl, "ACME", JAN)
+    resolved = resolve_membership_at(date.today() + timedelta(days=1), OWNER)
+    assert resolved.resolution == "exact"
+    assert resolved.tickers == ("ACME",)
+
+
+def test_resolution_is_approximate_before_the_seed_horizon(wl):
+    """A seeded row inherits `watchlists`' blind spot, and says so."""
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        # A seed-origin row is not trigger-written, so it declares itself.
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_direct_insert = 'on'"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlist_history "
+                "  (user_id, ticker, action, effective_at, recorded_at, origin) "
+                "VALUES (:u, 'OLDCO', 'add', :eff, :rec, 'seed')"
+            ),
+            {"u": OWNER, "eff": JAN, "rec": datetime(2026, 5, 1, tzinfo=timezone.utc)},
+        )
+
+    before = resolve_membership_at(date(2026, 4, 1), OWNER)
+    assert before.resolution == "approximate"
+    assert before.horizon is not None
+
+    # Post-install, not merely post-seed-row: the horizon is now the later
+    # of the two, so a 2026-06-01 cutoff is still before this database existed.
+    after = resolve_membership_at(date.today() + timedelta(days=1), OWNER)
+    assert after.resolution == "exact"
+
+
+def test_the_seed_horizon_is_the_wall_clock_not_the_transaction_start(wl):
+    """Codex P2 on `af82694`. The horizon was read off the wrong clock.
+
+    `recorded_at` defaulted to `NOW()`, which IS
+    `transaction_timestamp()` -- fixed when the applier's transaction
+    began, not when the seed ran. The seed sits at the end of an ATOMIC
+    group that first takes `LOCK TABLE watchlists IN SHARE ROW EXCLUSIVE
+    MODE`, so it runs an unbounded wait after that stamp whenever a
+    writer holds the table.
+
+    `_HORIZON_SQL` reads `max(recorded_at) WHERE origin = 'seed'` and
+    `resolve_membership_at` marks every cutoff before it `approximate`.
+    An under-reported horizon therefore marks a genuinely-blind cutoff
+    `exact` -- the one direction that matters, because it is a claim of
+    precision the data cannot support. Over-reporting only over-warns.
+
+    Driven through the statement `gcp/schema.sql` actually ships.
+    """
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, 'OLDCO', :at, 'test')"
+            ),
+            {"u": OWNER, "at": JAN},
+        )
+        # The trigger recorded that add; the seed's own guard is "history
+        # is entirely empty", so clear it and let the shipped statement run.
+        conn.execute(
+            sqlalchemy.text("SET LOCAL watchlist_history.allow_truncate = 'on'")
+        )
+        conn.execute(
+            sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY")
+        )
+
+    with wl.begin() as conn:
+        txn_start = conn.execute(
+            sqlalchemy.text("SELECT transaction_timestamp()")
+        ).scalar()
+        # Stand in for the lock wait: any delay between transaction start
+        # and the seed reproduces it.
+        conn.execute(sqlalchemy.text("SELECT pg_sleep(0.25)"))
+        # The seed is not trigger-written, so it declares itself exactly as
+        # gcp/schema.sql does around the shipped statement.
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_direct_insert = 'on'"))
+        conn.execute(sqlalchemy.text(_shipped_seed_statement()))
+        horizon = conn.execute(
+            sqlalchemy.text(
+                "SELECT max(recorded_at) FROM watchlist_history "
+                " WHERE origin = 'seed'"
+            )
+        ).scalar()
+
+    assert horizon is not None, "the shipped seed statement wrote nothing"
+    assert horizon > txn_start, (
+        "the seed horizon was stamped at transaction start "
+        f"({txn_start}), not when the seed ran; a cutoff in the gap is "
+        "reported as `exact` while the interval it covers is unrecoverable"
+    )
+
+
+def test_a_recorded_event_is_stamped_when_it_was_written(wl):
+    """Same clock, the trigger's side of it.
+
+    `recorded_at` is documented as when the ROW was written, while
+    `effective_at` for a live event is `clock_timestamp()`. Leaving the
+    default at `NOW()` made every live event claim to have been recorded
+    before it happened, which is incoherent on its face and is the same
+    defect the seed horizon suffers.
+    """
+    with wl.begin() as conn:
+        txn_start = conn.execute(
+            sqlalchemy.text("SELECT transaction_timestamp()")
+        ).scalar()
+        conn.execute(sqlalchemy.text("SELECT pg_sleep(0.25)"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, source) "
+                "VALUES (:u, 'ACME', :at, 'test')"
+            ),
+            {"u": OWNER, "at": JAN},
+        )
+        recorded_at, effective_at = conn.execute(
+            sqlalchemy.text(
+                "SELECT recorded_at, effective_at FROM watchlist_history "
+                " WHERE ticker = 'ACME'"
+            )
+        ).fetchone()
+
+    assert recorded_at > txn_start, (
+        f"recorded_at came from transaction start ({txn_start}), not the "
+        "write"
+    )
+    assert recorded_at >= effective_at, (
+        f"the row claims it was recorded ({recorded_at}) before the event "
+        f"it records happened ({effective_at})"
+    )
+
+
+def test_truncating_watchlists_closes_every_open_interval(wl):
+    """Codex P2 on `7fba374`. A row trigger does not fire on TRUNCATE.
+
+    Postgres does not treat truncation as row deletes, so clearing
+    `watchlists` left every `add` in history unclosed. Reproduced against
+    a live server before the statement trigger existed:
+
+        before truncate:  watchlists 1 | history 1
+        after  truncate:  watchlists 0 | history 1
+        history: add 2026-01-10       <- no remove, ever
+
+    `watchlists` is then empty while `resolve_membership_at` still reports
+    the ticker a member, permanently. Reachable: `db_query_cr.sh --commit`
+    runs arbitrary SQL, which is how the earlier comment claiming
+    truncation was unreachable from application code was wrong -- it is
+    not reachable from the APPLICATION, but it is reachable.
+    """
+    _add(wl, "ACME", JAN)
+    _add(wl, "BETA", JAN)
+    _remove(wl, "BETA", MAR)
+
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlists"))
+
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"], (
+        "truncation left ACME's interval open, so it resolves as a member "
+        "of a watchlist that no longer has any rows"
+    )
+    # BETA was already removed; truncation must not record a second remove.
+    assert [a for a, _ in _events(wl, "BETA")] == ["add", "remove"], (
+        "truncation recorded a duplicate removal for an already-removed row"
+    )
+    assert resolve_membership_at(date.today() + timedelta(days=1), OWNER).tickers == (), (
+        "the resolver still reports members after the source was emptied"
+    )
+
+
+def test_the_truncate_removal_is_stamped_at_execution(wl):
+    """Same clock rule as every other live transition."""
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        before = conn.execute(sqlalchemy.text("SELECT clock_timestamp()")).scalar()
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlists"))
+    events = _events(wl, "ACME")
+    assert events[1][0] == "remove"
+    assert events[1][1] >= before, (
+        f"the truncate removal was stamped {events[1][1]}, before the "
+        f"truncate ran ({before})"
+    )
+
+
+def test_a_legacy_future_dated_removal_is_refused_by_the_seed(wl):
+    """Codex P2 on `7fba374`. The seed bypassed the live validator.
+
+    The trigger now refuses a future-dated `removed_at`, but the seed is a
+    plain INSERT ... SELECT into `watchlist_history` and the append-only
+    trigger only covers UPDATE and DELETE -- so a row written BEFORE this
+    schema existed, when a future stamp was still allowed, would be copied
+    into the log unchecked. `watchlists` reads it as removed immediately
+    (the value is non-NULL) while the log would not apply it until the
+    date arrives, and the resolution would still be labelled `exact`.
+
+    Measured against production 2026-09-26 before adding this guard: 18
+    rows, 2 removed, 0 future-dated, 0 inverted, newest removal
+    2026-04-30 -- so the real seed is unaffected. The guard is for the
+    database this cannot be proven about at apply time.
+
+    Simulated by disabling the trigger, which is exactly what "written
+    before this schema existed" means.
+    """
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "ALTER TABLE watchlists DISABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, removed_at, source) "
+                "VALUES (:u, 'OLDCO', :added, :removed, 'legacy')"
+            ),
+            {"u": OWNER, "added": JAN,
+             "removed": datetime.now(timezone.utc) + timedelta(days=30)},
+        )
+        conn.execute(sqlalchemy.text(
+            "ALTER TABLE watchlists ENABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_truncate = 'on'"))
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY"))
+
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text(_shipped_seed_guard()))
+    msg = str(excinfo.value)
+    assert "OLDCO" in msg and "future" in msg.lower(), msg
+
+
+def test_the_seed_guard_passes_on_ordinary_legacy_rows(wl):
+    """It must refuse only the unrepresentable, not ordinary history.
+
+    Production's shape exactly: some active, some removed in the past.
+    """
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "ALTER TABLE watchlists DISABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlists (user_id, ticker, added_at, removed_at, source) "
+                "VALUES (:u,'SPY',:jan,NULL,'legacy'), (:u,'MSFT',:jan,:mar,'legacy')"
+            ),
+            {"u": OWNER, "jan": JAN, "mar": MAR},
+        )
+        conn.execute(sqlalchemy.text(
+            "ALTER TABLE watchlists ENABLE TRIGGER trg_watchlists_membership"))
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_truncate = 'on'"))
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY"))
+        conn.execute(sqlalchemy.text(_shipped_seed_guard()))
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_direct_insert = 'on'"))
+        conn.execute(sqlalchemy.text(_shipped_seed_statement()))
+
+    assert sorted(a for a, _ in _events(wl, "SPY")) == ["add"]
+    assert sorted(a for a, _ in _events(wl, "MSFT")) == ["add", "remove"]
+
+
+def test_truncating_the_history_is_refused(wl):
+    """Codex P2 on `f94ce61`. The hole I left open, and defended.
+
+    Truncating the log while `watchlists` stays populated does not merely
+    lose history -- it produces a confident wrong answer. Reproduced on a
+    live server before the guard existed:
+
+        watchlists 1 row (ACME, active) | watchlist_history truncated
+        resolve_membership_at(today) -> tickers=()  resolution='exact'
+
+    Empty, and asserted EXACT, because `_HORIZON_SQL` reads the seed rows'
+    max(recorded_at) and there are none left to find. Every replay loses
+    its analog universe silently.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history"))
+    assert "append-only" in str(excinfo.value)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add"], "the log was erased anyway"
+    assert resolve_membership_at(date.today(), OWNER).tickers == ("ACME",)
+
+
+def test_the_truncate_refusal_has_an_explicit_transaction_scoped_opt_in(wl):
+    """The suite needs a reset; it declares one rather than leaving a hole.
+
+    Also pins that the opt-in does NOT leak: a later transaction that has
+    not set it is refused again, which is what makes `SET LOCAL` the right
+    mechanism rather than a session GUC.
+    """
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(
+            sqlalchemy.text("SET LOCAL watchlist_history.allow_truncate = 'on'")
+        )
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history"))
+    assert _events(wl, "ACME") == []
+
+    _add(wl, "BETA", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history"))
+    assert "append-only" in str(excinfo.value), (
+        "the opt-in leaked past its transaction"
+    )
+
+
+def test_a_fabricated_event_cannot_be_inserted_directly(wl):
+    """Codex P2 on `78e3bc1`. INSERT was the hole the other guards left.
+
+    UPDATE, DELETE and TRUNCATE are all refused, so nothing stopped a row
+    being ADDED that `watchlists` never agreed to. Reproduced on a live
+    server before the guard existed:
+
+        watchlists: REAL                   (one trigger-recorded add)
+        INSERT ... ('GHOST','add', now() - 200 days)  -> accepted silently
+        resolve_membership_at(today - 100) -> tickers=('GHOST',)
+        DELETE FROM watchlist_history WHERE ticker='GHOST'
+            -> ERROR: watchlist_history is append-only
+
+    Served as authoritative history, and permanent: the append-only guard
+    then refuses every correction. The other guards make it worse.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlist_history "
+                    "  (user_id, ticker, action, effective_at, origin) "
+                    "VALUES (:u, 'GHOST', 'add', :eff, 'trigger')"
+                ),
+                {"u": OWNER, "eff": JAN},
+            )
+    assert "does not accept them" in str(excinfo.value)
+    assert [t for t in resolve_membership_at(date.today(), OWNER).tickers] == [
+        "ACME"
+    ], "the log disagrees with watchlists"
+
+
+def test_the_membership_trigger_still_writes_through_the_insert_guard(wl):
+    """The guard must not break the one writer it exists to protect.
+
+    `pg_trigger_depth()` is the discriminator: a trigger-written row
+    arrives at depth 2, a client INSERT at depth 1.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove", "add"]
+
+
+def test_truncating_watchlists_still_records_through_the_insert_guard(wl):
+    """The truncate recorder writes through the same guard, from a
+    STATEMENT trigger rather than a row one."""
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlists"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+
+
+def test_the_insert_refusal_has_an_explicit_transaction_scoped_opt_in(wl):
+    """The seed is not trigger-written, so it needs a declared way in.
+
+    Pinned as transaction-scoped for the same reason as the truncate
+    opt-in: a later transaction that has not declared it is refused again.
+    """
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_direct_insert = 'on'"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlist_history "
+                "  (user_id, ticker, action, effective_at, origin) "
+                "VALUES (:u, 'OLDCO', 'add', :eff, 'seed')"
+            ),
+            {"u": OWNER, "eff": JAN},
+        )
+    assert sorted(t for t in resolve_membership_at(date.today(), OWNER).tickers) == [
+        "ACME",
+        "OLDCO",
+    ]
+
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlist_history "
+                    "  (user_id, ticker, action, effective_at, origin) "
+                    "VALUES (:u, 'GHOST', 'add', :eff, 'seed')"
+                ),
+                {"u": OWNER, "eff": JAN},
+            )
+    assert "does not accept them" in str(excinfo.value), (
+        "the opt-in leaked past its transaction"
+    )
+
+
+def test_the_install_horizon_cannot_be_erased(wl):
+    """Losing the row re-opens the hole it closes, so it is immutable."""
+    for stmt in (
+        "UPDATE watchlist_history_origin SET installed_at = now()",
+        "DELETE FROM watchlist_history_origin",
+        "TRUNCATE TABLE watchlist_history_origin",
+    ):
+        with pytest.raises(Exception) as excinfo:
+            with wl.begin() as conn:
+                conn.execute(sqlalchemy.text(stmt))
+        assert "append-only" in str(excinfo.value), stmt
+
+
+def test_the_install_horizon_survives_a_re_apply(wl):
+    """`ON CONFLICT DO NOTHING` -- a horizon that moved forward on every
+    apply would silently re-mark settled history as approximate."""
+    with wl.begin() as conn:
+        first = conn.execute(sqlalchemy.text(
+            "SELECT installed_at FROM watchlist_history_origin")).scalar()
+        conn.execute(sqlalchemy.text(
+            "INSERT INTO watchlist_history_origin (singleton) VALUES (TRUE) "
+            "ON CONFLICT (singleton) DO NOTHING"))
+        again = conn.execute(sqlalchemy.text(
+            "SELECT installed_at FROM watchlist_history_origin")).scalar()
+    assert first == again, "the horizon moved on re-apply"
+
+
+def test_an_empty_watchlist_resolves_to_an_empty_universe(wl):
+    """Empty is a legitimate answer and must not raise; only a broken
+    database raises. The caller distinguishes them by exception, never by
+    an empty tuple."""
+    resolved = resolve_membership_at(date.today() + timedelta(days=1), OWNER)
+    assert resolved.tickers == ()
+    assert resolved.resolution == "exact"
+
+
+# ---------------------------------------------------------------------------
+# Agreement with the predicate this replaces, on the cases it could handle
+# ---------------------------------------------------------------------------
+
+
+def test_matches_the_legacy_predicate_on_production_history(wl):
+    """The live `watchlists` rows as measured 2026-09-17.
+
+    MSFT removed 2026-04-28 and SPX removed 2026-04-30 with no re-add,
+    MCK added 2026-05-04: all three are cases the legacy predicate gets
+    right, so the new resolver must agree with it exactly. Divergence
+    here would mean the history path changed the answer for ordinary
+    rows, not just for erased intervals.
+    """
+    seed = datetime(2026, 4, 27, 20, 39, 48, tzinfo=timezone.utc)
+    rows = [
+        ("SPY", seed, None), ("QQQ", seed, None), ("IWM", seed, None),
+        ("AVGO", seed, None),
+        ("MSFT", seed, datetime(2026, 4, 28, 9, 8, 57, tzinfo=timezone.utc)),
+        ("SPX", seed, datetime(2026, 4, 30, 16, 46, 55, tzinfo=timezone.utc)),
+        ("NVDA", datetime(2026, 4, 29, 16, 41, 2, tzinfo=timezone.utc), None),
+        ("MCK", datetime(2026, 5, 4, 0, 46, 31, tzinfo=timezone.utc), None),
+    ]
+    for ticker, added, removed in rows:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlists (user_id, ticker, added_at, removed_at) "
+                    "VALUES (:u, :t, :a, :r)"
+                ),
+                {"u": OWNER, "t": ticker, "a": added, "r": removed},
+            )
+
+    for cutoff in (
+        date(2026, 4, 26), date(2026, 4, 27), date(2026, 4, 29),
+        date(2026, 4, 30), date(2026, 5, 3), date(2026, 5, 4),
+        date(2026, 9, 15),
+    ):
+        assert list(resolve_membership_at(cutoff, OWNER).tickers) == _legacy(
+            wl, cutoff
+        ), f"diverged from the legacy predicate on {cutoff}"
+
+    # And the specific claims made in the PR description.
+    april_29 = resolve_membership_at(date(2026, 4, 29), OWNER).tickers
+    assert "SPX" in april_29, "SPX was active on 2026-04-29"
+    assert "MCK" not in april_29, "MCK was watchlisted five days later"
+
+
+# ---------------------------------------------------------------------------
+# End to end: history -> resolver -> summarizer -> bar query
+# ---------------------------------------------------------------------------
+
+
+def _seed_bars(engine, ticker: str, n: int = 300, seed: int = 1) -> None:
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    close = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.012, n)))
+    d0 = date(2025, 1, 1)
+    rows = [
+        {
+            "t": ticker,
+            "d": d0 + timedelta(days=i),
+            "o": float(close[i] * 1.001),
+            "h": float(close[i] * 1.01),
+            "l": float(close[i] * 0.99),
+            "c": float(close[i]),
+            "v": int(rng.integers(1_000_000, 5_000_000)),  # volume is BIGINT
+        }
+        for i in range(n)
+    ]
+    with engine.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO market_data_daily "
+                "  (ticker, date, open, high, low, close, volume) "
+                "VALUES (:t, :d, :o, :h, :l, :c, :v) "
+                "ON CONFLICT (ticker, date) DO NOTHING"
+            ),
+            rows,
+        )
+
+
+def test_a_re_add_changes_which_peers_a_replay_actually_pulls(wl):
+    """The whole chain, against real SQL.
+
+    The unit tests stub the resolver and assert the pull is bounded by
+    whatever it returns; the earlier tests here assert the resolver's
+    answer. This one closes the loop: an interval erased in `watchlists`
+    must change the bars a replay of that interval actually reads, which
+    is the thing that moves the forward-return statistics.
+    """
+    from lib.agents.summarizers import _build_cross_ticker_history
+
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE market_data_daily"))
+    for i, tk in enumerate(("TGT", "KEEP", "GONE")):
+        _seed_bars(wl, tk, seed=11 + i)
+
+    _add(wl, "KEEP", JAN)
+    _add(wl, "GONE", JAN)
+    _remove(wl, "GONE", MAR)          # removed before the replay date
+    _add(wl, "GONE", JUN)             # re-added later; erases the interval
+
+    april = date(2026, 4, 15)
+    resolved = resolve_membership_at(april, OWNER)
+    assert resolved.tickers == ("KEEP",), resolved.tickers
+
+    frame, reason = _build_cross_ticker_history("TGT", str(april), universe=resolved)
+    assert frame is not None, reason
+    assert sorted(frame["ticker"].unique()) == ["KEEP"], (
+        "the replay pulled bars for a ticker that was not on the watchlist "
+        "on that date"
+    )
+
+    # Today, GONE is back, so it is a peer again.
+    now = resolve_membership_at(date.today(), OWNER)
+    assert sorted(now.tickers) == ["GONE", "KEEP"]
+    frame_now, _ = _build_cross_ticker_history("TGT", str(date.today()), universe=now)
+    assert sorted(frame_now["ticker"].unique()) == ["GONE", "KEEP"]
+
+
+def test_the_bar_query_binds_a_list_through_the_production_driver(wl):
+    """`= ANY(:tickers)` with a Python list is a driver-level assumption.
+
+    The engine here is pg8000 — the same driver the Cloud SQL Connector
+    uses in production, and the one whose paramstyle already differs from
+    psycopg2 elsewhere in this module. An empty list must bind and return
+    nothing rather than raise a syntax error.
+    """
+    from lib.agents.summarizers import _query_strict
+
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE market_data_daily"))
+    _seed_bars(wl, "KEEP", n=5)
+
+    got = _query_strict(
+        "SELECT m.ticker, m.date FROM market_data_daily m "
+        "WHERE m.ticker = ANY(:tickers) AND m.date < CAST(:cutoff AS date)",
+        {"tickers": ["KEEP"], "cutoff": "2026-01-01"},
+    )
+    assert len(got) == 5
+
+    empty = _query_strict(
+        "SELECT m.ticker FROM market_data_daily m WHERE m.ticker = ANY(:tickers)",
+        {"tickers": []},
+    )
+    assert len(empty) == 0

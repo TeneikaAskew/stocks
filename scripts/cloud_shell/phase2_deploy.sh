@@ -104,11 +104,31 @@ for i in {1..15}; do
     sleep 1
 done
 
-PGPASSWORD="$DB_PASS" psql \
-    -h 127.0.0.1 -p $PROXY_PORT \
-    -U "$DB_USER" -d "$DB_NAME" \
-    -v ON_ERROR_STOP=1 \
-    -f gcp/schema.sql
+# Applied through gcp/apply_schema.py, NOT `psql -f`. The
+# `-- ATOMIC-BEGIN` / `-- ATOMIC-END` markers in gcp/schema.sql are the
+# applier's contract: it runs each marked group in ONE transaction, while
+# psql treats the markers as ordinary comments and commits every statement
+# on its own. Three groups in that file depend on the grouping for
+# correctness -- watchlist_history creates its table, installs the trigger
+# that captures membership transitions, and seeds from current state, and
+# splitting those commits leaves a live table with no trigger while
+# production keeps writing. This target is the LIVE instance through
+# cloud-sql-proxy, so that is not a theoretical difference here.
+#
+# The applier also records the applied revision in schema_apply_history and
+# refuses one older than the newest applied, which psql cannot do.
+#
+# No psql fallback on failure: silently applying without the grouping is
+# exactly the degradation this replaces. `set -euo pipefail` aborts the
+# deploy instead, which is the honest outcome.
+python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+
+DB_HOST=127.0.0.1 DB_PORT="$PROXY_PORT" \
+DB_USER="$DB_USER" DB_PASS="$DB_PASS" DB_NAME="$DB_NAME" \
+python3 -m gcp.apply_schema \
+    --revision="$(git rev-parse HEAD)" \
+    --revision-time="$(git log -1 --format=%ct HEAD)" \
+    --revision-ancestors="$(git rev-list --max-count=100 HEAD | tr '\n' ' ')"
 
 kill $PROXY_PID 2>/dev/null || true
 trap - EXIT

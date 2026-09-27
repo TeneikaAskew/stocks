@@ -526,6 +526,66 @@ def test_gamma_levels_extracts_kings_and_regime(patch_query):
     assert out["chain_size"] == 4
 
 
+def test_pinning_a_live_run_to_today_silently_swaps_the_intraday_chain(
+    monkeypatch,
+):
+    """Codex P2 on `af82694`. Supplying `as_of` is what discards the session.
+
+    `build_context_bundle` passes `inclusive_today=False`, so an `as_of`
+    turns the REALTIME phase's filter from "no snapshot bound" into
+    `snapshot_date < :as_of`. Production REALTIME rows carry their own
+    session's `snapshot_date` -- measured against production on
+    2026-09-26, SPY's newest is `2026-09-25 19:55:32+00` with
+    `snapshot_date = 2026-09-25` -- so a live run pinned to today matches
+    none of them.
+
+    The failure is not an error. Phase 2 answers with last night's EOD
+    chain, inside the freshness window, and the summary comes back
+    `available: True` looking exactly like a good one. Dealer positioning
+    from 20:00 yesterday presented as the current book is the
+    indistinguishable-value shape Rule 3.7 is about, and until this was
+    reverted an in-process run and a fan-out child of the SAME batch
+    disagreed about it.
+    """
+    today = date(2026, 5, 13)
+    realtime = _eod_chain_fixture(today)
+    overnight = _eod_chain_fixture(date(2026, 5, 12))
+
+    def cutoff_aware(sql: str, params=None):
+        params = params or {}
+        bounded = "snapshot_date < :as_of" in sql
+        rows = realtime if "market_session = 'REALTIME'" in sql else overnight
+        if not bounded:
+            return rows
+        # Honour the operator the SQL actually carries, against the same
+        # `snapshot_date` the rows hold.
+        cutoff = pd.Timestamp(params["as_of"]).date()
+        keep = rows[pd.to_datetime(rows["snapshot_date"]).dt.date < cutoff]
+        return keep.reset_index(drop=True)
+
+    monkeypatch.setattr(summarizers, "_query", cutoff_aware)
+    monkeypatch.setattr(summarizers, "_query_strict", cutoff_aware)
+
+    live = summarizers.summarize_gamma_levels(
+        "XYZ", as_of=None, inclusive_today=False)
+    assert live["available"] is True, live.get("reason")
+    assert live["data_source"] == "realtime", (
+        "an unpinned live run stopped reading the current session's chain"
+    )
+
+    pinned = summarizers.summarize_gamma_levels(
+        "XYZ", as_of=today, inclusive_today=False)
+    assert pinned["available"] is True, pinned.get("reason")
+    assert pinned["data_source"] == "eod_fallback", (
+        "expected the pinned run to fall through to the overnight chain; "
+        f"got {pinned['data_source']}"
+    )
+    assert pinned["data_source"] != live["data_source"], (
+        "pinning a live run to today changed which chain answered, and "
+        "nothing in the summary says the session's own book was dropped"
+    )
+
+
 def test_gamma_levels_unavailable_when_no_chain(patch_query):
     # No data set up → both phase 1 (REALTIME) and phase 2 (EOD)
     # return empty → unavailable.
@@ -866,12 +926,16 @@ def _cutoff_aware_query(monkeypatch, df):
         else:
             assert "date <= CAST(:cutoff AS date)" in sql, sql
             out = df[dates <= cutoff].reset_index(drop=True)
-        if "ticker <> :ticker" in sql:
+        if "= ANY(:tickers)" in sql:
             # Cross-ticker pull carries a `ticker` column per source row.
             out = out.assign(ticker="QQQ")
         return out
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    # The cross-ticker pull is strict (a DB error must not read as "no
+    # analogs"), so both paths need the same cutoff-aware fake or the test
+    # would exercise only the same-ticker query.
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
     return seen
 
 
@@ -922,8 +986,16 @@ def test_backtest_metrics_cross_ticker_query_honours_the_same_cutoff(monkeypatch
     df = _synth_daily_bars()
     as_of = pd.Timestamp(df.iloc[-1]["date"]).date()
     seen = _cutoff_aware_query(monkeypatch, df)
+    # Membership is resolved separately now; supply it rather than reaching
+    # for a database. What this test is about is the cutoff operator on the
+    # bar pull, not how the universe was resolved.
+    from gcp.fetchers._watchlist import WatchlistMembership
+
     summarizers.summarize_backtest_metrics(
-        "SPY", as_of=as_of, cross_ticker=True, inclusive_today=False)
+        "SPY", as_of=as_of, cross_ticker=True, inclusive_today=False,
+        universe=WatchlistMembership(
+            tickers=("QQQ",), as_of=as_of, owner="default",
+            resolution="exact", horizon=None))
     daily_sqls = [s for s, _ in seen if "market_data_daily" in s]
     assert daily_sqls, "no market_data_daily query issued"
     assert all("date <= CAST(:cutoff AS date)" not in s for s in daily_sqls), \
@@ -934,7 +1006,7 @@ def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
     calls = {}
 
     def fake_backtest(ticker, lookback_days=90, as_of=None, *, cross_ticker=True,
-                      inclusive_today=True):
+                      inclusive_today=True, universe=None):
         calls["inclusive_today"] = inclusive_today
         return {"available": False, "reason": "stub"}
 

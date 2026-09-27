@@ -86,6 +86,7 @@ def build_child_env(
     as_of_iso: Optional[str] = None,
     triggered_by: Optional[str] = None,
     force_update: bool = False,
+    universe_json: Optional[str] = None,
 ) -> list[dict[str, str]]:
     """Build the containerOverrides env list for one child execution.
 
@@ -112,6 +113,15 @@ def build_child_env(
     # the cause, not the effect.
     if force_update:
         env.append({"name": "INSIGHT_UPDATE", "value": "true"})
+    # The batch's frozen analog universe, serialized by
+    # WatchlistMembership.to_json with the parent named as inherited_from.
+    # Forwarded so every child of one batch backtests against the SAME
+    # peer set; a child that resolved its own would race every watchlist
+    # edit made between two children (Codex P2 on `e3463b3`, `af82694`).
+    # Omitted when the parent could not freeze one, in which case the
+    # child resolves its own and says so, exactly as the parent would.
+    if universe_json:
+        env.append({"name": "INSIGHT_UNIVERSE", "value": universe_json})
     return env
 
 
@@ -122,6 +132,7 @@ def enqueue_insight_task(
     as_of_iso: Optional[str] = None,
     triggered_by: Optional[str] = None,
     force_update: bool = False,
+    universe_json: Optional[str] = None,
 ) -> bool:
     """Enqueue one Cloud Tasks message that runs `insight-pipeline` in
     on-demand mode for a single ticker.
@@ -180,6 +191,7 @@ def enqueue_insight_task(
                                 as_of_iso=as_of_iso,
                                 triggered_by=triggered_by,
                                 force_update=force_update,
+                                universe_json=universe_json,
                             )
                         }
                     ]

@@ -63,6 +63,25 @@ def test_child_env_forwards_triggered_by():
     assert env["INSIGHT_TRIGGERED_BY"] == "cloud-scheduler:insight-pipeline-daily"
 
 
+def test_child_env_forwards_the_batch_universe():
+    """A child that resolved its own universe raced every watchlist edit
+    made between two children of one batch (Codex P2 on `e3463b3`,
+    `af82694`). The parent's frozen universe rides down as
+    INSIGHT_UNIVERSE, verbatim."""
+    payload = '{"tickers":["SPY"],"as_of":"2026-09-26","owner":"default",' \
+              '"resolution":"exact","horizon":null,"inherited_from":"x@t"}'
+    env = _as_dict(insight_tasks.build_child_env("r", "SPY", universe_json=payload))
+    assert env["INSIGHT_UNIVERSE"] == payload
+
+
+def test_child_env_omits_the_universe_when_the_parent_could_not_freeze_one():
+    """No universe, no key: the child then resolves its own and says so,
+    exactly as the parent would have."""
+    assert "INSIGHT_UNIVERSE" not in _as_dict(
+        insight_tasks.build_child_env("r", "SPY", universe_json=None)
+    )
+
+
 def test_child_env_sets_update_only_when_requested():
     assert "INSIGHT_UPDATE" not in _as_dict(
         insight_tasks.build_child_env("r", "SPY", force_update=False)
