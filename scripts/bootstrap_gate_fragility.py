@@ -5,7 +5,8 @@ Reviewer's concern: SPY 15m Phase 3 has three of four gates at exactly
 6/8 — the minimum to pass. How robust is this to test-set sampling
 noise within each fold?
 
-Method: for each fold, resample the test bars WITH REPLACEMENT N times,
+Method: for each fold, resample Eastern trading sessions WITH REPLACEMENT N
+times, retaining every bar in each sampled session,
 recompute the four gates each time, count how often the per-fold gate
 contributions to each phase-level gate would flip. Returns a distribution
 over the four gate counts {g1, g2, g3, g4} so we can read off the
@@ -40,6 +41,7 @@ from gcp.research.magnitude_engine.mag_config import (
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
     SUCCESS_BAR_MIN_FOLDS_LIFT,
 )
+from gcp.research.magnitude_engine.evaluation_windows import eastern_sessions
 from gcp.research.magnitude_engine.mag_pred_train import (
     expected_calibration_error, decisive_call_hit_rate, explosive_lift,
 )
@@ -115,8 +117,12 @@ def fold_gates(fold_df: pd.DataFrame, tf: str, prior=None) -> dict:
 
 
 def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1):
-    """Resample bars within each fold (with replacement) N times and count
+    """Resample Eastern sessions within each fold N times and count
     how often each cell-level gate (g1, g2, g3, g4) passes its 6/8 threshold."""
+    if "ts" not in preds:
+        raise ValueError("predictions need ts to bootstrap by Eastern session")
+    preds = preds.copy()
+    preds["_eastern_session"] = eastern_sessions(preds["ts"])
     folds = sorted(preds["fold"].unique())
     n_folds = len(folds)
     rng = np.random.default_rng(seed)
@@ -147,11 +153,13 @@ def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1)
         gc = [0, 0, 0, 0]
         for f in folds:
             g = fold_groups[f]
-            n = len(g)
-            if n == 0:
+            sessions = list(g.groupby("_eastern_session", sort=True))
+            n_sessions = len(sessions)
+            if n_sessions == 0:
                 continue
-            idx = rng.integers(0, n, size=n)
-            sample = g.iloc[idx]
+            # Cluster bootstrap: all dependent intraday bars travel together.
+            idx = rng.integers(0, n_sessions, size=n_sessions)
+            sample = pd.concat([sessions[i][1] for i in idx], ignore_index=True)
             r = fold_gates(sample, tf, prior=fold_priors[f])
             if r is None:
                 continue
@@ -214,7 +222,7 @@ def main():
     print()
     print("Interpretation:")
     print(f"  P(<6) is the bootstrap-estimated probability that a gate falls")
-    print(f"  below the 6/8 threshold under resampling of test bars within folds.")
+    print(f"  below the 6/8 threshold under resampling of Eastern sessions within folds.")
     print(f"  For a gate that 'just-barely-passed' (deterministic=6), a P(<6)")
     print(f"  near 50% signals the gate is at the edge of sampling noise.")
 

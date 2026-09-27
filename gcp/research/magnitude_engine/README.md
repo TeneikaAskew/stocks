@@ -26,6 +26,8 @@ gcp/research/magnitude_engine/
 ├── mag_config.py                tickers, TFs, label buckets, ATR
 │                                thresholds, PHASE_FEATURES, the
 │                                PRE-SET success bar (immutable)
+├── evaluation_windows.py        immutable America/New_York development,
+│                                validation and one-time final-test periods
 ├── mag_dataset.py               wraps strat_engine loader, computes
 │                                magnitude target, attaches phase-
 │                                specific features
@@ -78,6 +80,16 @@ gcloud run jobs execute magnitude-engine --region=us-east1 \
 gcloud run jobs execute magnitude-engine --region=us-east1 \
   --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m"
 ```
+
+## Evaluation isolation
+
+Every run selects `--evaluation-window development`, `validation`, or
+`final_test`. Boundaries and the criteria/final-test versions live in
+`evaluation_windows.py` and are half-open Eastern-session ranges. Walk-forward
+folds keep an entire trading session together and purge one observed session
+(the prediction horizon) before evaluation. The final-test marker is created
+atomically in GCS; reusing the same final-test version for the same cell is
+rejected rather than silently re-reading the holdout.
 
 ## Target
 

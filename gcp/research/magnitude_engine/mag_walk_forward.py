@@ -19,10 +19,12 @@ Run:
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 from fractions import Fraction
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -50,6 +52,10 @@ from gcp.research.magnitude_engine.mag_config import (
     PRODUCTION_READINESS_VERSION,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
+from gcp.research.magnitude_engine.evaluation_windows import (
+    CRITERIA_VERSION, FINAL_TEST_VERSION, PREDICTION_HORIZON_SESSIONS,
+    WINDOWS, assert_disjoint, eastern_sessions, purged_session_masks,
+)
 from gcp.research.magnitude_engine.mag_pred_train import (
     featurize, make_lgbm, resolve_class_weight, class_weight_power,
     decide_bucket, expected_calibration_error,
@@ -102,12 +108,37 @@ CREATE TABLE IF NOT EXISTS magnitude_walk_forward_results (
     fold_seconds    INTEGER,
     computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     run_id          VARCHAR(64),
+    split_name      VARCHAR(32),
+    split_start     DATE,
+    split_end       DATE,
+    criteria_version VARCHAR(64),
+    train_data_max_ts TIMESTAMPTZ,
+    evaluation_data_min_ts TIMESTAMPTZ,
+    evaluation_data_max_ts TIMESTAMPTZ,
+    purge_embargo_sessions INTEGER,
+    dataset_fingerprint VARCHAR(64),
+    code_commit VARCHAR(64),
+    container_digest TEXT,
     UNIQUE (phase, ticker, tf, fold, run_id)
 )
 """
 RESULTS_DDL_INDEX = """
 CREATE INDEX IF NOT EXISTS ix_mwfr_cell ON
     magnitude_walk_forward_results (phase, ticker, tf, computed_at DESC)
+"""
+RESULTS_DDL_PROVENANCE = """
+ALTER TABLE magnitude_walk_forward_results
+    ADD COLUMN IF NOT EXISTS split_name VARCHAR(32),
+    ADD COLUMN IF NOT EXISTS split_start DATE,
+    ADD COLUMN IF NOT EXISTS split_end DATE,
+    ADD COLUMN IF NOT EXISTS criteria_version VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS train_data_max_ts TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS evaluation_data_min_ts TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS evaluation_data_max_ts TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS purge_embargo_sessions INTEGER,
+    ADD COLUMN IF NOT EXISTS dataset_fingerprint VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS code_commit VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS container_digest TEXT
 """
 
 # Per-bar predictions table — added 2026-06-02. Written by the live
@@ -179,6 +210,48 @@ def _gcs_upload(content: bytes, blob_path: str, ctype: str = "application/json")
     return f"gs://{bucket_name}/{blob_path}"
 
 
+def _execution_provenance(X: np.ndarray, y: np.ndarray,
+                          timestamps: np.ndarray) -> dict:
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(X).view(np.uint8))
+    digest.update(np.ascontiguousarray(y).view(np.uint8))
+    digest.update(np.ascontiguousarray(timestamps).view(np.uint8))
+    commit = os.environ.get("GIT_COMMIT")
+    if not commit:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+            check=True).stdout.strip()
+    return {
+        "criteria_version": CRITERIA_VERSION,
+        "dataset_fingerprint": digest.hexdigest(),
+        "code_commit": commit,
+        "container_digest": os.environ.get(
+            "CONTAINER_IMAGE_DIGEST", os.environ.get("K_REVISION", "unknown")),
+    }
+
+
+def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
+                      run_id: str) -> None:
+    """Atomically consume a final-test version for one evaluation cell."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    path = f"research/magnitude_engine/final-test-consumed/{version}/{phase}_{ticker}_{tf}.json"
+    payload = json.dumps({"version": version, "phase": phase, "ticker": ticker,
+                          "tf": tf, "run_id": run_id,
+                          "consumed_at": pd.Timestamp.utcnow().isoformat()})
+    try:
+        gcs.Client().bucket(bucket_name).blob(path).upload_from_string(
+            payload, content_type="application/json", if_generation_match=0)
+    except Exception as exc:
+        # A generation-0 conditional write fails when the marker exists. Do
+        # not weaken this to exists()+write: concurrent final runs could race.
+        if getattr(exc, "code", None) in (409, 412) or type(exc).__name__ in {
+                "Conflict", "PreconditionFailed"}:
+            raise RuntimeError(
+                f"final-test version {version!r} has already been consumed "
+                f"for {phase}/{ticker}/{tf}") from exc
+        raise
+
+
 def _base_rate_logloss(y_train_idx: np.ndarray, y_test_idx: np.ndarray) -> float:
     prior = np.bincount(y_train_idx, minlength=len(LABEL_CLASSES)) / len(y_train_idx)
     proba = np.tile(prior, (len(y_test_idx), 1))
@@ -193,18 +266,33 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
                              tf: str,
                              lgbm_n_jobs: int,
                              calibration: str = DEFAULT_CALIBRATION,
-                             cv: int = DEFAULT_CV) -> dict:
-    train_end_dt = np.datetime64(train_end)
-    test_end_dt = np.datetime64(test_end)
-    train_mask = bar_dates < train_end_dt
-    test_mask = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt)
+                             cv: int = DEFAULT_CV,
+                             embargo_sessions: int = PREDICTION_HORIZON_SESSIONS,
+                             provenance: dict | None = None) -> dict:
+    # ``bar_dates`` are Eastern session labels (the historical argument name
+    # is retained for callers). Splitting bars independently would leak the
+    # strong within-session dependence across the partition boundary.
+    train_mask, test_mask = purged_session_masks(
+        bar_dates, train_end, test_end, embargo_sessions)
+    assert_disjoint(bar_dates[train_mask], bar_dates[test_mask])
     n_train = int(train_mask.sum())
     n_test = int(test_mask.sum())
+    timestamps = pd.to_datetime(ts_arr, utc=True)
+    audit = {
+        **(provenance or {}),
+        "train_data_max_ts": (timestamps[train_mask].max().isoformat()
+                              if n_train else None),
+        "evaluation_data_min_ts": (timestamps[test_mask].min().isoformat()
+                                   if n_test else None),
+        "evaluation_data_max_ts": (timestamps[test_mask].max().isoformat()
+                                   if n_test else None),
+        "purge_embargo_sessions": embargo_sessions,
+    }
     if n_test < MIN_TEST_BARS:
         return {"fold": f"{train_end}..{test_end}",
                 "train_end": train_end, "test_end": test_end,
                 "n_test": n_test, "n_train": n_train,
-                "status": "SKIP_THIN"}
+                "status": "SKIP_THIN", **audit}
 
     X_tr = X_full[train_mask]; X_te = X_full[test_mask]
     y_tr = y_full[train_mask]; y_te = y_full[test_mask]
@@ -267,6 +355,7 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
             *(f"p_{c}" for c in LABEL_CLASSES),
         ],
         "train_end": train_end, "test_end": test_end,
+        **audit,
         "n_train": n_train, "n_test": n_test,
         "logloss": ll, "base_logloss": base_ll, "beat": base_ll - ll,
         "accuracy": acc, "base_accuracy": base_acc,
@@ -326,6 +415,17 @@ def _results_dataframe(phase: str, ticker: str, tf: str,
             "decisive_hit_json": json.dumps(f.get("decisive_hit", {})),
             "fold_seconds": f.get("fold_seconds"),
             "run_id": run_id,
+            "split_name": f.get("split_name"),
+            "split_start": _to_date(f.get("split_start")),
+            "split_end": _to_date(f.get("split_end")),
+            "criteria_version": f.get("criteria_version"),
+            "train_data_max_ts": f.get("train_data_max_ts"),
+            "evaluation_data_min_ts": f.get("evaluation_data_min_ts"),
+            "evaluation_data_max_ts": f.get("evaluation_data_max_ts"),
+            "purge_embargo_sessions": f.get("purge_embargo_sessions"),
+            "dataset_fingerprint": f.get("dataset_fingerprint"),
+            "code_commit": f.get("code_commit"),
+            "container_digest": f.get("container_digest"),
         })
     df = pd.DataFrame(rows)
     if df.empty:
@@ -744,9 +844,27 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cv: int = DEFAULT_CV,
                   label_mode: str = DEFAULT_LABEL_MODE,
                   persist_production_model: bool = False,
-                  features: str = "") -> dict:
-    cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
+                  features: str = "",
+                  evaluation_window: str = "development",
+                  final_test_version: str = FINAL_TEST_VERSION) -> dict:
+    window = WINDOWS[evaluation_window]
+    if cutoffs is None:
+        cutoffs = [c for c in DEFAULT_CUTOFFS
+                   if window.start <= pd.Timestamp(c).date() < window.end]
+        if window.final:
+            cutoffs = [window.start.isoformat()]
+    if not cutoffs:
+        raise ValueError(f"no folds fall in evaluation window {window.name}")
+    for cutoff in cutoffs:
+        if not window.start <= pd.Timestamp(cutoff).date() < window.end:
+            raise ValueError(f"cutoff {cutoff} is outside immutable {window.name} "
+                             f"window [{window.start}, {window.end})")
     thresholds = resolve_magnitude_thresholds()
+    execution_id = (os.environ.get("CLOUD_RUN_EXECUTION")
+                    or os.environ.get("MAG_RUN_ID")
+                    or f"run_{int(time.time())}")
+    if window.final:
+        _claim_final_test(final_test_version, phase, ticker, tf, execution_id)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
              "label_mode=%s  thresholds=%s",
@@ -785,10 +903,18 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
     X_full = X_df.values.astype(np.float32, copy=False)
     y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
-    bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
     # Full-precision timestamps for per-bar prediction persistence (check 3
     # event-window analysis). ns precision; downstream parses as UTC.
     ts_arr = pd.to_datetime(df["ts"], utc=True).values.astype("datetime64[ns]")
+    # Session labels come from timestamps, not a potentially UTC-derived date
+    # column. This keeps every bar from one Eastern trading day together.
+    bar_dates_arr = eastern_sessions(ts_arr).values.astype("datetime64[D]")
+    provenance = _execution_provenance(X_full, y_full, ts_arr)
+    provenance.update({
+        "split_name": window.name,
+        "split_start": window.start.isoformat(),
+        "split_end": window.end.isoformat(),
+    })
     log.info("featurize-once: %d × %d in %.1fs", X_full.shape[0], X_full.shape[1], time.time() - t0)
 
     cores = max(1, os.cpu_count() or 1)
@@ -799,7 +925,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         if i + 1 < len(cutoffs):
             test_end = cutoffs[i + 1]
         else:
-            test_end = str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
+            test_end = window.end.isoformat()
         log.info("─" * 70)
         log.info("fold %d/%d  train<%s  test=[%s..%s)",
                  i + 1, len(cutoffs), cut, cut, test_end)
@@ -809,6 +935,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                 X_full, y_full, bar_dates_arr, ts_arr,
                 cut, test_end, tf, lgbm_n_jobs,
                 calibration=calibration, cv=cv,
+                embargo_sessions=PREDICTION_HORIZON_SESSIONS,
+                provenance=provenance,
             )
             r["fold_seconds"] = int(round(time.time() - fold_t0))
             folds.append(r)
@@ -836,7 +964,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
             log.exception("fold %s FAILED: %s", cut, e)
             folds.append({"fold": f"{cut}..{test_end}",
                           "train_end": cut, "test_end": test_end,
-                          "status": "ERROR", "error": str(e)})
+                          "status": "ERROR", "error": str(e), **provenance,
+                          "purge_embargo_sessions": PREDICTION_HORIZON_SESSIONS})
 
     gates = _evaluate_phase_gate(folds, tf)
     log.info("=" * 70)
@@ -869,6 +998,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     summary = {
         "production_readiness_version": PRODUCTION_READINESS_VERSION,
         "phase": phase, "ticker": ticker, "tf": tf,
+        **provenance,
+        "final_test_version": final_test_version if window.final else None,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration, "cv": cv,
@@ -889,9 +1020,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "gates": gates,
         "computed_at": pd.Timestamp.utcnow().isoformat(),
     }
-    run_id = (os.environ.get("CLOUD_RUN_EXECUTION")
-              or os.environ.get("MAG_RUN_ID")
-              or f"run_{int(time.time())}")
+    run_id = (execution_id)
     summary["run_id"] = run_id
 
     # Per-bar predictions CSV.
@@ -914,6 +1043,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # persist try/except so a DDL race doesn't drop the per-fold rows.
     try:
         execute_sql(RESULTS_DDL_CREATE)
+        execute_sql(RESULTS_DDL_PROVENANCE)
         execute_sql(RESULTS_DDL_INDEX)
     except Exception as e:
         # Race on CREATE/INDEX — fine, table will already exist by the
@@ -995,7 +1125,9 @@ def run_all_cells(engine, phase: str,
                    calibration: str = DEFAULT_CALIBRATION,
                    label_mode: str = DEFAULT_LABEL_MODE,
                    persist_production_model: bool = False,
-                   features: str = "") -> dict:
+                   features: str = "",
+                   evaluation_window: str = "development",
+                   final_test_version: str = FINAL_TEST_VERSION) -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
     all_summaries = []
     for ticker in TICKERS:
@@ -1005,7 +1137,9 @@ def run_all_cells(engine, phase: str,
                                  cutoffs=cutoffs, calibration=calibration,
                                  label_mode=label_mode,
                                  persist_production_model=persist_production_model,
-                                 features=features)
+                                 features=features,
+                                 evaluation_window=evaluation_window,
+                                 final_test_version=final_test_version)
                 all_summaries.append(s)
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
@@ -1152,6 +1286,11 @@ def main():
                         "this is auto-resolved from CLOUD_RUN_TASK_INDEX.")
     p.add_argument("--cutoffs", default=None,
                    help="Comma-separated YYYY-MM-DD (default: regime-spanning)")
+    p.add_argument("--evaluation-window", choices=tuple(WINDOWS),
+                   default="development",
+                   help="Immutable Eastern-session evaluation period")
+    p.add_argument("--final-test-version", default=FINAL_TEST_VERSION,
+                   help="One-time version claimed atomically for final_test")
     p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
                    choices=["none", "isotonic", "sigmoid"])
     p.add_argument("--label-mode", default=DEFAULT_LABEL_MODE, choices=list(LABEL_MODES),
@@ -1192,7 +1331,9 @@ def main():
                       cutoffs=cutoffs, calibration=args.calibration,
                       label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
-                      features=args.features)
+                      features=args.features,
+                      evaluation_window=args.evaluation_window,
+                      final_test_version=args.final_test_version)
         return
 
     if args.plan and args.task_index is not None:
@@ -1205,7 +1346,9 @@ def main():
                       cutoffs=cutoffs, calibration=args.calibration,
                       label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
-                      features=args.features)
+                      features=args.features,
+                      evaluation_window=args.evaluation_window,
+                      final_test_version=args.final_test_version)
         return
 
     if args.all_cells:
@@ -1215,7 +1358,9 @@ def main():
                        calibration=args.calibration,
                        label_mode=args.label_mode,
                        persist_production_model=args.persist_production_model,
-                       features=args.features)
+                       features=args.features,
+                       evaluation_window=args.evaluation_window,
+                       final_test_version=args.final_test_version)
         return
 
     if not args.phase or not args.ticker or not args.tf:
@@ -1229,7 +1374,9 @@ def main():
                   cutoffs=cutoffs, calibration=args.calibration,
                   label_mode=args.label_mode,
                   persist_production_model=args.persist_production_model,
-                  features=args.features)
+                  features=args.features,
+                  evaluation_window=args.evaluation_window,
+                  final_test_version=args.final_test_version)
 
 
 if __name__ == "__main__":
