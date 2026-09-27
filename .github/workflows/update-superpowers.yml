@@ -76,16 +76,17 @@ jobs:
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::error::PR_WORKFLOW_TOKEN secret is not set"; exit 1; }
           BRANCH="bot/superpowers-${VERSION}"
+          # A version counts as proposed once a PR exists for its branch, open
+          # or closed. Checked before the branch: a closed PR whose branch was
+          # deleted must still skip the version, not recreate it every week.
+          PR_URL=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}" \
+            --jq '.[0].html_url // empty')
+          if [ -n "$PR_URL" ]; then
+            echo "::notice::$VERSION was already proposed in $PR_URL"
+            exit 0
+          fi
           if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
-            # The version counts as proposed only once a PR exists for it, open
-            # or closed. A branch without one means an earlier run pushed and
-            # then failed to open the PR; open it now rather than skip forever.
-            PR_URL=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}" \
-              --jq '.[0].html_url // empty')
-            if [ -n "$PR_URL" ]; then
-              echo "::notice::$VERSION was already proposed in $PR_URL"
-              exit 0
-            fi
+            # An earlier run pushed the branch and then failed to open the PR.
             echo "::warning::$BRANCH exists without a PR; opening it now"
             git fetch -q origin "$BRANCH"
             STAT=$(git diff --stat HEAD FETCH_HEAD)
