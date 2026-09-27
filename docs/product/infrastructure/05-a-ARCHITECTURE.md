@@ -960,6 +960,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/research/direction_program/phase2_features.py`](../../../gcp/research/direction_program/phase2_features.py) | Phase-2 feature families for the DIRECTION and SIZE engines. New columns are | — |
 | [`gcp/research/direction_program/phase2_prune_sets.py`](../../../gcp/research/direction_program/phase2_prune_sets.py) | Near-dead feature columns from the 2026-07-08 importance audit. | — |
 | [`gcp/research/direction_program/slice_ledger.py`](../../../gcp/research/direction_program/slice_ledger.py) | Append-only JSONL ledger of every experiment slice tested, so the synthesis | — |
+| [`gcp/research/magnitude_engine/experiments/validate.py`](../../../gcp/research/magnitude_engine/experiments/validate.py) | Validate magnitude HPO manifests and the append-only CSV schemas. | — |
 | [`gcp/research/magnitude_engine/mag_config.py`](../../../gcp/research/magnitude_engine/mag_config.py) | Magnitude Engine — shared config. | — |
 | [`gcp/research/magnitude_engine/mag_dataset.py`](../../../gcp/research/magnitude_engine/mag_dataset.py) | Magnitude Engine — dataset loader. | — |
 | [`gcp/research/magnitude_engine/mag_inference.py`](../../../gcp/research/magnitude_engine/mag_inference.py) | Cloud Run Job: live per-bar magnitude inference. | `magnitude-inference` |
