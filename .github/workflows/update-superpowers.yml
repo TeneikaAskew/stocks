@@ -94,7 +94,9 @@ jobs:
             git config user.name  "github-actions[bot]"
             git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
             git checkout -b "$BRANCH"
-            git add -A -- .claude/skills
+            # -f: an upstream file matching this repo's .gitignore (*.csv, data/)
+            # must not be silently left out of the vendored copy.
+            git add -A -f -- .claude/skills
             git commit -q -m "chore(claude): update Superpowers skills to ${VERSION}"
             git push -u origin "$BRANCH"
             STAT=$(git diff --stat HEAD~1 HEAD)

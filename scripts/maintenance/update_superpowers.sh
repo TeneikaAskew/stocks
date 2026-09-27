@@ -139,8 +139,12 @@ EOF
 if [ "$(newest_of "$current" "$target")" != "$target" ]; then
   echo "Downgrade from $current to $target: no forward release notes apply."
 else
+  # A checked assignment: set -e does not apply to a substitution used as a
+  # for-loop word list, so a failed ls-remote there left the notes empty.
+  all_tags=$(release_tags)
+  [ -n "$all_tags" ] || die "no release tags found at $UPSTREAM"
   in_range=" "
-  for tag in $(release_tags); do
+  for tag in $all_tags; do
     if [ "$tag" != "$current" ] && [ "$(newest_of "$current" "$tag")" = "$tag" ] \
       && [ "$(newest_of "$tag" "$target")" = "$target" ]; then
       in_range+="$tag "
