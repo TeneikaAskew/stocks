@@ -925,10 +925,19 @@ def test_the_install_day_itself_is_approximate(wl):
 
     The horizon's own day is therefore the LAST approximate one, not the
     first exact one.
+
+    Ask the resolver which day that is rather than assuming it is today.
+    A test database outlives the run that created it, so the install day
+    equals `date.today()` only when the schema happened to be loaded on the
+    same calendar day -- always true of CI's ephemeral Postgres, and true of
+    a local one right up until midnight, where an earlier version of this
+    test asserted `approximate` for a day the resolver had correctly called
+    `exact`.
     """
     _add(wl, "ACME", JAN)
-    resolved = resolve_membership_at(date.today(), OWNER)
-    assert resolved.horizon is not None
+    probe = resolve_membership_at(date.today(), OWNER)
+    assert probe.horizon is not None
+    resolved = resolve_membership_at(probe.horizon.date(), OWNER)
     assert resolved.resolution == "approximate", (
         "the install day was reported exact, but only part of it was "
         "observed -- anything removed earlier that day is invisible"
