@@ -484,6 +484,12 @@ def test_the_build_stamp_counts_untracked_source_as_dirty():
     stamp = _deploy_fn("_stamp_build_info")
     assert "git status --porcelain" in stamp
     assert "git diff --quiet" not in stamp
+    # (round 6) every copied build input, not only the three source trees
+    deploy = (REPO / "gcp/deploy.sh").read_text()
+    for name in ("requirements-gcp.txt", "requirements-research.txt",
+                 "requirements-gcp.lock", "alert_config.json"):
+        assert name in stamp, name
+        assert f"cp {name}" in deploy or f"{name} " in deploy, name
 
 
 def test_the_bootstrap_bar_counts_scheduled_folds_not_prediction_rows():
@@ -650,3 +656,34 @@ def test_a_phase0_final_test_stages_its_candidate_without_the_flag():
     assert 'stage_final = window.final and phase == "phase0"' in src
     assert "or stage_final:" in src
     assert src.index("stage_final = ") < src.index("_persist_production_model_artifact(")
+
+
+# ═══════════════ Codex review of #1193, sixth round (d348107) ═══════════════
+
+def test_a_non_serving_contract_cannot_consume_the_final_test(monkeypatch):
+    """`--evaluation-window=final_test --label-mode=put` reached the claim,
+    consumed the cell's sole version, and was then refused staging by
+    serving_contract_reason, so the body-label decision could never run
+    (Codex P1)."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    claimed: list = []
+    monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
+    monkeypatch.setattr(mwf, "_last_loaded_session", lambda *a, **k: date(2026, 12, 31))
+    monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
+    monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
+    with pytest.raises(ValueError, match="serving contract"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test", label_mode="put")
+    assert claimed == []
+    monkeypatch.setenv("MAG_THRESHOLDS", "0.35,0.75,1.25")
+    with pytest.raises(ValueError, match="serving contract"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test")
+    assert claimed == []
+    monkeypatch.delenv("MAG_THRESHOLDS")
+    with pytest.raises(_Stop):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test")
+    assert len(claimed) == 1, "the serving contract still claims and loads"
+    src = inspect.getsource(mwf.walk_forward)
+    assert src.index("serving_contract_reason(") < src.index("_claim_final_test(")

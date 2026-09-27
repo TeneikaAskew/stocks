@@ -987,6 +987,17 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                     or f"run_{int(time.time())}")
     if window.final:
         _require_closed_window(window)
+        # The final test exists to stage the SERVING candidate. A run under a
+        # research label or custom thresholds would consume the cell's sole
+        # final-test version (the marker path carries neither) and then be
+        # refused staging by serving_contract_reason, leaving the body-label
+        # decision unrunnable (Codex P1 on #1193). Refuse before the claim.
+        contract_reason = serving_contract_reason(label_mode, thresholds)
+        if contract_reason:
+            raise ValueError(
+                f"the {window.name} window is reserved for the serving "
+                f"contract and would consume the one-time version: "
+                f"{contract_reason}")
         # Unlabelled coverage preflight, then the one-time claim, and only
         # then the labelled load below: the holdout's labels are never
         # constructed, logged or fingerprinted by a run that does not hold

@@ -86,9 +86,14 @@ _stamp_build_info() {
     local dir=$1 commit dirty
     commit=$(git rev-parse HEAD) || { echo "ERROR: cannot read HEAD for the build stamp" >&2; return 1; }
     # `git status --porcelain`, not `git diff HEAD`: an untracked file under
-    # lib/ gcp/ scripts/ ships in the image too (Codex P2 on #1193).
+    # lib/ gcp/ scripts/ ships in the image too (Codex P2 on #1193). The path
+    # list is EVERY build input build_image / build_research_image copy:
+    # the root requirements files, the lock and alert_config.json change the
+    # image's behaviour as surely as a source file (Codex P2 on #1193).
     dirty=false
-    [ -z "$(git status --porcelain -- lib gcp scripts 2>/dev/null)" ] || dirty=true
+    [ -z "$(git status --porcelain -- lib gcp scripts \
+            requirements-gcp.txt requirements-research.txt requirements-gcp.lock \
+            alert_config.json 2>/dev/null)" ] || dirty=true
     printf '{"git_commit": "%s", "git_dirty": %s, "built_at": "%s"}\n' \
         "${commit}" "${dirty}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${dir}/gcp/build_info.json"
 }
