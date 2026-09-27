@@ -9,7 +9,7 @@ Usage:
 
 Exit 0 = ok, 1 = blocked. Prints what to do next.
 
-Exempt branches (no spec needed): main, docs/*, chore/*, spike/*.
+Exempt branches (no spec needed): main (exact), docs/*, chore/*, spike/*.
 Only diffs that touch CODE_DIRS are gated; a doc-only diff on any branch passes.
 Any harness (Claude Code, Codex, a human) hits the same check.
 """
@@ -27,7 +27,8 @@ PLANS = ROOT / "docs" / "superpowers" / "plans"
 CATALOG = ROOT / "docs" / "product" / "02-FEATURE-CATALOG.md"
 
 FEAT = re.compile(r"FEAT-[A-Z]+-\d{3}")
-EXEMPT_BRANCH_PREFIXES = ("main", "docs/", "chore/", "spike/", "dependabot/", "renovate/")
+EXEMPT_BRANCHES = ("main", "master", "HEAD")
+EXEMPT_BRANCH_PREFIXES = ("docs/", "chore/", "spike/", "dependabot/", "renovate/")
 CODE_DIRS = ("lib/", "gcp/", "platform/", "scripts/", "src/", "tradingview-pine-scripts/")
 GATE_SELF = ("scripts/gate/",)  # the gate may change itself on a chore/ branch
 REQUIRED_SPEC_KEYS = ("feat_id", "req_ids", "done_when", "status")
@@ -117,7 +118,7 @@ def gated_files(changed: list[str]) -> list[str]:
 
 def check_pr_metadata(branch: str, changed: list[str]) -> list[str]:
     """CI only: PR title/body rules, read from PR_TITLE / PR_BODY env. Fire only when code is touched."""
-    if branch.startswith(EXEMPT_BRANCH_PREFIXES) or not gated_files(changed):
+    if branch in EXEMPT_BRANCHES or branch.startswith(EXEMPT_BRANCH_PREFIXES) or not gated_files(changed):
         return []
     title, body = os.environ.get("PR_TITLE"), os.environ.get("PR_BODY")
     errs: list[str] = []
@@ -132,7 +133,7 @@ def check_pr_metadata(branch: str, changed: list[str]) -> list[str]:
 
 
 def check(branch: str, changed: list[str]) -> list[str]:
-    if branch.startswith(EXEMPT_BRANCH_PREFIXES) or branch == "HEAD":
+    if branch in EXEMPT_BRANCHES or branch.startswith(EXEMPT_BRANCH_PREFIXES):
         return []
     gated = gated_files(changed)
     if not gated:
@@ -178,9 +179,15 @@ def main(argv: list[str]) -> int:
         changed = sh("git diff --cached --name-only").splitlines()
     elif mode == "--pr":
         base = argv[2] if len(argv) > 2 else "origin/main"
-        changed = sh(f"git diff --name-only {base}...HEAD").splitlines()
-        if not changed:  # shallow checkout fallback
-            changed = sh(f"git diff --name-only {base} HEAD").splitlines()
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", base], cwd=ROOT, capture_output=True).returncode != 0:
+            print(f"SPEC GATE FAILED\n - base ref '{base}' does not exist in this checkout; cannot compute the diff.")
+            print("   Fetch it (git fetch origin main) or pass the right base. Refusing to pass on an empty diff.")
+            return 1
+        merge_base = sh(f"git merge-base {base} HEAD")
+        if not merge_base:
+            print(f"SPEC GATE FAILED\n - no merge base between {base} and HEAD (shallow clone?). Use fetch-depth: 0.")
+            return 1
+        changed = sh(f"git diff --name-only {merge_base} HEAD").splitlines()
     else:
         print(__doc__)
         return 2

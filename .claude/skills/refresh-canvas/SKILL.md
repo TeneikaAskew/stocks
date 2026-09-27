@@ -60,6 +60,7 @@ the JSON that feeds it, which board file and JS constant hold the data, and whic
 - Never regenerate the whole data array from the JSON. The canvas-owned fields (`sched` ordering, `ratText`,
   `bucket`, `flow`, `stage`, `short`, `alert`) are curation; a regeneration destroys them.
 - Never edit `index.html`, `canvas.json`, `artifact-type/`, or any CSS/HTML outside the data line.
-- If the JSON `source_branch` is not `main`, refuse. If the file is older than the registry's
-  "Last reviewed" date, say the exporter needs a re-run on main first.
+- Provenance is the URL: fetch only from `raw.githubusercontent.com/<repo>/main/...`, never a local file,
+  never a branch URL. Compare the JSON's `source_sha` with `git ls-remote origin main` if in doubt.
+  If the JSON's `registry_last_reviewed` is older than the registry on main, the exporter needs a re-run first.
 - Do not chain this into a PR, a webhook, or a scheduled task. It runs when a person asks.

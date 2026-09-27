@@ -2128,8 +2128,7 @@
    "serves": "the LLM nodes' delivery half — `lib.agents.model_routing` (`gcp/insight_discord_push.py:36`)"
   }
  ],
- "source_branch": "chore/spec-gate",
- "source_sha": "3cf471d",
+ "source_sha": "777e3f9",
  "tables": [
   {
    "columns": [

@@ -18,8 +18,11 @@ jobs:
 
       - name: Spec gate (spec, plan, branch name, PR title and body; code PRs only)
         env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          git checkout -q -B "${{ github.event.pull_request.head.ref }}" HEAD
-          python3 scripts/gate/spec_gate.py --pr origin/${{ github.base_ref }}
+          git fetch --no-tags origin "$BASE_REF"
+          git checkout -q -B "$HEAD_REF" HEAD
+          python3 scripts/gate/spec_gate.py --pr "origin/$BASE_REF"

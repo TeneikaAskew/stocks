@@ -89,7 +89,6 @@ def build() -> dict:
     out: dict = {
         "generated_from": [str(REGISTRY.relative_to(ROOT)), str(EXPERIMENTS.relative_to(ROOT))],
         "source_sha": sh("git rev-parse --short HEAD"),
-        "source_branch": sh("git rev-parse --abbrev-ref HEAD"),
         "registry_last_reviewed": (re.search(r"Last reviewed:\*\*\s*([0-9-]+|unknown)", text) or [None, None])[1],
         "models": {},
         "experiment_traceability": {},
@@ -141,8 +140,7 @@ def main(argv: list[str]) -> int:
             return 1
         current = json.loads(OUT.read_text(encoding="utf-8"))
         fresh = json.loads(payload)
-        for k in ("source_sha", "source_branch"):
-            current.pop(k, None); fresh.pop(k, None)
+        current.pop("source_sha", None); fresh.pop("source_sha", None)
         if current != fresh:
             print(f"{OUT.relative_to(ROOT)} is stale; run export_model_registry.py and commit")
             return 1
