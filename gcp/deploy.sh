@@ -2801,14 +2801,14 @@ deploy_evaluate_ew_strikes() {
     gcloud run jobs create evaluate-ew-strikes \
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
-        --task-timeout 600 \
+        --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update evaluate-ew-strikes \
-        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" --task-timeout 3600 \
         --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
