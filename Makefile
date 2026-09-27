@@ -134,3 +134,7 @@ help:
 	@echo "GCP deployment:"
 	@echo "  make setup-notifier      One-time: store GitHub PAT + repo in Secret Manager"
 	@echo "  make notifier            Build + deploy failure-notifier service + log sink"
+
+hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit

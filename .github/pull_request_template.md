@@ -1,3 +1,16 @@
+**FEAT-ID:** FEAT-XXX-000
+**Spec:** docs/superpowers/specs/....md
+**Plan:** docs/superpowers/plans/....md
+
+## Done when (copied from the spec)
+- [ ]
+- [ ]
+
+## Capacity (CLAUDE.md rule 0)
+Volume: · Velocity: · Wall-clock: · $/run × runs/day × 30:
+
+Canvas refresh pending: none
+
 <!-- Keep the sections; replace the comments. Write "n/a — <why>" rather than
      deleting a section, so reviewers can tell "considered and not applicable"
      from "skipped". -->

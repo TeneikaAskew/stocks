@@ -169,6 +169,7 @@ point: somebody decides its class rather than inheriting a directory's.
 | A | docs/product/infrastructure/05-d-COST_ANALYSIS.md | gcp/deploy.sh | prose:.github/prompts/cost-analysis.md |
 | A | docs/product/infrastructure/05-e-API.md | platform/api | inventory:*; inventory:routers; inventory:routes |
 | A | docs/INVESTMENT_MODELS_SUMMARY.md | lib/strategies | mark:ticker_calibration_resolved_values |
+| A | docs/product/generated/model-registry.json | docs/product/07-MODEL-REGISTRY.md, docs/EXPERIMENT_REGISTRY.md, scripts/gate/export_model_registry.py | all |
 | B | docs/product/infrastructure/manual/* | |  |
 | C | docs/archive/* | |  |
 | C | docs/audit/* | |  |

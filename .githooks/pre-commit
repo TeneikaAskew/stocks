@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Installed via: git config core.hooksPath .githooks
+# Runs for every author and every harness. Bypass only with --no-verify, which CI will still catch.
+set -e
+python3 "$(git rev-parse --show-toplevel)/scripts/gate/spec_gate.py" --commit

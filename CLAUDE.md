@@ -2,6 +2,13 @@
 
 **Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
+## Before any change (read this first)
+Any edit, fix, refactor, or feature, however small: invoke the `product-delivery` skill before touching code.
+It classifies the work (TRIVIAL / SPIKE / CHANGE), requires a FEAT-ID from docs/product/02-FEATURE-CATALOG.md,
+and runs the Superpowers brainstorming -> writing-plans -> subagent-driven-development chain.
+Commits and PRs that skip it are rejected by `scripts/gate/spec_gate.py` (pre-commit hook and CI).
+Review cap on every PR: two rounds, then split, re-cut, or discard. Never a third round, never a stacked follow-up.
+
 ## Project Overview
 This is a stocks/trading application project that includes Google Apps Script components for market data fetching, historical data backfilling, and continuation systems for long-running operations.
 
