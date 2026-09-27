@@ -69,6 +69,21 @@ log = logging.getLogger(__name__)
 
 AXIS = "size"
 
+PROMOTION_STATUSES = frozenset({
+    "research", "shadow", "eligible", "promoted", "rejected", "withdrawn",
+})
+
+
+def _feature_set_name(phase: str, features: str, alpha: float) -> str:
+    """Return the stable feature/training variant used in a decision key."""
+    families = ",".join(sorted(filter(None, features.split(",")))) or "baseline"
+    return f"{phase}:{families}:class_weight_alpha={alpha:g}"
+
+
+def _label_version(label_mode: str, thresholds: tuple[float, ...]) -> str:
+    cuts = "-".join(f"{value:g}" for value in thresholds)
+    return f"{label_mode}:v1:{cuts}"
+
 
 # ─────────────────────── DDL for the results table ───────────────────────
 # Idempotent — runs once on first dispatch. Keyed by (phase, ticker, tf,
@@ -738,6 +753,108 @@ def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
     return gates
 
 
+def _clears_every_registered_gate(summary: dict) -> bool:
+    """Fail closed unless a cell explicitly records every registered gate.
+
+    Gates 5-7 are normally added by the post-hoc analysis.  Their absence is
+    therefore not a pass, especially for a new 15m/30m experiment.
+    """
+    gates = summary.get("gates") or {}
+    return all(gates.get(f"g{i}_pass") is True for i in range(1, 8))
+
+
+def _scorecard_cell(summary: dict, *, disabled: bool = False) -> dict:
+    """Build one atomic promotion decision without consulting fleet totals."""
+    ticker, tf = summary["ticker"], summary["tf"]
+    phase = summary.get("phase", "unknown")
+    label_mode = summary.get("label_mode", DEFAULT_LABEL_MODE)
+    thresholds = tuple(summary.get("thresholds", MAGNITUDE_THRESHOLDS))
+    recorded_alpha = summary.get("class_weight_power")
+    alpha = float(class_weight_power() if recorded_alpha is None else recorded_alpha)
+    feature_set = summary.get("feature_set") or _feature_set_name(
+        phase, summary.get("features", ""), alpha)
+    decision_key = {
+        "ticker": ticker,
+        "timeframe": tf,
+        "target": "magnitude",
+        "feature_set": feature_set,
+        "label_version": _label_version(label_mode, thresholds),
+    }
+
+    gates = summary.get("gates") or {}
+    cell_pass = gates.get("cell_pass_gates_1_to_4") is True
+    preregistered = summary.get("preregistered_experiment") is True
+    every_gate = _clears_every_registered_gate(summary)
+    reason: str
+    if disabled:
+        status, reason = "withdrawn", "timeframe disabled for this ticker"
+    elif summary.get("status") == "ERROR" or not cell_pass:
+        status, reason = "rejected", "cell failed or did not report its own gates"
+    elif tf in {"15m", "30m"} and not (preregistered and every_gate):
+        status, reason = "rejected", (
+            "15m/30m require a new pre-registered experiment that independently "
+            "clears all seven gates")
+    elif label_mode != DEFAULT_LABEL_MODE or thresholds != tuple(MAGNITUDE_THRESHOLDS):
+        status, reason = "research", "label contract is research-only"
+    elif phase != "phase0" or bool(summary.get("features", "")):
+        status, reason = "shadow", "non-baseline configuration remains in shadow"
+    elif tf == "5m" and alpha != 0.0:
+        status, reason = "research", "phase-0 5m promotion track is unweighted"
+    elif summary.get("production_model_uri"):
+        status, reason = "promoted", "cell cleared its criteria and was published"
+    else:
+        status, reason = "eligible", "cell cleared its criteria; publication pending"
+
+    assert status in PROMOTION_STATUSES
+    return {
+        "decision_key": decision_key,
+        "status": status,
+        "reason": reason,
+        "enabled": not disabled,
+        "baseline_scope": {"ticker": ticker, "timeframe": tf},
+        "cell_pass": cell_pass,
+        "all_registered_gates_pass": every_gate,
+        "preregistered_experiment": preregistered,
+        "gates": gates,
+        "run_id": summary.get("run_id"),
+    }
+
+
+def build_promotion_report(all_summaries: list[dict],
+                           disabled_timeframes: dict[str, set[str]] | None = None
+                           ) -> dict:
+    """Create ticker scorecards whose cells, never fleet aggregates, decide.
+
+    ``disabled_timeframes`` is keyed by ticker, so disabling SPY/15m cannot
+    withdraw IWM/15m or either of SPY's other timeframes.
+    """
+    disabled_timeframes = disabled_timeframes or {}
+    scorecards = {ticker: [] for ticker in TICKERS}
+    for summary in all_summaries:
+        ticker = summary["ticker"]
+        disabled = summary["tf"] in disabled_timeframes.get(ticker, set())
+        scorecards.setdefault(ticker, []).append(
+            _scorecard_cell(summary, disabled=disabled))
+    for cells in scorecards.values():
+        cells.sort(key=lambda cell: TIMEFRAMES.index(
+            cell["decision_key"]["timeframe"]))
+
+    # Diagnostics are deliberately downstream of decisions and carry no
+    # verdict.  They cannot turn a rejected cell into an eligible one.
+    diagnostics = {
+        tf: sum(cell["status"] in {"eligible", "promoted"}
+                for cells in scorecards.values() for cell in cells
+                if cell["decision_key"]["timeframe"] == tf)
+        for tf in TIMEFRAMES
+    }
+    return {
+        "decision_unit": [
+            "ticker", "timeframe", "target", "feature_set", "label_version"],
+        "scorecards": scorecards,
+        "fleet_diagnostics_non_decisioning": {"eligible_count_by_timeframe": diagnostics},
+    }
+
+
 def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cutoffs: list[str] | None = None,
                   calibration: str = DEFAULT_CALIBRATION,
@@ -876,6 +993,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # summary before 2026-09-14, which left the serving model's setting
         # unrecoverable (see mag_pred_train.class_weight_power).
         "class_weight_power": class_weight_power(),
+        "features": features,
+        "feature_set": _feature_set_name(phase, features, class_weight_power()),
         "decision_lift_min": float(DECISION_LIFT_MIN),
         # Recorded so a run's own output says which labels it trained on.
         # Before #1048's follow-up the summary named neither, and three of the
@@ -962,13 +1081,18 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # want exactly one canonical artifact per (ticker, tf).
     if persist_production_model and phase == "phase0":
         try:
-            uri = _persist_production_model_artifact(
-                ticker, tf, run_id, X_full, y_full, feature_cols,
-                gates=gates, label_mode=label_mode, thresholds=thresholds,
-                calibration=calibration, cv=cv,
-            )
-            if uri:
-                summary["production_model_uri"] = uri
+            policy = _scorecard_cell(summary)
+            if policy["status"] != "eligible":
+                log.info("production publish skipped for %s:%s — %s (%s)",
+                         ticker, tf, policy["status"], policy["reason"])
+            else:
+                uri = _persist_production_model_artifact(
+                    ticker, tf, run_id, X_full, y_full, feature_cols,
+                    gates=gates, label_mode=label_mode, thresholds=thresholds,
+                    calibration=calibration, cv=cv,
+                )
+                if uri:
+                    summary["production_model_uri"] = uri
         except Exception as e:
             log.error("Production-model persist FAILED (%s): %s",
                       type(e).__name__, e)
@@ -995,7 +1119,8 @@ def run_all_cells(engine, phase: str,
                    calibration: str = DEFAULT_CALIBRATION,
                    label_mode: str = DEFAULT_LABEL_MODE,
                    persist_production_model: bool = False,
-                   features: str = "") -> dict:
+                   features: str = "",
+                   disabled_timeframes: dict[str, set[str]] | None = None) -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
     all_summaries = []
     for ticker in TICKERS:
@@ -1015,27 +1140,14 @@ def run_all_cells(engine, phase: str,
                     "status": "ERROR", "error": str(e),
                 })
 
-    # Phase-level verdict: passes if ≥ 2 of 3 tickers per TF passed
-    pass_count_by_tf = {tf: 0 for tf in TIMEFRAMES}
-    for s in all_summaries:
-        g = s.get("gates", {})
-        if g.get("cell_pass_gates_1_to_4", g.get("cell_pass")):
-            pass_count_by_tf[s["tf"]] += 1
-    phase_pass_tfs = [tf for tf, n in pass_count_by_tf.items() if n >= 2]
-    phase_verdict = "PASS" if len(phase_pass_tfs) >= 2 else "FAIL"
-
-    log.info("=" * 70)
-    log.info("PHASE %s VERDICT: %s  (passing TFs: %s)", phase, phase_verdict,
-             ", ".join(phase_pass_tfs) or "none")
-    log.info("=" * 70)
-
-    return {
+    report = build_promotion_report(all_summaries, disabled_timeframes)
+    report.update({
         "production_readiness_version": PRODUCTION_READINESS_VERSION,
-        "phase": phase, "verdict": phase_verdict,
-        "pass_count_by_tf": pass_count_by_tf,
-        "pass_tfs": phase_pass_tfs,
-        "cells": all_summaries,
-    }
+        "phase": phase, "cells": all_summaries,
+    })
+    log.info("promotion report contains independent scorecards for %s",
+             ", ".join(report["scorecards"]))
+    return report
 
 
 # ─────────────────────── Task plans for Cloud Run parallel dispatch ────────
