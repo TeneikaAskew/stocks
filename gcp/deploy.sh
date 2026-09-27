@@ -5379,6 +5379,7 @@ case "${1:-help}" in
     weekend) _run build_image deploy_weekend ;;
     fetchers) _run build_image deploy_fetchers backfill_watchlist ;;
     insights) _run build_image setup_insight_tasks_queue deploy_insight_pipeline deploy_insight_discord_push deploy_historical_signals_watchlist deploy_auto_refresh_top_n ;;
+    historical-signals) _run build_image deploy_historical_signals_watchlist ;;
     schedulers)  _PIN_AFTER=0; deploy_schedulers ;;
     backfill)    _PIN_AFTER=0; shift; backfill_watchlist "$@" ;;
     apply-schema) _run build_image deploy_apply_schema_migrations apply_schema_via_build ;;
@@ -5498,6 +5499,7 @@ case "${1:-help}" in
         echo "  weekend    Deploy weekend review job"
         echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
         echo "  insights   Deploy AI insight pipeline job + Cloud Tasks queue"
+        echo "  historical-signals  Deploy only the nightly historical-signals-watchlist job"
         echo "  schedulers Create/update all Cloud Scheduler triggers"
         echo "  backfill   Idempotently backfill data for every watchlist ticker."
         echo "             Pass --tickers AVGO,NVDA to override. Runs automatically"

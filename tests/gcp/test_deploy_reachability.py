@@ -143,6 +143,17 @@ def test_discord_target_deploys_service_and_backing_jobs_together():
     assert {"discord-interactions", "backfill-ticker", "validate-brief", "backtest"} <= created
 
 
+def test_historical_signals_target_deploys_only_the_nightly_writer():
+    """#1167 changes the tags `run_historical_signals` writes, and its job was
+    reachable only through `insights`, which also deploys the insight pipeline
+    and its Discord push, or through `all`. Deploying that change meant
+    deploying jobs it does not touch."""
+    arms = _dispatch_arms()
+    assert "historical-signals" in arms, "historical-signals) dispatcher target missing"
+    created = _created_by(_closure(_called_from(arms["historical-signals"])))
+    assert created == {"historical-signals-watchlist"}, created
+
+
 def _gamma_levels_body() -> str:
     assert "deploy_p2_build_gamma_levels" in FNS, \
         "deploy_p2_build_gamma_levels() must exist (#834: the job's config lives nowhere in the repo)"
