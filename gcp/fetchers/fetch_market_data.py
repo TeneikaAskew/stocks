@@ -112,6 +112,12 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
         resp.raise_for_status()
         data = resp.json()
 
+        if not isinstance(data, dict):
+            # Valid JSON that is not an object is still the vendor's reply,
+            # and it holds no time series (Codex on #1202).
+            log.error("    AV intraday reply for %s is not a JSON object: %s",
+                      ticker, type(data).__name__)
+            return pd.DataFrame(), FETCH_NO_TIMESERIES
         if 'Error Message' in data:
             log.error("    AV intraday error for %s: %s", ticker, data['Error Message'])
             return pd.DataFrame(), FETCH_INVALID_API
@@ -122,7 +128,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
 
         ts_key = 'Time Series (1min)'
         ts = data.get(ts_key, {})
-        if not ts:
+        if not ts or not isinstance(ts, dict):
             log.warning("    AV intraday: no time series for %s month %s", ticker, month)
             return pd.DataFrame(), FETCH_NO_TIMESERIES
 

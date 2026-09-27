@@ -522,6 +522,26 @@ def test_a_transport_failure_is_named():
     assert bars.empty and got == "request_error"
 
 
+@pytest.mark.parametrize("payload", [
+    [], None, "Invalid API call", 5,
+    {"Meta Data": {}, "Time Series (1min)": ["2026-09-25 09:30:00"]},
+    {"Meta Data": {}, "Time Series (1min)": "unavailable"},
+])
+def test_a_reply_that_is_not_a_json_object_is_the_vendors_shape(payload):
+    """Codex on #1202: a body that parses as JSON but is not an object, or a
+    time series that is not one, raised AttributeError or TypeError out of
+    this function. Before #1181 a bare `except Exception` made it an empty
+    frame; it is the vendor's reply, so it is named like any other reply with
+    no time series. The daily fetcher then still falls back to the daily
+    endpoint, and the premarket refresh, which has no per-ticker guard, keeps
+    going."""
+    with patch.object(fmd.requests, "get", return_value=_Resp(payload)):
+        bars, got = fmd.fetch_minute_bars("SPY", "2026-09-25", "key")
+        df = fmd.fetch_minute_data("SPY", "2026-09-25", "key")
+    assert bars.empty and got == "no_timeseries"
+    assert isinstance(df, pd.DataFrame) and df.empty
+
+
 def test_bars_on_the_date_come_back_ok():
     with patch.object(fmd.requests, "get", return_value=_Resp(_month("2026-09-25"))):
         bars, got = fmd.fetch_minute_bars("SPY", "2026-09-25", "key")
