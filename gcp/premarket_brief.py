@@ -774,16 +774,16 @@ def load_ew_recap(today: date) -> dict:
 def _ew_recap_or_unavailable(today: date) -> dict:
     """load_ew_recap, or an envelope that says why it is missing.
 
-    The recap is not worth failing the morning brief for, but a missing one
-    must read as missing (CLAUDE.md §3.7): the error is logged with its
-    stack, and the embed names it instead of showing nothing.
+    Not worth failing the brief for, but a missing recap must read as missing
+    (CLAUDE.md §3.7): the embed names the error's class, and its text, which
+    can carry hosts, users and markdown, stays in the log with the stack.
     """
     try:
         return load_ew_recap(today)
     except Exception as e:
         logger.exception("EW recap load failed for %s", today)
         return {'session': None, 'picks': [], 'unscored': 0,
-                'unavailable': f'{type(e).__name__}: {e}'}
+                'unavailable': type(e).__name__}
 
 
 def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
@@ -2896,12 +2896,10 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         # evaluate-ew-strikes the evening after their session.
         recap = ''
         if ew_recap.get('unavailable'):
-            # One line, bounded: the stack is in the log, and a SQLAlchemy
-            # error's text runs the whole statement over a dozen lines.
-            why = ew_recap['unavailable'].splitlines()[0]
-            why = why if len(why) <= 200 else why[:199] + '…'
+            # The error's class only; _ew_recap_or_unavailable keeps its text
+            # out of Discord and in the log (Codex on #1203).
             recap = (f'\n**\U0001f52e EW picks, last session: unavailable '
-                     f'({why})**')
+                     f'({ew_recap["unavailable"]})**')
         elif has_recap:
             s = ew_recap.get('session')
             label = s.strftime('%a %m/%d') if hasattr(s, 'strftime') else str(s)

@@ -3018,7 +3018,8 @@ def test_the_recap_renders_on_a_day_without_earnings():
 def test_an_unavailable_recap_is_said_not_hidden(monkeypatch, caplog):
     """The recap is not worth failing the morning brief for, but a missing
     one must read as missing: an ERROR with the stack, and a line in the
-    embed (CLAUDE.md §3.7)."""
+    embed naming the error's class (CLAUDE.md §3.7). Its text stays in the
+    log (Codex on #1203)."""
     from gcp import premarket_brief as pb
 
     def boom(today):
@@ -3027,12 +3028,14 @@ def test_an_unavailable_recap_is_said_not_hidden(monkeypatch, caplog):
     monkeypatch.setattr(pb, 'load_ew_recap', boom)
     with caplog.at_level('ERROR'):
         recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
-    assert recap['unavailable'] == 'RuntimeError: calendar unavailable'
-    assert any(r.levelname == 'ERROR' and r.exc_info for r in caplog.records)
+    assert recap['unavailable'] == 'RuntimeError'
+    errors = [r for r in caplog.records if r.levelname == 'ERROR' and r.exc_info]
+    assert errors and 'calendar unavailable' in str(errors[0].exc_info[1])
     data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
     data['ew_recap'] = recap
     desc = pb._build_earnings_embed(data)['description']
-    assert 'EW picks, last session: unavailable (RuntimeError: calendar unavailable)' in desc
+    assert 'EW picks, last session: unavailable (RuntimeError)**' in desc
+    assert 'calendar unavailable' not in desc
 
 
 def test_a_failed_recap_query_reads_as_unavailable_not_as_no_picks(monkeypatch):
@@ -3050,7 +3053,7 @@ def test_a_failed_recap_query_reads_as_unavailable_not_as_no_picks(monkeypatch):
     monkeypatch.setattr(database, 'query_to_dataframe', lambda sql, params=None: pd.DataFrame())
     monkeypatch.setattr(database, 'query_to_dataframe_strict', strict)
     recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
-    assert recap.get('unavailable') == 'RuntimeError: connection refused'
+    assert recap.get('unavailable') == 'RuntimeError'
     assert recap['picks'] == []
 
 
@@ -3093,18 +3096,17 @@ def test_an_unavailable_recap_survives_the_cut_too():
     from gcp.premarket_brief import _build_earnings_embed
     data = _busy_day()
     data['ew_recap'] = {'session': None, 'picks': [], 'unscored': 0,
-                        'unavailable': 'RuntimeError: connection refused'}
+                        'unavailable': 'RuntimeError'}
     desc = _build_earnings_embed(data)['description']
     assert len(desc) <= 4090
-    assert desc.endswith('EW picks, last session: unavailable (RuntimeError: connection refused)**')
+    assert desc.endswith('EW picks, last session: unavailable (RuntimeError)**')
 
 
-def test_a_database_error_is_named_in_one_short_line(monkeypatch):
-    """The strict path lets a real database error reach the embed, and a
-    SQLAlchemy error's text runs the whole statement over a dozen lines (584
-    characters for this query), which would break the line's bold and take
-    the space the recap reserves. The embed names the error on one line; the
-    stack is in the log."""
+def test_a_database_error_reaches_discord_as_its_class_only(monkeypatch, caplog):
+    """Codex on #1203: with the strict path a real database error reaches the
+    embed, and its text is the driver's: relation names, the whole statement,
+    and for a connection failure the host and the user. The embed names the
+    class; the text stays in the log with the stack."""
     import sqlalchemy
     from gcp import database
     from gcp import premarket_brief as pb
@@ -3116,28 +3118,19 @@ def test_a_database_error_is_named_in_one_short_line(monkeypatch):
 
     # Only for the load: the embed reads other metrics whenever Cloud SQL
     # reports as configured, and this test must not reach for a database.
-    with monkeypatch.context() as m:
+    with monkeypatch.context() as m, caplog.at_level('ERROR'):
         m.setattr(database, 'is_cloud_sql_configured', lambda: True)
         m.setattr(database, 'query_to_dataframe_strict', strict)
         recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
-    assert '[SQL:' in recap['unavailable']
+    assert recap['unavailable'] == 'OperationalError'
+    assert any('no such table: earnings_calendar' in str(r.exc_info[1])
+               for r in caplog.records if r.exc_info)
     data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
     data['ew_recap'] = recap
     desc = pb._build_earnings_embed(data)['description']
-    assert '[SQL:' not in desc
+    assert 'no such table' not in desc and '[SQL:' not in desc
     assert desc.splitlines()[-1] == (
-        '**\U0001f52e EW picks, last session: unavailable (OperationalError: '
-        '(sqlite3.OperationalError) no such table: earnings_calendar)**')
-
-
-def test_a_long_reason_is_cut_to_200_characters():
-    from gcp.premarket_brief import _build_earnings_embed
-    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
-    data['ew_recap'] = {'session': None, 'picks': [], 'unscored': 0,
-                        'unavailable': 'RuntimeError: ' + 'x' * 500}
-    line = _build_earnings_embed(data)['description'].splitlines()[-1]
-    frame = '**\U0001f52e EW picks, last session: unavailable ()**'
-    assert line.endswith('x…)**') and len(line) == len(frame) + 200
+        '**\U0001f52e EW picks, last session: unavailable (OperationalError)**')
 
 
 def test_a_quiet_day_is_not_cut():
