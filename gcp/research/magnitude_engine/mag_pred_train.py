@@ -1,14 +1,11 @@
-"""Magnitude Engine — model + featurize + ECE.
+"""Magnitude Engine — model, features, calibration, and diagnostics.
 
 Parallels strat_engine.strat_pred_train. Same LightGBM hyperparameters,
-same calibration default (none — raw softmax), same ECE measurement.
+plus nested probability calibration and detailed calibration measurements.
 Differs ONLY in the target column and the feature drop set.
 
-The DEFAULT_CALIBRATION decision is preserved because the underlying
-model class (LightGBM multiclass with cross-entropy) is the same; the
-target being different does not change whether Platt-on-top is double-
-calibration. We will still measure ECE per fold and switch if the new
-target breaches the per-tf ceiling (per the spec).
+Calibrators consume only probabilities from a later disjoint calibration
+window; selection and test-fold isolation are orchestrated by mag_walk_forward.
 """
 from __future__ import annotations
 import logging
@@ -16,6 +13,10 @@ import os
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize, minimize_scalar
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import log_loss
 
 from gcp.research.magnitude_engine.mag_config import (
     DECISION_LIFT_MIN,
@@ -32,6 +33,129 @@ from gcp.research.strat_engine.strat_config import (
 # explosive_lift) can import this module without LightGBM installed.
 
 log = logging.getLogger(__name__)
+
+CALIBRATION_METHODS = ("uncalibrated", "sigmoid", "isotonic", "temperature", "vector")
+MIN_ISOTONIC_SAMPLES_PER_CLASS = 25
+_EPS = 1e-12
+
+
+def _normalise_rows(p: np.ndarray) -> np.ndarray:
+    p = np.clip(np.asarray(p, dtype=float), _EPS, None)
+    return p / p.sum(axis=1, keepdims=True)
+
+
+class ProbabilityCalibrator:
+    """Serializable multiclass calibrator fitted only to held-out probabilities."""
+    def __init__(self, method: str, n_classes: int):
+        self.method, self.n_classes = method, n_classes
+
+    def fit(self, probabilities: np.ndarray, y: np.ndarray):
+        p = _normalise_rows(probabilities)
+        y = np.asarray(y, dtype=int)
+        logits = np.log(p)
+        if self.method == "uncalibrated":
+            return self
+        if self.method == "sigmoid":
+            self.models_ = []
+            for c in range(self.n_classes):
+                lr = LogisticRegression(solver="lbfgs")
+                lr.fit(logits[:, [c]], (y == c).astype(int))
+                self.models_.append(lr)
+        elif self.method == "isotonic":
+            counts = np.bincount(y, minlength=self.n_classes)
+            if np.any(counts < MIN_ISOTONIC_SAMPLES_PER_CLASS):
+                raise ValueError("isotonic calibration requires at least "
+                                 f"{MIN_ISOTONIC_SAMPLES_PER_CLASS} samples per class; got {counts.tolist()}")
+            self.models_ = [IsotonicRegression(out_of_bounds="clip").fit(
+                p[:, c], (y == c).astype(float)) for c in range(self.n_classes)]
+        elif self.method == "temperature":
+            result = minimize_scalar(
+                lambda log_t: log_loss(y, self._softmax(logits / np.exp(log_t)),
+                                       labels=list(range(self.n_classes))),
+                bounds=(-5.0, 5.0), method="bounded")
+            self.temperature_ = float(np.exp(result.x))
+        elif self.method == "vector":
+            def objective(theta):
+                scaled = logits * np.exp(theta[:self.n_classes]) + theta[self.n_classes:]
+                return log_loss(y, self._softmax(scaled), labels=list(range(self.n_classes)))
+            result = minimize(objective, np.zeros(2 * self.n_classes), method="L-BFGS-B",
+                              bounds=[(-5, 5)] * self.n_classes + [(-10, 10)] * self.n_classes)
+            self.scale_ = np.exp(result.x[:self.n_classes])
+            self.bias_ = result.x[self.n_classes:]
+        else:
+            raise ValueError(f"unknown calibration method {self.method!r}")
+        return self
+
+    @staticmethod
+    def _softmax(z):
+        z = z - np.max(z, axis=1, keepdims=True)
+        e = np.exp(z)
+        return e / e.sum(axis=1, keepdims=True)
+
+    def transform(self, probabilities: np.ndarray) -> np.ndarray:
+        p = _normalise_rows(probabilities)
+        logits = np.log(p)
+        if self.method == "uncalibrated":
+            return p
+        if self.method == "sigmoid":
+            return _normalise_rows(np.column_stack([
+                model.predict_proba(logits[:, [c]])[:, 1]
+                for c, model in enumerate(self.models_)]))
+        if self.method == "isotonic":
+            return _normalise_rows(np.column_stack([
+                model.predict(p[:, c]) for c, model in enumerate(self.models_)]))
+        if self.method == "temperature":
+            return self._softmax(logits / self.temperature_)
+        return self._softmax(logits * self.scale_ + self.bias_)
+
+
+class CalibratedProbabilityModel:
+    """Keep the estimator/calibrator pair together for inference/joblib."""
+    def __init__(self, estimator, calibrator: ProbabilityCalibrator):
+        self.estimator, self.calibrator = estimator, calibrator
+        self.classes_ = np.asarray(estimator.classes_)
+
+    def predict_proba(self, X):
+        return self.calibrator.transform(self.estimator.predict_proba(X))
+
+
+def calibration_metrics(y_true_idx: np.ndarray, y_proba: np.ndarray,
+                        n_bins: int = 10) -> dict:
+    """Probability diagnostics, including fixed/adaptive and one-v-rest ECE."""
+    y = np.asarray(y_true_idx, dtype=int)
+    p = _normalise_rows(y_proba)
+    ece, bins = expected_calibration_error(y, p, n_bins)
+    conf, correct = p.max(axis=1), (p.argmax(axis=1) == y).astype(float)
+    order = np.argsort(conf)
+    adaptive_bins, adaptive = [], 0.0
+    for i, idx in enumerate(np.array_split(order, n_bins)):
+        if not len(idx):
+            continue
+        gap = abs(float(conf[idx].mean()) - float(correct[idx].mean()))
+        adaptive += len(idx) / len(y) * gap
+        adaptive_bins.append({"bin": i, "n": int(len(idx)),
+                              "avg_conf": float(conf[idx].mean()),
+                              "avg_acc": float(correct[idx].mean())})
+    classwise = []
+    edges = np.linspace(0, 1, n_bins + 1)
+    for c in range(p.shape[1]):
+        target = (y == c).astype(float); value = 0.0
+        for b in range(n_bins):
+            mask = (p[:, c] >= edges[b]) & ((p[:, c] < edges[b + 1]) if b < n_bins - 1 else (p[:, c] <= edges[b + 1]))
+            if mask.any():
+                value += mask.mean() * abs(float(p[mask, c].mean()) - float(target[mask].mean()))
+        classwise.append(float(value))
+    one_hot = np.eye(p.shape[1])[y]
+    # Calibration-in-the-large and slope on the multiclass true-class event.
+    flat_y, flat_p = one_hot.ravel(), np.clip(p.ravel(), 1e-8, 1 - 1e-8)
+    lr = LogisticRegression(C=1e6, solver="lbfgs").fit(
+        np.log(flat_p / (1 - flat_p)).reshape(-1, 1), flat_y)
+    return {"ece": float(ece), "adaptive_ece": float(adaptive),
+            "classwise_ece": classwise, "brier_score": float(np.mean(np.sum((p - one_hot) ** 2, axis=1))),
+            "log_loss": float(log_loss(y, p, labels=list(range(p.shape[1])))),
+            "reliability_bins": bins, "adaptive_reliability_bins": adaptive_bins,
+            "calibration_intercept": float(lr.intercept_[0]),
+            "calibration_slope": float(lr.coef_[0, 0])}
 
 
 def featurize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
