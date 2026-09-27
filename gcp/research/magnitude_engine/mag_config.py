@@ -119,7 +119,7 @@ DEFAULT_LABEL_MODE = "body"
 # This is deliberately a versioned, immutable registry rather than a list in a
 # notebook.  A registry version identifies both the candidate names and the
 # feature-selection contract below; changing either requires a new version.
-FEATURE_REGISTRY_VERSION = "magnitude-features-v1"
+FEATURE_REGISTRY_VERSION = "magnitude-features-v2"
 
 FEATURE_FAMILIES: tuple[str, ...] = (
     "price_volume",
@@ -160,7 +160,7 @@ def _candidates(source: str, *names: str, available: bool = True,
 
 # Information-source groupings are intentionally disjoint.  They describe the
 # candidate surface, not which columns happen to coexist in a phase today.
-FEATURE_REGISTRY: Mapping[str, tuple[FeatureCandidate, ...]] = {
+FEATURE_REGISTRY: Mapping[str, tuple[FeatureCandidate, ...]] = MappingProxyType({
     "price_volume": _candidates(
         "strat_features_<tf>", "obv", "rvol", "rvol_10",
         "price_vs_vwap", "intraday_return", "high_low_spread_pct"),
@@ -184,17 +184,22 @@ FEATURE_REGISTRY: Mapping[str, tuple[FeatureCandidate, ...]] = {
         available=False),
     "cross_asset": _candidates(
         "market_data_cross_asset", "vix_5m_delta", "vix_z_15",
-        "ust10y_delta", "dxy_delta", "oil_z", "gold_z"),
-    "calendar_event": _candidates(
-        "published economic calendar", "hours_until_next_hi_event",
-        "hours_since_last_hi_event", "is_event_day_pm4h", "cal_day_of_week",
-        "cal_week_of_month", "cal_is_first_friday", "cal_is_fomc_week",
-        "cal_is_month_end", "cal_is_quarter_end", timestamp_contract=
-        "use only event schedules published before the bar; never outcomes"),
+        "ust10y_delta", "dxy_delta", "oil_z", "gold_z", available=False),
+    "calendar_event": (
+        _candidates(
+            "unversioned economic calendar (not point-in-time safe)",
+            "hours_until_next_hi_event", "hours_since_last_hi_event",
+            "is_event_day_pm4h", available=False,
+            timestamp_contract=
+            "requires a versioned schedule published before the bar")
+        + _candidates(
+            "exchange calendar/bar timestamp", "cal_day_of_week",
+            "cal_week_of_month", "cal_is_first_friday", "cal_is_fomc_week",
+            "cal_is_month_end", "cal_is_quarter_end")),
     "time_of_session": _candidates(
         "exchange calendar/bar timestamp", "cal_hour_of_day",
         "cal_minute_of_hour"),
-}
+})
 
 
 @dataclass(frozen=True)
@@ -213,12 +218,18 @@ class FeatureSelectionProtocol:
     )
     identical_samples_within_fold: bool = True
     chronological_folds: bool = True
-    selection_cutoffs: tuple[str, ...] = tuple(DEFAULT_CUTOFFS[:-1])
+    # walk_forward treats each cutoff as a fold START and uses the next cutoff
+    # as its exclusive end.  Keep the locked start in the boundary sequence so
+    # the last selection fold ends there, but never select/evaluate its fold.
+    fold_boundaries: tuple[str, ...] = tuple(DEFAULT_CUTOFFS)
+    selection_fold_starts: tuple[str, ...] = tuple(DEFAULT_CUTOFFS[:-1])
     final_test_cutoff: str = DEFAULT_CUTOFFS[-1]
     importance_split: str = "held_out_only"
     permutation_repeats: int = 30
     max_missing_fraction: float = 0.20
     max_ece_regression: float = 0.01
+    min_improving_folds: int = 5
+    min_median_log_loss_improvement: float = 0.001
     min_rank_stability_spearman: float = 0.50
     max_pairwise_spearman: float = 0.90
     drift_metric: str = "population_stability_index"
@@ -236,8 +247,9 @@ class FeatureSelectionProtocol:
         "timestamp_leakage",
     )
     retention_rule: str = (
-        "retain only when the primary metric improves consistently across "
-        "selection folds without materially worsening calibration"
+        "retain only when log loss improves by at least 0.001 at the median, "
+        "improves in at least 5 of 7 selection folds, and median ECE does not "
+        "worsen by more than 0.01"
     )
 
 
