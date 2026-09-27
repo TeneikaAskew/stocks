@@ -38,9 +38,28 @@ gcp/research/magnitude_engine/
 ├── mag_inference.py             daily scorer: loads LATEST per cell,
 │                                verifies CONTRACT.json, applies the
 │                                decision rule, upserts predictions
-└── mag_leakage_audit.py         3 audits: feature drop set, atr_20
-                                 t-known, phase-1 no-future-look
+├── mag_leakage_audit.py         3 audits: feature drop set, atr_20
+│                                t-known, phase-1 no-future-look
+├── binary_config.py             immutable binary utility/artifact contract
+└── binary_research.py           isolated EXPLOSIVE-vs-rest benchmarks
 ```
+
+## Binary rare-event research
+
+`binary_research.py` is a separate, research-only experiment. It compares
+unweighted and capped-weight LightGBM, focal-equivalent rare-event weighting,
+calibrated logistic regression, and a train base-rate baseline. Per-ticker
+chronological validation selects and locks each operating threshold using the
+pre-declared `+5 TP / -1 FP` utility (optionally subject to minimum precision).
+The untouched test partition reports PR AUC (primary), ROC AUC, log loss, Brier
+score, calibration/ECE, precision, recall, false alerts per session, and
+expected net utility.
+
+Artifacts are confined to
+`magnitude-binary-research/v1/<TICKER>/report.json`, never the four-class
+production path. There is no fleet threshold or implicit pooled model. A future
+pooled experiment must independently beat the ticker-specific validation PR
+AUC for every ticker before it can be selected.
 
 ## The served decision (2026-09-14)
 
