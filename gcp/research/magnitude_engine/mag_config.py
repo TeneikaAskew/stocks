@@ -269,8 +269,9 @@ PRODUCTION_READINESS_TAIL_CLASSES: tuple[str, ...] = ("EXPANDED", "EXPLOSIVE")
 # tuples make accidental mutation during an experiment fail loudly.  These
 # are conjunctive requirements: an absent/unmeasurable value is a failure,
 # never an exemption.  Numeric definitions that are experiment-specific
-# (regime catastrophe and net utility) must be pre-registered before looking
-# at that experiment's validation window; they may not be selected post hoc.
+# (regime catastrophe, net utility, and the EXPLOSIVE precision/recall
+# acceptance rule) must be pre-registered before looking at that
+# experiment's validation window; they may not be selected post hoc.
 PRODUCTION_READINESS_CRITERIA = MappingProxyType({
     "primary_objective": PRODUCTION_READINESS_PRIMARY_OBJECTIVE,
     # The only label a v1 promotion may use (PRODUCTION_READINESS.md,
@@ -310,6 +311,14 @@ PRODUCTION_READINESS_CRITERIA = MappingProxyType({
         "recall_with_confidence_interval": True,
         "lift_alone_is_sufficient": False,
         "thresholds_selected_post_hoc_from_multiclass_probabilities": False,
+        # Reporting intervals is necessary, not sufficient: a zero-recall
+        # detector reports intervals too (Codex P1 on #1187). The pass rule
+        # (minimum lower confidence bound for precision and for recall, and
+        # the baseline each is compared with) is pre-registered per
+        # experiment; with none registered, gate 4 fails.
+        "acceptance_rule_preregistered": True,
+        "reporting_intervals_alone_is_sufficient": False,
+        "missing_acceptance_rule_blocks_promotion": True,
     }),
     "regimes": MappingProxyType({
         "minimum": PRODUCTION_READINESS_MIN_REGIMES,
@@ -323,6 +332,7 @@ PRODUCTION_READINESS_CRITERIA = MappingProxyType({
         "independent_sessions": PRODUCTION_READINESS_MIN_SESSIONS,
         "realized_observations_per_promoted_tail_class":
             PRODUCTION_READINESS_MIN_TAIL_OBSERVATIONS,
+        "tail_classes": PRODUCTION_READINESS_TAIL_CLASSES,
         "extend_collection_window_if_unmet": True,
     }),
     "unmeasurable_mandatory_metric_blocks_promotion": True,

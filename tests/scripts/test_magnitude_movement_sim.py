@@ -67,3 +67,24 @@ def test_a_missing_run_summary_is_an_error_not_a_default(monkeypatch):
     monkeypatch.setattr(helpers.gcs, "Client", lambda: _Client({}))
     with pytest.raises(SystemExit, match="walk_forward_r1.json"):
         helpers.load_run_readiness_version("phase1", "IWM", "5m", "b", "r1")
+
+
+class _Listing(_Client):
+    def bucket(self, _name):
+        store = self._store
+        return SimpleNamespace(
+            list_blobs=lambda prefix: [_Blob(store, n) for n in sorted(store)
+                                       if n.startswith(prefix)])
+
+
+def test_predictions_are_matched_by_exact_run_id_not_substring(monkeypatch):
+    """`--run-id r1` used to substring-match predictions_r10.csv and take it
+    as the lexicographically last hit, pairing r10's predictions with r1's
+    readiness version (Codex P2 on #1187)."""
+    import pandas as pd
+    prefix = helpers.research_prefix("phase1", "IWM", "5m")
+    store = {prefix + "predictions_r1.csv": b"ts,src\n1,r1\n",
+             prefix + "predictions_r10.csv": b"ts,src\n1,r10\n"}
+    monkeypatch.setattr(helpers.gcs, "Client", lambda: _Listing(store))
+    got = helpers.load_predictions("phase1", "IWM", "5m", "b", "r1")
+    assert list(got["src"]) == ["r1"]

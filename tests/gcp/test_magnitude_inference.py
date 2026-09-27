@@ -1107,6 +1107,28 @@ def test_the_locked_criteria_state_the_canonical_label_contract():
         label["label_mode"] = "excursion"
 
 
+def test_the_locked_criteria_name_the_tail_classes():
+    """The evidence floor counts observations per tail class; the mapping
+    must say which classes those are (Codex P2 on #1187)."""
+    from gcp.research.magnitude_engine.mag_config import (
+        PRODUCTION_READINESS_CRITERIA)
+    floor = PRODUCTION_READINESS_CRITERIA["sample_minimums"]
+    assert floor["tail_classes"] == ("EXPANDED", "EXPLOSIVE")
+
+
+def test_reporting_explosive_intervals_alone_cannot_pass_gate_4():
+    """Gate 4 said to report precision and recall with intervals but gave no
+    pass rule, so a zero-recall detector could satisfy it (Codex P1 on
+    #1187). The acceptance rule is pre-registered per experiment, like the
+    regime and utility boundaries, and its absence blocks promotion."""
+    from gcp.research.magnitude_engine.mag_config import (
+        PRODUCTION_READINESS_CRITERIA)
+    g4 = PRODUCTION_READINESS_CRITERIA["explosive"]
+    assert g4["acceptance_rule_preregistered"] is True
+    assert g4["reporting_intervals_alone_is_sufficient"] is False
+    assert g4["missing_acceptance_rule_blocks_promotion"] is True
+
+
 def test_the_locked_ece_ceilings_do_not_follow_the_mutable_dict(monkeypatch):
     """MappingProxyType is a live view of the dict it wraps. Wrapping the
     exported ECE_CEILING_BY_TF let an in-process edit to that dict change the

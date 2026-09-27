@@ -114,7 +114,11 @@ def load_predictions(phase: str, ticker: str, tf: str,
     if not blobs:
         raise SystemExit(f"no prediction CSV under gs://{bucket}/{prefix}")
     if run_id:
-        blobs = [b for b in blobs if run_id in b.name]
+        # Exact filename, not a substring: `r1` must not select
+        # predictions_r10.csv, whose run carries a different readiness
+        # version (Codex P2 on #1187).
+        want = f"predictions_{run_id}.csv"
+        blobs = [b for b in blobs if b.name.rsplit("/", 1)[-1] == want]
         if not blobs:
             raise SystemExit(
                 f"no prediction CSV matching run_id={run_id} under gs://{bucket}/{prefix}"

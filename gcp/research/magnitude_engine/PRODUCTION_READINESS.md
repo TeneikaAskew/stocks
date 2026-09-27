@@ -35,9 +35,10 @@ EXPLOSIVE diagnostics do not turn the multiclass model into the binary model.
 Promotion is decided independently for each `(ticker, timeframe)`. All metrics
 below must be computed on untouched, chronological out-of-sample data. Splits,
 regime definitions, materially populated-class rules, bootstrap method,
-reliability-failure rule, catastrophic-degradation boundary, execution-cost
-assumptions, abstention policy, and any binary threshold must be registered
-before examining the corresponding validation window.
+reliability-failure rule, catastrophic-degradation boundary, EXPLOSIVE
+precision/recall acceptance rule, execution-cost assumptions, abstention
+policy, and any binary threshold must be registered before examining the
+corresponding validation window.
 
 The criteria may be changed only prospectively under a new version. They must
 never be revised after examining the validation window to which they apply.
@@ -56,7 +57,11 @@ For a cell to be promoted, **all** of the following must pass:
 3. **Probability quality:** multiclass Brier score improves on the same
    expanding class-prior baseline.
 4. **EXPLOSIVE operating characteristics:** report precision **and** recall,
-   each with confidence intervals. Lift alone is insufficient. For a binary
+   each with confidence intervals. Lift alone is insufficient, and so is
+   reporting the intervals: the acceptance rule (the minimum lower confidence
+   bound for precision and for recall, and the baseline each is compared
+   with) must be pre-registered before the validation window is examined,
+   and a gate with no registered rule fails. For a binary
    EXPLOSIVE detector these are metrics of that separately validated model;
    multiclass diagnostics remain explicitly multiclass diagnostics.
 5. **Regime robustness:** demonstrate performance in at least three
