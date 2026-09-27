@@ -29,8 +29,12 @@ SELF=${0#"$ROOT"/}
 
 log() { echo "update-superpowers: $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
+# Final release tags only (vMAJOR.MINOR.PATCH), oldest first. Prereleases are
+# excluded: GNU sort -V orders v6.5.0-rc.1 after v6.5.0, so keeping them would
+# vendor a release candidate over the final release.
 release_tags() {
-  git ls-remote --tags --refs "$UPSTREAM" 'v*' | sed 's#.*refs/tags/##' | sort -V
+  git ls-remote --tags --refs "$UPSTREAM" 'v*' | sed 's#.*refs/tags/##' \
+    | grep -E '^v[0-9]+(\.[0-9]+)*$' | sort -V
 }
 newest_of() { printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1; }
 
@@ -39,6 +43,10 @@ current=$(sed -n 's/^- Version: //p' "$NOTE")
 
 if [ -n "${1:-}" ]; then
   target=$1
+  # git clone --branch also accepts a branch name, which would vendor
+  # unreleased upstream code recorded as "Version: main".
+  release_tags | grep -qx -- "$target" \
+    || die "$target is not a release tag at $UPSTREAM"
 else
   target=$(release_tags | tail -n 1)
   [ -n "$target" ] || die "no release tags found at $UPSTREAM"
