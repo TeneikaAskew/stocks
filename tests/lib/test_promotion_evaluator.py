@@ -1,5 +1,7 @@
 import hashlib
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -16,12 +18,20 @@ def canonical(value):
 
 
 def policy():
-    return PromotionPolicy(20, 100, 0.2, 0.1, 0.05, 0.99, 4, 1.0)
+    return PromotionPolicy(20, 100, 0.2, 0.1, 0.05, 0.99, 4, 1.0, 60, ("regular_hours",))
 
 
 def row():
     artifact = {"uri": "gs://models/a", "version": "v1"}
-    contract = {"ticker": "SPY", "model_id": "v1", "features": ["x"]}
+    artifact_sha = hashlib.sha256(canonical(artifact)).hexdigest()
+    contract = {
+        "ticker": "SPY",
+        "model_id": "v1",
+        "features": ["x"],
+        "artifact": artifact,
+        "artifact_sha256": artifact_sha,
+        "rollback_target": "v0",
+    }
     metrics = {
         "window_days": (30, 29, 31),
         "sample_size": (200, 190, 210),
@@ -40,10 +50,18 @@ def row():
         "evaluation_id": "e1",
         "artifact": artifact,
         "contract": contract,
-        "artifact_sha256": hashlib.sha256(canonical(artifact)).hexdigest(),
+        "artifact_sha256": artifact_sha,
         "contract_sha256": hashlib.sha256(canonical(contract)).hexdigest(),
         "metrics": {
             k: {"value": v, "ci_lower": lo, "ci_upper": hi} for k, (v, lo, hi) in metrics.items()
+        },
+        "cohorts": {
+            "regular_hours": {
+                "metrics": {
+                    k: {"value": v, "ci_lower": lo, "ci_upper": hi}
+                    for k, (v, lo, hi) in metrics.items()
+                }
+            }
         },
     }
 
@@ -75,6 +93,7 @@ def test_evaluator_reads_only_finalized_shadow_or_final_test():
         "alert_frequency",
         "realized_utility",
         "artifact_contract_identity",
+        "cohort:regular_hours",
     }
 
 
@@ -102,6 +121,26 @@ def test_missing_metric_and_identity_mismatch_fail_closed():
     )
 
 
+def test_contract_must_bind_the_evaluated_artifact():
+    candidate = row()
+    candidate["contract"]["artifact"] = {"uri": "gs://models/other", "version": "v1"}
+    candidate["contract_sha256"] = hashlib.sha256(canonical(candidate["contract"])).hexdigest()
+    report = evaluate_promotions([candidate], policy())[0]
+    assert report["overall_verdict"] == "FAIL"
+
+
+def test_nonfinite_metric_fails_criterion_without_aborting_report():
+    candidate = row()
+    candidate["metrics"]["ece"] = {
+        "value": float("inf"),
+        "ci_lower": float("inf"),
+        "ci_upper": float("inf"),
+    }
+    report = evaluate_promotions([candidate], policy())[0]
+    assert report["overall_verdict"] == "FAIL"
+    assert "finite" in next(c for c in report["criteria"] if c["name"] == "calibration")["error"]
+
+
 def test_duplicate_finalized_snapshot_is_rejected_not_averaged():
     with pytest.raises(ValueError, match="multiple finalized"):
         evaluate_promotions([row(), row()], policy())
@@ -116,7 +155,6 @@ def test_rollback_conditions_are_independent_and_fail_closed():
         "feature_health": {
             "missing_count": 0,
             "max_age_seconds": 20,
-            "max_allowed_age_seconds": 60,
         },
     }
     assert rollback_report(observation, policy())["rollback_required"] is False
@@ -128,6 +166,10 @@ def test_rollback_conditions_are_independent_and_fail_closed():
         "worse_than_baseline_rolling_log_loss",
         "missing_or_stale_features",
     }
+
+    observation["feature_health"] = None
+    malformed = rollback_report(observation, policy())
+    assert "missing_or_stale_features" in malformed["triggered_conditions"]
 
 
 class MemoryStore:
@@ -165,6 +207,7 @@ def test_promotion_requires_approval_and_records_report_before_latest():
         approval_uri="approval.json",
         contract_uri="contract.json",
         latest_uri="LATEST",
+        approval_trust_prefix="approval",
     )
     assert contract["promotion"]["report_uri"] == "report.json"
     assert store.writes == ["contract.json", "LATEST"]
@@ -194,6 +237,121 @@ def test_wrong_or_absent_approval_never_changes_latest():
             approval_uri="approval.json",
             contract_uri="contract.json",
             latest_uri="LATEST",
+            approval_trust_prefix="approval",
         )
     assert store.values["LATEST"] == b"old"
     assert store.writes == []
+
+
+def test_promotion_revalidates_report_contract_and_approval_boundary():
+    candidate = row()
+    report = evaluate_promotions([candidate], policy(), generated_at="now")[0]
+    approval = {
+        "decision": "APPROVE",
+        "report_uri": "reports/report.json",
+        "report_id": report["report_id"],
+        "approved_by": "risk",
+        "approved_at": "2026-09-27T00:00:00Z",
+    }
+
+    def attempt(changed_report=report, changed_contract=candidate["contract"], **kwargs):
+        store = MemoryStore(
+            {
+                "reports/report.json": json.dumps(changed_report).encode(),
+                "approvals/approval.json": json.dumps(approval).encode(),
+                "contract.json": json.dumps(changed_contract).encode(),
+                "LATEST": b"v0",
+            }
+        )
+        with pytest.raises(ValueError):
+            promote_approved_report(
+                store,
+                report_uri="reports/report.json",
+                approval_uri=kwargs.get("approval_uri", "approvals/approval.json"),
+                contract_uri="contract.json",
+                latest_uri="LATEST",
+                approval_trust_prefix=kwargs.get("prefix", "approvals/"),
+            )
+        assert store.values["LATEST"] == b"v0"
+        assert store.writes == []
+
+    tampered = dict(report)
+    tampered["ticker"] = "QQQ"
+    attempt(changed_report=tampered)
+    incomplete = dict(report)
+    incomplete["criteria"] = incomplete["criteria"][:1]
+    incomplete["report_id"] = hashlib.sha256(
+        canonical({k: v for k, v in incomplete.items() if k != "report_id"})
+    ).hexdigest()
+    approval["report_id"] = incomplete["report_id"]
+    attempt(changed_report=incomplete)
+    approval["report_id"] = report["report_id"]
+    changed_contract = dict(candidate["contract"])
+    changed_contract["features"] = ["other"]
+    attempt(changed_contract=changed_contract)
+    approval["approved_at"] = "not-a-timestamp"
+    attempt()
+
+
+def test_report_and_approval_cannot_share_storage_domain():
+    candidate = row()
+    report = evaluate_promotions([candidate], policy())[0]
+    combined = dict(report)
+    combined.update(
+        {
+            "decision": "APPROVE",
+            "report_uri": "approvals/both.json",
+            "approved_by": "risk",
+            "approved_at": "2026-09-27T00:00:00Z",
+        }
+    )
+    store = MemoryStore(
+        {
+            "approvals/both.json": json.dumps(combined).encode(),
+            "contract.json": json.dumps(candidate["contract"]).encode(),
+        }
+    )
+    with pytest.raises(ValueError, match="distinct"):
+        promote_approved_report(
+            store,
+            report_uri="approvals/both.json",
+            approval_uri="approvals/both.json",
+            contract_uri="contract.json",
+            latest_uri="LATEST",
+            approval_trust_prefix="approvals/",
+        )
+
+
+def test_documented_evaluator_cli_runs_and_emits_promotable_object(tmp_path):
+    rows = tmp_path / "rows.jsonl"
+    policy_file = tmp_path / "policy.json"
+    output = tmp_path / "report.json"
+    rows.write_text(json.dumps(row()) + "\n")
+    policy_file.write_text(
+        json.dumps(
+            {
+                "min_window_days": 20,
+                "min_samples": 100,
+                "max_feature_drift": 0.2,
+                "max_probability_drift": 0.1,
+                "max_ece": 0.05,
+                "max_log_loss_ratio": 0.99,
+                "max_alerts_per_day": 4,
+                "min_realized_utility": 1,
+                "max_feature_age_seconds": 60,
+                "required_cohorts": ["regular_hours"],
+            }
+        )
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_model_promotion.py",
+            str(rows),
+            str(policy_file),
+            "--output",
+            str(output),
+        ],
+        check=True,
+    )
+    assert json.loads(output.read_text())["overall_verdict"] == "PASS"

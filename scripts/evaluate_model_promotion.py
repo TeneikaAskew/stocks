@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from lib.promotion_evaluator import PromotionPolicy, evaluate_promotions
 
@@ -18,8 +21,13 @@ def main() -> int:
     rows = [json.loads(line) for line in args.rows.read_text().splitlines() if line.strip()]
     policy = PromotionPolicy(**json.loads(args.policy.read_text()))
     reports = evaluate_promotions(rows, policy)
+    if len(reports) != 1:
+        parser.error(
+            f"expected exactly one ticker/model report, found {len(reports)}; "
+            "partition input rows and assign each report its own immutable URI"
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(reports, indent=2, sort_keys=True) + "\n")
+    args.output.write_text(json.dumps(reports[0], indent=2, sort_keys=True) + "\n")
     return 0
 
 

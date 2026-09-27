@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol
 
@@ -27,6 +28,8 @@ class PromotionPolicy:
     max_log_loss_ratio: float
     max_alerts_per_day: float
     min_realized_utility: float
+    max_feature_age_seconds: float
+    required_cohorts: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,8 @@ def _metric(row: Mapping[str, Any], name: str) -> tuple[float, float, float]:
         high = float(item["ci_upper"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"metric {name!r} requires value, ci_lower, and ci_upper") from exc
+    if not all(math.isfinite(number) for number in (value, low, high)):
+        raise ValueError(f"metric {name!r} requires finite values")
     if not low <= value <= high:
         raise ValueError(f"metric {name!r} confidence interval does not contain value")
     return value, low, high
@@ -154,6 +159,11 @@ def evaluate_promotions(
         expected_contract_sha = row.get("contract_sha256")
         observed_artifact_sha = _sha256(artifact) if artifact is not None else None
         observed_contract_sha = _sha256(contract) if contract is not None else None
+        artifact_bound = bool(
+            isinstance(contract, Mapping)
+            and contract.get("artifact") == artifact
+            and contract.get("artifact_sha256") == observed_artifact_sha
+        )
         identity_pass = bool(
             expected_artifact_sha
             and expected_contract_sha
@@ -162,6 +172,7 @@ def evaluate_promotions(
             and isinstance(contract, Mapping)
             and contract.get("ticker") == ticker
             and contract.get("model_id") == model_id
+            and artifact_bound
         )
         criteria.append(
             {
@@ -188,6 +199,32 @@ def evaluate_promotions(
                 "passed": identity_pass,
             }
         )
+        cohorts = row.get("cohorts")
+        for cohort in policy.required_cohorts:
+            cohort_row = cohorts.get(cohort) if isinstance(cohorts, Mapping) else None
+            cohort_results = []
+            if isinstance(cohort_row, Mapping):
+                for spec in specs:
+                    try:
+                        cohort_results.append(_criterion(spec, cohort_row))
+                    except ValueError as exc:
+                        cohort_results.append(
+                            {"name": spec.name, "passed": False, "error": str(exc)}
+                        )
+            cohort_passed = len(cohort_results) == len(specs) and all(
+                item["passed"] for item in cohort_results
+            )
+            criteria.append(
+                {
+                    "name": f"cohort:{cohort}",
+                    "mandatory": True,
+                    "observed": cohort_results if cohort_results else None,
+                    "confidence_interval": None,
+                    "threshold": "all aggregate gates",
+                    "operator": "all",
+                    "passed": cohort_passed,
+                }
+            )
         passed = all(item["passed"] for item in criteria)
         report = {
             "schema_version": "1.0",
@@ -244,21 +281,31 @@ def rollback_report(observation: Mapping[str, Any], policy: PromotionPolicy) -> 
             }
         gate["triggered"] = not gate["passed"]
         checks.append(gate)
-    feature_health = observation.get("feature_health", {})
-    available = feature_health.get("missing_count") == 0
-    fresh = feature_health.get("max_age_seconds") is not None and feature_health.get(
-        "max_age_seconds"
-    ) <= feature_health.get("max_allowed_age_seconds", -1)
+    feature_health = observation.get("feature_health")
+    health_error = None
+    try:
+        if not isinstance(feature_health, Mapping):
+            raise ValueError("feature_health must be an object")
+        missing_count = int(feature_health["missing_count"])
+        max_age = float(feature_health["max_age_seconds"])
+        if missing_count < 0 or not math.isfinite(max_age) or max_age < 0:
+            raise ValueError("feature health values are invalid")
+        available = missing_count == 0
+        fresh = max_age <= policy.max_feature_age_seconds
+    except (KeyError, TypeError, ValueError) as exc:
+        available = fresh = False
+        health_error = str(exc)
     checks.append(
         {
             "name": "missing_or_stale_features",
             "mandatory": True,
             "observed": feature_health,
             "confidence_interval": None,
-            "threshold": {"missing_count": 0, "max_age_seconds": "<= max_allowed_age_seconds"},
+            "threshold": {"missing_count": 0, "max_age_seconds": policy.max_feature_age_seconds},
             "operator": "health",
             "passed": available and fresh,
             "triggered": not (available and fresh),
+            **({"error": health_error} if health_error else {}),
         }
     )
     triggered = [c["name"] for c in checks if c["triggered"]]
@@ -273,32 +320,82 @@ def rollback_report(observation: Mapping[str, Any], policy: PromotionPolicy) -> 
 
 
 def promote_approved_report(
-    store: ObjectStore, *, report_uri: str, approval_uri: str, contract_uri: str, latest_uri: str
+    store: ObjectStore,
+    *,
+    report_uri: str,
+    approval_uri: str,
+    contract_uri: str,
+    latest_uri: str,
+    approval_trust_prefix: str,
 ) -> dict[str, Any]:
     """Promote only an explicitly approved PASS report, writing LATEST last."""
+    if report_uri == approval_uri:
+        raise ValueError("report and approval URIs must be distinct")
+    if not approval_trust_prefix or not approval_uri.startswith(approval_trust_prefix):
+        raise ValueError("approval URI is outside the configured trust domain")
+    if report_uri.startswith(approval_trust_prefix):
+        raise ValueError("report storage must be distinct from the approval trust domain")
     report = json.loads(store.read_bytes(report_uri))
     approval = json.loads(store.read_bytes(approval_uri))
+    if not isinstance(report, Mapping) or not isinstance(approval, Mapping):
+        raise ValueError("report and approval must be JSON objects")
+    supplied_report_id = report.get("report_id")
+    report_body = dict(report)
+    report_body.pop("report_id", None)
+    if supplied_report_id != _sha256(report_body):
+        raise ValueError("promotion report content does not match report_id")
     if report.get("overall_verdict") != "PASS":
         raise ValueError("promotion report verdict is not PASS")
-    if not report.get("criteria") or not all(
-        c.get("mandatory") and c.get("passed") for c in report["criteria"]
+    required_names = {
+        "data_window",
+        "sample_size",
+        "feature_drift",
+        "probability_drift",
+        "calibration",
+        "worse_than_baseline_log_loss",
+        "alert_frequency",
+        "realized_utility",
+        "artifact_contract_identity",
+    }
+    criteria = report.get("criteria")
+    names = [c.get("name") for c in criteria] if isinstance(criteria, list) else []
+    cohort_names = [name for name in names if isinstance(name, str) and name.startswith("cohort:")]
+    if (
+        not required_names.issubset(names)
+        or not cohort_names
+        or len(names) != len(set(names))
+        or not criteria
+        or not all(
+            isinstance(c, Mapping) and c.get("mandatory") is True and c.get("passed") is True
+            for c in criteria
+        )
     ):
         raise ValueError("not every mandatory promotion criterion passed")
     if approval.get("decision") != "APPROVE" or approval.get("report_uri") != report_uri:
         raise ValueError("approval must explicitly approve this report URI")
     if approval.get("report_id") != report.get("report_id") or not approval.get("approved_by"):
         raise ValueError("approval identity is incomplete or does not match report")
+    try:
+        approved_at = datetime.fromisoformat(str(approval["approved_at"]).replace("Z", "+00:00"))
+        if approved_at.tzinfo is None or approved_at.utcoffset() is None:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("approval requires a timezone-aware approved_at timestamp") from None
     contract = json.loads(store.read_bytes(contract_uri))
     if contract.get("ticker") != report.get("ticker") or contract.get("model_id") != report.get(
         "model_id"
     ):
         raise ValueError("model contract identity does not match promotion report")
+    if _sha256(contract) != report.get("contract_identity", {}).get("sha256"):
+        raise ValueError("live contract content does not match the evaluated contract")
+    if not contract.get("rollback_target") or contract["rollback_target"] == report.get("model_id"):
+        raise ValueError("model contract requires a distinct rollback_target")
     contract["promotion"] = {
         "report_uri": report_uri,
         "report_id": report["report_id"],
         "approval_uri": approval_uri,
         "approved_by": approval["approved_by"],
-        "approved_at": approval.get("approved_at"),
+        "approved_at": approval["approved_at"],
     }
     # Contract is durable before the pointer changes. Readers can therefore
     # never observe a newly promoted model without its approving report URI.
