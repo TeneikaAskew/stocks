@@ -2171,3 +2171,28 @@ def test_a_predicate_alias_prunes_the_branch_its_literal_rules_out(mini_repo):
     repo = inv.repo_inventory(mini_repo)
     e = {x["job"]: x for x in inv.job_table_edges(repo, repo["table_refs"])}
     assert e["alpha"]["reads"] == ["market_data_intraday"], e["alpha"]
+
+
+def test_jobs_deployed_by_digest_keep_their_image_kind(tmp_path):
+    """#1171: deploys name a digest, `${IMAGE_REF:?...}` for the main image and
+    `research_image=$(_research_image_ref)` for the research one. The table
+    must still say which image a job runs. The tag-based parse read the first
+    as the tag `?build_image has not run...` and the second as `main`."""
+    (tmp_path / "gcp").mkdir()
+    (tmp_path / "gcp/deploy.sh").write_text(r'''
+deploy_main_job() {
+    gcloud run jobs create main-job \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.x" --quiet
+}
+
+deploy_research_job() {
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create research-job \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" --args="-m,gcp.research.y" --quiet
+}
+''')
+    jobs = {j["name"]: j for j in inv.deploy_jobs(tmp_path)}
+    assert jobs["main-job"]["image"] == "main", jobs["main-job"]["image"]
+    assert jobs["research-job"]["image"] == "research", jobs["research-job"]["image"]
