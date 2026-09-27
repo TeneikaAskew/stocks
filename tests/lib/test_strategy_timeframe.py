@@ -183,118 +183,57 @@ def test_atr_threshold_is_in_percent_not_fraction():
     assert tag_low == "15m"   # momentum default at avg vol, NOT 15m via high-vol path
 
 
-# ── Empirical lookup integration (Q3) ──────────────────────────────────
+# ── Backfill tagging: the placeholder tiers (#1167) ────────────────────
+#
+# EMPIRICAL_LOOKUP is retired. Re-derived on the #1154-corrected
+# classifications, its method was degenerate: every window measures the best
+# favorable move since entry, so the clean-hit rate rises with the window and
+# "highest clean rate" picked 240m for 50 of 52 buckets. The May table's
+# "60m everywhere" was the same artifact under the unit bug. See
+# docs/analysis/TIMEFRAME_HEURISTIC_2026-09-26.md.
 
-def test_empirical_lookup_has_28_buckets():
-    """Sanity guard: the lookup was generated from 91,831 rows. If the
-    bucket count silently changes, someone re-trained — re-validate
-    the holdout numbers in docs/analysis/TIMEFRAME_HEURISTIC_*.md."""
-    from lib.strategies.timeframe import EMPIRICAL_LOOKUP
-    assert len(EMPIRICAL_LOOKUP) == 28
-
-
-def test_empirical_lookup_dominantly_60m():
-    """25 of 28 buckets predict 60m — the universal-best TF at the
-    0.5% CLEAN_HIT threshold per the holdout analysis. Three exceptions
-    surface in the test below (15m / 30m / 240m, one bucket each)."""
-    from lib.strategies.timeframe import EMPIRICAL_LOOKUP
-    from collections import Counter
-    counts = Counter(EMPIRICAL_LOOKUP.values())
-    assert counts["60m"] == 25
-    assert counts["30m"] == 1
-    assert counts["240m"] == 1
-    assert counts["15m"] == 1
+def test_the_empirical_lookup_is_retired():
+    import lib.strategies.timeframe as tf
+    assert not hasattr(tf, "EMPIRICAL_LOOKUP")
+    assert "EMPIRICAL_LOOKUP" not in tf.__all__
 
 
-def test_empirical_lookup_known_exceptions():
-    """Pin the 4 buckets that DON'T predict 60m. If these change,
-    the analysis methodology shifted — surface the diff explicitly."""
-    from lib.strategies.timeframe import EMPIRICAL_LOOKUP
-    assert EMPIRICAL_LOOKUP[("momentum", 4, "high", "high")] == "30m"
-    assert EMPIRICAL_LOOKUP[("momentum", 4, "high", "low")] == "240m"
-    assert EMPIRICAL_LOOKUP[("momentum", 4, "unknown", "high")] == "15m"
+def test_backfill_uses_the_placeholder_tiers_for_every_input():
+    """Every input the retired table bucketed now gets the placeholder's
+    answer, and entry_rsi no longer changes the tag."""
+    from lib.strategies.timeframe import _placeholder_assign, assign_timeframe_for_backfill
+    for strategy in ("momentum", "mean_reversion", "other", None):
+        for strength in (None, 0, 3, 4, 5, 6):
+            for atr in (None, float("nan"), 0.0005, 0.002, 0.005):
+                expected = _placeholder_assign(strategy, strength, atr)
+                for rsi in (None, float("nan"), 20.0, 50.0, 80.0):
+                    got = assign_timeframe_for_backfill(strategy, strength, atr, rsi)
+                    assert got == expected, (strategy, strength, atr, rsi, got, expected)
 
 
-def test_assign_timeframe_for_backfill_uses_empirical_lookup_when_rsi_present():
-    """With all 4 features present, the empirical lookup hit should
-    return the data-driven prediction — 60m for the dominant case."""
+def test_backfill_no_longer_tags_the_old_dominant_bucket_60m():
+    """(momentum, 3, avg ATR, mid RSI) was the table's largest bucket, tagged
+    60m. The placeholder's momentum default at average volatility is 15m."""
     from lib.strategies.timeframe import assign_timeframe_for_backfill
-    tag, hold = assign_timeframe_for_backfill(
-        strategy="momentum", signal_strength=3,
-        atr_5m_pct=0.002, entry_rsi=50.0,
-    )
-    # Bucket: ('momentum', 3, 'avg', 'mid') → '60m' per lookup
-    assert tag == "60m"
-    assert hold == 60
-
-
-def test_assign_timeframe_for_backfill_returns_known_exceptions_correctly():
-    """The 3 non-60m buckets must surface their actual lookup values."""
-    from lib.strategies.timeframe import assign_timeframe_for_backfill
-
-    # momentum/4/high/high → 30m
-    tag, hold = assign_timeframe_for_backfill(
-        strategy="momentum", signal_strength=4,
-        atr_5m_pct=0.005, entry_rsi=80.0,
-    )
-    assert (tag, hold) == ("30m", 30)
-
-    # momentum/4/high/low → 240m
-    tag, hold = assign_timeframe_for_backfill(
-        strategy="momentum", signal_strength=4,
-        atr_5m_pct=0.005, entry_rsi=20.0,
-    )
-    assert (tag, hold) == ("240m", 240)
-
-
-def test_assign_timeframe_for_backfill_falls_back_to_placeholder_on_cold_start():
-    """mean_reversion isn't in EMPIRICAL_LOOKUP yet (the research
-    iterator hasn't been run with --strategy=mean_reversion), so any
-    mean_reversion fire MUST fall back to the placeholder tier rules."""
-    from lib.strategies.timeframe import assign_timeframe_for_backfill
-    # mean_reversion at avg vol → placeholder returns 30m
-    tag, _ = assign_timeframe_for_backfill(
-        strategy="mean_reversion", signal_strength=3,
-        atr_5m_pct=0.002, entry_rsi=50.0,
-    )
-    assert tag == "30m"
-
-
-def test_assign_timeframe_for_backfill_falls_back_when_rsi_missing_unknown_bucket():
-    """An (rsi=None) lookup against a bucket where the unknown-rsi
-    variant isn't populated falls through to the placeholder, NOT to
-    a wrong default."""
-    from lib.strategies.timeframe import assign_timeframe_for_backfill
-    # ('momentum', 5, 'high', 'unknown') is NOT in the lookup
-    # (only mid for ss=5/high), so falls back to placeholder.
-    tag, _ = assign_timeframe_for_backfill(
-        strategy="momentum", signal_strength=5,
-        atr_5m_pct=0.005, entry_rsi=None,
-    )
-    # Placeholder: high vol + strong → 15m
-    assert tag == "15m"
+    assert assign_timeframe_for_backfill("momentum", 3, 0.002, 50.0) == ("15m", 15)
 
 
 def test_assign_timeframe_for_backfill_signature_accepts_entry_rsi_kwarg():
-    """The function gained an entry_rsi kwarg in this PR. Old callers
-    without it must still work (fall back to placeholder)."""
+    """Callers pass entry_rsi (run_historical_signals, backfill_timeframe_tags);
+    it is accepted and unused, and a call without it still works."""
     from lib.strategies.timeframe import assign_timeframe_for_backfill
-    # No entry_rsi → 'unknown' rsi bucket → likely cold-start
-    tag, _ = assign_timeframe_for_backfill(
+    assert assign_timeframe_for_backfill(
         strategy="momentum", signal_strength=3, atr_5m_pct=0.002,
-    )
-    # ('momentum', 3, 'avg', 'unknown') is NOT in lookup → placeholder
-    # → momentum at avg vol → 15m
-    assert tag == "15m"
+    ) == assign_timeframe_for_backfill(
+        strategy="momentum", signal_strength=3, atr_5m_pct=0.002, entry_rsi=75.0,
+    ) == ("15m", 15)
 
 
 def test_assign_timeframe_for_backfill_handles_nan_inputs():
-    """NaN ATR or RSI bucket as 'unknown', not crash."""
+    """NaN ATR is not high volatility, and NaN RSI is ignored; no crash."""
     from lib.strategies.timeframe import assign_timeframe_for_backfill
-    import math
     tag, hold = assign_timeframe_for_backfill(
         strategy="momentum", signal_strength=3,
         atr_5m_pct=float("nan"), entry_rsi=float("nan"),
     )
-    # Both unknown → cold-start → placeholder → momentum default → 15m
-    assert tag == "15m"
+    assert (tag, hold) == ("15m", 15)

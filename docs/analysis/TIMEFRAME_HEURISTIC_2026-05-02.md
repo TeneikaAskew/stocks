@@ -1,5 +1,7 @@
 # Timeframe Heuristic — Empirical Analysis
 
+> **Superseded** by [TIMEFRAME_HEURISTIC_2026-09-26.md](TIMEFRAME_HEURISTIC_2026-09-26.md). The 5m to 60m clean rates below were classified with a cut-point 100 times too lenient (#1154), and on the corrected data this method picks the longest window almost everywhere, so `EMPIRICAL_LOOKUP` was retired (#1167).
+
 **Date:** 2026-05-02 (Saturday session, holdout-based since markets were closed)
 **Source:** `scripts/analyze_timeframe_heuristic.py`
 **Dataset:** `historical_signals` × `signal_metrics` join, status='final', 91,831 rows

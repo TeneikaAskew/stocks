@@ -29,6 +29,12 @@ NO heuristic changes in this PR. Output is the basis for a follow-up
 PR that integrates the validated mapping into the production
 `assign_timeframe_for_backfill`.
 
+That mapping (EMPIRICAL_LOOKUP) shipped and was retired in #1167. On the
+#1154-corrected classifications the clean-hit rate rises with the window,
+so both max_clean_rate targets pick the longest window almost everywhere
+(docs/analysis/TIMEFRAME_HEURISTIC_2026-09-26.md). The script stays as the
+way to reproduce that finding.
+
 Usage:
     python -m scripts.analyze_timeframe_heuristic
     python -m scripts.analyze_timeframe_heuristic --holdout-pct 0.30 --seed 7

@@ -153,3 +153,69 @@ def test_parse_args_with_tickers_and_limit():
     assert args.limit == 100
     assert args.chunk_size == 50
     assert args.dry_run is True
+
+
+# ── 4) --retag: rewrite existing tags after the lookup was retired (#1167) ──
+
+import scripts.backfill_timeframe_tags as backfill  # noqa: E402
+
+
+def _rows_with_old_tags():
+    return pd.DataFrame([
+        # The retired table tagged this momentum row 60m; the placeholder says 15m.
+        {"ticker": "SPY", "entry_time": pd.Timestamp("2026-05-01 14:00", tz="UTC"),
+         "strategy": "momentum", "signal_strength": 3, "entry_rsi": 50.0,
+         "atr_5m_pct": 0.002, "old_tag": "60m", "old_hold": 60},
+        # Already on the placeholder's answer: nothing to write.
+        {"ticker": "QQQ", "entry_time": pd.Timestamp("2026-05-01 14:05", tz="UTC"),
+         "strategy": "mean_reversion", "signal_strength": 3, "entry_rsi": 25.0,
+         "atr_5m_pct": 0.002, "old_tag": "30m", "old_hold": 30},
+        # Never tagged: a retag still fills it.
+        {"ticker": "IWM", "entry_time": pd.Timestamp("2026-05-01 14:10", tz="UTC"),
+         "strategy": "momentum", "signal_strength": 5, "entry_rsi": None,
+         "atr_5m_pct": 0.005, "old_tag": None, "old_hold": None},
+    ])
+
+
+def test_parse_args_retag_defaults_off():
+    assert parse_args([]).retag is False
+    assert parse_args(["--retag"]).retag is True
+
+
+def test_changed_rows_keeps_only_rows_whose_tag_or_hold_changes():
+    df = backfill.changed_rows(apply_tags(_rows_with_old_tags()))
+    assert list(df["ticker"]) == ["SPY", "IWM"]
+    assert list(df["timeframe_tag"]) == ["15m", "15m"]
+
+
+def test_fetch_selects_tagged_rows_only_when_retagging(monkeypatch):
+    seen = []
+    monkeypatch.setattr(backfill.pd, "read_sql",
+                        lambda sql, engine, params=None: seen.append(str(sql)) or pd.DataFrame())
+    backfill.fetch_rows_to_backfill(object())
+    backfill.fetch_rows_to_backfill(object(), retag=True)
+    assert "timeframe_tag IS NULL" in seen[0]
+    assert "timeframe_tag IS NULL" not in seen[1]
+    assert "AS old_tag" in seen[1] and "AS old_hold" in seen[1]
+
+
+def _run_main(monkeypatch, argv):
+    writes = []
+    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr(backfill, "fetch_rows_to_backfill",
+                        lambda engine, tickers=None, limit=None, retag=False: _rows_with_old_tags())
+    monkeypatch.setattr(backfill, "upsert_chunk",
+                        lambda engine, chunk: writes.append(chunk.copy()) or len(chunk))
+    return backfill.main(argv), writes
+
+
+def test_retag_dry_run_writes_nothing(monkeypatch):
+    rc, writes = _run_main(monkeypatch, ["--retag", "--dry-run"])
+    assert rc == 0 and writes == []
+
+
+def test_retag_writes_only_the_rows_that_change(monkeypatch):
+    rc, writes = _run_main(monkeypatch, ["--retag"])
+    assert rc == 0
+    written = pd.concat(writes)
+    assert sorted(written["ticker"]) == ["IWM", "SPY"]
