@@ -21,7 +21,7 @@
 # the run rather than being replaced.
 set -euo pipefail
 
-UPSTREAM=https://github.com/obra/superpowers
+UPSTREAM=${SUPERPOWERS_UPSTREAM:-https://github.com/obra/superpowers}
 ROOT=$(git rev-parse --show-toplevel)
 DEST="$ROOT/.claude/skills"
 NOTE="$DEST/SUPERPOWERS.md"
@@ -62,9 +62,12 @@ log "updating $current -> $target"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-git -c advice.detachedHead=false clone -q --depth 1 --branch "$target" \
-  "$UPSTREAM" "$tmp/sp"
+# Fetch the tag ref itself: clone --branch prefers a branch of the same name,
+# which would vendor unreleased branch code under a release version.
 src="$tmp/sp"
+git init -q "$src"
+git -C "$src" fetch -q --depth 1 "$UPSTREAM" "refs/tags/$target"
+git -C "$src" -c advice.detachedHead=false checkout -q FETCH_HEAD
 [ -f "$src/skills/using-superpowers/SKILL.md" ] \
   || die "$target has no skills/using-superpowers/SKILL.md; upstream layout changed"
 commit=$(git -C "$src" rev-parse HEAD)
