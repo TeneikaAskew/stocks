@@ -628,7 +628,9 @@ def contract_payload(label_mode: str,
                      thresholds: tuple[float, ...],
                      class_priors: Sequence[float],
                      class_priors_source: str = CLASS_PRIORS_TRAINING_LABELS,
-                     decision_lift_min: float = DECISION_LIFT_MIN) -> dict:
+                     decision_lift_min: float = DECISION_LIFT_MIN,
+                     calibration_method: str | None = None,
+                     calibration_window: dict | None = None) -> dict:
     """The label contract a model artifact was trained under.
 
     `classes` is recorded even though it is currently a constant: a future
@@ -657,7 +659,7 @@ def contract_payload(label_mode: str,
         raise ValueError(
             f"class_priors has {len(priors)} entries; one per class in "
             f"{list(LABEL_CLASSES)} is required")
-    return {
+    payload = {
         "label_mode": label_mode,
         "thresholds": [float(t) for t in thresholds],
         "classes": list(LABEL_CLASSES),
@@ -665,6 +667,12 @@ def contract_payload(label_mode: str,
         "class_priors_source": class_priors_source,
         "decision_lift_min": float(decision_lift_min),
     }
+    if calibration_method is not None:
+        payload["calibration_method"] = str(calibration_method)
+        if not calibration_window or not {"start", "end_exclusive"} <= set(calibration_window):
+            raise ValueError("calibration_window requires start and end_exclusive")
+        payload["calibration_window"] = dict(calibration_window)
+    return payload
 
 
 def contract_mismatch(payload: dict,

@@ -1,7 +1,10 @@
 """Magnitude Engine — anchored walk-forward.
 
 Same 8-cutoff schedule as strat_engine. For each fold:
-  - full retrain + (optional) recalibrate from scratch
+  - fit the estimator on the early training segment
+  - compare raw, sigmoid, isotonic, temperature and vector scaling on a
+    later disjoint calibration segment (isotonic is omitted when too thin)
+  - select by calibration-window log loss, then evaluate on untouched test
   - log-loss vs train-prior base rate
   - ECE (multiclass max-proba binning)
   - decisive-call hit rate across [0.40, 0.50, 0.60, 0.70]
@@ -54,6 +57,8 @@ from gcp.research.magnitude_engine.mag_pred_train import (
     featurize, make_lgbm, resolve_class_weight, class_weight_power,
     decide_bucket, expected_calibration_error,
     decisive_call_hit_rate, explosive_lift,
+    CALIBRATION_METHODS, MIN_ISOTONIC_SAMPLES_PER_CLASS,
+    ProbabilityCalibrator, CalibratedProbabilityModel, calibration_metrics,
 )
 from gcp.research.direction_program.phase2_features import (
     build_family_columns, prune_feature_cols, _load_peers,
@@ -61,13 +66,70 @@ from gcp.research.direction_program.phase2_features import (
 from gcp.research.direction_program.phase2_prune_sets import NEAR_DEAD
 from google.cloud import storage as gcs
 from lib.logging_config import setup_logging
-from sklearn.calibration import CalibratedClassifierCV
+from sklearn.calibration import CalibratedClassifierCV  # legacy direct-call compatibility
 from sklearn.metrics import log_loss
 
 setup_logging()
 log = logging.getLogger(__name__)
 
 AXIS = "size"
+CALIBRATION_FRACTION = 0.20
+CALIBRATION_SELECTION_FRACTION = 0.50
+AUTO_CALIBRATION = "auto"
+
+
+def _fit_and_select_calibrators(raw_cal: np.ndarray, y_cal: np.ndarray,
+                                requested: str = AUTO_CALIBRATION) -> tuple:
+    """Fit on early calibration rows and select on later, untouched rows.
+
+    After selection, eligible candidates are refit on the complete calibration
+    window for their one-time test evaluation. The base estimator never sees
+    any row in this function. One row is embargoed between the fit and
+    selection subwindows because the magnitude label consumes the next bar.
+    """
+    n = len(y_cal)
+    split = int(np.floor(n * (1.0 - CALIBRATION_SELECTION_FRACTION)))
+    if split < 2 or split >= n:
+        raise ValueError("not enough calibration rows for fit/selection subwindows")
+    fit_idx = np.arange(0, split - 1)  # purge next-bar label at the boundary
+    select_idx = np.arange(split, n)
+    fit_counts = np.bincount(y_cal[fit_idx], minlength=len(LABEL_CLASSES))
+    full_counts = np.bincount(y_cal, minlength=len(LABEL_CLASSES))
+    selection, omitted = {}, {}
+    fitted = {}
+    for method in CALIBRATION_METHODS:
+        if method == "isotonic" and (np.any(fit_counts < MIN_ISOTONIC_SAMPLES_PER_CLASS)
+                                      or np.any(full_counts < MIN_ISOTONIC_SAMPLES_PER_CLASS)):
+            omitted[method] = (f"requires {MIN_ISOTONIC_SAMPLES_PER_CLASS} samples per class "
+                               f"in calibrator-fit and full calibration windows; got "
+                               f"fit={fit_counts.tolist()}, full={full_counts.tolist()}")
+            continue
+        if method == "sigmoid" and (np.any(fit_counts == 0) or np.any(full_counts == 0)):
+            omitted[method] = ("requires every class in calibrator-fit and full calibration "
+                               f"windows; got fit={fit_counts.tolist()}, full={full_counts.tolist()}")
+            continue
+        try:
+            selector = ProbabilityCalibrator(method, len(LABEL_CLASSES)).fit(
+                raw_cal[fit_idx], y_cal[fit_idx])
+            selection[method] = calibration_metrics(
+                y_cal[select_idx], selector.transform(raw_cal[select_idx]))
+            fitted[method] = ProbabilityCalibrator(method, len(LABEL_CLASSES)).fit(
+                raw_cal, y_cal)
+        except ValueError as exc:
+            omitted[method] = str(exc)
+    if requested != AUTO_CALIBRATION:
+        requested = "uncalibrated" if requested == "none" else requested
+        if requested not in fitted:
+            raise ValueError(f"requested calibration {requested!r} is ineligible: "
+                             f"{omitted.get(requested, 'unknown method')}")
+        chosen = requested
+    else:
+        chosen = min(selection, key=lambda method: (
+            selection[method]["log_loss"], CALIBRATION_METHODS.index(method)))
+    return chosen, fitted, selection, omitted, {
+        "n_fit": int(len(fit_idx)), "n_selection": int(len(select_idx)),
+        "embargoed_rows": 1,
+    }
 
 
 # ─────────────────────── DDL for the results table ───────────────────────
@@ -192,7 +254,7 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
                              train_end: str, test_end: str,
                              tf: str,
                              lgbm_n_jobs: int,
-                             calibration: str = DEFAULT_CALIBRATION,
+                             calibration: str = AUTO_CALIBRATION,
                              cv: int = DEFAULT_CV) -> dict:
     train_end_dt = np.datetime64(train_end)
     test_end_dt = np.datetime64(test_end)
@@ -206,21 +268,42 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
                 "n_test": n_test, "n_train": n_train,
                 "status": "SKIP_THIN"}
 
-    X_tr = X_full[train_mask]; X_te = X_full[test_mask]
-    y_tr = y_full[train_mask]; y_te = y_full[test_mask]
+    train_indices = np.flatnonzero(train_mask)
+    train_indices = train_indices[np.argsort(bar_dates[train_indices], kind="stable")]
+    split = int(np.floor(len(train_indices) * (1.0 - CALIBRATION_FRACTION)))
+    if split <= 0 or split >= len(train_indices):
+        return {"fold": f"{train_end}..{test_end}", "train_end": train_end,
+                "test_end": test_end, "n_test": n_test, "n_train": n_train,
+                "status": "SKIP_THIN_CALIBRATION"}
+    # Purge the row immediately before calibration: its target consumes the
+    # first calibration bar. Also purge the final pre-test row for the same
+    # reason, so no calibration label consumes a test-fold bar.
+    fit_idx, cal_idx = train_indices[:split - 1], train_indices[split:-1]
+    if not len(fit_idx) or len(cal_idx) < 4:
+        return {"fold": f"{train_end}..{test_end}", "train_end": train_end,
+                "test_end": test_end, "n_test": n_test, "n_train": n_train,
+                "status": "SKIP_THIN_CALIBRATION"}
+    X_tr, y_tr = X_full[fit_idx], y_full[fit_idx]
+    X_cal, y_cal = X_full[cal_idx], y_full[cal_idx]
+    X_te, y_te = X_full[test_mask], y_full[test_mask]
 
+    # The estimator never sees calibration/test rows. Every calibrator is fit
+    # and selected on the later calibration window; the test fold is touched
+    # exactly once after selection.
     cw_tr = resolve_class_weight(y_tr)
-    if calibration == "none":
-        model = make_lgbm(class_weight=cw_tr, n_jobs=-1)
-        model.fit(X_tr, y_tr)
-        proba = model.predict_proba(X_te)
-    else:
-        calibrated = CalibratedClassifierCV(
-            estimator=make_lgbm(class_weight=cw_tr, n_jobs=lgbm_n_jobs),
-            method=calibration, cv=cv, n_jobs=cv,
-        )
-        calibrated.fit(X_tr, y_tr)
-        proba = calibrated.predict_proba(X_te)
+    base_model = make_lgbm(class_weight=cw_tr, n_jobs=lgbm_n_jobs)
+    base_model.fit(X_tr, y_tr)
+    raw_cal = base_model.predict_proba(X_cal)
+    chosen, candidates, selection_metrics, omitted, selection_window = (
+        _fit_and_select_calibrators(raw_cal, y_cal, calibration))
+    raw_test = base_model.predict_proba(X_te)
+    comparison = {}
+    for method, calibrator in candidates.items():
+        comparison[method] = {
+            "selection": selection_metrics[method],
+            "test": calibration_metrics(y_te, calibrator.transform(raw_test)),
+        }
+    proba = candidates[chosen].transform(raw_test)
 
     ll = float(log_loss(y_te, proba, labels=list(range(len(LABEL_CLASSES)))))
     base_ll = _base_rate_logloss(y_tr, y_te)
@@ -228,7 +311,8 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     acc = float((pred == y_te).mean())
     train_majority = int(np.bincount(y_tr, minlength=len(LABEL_CLASSES)).argmax())
     base_acc = float((y_te == train_majority).mean())
-    ece, ece_bins = expected_calibration_error(y_te, proba, n_bins=10)
+    selected_metrics = comparison[chosen]["test"]
+    ece, ece_bins = selected_metrics["ece"], selected_metrics["reliability_bins"]
 
     ece_ceiling = ECE_CEILING_BY_TF[tf]
     ece_pass = ece <= ece_ceiling
@@ -268,11 +352,26 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
         ],
         "train_end": train_end, "test_end": test_end,
         "n_train": n_train, "n_test": n_test,
+        "n_base_train": int(len(fit_idx)), "n_calibration": int(len(cal_idx)),
+        "calibration_window": {
+            "start": str(bar_dates[cal_idx].min()),
+            "end_exclusive": train_end,
+        },
+        "chosen_calibration_method": chosen,
+        "calibration_selection_metric": "log_loss",
+        "calibration_selection_window": selection_window,
+        "calibration_methods_omitted": omitted,
+        "calibration_comparison": comparison,
         "logloss": ll, "base_logloss": base_ll, "beat": base_ll - ll,
         "accuracy": acc, "base_accuracy": base_acc,
         "accuracy_beat_pp": (acc - base_acc) * 100,
         "ece": float(ece), "ece_ceiling": ece_ceiling, "ece_pass": ece_pass,
         "ece_bins": ece_bins,
+        "adaptive_ece": selected_metrics["adaptive_ece"],
+        "classwise_ece": selected_metrics["classwise_ece"],
+        "brier_score": selected_metrics["brier_score"],
+        "calibration_slope": selected_metrics["calibration_slope"],
+        "calibration_intercept": selected_metrics["calibration_intercept"],
         "decisive_hit": decisive,
         "explosive": explosive,
         "status": "OK",
@@ -520,8 +619,9 @@ def _persist_production_model_artifact(
     gates: dict,
     label_mode: str,
     thresholds: tuple[float, ...],
-    calibration: str = DEFAULT_CALIBRATION,
+    calibration: str = AUTO_CALIBRATION,
     cv: int = DEFAULT_CV,
+    bar_dates: np.ndarray | None = None,
 ) -> str | None:
     """Train a 'production' model on the ENTIRE dataset (no held-out test)
     and upload it to gs://<bucket>/magnitude-models/production/{ticker}/{tf}/.
@@ -575,19 +675,41 @@ def _persist_production_model_artifact(
              "(%d rows × %d features, calibration=%s)",
              len(X_full), X_full.shape[1], calibration)
 
-    cw_full = resolve_class_weight(y_full)
-    if calibration == "none":
-        model = make_lgbm(class_weight=cw_full, n_jobs=-1)
-        model.fit(X_full, y_full)
+    # Direct callers predating nested calibration did not provide timestamps.
+    # Keep that API working; the walk-forward production path always supplies
+    # bar_dates and therefore always takes the nested path below.
+    if bar_dates is None:
+        cw_full = resolve_class_weight(y_full)
+        if calibration in ("none", AUTO_CALIBRATION):
+            model = make_lgbm(class_weight=cw_full, n_jobs=-1)
+            model.fit(X_full, y_full)
+        else:
+            model = CalibratedClassifierCV(
+                estimator=make_lgbm(class_weight=cw_full, n_jobs=cv),
+                method=calibration, cv=cv, n_jobs=cv)
+            model.fit(X_full, y_full)
+        fit_idx = np.arange(len(y_full))
+        chosen_calibration = "uncalibrated" if calibration in ("none", AUTO_CALIBRATION) else calibration
+        calibration_window = {"start": "legacy-full-data", "end_exclusive": "legacy-full-data"}
+        order = fit_idx
     else:
-        # Same wrapper as fold training. With cv=DEFAULT_CV the calibration
-        # uses an internal cross-validation split for the sigmoid/isotonic
-        # mapping; the underlying LightGBM still sees the full data.
-        model = CalibratedClassifierCV(
-            estimator=make_lgbm(class_weight=cw_full, n_jobs=cv),
-            method=calibration, cv=cv, n_jobs=cv,
-        )
-        model.fit(X_full, y_full)
+        order = np.argsort(bar_dates, kind="stable")
+    split = int(np.floor(len(order) * (1.0 - CALIBRATION_FRACTION)))
+    if bar_dates is not None and (split <= 0 or split >= len(order)):
+        raise ValueError("not enough rows for a disjoint production calibration window")
+    if bar_dates is not None:
+        # Purge the base row whose next-bar label crosses into calibration.
+        fit_idx, cal_idx = order[:split - 1], order[split:]
+        base_model = make_lgbm(class_weight=resolve_class_weight(y_full[fit_idx]), n_jobs=-1)
+        base_model.fit(X_full[fit_idx], y_full[fit_idx])
+        raw_cal = base_model.predict_proba(X_full[cal_idx])
+        chosen_calibration, fitted, _, omitted, _ = _fit_and_select_calibrators(
+            raw_cal, y_full[cal_idx], calibration)
+        if omitted:
+            log.info("production calibration methods omitted: %s", omitted)
+        model = CalibratedProbabilityModel(base_model, fitted[chosen_calibration])
+        calibration_window = {"start": str(np.min(bar_dates[cal_idx])),
+                              "end_exclusive": str(np.max(bar_dates[cal_idx]) + np.timedelta64(1, "D"))}
 
     # Promotion gate -- refuse to make a model LATEST whose served decision
     # rule is stuck on one bucket. Scored on the training matrix on purpose:
@@ -596,7 +718,8 @@ def _persist_production_model_artifact(
     # the decision rule scales by, and they go into CONTRACT.json below so
     # inference names buckets exactly as this verdict did. See mag_config for
     # the c49qf, slv7m and alpha-sweep evidence.
-    class_priors = np.bincount(y_full, minlength=len(LABEL_CLASSES)) / len(y_full)
+    class_priors = (np.bincount(y_full[fit_idx], minlength=len(LABEL_CLASSES))
+                    / len(fit_idx))
     verdict = promotion_verdict(model.predict_proba(X_full), class_priors)
     verdict["class_priors"] = [float(p) for p in class_priors]
     verdict["class_weight_power"] = class_weight_power()
@@ -654,7 +777,9 @@ def _persist_production_model_artifact(
         # check a value the writer never wrote is not a check at all.
         bucket.blob(f"{run_prefix}/{CONTRACT_BLOB}").upload_from_string(
             json.dumps(contract_payload(label_mode, thresholds,
-                                        class_priors=class_priors),
+                                        class_priors=class_priors,
+                                        calibration_method=chosen_calibration,
+                                        calibration_window=calibration_window),
                        indent=2),
             content_type="application/json")
         # Artifacts are uploaded even when the gate blocks: the run-scoped
@@ -740,7 +865,7 @@ def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
 
 def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cutoffs: list[str] | None = None,
-                  calibration: str = DEFAULT_CALIBRATION,
+                  calibration: str = AUTO_CALIBRATION,
                   cv: int = DEFAULT_CV,
                   label_mode: str = DEFAULT_LABEL_MODE,
                   persist_production_model: bool = False,
@@ -791,8 +916,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     ts_arr = pd.to_datetime(df["ts"], utc=True).values.astype("datetime64[ns]")
     log.info("featurize-once: %d × %d in %.1fs", X_full.shape[0], X_full.shape[1], time.time() - t0)
 
-    cores = max(1, os.cpu_count() or 1)
-    lgbm_n_jobs = max(1, cores // cv) if calibration != "none" else -1
+    lgbm_n_jobs = -1
 
     folds: list[dict] = []
     for i, cut in enumerate(cutoffs):
@@ -871,7 +995,11 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "phase": phase, "ticker": ticker, "tf": tf,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
-        "calibration": calibration, "cv": cv,
+        "calibration": "nested_auto",
+        "calibration_candidates": list(CALIBRATION_METHODS),
+        "calibration_fraction": CALIBRATION_FRACTION,
+        "calibration_selection_metric": "log_loss",
+        "requested_calibration": calibration, "cv": cv,
         # The exponent the class weighting actually used. Absent from every
         # summary before 2026-09-14, which left the serving model's setting
         # unrecoverable (see mag_pred_train.class_weight_power).
@@ -966,6 +1094,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                 ticker, tf, run_id, X_full, y_full, feature_cols,
                 gates=gates, label_mode=label_mode, thresholds=thresholds,
                 calibration=calibration, cv=cv,
+                bar_dates=bar_dates_arr,
             )
             if uri:
                 summary["production_model_uri"] = uri
@@ -992,7 +1121,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
 def run_all_cells(engine, phase: str,
                    cutoffs: list[str] | None = None,
-                   calibration: str = DEFAULT_CALIBRATION,
+                   calibration: str = AUTO_CALIBRATION,
                    label_mode: str = DEFAULT_LABEL_MODE,
                    persist_production_model: bool = False,
                    features: str = "") -> dict:
@@ -1152,8 +1281,12 @@ def main():
                         "this is auto-resolved from CLOUD_RUN_TASK_INDEX.")
     p.add_argument("--cutoffs", default=None,
                    help="Comma-separated YYYY-MM-DD (default: regime-spanning)")
-    p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
-                   choices=["none", "isotonic", "sigmoid"])
+    p.add_argument("--calibration", default=AUTO_CALIBRATION,
+                   choices=[AUTO_CALIBRATION, "none", "isotonic", "sigmoid",
+                            "temperature", "vector"],
+                   help="auto compares all eligible methods on an inner "
+                        "chronological selection window; another value forces "
+                        "that method while still reporting the comparison")
     p.add_argument("--label-mode", default=DEFAULT_LABEL_MODE, choices=list(LABEL_MODES),
                    help="Magnitude target: body=|next_close-next_open|/atr_20 "
                         "(IV expected-move); excursion=(next_high-next_low)/atr_20 "
