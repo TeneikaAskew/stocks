@@ -62,6 +62,21 @@ def validate_windows() -> None:
             raise ValueError(f"evaluation windows overlap: {left.name}/{right.name}")
 
 
+def assert_window_complete(window: EvaluationWindow, as_of: date) -> None:
+    """Refuse a window whose sessions can not all exist yet.
+
+    `as_of` is a market date (lib.eastern_time.market_today), since the
+    window is an Eastern-session range. Claiming the final test earlier would
+    evaluate a partial year and consume the one-time version on it,
+    permanently (Codex P1 on #1193).
+    """
+    if as_of < window.end:
+        raise ValueError(
+            f"{window.name} window is incomplete: it runs through "
+            f"{window.end.isoformat()} and the market date is "
+            f"{as_of.isoformat()}")
+
+
 def utc_instants(timestamps) -> pd.DatetimeIndex:
     """Aware UTC index for the harness's bar timestamps.
 

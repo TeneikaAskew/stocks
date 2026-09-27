@@ -4,7 +4,8 @@ import pandas as pd
 import pytest
 
 from gcp.research.magnitude_engine.evaluation_windows import (
-    EASTERN, WINDOWS, assert_disjoint, eastern_sessions, purged_session_masks,
+    EASTERN, WINDOWS, assert_disjoint, assert_window_complete,
+    eastern_sessions, purged_session_masks,
 )
 
 
@@ -36,6 +37,28 @@ def test_rejects_overlap_and_short_embargo():
         assert_disjoint(sessions, sessions[-1:])
     with pytest.raises(ValueError, match="prediction horizon"):
         purged_session_masks(sessions, "2025-01-03", "2025-01-04", 0)
+
+
+def test_final_window_cannot_run_until_it_is_complete():
+    with pytest.raises(ValueError, match="incomplete"):
+        assert_window_complete(WINDOWS["final_test"], date(2026, 9, 27))
+    assert_window_complete(WINDOWS["final_test"], date(2027, 1, 1))
+
+
+def test_gate_threshold_scales_from_six_of_eight_to_window_fold_count():
+    from gcp.research.magnitude_engine.mag_walk_forward import _evaluate_phase_gate
+
+    passing = {
+        "status": "OK", "beat": 0.1, "ece_pass": True,
+        "explosive": {"lift": 2.0},
+        "decisive_hit": {
+            "0.40": {"accuracy": 0.5}, "0.50": {"accuracy": 0.6},
+            "0.60": {"accuracy": 0.7}, "0.70": {"accuracy": 0.8},
+        },
+    }
+    gates = _evaluate_phase_gate([passing.copy(), passing.copy()], "5m")
+    assert gates["min_folds_required"] == 2
+    assert gates["cell_pass_gates_1_to_4"] is True
 
 
 # ═══════════════ Codex review of #1193 (bd944c5) ═══════════════
@@ -152,7 +175,7 @@ def test_the_final_test_is_refused_until_its_window_has_closed(monkeypatch):
                         lambda *a, **k: claimed.append(a))
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
     monkeypatch.setattr(mwf, "market_today", lambda: date(2026, 12, 31))
-    with pytest.raises(RuntimeError, match="2027-01-01"):
+    with pytest.raises(ValueError, match="2027-01-01"):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test")
     assert claimed == [], "the one-time version must not be consumed"
@@ -306,3 +329,55 @@ def test_the_report_refuses_a_summary_from_another_window(monkeypatch):
     # summaries written before windows existed carry no split_name: development
     monkeypatch.setattr(am, "_cat", lambda uri: {"gates": {}})
     assert am.latest_result("phase0", "SPY", "15m", "b") is not None
+
+
+# ═══════════════ Codex review of #1193, second round (32fba58) ═══════════════
+
+def test_final_test_folds_cannot_be_overridden(monkeypatch):
+    """`--evaluation-window=final_test --cutoffs=2026-06-01` passed the range
+    check, trained on the first half of the holdout and evaluated the rest,
+    then consumed the marker: a leak and a silently changed final-test
+    population (Codex P1)."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
+    monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
+    monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: None)
+    with pytest.raises(ValueError, match="holdout"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test", cutoffs=["2026-06-01"])
+    with pytest.raises(ValueError, match="holdout"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test",
+                         cutoffs=["2026-01-01", "2026-06-01"])
+    # the window's own start is the one accepted spelling
+    with pytest.raises(_Stop):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test", cutoffs=["2026-01-01"])
+
+
+def test_the_final_test_version_is_a_constant_not_a_flag():
+    """A CLI value defeated the one-time marker: after consuming v1 the same
+    operator could pass v2 and re-read the identical holdout (Codex P1)."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    assert "final_test_version" not in inspect.signature(mwf.walk_forward).parameters
+    assert "final_test_version" not in inspect.signature(mwf.run_all_cells).parameters
+    assert "--final-test-version" not in inspect.getsource(mwf.main)
+    assert "_claim_final_test(FINAL_TEST_VERSION," in inspect.getsource(mwf.walk_forward)
+
+
+def test_only_the_final_window_may_promote_a_production_model():
+    """The deployed job defaults to development with
+    MAG_PERSIST_PRODUCTION_MODEL=true; with the bounded read, a routine
+    passing run would have flipped LATEST to a model missing every session
+    after 2023 (Codex P1)."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    assert mwf.production_persist_refusal(WINDOWS["final_test"]) is None
+    for name in ("development", "validation"):
+        reason = mwf.production_persist_refusal(WINDOWS[name])
+        assert name in reason and "final_test" in reason
+    src = inspect.getsource(mwf.walk_forward)
+    assert (src.index("production_persist_refusal(window)")
+            < src.index("_persist_production_model_artifact("))
+    assert 'summary["production_model_refused"]' in src

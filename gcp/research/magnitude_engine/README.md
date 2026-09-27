@@ -93,6 +93,13 @@ rejected rather than silently re-reading the holdout, and the claim is
 refused while the window is still open on the market date, so a partial
 year can never consume the one-time version.
 
+The final-test folds are fixed at `[window.start]`; custom `--cutoffs` are
+refused there, and the one-time version is the `FINAL_TEST_VERSION` constant,
+not a flag. Only a `final_test` run may publish a production model:
+`--persist-production-model` under development or validation logs a refusal
+and records it as `production_model_refused` in the summary, since the
+deployed job's default window is development.
+
 A run reads the dataset only through its window's end (`until`), so a
 development or validation run never labels, class-balances or fingerprints
 final-test rows. Gates 1-4 keep the 6-of-8 bar as a fraction of the folds
@@ -143,11 +150,16 @@ Per the spec's hard guardrail: "Document the success bar in the PR
 description BEFORE running the experiments." Re-read both before
 proposing any tweak to the gate.
 
-Per-cell:
-1. log-loss beat positive in ≥ 6/8 folds
-2. ECE within ceiling (0.05 for 5m + 15m; 0.075 for 30m) in ≥ 6/8 folds
-3. decisive-call hit rate rises monotonically across thresholds 0.40 → 0.70 in ≥ 6/8 folds
-4. EXPLOSIVE-bucket lift over base ≥ 1.5 in ≥ 6/8 folds — since
+Per-cell. The original eight-fold schedule requires 6/8 folds; an
+evaluation window holds fewer yearly folds, so the evaluator applies the
+same bar as a ceiling-rounded fraction of the folds the run ATTEMPTED
+(`mag_config.min_folds_required`: 8 -> 6, 5 -> 4, 2 -> 2, 1 -> 1). A thin or
+errored fold still counts in the denominator; it can never lower the bar.
+
+1. log-loss beat positive in ≥ 6/8 of attempted folds
+2. ECE within ceiling (0.05 for 5m + 15m; 0.075 for 30m) in ≥ 6/8 of attempted folds
+3. decisive-call hit rate rises monotonically across thresholds 0.40 → 0.70 in ≥ 6/8 of attempted folds
+4. EXPLOSIVE-bucket lift over base ≥ 1.5 in ≥ 6/8 of attempted folds — since
    2026-09-14 measured on the bars the decision rule names EXPLOSIVE,
    not argmax (metric and threshold unchanged; see the results doc §0
    amendment)

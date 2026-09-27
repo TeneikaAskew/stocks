@@ -54,8 +54,8 @@ from gcp.research.magnitude_engine.mag_config import (
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.evaluation_windows import (
     CRITERIA_VERSION, FINAL_TEST_VERSION, PREDICTION_HORIZON_SESSIONS,
-    WINDOWS, assert_disjoint, eastern_sessions, purged_session_masks,
-    utc_instants,
+    WINDOWS, assert_disjoint, assert_window_complete, eastern_sessions,
+    purged_session_masks, utc_instants,
 )
 from gcp.research.magnitude_engine.mag_pred_train import (
     featurize, make_lgbm, resolve_class_weight, class_weight_power,
@@ -273,23 +273,39 @@ def _execution_provenance(X: np.ndarray, y: np.ndarray,
     }
 
 
+def production_persist_refusal(window) -> str | None:
+    """Why a run under `window` may not publish a production model, or None.
+
+    The deployed job defaults to the development window with
+    MAG_PERSIST_PRODUCTION_MODEL=true, so without this a routine passing run
+    would flip LATEST to a model trained only on data before window.end,
+    dropping every later session the served model holds today (Codex P1 on
+    #1193). The window definitions reserve the production decision for
+    final_test.
+    """
+    if window.final:
+        return None
+    return (f"production promotion is reserved for the final_test window; "
+            f"this {window.name} run trains on data before "
+            f"{window.end.isoformat()}")
+
+
 def _require_closed_window(window) -> None:
-    """A final-test window may be claimed only once every session in it is
-    over. Claiming earlier evaluates a partial year and consumes the one-time
-    version on it, permanently (Codex P1 on #1193). Compared on the market
-    date, since the window is an Eastern-session range."""
-    today = market_today()
-    if today < window.end:
-        raise RuntimeError(
-            f"evaluation window {window.name!r} runs through "
-            f"{window.end.isoformat()} and is still open on {today.isoformat()} "
-            f"(market date); the one-time final-test version is not claimed "
-            f"on a partial window")
+    """The final test may be claimed only once every session in its window
+    is over, judged on the market date (see assert_window_complete)."""
+    assert_window_complete(window, market_today())
 
 
 def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
                       run_id: str) -> None:
-    """Atomically consume a final-test version for one evaluation cell."""
+    """Atomically consume a final-test version for one evaluation cell.
+
+    `version` is always evaluation_windows.FINAL_TEST_VERSION: a code-reviewed
+    constant that changes only with the criteria or window definitions. It
+    was once a CLI flag, which defeated the guard: after consuming v1 an
+    operator could pass v2 and re-read the identical holdout under a fresh
+    marker path (Codex P1 on #1193).
+    """
     bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
     path = f"research/magnitude_engine/final-test-consumed/{version}/{phase}_{ticker}_{tf}.json"
     payload = json.dumps({"version": version, "phase": phase, "ticker": ticker,
@@ -916,8 +932,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   label_mode: str = DEFAULT_LABEL_MODE,
                   persist_production_model: bool = False,
                   features: str = "",
-                  evaluation_window: str = "development",
-                  final_test_version: str = FINAL_TEST_VERSION) -> dict:
+                  evaluation_window: str = "development") -> dict:
     window = WINDOWS[evaluation_window]
     if cutoffs is None:
         cutoffs = [c for c in DEFAULT_CUTOFFS
@@ -930,6 +945,14 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         if not window.start <= pd.Timestamp(cutoff).date() < window.end:
             raise ValueError(f"cutoff {cutoff} is outside immutable {window.name} "
                              f"window [{window.start}, {window.end})")
+    if window.final and [pd.Timestamp(c).date() for c in cutoffs] != [window.start]:
+        # One fold, training before the window and evaluating all of it. A
+        # later cutoff would train on part of the holdout and evaluate the
+        # rest, then consume the marker: a leak and a silently changed
+        # final-test population (Codex P1 on #1193).
+        raise ValueError(
+            f"{window.name} folds are fixed at [{window.start.isoformat()}]: "
+            f"custom cutoffs {list(cutoffs)} would train on part of the holdout")
     thresholds = resolve_magnitude_thresholds()
     execution_id = (os.environ.get("CLOUD_RUN_EXECUTION")
                     or os.environ.get("MAG_RUN_ID")
@@ -952,6 +975,10 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     df = load_magnitude_dataset(engine, ticker, tf, phase,
                                 until=window.end.isoformat(),
                                 label_mode=label_mode)
+    if df.empty:
+        raise ValueError(
+            f"dataset has no rows before the {window.name} window end "
+            f"{window.end.isoformat()}")
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     log.info("loaded: %d rows  (%s..%s)",
              len(df), df["bar_date"].min(), df["bar_date"].max())
@@ -1000,7 +1027,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # Claimed only now, with the data and its provenance in hand: a load
         # or feature failure above must not consume the one-time version on
         # a run that evaluated nothing.
-        _claim_final_test(final_test_version, phase, ticker, tf, execution_id)
+        _claim_final_test(FINAL_TEST_VERSION, phase, ticker, tf, execution_id)
 
     cores = max(1, os.cpu_count() or 1)
     lgbm_n_jobs = max(1, cores // cv) if calibration != "none" else -1
@@ -1087,7 +1114,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "production_readiness_version": PRODUCTION_READINESS_VERSION,
         "phase": phase, "ticker": ticker, "tf": tf,
         **provenance,
-        "final_test_version": final_test_version if window.final else None,
+        "final_test_version": FINAL_TEST_VERSION if window.final else None,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration, "cv": cv,
@@ -1179,7 +1206,13 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # aborted it and silently left the production model un-persisted.)
     # Only emit from phase0 — phase1+ share the same backbone features and we
     # want exactly one canonical artifact per (ticker, tf).
-    if persist_production_model and phase == "phase0":
+    persist_refusal = (production_persist_refusal(window)
+                       if persist_production_model and phase == "phase0" else None)
+    if persist_refusal:
+        log.warning("production model NOT persisted for %s:%s: %s",
+                    ticker, tf, persist_refusal)
+        summary["production_model_refused"] = persist_refusal
+    if persist_production_model and phase == "phase0" and not persist_refusal:
         try:
             uri = _persist_production_model_artifact(
                 ticker, tf, run_id, X_full, y_full, feature_cols,
@@ -1216,8 +1249,7 @@ def run_all_cells(engine, phase: str,
                    label_mode: str = DEFAULT_LABEL_MODE,
                    persist_production_model: bool = False,
                    features: str = "",
-                   evaluation_window: str = "development",
-                   final_test_version: str = FINAL_TEST_VERSION) -> dict:
+                   evaluation_window: str = "development") -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
     all_summaries = []
     for ticker in TICKERS:
@@ -1228,8 +1260,7 @@ def run_all_cells(engine, phase: str,
                                  label_mode=label_mode,
                                  persist_production_model=persist_production_model,
                                  features=features,
-                                 evaluation_window=evaluation_window,
-                                 final_test_version=final_test_version)
+                                 evaluation_window=evaluation_window)
                 all_summaries.append(s)
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
@@ -1379,8 +1410,6 @@ def main():
     p.add_argument("--evaluation-window", choices=tuple(WINDOWS),
                    default="development",
                    help="Immutable Eastern-session evaluation period")
-    p.add_argument("--final-test-version", default=FINAL_TEST_VERSION,
-                   help="One-time version claimed atomically for final_test")
     p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
                    choices=["none", "isotonic", "sigmoid"])
     p.add_argument("--label-mode", default=DEFAULT_LABEL_MODE, choices=list(LABEL_MODES),
@@ -1422,8 +1451,7 @@ def main():
                       label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
                       features=args.features,
-                      evaluation_window=args.evaluation_window,
-                      final_test_version=args.final_test_version)
+                      evaluation_window=args.evaluation_window)
         return
 
     if args.plan and args.task_index is not None:
@@ -1437,8 +1465,7 @@ def main():
                       label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
                       features=args.features,
-                      evaluation_window=args.evaluation_window,
-                      final_test_version=args.final_test_version)
+                      evaluation_window=args.evaluation_window)
         return
 
     if args.all_cells:
@@ -1449,8 +1476,7 @@ def main():
                        label_mode=args.label_mode,
                        persist_production_model=args.persist_production_model,
                        features=args.features,
-                       evaluation_window=args.evaluation_window,
-                       final_test_version=args.final_test_version)
+                       evaluation_window=args.evaluation_window)
         return
 
     if not args.phase or not args.ticker or not args.tf:
@@ -1465,8 +1491,7 @@ def main():
                   label_mode=args.label_mode,
                   persist_production_model=args.persist_production_model,
                   features=args.features,
-                  evaluation_window=args.evaluation_window,
-                  final_test_version=args.final_test_version)
+                  evaluation_window=args.evaluation_window)
 
 
 if __name__ == "__main__":

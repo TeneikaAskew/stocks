@@ -22,6 +22,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 
 
@@ -458,6 +459,9 @@ def test_results_dataframe_coerces_all_none_float_cols():
          "base_logloss": 0.82, "beat": 0.01, "ece": 0.03, "ece_ceiling": 0.05,
          "ece_pass": True, "accuracy": 0.7, "base_accuracy": 0.7,
          "accuracy_beat_pp": 0.0,
+         "train_data_max_ts": "2018-12-28T21:00:00+00:00",
+         "evaluation_data_min_ts": "2019-01-02T14:30:00+00:00",
+         "evaluation_data_max_ts": "2019-12-31T21:00:00+00:00",
          "explosive": {"base_rate": 0.02}},  # no precision/lift keys -> None
         {"fold": "2020..2021", "train_end": "2020-01-01", "test_end": "2021-01-01",
          "n_train": 120, "n_test": 55, "status": "OK", "logloss": 0.89,
@@ -471,6 +475,9 @@ def test_results_dataframe_coerces_all_none_float_cols():
         assert df[col].isna().all()
     # a populated column keeps its real values
     assert df["beat"].tolist() == [0.01, -0.02]
+    for col in ("train_data_max_ts", "evaluation_data_min_ts",
+                "evaluation_data_max_ts"):
+        assert isinstance(df[col].dtype, pd.DatetimeTZDtype)
 
 
 # ── Promotion gate (c49qf incident, 2026-08-27) ────────────────────────────
