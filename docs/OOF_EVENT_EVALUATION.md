@@ -14,7 +14,8 @@ Each candidate defines an `instrument`, signal `spot`, decision (`long`,
 1. calls for long decisions and puts for short decisions;
 2. nearest expiration on or after the requested DTE;
 3. nearest listed strike to the signal-time spot;
-4. entry at the first valid **ask** after configured latency; and
+4. freeze the chain at the first snapshot after configured latency and enter at
+   that snapshot's valid **ask**; and
 5. exit at the first valid **bid** after the holding period.
 
 The engine never substitutes underlying close-to-close returns or synthetic
@@ -23,6 +24,10 @@ probability, contract and concurrent-position limits, and treats capacity-
 rejected overlapping alerts as zero-P&L alerts. Thus overlap does not create
 independent capital and missed/rejected alerts remain in expected-value and
 fill-rate denominators.
+
+An executable entry with no later exit bid is retained as an open position,
+continues consuming capacity, and makes the run ineligible for production. It
+is never censored as a no-trade after inspecting future exit availability.
 
 ## Output and production gate
 

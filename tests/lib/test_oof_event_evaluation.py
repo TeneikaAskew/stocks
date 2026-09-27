@@ -61,12 +61,28 @@ def test_rejects_predictions_that_are_not_strictly_out_of_fold():
         evaluate_oof_events(candidates, _quotes())
 
 
+@pytest.mark.parametrize("column", ["timestamp", "trained_through", "session"])
+def test_rejects_missing_oof_boundaries(column):
+    candidates = _candidates()
+    candidates.loc[0, column] = None
+    with pytest.raises(ValueError, match="non-OOF predictions"):
+        evaluate_oof_events(candidates, _quotes())
+
+
+def test_rejects_negative_latency():
+    with pytest.raises(ValueError, match="latency_ms"):
+        EvaluationConfig(latency_ms=-1)
+
+
 def test_overlapping_alerts_share_position_capacity():
     candidates = _candidates(
         ("2025-01-02 14:30Z", "2025-01-02 14:35Z"), ("long", "long")
     )
+    quotes = _quotes()
+    quotes = pd.concat([quotes, pd.DataFrame([{**quotes.iloc[0].to_dict(),
+        "timestamp": pd.Timestamp("2025-01-02 14:36Z")}])], ignore_index=True)
     report = evaluate_oof_events(
-        candidates, _quotes(), EvaluationConfig(bootstrap_samples=20, max_open_positions=1)
+        candidates, quotes, EvaluationConfig(bootstrap_samples=20, max_open_positions=1)
     )
     assert report.events.status.tolist() == ["filled", "position_limit"]
     # EV is per alert, so rejected overlap remains in the denominator.
@@ -112,3 +128,70 @@ def test_contract_selection_is_nearest_strike_not_underlying_return():
     assert report.baselines.keys() == {
         "abstention", "class_prior", "buy_and_hold", "simple_volatility"
     }
+
+
+def test_contract_selection_freezes_first_eligible_chain_snapshot():
+    quotes = _quotes()
+    quotes["strike"] = 505
+    quotes["contract"] = "SPY-EARLY-C505"
+    late = _quotes()
+    late["timestamp"] = pd.to_datetime(late["timestamp"], utc=True) + pd.Timedelta(hours=1)
+    report = evaluate_oof_events(
+        _candidates(), pd.concat([quotes, late], ignore_index=True),
+        EvaluationConfig(bootstrap_samples=20),
+    )
+    assert report.events.iloc[0].contract == "SPY-EARLY-C505"
+
+
+def test_entry_without_exit_is_not_censored_and_blocks_eligibility():
+    quotes = _quotes().iloc[:1]
+    report = evaluate_oof_events(_candidates(), quotes, EvaluationConfig(bootstrap_samples=20))
+    assert report.events.iloc[0].status == "open_no_exit_quote"
+    assert report.events.iloc[0].notional_in > 0
+    assert not report.production_eligible
+    assert "lack an executable exit quote" in report.eligibility_reasons[-1]
+
+
+def test_invalid_quotes_are_not_trading_performance_evidence():
+    quotes = _quotes()
+    quotes["bid"] = quotes["ask"] + 1
+    report = evaluate_oof_events(_candidates(), quotes, EvaluationConfig(bootstrap_samples=20))
+    assert report.evidence_classification == "model-quality evidence only"
+    assert not report.production_eligible
+
+
+@pytest.mark.parametrize("prediction, expected", [(1.0, 1), (-1.0, -1)])
+def test_float_predictions_are_directional(prediction, expected):
+    candidates = _candidates(predictions=(prediction,))
+    report = evaluate_oof_events(candidates, _quotes(), EvaluationConfig(bootstrap_samples=20))
+    assert report.events.iloc[0].direction == expected
+
+
+def test_missed_fill_draw_is_paired_by_alert_across_baselines():
+    sessions = ("2025-01-02", "2025-01-03")
+    candidates = _candidates(
+        tuple(f"{d} 14:30Z" for d in sessions), ("flat", "long")
+    )
+    report = evaluate_oof_events(
+        candidates, _quotes((2.1, 2.1), (2.4, 2.4), sessions),
+        EvaluationConfig(bootstrap_samples=20, fill_probability=.8, random_seed=7),
+    )
+    # Seed 7 draws ~.625 for alert 1 and ~.897 for alert 2. The model
+    # abstains on alert 1, but must still use alert 2's draw just as the prior
+    # baseline does, rather than shifting the RNG stream.
+    assert report.metrics["net"]["fills"] == 0
+    assert report.baselines["class_prior"]["fills"] == 1
+
+
+def test_drawdown_preserves_intraday_loss_before_recovery():
+    events = _candidates(
+        ("2025-01-02 14:30Z", "2025-01-02 15:30Z"), ("long", "long")
+    )
+    quotes = _quotes((2.0, 2.0), (1.0, 3.1), ("2025-01-02", "2025-01-02"))
+    # Move the second chain one hour later so both alerts select distinct trades.
+    quotes.loc[2:, "timestamp"] = pd.to_datetime(quotes.loc[2:, "timestamp"], utc=True) + pd.Timedelta(hours=1)
+    report = evaluate_oof_events(
+        events, quotes, EvaluationConfig(bootstrap_samples=20, max_open_positions=1)
+    )
+    assert report.metrics["net"]["total_pnl"] > 0
+    assert report.metrics["net"]["max_drawdown"] > 100

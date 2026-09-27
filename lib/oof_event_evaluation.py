@@ -47,6 +47,10 @@ class EvaluationConfig:
             raise ValueError("contract limits must be positive")
         if self.max_open_positions < 1 or self.holding_minutes <= 0:
             raise ValueError("position/time limits must be positive")
+        if self.latency_ms < 0:
+            raise ValueError("latency_ms must be nonnegative")
+        if self.bootstrap_samples < 1 or not 0 < self.confidence < 1:
+            raise ValueError("bootstrap settings must be positive and confidence in (0, 1)")
 
 
 @dataclass(frozen=True)
@@ -80,14 +84,17 @@ def _normalise(candidates: pd.DataFrame, quotes: Optional[pd.DataFrame]) -> tupl
     if missing:
         raise ValueError(f"candidates missing required columns: {sorted(missing)}")
     c = candidates.copy()
-    c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True)
+    c["timestamp"] = pd.to_datetime(c["timestamp"], utc=True)  # tz-ok: evaluator input timestamps are UTC by contract
     c["session"] = pd.to_datetime(c["session"]).dt.date
-    c["trained_through"] = pd.to_datetime(c["trained_through"], utc=True)
+    c["trained_through"] = pd.to_datetime(c["trained_through"], utc=True)  # tz-ok: model training boundaries are UTC by contract
     if c["alert_id"].duplicated().any():
         raise ValueError("alert_id must be unique")
     # A prediction is OOF only when its training information set ends before
     # the event.  A non-empty fold id is also required for auditability.
-    bad = (c["trained_through"] >= c["timestamp"]) | c["prediction_fold"].isna()
+    bad = (c["timestamp"].isna() | c["trained_through"].isna() |
+           c["session"].isna() | c["prediction_fold"].isna() |
+           c["prediction_fold"].astype(str).str.strip().eq("") |
+           (c["trained_through"] >= c["timestamp"]))
     if bad.any():
         ids = c.loc[bad, "alert_id"].astype(str).tolist()
         raise ValueError(f"non-OOF predictions rejected: {ids}")
@@ -98,15 +105,21 @@ def _normalise(candidates: pd.DataFrame, quotes: Optional[pd.DataFrame]) -> tupl
     if qmissing:
         raise ValueError(f"quotes missing required columns: {sorted(qmissing)}")
     q = quotes.copy()
-    q["timestamp"] = pd.to_datetime(q["timestamp"], utc=True)
-    q["expiration"] = pd.to_datetime(q["expiration"], utc=True)
+    q["timestamp"] = pd.to_datetime(q["timestamp"], utc=True)  # tz-ok: quote timestamps are UTC by contract
+    q["expiration"] = pd.to_datetime(q["expiration"], utc=True)  # tz-ok: option expirations are UTC by contract
     numeric = ["strike", "bid", "ask"]
     q[numeric] = q[numeric].apply(pd.to_numeric, errors="coerce")
-    q = q[(q["bid"] >= 0) & (q["ask"] >= q["bid"])].sort_values("timestamp")
-    return c, q
+    q = q[q["timestamp"].notna() & q["expiration"].notna() &
+          (q["bid"] >= 0) & (q["ask"] >= q["bid"])].sort_values("timestamp")
+    return c, q if not q.empty else None
 
 
 def _direction(value: object) -> int:
+    if isinstance(value, (int, float, np.integer, np.floating)) and not pd.isna(value):
+        if float(value) == 1.0:
+            return 1
+        if float(value) == -1.0:
+            return -1
     text = str(value).strip().lower()
     if text in {"1", "long", "call", "up", "buy"}:
         return 1
@@ -115,7 +128,8 @@ def _direction(value: object) -> int:
     return 0
 
 
-def _select_contract(row: pd.Series, q: pd.DataFrame, config: EvaluationConfig) -> Optional[tuple[pd.Series, pd.Series]]:
+def _select_contract(row: pd.Series, q: pd.DataFrame,
+                     config: EvaluationConfig) -> Optional[tuple[pd.Series, Optional[pd.Series]]]:
     """Select the nearest-expiry, nearest-to-spot contract, then executable quotes."""
     side = _direction(row["prediction"])
     if side == 0:
@@ -124,21 +138,27 @@ def _select_contract(row: pd.Series, q: pd.DataFrame, config: EvaluationConfig) 
     earliest = row["timestamp"] + pd.Timedelta(milliseconds=config.latency_ms)
     desired_dte = int(row.get("target_dte", 0))
     desired_exp = earliest.normalize() + pd.Timedelta(days=desired_dte)
-    universe = q[(q["instrument"] == row["instrument"]) &
-                 (q["option_type"].str.lower().str.rstrip("s") == option_type) &
-                 (q["timestamp"] >= earliest) & (q["expiration"] >= desired_exp)]
+    eligible = q[(q["instrument"] == row["instrument"]) &
+                 (q["option_type"].astype(str).str.lower().str.rstrip("s") == option_type) &
+                 (q["timestamp"] >= earliest)]
+    if eligible.empty:
+        return None
+    # Freeze the chain at the first executable snapshot. Looking across later
+    # snapshots would use future contract availability to improve selection.
+    entry_timestamp = eligible["timestamp"].min()
+    universe = eligible[(eligible["timestamp"] == entry_timestamp) &
+                        (eligible["expiration"] >= desired_exp)]
     if universe.empty:
         return None
     expir = universe["expiration"].min()
     universe = universe[universe["expiration"] == expir].copy()
     universe["distance"] = (universe["strike"] - float(row["spot"])).abs()
     contract = universe.sort_values(["distance", "strike", "contract"], kind="stable").iloc[0]["contract"]
-    cq = universe[universe["contract"] == contract].sort_values("timestamp")
-    entry = cq.iloc[0]
+    entry = universe[universe["contract"] == contract].sort_values("timestamp").iloc[0]
     exit_after = entry["timestamp"] + pd.Timedelta(minutes=config.holding_minutes)
     exits = q[(q["contract"] == contract) & (q["timestamp"] >= exit_after)].sort_values("timestamp")
     if exits.empty:
-        return None
+        return entry, None
     return entry, exits.iloc[0]
 
 
@@ -150,7 +170,10 @@ def _metrics(events: pd.DataFrame, config: EvaluationConfig) -> Dict[str, Dict[s
     for label, col in (("gross", "gross_pnl"), ("net", "net_pnl")):
         pnl = filled[col].astype(float) if not filled.empty else pd.Series(dtype=float)
         by_session = filled.groupby("session")[col].sum().reindex(events["session"].drop_duplicates(), fill_value=0.0)
-        equity = by_session.cumsum()
+        # Drawdown follows realized exits rather than session-net P&L so an
+        # intraday loss cannot be hidden by a later winner in the same session.
+        realized = filled.sort_values(["exit_timestamp", "alert_id"], kind="stable")[col]
+        equity = realized.cumsum()
         drawdown = equity - equity.cummax().clip(lower=0)
         downside = by_session[by_session < 0].std(ddof=1)
         std = by_session.std(ddof=1)
@@ -214,6 +237,7 @@ def _simulate(c: pd.DataFrame, q: Optional[pd.DataFrame], config: EvaluationConf
     rows = []
     open_until: list[pd.Timestamp] = []
     rng = np.random.default_rng(seed)
+    fill_draws = dict(zip(c["alert_id"], rng.random(len(c))))
     for _, candidate in c.iterrows():
         base = {"alert_id": candidate["alert_id"], "timestamp": candidate["timestamp"],
                 "session": candidate["session"], "instrument": candidate["instrument"],
@@ -224,17 +248,29 @@ def _simulate(c: pd.DataFrame, q: Optional[pd.DataFrame], config: EvaluationConf
             rows.append(base); continue
         if q is None:
             base["status"] = "no_execution_data"; rows.append(base); continue
-        open_until = [t for t in open_until if t > candidate["timestamp"]]
-        if len(open_until) >= config.max_open_positions:
-            base["status"] = "position_limit"; rows.append(base); continue
         selected = _select_contract(candidate, q, config)
         if selected is None:
             base["status"] = "no_executable_quote"; rows.append(base); continue
         entry, exit_quote = selected
-        if rng.random() > config.fill_probability:
+        entry_timestamp = entry["timestamp"]
+        open_until = [t for t in open_until if t > entry_timestamp]
+        if len(open_until) >= config.max_open_positions:
+            base["status"] = "position_limit"; rows.append(base); continue
+        if fill_draws[candidate["alert_id"]] > config.fill_probability:
             base["status"] = "missed_fill"; rows.append(base); continue
         qty = min(config.contracts_per_trade, config.max_contracts)
         entry_quote_px = float(entry["ask"])
+        base.update(contract=entry["contract"], notional_in=(
+            entry_quote_px + config.slippage_per_contract_side / config.multiplier
+        ) * config.multiplier * qty)
+        if exit_quote is None:
+            # The entry was executable, so it must consume capacity. Its P&L
+            # remains unknown and the report is made ineligible below rather
+            # than survivorship-biasing the trade away.
+            base["status"] = "open_no_exit_quote"
+            open_until.append(pd.Timestamp.max.tz_localize("UTC"))
+            rows.append(base)
+            continue
         exit_quote_px = float(exit_quote["bid"])
         slip = config.slippage_per_contract_side / config.multiplier
         entry_px = entry_quote_px + slip
@@ -246,12 +282,13 @@ def _simulate(c: pd.DataFrame, q: Optional[pd.DataFrame], config: EvaluationConf
         base.update(status="filled", contract=entry["contract"], gross_pnl=gross,
                     net_pnl=net, notional_in=entry_px * config.multiplier * qty,
                     notional_out=exit_px * config.multiplier * qty,
+                    exit_timestamp=exit_quote["timestamp"],
                     duration_seconds=(exit_quote["timestamp"] - entry["timestamp"]).total_seconds())
         open_until.append(exit_quote["timestamp"])
         rows.append(base)
     columns = ["alert_id", "timestamp", "session", "instrument", "direction",
                "contract", "status", "gross_pnl", "net_pnl", "notional_in",
-               "notional_out", "duration_seconds"]
+               "notional_out", "duration_seconds", "exit_timestamp"]
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -275,8 +312,10 @@ def evaluate_oof_events(
     reasons = []
     if q is None:
         reasons.append("options execution data unavailable")
-    if ci[0] <= 0:
+    if not np.isfinite(ci[0]) or ci[0] <= 0:
         reasons.append("net expected utility confidence interval is not above zero")
+    if (events["status"] == "open_no_exit_quote").any():
+        reasons.append("one or more entered positions lack an executable exit quote")
     if metrics["net"]["max_drawdown"] > config.max_acceptable_drawdown:
         reasons.append("net drawdown exceeds configured limit")
     assumptions = {**asdict(config), "instrument_rule": "candidate instrument",
