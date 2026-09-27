@@ -52,9 +52,11 @@ def _cat(uri: str) -> dict:
     return json.loads(out.decode())
 
 
-def latest_result(phase: str, ticker: str, tf: str, bucket: str) -> dict | None:
+def latest_result(phase: str, ticker: str, tf: str, bucket: str,
+                  evaluation_window: str = "development") -> dict | None:
     """Return the most recent walk_forward_*.json for one cell."""
-    prefix = f"gs://{bucket}/research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
+    prefix = (f"gs://{bucket}/research/magnitude_engine/{phase}/"
+              f"{ticker.lower()}_{tf}/{evaluation_window}/")
     files = _ls(prefix)
     if not files:
         return None
@@ -149,14 +151,15 @@ def fmt_fold_detail(phase: str, cells: dict[tuple[str, str], dict]) -> str:
     return "\n".join(rows)
 
 
-def assemble(phases: list[str], bucket: str) -> dict[str, dict]:
+def assemble(phases: list[str], bucket: str,
+             evaluation_window: str = "development") -> dict[str, dict]:
     """For each phase, pull all cells and compute verdicts."""
     results: dict[str, dict] = {}
     for phase in phases:
         cells: dict[tuple[str, str], dict] = {}
         for ticker in TICKERS:
             for tf in TIMEFRAMES:
-                r = latest_result(phase, ticker, tf, bucket)
+                r = latest_result(phase, ticker, tf, bucket, evaluation_window)
                 if r is not None:
                     cells[(ticker, tf)] = r
         verdict = per_phase_verdict(cells)
@@ -197,11 +200,14 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--phases", default="phase0,phase1,phase3")
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    p.add_argument("--evaluation-window",
+                   choices=("development", "validation", "final_test"),
+                   default="development")
     p.add_argument("--output", default=None,
                    help="If set, write markdown here. Otherwise print to stdout.")
     args = p.parse_args()
     phases = [p.strip() for p in args.phases.split(",")]
-    results = assemble(phases, args.bucket)
+    results = assemble(phases, args.bucket, args.evaluation_window)
     md = render_markdown(results)
     if args.output:
         Path(args.output).write_text(md)

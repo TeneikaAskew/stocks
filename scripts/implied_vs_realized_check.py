@@ -177,7 +177,8 @@ def main():
 
     # Load model predictions for EXPLOSIVE filtering
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-                                 research=args.research)
+                             research=args.research,
+                             evaluation_window=args.evaluation_window)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     explosive_idx = LABEL_TO_IDX["EXPLOSIVE"]
     pe = preds[preds["pred_bucket_idx"] == explosive_idx].copy()

@@ -1882,6 +1882,14 @@ deploy_build_realtime_gex() {
 deploy_magnitude_engine() {
     echo "Deploying magnitude-engine job (task-parallel)..."
     local research_image="${IMAGE}:research"
+    local git_commit image_digest
+    git_commit="$(git rev-parse HEAD)"
+    image_digest="$(gcloud artifacts docker images describe "${research_image}" \
+        --format='value(image_summary.digest)')"
+    if [ -z "${image_digest}" ]; then
+        echo "ERROR: could not resolve immutable digest for ${research_image}" >&2
+        return 1
+    fi
     # Task-parallel design:
     #   --tasks=27 --parallelism=27   — fan out to 27 independent workers,
     #                                   one per (phase, ticker, tf) cell of
@@ -1902,7 +1910,7 @@ deploy_magnitude_engine() {
     # depends on belongs in this list.
     local plan_default=no_backfill
     local plan_size=27
-    local mag_env="MAG_PLAN=${plan_default},MAG_PERSIST_PRODUCTION_MODEL=true,MAG_CLASS_WEIGHT_POWER=0.75"
+    local mag_env="MAG_PLAN=${plan_default},MAG_PERSIST_PRODUCTION_MODEL=true,MAG_CLASS_WEIGHT_POWER=0.75,GIT_COMMIT=${git_commit},CONTAINER_IMAGE_DIGEST=${image_digest}"
     gcloud run jobs create magnitude-engine \
         --image "${research_image}" --region "${REGION}" \
         --tasks ${plan_size} --parallelism ${plan_size} \

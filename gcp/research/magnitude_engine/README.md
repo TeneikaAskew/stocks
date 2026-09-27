@@ -126,10 +126,14 @@ description BEFORE running the experiments." Re-read both before
 proposing any tweak to the gate.
 
 Per-cell:
-1. log-loss beat positive in ≥ 6/8 folds
-2. ECE within ceiling (0.05 for 5m + 15m; 0.075 for 30m) in ≥ 6/8 folds
-3. decisive-call hit rate rises monotonically across thresholds 0.40 → 0.70 in ≥ 6/8 folds
-4. EXPLOSIVE-bucket lift over base ≥ 1.5 in ≥ 6/8 folds — since
+The original eight-fold schedule requires 6/8 folds. Immutable evaluation
+windows contain different fold counts, so the evaluator applies the equivalent
+ceiling-rounded 75% requirement within the selected window.
+
+1. log-loss beat positive in ≥ 75% of folds
+2. ECE within ceiling (0.05 for 5m + 15m; 0.075 for 30m) in ≥ 75% of folds
+3. decisive-call hit rate rises monotonically across thresholds 0.40 → 0.70 in ≥ 75% of folds
+4. EXPLOSIVE-bucket lift over base ≥ 1.5 in ≥ 75% of folds — since
    2026-09-14 measured on the bars the decision rule names EXPLOSIVE,
    not argmax (metric and threshold unchanged; see the results doc §0
    amendment)

@@ -197,7 +197,8 @@ def main():
     args = p.parse_args()
 
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-                                 research=args.research)
+                                 research=args.research,
+                                 evaluation_window=args.evaluation_window)
     print(f"\nLoaded {len(preds)} prediction rows for {args.phase} {args.ticker} {args.tf}")
     print(f"Bootstrap iterations: {args.bootstrap_n}")
 

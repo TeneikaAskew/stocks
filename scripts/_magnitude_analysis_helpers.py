@@ -34,6 +34,10 @@ def add_research_arg(p) -> None:
              "path segment mag_config.research_namespace() produced for the "
              "run, and it is recorded in the run's walk_forward JSON as "
              "label_mode + thresholds.")
+    p.add_argument(
+        "--evaluation-window", choices=("development", "validation", "final_test"),
+        default="development",
+        help="Evaluation artifact namespace (default: development).")
 
 
 def apply_research_contract(research: str | None,
@@ -88,18 +92,20 @@ def apply_research_contract(research: str | None,
 
 
 def research_prefix(phase: str, ticker: str, tf: str,
-                    research: str | None = None) -> str:
+                    research: str | None = None,
+                    evaluation_window: str = "development") -> str:
     """GCS prefix for a cell's artifacts, canonical or research."""
     cell = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
     if not research:
-        return cell
+        return f"{cell}{evaluation_window}/"
     return (f"research/magnitude_engine/_research/{research}/"
-            f"{phase}/{ticker.lower()}_{tf}/")
+            f"{phase}/{ticker.lower()}_{tf}/{evaluation_window}/")
 
 
 def load_predictions(phase: str, ticker: str, tf: str,
                       bucket: str, run_id: str | None,
-                      research: str | None = None) -> pd.DataFrame:
+                      research: str | None = None,
+                      evaluation_window: str = "development") -> pd.DataFrame:
     """Load the latest predictions CSV for a (phase, ticker, tf) cell.
 
     Filters by run_id when supplied. `research` selects the namespace a
@@ -108,7 +114,7 @@ def load_predictions(phase: str, ticker: str, tf: str,
     """
     client = gcs.Client()
     bkt = client.bucket(bucket)
-    prefix = research_prefix(phase, ticker, tf, research)
+    prefix = research_prefix(phase, ticker, tf, research, evaluation_window)
     blobs = [b for b in bkt.list_blobs(prefix=prefix)
              if b.name.endswith(".csv") and "predictions_" in b.name]
     if not blobs:

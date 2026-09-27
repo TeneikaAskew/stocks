@@ -153,7 +153,8 @@ def main():
     args.label_mode, _thresholds = apply_research_contract(
         args.research, args.label_mode)
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-                                 research=args.research)
+                             research=args.research,
+                             evaluation_window=args.evaluation_window)
     readiness_version = load_run_readiness_version(
         args.phase, args.ticker, args.tf, args.bucket, args.run_id,
         research=args.research)

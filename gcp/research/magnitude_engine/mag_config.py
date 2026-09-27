@@ -854,7 +854,8 @@ def parse_research_namespace(slug: str) -> tuple[str, tuple[float, ...]]:
 
 def gcs_run_prefix(phase: str, ticker: str, tf: str,
                    label_mode: str | None = None,
-                   thresholds: Sequence[float] | None = None) -> str:
+                   thresholds: Sequence[float] | None = None,
+                   evaluation_window: str | None = None) -> str:
     """Where a cell-run's artifacts live.
 
     Canonical serving semantics keep the historical path unchanged. Anything
@@ -864,9 +865,9 @@ def gcs_run_prefix(phase: str, ticker: str, tf: str,
     """
     cell = f"{phase}/{ticker.lower()}_{tf}"
     slug = research_namespace(label_mode, thresholds)
-    if slug is None:
-        return f"{GCS_PREFIX}/{cell}"
-    return f"{GCS_PREFIX}/_research/{slug}/{cell}"
+    prefix = (f"{GCS_PREFIX}/{cell}" if slug is None
+              else f"{GCS_PREFIX}/_research/{slug}/{cell}")
+    return f"{prefix}/{evaluation_window}" if evaluation_window else prefix
 
 
 # Tables for Phase 2 + 4 (NOT created by default — only when those phases

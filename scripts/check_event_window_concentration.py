@@ -192,7 +192,8 @@ def main():
         for tf in tfs:
             try:
                 preds = load_predictions(args.phase, t, tf, args.bucket, args.run_id,
-                                 research=args.research)
+                                         research=args.research,
+                                         evaluation_window=args.evaluation_window)
             except SystemExit as e:
                 print(f"\n[{args.phase} {t} {tf}] skipped: {e}")
                 continue

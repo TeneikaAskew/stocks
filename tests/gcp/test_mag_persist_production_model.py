@@ -452,12 +452,16 @@ def test_results_dataframe_coerces_all_none_float_cols():
     insert fails with SQLSTATE 42804, which used to abort the whole persist
     try-block and silently skip the production-model artifact."""
     from gcp.research.magnitude_engine.mag_walk_forward import _results_dataframe
+    import pandas as pd
     folds = [
         {"fold": "2019..2020", "train_end": "2019-01-01", "test_end": "2020-01-01",
          "n_train": 100, "n_test": 50, "status": "OK", "logloss": 0.81,
          "base_logloss": 0.82, "beat": 0.01, "ece": 0.03, "ece_ceiling": 0.05,
          "ece_pass": True, "accuracy": 0.7, "base_accuracy": 0.7,
          "accuracy_beat_pp": 0.0,
+         "train_data_max_ts": "2018-12-28T21:00:00+00:00",
+         "evaluation_data_min_ts": "2019-01-02T14:30:00+00:00",
+         "evaluation_data_max_ts": "2019-12-31T21:00:00+00:00",
          "explosive": {"base_rate": 0.02}},  # no precision/lift keys -> None
         {"fold": "2020..2021", "train_end": "2020-01-01", "test_end": "2021-01-01",
          "n_train": 120, "n_test": 55, "status": "OK", "logloss": 0.89,
@@ -471,6 +475,9 @@ def test_results_dataframe_coerces_all_none_float_cols():
         assert df[col].isna().all()
     # a populated column keeps its real values
     assert df["beat"].tolist() == [0.01, -0.02]
+    for col in ("train_data_max_ts", "evaluation_data_min_ts",
+                "evaluation_data_max_ts"):
+        assert isinstance(df[col].dtype, pd.DatetimeTZDtype)
 
 
 # ── Promotion gate (c49qf incident, 2026-08-27) ────────────────────────────
@@ -1001,8 +1008,8 @@ def test_walk_forward_writes_under_the_namespace_it_resolved():
     # both artifact paths — the predictions CSV and the summary JSON — or one
     # of them leaks a research run into the canonical prefix
     assert src.count("gcs_run_prefix(phase, ticker, tf,") == 2
-    assert src.count(
-        "label_mode=label_mode, thresholds=thresholds)") == 2
+    assert src.count("label_mode=label_mode, thresholds=thresholds,") >= 2
+    assert src.count("evaluation_window=window.name)") == 2
     # and the persist path is told the same semantics it wrote under
     assert "gates=gates, label_mode=label_mode, thresholds=thresholds," in src
 
@@ -1019,14 +1026,17 @@ def test_analysis_loader_reads_the_research_namespace():
     from gcp.research.magnitude_engine.mag_config import gcs_run_prefix
 
     assert research_prefix("phase0", "SPY", "15m") == \
-        gcs_run_prefix("phase0", "SPY", "15m") + "/"
+        gcs_run_prefix("phase0", "SPY", "15m",
+                       evaluation_window="development") + "/"
     assert research_prefix("phase0", "SPY", "15m", "excursion") == \
         gcs_run_prefix("phase0", "SPY", "15m",
                        label_mode="excursion",
-                       thresholds=(0.5, 1.0, 1.5)) + "/"
+                       thresholds=(0.5, 1.0, 1.5),
+                       evaluation_window="development") + "/"
     assert research_prefix("phase0", "SPY", "15m", "t0.35_0.75_1.25") == \
         gcs_run_prefix("phase0", "SPY", "15m", label_mode="body",
-                       thresholds=(0.35, 0.75, 1.25)) + "/"
+                       thresholds=(0.35, 0.75, 1.25),
+                       evaluation_window="development") + "/"
 
 
 @pytest.mark.parametrize("script", [

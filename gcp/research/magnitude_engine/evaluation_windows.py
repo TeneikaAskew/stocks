@@ -8,11 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
-
 import pandas as pd
+from lib.eastern_time import ET as EASTERN, utc_to_eastern_naive
 
-EASTERN = ZoneInfo("America/New_York")
 CRITERIA_VERSION = "magnitude-evaluation-v1"
 FINAL_TEST_VERSION = "magnitude-final-v1"
 PREDICTION_HORIZON_SESSIONS = 1
@@ -59,10 +57,18 @@ def validate_windows() -> None:
             raise ValueError(f"evaluation windows overlap: {left.name}/{right.name}")
 
 
+def assert_window_complete(window: EvaluationWindow, as_of: date) -> None:
+    """Refuse evaluation before every session in an immutable window can exist."""
+    if as_of < window.end:
+        raise ValueError(
+            f"{window.name} window is incomplete through {window.end}; "
+            f"as-of date is {as_of}")
+
+
 def eastern_sessions(timestamps) -> pd.DatetimeIndex:
     """Return normalized America/New_York session labels for UTC timestamps."""
-    values = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True))
-    return values.tz_convert(EASTERN).normalize().tz_localize(None)
+    values = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True))  # tz-ok: input contract is UTC instants
+    return utc_to_eastern_naive(values).normalize()
 
 
 def assert_disjoint(train_sessions, evaluation_sessions) -> None:
