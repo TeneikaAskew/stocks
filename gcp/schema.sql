@@ -2857,6 +2857,66 @@ CREATE TRIGGER trg_watchlist_history_append_only
     BEFORE UPDATE OR DELETE ON watchlist_history
     FOR EACH ROW EXECUTE FUNCTION watchlist_history_is_append_only();
 
+-- INSERT was the remaining way to corrupt this log, and it was open
+-- (Codex P2 on `78e3bc1`). UPDATE, DELETE and TRUNCATE are all refused,
+-- but nothing stopped a row being ADDED that `watchlists` never agreed to.
+-- Reproduced on a live server:
+--
+--   watchlists: REAL                       (one trigger-recorded add)
+--   INSERT INTO watchlist_history (... 'GHOST','add', now() - 200 days ...)
+--       -> accepted, silently
+--   resolve_membership_at(today - 100)     -> tickers=('GHOST',)
+--   DELETE FROM watchlist_history WHERE ticker='GHOST'
+--       -> ERROR: watchlist_history is append-only
+--
+-- So a fabricated event is served as authoritative history AND is
+-- permanent: the append-only guard then refuses every correction. The
+-- other guards make this failure worse rather than better.
+--
+-- Reachable exactly like the TRUNCATE case. `db_query_cr.sh --commit` runs
+-- arbitrary SQL as the SAME database role the application uses, so no
+-- privilege grant can separate "the app recording a change" from "an
+-- operator typing an INSERT". The discriminator has to be HOW the row
+-- arrived, not who sent it.
+--
+-- `pg_trigger_depth()` is that discriminator, measured rather than assumed:
+--
+--   client writes `watchlists`, trigger writes here   -> depth 2
+--   client writes here directly                       -> depth 1
+--
+-- An "only while the log is still empty" test was tried first and is
+-- WRONG, also measured: a BEFORE INSERT row trigger sees rows written
+-- earlier by the SAME statement (of three rows, the second sees one and
+-- the third sees two), so it would admit the seed's first row and refuse
+-- the rest. The seed declares itself instead, below.
+CREATE OR REPLACE FUNCTION watchlist_history_is_recorded_not_authored()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    -- Written by trg_watchlists_membership or trg_watchlists_truncate.
+    IF pg_trigger_depth() >= 2 THEN
+        RETURN NEW;
+    END IF;
+    IF COALESCE(
+           current_setting('watchlist_history.allow_direct_insert', TRUE), 'off'
+       ) = 'on' THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION
+        'watchlist_history records membership changes; it does not accept '
+        'them. Change `watchlists` and let trg_watchlists_membership write '
+        'the event, so the two cannot disagree. A row inserted here that '
+        '`watchlists` never agreed to is served as authoritative history '
+        'and can never be corrected, because UPDATE and DELETE are refused. '
+        'The migration seed, and a test that must fabricate a row, declare '
+        'it: SET LOCAL watchlist_history.allow_direct_insert = ''on'';';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_watchlist_history_insert_guard ON watchlist_history;
+CREATE TRIGGER trg_watchlist_history_insert_guard
+    BEFORE INSERT ON watchlist_history
+    FOR EACH ROW EXECUTE FUNCTION watchlist_history_is_recorded_not_authored();
+
 -- TRUNCATE was deliberately left open here so the integration suite could
 -- isolate, and that was wrong (Codex P2 on `f94ce61`). Truncating this table
 -- while `watchlists` stays populated does not merely lose history -- it
@@ -3039,6 +3099,13 @@ BEGIN
 END
 $$;
 
+-- The seed is the one INSERT here that no trigger writes, so it declares
+-- itself to trg_watchlist_history_insert_guard. Session-scoped (`FALSE`)
+-- rather than SET LOCAL, because `psql -f` runs each statement in its own
+-- transaction, where SET LOCAL is discarded with a warning and the seed
+-- would be refused by its own schema. Reset on the far side.
+SELECT set_config('watchlist_history.allow_direct_insert', 'on', FALSE);
+
 INSERT INTO watchlist_history
     (user_id, ticker, action, effective_at, origin, source, in_brief, in_insight, signals)
 SELECT s.user_id, s.ticker, s.action, s.effective_at, 'seed',
@@ -3053,6 +3120,8 @@ SELECT s.user_id, s.ticker, s.action, s.effective_at, 'seed',
           FROM watchlists WHERE removed_at IS NOT NULL
        ) s
  WHERE NOT EXISTS (SELECT 1 FROM watchlist_history);
+
+SELECT set_config('watchlist_history.allow_direct_insert', 'off', FALSE);
 -- ATOMIC-END watchlist history
 
 

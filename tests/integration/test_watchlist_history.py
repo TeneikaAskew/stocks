@@ -960,6 +960,9 @@ def test_resolution_is_approximate_before_the_seed_horizon(wl):
     """A seeded row inherits `watchlists`' blind spot, and says so."""
     _add(wl, "ACME", JAN)
     with wl.begin() as conn:
+        # A seed-origin row is not trigger-written, so it declares itself.
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_direct_insert = 'on'"))
         conn.execute(
             sqlalchemy.text(
                 "INSERT INTO watchlist_history "
@@ -1021,6 +1024,10 @@ def test_the_seed_horizon_is_the_wall_clock_not_the_transaction_start(wl):
         # Stand in for the lock wait: any delay between transaction start
         # and the seed reproduces it.
         conn.execute(sqlalchemy.text("SELECT pg_sleep(0.25)"))
+        # The seed is not trigger-written, so it declares itself exactly as
+        # gcp/schema.sql does around the shipped statement.
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_direct_insert = 'on'"))
         conn.execute(sqlalchemy.text(_shipped_seed_statement()))
         horizon = conn.execute(
             sqlalchemy.text(
@@ -1191,6 +1198,8 @@ def test_the_seed_guard_passes_on_ordinary_legacy_rows(wl):
             "SET LOCAL watchlist_history.allow_truncate = 'on'"))
         conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history RESTART IDENTITY"))
         conn.execute(sqlalchemy.text(_shipped_seed_guard()))
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_direct_insert = 'on'"))
         conn.execute(sqlalchemy.text(_shipped_seed_statement()))
 
     assert sorted(a for a, _ in _events(wl, "SPY")) == ["add"]
@@ -1240,6 +1249,98 @@ def test_the_truncate_refusal_has_an_explicit_transaction_scoped_opt_in(wl):
         with wl.begin() as conn:
             conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlist_history"))
     assert "append-only" in str(excinfo.value), (
+        "the opt-in leaked past its transaction"
+    )
+
+
+def test_a_fabricated_event_cannot_be_inserted_directly(wl):
+    """Codex P2 on `78e3bc1`. INSERT was the hole the other guards left.
+
+    UPDATE, DELETE and TRUNCATE are all refused, so nothing stopped a row
+    being ADDED that `watchlists` never agreed to. Reproduced on a live
+    server before the guard existed:
+
+        watchlists: REAL                   (one trigger-recorded add)
+        INSERT ... ('GHOST','add', now() - 200 days)  -> accepted silently
+        resolve_membership_at(today - 100) -> tickers=('GHOST',)
+        DELETE FROM watchlist_history WHERE ticker='GHOST'
+            -> ERROR: watchlist_history is append-only
+
+    Served as authoritative history, and permanent: the append-only guard
+    then refuses every correction. The other guards make it worse.
+    """
+    _add(wl, "ACME", JAN)
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlist_history "
+                    "  (user_id, ticker, action, effective_at, origin) "
+                    "VALUES (:u, 'GHOST', 'add', :eff, 'trigger')"
+                ),
+                {"u": OWNER, "eff": JAN},
+            )
+    assert "does not accept them" in str(excinfo.value)
+    assert [t for t in resolve_membership_at(date.today(), OWNER).tickers] == [
+        "ACME"
+    ], "the log disagrees with watchlists"
+
+
+def test_the_membership_trigger_still_writes_through_the_insert_guard(wl):
+    """The guard must not break the one writer it exists to protect.
+
+    `pg_trigger_depth()` is the discriminator: a trigger-written row
+    arrives at depth 2, a client INSERT at depth 1.
+    """
+    _add(wl, "ACME", JAN)
+    _remove(wl, "ACME", MAR)
+    _add(wl, "ACME", JUN)
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove", "add"]
+
+
+def test_truncating_watchlists_still_records_through_the_insert_guard(wl):
+    """The truncate recorder writes through the same guard, from a
+    STATEMENT trigger rather than a row one."""
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text("TRUNCATE TABLE watchlists"))
+    assert [a for a, _ in _events(wl, "ACME")] == ["add", "remove"]
+
+
+def test_the_insert_refusal_has_an_explicit_transaction_scoped_opt_in(wl):
+    """The seed is not trigger-written, so it needs a declared way in.
+
+    Pinned as transaction-scoped for the same reason as the truncate
+    opt-in: a later transaction that has not declared it is refused again.
+    """
+    _add(wl, "ACME", JAN)
+    with wl.begin() as conn:
+        conn.execute(sqlalchemy.text(
+            "SET LOCAL watchlist_history.allow_direct_insert = 'on'"))
+        conn.execute(
+            sqlalchemy.text(
+                "INSERT INTO watchlist_history "
+                "  (user_id, ticker, action, effective_at, origin) "
+                "VALUES (:u, 'OLDCO', 'add', :eff, 'seed')"
+            ),
+            {"u": OWNER, "eff": JAN},
+        )
+    assert sorted(t for t in resolve_membership_at(date.today(), OWNER).tickers) == [
+        "ACME",
+        "OLDCO",
+    ]
+
+    with pytest.raises(Exception) as excinfo:
+        with wl.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlist_history "
+                    "  (user_id, ticker, action, effective_at, origin) "
+                    "VALUES (:u, 'GHOST', 'add', :eff, 'seed')"
+                ),
+                {"u": OWNER, "eff": JAN},
+            )
+    assert "does not accept them" in str(excinfo.value), (
         "the opt-in leaked past its transaction"
     )
 
