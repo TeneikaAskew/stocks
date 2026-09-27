@@ -430,7 +430,36 @@ def test_pin_floating_pins_every_job_from_one_snapshot_and_names_a_moved_tag(tmp
     specs = _specs(tmp_path)
     assert set(specs.values()) == {f"{IMAGE}@{RESOLVED}"}, specs
     assert "rc=0" not in r.stdout, r.stdout + r.stderr
-    assert f"{IMAGE} moved during the pass" in r.stderr, r.stderr
+    assert f"{IMAGE}:latest moved during the pass" in r.stderr, r.stderr
+
+
+def test_pin_floating_resolves_the_tagless_image_and_latest_as_one_tag(tmp_path):
+    """Codex on #1189 (c11eb1d2): the snapshot was keyed by the raw ref, so
+    the tag-less image and `:latest`, one tag, were resolved by two calls. A
+    build moving :latest between them pinned one group to the old digest and
+    the other to the new. The pass failed, but every spec then named a digest,
+    so a re-run passed and the audit saw nothing. Both forms are one key now:
+    every job on the tag gets one digest, and the moved tag still fails it."""
+    env = _env(tmp_path)
+    env.update(RESOLVE_FLIP_AFTER="1", RESOLVE_DIGEST_NEW="sha256:" + "6" * 64)
+    _jobs(tmp_path, {"tagless": IMAGE, "latest": f"{IMAGE}:latest"})
+    r = _run(tmp_path, env, _PIN_FNS, "pin_floating_jobs")
+    specs = _specs(tmp_path)
+    assert set(specs.values()) == {f"{IMAGE}@{RESOLVED}"}, specs
+    assert "rc=0" not in r.stdout, r.stdout + r.stderr
+    assert f"{IMAGE}:latest moved during the pass" in r.stderr, r.stderr
+
+
+def test_pin_floating_resolves_each_tag_once_whatever_form_names_it(tmp_path):
+    """The I/O shape: three jobs naming :latest two ways are one tag, so one
+    resolution for the snapshot and one for the final check."""
+    env = _env(tmp_path)
+    _jobs(tmp_path, {"tagless": IMAGE, "latest": f"{IMAGE}:latest", "also": IMAGE})
+    r = _run(tmp_path, env, _PIN_FNS, "pin_floating_jobs")
+    assert "rc=0" in r.stdout, r.stdout + r.stderr
+    resolves = [c for c in _calls(tmp_path) if c.startswith("artifacts docker images describe")]
+    assert resolves == [f"artifacts docker images describe {IMAGE}:latest "
+                        "--format=value(image_summary.digest)"] * 2, resolves
 
 
 def test_pin_floating_refuses_while_a_build_is_in_flight(tmp_path):

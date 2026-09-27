@@ -5228,11 +5228,11 @@ pin_floating_jobs() {
     # converts them in one pass.
     #
     # Each tag is resolved ONCE, before any update, and every job on it is
-    # pinned to that digest. Resolving per job let a build that landed
-    # mid-pass pin earlier jobs to the old digest and later ones to the new
-    # (Codex on #1189). The pass then reads every spec back against that
-    # snapshot and re-resolves the tags: a tag that moved during it is named
-    # and fails the pass, since a build ran while jobs were being pinned.
+    # pinned to that digest; a tag-less spec IS :latest, so it is keyed as
+    # :latest. Resolving per job, or per spelling, let a build landing mid-pass
+    # split one tag's jobs across two digests (Codex, twice, on #1189). The
+    # pass reads every spec back against that snapshot and re-resolves each
+    # tag: one that moved during it is named and fails the pass.
     local ongoing listing job ref pinned now converted=0 failures=0 left=0 moved=0
     local -A pin_of=() converted_from=()
     ongoing=$(gcloud builds list --ongoing --format="value(id)") \
@@ -5244,7 +5244,7 @@ pin_floating_jobs() {
         || { echo "ERROR: cannot list Cloud Run jobs; nothing pinned." >&2; return 1; }
     while IFS=$'\t' read -r job ref; do
         [ -n "${job}" ] || continue
-        [[ "${ref}" == *@sha256:* ]] && continue
+        [[ "${ref}" == *@sha256:* ]] && continue; [[ "${ref##*/}" == *:* ]] || ref+=":latest"
         [ -z "${pin_of[${ref}]+x}" ] || continue
         if pinned=$(_resolve_image_ref "${ref}"); then
             pin_of[${ref}]=${pinned}
@@ -5254,7 +5254,7 @@ pin_floating_jobs() {
     done <<< "${listing}"
     while IFS=$'\t' read -r job ref; do
         [ -n "${job}" ] || continue
-        [[ "${ref}" == *@sha256:* ]] && continue
+        [[ "${ref}" == *@sha256:* ]] && continue; [[ "${ref##*/}" == *:* ]] || ref+=":latest"
         [ -n "${pin_of[${ref}]+x}" ] || continue   # its tag did not resolve; counted above
         if gcloud run jobs update "${job}" --region "${REGION}" --image "${pin_of[${ref}]}" --quiet >/dev/null; then
             converted=$((converted + 1))
