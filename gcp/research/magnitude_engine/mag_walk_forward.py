@@ -712,9 +712,18 @@ def _persist_production_model_artifact(
     thresholds: tuple[float, ...],
     calibration: str = DEFAULT_CALIBRATION,
     cv: int = DEFAULT_CV,
+    stage_only: bool = False,
 ) -> str | None:
     """Train a 'production' model on the ENTIRE dataset (no held-out test)
     and upload it to gs://<bucket>/magnitude-models/production/{ticker}/{tf}/.
+
+    `stage_only` uploads the candidate and a PROMOTION_STAGED marker in place
+    of flipping LATEST. The walk-forward verdict is gates 1-4 only, which
+    _evaluate_phase_gate marks preliminary: gates 5-7 (bootstrap, mechanism,
+    implied-vs-realized) run afterwards on the run's predictions, so a
+    final-test run stages and an operator promotes once those pass (Codex
+    P1 on #1193). mag_inference reads a staged-only prefix as never
+    promoted, like a blocked one.
 
     Prerequisite for `gcp.research.magnitude_engine.mag_inference` which
     loads model.joblib + feature_cols.txt + VERSION from this exact GCS
@@ -860,6 +869,17 @@ def _persist_production_model_artifact(
                 "gs://%s/%s/ for diagnosis.",
                 ticker, tf, run_id, verdict["reason"], bucket_name, run_prefix)
             return None
+        if stage_only:
+            bucket.blob(f"{run_prefix}/PROMOTION_STAGED").upload_from_string(
+                json.dumps({"verdict": verdict, "gates_1_4": gates,
+                            "promote": f"gs://{bucket_name}/{base_prefix}/LATEST "
+                                       f"<- {run_id}, after gates 5-7 pass"},
+                           indent=2, default=str),
+                content_type="application/json")
+            uri = f"gs://{bucket_name}/{run_prefix}/"
+            log.info("production candidate STAGED (run=%s, LATEST untouched; "
+                     "promote after gates 5-7) -> %s", run_id, uri)
+            return uri
         # Atomic flip: LATEST is a single-blob write. Its presence/
         # contents is what mag_inference reads to choose which run to
         # load.
@@ -1207,12 +1227,16 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         summary["production_model_refused"] = persist_refusal
     if persist_production_model and phase == "phase0" and not persist_refusal:
         try:
+            # The final-test candidate is STAGED, never promoted here: gates
+            # 5-7 are scored after this run, on its predictions.
             uri = _persist_production_model_artifact(
                 ticker, tf, run_id, X_full, y_full, feature_cols,
                 gates=gates, label_mode=label_mode, thresholds=thresholds,
-                calibration=calibration, cv=cv,
+                calibration=calibration, cv=cv, stage_only=window.final,
             )
-            if uri:
+            if uri and window.final:
+                summary["production_model_staged"] = uri
+            elif uri:
                 summary["production_model_uri"] = uri
         except Exception as e:
             log.error("Production-model persist FAILED (%s): %s",

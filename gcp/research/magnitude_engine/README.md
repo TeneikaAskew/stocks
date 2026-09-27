@@ -98,7 +98,15 @@ refused there, and the one-time version is the `FINAL_TEST_VERSION` constant,
 not a flag. Only a `final_test` run may publish a production model:
 `--persist-production-model` under development or validation logs a refusal
 and records it as `production_model_refused` in the summary, since the
-deployed job's default window is development.
+deployed job's default window is development. A final-test run that clears
+gates 1-4 STAGES its candidate (artifacts plus a `PROMOTION_STAGED` marker
+under the run prefix, recorded as `production_model_staged`) and leaves
+`LATEST` untouched, because gates 5-7 (bootstrap, mechanism,
+implied-vs-realized) are scored afterwards on the run's predictions.
+Promotion is the operator writing the run id to `LATEST` once they pass;
+`mag_inference` reads a staged-only prefix as never promoted.
+`scripts/naive_calendar_lookup_baseline.py` refuses the final window
+outright and builds its masks with the harness's session purge.
 
 A run reads the dataset only through its window's end (`until`), so a
 development or validation run never labels, class-balances or fingerprints

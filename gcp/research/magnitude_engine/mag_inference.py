@@ -257,14 +257,18 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
                 f"gs://{bucket_name}/{base_prefix}/. Run walk_forward with "
                 f"--persist-production-model to publish."
             )
-        if all("PROMOTION_BLOCKED" in files for files in runs.values()):
+        # PROMOTION_STAGED is the final-test candidate awaiting gates 5-7
+        # (mag_walk_forward stage_only): also a deliberate no-LATEST state.
+        if all(files & {"PROMOTION_BLOCKED", "PROMOTION_STAGED"}
+               for files in runs.values()):
             raise NeverPromoted(
                 f"no production model has ever been published for "
                 f"{ticker}:{tf} — all {len(runs)} candidate run(s) under "
                 f"gs://{bucket_name}/{base_prefix}/ were gate-blocked "
-                f"(PROMOTION_BLOCKED). Train a candidate that clears the "
+                f"(PROMOTION_BLOCKED) or staged awaiting gates 5-7 "
+                f"(PROMOTION_STAGED). Train a candidate that clears the "
                 f"promotion gate via walk_forward "
-                f"--persist-production-model."
+                f"--persist-production-model, then promote it."
             )
         raise FileNotFoundError(
             f"no production model deployed for {ticker}:{tf} — LATEST "

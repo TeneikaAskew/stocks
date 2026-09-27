@@ -47,6 +47,7 @@ from gcp.research.magnitude_engine.mag_pred_train import (
 )
 from sklearn.metrics import log_loss
 from scripts._magnitude_analysis_helpers import (
+    load_run_summary,
     add_research_arg, load_predictions)
 
 
@@ -116,7 +117,8 @@ def fold_gates(fold_df: pd.DataFrame, tf: str, prior=None) -> dict:
     }
 
 
-def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1):
+def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1,
+                       n_folds_scheduled: int | None = None):
     """Resample Eastern sessions within each fold N times and count
     how often each cell-level gate (g1, g2, g3, g4) passes its bar: the
     6-of-8 fraction scaled to the folds this run holds (min_folds_required),
@@ -127,7 +129,16 @@ def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1)
     preds["_eastern_session"] = eastern_sessions(preds["ts"])
     folds = sorted(preds["fold"].unique())
     n_folds = len(folds)
-    required = min_folds_required(n_folds)
+    # The bar is set by the folds the run SCHEDULED (its summary's cutoffs),
+    # not by the folds that left prediction rows: an ERROR or SKIP_THIN fold
+    # has none, and a bar read off the CSV lowered itself by omission
+    # (Codex P1 on #1193). Missing folds stay non-passing.
+    if n_folds_scheduled is None:
+        n_folds_scheduled = n_folds
+    if n_folds > n_folds_scheduled:
+        raise ValueError(f"{n_folds} prediction folds exceed the {n_folds_scheduled} "
+                         f"the run scheduled")
+    required = min_folds_required(n_folds_scheduled)
     rng = np.random.default_rng(seed)
 
     # Per-iteration counts
@@ -175,6 +186,7 @@ def bootstrap_one_cell(preds: pd.DataFrame, tf: str, n_iter: int, seed: int = 1)
     counts = np.array(iter_g_counts)
     return {
         "n_folds": n_folds,
+        "n_folds_scheduled": n_folds_scheduled,
         "min_folds_required": required,
         "deterministic": tuple(det_g),
         "mean": counts.mean(axis=0),
@@ -193,7 +205,9 @@ def main():
     p.add_argument("--phase", required=True)
     p.add_argument("--ticker", required=True)
     p.add_argument("--tf", required=True)
-    p.add_argument("--run-id", default=None)
+    p.add_argument("--run-id", required=True,
+                   help="exec/run-id of the walk-forward run; its summary "
+                        "supplies the scheduled fold count the bar is set by")
     p.add_argument("--bootstrap-n", type=int, default=1000)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
     add_research_arg(p)
@@ -206,13 +220,17 @@ def main():
     print(f"\nLoaded {len(preds)} prediction rows for {args.phase} {args.ticker} {args.tf}")
     print(f"Bootstrap iterations: {args.bootstrap_n}")
 
-    r = bootstrap_one_cell(preds, args.tf, args.bootstrap_n, seed=args.seed)
+    summary = load_run_summary(args.phase, args.ticker, args.tf, args.bucket,
+                               args.run_id, research=args.research,
+                               evaluation_window=args.evaluation_window)
+    r = bootstrap_one_cell(preds, args.tf, args.bootstrap_n, seed=args.seed,
+                           n_folds_scheduled=len(summary["cutoffs"]))
 
     print()
     print("=" * 86)
     print(f"BOOTSTRAP GATE FRAGILITY — {args.phase} {args.ticker} {args.tf}")
     print("=" * 86)
-    bar = f"{r['min_folds_required']}/{r['n_folds']}"
+    bar = f"{r['min_folds_required']}/{r['n_folds_scheduled']}"
     print(f"Gate bar: {bar} folds (6/8 scaled to this run's folds)")
     gate_names = ["g1 logloss-beat", "g2 ece-pass", "g3 monotone", "g4 lift>=1.5"]
     print(f"\n{'gate':20} {'det':>5} {'mean':>6} {'p5':>4} {'p50':>4} {'p95':>4} "

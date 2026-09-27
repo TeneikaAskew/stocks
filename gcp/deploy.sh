@@ -85,8 +85,10 @@ _stamp_build_info() {
     # for the provenance every walk-forward records (Codex P1 on #1193).
     local dir=$1 commit dirty
     commit=$(git rev-parse HEAD) || { echo "ERROR: cannot read HEAD for the build stamp" >&2; return 1; }
+    # `git status --porcelain`, not `git diff HEAD`: an untracked file under
+    # lib/ gcp/ scripts/ ships in the image too (Codex P2 on #1193).
     dirty=false
-    git diff --quiet HEAD -- lib gcp scripts 2>/dev/null || dirty=true
+    [ -z "$(git status --porcelain -- lib gcp scripts 2>/dev/null)" ] || dirty=true
     printf '{"git_commit": "%s", "git_dirty": %s, "built_at": "%s"}\n' \
         "${commit}" "${dirty}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${dir}/gcp/build_info.json"
 }

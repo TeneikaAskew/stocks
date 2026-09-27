@@ -149,24 +149,37 @@ def load_predictions(phase: str, ticker: str, tf: str,
     return pd.read_csv(io.BytesIO(target.download_as_bytes()))
 
 
-def load_run_readiness_version(phase: str, ticker: str, tf: str,
-                               bucket: str, run_id: str,
-                               research: str | None = None,
-                               evaluation_window: str | None = None) -> str | None:
-    """The production_readiness_version the walk-forward run recorded.
+def load_run_summary(phase: str, ticker: str, tf: str, bucket: str,
+                     run_id: str, research: str | None = None,
+                     evaluation_window: str | None = None) -> dict:
+    """The walk_forward_<run_id>.json a run wrote: the one reader of it.
 
-    Read from that run's own walk_forward_<run_id>.json, so an analysis of
-    an older run carries the policy the run was produced under rather than
-    the one the code holds today. None means the run predates the policy;
-    that is a fact about the run, not a default. A missing summary raises,
-    like a missing predictions CSV.
+    Analyses that need a fact about the run (its fold schedule, its
+    readiness policy) take it from here rather than re-deriving it from
+    prediction rows. A missing summary raises, like a missing predictions
+    CSV.
     """
     name = (research_prefix(phase, ticker, tf, research, evaluation_window)
             + f"walk_forward_{run_id}.json")
     blob = gcs.Client().bucket(bucket).blob(name)
     if not blob.exists():
         raise SystemExit(f"no walk-forward summary at gs://{bucket}/{name}")
-    return json.loads(blob.download_as_bytes()).get("production_readiness_version")
+    return json.loads(blob.download_as_bytes())
+
+
+def load_run_readiness_version(phase: str, ticker: str, tf: str,
+                               bucket: str, run_id: str,
+                               research: str | None = None,
+                               evaluation_window: str | None = None) -> str | None:
+    """The production_readiness_version the walk-forward run recorded.
+
+    Read from that run's own summary, so an analysis of an older run carries
+    the policy the run was produced under rather than the one the code holds
+    today. None means the run predates the policy; that is a fact about the
+    run, not a default.
+    """
+    return load_run_summary(phase, ticker, tf, bucket, run_id, research,
+                            evaluation_window).get("production_readiness_version")
 
 
 def calendar_keys(ts_series, bucket_minutes: int = 30):

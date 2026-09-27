@@ -48,6 +48,7 @@ shift || true
 label_mode=""
 thresholds=""
 class_weight_power=""
+evaluation_window=""
 for arg in "$@"; do
   case "$arg" in
     --label-mode=*) label_mode="${arg#*=}" ;;
@@ -57,6 +58,10 @@ for arg in "$@"; do
     # this script could not carry it; recorded in the run summary as
     # class_weight_power so the setting is never again unrecoverable.
     --class-weight-power=*) class_weight_power="${arg#*=}" ;;
+    # Evaluation window (evaluation_windows.py). Without this the wrapper
+    # rejected the flag and every dispatch silently kept the module default
+    # of development (Codex P2 on #1193).
+    --evaluation-window=*) evaluation_window="${arg#*=}" ;;
     --with-checks)
        # Documented in the header since the Phase-3 post-mortem but never
        # implemented: before this parser existed, extra arguments were simply
@@ -72,6 +77,7 @@ for arg in "$@"; do
     *) echo "Unknown option: $arg" >&2
        echo "Valid: --label-mode=body|excursion|call|put  --thresholds=t0,t1,t2" >&2
        echo "       --class-weight-power=0.0..1.0 (0 = unweighted, 1 = balanced)" >&2
+       echo "       --evaluation-window=development|validation|final_test" >&2
        echo "       --with-checks (accepted, not implemented)" >&2
        exit 64 ;;
   esac
@@ -79,6 +85,7 @@ done
 
 mag_args="-m,gcp.research.magnitude_engine.mag_walk_forward"
 [ -n "$label_mode" ] && mag_args="${mag_args},--label-mode=${label_mode}"
+[ -n "$evaluation_window" ] && mag_args="${mag_args},--evaluation-window=${evaluation_window}"
 
 # MAG_THRESHOLDS is itself comma-separated and gcloud splits --update-env-vars
 # on commas, so "MAG_PLAN=phase0,MAG_THRESHOLDS=0.35,0.75,1.25" would set

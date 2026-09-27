@@ -50,7 +50,8 @@ from gcp.research.magnitude_engine.mag_config import (
     GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
-from gcp.research.magnitude_engine.evaluation_windows import WINDOWS, window_cutoffs
+from gcp.research.magnitude_engine.evaluation_windows import (
+    WINDOWS, eastern_sessions, purged_session_masks, window_cutoffs)
 from gcp.research.magnitude_engine.mag_pred_train import (
     expected_calibration_error, decisive_call_hit_rate, explosive_lift,
 )
@@ -165,6 +166,15 @@ def main():
     # baseline read every row through the final-test period and scored eight
     # folds against a six-fold bar (Codex P1 on #1193).
     window = WINDOWS[args.evaluation_window]
+    if window.final:
+        # The final window is the one-time production decision, guarded in
+        # walk_forward by the completion check and the atomic claim. A
+        # baseline there would score the holdout without either and could be
+        # rerun forever (Codex P1 on #1193).
+        raise SystemExit(
+            f"--evaluation-window={window.name} is the one-time production "
+            f"decision and is not scored by the baseline; use development "
+            f"or validation")
 
     engine = get_engine()
     # Load the cell through the window's end — same query the walk-forward
@@ -181,7 +191,10 @@ def main():
 
     y_all = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
     ts_all = pd.to_datetime(df["ts"], utc=True)
-    bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
+    # The harness's session labels and purge, so the baseline's training
+    # population is the model's: a mask mismatch would otherwise be able to
+    # explain a marginal gate comparison (Codex P2 on #1193).
+    sessions = eastern_sessions(ts_all).values.astype("datetime64[D]")
 
     cutoffs = window_cutoffs(window)
     required = min_folds_required(len(cutoffs))
@@ -191,10 +204,7 @@ def main():
             test_end = cutoffs[i + 1]
         else:
             test_end = window.end.isoformat()
-        train_end_dt = np.datetime64(cut)
-        test_end_dt = np.datetime64(test_end)
-        train_mask = bar_dates_arr < train_end_dt
-        test_mask = (bar_dates_arr >= train_end_dt) & (bar_dates_arr < test_end_dt)
+        train_mask, test_mask = purged_session_masks(sessions, cut, test_end)
         if int(test_mask.sum()) < MIN_TEST_BARS:
             folds.append({"fold": f"{cut}..{test_end}", "status": "SKIP_THIN"})
             continue

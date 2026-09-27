@@ -444,3 +444,114 @@ def test_the_naive_baseline_honours_the_window_it_accepts():
     assert "window_cutoffs(window)" in src
     assert "min_folds_required(len(cutoffs))" in src
     assert "c >= 6 " not in src and "list(DEFAULT_CUTOFFS)" not in src
+
+
+# ═══════════════ Codex review of #1193, fourth round (96d2396) ═══════════════
+
+def test_the_naive_baseline_refuses_the_final_window_and_purges_like_the_harness():
+    """A baseline run under final_test scored the holdout without the
+    completion check or the one-time claim, and could be rerun forever; and
+    its masks kept the session the harness purges, so a marginal comparison
+    could be a mask artefact (Codex P1 + P2)."""
+    src = (REPO / "scripts/naive_calendar_lookup_baseline.py").read_text()
+    assert "if window.final:" in src and "SystemExit" in src
+    assert "purged_session_masks(" in src and "eastern_sessions(" in src
+    assert "bar_dates_arr < train_end_dt" not in src
+
+
+def test_the_dispatch_wrapper_forwards_the_window():
+    src = (REPO / "scripts/dispatch_magnitude_phase.sh").read_text()
+    assert "--evaluation-window=*)" in src
+    assert '--evaluation-window=${evaluation_window}' in src
+
+
+def test_the_build_stamp_counts_untracked_source_as_dirty():
+    """`git diff --quiet HEAD` ignores untracked files, but `cp -r` ships them
+    (Codex P2)."""
+    stamp = _deploy_fn("_stamp_build_info")
+    assert "git status --porcelain" in stamp
+    assert "git diff --quiet" not in stamp
+
+
+def test_the_bootstrap_bar_counts_scheduled_folds_not_prediction_rows():
+    """An ERROR or SKIP_THIN fold has no prediction rows, so a bar derived from
+    the CSV lowered itself by omission: min_folds_required(4) == 3 where the
+    evaluator required min_folds_required(5) == 4 (Codex P1)."""
+    import inspect
+    import scripts.bootstrap_gate_fragility as bs
+    rng = np.random.default_rng(3)
+    y = rng.choice(4, size=120, p=[0.64, 0.27, 0.07, 0.02])
+    proba = np.tile([0.64, 0.27, 0.07, 0.02], (120, 1))
+    preds = pd.DataFrame({
+        "fold": "a", "ts": "2025-01-02T15:00:00Z", "true_bucket_idx": y,
+        "pred_bucket_idx": 0, "max_proba": 0.64,
+        "p_TIGHT": proba[:, 0], "p_NORMAL": proba[:, 1],
+        "p_EXPANDED": proba[:, 2], "p_EXPLOSIVE": proba[:, 3]})
+    r = bs.bootstrap_one_cell(preds, "5m", n_iter=3, n_folds_scheduled=2)
+    assert (r["n_folds"], r["n_folds_scheduled"], r["min_folds_required"]) == (1, 2, 2)
+    assert r["cell_pass_rate"] == 0.0, "one fold of two can never reach a 2-fold bar"
+    src = inspect.getsource(bs.main)
+    assert "load_run_summary(" in src and "n_folds_scheduled=" in src
+
+
+def test_the_run_summary_loader_is_the_one_reader_of_walk_forward_json(monkeypatch):
+    sys.path.insert(0, str(REPO / "scripts"))
+    import _magnitude_analysis_helpers as helpers
+    name = helpers.research_prefix("phase1", "IWM", "5m") + "walk_forward_r1.json"
+    store = {name: json.dumps({"cutoffs": ["2019-01-01", "2020-01-01"],
+                               "production_readiness_version": "v1"}).encode()}
+
+    class _Blob:
+        def __init__(self, n): self.n = n
+        def exists(self): return self.n in store
+        def download_as_bytes(self): return store[self.n]
+
+    client = type("C", (), {"bucket": lambda self, _b: type(
+        "B", (), {"blob": lambda self, n: _Blob(n)})()})()
+    monkeypatch.setattr(helpers.gcs, "Client", lambda: client)
+    summary = helpers.load_run_summary("phase1", "IWM", "5m", "b", "r1")
+    assert summary["cutoffs"] == ["2019-01-01", "2020-01-01"]
+    assert helpers.load_run_readiness_version("phase1", "IWM", "5m", "b", "r1") == "v1"
+
+
+def test_a_passing_final_test_cell_is_staged_not_promoted(monkeypatch):
+    """Gates 1-4 are preliminary; 5-7 run after the walk-forward on its
+    predictions. A final-test pass therefore must not move LATEST (Codex P1):
+    the candidate is uploaded with a PROMOTION_STAGED marker instead."""
+    from tests.gcp.test_mag_persist_production_model import (
+        _capture_blob_uploads, _passing_gates, _promotable_model, _toy_data)
+    from unittest.mock import patch
+    import joblib
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    monkeypatch.setattr(joblib, "dump", lambda obj, buf: buf.write(b"m"))
+    X, y = _toy_data()
+    fake_client, captured = _capture_blob_uploads()
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "QQQ", "15m", run_id="final-001", X_full=X, y_full=y,
+            feature_cols=["x"], gates=_passing_gates(), label_mode="body",
+            thresholds=(0.5, 1.0, 1.5), calibration="none", stage_only=True)
+    assert uri == "gs://test-bucket/magnitude-models/production/QQQ/15m/final-001/"
+    assert "magnitude-models/production/QQQ/15m/LATEST" not in captured
+    marker = json.loads(
+        captured["magnitude-models/production/QQQ/15m/final-001/PROMOTION_STAGED"].decode())
+    assert marker["verdict"]["ok"] is True and "gates 5-7" in marker["promote"]
+    src = (REPO / "gcp/research/magnitude_engine/mag_walk_forward.py").read_text()
+    assert "stage_only=window.final" in src
+    assert 'summary["production_model_staged"]' in src
+
+
+def test_inference_reads_a_staged_only_prefix_as_never_promoted():
+    from unittest.mock import patch
+    from tests.gcp.test_magnitude_inference import _never_promoted_bucket
+    from gcp.research.magnitude_engine import mag_inference as mod
+    from gcp.research.magnitude_engine.mag_config import NeverPromoted
+    pfx = "magnitude-models/production/SPY/15m"
+    client = _never_promoted_bucket(blob_names=[
+        f"{pfx}/run-1/model.joblib", f"{pfx}/run-1/PROMOTION_BLOCKED",
+        f"{pfx}/run-2/model.joblib", f"{pfx}/run-2/PROMOTION_STAGED"])
+    with patch("google.cloud.storage.Client", return_value=client):
+        with pytest.raises(NeverPromoted, match="PROMOTION_STAGED"):
+            mod._load_model_and_version("SPY", "15m")
