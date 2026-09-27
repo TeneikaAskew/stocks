@@ -13,7 +13,7 @@ name: Update vendored Superpowers skills
 # force-pushed. While a PR for that transition is open, or was closed without
 # merging, the run exits clean: closing an update PR skips that transition
 # until the next release. A merged PR does not block a later repeat of the
-# same transition (after a downgrade), which gets a -run<N> branch. A branch
+# same transition (after a downgrade), which gets a -r<N> branch. A branch
 # left without a PR by a failed run gets its PR on the next run.
 #
 # Secrets:
@@ -82,25 +82,30 @@ jobs:
           FROM: ${{ steps.refresh.outputs.from }}
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::error::PR_WORKFLOW_TOKEN secret is not set"; exit 1; }
-          # One branch per transition, so a downgrade and a later re-upgrade
-          # are distinct proposals rather than repeats of an old version.
-          BRANCH="bot/superpowers-${FROM}-to-${VERSION}"
           pulls() {
             gh api "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${GITHUB_REPOSITORY_OWNER}:$1" --jq "$2"
           }
-          # An open PR, or one closed without merging (a rejection), means this
-          # transition is already proposed: skip it until the next release.
-          # Checked before the branch, so a rejected PR whose branch was
-          # deleted still skips. A merged one does not block: the transition
-          # is being repeated after a later downgrade, so use a fresh branch.
-          PR_URL=$(pulls "$BRANCH" '[.[] | select(.merged_at == null)][0].html_url // empty')
-          if [ -n "$PR_URL" ]; then
-            echo "::notice::$FROM -> $VERSION was already proposed in $PR_URL"
-            exit 0
-          fi
-          if [ -n "$(pulls "$BRANCH" '.[0].html_url // empty')" ]; then
-            BRANCH="${BRANCH}-run${GITHUB_RUN_NUMBER}"
-          fi
+          # One branch per transition, so a downgrade and a later re-upgrade
+          # are distinct proposals rather than repeats of an old version. A
+          # transition repeated after its PR merged takes the next -r<N>
+          # suffix; every earlier candidate is checked, so an open or rejected
+          # PR on any of them is found. An open PR, or one closed without
+          # merging (a rejection), means this transition is already proposed:
+          # skip it until the next release. PRs are checked before branches,
+          # so a rejected PR whose branch was deleted still skips.
+          STEM="bot/superpowers-${FROM}-to-${VERSION}"
+          BRANCH=$STEM
+          N=1
+          while :; do
+            PR_URL=$(pulls "$BRANCH" '[.[] | select(.merged_at == null)][0].html_url // empty')
+            if [ -n "$PR_URL" ]; then
+              echo "::notice::$FROM -> $VERSION was already proposed in $PR_URL"
+              exit 0
+            fi
+            [ -n "$(pulls "$BRANCH" '.[0].html_url // empty')" ] || break
+            N=$((N + 1))
+            BRANCH="${STEM}-r${N}"
+          done
           if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
             # An earlier run pushed the branch and then failed to open the PR.
             echo "::warning::$BRANCH exists without a PR; opening it now"

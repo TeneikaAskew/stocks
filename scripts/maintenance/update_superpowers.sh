@@ -150,9 +150,18 @@ else
       in_range+="$tag "
     fi
   done
+  # A release with no "## <tag>" section is named in the output rather than
+  # dropped, so the PR says its notes are missing instead of showing fewer.
   awk -v set="$in_range" '
-    /^## / { split($0, h, " "); on = index(set, " " h[2] " ") > 0 }
+    /^## / { split($0, h, " "); on = index(set, " " h[2] " ") > 0; if (on) seen[h[2]] = 1 }
     on { print }
+    END {
+      n = split(set, want, " ")
+      for (i = 1; i <= n; i++) if (!(want[i] in seen)) {
+        printf "\n## %s\n\nNo \"## %s\" section in upstream RELEASE-NOTES.md.\n", want[i], want[i]
+        printf "update-superpowers: WARNING: no release notes section for %s\n", want[i] > "/dev/stderr"
+      }
+    }
   ' "$src/RELEASE-NOTES.md"
 fi
 
