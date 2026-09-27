@@ -92,9 +92,14 @@ atomically in GCS; reusing the same final-test version for the same cell is
 rejected rather than silently re-reading the holdout, and the claim is
 refused while the window is still open on the market date, so a partial
 year can never consume the one-time version. The claim is taken after an
-unlabelled coverage preflight (`MAX(bar_date)` of the source table) and
-before the labelled load, so a rerun after the marker exists, or the loser
-of a concurrent claim, never constructs a final-test label.
+unlabelled preflight (per-session bar counts of the source table: the last
+session must be present AND hold at least the median bar count of the
+sessions before it, so a still-ingesting session is refused) and before the
+labelled load, so a rerun after the marker exists, or the loser of a
+concurrent claim, never constructs a final-test label. The claim resumes
+for the run id that holds it: a staging failure after the claim is
+recorded as `production_model_staging_failed` and recovered by rerunning
+with `MAG_RUN_ID=<that run id>`, never under a new version.
 
 The final-test folds are fixed at `[window.start]`; custom `--cutoffs` are
 refused there, and the one-time version is the `FINAL_TEST_VERSION` constant,

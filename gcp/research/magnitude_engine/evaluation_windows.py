@@ -149,6 +149,31 @@ def assert_window_covered(window: EvaluationWindow, session_labels) -> None:
             f"table is incomplete, refusing to consume the final-test version")
 
 
+def assert_final_session_complete(window: EvaluationWindow, last_count: int,
+                                  prior_counts) -> None:
+    """Refuse a last session that holds fewer bars than the sessions before it.
+
+    assert_window_covered proves the last session's DATE is present; this
+    proves the session is whole. A partially ingested final session still
+    answers MAX(bar_date) with that date, so a handful of bars could consume
+    the one-time version and stage against a truncated holdout (Codex P1 on
+    #1193). The bar is the median count of the preceding sessions, an
+    unlabelled signal that needs no per-timeframe session model; a genuine
+    half-day at the window's end would be refused, which fails closed.
+    """
+    prior = [int(c) for c in prior_counts]
+    if not prior:
+        raise ValueError(f"no sessions before the last {window.name} session to "
+                         f"judge its completeness against")
+    expected = int(pd.Series(prior).median())
+    if last_count < expected:
+        raise ValueError(
+            f"{window.name} last session holds {last_count} bars but the "
+            f"median of the preceding {len(prior)} sessions is {expected}; the "
+            f"session is still being ingested, refusing to consume the "
+            f"final-test version")
+
+
 def utc_instants(timestamps) -> pd.DatetimeIndex:
     """Aware UTC index for the harness's bar timestamps.
 

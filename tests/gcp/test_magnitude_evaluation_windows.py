@@ -167,6 +167,13 @@ def test_the_dataset_load_stops_at_the_window_end(monkeypatch):
         assert seen["until"] == end, window
 
 
+def _sessions(last: date, last_count: int = 78, n: int = 21):
+    """Newest-first (bar_date, bar count) rows, as the unlabelled preflight
+    returns them: `last` with `last_count` bars, then n-1 full sessions."""
+    return [(last, last_count)] + [
+        (last - pd.Timedelta(days=i).to_pytimedelta(), 78) for i in range(1, n)]
+
+
 # ── P1: the final test cannot be claimed on a partial window ──────────────
 
 def test_the_final_test_is_refused_until_its_window_has_closed(monkeypatch):
@@ -182,14 +189,14 @@ def test_the_final_test_is_refused_until_its_window_has_closed(monkeypatch):
     assert claimed == [], "the one-time version must not be consumed"
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
     # (round 5) the coverage preflight is unlabelled and precedes the claim
-    monkeypatch.setattr(mwf, "_last_loaded_session",
-                        lambda *a, **k: date(2026, 12, 24))
+    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
+                        lambda *a, **k: _sessions(date(2026, 12, 24)))
     with pytest.raises(ValueError, match="2026-12-31"):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test")
     assert claimed == [], "a stale source table must not consume the version"
-    monkeypatch.setattr(mwf, "_last_loaded_session",
-                        lambda *a, **k: date(2026, 12, 31))
+    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
+                        lambda *a, **k: _sessions(date(2026, 12, 31)))
     with pytest.raises(_Stop):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test")
@@ -197,7 +204,7 @@ def test_the_final_test_is_refused_until_its_window_has_closed(monkeypatch):
     # the order is the guarantee: refuse while open, preflight, claim, load
     import inspect
     src = inspect.getsource(mwf.walk_forward)
-    assert (src.index("_require_closed_window(") < src.index("_last_loaded_session(")
+    assert (src.index("_require_closed_window(") < src.index("_recent_session_bar_counts(")
             < src.index("_claim_final_test(") < src.index("load_magnitude_dataset("))
 
 
@@ -354,7 +361,7 @@ def test_final_test_folds_cannot_be_overridden(monkeypatch):
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
     monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: None)
-    monkeypatch.setattr(mwf, "_last_loaded_session", lambda *a, **k: date(2026, 12, 31))
+    monkeypatch.setattr(mwf, "_recent_session_bar_counts", lambda *a, **k: _sessions(date(2026, 12, 31)))
     with pytest.raises(ValueError, match="holdout"):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test", cutoffs=["2026-06-01"])
@@ -629,8 +636,8 @@ def test_the_final_test_is_claimed_before_any_holdout_label_exists(monkeypatch):
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
     order: list[str] = []
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
-    monkeypatch.setattr(mwf, "_last_loaded_session",
-                        lambda *a, **k: order.append("preflight") or date(2026, 12, 31))
+    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
+                        lambda *a, **k: order.append("preflight") or _sessions(date(2026, 12, 31)))
 
     def refused(*a, **k):
         order.append("claim")
@@ -644,7 +651,7 @@ def test_the_final_test_is_claimed_before_any_holdout_label_exists(monkeypatch):
     assert order == ["preflight", "claim"], "the refused rerun read no holdout row"
     # and the preflight itself carries no label: one MAX(bar_date) below `until`
     src = (REPO / "gcp/research/magnitude_engine/mag_walk_forward.py").read_text()
-    assert "MAX(bar_date)" in src and "bar_date < :until" in src
+    assert "COUNT(*)" in src and "bar_date < :until" in src and "GROUP BY bar_date" in src
 
 
 def test_a_phase0_final_test_stages_its_candidate_without_the_flag():
@@ -668,7 +675,7 @@ def test_a_non_serving_contract_cannot_consume_the_final_test(monkeypatch):
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
     claimed: list = []
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
-    monkeypatch.setattr(mwf, "_last_loaded_session", lambda *a, **k: date(2026, 12, 31))
+    monkeypatch.setattr(mwf, "_recent_session_bar_counts", lambda *a, **k: _sessions(date(2026, 12, 31)))
     monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
     with pytest.raises(ValueError, match="serving contract"):
@@ -687,3 +694,56 @@ def test_a_non_serving_contract_cannot_consume_the_final_test(monkeypatch):
     assert len(claimed) == 1, "the serving contract still claims and loads"
     src = inspect.getsource(mwf.walk_forward)
     assert src.index("serving_contract_reason(") < src.index("_claim_final_test(")
+
+
+# ═══════════════ Codex review of #1193, seventh round (bccbc84) ═══════════════
+
+def test_a_partially_ingested_final_session_cannot_be_claimed(monkeypatch):
+    """MAX(bar_date) answers the last session's date from a handful of bars,
+    so a still-ingesting session consumed the version and staged against a
+    truncated holdout (Codex P1). The preflight now compares the last
+    session's bar count with the median of the sessions before it."""
+    from gcp.research.magnitude_engine.evaluation_windows import (
+        assert_final_session_complete)
+    final = WINDOWS["final_test"]
+    with pytest.raises(ValueError, match="still being ingested"):
+        assert_final_session_complete(final, 9, [78] * 20)
+    with pytest.raises(ValueError, match="no sessions before"):
+        assert_final_session_complete(final, 78, [])
+    assert_final_session_complete(final, 78, [78, 77, 79, 78])
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    claimed: list = []
+    monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
+    monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: claimed.append(a))
+    monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
+    monkeypatch.setattr(mwf, "_recent_session_bar_counts",
+                        lambda *a, **k: _sessions(date(2026, 12, 31), last_count=9))
+    with pytest.raises(ValueError, match="still being ingested"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test")
+    assert claimed == []
+    src = inspect.getsource(mwf.walk_forward)
+    assert (src.index("assert_window_covered(") < src.index("assert_final_session_complete(")
+            < src.index("_claim_final_test("))
+
+
+def test_the_final_claim_resumes_for_the_run_that_holds_it(monkeypatch):
+    """A staging failure after the claim left no candidate and every rerun
+    refused (Codex P1). The same run id may resume; any other is refused
+    with the recovery instruction."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    class Taken(Exception):
+        code = 412
+
+    class _Blob:
+        def upload_from_string(self, *a, **k): raise Taken()
+        def download_as_text(self): return json.dumps({"run_id": "r1"})
+    client = MagicMock()
+    client.bucket.return_value.blob.return_value = _Blob()
+    monkeypatch.setattr(mwf.gcs, "Client", lambda: client)
+    mwf._claim_final_test("v1", "phase0", "IWM", "15m", "r1")  # resumes
+    with pytest.raises(RuntimeError, match="MAG_RUN_ID=r1"):
+        mwf._claim_final_test("v1", "phase0", "IWM", "15m", "r2")
+    src = inspect.getsource(mwf.walk_forward)
+    assert src.count('summary["production_model_staging_failed"] = ') == 2

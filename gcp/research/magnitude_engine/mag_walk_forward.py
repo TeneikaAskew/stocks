@@ -54,7 +54,7 @@ from gcp.research.magnitude_engine.mag_config import (
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.evaluation_windows import (
     CRITERIA_VERSION, FINAL_TEST_VERSION, PREDICTION_HORIZON_SESSIONS,
-    WINDOWS, assert_disjoint, assert_window_complete, assert_window_covered,
+    WINDOWS, assert_disjoint, assert_final_session_complete, assert_window_complete, assert_window_covered,
     eastern_sessions, purged_session_masks, utc_instants, window_cutoffs,
 )
 from gcp.research.magnitude_engine.mag_pred_train import (
@@ -299,21 +299,30 @@ def production_persist_refusal(window) -> str | None:
             f"{window.end.isoformat()}")
 
 
-def _last_loaded_session(engine, ticker: str, tf: str, until: str):
-    """The newest Eastern session `bar_date` the source table holds before
-    `until`, read WITHOUT labels, features or OHLC.
+FINAL_PREFLIGHT_SESSIONS = 21
 
-    The final-test coverage check runs on this, so the one-time claim can be
-    taken before any final-test label is constructed or logged: a rerun after
-    the marker exists, or the loser of a concurrent claim, never sees the
-    holdout (Codex P1 on #1193). Returns None when no row exists.
+
+def _recent_session_bar_counts(engine, ticker: str, tf: str, until: str,
+                               n_sessions: int = FINAL_PREFLIGHT_SESSIONS):
+    """The newest `n_sessions` Eastern sessions before `until` with their bar
+    counts, newest first, read WITHOUT labels, features or OHLC.
+
+    The final-test coverage and completeness checks run on this, so the
+    one-time claim can be taken before any final-test label is constructed
+    or logged: a rerun after the marker exists, or the loser of a concurrent
+    claim, never sees the holdout (Codex P1 on #1193). The counts let the
+    last session be judged whole, not merely present (Codex P1 on #1193).
+    Returns [] when no row exists.
     """
     from sqlalchemy import text
     from gcp.research.strat_engine.strat_config import strat_features_table
-    sql = text(f"SELECT MAX(bar_date) FROM {strat_features_table(tf)} "
-               f"WHERE ticker = :t AND bar_date < :until")
+    sql = text(f"SELECT bar_date, COUNT(*) AS n FROM {strat_features_table(tf)} "
+               f"WHERE ticker = :t AND bar_date < :until "
+               f"GROUP BY bar_date ORDER BY bar_date DESC LIMIT :n")
     with engine.connect() as conn:
-        return conn.execute(sql, {"t": ticker, "until": until}).scalar()
+        rows = conn.execute(sql, {"t": ticker, "until": until,
+                                  "n": n_sessions}).fetchall()
+    return [(r[0], int(r[1])) for r in rows]
 
 
 def _require_closed_window(window) -> None:
@@ -337,17 +346,30 @@ def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
     payload = json.dumps({"version": version, "phase": phase, "ticker": ticker,
                           "tf": tf, "run_id": run_id,
                           "consumed_at": utc_now().isoformat()})
+    blob = gcs.Client().bucket(bucket_name).blob(path)
     try:
-        gcs.Client().bucket(bucket_name).blob(path).upload_from_string(
+        blob.upload_from_string(
             payload, content_type="application/json", if_generation_match=0)
     except Exception as exc:
         # A generation-0 conditional write fails when the marker exists. Do
         # not weaken this to exists()+write: concurrent final runs could race.
         if getattr(exc, "code", None) in (409, 412) or type(exc).__name__ in {
                 "Conflict", "PreconditionFailed"}:
+            # The SAME run may resume: a staging failure after the claim
+            # (model fit, GCS upload) must be recoverable without exposing
+            # the holdout under a new version (Codex P1 on #1193). The
+            # operator reruns with MAG_RUN_ID=<the run id in the marker>;
+            # every artifact is keyed by that run id, so the rerun overwrites
+            # its own outputs and nothing else.
+            holder = json.loads(blob.download_as_text()).get("run_id")
+            if holder == run_id:
+                log.warning("final-test version %s already claimed by THIS run "
+                            "(%s); resuming it", version, run_id)
+                return
             raise RuntimeError(
                 f"final-test version {version!r} has already been consumed "
-                f"for {phase}/{ticker}/{tf}") from exc
+                f"for {phase}/{ticker}/{tf} by run {holder!r}; to recover a "
+                f"failed staging, rerun with MAG_RUN_ID={holder}") from exc
         raise
 
 
@@ -1005,9 +1027,11 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # reaches the window's last session, so a load failure after the
         # claim is an infrastructure fault, not a data gap; and a rerun after
         # the marker exists is refused before it reads a single holdout row.
-        last_session = _last_loaded_session(engine, ticker, tf,
-                                            window.end.isoformat())
-        assert_window_covered(window, [] if last_session is None else [last_session])
+        sessions = _recent_session_bar_counts(engine, ticker, tf,
+                                              window.end.isoformat())
+        assert_window_covered(window, [d for d, _ in sessions[:1]])
+        assert_final_session_complete(window, sessions[0][1],
+                                      [c for _, c in sessions[1:]])
         _claim_final_test(FINAL_TEST_VERSION, phase, ticker, tf, execution_id)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
@@ -1285,9 +1309,23 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                 summary["production_model_staged"] = uri
             elif uri:
                 summary["production_model_uri"] = uri
+            elif window.final:
+                # The version is consumed; without the artifact gates 5-7
+                # have nothing to promote. Say so in the summary with the
+                # recovery path (the claim resumes for this run id).
+                summary["production_model_staging_failed"] = (
+                    f"no candidate staged (see PROMOTION_BLOCKED or the log); "
+                    f"rerun with MAG_RUN_ID={run_id} to retry staging under "
+                    f"the same final-test claim")
+                log.error("final-test staging produced no candidate for %s:%s; %s",
+                          ticker, tf, summary["production_model_staging_failed"])
         except Exception as e:
             log.error("Production-model persist FAILED (%s): %s",
                       type(e).__name__, e)
+            if window.final:
+                summary["production_model_staging_failed"] = (
+                    f"{type(e).__name__}: {e}; rerun with MAG_RUN_ID={run_id} "
+                    f"to retry staging under the same final-test claim")
 
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf,
