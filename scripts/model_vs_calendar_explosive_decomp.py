@@ -64,6 +64,7 @@ from gcp.research.magnitude_engine.mag_config import (
     DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
+from gcp.research.magnitude_engine.evaluation_windows import WINDOWS
 from scripts._magnitude_analysis_helpers import (
     add_research_arg, apply_research_contract, load_predictions,
     calendar_keys)
@@ -93,7 +94,10 @@ def main():
     print("loading magnitude dataset for training-rate computation...", file=sys.stderr)
     # Same contract the predictions were produced under, or the historical
     # EXPLOSIVE rates below describe a different target than the model saw.
+    # Read only through the selected window's end: a validation analysis
+    # must not construct final-test labels (Codex P1 on #1193).
     df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0",
+                                until=WINDOWS[args.evaluation_window].end.isoformat(),
                                 label_mode=_label_mode)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     print(f"loaded {len(df)} dataset rows", file=sys.stderr)

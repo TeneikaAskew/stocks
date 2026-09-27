@@ -68,16 +68,44 @@ def latest_result(phase: str, ticker: str, tf: str, bucket: str,
     # works for both).
     latest = sorted(files)[-1]
     result = _cat(latest)
-    # A summary names the window it was produced under (split_name; absent
-    # on summaries written before windows existed, which are development).
-    # One found under another window's root is misfiled evidence, and
-    # reporting it would blend windows into one verdict (Codex P2 on #1193).
-    found = result.get("split_name") or "development"
+    # A summary names the window it was produced under (split_name). One
+    # found under another window's root is misfiled evidence, and reporting
+    # it would blend windows into one verdict (Codex P2 on #1193). A summary
+    # written before windows existed carries no split_name and is NOT
+    # development evidence by default: those runs used all eight cutoffs,
+    # 2024-2026 included. It counts as development only if every cutoff it
+    # ran falls inside the development window (Codex P2 on #1193).
+    found = result.get("split_name")
+    if found is None:
+        found = _legacy_split_name(latest, result)
     if found != evaluation_window:
         raise RuntimeError(
             f"{latest} records split_name={found!r} but was read for the "
             f"{evaluation_window!r} window; refusing to report it")
     return result
+
+
+def _legacy_split_name(uri: str, result: dict) -> str:
+    """The window a pre-window summary's own fold schedule proves it ran.
+
+    Only "development" can be proven: every cutoff inside that window. A
+    schedule reaching into 2024-2026, or a summary with no schedule, is
+    refused rather than reported under any window.
+    """
+    from gcp.research.magnitude_engine.evaluation_windows import window_cutoffs
+    cutoffs = result.get("cutoffs")
+    if not cutoffs:
+        raise RuntimeError(
+            f"{uri} records neither split_name nor cutoffs; refusing to "
+            f"assign it to a window")
+    try:
+        window_cutoffs(WINDOWS["development"], [str(c) for c in cutoffs])
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{uri} predates evaluation windows and its cutoffs {cutoffs} "
+            f"reach past the development window; it is not development "
+            f"evidence and is not reported") from exc
+    return "development"
 
 
 def per_phase_verdict(cells: dict[tuple[str, str], dict]) -> dict:

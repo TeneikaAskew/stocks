@@ -65,6 +65,7 @@ from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_TO_IDX, DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
+from gcp.research.magnitude_engine.evaluation_windows import WINDOWS
 from lib.eastern_time import utc_now
 from scripts._magnitude_analysis_helpers import (
     add_research_arg, apply_research_contract, load_predictions,
@@ -169,7 +170,10 @@ def main():
 
     # 2. Dataset OHLC (entry = next_open; path = next_high/low/close; atr_20).
     engine = get_engine()
+    # Read only through the selected window's end: a validation analysis
+    # must not construct final-test labels (Codex P1 on #1193).
     df = load_magnitude_dataset(engine, args.ticker, args.tf, phase=args.phase,
+                                until=WINDOWS[args.evaluation_window].end.isoformat(),
                                 label_mode=args.label_mode)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     cols = ["ts", "next_open", "next_high", "next_low", "next_close", "atr_20"]

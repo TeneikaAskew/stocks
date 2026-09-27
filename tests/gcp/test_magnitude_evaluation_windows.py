@@ -62,6 +62,7 @@ def test_gate_threshold_scales_from_six_of_eight_to_window_fold_count():
 
 
 # ═══════════════ Codex review of #1193 (bd944c5) ═══════════════
+import inspect
 import json
 import re
 import subprocess
@@ -180,15 +181,24 @@ def test_the_final_test_is_refused_until_its_window_has_closed(monkeypatch):
                          evaluation_window="final_test")
     assert claimed == [], "the one-time version must not be consumed"
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
+    # (round 5) the coverage preflight is unlabelled and precedes the claim
+    monkeypatch.setattr(mwf, "_last_loaded_session",
+                        lambda *a, **k: date(2026, 12, 24))
+    with pytest.raises(ValueError, match="2026-12-31"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test")
+    assert claimed == [], "a stale source table must not consume the version"
+    monkeypatch.setattr(mwf, "_last_loaded_session",
+                        lambda *a, **k: date(2026, 12, 31))
     with pytest.raises(_Stop):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test")
-    assert claimed == [], "a failed load must not consume the version either"
-    # the order is the guarantee: refuse while open, load, then claim
+    assert len(claimed) == 1, "covered and closed: the claim precedes the load"
+    # the order is the guarantee: refuse while open, preflight, claim, load
     import inspect
     src = inspect.getsource(mwf.walk_forward)
-    assert (src.index("_require_closed_window(") < src.index("load_magnitude_dataset(")
-            < src.index("_claim_final_test("))
+    assert (src.index("_require_closed_window(") < src.index("_last_loaded_session(")
+            < src.index("_claim_final_test(") < src.index("load_magnitude_dataset("))
 
 
 # ── P1/P2: provenance without git, with a real digest ─────────────────────
@@ -326,8 +336,10 @@ def test_the_report_refuses_a_summary_from_another_window(monkeypatch):
     got = am.latest_result("phase0", "SPY", "15m", "b", evaluation_window="validation")
     assert got["split_name"] == "validation"
     assert "/_windows/validation/" in listed[-1]
-    # summaries written before windows existed carry no split_name: development
-    monkeypatch.setattr(am, "_cat", lambda uri: {"gates": {}})
+    # summaries written before windows existed carry no split_name: they are
+    # development only when their own schedule proves it (round 5)
+    monkeypatch.setattr(am, "_cat", lambda uri: {
+        "gates": {}, "cutoffs": ["2019-01-01", "2020-01-01", "2021-01-01"]})
     assert am.latest_result("phase0", "SPY", "15m", "b") is not None
 
 
@@ -342,6 +354,7 @@ def test_final_test_folds_cannot_be_overridden(monkeypatch):
     monkeypatch.setattr(mwf, "load_magnitude_dataset", _stop)
     monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
     monkeypatch.setattr(mwf, "_claim_final_test", lambda *a, **k: None)
+    monkeypatch.setattr(mwf, "_last_loaded_session", lambda *a, **k: date(2026, 12, 31))
     with pytest.raises(ValueError, match="holdout"):
         mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
                          evaluation_window="final_test", cutoffs=["2026-06-01"])
@@ -555,3 +568,85 @@ def test_inference_reads_a_staged_only_prefix_as_never_promoted():
     with patch("google.cloud.storage.Client", return_value=client):
         with pytest.raises(NeverPromoted, match="PROMOTION_STAGED"):
             mod._load_model_and_version("SPY", "15m")
+
+
+# ═══════════════ Codex review of #1193, fifth round (b77c303) ═══════════════
+
+def test_gate_7_requirements_scale_with_the_scheduled_folds():
+    """Fixed 6-passing / 4-covered made development (5 folds) unpassable and
+    validation / final_test INSUFFICIENT_DATA, so no staged candidate could
+    ever complete promotion (Codex P1)."""
+    from gcp.research.magnitude_engine.mag_config import gate7_requirements
+    assert [gate7_requirements(n) for n in (8, 5, 2, 1)] == [
+        (6, 4), (4, 3), (2, 1), (1, 1)]
+    with pytest.raises(ValueError):
+        gate7_requirements(0)
+    src = (REPO / "scripts/implied_vs_realized_check.py").read_text()
+    assert "gate7_requirements(len(cutoffs))" in src
+    assert 'summary["cutoffs"]' in src and "load_run_summary(" in src
+    assert "list(DEFAULT_CUTOFFS)" not in src
+    assert "test_end = window.end.isoformat()" in src
+
+
+def test_every_post_hoc_consumer_reads_only_through_its_window():
+    """A validation-window analysis reloaded the whole table and so built
+    final-test labels without the claim (Codex P1)."""
+    for name in ("implied_vs_realized_check", "model_vs_calendar_explosive_decomp",
+                 "magnitude_movement_sim"):
+        src = (REPO / f"scripts/{name}.py").read_text()
+        assert "until=window.end.isoformat()" in src or \
+            "until=WINDOWS[args.evaluation_window].end.isoformat()" in src, name
+
+
+def test_legacy_summaries_are_development_only_when_their_cutoffs_prove_it(monkeypatch):
+    """A pre-window summary ran all eight cutoffs, 2024-2026 included, so it
+    is not development evidence by default (Codex P2)."""
+    import scripts.assemble_magnitude_results as am
+    monkeypatch.setattr(am, "_ls", lambda prefix: [prefix + "walk_forward_r0.json"])
+    eight = ["2019-01-01", "2020-01-01", "2021-01-01", "2022-01-01",
+             "2023-01-01", "2024-01-01", "2025-01-01", "2026-01-01"]
+    monkeypatch.setattr(am, "_cat", lambda uri: {"gates": {}, "cutoffs": eight})
+    with pytest.raises(RuntimeError, match="reach past the development window"):
+        am.latest_result("phase0", "SPY", "15m", "b")
+    monkeypatch.setattr(am, "_cat", lambda uri: {"gates": {}})
+    with pytest.raises(RuntimeError, match="neither split_name nor cutoffs"):
+        am.latest_result("phase0", "SPY", "15m", "b")
+    monkeypatch.setattr(am, "_cat", lambda uri: {"gates": {}, "cutoffs": eight[:5]})
+    assert am.latest_result("phase0", "SPY", "15m", "b")["cutoffs"] == eight[:5]
+
+
+def test_the_final_test_is_claimed_before_any_holdout_label_exists(monkeypatch):
+    """A rerun after the marker existed still loaded, labelled, logged and
+    fingerprinted the holdout before the conditional write refused it; so did
+    the loser of a concurrent claim (Codex P1). The claim now follows an
+    UNLABELLED coverage preflight and precedes the labelled load."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    order: list[str] = []
+    monkeypatch.setattr(mwf, "market_today", lambda: date(2027, 1, 1))
+    monkeypatch.setattr(mwf, "_last_loaded_session",
+                        lambda *a, **k: order.append("preflight") or date(2026, 12, 31))
+
+    def refused(*a, **k):
+        order.append("claim")
+        raise RuntimeError("already been consumed")
+    monkeypatch.setattr(mwf, "_claim_final_test", refused)
+    monkeypatch.setattr(mwf, "load_magnitude_dataset",
+                        lambda *a, **k: order.append("load") or _stop())
+    with pytest.raises(RuntimeError, match="consumed"):
+        mwf.walk_forward(MagicMock(), "phase0", "IWM", "15m",
+                         evaluation_window="final_test")
+    assert order == ["preflight", "claim"], "the refused rerun read no holdout row"
+    # and the preflight itself carries no label: one MAX(bar_date) below `until`
+    src = (REPO / "gcp/research/magnitude_engine/mag_walk_forward.py").read_text()
+    assert "MAX(bar_date)" in src and "bar_date < :until" in src
+
+
+def test_a_phase0_final_test_stages_its_candidate_without_the_flag():
+    """The run consumes the one-time version; without the artifact there is
+    nothing for gates 5-7 to promote and no second run to produce it (Codex
+    P1), so a phase-0 final run stages unconditionally."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    src = inspect.getsource(mwf.walk_forward)
+    assert 'stage_final = window.final and phase == "phase0"' in src
+    assert "or stage_final:" in src
+    assert src.index("stage_final = ") < src.index("_persist_production_model_artifact(")

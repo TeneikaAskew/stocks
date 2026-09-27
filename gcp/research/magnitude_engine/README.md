@@ -91,7 +91,10 @@ folds keep an entire trading session together and purge one observed session
 atomically in GCS; reusing the same final-test version for the same cell is
 rejected rather than silently re-reading the holdout, and the claim is
 refused while the window is still open on the market date, so a partial
-year can never consume the one-time version.
+year can never consume the one-time version. The claim is taken after an
+unlabelled coverage preflight (`MAX(bar_date)` of the source table) and
+before the labelled load, so a rerun after the marker exists, or the loser
+of a concurrent claim, never constructs a final-test label.
 
 The final-test folds are fixed at `[window.start]`; custom `--cutoffs` are
 refused there, and the one-time version is the `FINAL_TEST_VERSION` constant,
@@ -103,8 +106,13 @@ gates 1-4 STAGES its candidate (artifacts plus a `PROMOTION_STAGED` marker
 under the run prefix, recorded as `production_model_staged`) and leaves
 `LATEST` untouched, because gates 5-7 (bootstrap, mechanism,
 implied-vs-realized) are scored afterwards on the run's predictions.
-Promotion is the operator writing the run id to `LATEST` once they pass;
-`mag_inference` reads a staged-only prefix as never promoted.
+A phase-0 final run stages whether or not the flag was passed, since it
+has consumed the one-time version. Promotion is the operator writing the
+run id to `LATEST` once gates 5-7 pass; `mag_inference` reads a staged-only
+prefix as never promoted. Gate 7's requirements scale like gates 1-4
+(`mag_config.gate7_requirements`: 8 -> 6 passing of 4 covered, 5 -> 4/3,
+2 -> 2/1, 1 -> 1/1) over the folds the run's summary scheduled, and every
+post-hoc script reads the dataset only through its window's end.
 `scripts/naive_calendar_lookup_baseline.py` refuses the final window
 outright and builds its masks with the harness's session purge.
 

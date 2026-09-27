@@ -299,6 +299,23 @@ def production_persist_refusal(window) -> str | None:
             f"{window.end.isoformat()}")
 
 
+def _last_loaded_session(engine, ticker: str, tf: str, until: str):
+    """The newest Eastern session `bar_date` the source table holds before
+    `until`, read WITHOUT labels, features or OHLC.
+
+    The final-test coverage check runs on this, so the one-time claim can be
+    taken before any final-test label is constructed or logged: a rerun after
+    the marker exists, or the loser of a concurrent claim, never sees the
+    holdout (Codex P1 on #1193). Returns None when no row exists.
+    """
+    from sqlalchemy import text
+    from gcp.research.strat_engine.strat_config import strat_features_table
+    sql = text(f"SELECT MAX(bar_date) FROM {strat_features_table(tf)} "
+               f"WHERE ticker = :t AND bar_date < :until")
+    with engine.connect() as conn:
+        return conn.execute(sql, {"t": ticker, "until": until}).scalar()
+
+
 def _require_closed_window(window) -> None:
     """The final test may be claimed only once every session in its window
     is over, judged on the market date (see assert_window_complete)."""
@@ -970,6 +987,17 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                     or f"run_{int(time.time())}")
     if window.final:
         _require_closed_window(window)
+        # Unlabelled coverage preflight, then the one-time claim, and only
+        # then the labelled load below: the holdout's labels are never
+        # constructed, logged or fingerprinted by a run that does not hold
+        # the claim (Codex P1 on #1193). The preflight proves the table
+        # reaches the window's last session, so a load failure after the
+        # claim is an infrastructure fault, not a data gap; and a rerun after
+        # the marker exists is refused before it reads a single holdout row.
+        last_session = _last_loaded_session(engine, ticker, tf,
+                                            window.end.isoformat())
+        assert_window_covered(window, [] if last_session is None else [last_session])
+        _claim_final_test(FINAL_TEST_VERSION, phase, ticker, tf, execution_id)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
              "label_mode=%s  thresholds=%s",
@@ -1035,12 +1063,10 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     })
     log.info("featurize-once: %d × %d in %.1fs", X_full.shape[0], X_full.shape[1], time.time() - t0)
     if window.final:
-        # Claimed only now, with the data and its provenance in hand and the
-        # data proven to reach the window's last session: a load or feature
-        # failure above, or a stale source table, must not consume the
-        # one-time version on a run that evaluated nothing or a partial year.
+        # The claim was taken above on an unlabelled preflight; this confirms
+        # the labelled rows the run will actually evaluate reach the same
+        # last session (rows dropped for a missing label or ATR could not).
         assert_window_covered(window, bar_dates_arr)
-        _claim_final_test(FINAL_TEST_VERSION, phase, ticker, tf, execution_id)
 
     cores = max(1, os.cpu_count() or 1)
     lgbm_n_jobs = max(1, cores // cv) if calibration != "none" else -1
@@ -1225,7 +1251,17 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         log.warning("production model NOT persisted for %s:%s: %s",
                     ticker, tf, persist_refusal)
         summary["production_model_refused"] = persist_refusal
-    if persist_production_model and phase == "phase0" and not persist_refusal:
+    # A phase-0 final-test run stages its candidate whether or not the flag
+    # was passed: the run has consumed the one-time version, and without the
+    # artifact there is nothing for gates 5-7 to promote and no second run to
+    # produce it (Codex P1 on #1193).
+    stage_final = window.final and phase == "phase0"
+    if stage_final and not persist_production_model:
+        log.info("final-test run: staging the phase0 candidate although "
+                 "--persist-production-model was not passed; the one-time "
+                 "version is consumed by this run")
+    if (persist_production_model and phase == "phase0" and not persist_refusal) \
+            or stage_final:
         try:
             # The final-test candidate is STAGED, never promoted here: gates
             # 5-7 are scored after this run, on its predictions.

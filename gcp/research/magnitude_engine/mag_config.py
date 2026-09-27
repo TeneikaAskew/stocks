@@ -245,8 +245,26 @@ SUCCESS_BAR_MECHANISM_RATIO_MIN = 2.0     # gate 6: predicted-EXPLOSIVE
 # real 5-min straddle round-trip. See docs/MAGNITUDE_ENGINE_RESULTS.md §5e
 # for the derivation and the COMMITTED-BEFORE-RUN epistemic claim.
 SUCCESS_BAR_GATE7_RATIO_MIN = 1.25
-SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS = 6     # of folds with IV coverage
-SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS = 4    # below this → INSUFFICIENT_DATA
+SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS = 6     # of folds with IV coverage, at 8 folds
+SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS = 4    # below this → INSUFFICIENT_DATA, at 8 folds
+# The two counts above are the documented 8-fold bar. A run holds the folds
+# its evaluation window schedules (development 5, validation 2, final_test
+# 1), so gate 7 takes its requirements from gate7_requirements(n_folds), the
+# same fractions of the scheduled folds; the fixed counts made every window
+# but the legacy 8-fold run unpassable or INSUFFICIENT_DATA (Codex P1 on
+# #1193).
+SUCCESS_BAR_GATE7_MIN_PASSING_FRACTION = Fraction(SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS, 8)
+SUCCESS_BAR_GATE7_MIN_COVERAGE_FRACTION = Fraction(SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS, 8)
+
+
+def gate7_requirements(n_folds: int) -> tuple[int, int]:
+    """(folds that must pass gate 7, folds that must have IV coverage) for a
+    run of `n_folds` scheduled folds: 8 -> (6, 4), 5 -> (4, 3), 2 -> (2, 1),
+    1 -> (1, 1)."""
+    if n_folds < 1:
+        raise ValueError(f"n_folds must be at least 1, got {n_folds}")
+    return (math.ceil(SUCCESS_BAR_GATE7_MIN_PASSING_FRACTION * n_folds),
+            math.ceil(SUCCESS_BAR_GATE7_MIN_COVERAGE_FRACTION * n_folds))
 
 # Bucket terminology for the augmented bar:
 #   PASS    — all 6 gates hold
