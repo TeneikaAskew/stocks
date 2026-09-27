@@ -7,6 +7,10 @@ from gcp.research.magnitude_engine.mag_pred_train import (
     ProbabilityCalibrator,
     calibration_metrics,
 )
+from gcp.research.magnitude_engine.mag_walk_forward import (
+    AUTO_CALIBRATION,
+    _fit_and_select_calibrators,
+)
 
 
 def _probabilities(n=160):
@@ -41,3 +45,27 @@ def test_calibration_metrics_report_complete_diagnostics_and_bin_counts():
     assert len(metrics["classwise_ece"]) == 4
     assert sum(item["n"] for item in metrics["reliability_bins"]) == len(y)
     assert sum(item["n"] for item in metrics["adaptive_reliability_bins"]) == len(y)
+
+
+def test_method_selection_uses_disjoint_chronological_subwindow():
+    probabilities, y = _probabilities()
+    chosen, fitted, selection, omitted, window = _fit_and_select_calibrators(
+        probabilities, y, AUTO_CALIBRATION)
+    assert chosen in fitted
+    assert set(selection) == set(fitted)
+    assert window == {"n_fit": 79, "n_selection": 80, "embargoed_rows": 1}
+    assert omitted == {
+        "isotonic": "requires 25 samples per class in calibrator-fit and full "
+                    "calibration windows; got fit=[20, 20, 20, 19], "
+                    "full=[40, 40, 40, 40]"
+    }
+
+
+def test_forced_method_is_honored_and_absent_class_sigmoid_is_ineligible():
+    probabilities, y = _probabilities()
+    chosen, *_ = _fit_and_select_calibrators(probabilities, y, "temperature")
+    assert chosen == "temperature"
+
+    thin_y = np.zeros(len(y), dtype=int)
+    with pytest.raises(ValueError, match="requested calibration 'sigmoid' is ineligible"):
+        _fit_and_select_calibrators(probabilities, thin_y, "sigmoid")
