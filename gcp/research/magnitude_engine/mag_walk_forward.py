@@ -489,14 +489,38 @@ def reclaim_incomplete_final_test(ticker: str, tf: str, holder: str,
     audit = {"version": FINAL_TEST_VERSION, "ticker": ticker, "tf": tf,
              "from_run_id": holder, "to_run_id": new_run_id,
              "reclaimed_at": utc_now().isoformat(), "prior_history": history}
-    # Immutable: a second reclaim of the same holder fails here.
-    bucket.blob(f"{_final_claim_path(FINAL_TEST_VERSION, ticker, tf)}.reclaims/"
-                f"{holder}.json").upload_from_string(
-        json.dumps(audit), content_type="application/json", if_generation_match=0)
+    # Immutable: written once per holder. If it already exists while the
+    # marker still names `holder`, an earlier reclaim died between this
+    # write and the marker CAS below; the retry reconciles against the
+    # existing record (same holder, same prior history) and completes the
+    # transition instead of being stranded (Codex P1 on #1193). A second
+    # reclaim of a holder the marker no longer names is refused above.
+    audit_blob = bucket.blob(f"{_final_claim_path(FINAL_TEST_VERSION, ticker, tf)}"
+                             f".reclaims/{holder}.json")
+    try:
+        audit_blob.upload_from_string(
+            json.dumps(audit), content_type="application/json", if_generation_match=0)
+    except Exception as exc:
+        if not (getattr(exc, "code", None) in (409, 412) or type(exc).__name__ in {
+                "Conflict", "PreconditionFailed"}):
+            raise
+        existing = json.loads(audit_blob.download_as_text())
+        if existing.get("from_run_id") != holder or \
+                existing.get("prior_history") != history:
+            raise RuntimeError(
+                f"reclaim audit for {ticker}/{tf} holder {holder} records a "
+                f"different transition ({existing}); refusing to reconcile") from exc
+        log.warning("reclaim of %s:%s from %s was interrupted after its audit "
+                    "record (to %s); reconciling and completing the transition "
+                    "to %s", ticker, tf, holder, existing.get("to_run_id"), new_run_id)
+        audit = {**existing, "to_run_id": new_run_id,
+                 "reconciled_from": existing.get("to_run_id")}
     marker.update({"run_id": new_run_id, "state": "claimed",
                    "consumed_at": utc_now().isoformat(),
                    "history": history + [{"run_id": holder,
-                                          "reclaimed_at": audit["reclaimed_at"]}]})
+                                          "reclaimed_at": audit["reclaimed_at"],
+                                          **({"reconciled_from": audit["reconciled_from"]}
+                                             if "reconciled_from" in audit else {})}]})
     bucket.blob(_final_claim_path(FINAL_TEST_VERSION, ticker, tf)).upload_from_string(
         json.dumps(marker), content_type="application/json",
         if_generation_match=generation)

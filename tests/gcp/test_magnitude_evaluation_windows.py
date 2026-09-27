@@ -939,6 +939,9 @@ def test_a_claim_whose_holder_died_before_any_output_can_be_reclaimed_once(monke
     store: dict = {}
     gens: dict = {}
 
+    class Conflict(Exception):
+        code = 412
+
     class _Blob:
         def __init__(self, name): self.name = name
         def exists(self): return self.name in store
@@ -946,9 +949,9 @@ def test_a_claim_whose_holder_died_before_any_output_can_be_reclaimed_once(monke
         def download_as_text(self): return store[self.name]
         def upload_from_string(self, data, content_type=None, if_generation_match=None):
             if if_generation_match == 0 and self.name in store:
-                raise RuntimeError("Conflict")
+                raise Conflict("exists")
             if if_generation_match not in (None, 0) and gens.get(self.name) != if_generation_match:
-                raise RuntimeError("PreconditionFailed")
+                raise Conflict("generation moved")
             store[self.name] = data
             gens[self.name] = gens.get(self.name, 0) + 1
 
@@ -987,11 +990,29 @@ def test_a_claim_whose_holder_died_before_any_output_can_be_reclaimed_once(monke
     with pytest.raises(RuntimeError, match="left durable output"):
         mwf.reclaim_incomplete_final_test("IWM", "15m", "r3", "r4")
     del store[pred]
+    # (round 10) a reclaim that died between its audit write and the marker
+    # CAS left the audit in place and the marker on the dead holder; the
+    # retry reconciles against that audit instead of being refused forever
+    store[f"{path}.reclaims/r3.json"] = json.dumps({
+        "from_run_id": "r3", "to_run_id": "r4-died", "reclaimed_at": "t",
+        "prior_history": json.loads(store[path])["history"]})
+    mwf.reclaim_incomplete_final_test("IWM", "15m", "r3", "r4")
+    marker = json.loads(store[path])
+    assert marker["run_id"] == "r4"
+    assert marker["history"][-1] == {"run_id": "r3", "reclaimed_at": "t",
+                                     "reconciled_from": "r4-died"}
+    # but an audit that records a DIFFERENT transition is not reconciled
+    store[f"{path}.reclaims/r4.json"] = json.dumps({
+        "from_run_id": "zz", "to_run_id": "q", "reclaimed_at": "t", "prior_history": []})
+    with pytest.raises(RuntimeError, match="different transition"):
+        mwf.reclaim_incomplete_final_test("IWM", "15m", "r4", "r5")
+    del store[f"{path}.reclaims/r4.json"]
+    mwf.reclaim_incomplete_final_test("IWM", "15m", "r4", "r5")
     # once the summary is durable the claim is 'evaluated' and final
-    mwf._mark_final_test_evaluated("v", "IWM", "15m", "r3", "some/summary.json")
+    mwf._mark_final_test_evaluated("v", "IWM", "15m", "r5", "some/summary.json")
     assert json.loads(store[path])["state"] == "evaluated"
     with pytest.raises(RuntimeError, match="cannot be reclaimed"):
-        mwf.reclaim_incomplete_final_test("IWM", "15m", "r3", "r4")
+        mwf.reclaim_incomplete_final_test("IWM", "15m", "r5", "r6")
     with pytest.raises(RuntimeError, match="not held by 'zz'"):
         mwf._mark_final_test_evaluated("v", "IWM", "15m", "zz", "s")
     # the transition is written after the summary upload, on the final path only
