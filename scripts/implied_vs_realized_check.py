@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from gcp.database import get_engine
 from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
-    DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
+    GCS_BUCKET_DEFAULT,
     SUCCESS_BAR_GATE7_RATIO_MIN as GATE_7_RATIO_THRESHOLD,
     SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS as GATE_7_MIN_PASSING_FOLDS,
     SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS as GATE_7_MIN_FOLDS_WITH_COVERAGE,
@@ -62,7 +62,10 @@ from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 TRADING_MINUTES_PER_YEAR = 252 * 390  # 98,280
 
 from scripts._magnitude_analysis_helpers import (
-    add_research_arg, apply_research_contract, load_predictions)
+    add_research_arg, apply_research_contract, load_predictions,
+    load_run_summary)
+from gcp.research.magnitude_engine.evaluation_windows import WINDOWS
+from gcp.research.magnitude_engine.mag_config import gate7_requirements
 
 
 def load_atm_iv_per_date(engine, ticker: str,
@@ -177,7 +180,8 @@ def main():
 
     # Load model predictions for EXPLOSIVE filtering
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-                                 research=args.research)
+                                 research=args.research,
+        evaluation_window=args.evaluation_window)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     explosive_idx = LABEL_TO_IDX["EXPLOSIVE"]
     pe = preds[preds["pred_bucket_idx"] == explosive_idx].copy()
@@ -191,7 +195,18 @@ def main():
     engine = get_engine()
     print("loading magnitude dataset for spot + realized-move computation...",
           file=sys.stderr)
+    # The run's own schedule and window: gate 7 is scored over the folds the
+    # run SCHEDULED, with requirements scaled to that count, and the dataset
+    # is read only through the window's end so a validation check never
+    # labels final-test rows (Codex P1 x2 on #1193).
+    summary = load_run_summary(args.phase, args.ticker, args.tf, args.bucket,
+                               args.run_id, research=args.research,
+                               evaluation_window=args.evaluation_window)
+    window = WINDOWS[args.evaluation_window]
+    cutoffs = [str(c) for c in summary["cutoffs"]]
+    min_passing, min_coverage = gate7_requirements(len(cutoffs))
     df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0",
+                                until=window.end.isoformat(),
                                 label_mode=args.label_mode)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
@@ -271,12 +286,11 @@ def main():
     print("-" * 100)
 
     fold_results = []
-    cutoffs = list(DEFAULT_CUTOFFS)
     for i, cut in enumerate(cutoffs):
         if i + 1 < len(cutoffs):
             test_end = cutoffs[i + 1]
         else:
-            test_end = str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
+            test_end = window.end.isoformat()
         fold_label = f"{cut}..{test_end}"
         if i + 1 < len(cutoffs):
             fold_data = join[join["fold"] == fold_label]
@@ -315,11 +329,14 @@ def main():
     ok_folds = [f for f in fold_results if f.get("status") == "OK"]
     pass_count = sum(1 for f in ok_folds if f.get("gate7"))
     n_cov = len(ok_folds)
-    print(f"Folds with IV coverage: {n_cov} of {len(cutoffs)}")
+    print(f"Folds with IV coverage: {n_cov} of {len(cutoffs)} scheduled "
+          f"({args.evaluation_window} window; bar {min_passing} passing of "
+          f"{min_coverage}+ covered, from the 8-fold "
+          f"{GATE_7_MIN_PASSING_FOLDS}/{GATE_7_MIN_FOLDS_WITH_COVERAGE})")
     print(f"Folds passing gate 7 (ratio ≥ {GATE_7_RATIO_THRESHOLD}): {pass_count}")
-    if n_cov < GATE_7_MIN_FOLDS_WITH_COVERAGE:
-        verdict = f"INSUFFICIENT_DATA ({n_cov} < {GATE_7_MIN_FOLDS_WITH_COVERAGE} folds with coverage)"
-    elif pass_count >= GATE_7_MIN_PASSING_FOLDS:
+    if n_cov < min_coverage:
+        verdict = f"INSUFFICIENT_DATA ({n_cov} < {min_coverage} folds with coverage)"
+    elif pass_count >= min_passing:
         verdict = "PASS — within-cell signal is finding moves the option market under-prices"
     else:
         verdict = "FAIL — within-cell boost is at-or-below the priced implied move; not tradeable as a non-directional bet"

@@ -187,7 +187,7 @@ default applies (task-timeout **600s**, max-retries **3**).
 | `earnings-reactions-brief` | `deploy_earnings_reactions_brief` | `35 8 * * 1-5` | `600` | `0` | `1Gi` | `1` | — |
 | `earnings-sweep` | `deploy_earnings_sweep` | manual | `1800` | `0` | `4Gi` | `2` | — |
 | `etf-options-retention` | `deploy_options_retention` | `0 2 * * *` | `3600` | `0` | `512Mi` | `1` | `DB_PASS` |
-| `evaluate-ew-strikes` | `deploy_evaluate_ew_strikes` | `0 23 * * 1-5` | `600` | **`1`** | `512Mi` | `1` | — |
+| `evaluate-ew-strikes` | `deploy_evaluate_ew_strikes` | `0 23 * * 1-5` | `3600` | **`1`** | `512Mi` | `1` | — |
 | `fetch-alphavantage-intraday` | `deploy_fetch_alphavantage` | `0 21 1 * *`; `0 21 * * 1-6` | `3600` | **`1`** | `2Gi` | `1` | — |
 | `fetch-av-options-backfill` | `deploy_av_options_backfill` | `0 21 * * 1-5`; `0 5 1 * *` | `43200` | `0` | `2Gi` | `1` | `DB_PASS` |
 | `fetch-av-options-realtime` | `deploy_av_options_realtime` | `*/5 9-15 * * 1-5` | `600` | `0` | `512Mi` | `1` | `DB_PASS` |

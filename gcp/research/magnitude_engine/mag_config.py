@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from fractions import Fraction
 from types import MappingProxyType
 from typing import Sequence
 
@@ -205,6 +206,24 @@ PHASE_FEATURES: dict[str, tuple[str, ...]] = {
 SUCCESS_BAR_MIN_FOLDS_LOGLOSS = 6      # of 8
 SUCCESS_BAR_MIN_FOLDS_ECE = 6          # of 8
 SUCCESS_BAR_MIN_FOLDS_LIFT = 6         # of 8
+# The bar is a FRACTION of the folds a run holds: 6 of the historical 8. An
+# evaluation window (evaluation_windows.py) holds fewer yearly folds
+# (development 5, validation 2, final_test 1), and a fixed count of 6 there
+# is not a stricter bar but an unattainable one: every default run failed
+# and --persist-production-model could promote nothing (Codex P1 on #1193).
+SUCCESS_BAR_MIN_FOLDS_FRACTION = Fraction(6, 8)
+
+
+def min_folds_required(n_folds: int) -> int:
+    """Folds that must pass each of gates 1-4 when a run holds `n_folds`.
+
+    ceil(6/8 * n): 8 -> 6 (the documented bar, unchanged), 5 -> 4, 2 -> 2,
+    1 -> 1. Every fold the run attempted counts in `n_folds`, including
+    SKIP_THIN and ERROR folds, so a thin window cannot pass by omission.
+    """
+    if n_folds < 1:
+        raise ValueError(f"n_folds must be at least 1, got {n_folds}")
+    return math.ceil(SUCCESS_BAR_MIN_FOLDS_FRACTION * n_folds)
 SUCCESS_BAR_EXPLOSIVE_LIFT_MIN = 1.5
 SUCCESS_BAR_CONFIDENCE_THRESHOLDS: tuple[float, ...] = (0.40, 0.50, 0.60, 0.70)
 
@@ -226,8 +245,26 @@ SUCCESS_BAR_MECHANISM_RATIO_MIN = 2.0     # gate 6: predicted-EXPLOSIVE
 # real 5-min straddle round-trip. See docs/MAGNITUDE_ENGINE_RESULTS.md §5e
 # for the derivation and the COMMITTED-BEFORE-RUN epistemic claim.
 SUCCESS_BAR_GATE7_RATIO_MIN = 1.25
-SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS = 6     # of folds with IV coverage
-SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS = 4    # below this → INSUFFICIENT_DATA
+SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS = 6     # of folds with IV coverage, at 8 folds
+SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS = 4    # below this → INSUFFICIENT_DATA, at 8 folds
+# The two counts above are the documented 8-fold bar. A run holds the folds
+# its evaluation window schedules (development 5, validation 2, final_test
+# 1), so gate 7 takes its requirements from gate7_requirements(n_folds), the
+# same fractions of the scheduled folds; the fixed counts made every window
+# but the legacy 8-fold run unpassable or INSUFFICIENT_DATA (Codex P1 on
+# #1193).
+SUCCESS_BAR_GATE7_MIN_PASSING_FRACTION = Fraction(SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS, 8)
+SUCCESS_BAR_GATE7_MIN_COVERAGE_FRACTION = Fraction(SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS, 8)
+
+
+def gate7_requirements(n_folds: int) -> tuple[int, int]:
+    """(folds that must pass gate 7, folds that must have IV coverage) for a
+    run of `n_folds` scheduled folds: 8 -> (6, 4), 5 -> (4, 3), 2 -> (2, 1),
+    1 -> (1, 1)."""
+    if n_folds < 1:
+        raise ValueError(f"n_folds must be at least 1, got {n_folds}")
+    return (math.ceil(SUCCESS_BAR_GATE7_MIN_PASSING_FRACTION * n_folds),
+            math.ceil(SUCCESS_BAR_GATE7_MIN_COVERAGE_FRACTION * n_folds))
 
 # Bucket terminology for the augmented bar:
 #   PASS    — all 6 gates hold
@@ -854,19 +891,35 @@ def parse_research_namespace(slug: str) -> tuple[str, tuple[float, ...]]:
 
 def gcs_run_prefix(phase: str, ticker: str, tf: str,
                    label_mode: str | None = None,
-                   thresholds: Sequence[float] | None = None) -> str:
+                   thresholds: Sequence[float] | None = None,
+                   evaluation_window: str | None = None) -> str:
     """Where a cell-run's artifacts live.
 
     Canonical serving semantics keep the historical path unchanged. Anything
     else goes under a sibling `_research/<slug>/` root — a separate root
     rather than a subdirectory, so no listing of the canonical prefix can
     reach it however it is written.
+
+    An evaluation window other than development (evaluation_windows.py) gets
+    its own `_windows/<name>/` root ahead of that, for the same reason:
+    assemble_magnitude_results.latest_result and the analysis loaders take
+    the lexicographically latest artifact, so a validation or final-test
+    dispatch sharing the cell prefix would silently become the development
+    verdict (Codex P2 on #1193).
     """
     cell = f"{phase}/{ticker.lower()}_{tf}"
+    root = GCS_PREFIX
+    if evaluation_window not in (None, "development"):
+        from gcp.research.magnitude_engine.evaluation_windows import WINDOWS
+        if evaluation_window not in WINDOWS:
+            raise ValueError(
+                f"unknown evaluation window {evaluation_window!r}; "
+                f"expected one of {list(WINDOWS)}")
+        root = f"{root}/_windows/{evaluation_window}"
     slug = research_namespace(label_mode, thresholds)
-    if slug is None:
-        return f"{GCS_PREFIX}/{cell}"
-    return f"{GCS_PREFIX}/_research/{slug}/{cell}"
+    if slug is not None:
+        root = f"{root}/_research/{slug}"
+    return f"{root}/{cell}"
 
 
 # Tables for Phase 2 + 4 (NOT created by default — only when those phases

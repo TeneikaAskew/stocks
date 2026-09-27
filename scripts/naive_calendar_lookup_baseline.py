@@ -45,11 +45,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from gcp.database import get_engine
 from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
-    DEFAULT_CUTOFFS, MIN_TEST_BARS, ECE_CEILING_BY_TF,
+    MIN_TEST_BARS, ECE_CEILING_BY_TF, min_folds_required,
     SUCCESS_BAR_EXPLOSIVE_LIFT_MIN, SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
+from gcp.research.magnitude_engine.evaluation_windows import (
+    WINDOWS, eastern_sessions, purged_session_masks, window_cutoffs)
 from gcp.research.magnitude_engine.mag_pred_train import (
     expected_calibration_error, decisive_call_hit_rate, explosive_lift,
 )
@@ -159,33 +161,50 @@ def main():
     # predicted, or its gate counts cannot say whether the model beats the
     # calendar prior — they would compare against a different question.
     _label_mode, _thresholds = apply_research_contract(args.research)
+    # The same window as the walk-forward it is compared with: bounded read,
+    # the window's fold schedule and the window's bar. Without this the
+    # baseline read every row through the final-test period and scored eight
+    # folds against a six-fold bar (Codex P1 on #1193).
+    window = WINDOWS[args.evaluation_window]
+    if window.final:
+        # The final window is the one-time production decision, guarded in
+        # walk_forward by the completion check and the atomic claim. A
+        # baseline there would score the holdout without either and could be
+        # rerun forever (Codex P1 on #1193).
+        raise SystemExit(
+            f"--evaluation-window={window.name} is the one-time production "
+            f"decision and is not scored by the baseline; use development "
+            f"or validation")
 
     engine = get_engine()
-    # Load full dataset for this cell — same query the walk-forward uses
-    # but we only need ts + magnitude_bucket. Pull phase0 to avoid the
+    # Load the cell through the window's end — same query the walk-forward
+    # uses but we only need ts + magnitude_bucket. Pull phase0 to avoid the
     # phase-specific feature joins; the target depends only on OHLCV+atr20
     # which are present in phase0.
-    print(f"loading magnitude dataset for {args.ticker} {args.tf}...", file=sys.stderr)
+    print(f"loading magnitude dataset for {args.ticker} {args.tf} "
+          f"through {window.end}...", file=sys.stderr)
     df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0",
+                                until=window.end.isoformat(),
                                 label_mode=_label_mode)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     print(f"loaded {len(df)} rows", file=sys.stderr)
 
     y_all = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
     ts_all = pd.to_datetime(df["ts"], utc=True)
-    bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
+    # The harness's session labels and purge, so the baseline's training
+    # population is the model's: a mask mismatch would otherwise be able to
+    # explain a marginal gate comparison (Codex P2 on #1193).
+    sessions = eastern_sessions(ts_all).values.astype("datetime64[D]")
 
-    cutoffs = list(DEFAULT_CUTOFFS)
+    cutoffs = window_cutoffs(window)
+    required = min_folds_required(len(cutoffs))
     folds = []
     for i, cut in enumerate(cutoffs):
         if i + 1 < len(cutoffs):
             test_end = cutoffs[i + 1]
         else:
-            test_end = str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
-        train_end_dt = np.datetime64(cut)
-        test_end_dt = np.datetime64(test_end)
-        train_mask = bar_dates_arr < train_end_dt
-        test_mask = (bar_dates_arr >= train_end_dt) & (bar_dates_arr < test_end_dt)
+            test_end = window.end.isoformat()
+        train_mask, test_mask = purged_session_masks(sessions, cut, test_end)
         if int(test_mask.sum()) < MIN_TEST_BARS:
             folds.append({"fold": f"{cut}..{test_end}", "status": "SKIP_THIN"})
             continue
@@ -208,6 +227,7 @@ def main():
     print("=" * 100)
     print(f"NAIVE {'CLOCK-ONLY' if args.clock_only else 'CALENDAR-LOOKUP'} BASELINE  "
            f"ticker={args.ticker} tf={args.tf}  bucket={args.bucket_minutes}min"
+           f"  window={window.name} bar={required}/{len(cutoffs)}"
            f"{'  (DoW dropped — vol-smile only)' if args.clock_only else ''}")
     print("=" * 100)
     print(f"\n{'fold':25} {'n_tr':>7} {'n_te':>7} {'beat':>8} "
@@ -237,7 +257,7 @@ def main():
     print(f"  g2 ece-pass:        {g_pass['ece']}/{n_ok}")
     print(f"  g3 monotone:        {g_pass['mono']}/{n_ok}")
     print(f"  g4 lift >= 1.5:     {g_pass['lift']}/{n_ok}")
-    cell_pass = all(c >= 6 for c in g_pass.values())
+    cell_pass = all(c >= required for c in g_pass.values())
     print(f"\nNaive predictor cell_pass: {'YES' if cell_pass else 'NO'}")
     print()
     print("Interpretation:")

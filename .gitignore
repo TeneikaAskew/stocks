@@ -202,3 +202,7 @@ gha-creds-*.json
 # exists on the runner and is never staged (the PR step adds named docs only).
 !refresh-inputs/
 !refresh-inputs/**
+
+# Written into the Cloud Build context by gcp/deploy.sh _stamp_build_info;
+# never a tracked file (a checkout answers with git, an image with this).
+gcp/build_info.json

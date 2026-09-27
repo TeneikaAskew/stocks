@@ -115,14 +115,44 @@ def _flag(body: str, name: str) -> str | None:
 def _resolve_locals(body: str, value: str) -> str:
     """Substitute `${var}` / `$var` with the function's own `local var="..."`.
 
-    One level only, which is what deploy.sh uses (`local research_image=
-    "${IMAGE}:research"`, `local default_args="-m,..."`). `${IMAGE}` and the
-    other globals are left as-is so the reader sees the placeholder.
+    One level only, which is what deploy.sh uses (`local default_args=
+    "-m,..."`, `local mag_env="MAG_PLAN=..."`). `${IMAGE}` and the other
+    globals are left as-is so the reader sees the placeholder.
     """
     for m in re.finditer(r'local (\w+)="([^"]*)"', body):
         var, val = m.group(1), m.group(2)
         value = value.replace("${" + var + "}", val).replace("$" + var, val)
     return value
+
+
+# The image each digest ref names (#1171). deploy.sh passes a digest at every
+# --image site, and a digest carries no tag to read the image from.
+_DIGEST_REF_IMAGE = {
+    "IMAGE_REF": "main",
+    "RESEARCH_IMAGE_REF": "research",
+    "_research_image_ref": "research",
+}
+
+
+def _image_kind(body: str, image: str) -> str:
+    """The image a job runs, as the jobs table names it: `main` or a tag.
+
+    deploy.sh deploys by digest (#1171): `${IMAGE_REF:?...}` for the main
+    build, or a local assigned by `research_image=$(_research_image_ref)`.
+    Neither has a tag, so the ref, or the helper that set the local, names
+    the image. A literal tag (`"${IMAGE}:research"`) is still read as that
+    tag, and anything else is the main image, as before.
+    """
+    m = re.fullmatch(r"\$\{(\w+)(?::?[-?=+][^}]*)?\}", image)
+    if m:
+        ref = m.group(1)
+        call = re.search(rf"\b{ref}=\$\((\w+)\)", body)
+        ref = call.group(1) if call else ref
+        if ref in _DIGEST_REF_IMAGE:
+            return _DIGEST_REF_IMAGE[ref]
+    if ":" in image.split("/")[-1]:
+        return image.split(":", 1)[1].strip("}\"")
+    return "main"
 
 
 def _expand_helper_calls(body: str, funcs: dict) -> str:
@@ -162,9 +192,7 @@ def deploy_jobs(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
             if job in rows:
                 continue
             image = _resolve_locals(body, _flag(body, "image") or "")
-            image_tag = "main"
-            if ":" in image.split("/")[-1]:
-                image_tag = image.split(":", 1)[1].strip("}\"")
+            image_tag = _image_kind(body, image)
             command = _resolve_locals(body, _flag(body, "command") or "")
             args = _resolve_locals(body, _flag(body, "args") or "")
             # locate the create line in the ORIGINAL file for a stable file:line

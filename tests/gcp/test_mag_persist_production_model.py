@@ -22,6 +22,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 
 
@@ -458,6 +459,9 @@ def test_results_dataframe_coerces_all_none_float_cols():
          "base_logloss": 0.82, "beat": 0.01, "ece": 0.03, "ece_ceiling": 0.05,
          "ece_pass": True, "accuracy": 0.7, "base_accuracy": 0.7,
          "accuracy_beat_pp": 0.0,
+         "train_data_max_ts": "2018-12-28T21:00:00+00:00",
+         "evaluation_data_min_ts": "2019-01-02T14:30:00+00:00",
+         "evaluation_data_max_ts": "2019-12-31T21:00:00+00:00",
          "explosive": {"base_rate": 0.02}},  # no precision/lift keys -> None
         {"fold": "2020..2021", "train_end": "2020-01-01", "test_end": "2021-01-01",
          "n_train": 120, "n_test": 55, "status": "OK", "logloss": 0.89,
@@ -471,6 +475,9 @@ def test_results_dataframe_coerces_all_none_float_cols():
         assert df[col].isna().all()
     # a populated column keeps its real values
     assert df["beat"].tolist() == [0.01, -0.02]
+    for col in ("train_data_max_ts", "evaluation_data_min_ts",
+                "evaluation_data_max_ts"):
+        assert isinstance(df[col].dtype, pd.DatetimeTZDtype)
 
 
 # ── Promotion gate (c49qf incident, 2026-08-27) ────────────────────────────
@@ -863,8 +870,9 @@ def test_every_dispatch_path_forwards_label_mode():
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
     src = inspect.getsource(mwf.main)
-    # one per dispatch path: task-parallel, --plan, --all-cells, single cell
-    assert src.count("label_mode=args.label_mode") == 4, (
+    # one per dispatch path: task-parallel, --plan, --all-cells, single cell,
+    # and the --reclaim-incomplete final-test recovery (#1193)
+    assert src.count("label_mode=args.label_mode") == 5, (
         "every dispatch path must forward the requested label mode; a path "
         "that drops it trains the default and reports success")
 
@@ -1001,8 +1009,7 @@ def test_walk_forward_writes_under_the_namespace_it_resolved():
     # both artifact paths — the predictions CSV and the summary JSON — or one
     # of them leaks a research run into the canonical prefix
     assert src.count("gcs_run_prefix(phase, ticker, tf,") == 2
-    assert src.count(
-        "label_mode=label_mode, thresholds=thresholds)") == 2
+    assert src.count("evaluation_window=window.name)") == 2
     # and the persist path is told the same semantics it wrote under
     assert "gates=gates, label_mode=label_mode, thresholds=thresholds," in src
 
@@ -1201,7 +1208,9 @@ def test_movement_sim_writes_into_its_own_namespace():
     """Reading from _research/<slug>/ and writing back to the canonical prefix
     would file a research result among body-contract artifacts."""
     src = pathlib.Path("scripts/magnitude_movement_sim.py").read_text()
-    assert "research_prefix(args.phase, args.ticker, args.tf, args.research)" in src
+    assert "research_prefix(args.phase, args.ticker, args.tf, args.research," in src
+    # and the window it read from is the window it writes back to (#1193)
+    assert "evaluation_window=args.evaluation_window)" in src
     assert 'blob = (f"research/magnitude_engine/{args.phase}' not in src
 
 

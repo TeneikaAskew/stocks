@@ -20,6 +20,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pandas as pd
 from typing import Any
 
 # Import gate thresholds from mag_config — this enforces that we apply the
@@ -30,7 +32,9 @@ from gcp.research.magnitude_engine.mag_config import (
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
     SUCCESS_BAR_MIN_FOLDS_LIFT, SUCCESS_BAR_EXPLOSIVE_LIFT_MIN,
     ECE_CEILING_BY_TF, SUCCESS_BAR_MIN_PASSING_TICKERS_PER_TF,
+    gcs_run_prefix,
 )
+from gcp.research.magnitude_engine.evaluation_windows import WINDOWS
 
 
 def _ls(prefix: str) -> list[str]:
@@ -52,9 +56,12 @@ def _cat(uri: str) -> dict:
     return json.loads(out.decode())
 
 
-def latest_result(phase: str, ticker: str, tf: str, bucket: str) -> dict | None:
-    """Return the most recent walk_forward_*.json for one cell."""
-    prefix = f"gs://{bucket}/research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
+def latest_result(phase: str, ticker: str, tf: str, bucket: str,
+                  evaluation_window: str = "development") -> dict | None:
+    """Return the most recent walk_forward_*.json for one cell and window."""
+    prefix = (f"gs://{bucket}/"
+              + gcs_run_prefix(phase, ticker, tf,
+                               evaluation_window=evaluation_window) + "/")
     files = _ls(prefix)
     if not files:
         return None
@@ -62,7 +69,62 @@ def latest_result(phase: str, ticker: str, tf: str, bucket: str) -> dict | None:
     # Cloud Run execution name like magnitude-engine-XXXXX — lex-sorted
     # works for both).
     latest = sorted(files)[-1]
-    return _cat(latest)
+    result = _cat(latest)
+    # A summary names the window it was produced under (split_name). One
+    # found under another window's root is misfiled evidence, and reporting
+    # it would blend windows into one verdict (Codex P2 on #1193). A summary
+    # written before windows existed carries no split_name and is NOT
+    # development evidence by default: those runs used all eight cutoffs,
+    # 2024-2026 included. It counts as development only if every cutoff it
+    # ran falls inside the development window (Codex P2 on #1193).
+    found = result.get("split_name")
+    if found is None:
+        found = _legacy_split_name(latest, result)
+    if found != evaluation_window:
+        raise RuntimeError(
+            f"{latest} records split_name={found!r} but was read for the "
+            f"{evaluation_window!r} window; refusing to report it")
+    return result
+
+
+def _legacy_split_name(uri: str, result: dict) -> str:
+    """The window a pre-window summary's own fold schedule proves it ran.
+
+    Only "development" can be proven: every cutoff inside that window. A
+    schedule reaching into 2024-2026, or a summary with no schedule, is
+    refused rather than reported under any window.
+    """
+    from gcp.research.magnitude_engine.evaluation_windows import window_cutoffs
+    cutoffs = result.get("cutoffs")
+    if not cutoffs:
+        raise RuntimeError(
+            f"{uri} records neither split_name nor cutoffs; refusing to "
+            f"assign it to a window")
+    dev = WINDOWS["development"]
+    try:
+        window_cutoffs(dev, [str(c) for c in cutoffs])
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{uri} predates evaluation windows and its cutoffs {cutoffs} "
+            f"reach past the development window; it is not development "
+            f"evidence and is not reported") from exc
+    # The cutoffs bound where folds START. The old harness ended its last
+    # fold at bar_date.max() + 1 day, so a run whose cutoffs all precede 2024
+    # still evaluated 2024-2026 in that fold (Codex P2 on #1193): every
+    # recorded fold must END inside the window too.
+    folds = result.get("folds")
+    if not folds:
+        raise RuntimeError(f"{uri} records no folds; its evaluation extent is "
+                           f"unknown and it is not reported")
+    late = [str(f.get("test_end")) for f in folds
+            if f.get("test_end") is None
+            or pd.Timestamp(str(f["test_end"])).date() > dev.end]
+    if late:
+        raise RuntimeError(
+            f"{uri} predates evaluation windows and its folds end at {late}, "
+            f"past the development window end {dev.end.isoformat()}; it is "
+            f"not development evidence and is not reported")
+    return "development"
 
 
 def per_phase_verdict(cells: dict[tuple[str, str], dict]) -> dict:
@@ -149,14 +211,17 @@ def fmt_fold_detail(phase: str, cells: dict[tuple[str, str], dict]) -> str:
     return "\n".join(rows)
 
 
-def assemble(phases: list[str], bucket: str) -> dict[str, dict]:
-    """For each phase, pull all cells and compute verdicts."""
+def assemble(phases: list[str], bucket: str,
+             evaluation_window: str = "development") -> dict[str, dict]:
+    """For each phase, pull all cells of one evaluation window and compute
+    verdicts."""
     results: dict[str, dict] = {}
     for phase in phases:
         cells: dict[tuple[str, str], dict] = {}
         for ticker in TICKERS:
             for tf in TIMEFRAMES:
-                r = latest_result(phase, ticker, tf, bucket)
+                r = latest_result(phase, ticker, tf, bucket,
+                                  evaluation_window=evaluation_window)
                 if r is not None:
                     cells[(ticker, tf)] = r
         verdict = per_phase_verdict(cells)
@@ -164,9 +229,14 @@ def assemble(phases: list[str], bucket: str) -> dict[str, dict]:
     return results
 
 
-def render_markdown(results: dict[str, dict]) -> str:
+def render_markdown(results: dict[str, dict],
+                    evaluation_window: str = "development") -> str:
     out = []
     out.append("# Magnitude Engine — Phase Results (auto-assembled)")
+    out.append("")
+    out.append(f"> Evaluation window: **{evaluation_window}** "
+               f"(`evaluation_windows.py`); every summary below records it "
+               f"as `split_name`.")
     out.append("")
     out.append("> This report is generated by `scripts/assemble_magnitude_results.py`")
     out.append("> from the per-cell `walk_forward_*.json` files in GCS. The gates")
@@ -199,10 +269,14 @@ def main():
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
     p.add_argument("--output", default=None,
                    help="If set, write markdown here. Otherwise print to stdout.")
+    p.add_argument("--evaluation-window", default="development",
+                   choices=tuple(WINDOWS),
+                   help="Report the cells of this evaluation window only; "
+                        "each window's artifacts live under their own root.")
     args = p.parse_args()
     phases = [p.strip() for p in args.phases.split(",")]
-    results = assemble(phases, args.bucket)
-    md = render_markdown(results)
+    results = assemble(phases, args.bucket, args.evaluation_window)
+    md = render_markdown(results, args.evaluation_window)
     if args.output:
         Path(args.output).write_text(md)
         print(f"wrote {args.output} ({len(md)} bytes)", file=sys.stderr)
