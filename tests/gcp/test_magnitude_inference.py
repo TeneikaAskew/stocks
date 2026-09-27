@@ -1067,6 +1067,80 @@ def test_a_reordered_class_list_is_still_caught():
     assert got and "classes=" in got
 
 
+def test_the_serving_contract_does_not_claim_a_readiness_verdict():
+    """Nothing evaluates the eight PRODUCTION_READINESS.md gates yet, so a
+    model artifact stamped with the readiness version would claim a verdict
+    no code produced, and inference would serve it as such (Codex P1 on
+    #1187). The version belongs to experiment summaries until an evaluator
+    records an explicit pass."""
+    from gcp.research.magnitude_engine.mag_config import contract_mismatch
+    assert "production_readiness_version" not in _SERVING_CONTRACT
+    # And an artifact without it stays servable: every LATEST published
+    # before this PR carries no version.
+    assert contract_mismatch(_contract()) is None
+
+
+def test_the_backfill_does_not_stamp_the_readiness_policy():
+    """A legacy model's audit establishes its label and decision contract,
+    not any v1 readiness metric, so the backfill must not stamp it as v1
+    (Codex P1 on #1187). Treating the version as a decision key also made a
+    contract with valid training priors look incomplete, and its exact
+    priors were overwritten from the newest sibling (Codex P2 on #1187)."""
+    from scripts.backfill_model_contracts import (
+        _AUDITED_LEGACY_CONTRACT, _DECISION_KEYS)
+    assert "production_readiness_version" not in _AUDITED_LEGACY_CONTRACT
+    assert _DECISION_KEYS == ("class_priors", "decision_lift_min")
+
+
+def test_the_locked_criteria_state_the_canonical_label_contract():
+    """PRODUCTION_READINESS.md restricts promotion to the body/ATR label at
+    0.5/1.0/1.5 over the four classes. An evaluator must be able to compare a
+    summary's label_mode and thresholds against the locked criteria rather
+    than hardcode the policy elsewhere (Codex P2 on #1187)."""
+    from gcp.research.magnitude_engine.mag_config import (
+        PRODUCTION_READINESS_CRITERIA)
+    label = PRODUCTION_READINESS_CRITERIA["label_contract"]
+    assert label["label_mode"] == "body"
+    assert label["thresholds"] == (0.5, 1.0, 1.5)
+    assert label["classes"] == ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
+    with pytest.raises(TypeError):
+        label["label_mode"] = "excursion"
+
+
+def test_the_locked_criteria_name_the_tail_classes():
+    """The evidence floor counts observations per tail class; the mapping
+    must say which classes those are (Codex P2 on #1187)."""
+    from gcp.research.magnitude_engine.mag_config import (
+        PRODUCTION_READINESS_CRITERIA)
+    floor = PRODUCTION_READINESS_CRITERIA["sample_minimums"]
+    assert floor["tail_classes"] == ("EXPANDED", "EXPLOSIVE")
+
+
+def test_reporting_explosive_intervals_alone_cannot_pass_gate_4():
+    """Gate 4 said to report precision and recall with intervals but gave no
+    pass rule, so a zero-recall detector could satisfy it (Codex P1 on
+    #1187). The acceptance rule is pre-registered per experiment, like the
+    regime and utility boundaries, and its absence blocks promotion."""
+    from gcp.research.magnitude_engine.mag_config import (
+        PRODUCTION_READINESS_CRITERIA)
+    g4 = PRODUCTION_READINESS_CRITERIA["explosive"]
+    assert g4["acceptance_rule_preregistered"] is True
+    assert g4["reporting_intervals_alone_is_sufficient"] is False
+    assert g4["missing_acceptance_rule_blocks_promotion"] is True
+
+
+def test_the_locked_ece_ceilings_do_not_follow_the_mutable_dict(monkeypatch):
+    """MappingProxyType is a live view of the dict it wraps. Wrapping the
+    exported ECE_CEILING_BY_TF let an in-process edit to that dict change the
+    'locked' criteria without a version bump (Codex P2 on #1187)."""
+    from gcp.research.magnitude_engine import mag_config
+    locked = mag_config.PRODUCTION_READINESS_CRITERIA[
+        "calibration"]["ece_ceiling_by_timeframe"]
+    before = dict(locked)
+    monkeypatch.setitem(mag_config.ECE_CEILING_BY_TF, "5m", 0.99)
+    assert dict(locked) == before
+
+
 def test_the_backfill_refuses_an_unaudited_run():
     """Before #1055 the single-cell dispatch path DID forward --label-mode
     while the persist path checked nothing, so `old` does not imply `body`.

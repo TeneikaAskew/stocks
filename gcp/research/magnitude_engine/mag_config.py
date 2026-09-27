@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Sequence
 
 
@@ -242,6 +243,101 @@ ECE_CEILING_BY_TF: dict[str, float] = {
     "15m": 0.05,
     "30m": 0.075,
 }
+
+
+# ───────────────── Production-readiness criteria (LOCKED) ─────────────────
+# This version identifies the complete, per-(ticker, timeframe) promotion
+# policy documented in PRODUCTION_READINESS.md.  Bump the version only in a
+# prospective code change made before its validation window is examined.
+#
+# It names the policy GOVERNING an experiment, not a verdict. It is recorded
+# in walk-forward and movement-sim summaries only. It is deliberately NOT in
+# CONTRACT.json or checked by contract_mismatch: nothing evaluates the eight
+# gates yet, so stamping it on a model would claim a pass no code produced
+# (Codex P1s on #1187). Serving enforcement lands with the evaluator that
+# records an explicit verdict and its evidence.
+PRODUCTION_READINESS_VERSION = "magnitude-production-readiness-v1"
+PRODUCTION_READINESS_PRIMARY_OBJECTIVE = "four_class_next_bar_body_atr_bucket"
+PRODUCTION_READINESS_BINARY_OBJECTIVE = "binary_explosive_detector"
+PRODUCTION_READINESS_CONFIDENCE_LEVEL = 0.95
+PRODUCTION_READINESS_MIN_REGIMES = 3
+PRODUCTION_READINESS_MIN_SESSIONS = 20
+PRODUCTION_READINESS_MIN_TAIL_OBSERVATIONS = 50
+PRODUCTION_READINESS_TAIL_CLASSES: tuple[str, ...] = ("EXPANDED", "EXPLOSIVE")
+
+# Machine-readable mirror of PRODUCTION_READINESS.md.  MappingProxyType and
+# tuples make accidental mutation during an experiment fail loudly.  These
+# are conjunctive requirements: an absent/unmeasurable value is a failure,
+# never an exemption.  Numeric definitions that are experiment-specific
+# (regime catastrophe, net utility, and the EXPLOSIVE precision/recall
+# acceptance rule) must be pre-registered before looking at that
+# experiment's validation window; they may not be selected post hoc.
+PRODUCTION_READINESS_CRITERIA = MappingProxyType({
+    "primary_objective": PRODUCTION_READINESS_PRIMARY_OBJECTIVE,
+    # The only label a v1 promotion may use (PRODUCTION_READINESS.md,
+    # "Objective boundary"). Stated here so an evaluator compares a run's
+    # label_mode and thresholds against the locked policy instead of
+    # hardcoding it (Codex P2 on #1187). The constants are the defaults, not
+    # the MAG_THRESHOLDS research override, and are immutable tuples.
+    "label_contract": MappingProxyType({
+        "label_mode": DEFAULT_LABEL_MODE,
+        "target": "abs(next_close - next_open) / atr_20",
+        "thresholds": MAGNITUDE_THRESHOLDS,
+        "classes": LABEL_CLASSES,
+    }),
+    "separate_binary_objective": PRODUCTION_READINESS_BINARY_OBJECTIVE,
+    "per_cell": True,
+    "untouched_chronological_data": True,
+    "log_loss": MappingProxyType({
+        "baseline": "expanding_class_prior",
+        "difference": "model_minus_baseline",
+        "required_direction": "below_zero",
+        "bootstrap_confidence_level": PRODUCTION_READINESS_CONFIDENCE_LEVEL,
+        "confidence_interval_must_exclude_zero": True,
+    }),
+    "calibration": MappingProxyType({
+        # A private copy: a proxy over ECE_CEILING_BY_TF itself is a live
+        # view, so an in-process edit to that dict would move the locked
+        # ceilings without a version bump (Codex P2 on #1187).
+        "ece_ceiling_by_timeframe": MappingProxyType(dict(ECE_CEILING_BY_TF)),
+        "no_material_reliability_curve_failure_in_populated_class": True,
+    }),
+    "brier": MappingProxyType({
+        "baseline": "expanding_class_prior",
+        "improvement_required": True,
+    }),
+    "explosive": MappingProxyType({
+        "precision_with_confidence_interval": True,
+        "recall_with_confidence_interval": True,
+        "lift_alone_is_sufficient": False,
+        "thresholds_selected_post_hoc_from_multiclass_probabilities": False,
+        # Reporting intervals is necessary, not sufficient: a zero-recall
+        # detector reports intervals too (Codex P1 on #1187). The pass rule
+        # (minimum lower confidence bound for precision and for recall, and
+        # the baseline each is compared with) is pre-registered per
+        # experiment; with none registered, gate 4 fails.
+        "acceptance_rule_preregistered": True,
+        "reporting_intervals_alone_is_sufficient": False,
+        "missing_acceptance_rule_blocks_promotion": True,
+    }),
+    "regimes": MappingProxyType({
+        "minimum": PRODUCTION_READINESS_MIN_REGIMES,
+        "no_catastrophic_degradation": True,
+    }),
+    "utility": MappingProxyType({
+        "must_be_net_positive": True,
+        "costs": ("spread", "slippage", "latency", "abstention"),
+    }),
+    "sample_minimums": MappingProxyType({
+        "independent_sessions": PRODUCTION_READINESS_MIN_SESSIONS,
+        "realized_observations_per_promoted_tail_class":
+            PRODUCTION_READINESS_MIN_TAIL_OBSERVATIONS,
+        "tail_classes": PRODUCTION_READINESS_TAIL_CLASSES,
+        "extend_collection_window_if_unmet": True,
+    }),
+    "unmeasurable_mandatory_metric_blocks_promotion": True,
+    "criteria_frozen_before_validation_window_review": True,
+})
 
 # A phase PASSES if all six gates hold across at least 2 of 3 cells per TF
 # (i.e. 2 of 3 tickers). Repeated for each (TF) cell-row of the 3×3 grid.
