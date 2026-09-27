@@ -381,3 +381,66 @@ def test_only_the_final_window_may_promote_a_production_model():
     assert (src.index("production_persist_refusal(window)")
             < src.index("_persist_production_model_artifact("))
     assert 'summary["production_model_refused"]' in src
+
+
+# ═══════════════ Codex review of #1193, third round (70430ca) ═══════════════
+
+def test_window_cutoffs_is_the_single_fold_schedule():
+    """The harness and the naive baseline evaluated different fold
+    schedules; both now read one rule."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    from gcp.research.magnitude_engine.evaluation_windows import window_cutoffs
+    assert window_cutoffs(WINDOWS["development"]) == [
+        "2019-01-01", "2020-01-01", "2021-01-01", "2022-01-01", "2023-01-01"]
+    assert window_cutoffs(WINDOWS["validation"]) == ["2024-01-01", "2025-01-01"]
+    assert window_cutoffs(WINDOWS["final_test"]) == ["2026-01-01"]
+    assert window_cutoffs(WINDOWS["validation"], ["2024-07-01"]) == ["2024-07-01"]
+    with pytest.raises(ValueError, match="outside"):
+        window_cutoffs(WINDOWS["validation"], ["2023-07-01"])
+    with pytest.raises(ValueError, match="holdout"):
+        window_cutoffs(WINDOWS["final_test"], ["2026-06-01"])
+    assert "window_cutoffs(window, cutoffs)" in inspect.getsource(mwf.walk_forward)
+
+
+def test_the_final_test_refuses_data_that_stops_short_of_its_last_session():
+    """The date check proves the window has ended, not that the table holds
+    it: a stale source still consumed the one-time version and then found
+    a thin or empty final fold (Codex P1)."""
+    import inspect
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    from gcp.research.magnitude_engine.evaluation_windows import (
+        assert_window_covered, last_expected_session)
+    final = WINDOWS["final_test"]
+    assert last_expected_session(final) == date(2026, 12, 31)
+    short = pd.to_datetime(["2026-01-02", "2026-12-24"]).values.astype("datetime64[D]")
+    with pytest.raises(ValueError, match="2026-12-31"):
+        assert_window_covered(final, short)
+    full = pd.to_datetime(["2026-01-02", "2026-12-31"]).values.astype("datetime64[D]")
+    assert_window_covered(final, full)
+    src = inspect.getsource(mwf.walk_forward)
+    assert src.index("assert_window_covered(") < src.index("_claim_final_test(")
+
+
+def test_provenance_records_a_dirty_build(monkeypatch, tmp_path):
+    """The image copies the modified working tree, so a bare HEAD would
+    attribute code that is not reproducible from that commit to a clean
+    revision (Codex P2)."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    stamp = tmp_path / "build_info.json"
+    monkeypatch.setattr(mwf, "BUILD_INFO_PATH", stamp)
+    stamp.write_text(json.dumps({"git_commit": "abc123", "git_dirty": True}))
+    assert mwf._execution_provenance(_X, _Y, _TS)["code_commit"] == "abc123-dirty"
+    stamp.write_text(json.dumps({"git_commit": "abc123", "git_dirty": False}))
+    assert mwf._execution_provenance(_X, _Y, _TS)["code_commit"] == "abc123"
+
+
+def test_the_naive_baseline_honours_the_window_it_accepts():
+    """It took --evaluation-window through the shared helper and ignored it:
+    unbounded load, every DEFAULT_CUTOFFS fold including 2026, a fixed
+    six-fold verdict (Codex P1)."""
+    src = (REPO / "scripts/naive_calendar_lookup_baseline.py").read_text()
+    assert "until=window.end.isoformat()" in src
+    assert "window_cutoffs(window)" in src
+    assert "min_folds_required(len(cutoffs))" in src
+    assert "c >= 6 " not in src and "list(DEFAULT_CUTOFFS)" not in src

@@ -54,8 +54,8 @@ from gcp.research.magnitude_engine.mag_config import (
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.evaluation_windows import (
     CRITERIA_VERSION, FINAL_TEST_VERSION, PREDICTION_HORIZON_SESSIONS,
-    WINDOWS, assert_disjoint, assert_window_complete, eastern_sessions,
-    purged_session_masks, utc_instants,
+    WINDOWS, assert_disjoint, assert_window_complete, assert_window_covered,
+    eastern_sessions, purged_session_masks, utc_instants, window_cutoffs,
 )
 from gcp.research.magnitude_engine.mag_pred_train import (
     featurize, make_lgbm, resolve_class_weight, class_weight_power,
@@ -232,7 +232,10 @@ def _source_commit() -> str | None:
         info = json.loads(BUILD_INFO_PATH.read_text())
         stamped = info.get("git_commit") if isinstance(info, dict) else None
         if stamped:
-            return str(stamped)
+            # The build copied the working tree, so a dirty tree's code is
+            # not reproducible from the bare commit; say so, the way
+            # `git describe --dirty` does (Codex P2 on #1193).
+            return str(stamped) + ("-dirty" if info.get("git_dirty") else "")
     except (OSError, ValueError):
         pass
     env = os.environ.get("GIT_COMMIT")
@@ -241,7 +244,13 @@ def _source_commit() -> str | None:
     try:
         out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
                              text=True, check=True, cwd=_REPO_ROOT)
-        return out.stdout.strip() or None
+        head = out.stdout.strip()
+        if not head:
+            return None
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", "lib", "gcp",
+                                "scripts"], capture_output=True, text=True,
+                               check=True, cwd=_REPO_ROOT).stdout.strip()
+        return head + ("-dirty" if dirty else "")
     except (OSError, subprocess.CalledProcessError):
         return None
 
@@ -934,25 +943,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   features: str = "",
                   evaluation_window: str = "development") -> dict:
     window = WINDOWS[evaluation_window]
-    if cutoffs is None:
-        cutoffs = [c for c in DEFAULT_CUTOFFS
-                   if window.start <= pd.Timestamp(c).date() < window.end]
-        if window.final:
-            cutoffs = [window.start.isoformat()]
-    if not cutoffs:
-        raise ValueError(f"no folds fall in evaluation window {window.name}")
-    for cutoff in cutoffs:
-        if not window.start <= pd.Timestamp(cutoff).date() < window.end:
-            raise ValueError(f"cutoff {cutoff} is outside immutable {window.name} "
-                             f"window [{window.start}, {window.end})")
-    if window.final and [pd.Timestamp(c).date() for c in cutoffs] != [window.start]:
-        # One fold, training before the window and evaluating all of it. A
-        # later cutoff would train on part of the holdout and evaluate the
-        # rest, then consume the marker: a leak and a silently changed
-        # final-test population (Codex P1 on #1193).
-        raise ValueError(
-            f"{window.name} folds are fixed at [{window.start.isoformat()}]: "
-            f"custom cutoffs {list(cutoffs)} would train on part of the holdout")
+    cutoffs = window_cutoffs(window, cutoffs)
     thresholds = resolve_magnitude_thresholds()
     execution_id = (os.environ.get("CLOUD_RUN_EXECUTION")
                     or os.environ.get("MAG_RUN_ID")
@@ -1024,9 +1015,11 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     })
     log.info("featurize-once: %d × %d in %.1fs", X_full.shape[0], X_full.shape[1], time.time() - t0)
     if window.final:
-        # Claimed only now, with the data and its provenance in hand: a load
-        # or feature failure above must not consume the one-time version on
-        # a run that evaluated nothing.
+        # Claimed only now, with the data and its provenance in hand and the
+        # data proven to reach the window's last session: a load or feature
+        # failure above, or a stale source table, must not consume the
+        # one-time version on a run that evaluated nothing or a partial year.
+        assert_window_covered(window, bar_dates_arr)
         _claim_final_test(FINAL_TEST_VERSION, phase, ticker, tf, execution_id)
 
     cores = max(1, os.cpu_count() or 1)

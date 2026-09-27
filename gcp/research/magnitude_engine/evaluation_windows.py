@@ -14,6 +14,7 @@ from datetime import date, datetime
 
 import pandas as pd
 
+from gcp.research.magnitude_engine.mag_config import DEFAULT_CUTOFFS
 from lib.eastern_time import ET as EASTERN, utc_to_eastern_naive
 
 CRITERIA_VERSION = "magnitude-evaluation-v1"
@@ -75,6 +76,77 @@ def assert_window_complete(window: EvaluationWindow, as_of: date) -> None:
             f"{window.name} window is incomplete: it runs through "
             f"{window.end.isoformat()} and the market date is "
             f"{as_of.isoformat()}")
+
+
+def window_cutoffs(window: EvaluationWindow,
+                   cutoffs: list[str] | None = None) -> list[str]:
+    """The fold schedule a window evaluates: the one rule for every consumer.
+
+    Default: the DEFAULT_CUTOFFS that fall inside the window, so the harness
+    and the naive baseline (scripts/naive_calendar_lookup_baseline.py) score
+    the same folds. The final window has exactly one fold, training before
+    it and evaluating all of it: a later cutoff would train on part of the
+    holdout and evaluate the rest, a leak and a silently changed final-test
+    population (Codex P1 on #1193), so custom cutoffs are refused there.
+    """
+    if cutoffs is None:
+        cutoffs = ([window.start.isoformat()] if window.final else
+                   [c for c in DEFAULT_CUTOFFS
+                    if window.start <= pd.Timestamp(c).date() < window.end])
+    cutoffs = [str(c) for c in cutoffs]
+    if not cutoffs:
+        raise ValueError(f"no folds fall in evaluation window {window.name}")
+    for cutoff in cutoffs:
+        if not window.start <= pd.Timestamp(cutoff).date() < window.end:
+            raise ValueError(f"cutoff {cutoff} is outside immutable {window.name} "
+                             f"window [{window.start}, {window.end})")
+    if window.final and [pd.Timestamp(c).date() for c in cutoffs] != [window.start]:
+        raise ValueError(
+            f"{window.name} folds are fixed at [{window.start.isoformat()}]: "
+            f"custom cutoffs {cutoffs} would train on part of the holdout")
+    return cutoffs
+
+
+def last_expected_session(window: EvaluationWindow) -> date:
+    """The last NYSE session strictly before `window.end`.
+
+    Honors exchange holidays through pandas_market_calendars, the calendar
+    lib/strat_levels already relies on. Without it the last weekday stands
+    in, which fails CLOSED: it can refuse a window whose last weekday was a
+    holiday, never accept one whose last session is missing.
+    """
+    end = pd.Timestamp(window.end)
+    try:
+        import pandas_market_calendars as mcal
+    except ImportError:
+        return (end - pd.offsets.BDay(1)).date()
+    days = mcal.get_calendar("NYSE").valid_days(
+        start_date=(end - pd.Timedelta(days=14)).strftime("%Y-%m-%d"),
+        end_date=(end - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+    if len(days) == 0:
+        raise RuntimeError(f"NYSE calendar returned no session in the two "
+                           f"weeks before {window.end}")
+    return days[-1].date()
+
+
+def assert_window_covered(window: EvaluationWindow, session_labels) -> None:
+    """Refuse a window whose loaded sessions stop short of its last one.
+
+    assert_window_complete proves the period has ended; this proves the
+    data reached its end. Without it a stale source table consumed the
+    one-time final-test version and only then found a thin or empty final
+    fold (Codex P1 on #1193).
+    """
+    sessions = pd.DatetimeIndex(session_labels)
+    if len(sessions) == 0:
+        raise ValueError(f"no sessions loaded for the {window.name} window")
+    last = sessions.max().date()
+    expected = last_expected_session(window)
+    if last < expected:
+        raise ValueError(
+            f"{window.name} data ends at session {last.isoformat()} but the "
+            f"window's last session is {expected.isoformat()}; the source "
+            f"table is incomplete, refusing to consume the final-test version")
 
 
 def utc_instants(timestamps) -> pd.DatetimeIndex:
