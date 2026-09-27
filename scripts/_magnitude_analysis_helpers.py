@@ -8,6 +8,7 @@ drift on path scheme or bucket bin.
 """
 from __future__ import annotations
 import io
+import json
 import sys
 
 import pandas as pd
@@ -113,7 +114,11 @@ def load_predictions(phase: str, ticker: str, tf: str,
     if not blobs:
         raise SystemExit(f"no prediction CSV under gs://{bucket}/{prefix}")
     if run_id:
-        blobs = [b for b in blobs if run_id in b.name]
+        # Exact filename, not a substring: `r1` must not select
+        # predictions_r10.csv, whose run carries a different readiness
+        # version (Codex P2 on #1187).
+        want = f"predictions_{run_id}.csv"
+        blobs = [b for b in blobs if b.name.rsplit("/", 1)[-1] == want]
         if not blobs:
             raise SystemExit(
                 f"no prediction CSV matching run_id={run_id} under gs://{bucket}/{prefix}"
@@ -121,6 +126,24 @@ def load_predictions(phase: str, ticker: str, tf: str,
     target = sorted(blobs, key=lambda b: b.name)[-1]
     print(f"loading predictions: gs://{bucket}/{target.name}", file=sys.stderr)
     return pd.read_csv(io.BytesIO(target.download_as_bytes()))
+
+
+def load_run_readiness_version(phase: str, ticker: str, tf: str,
+                               bucket: str, run_id: str,
+                               research: str | None = None) -> str | None:
+    """The production_readiness_version the walk-forward run recorded.
+
+    Read from that run's own walk_forward_<run_id>.json, so an analysis of
+    an older run carries the policy the run was produced under rather than
+    the one the code holds today. None means the run predates the policy;
+    that is a fact about the run, not a default. A missing summary raises,
+    like a missing predictions CSV.
+    """
+    name = research_prefix(phase, ticker, tf, research) + f"walk_forward_{run_id}.json"
+    blob = gcs.Client().bucket(bucket).blob(name)
+    if not blob.exists():
+        raise SystemExit(f"no walk-forward summary at gs://{bucket}/{name}")
+    return json.loads(blob.download_as_bytes()).get("production_readiness_version")
 
 
 def calendar_keys(ts_series, bucket_minutes: int = 30):
